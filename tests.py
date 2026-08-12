@@ -48,11 +48,18 @@ class Spy:
     def __init__(self) -> None:
         self.events: list[str] = []
 
-    def machine(self, hotkey_vk: int = VK_RCTRL) -> PTTStateMachine:
+    def machine(self, hotkey_vk=VK_RCTRL) -> PTTStateMachine:
         return PTTStateMachine(
             hotkey_vk,
-            on_start=lambda: self.events.append("start"),
-            on_stop=lambda: self.events.append("stop"),
+            on_start=lambda lang: self.events.append("start"),
+            on_stop=lambda lang: self.events.append("stop"),
+            on_abort=lambda why: self.events.append(f"abort:{why}"))
+
+    def lang_machine(self, hotkeys: dict) -> PTTStateMachine:
+        return PTTStateMachine(
+            hotkeys,
+            on_start=lambda lang: self.events.append(f"start:{lang}"),
+            on_stop=lambda lang: self.events.append(f"stop:{lang}"),
             on_abort=lambda why: self.events.append(f"abort:{why}"))
 
 
@@ -359,7 +366,7 @@ def test_gemini_rotates_past_an_exhausted_model() -> None:
     t._cooldown, t._strikes, t._thinking = {}, {}, {}
     calls: list[str] = []
 
-    def fake_one(model, wav):
+    def fake_one(model, wav, language=None):
         calls.append(model)
         if model == "dead":
             raise _fake_429()
@@ -382,7 +389,8 @@ def test_gemini_reports_when_every_model_is_spent() -> None:
     t = GeminiTranscriber.__new__(GeminiTranscriber)
     t._models = ["a", "b"]
     t._cooldown, t._strikes, t._thinking = {}, {}, {}
-    t._one = lambda model, wav: (_ for _ in ()).throw(_fake_429())
+    t._one = lambda model, wav, language=None: (
+        _ for _ in ()).throw(_fake_429())
     try:
         t.transcribe(b"wav")
     except RateLimitError as e:
@@ -708,6 +716,103 @@ def _router(lang, prob, threshold=0.8):
     t._english_threshold = threshold
     t._english = _StubDetector(lang, prob)
     return t._pick_language(object())
+
+
+VK_RALT = 0xA5
+
+
+def test_second_hotkey_selects_english() -> None:
+    """A dedicated key is the reliable path: detection scored a Hebrew
+    sentence as English 0.57 on the real microphone."""
+    spy = Spy()
+    m = spy.lang_machine({VK_RCTRL: "he", VK_RALT: "en"})
+
+    m.handle("down", VK_RCTRL, False)
+    assert m.language == "he"
+    m.handle("up", VK_RCTRL, False)
+
+    m.handle("down", VK_RALT, False)
+    assert m.language == "en"
+    m.handle("up", VK_RALT, False)
+
+    assert spy.events == ["start:he", "stop:he", "start:en", "stop:en"], \
+        spy.events
+    assert m.language is None      # nothing recording
+
+
+def test_pressing_both_hotkeys_aborts() -> None:
+    """Rather than silently guess which language was meant."""
+    spy = Spy()
+    m = spy.lang_machine({VK_RCTRL: "he", VK_RALT: "en"})
+    m.handle("down", VK_RCTRL, False)
+    m.handle("down", VK_RALT, False)          # physical -> abort
+    assert m.state == "idle"
+    assert spy.events[0] == "start:he"
+    assert spy.events[1].startswith("abort:"), spy.events
+    assert m.language is None
+
+
+def test_english_hotkey_releases_independently() -> None:
+    """Releasing the OTHER hotkey must not end an English recording."""
+    spy = Spy()
+    m = spy.lang_machine({VK_RCTRL: "he", VK_RALT: "en"})
+    m.handle("down", VK_RALT, False)
+    m.handle("up", VK_RCTRL, False)           # key-ups never abort or stop
+    assert m.state == "recording", spy.events
+    m.handle("up", VK_RALT, False)
+    assert spy.events == ["start:en", "stop:en"], spy.events
+
+
+def test_hotkeys_must_differ() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "c.toml"
+        p.write_text('hotkey = "right ctrl"\n'
+                     'english_hotkey = "right ctrl"\n', "utf-8")
+        try:
+            config_mod.load(p)
+        except config_mod.ConfigError as e:
+            assert "differ" in str(e), e
+        else:
+            raise AssertionError("identical hotkeys must be rejected")
+
+
+def test_explicit_language_beats_detection() -> None:
+    """When the user pressed the English key, no detector gets a vote."""
+    from transcribers.local_whisper import LocalWhisperTranscriber
+
+    calls = {}
+
+    class FakeModel:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def transcribe(self, audio, **kw):
+            calls["model"] = self.tag
+            calls["language"] = kw.get("language")
+
+            class Seg:
+                text = "hello"
+            return [Seg()], None
+
+        def detect_language(self, audio=None, vad_filter=False):
+            calls["detected"] = True
+            return "he", 1.0, []
+
+    t = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    t._model, t._english = FakeModel("he"), FakeModel("en")
+    t._language, t._english_threshold = "he", 0.8
+    t._cleanup, t._fillers = False, ()
+
+    assert t.transcribe(b"RIFF", language="en") == "hello"
+    assert calls["model"] == "en" and calls["language"] == "en", calls
+    assert "detected" not in calls, "must not detect when told explicitly"
+
+    calls.clear()
+    assert t.transcribe(b"RIFF", language="he") == "hello"
+    assert calls["model"] == "he" and calls["language"] == "he", calls
+    assert "detected" not in calls
 
 
 def test_language_router_is_biased_to_hebrew() -> None:

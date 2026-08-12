@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import dataclasses
+import inspect
 import logging
 import logging.handlers
 import queue
@@ -65,14 +66,17 @@ class App:
     def __init__(self, cfg: config_mod.Config):
         self.cfg = cfg
         parse_chord(cfg.paste_chord)  # fail fast on a bad chord name
-        self.queue: queue.Queue[tuple[bytes, float, int]] = queue.Queue()
+        self.queue: queue.Queue[tuple[bytes, float, int, str]] = queue.Queue()
         self.transcriber = get_transcriber(cfg)  # fail fast (e.g. no key)
         self.spool = Spool(APP_DIR / "pending")
         self._local = None       # lazily built local fallback, if enabled
         self.recorder = Recorder(cfg.audio.sample_rate, cfg.audio.device,
                                  cfg.max_seconds, self._on_overflow)
+        hotkeys = {vk_for(cfg.hotkey): "he"}
+        if cfg.english_hotkey:
+            hotkeys[vk_for(cfg.english_hotkey)] = "en"
         self.machine = PTTStateMachine(
-            vk_for(cfg.hotkey),
+            hotkeys,
             on_start=self._on_start, on_stop=self._on_stop,
             on_abort=self._on_abort)
         self.hook = HookThread(self.machine)
@@ -90,12 +94,13 @@ class App:
 
     # ---- hook-thread callbacks: keep them fast ----
 
-    def _on_start(self) -> None:
+    def _on_start(self, language: str = "he") -> None:
         self.recorder.begin()
         beep("start")
-        log.info("recording... (release '%s' to transcribe)", self.cfg.hotkey)
+        log.info("recording %s... (release to transcribe)",
+                 "ENGLISH" if language == "en" else "Hebrew")
 
-    def _on_stop(self) -> None:
+    def _on_stop(self, language: str = "he") -> None:
         wav, seconds = self.recorder.end()
         if wav is None:
             # overflowed at max_seconds — beep already fired at cap time
@@ -112,8 +117,9 @@ class App:
         # paste, transcription) happens on the worker: this callback runs
         # inside the OS keyboard hook, and blocking here would make Windows
         # drop the hook and freeze input.
-        self.queue.put((wav, seconds, injector.foreground_window()))
-        log.info("captured %.1f s -> transcribing (%s)...", seconds,
+        self.queue.put((wav, seconds, injector.foreground_window(), language))
+        log.info("captured %.1f s of %s -> transcribing (%s)...", seconds,
+                 "English" if language == "en" else "Hebrew",
                  self.transcriber.name)
 
     def _on_abort(self, reason: str) -> None:
@@ -155,26 +161,46 @@ class App:
             return None
         return self._local
 
-    def _transcribe(self, wav: bytes) -> tuple[str, str]:
+    @staticmethod
+    def _call(backend, wav: bytes, language: str | None) -> str:
+        """Pass the chosen language through when the backend supports it.
+
+        The signature is inspected rather than catching TypeError, so a
+        genuine TypeError raised *inside* a backend is not silently retried
+        as if the backend simply lacked the parameter.
+        """
+        try:
+            takes_language = "language" in inspect.signature(
+                backend.transcribe).parameters
+        except (TypeError, ValueError):
+            takes_language = False
+        if takes_language:
+            return backend.transcribe(wav, language=language)
+        return backend.transcribe(wav)
+
+    def _transcribe(self, wav: bytes,
+                    language: str | None = None) -> tuple[str, str]:
         """Cloud first; local only once every cloud model is out of quota."""
         try:
-            return self.transcriber.transcribe(wav), self.transcriber.name
+            return (self._call(self.transcriber, wav, language),
+                    self.transcriber.name)
         except RateLimitError:
             local = self._local_backend()
             if local is None:
                 raise
-            return local.transcribe(wav), local.name
+            return self._call(local, wav, language), local.name
 
     def _worker(self) -> None:
         while True:
-            wav, seconds, hwnd = self.queue.get()
+            wav, seconds, hwnd, language = self.queue.get()
             try:
-                self._handle(wav, seconds, hwnd)
+                self._handle(wav, seconds, hwnd, language)
             except Exception:
                 beep("error")
                 log.exception("unexpected failure handling a recording")
 
-    def _handle(self, wav: bytes, seconds: float, hwnd: int) -> None:
+    def _handle(self, wav: bytes, seconds: float, hwnd: int,
+                language: str | None = None) -> None:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
@@ -196,7 +222,7 @@ class App:
         while True:
             attempt += 1
             try:
-                text, backend = self._transcribe(wav)
+                text, backend = self._transcribe(wav, language)
                 break
             except TranscriptionError as e:
                 last_error = str(e)
@@ -457,8 +483,10 @@ def main() -> int:
     except OSError as e:
         report_fatal(str(e))
         return 1
-    log.info("ready — hold '%s', speak Hebrew, release to paste. %s",
+    log.info("ready — hold '%s' for Hebrew%s, release to paste. %s",
              cfg.hotkey,
+             f", '{cfg.english_hotkey}' for English" if cfg.english_hotkey
+             else "",
              "Ctrl+C here to quit." if HAS_CONSOLE
              else 'Double-click "Stop Dictation.vbs" to quit.')
     log.info("mic: %s | backend: %s | transcripts: %s",

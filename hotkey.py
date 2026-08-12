@@ -86,47 +86,71 @@ def parse_chord(chord: str) -> list[int]:
 class PTTStateMachine:
     """Decides what each key event means for push-to-talk.
 
-    - hotkey down while idle      -> on_start
-    - hotkey down while recording -> ignored (Windows auto-repeat)
-    - hotkey up while recording   -> on_stop
+    More than one hotkey may be registered, each bound to a language. That
+    is deliberately an explicit choice rather than automatic detection:
+    language detection measured badly on real microphone audio (a Hebrew
+    sentence scored "English 0.57"), whereas a dedicated key is always
+    right.
+
+    - a hotkey down while idle      -> on_start(language)
+    - that hotkey down while recording -> ignored (Windows auto-repeat)
+    - that hotkey up while recording   -> on_stop(language)
     - any other PHYSICAL key-down while recording -> on_abort(reason):
       the user is typing a combo (e.g. holding Right Ctrl for Ctrl+C),
       not dictating. Injected key-downs (our own paste chord, test
       drivers) never abort. Key-UPs of other keys never abort either.
+      The OTHER hotkey counts as "any other key" — pressing both aborts
+      rather than silently picking a language.
 
     Callbacks run on the hook thread — keep them fast.
     """
 
-    def __init__(self, hotkey_vk: int,
-                 on_start: Callable[[], None],
-                 on_stop: Callable[[], None],
+    def __init__(self, hotkeys: int | dict[int, str],
+                 on_start: Callable[[str], None],
+                 on_stop: Callable[[str], None],
                  on_abort: Callable[[str], None]):
-        self._hotkey_vk = hotkey_vk
+        # A bare vk keeps the original single-hotkey form working.
+        self._hotkeys = ({hotkeys: "he"} if isinstance(hotkeys, int)
+                         else dict(hotkeys))
+        if not self._hotkeys:
+            raise ValueError("at least one hotkey is required")
         self._on_start = on_start
         self._on_stop = on_stop
         self._on_abort = on_abort
         self._state = IDLE
+        self._active_vk: int | None = None
         self._lock = threading.Lock()
 
     @property
     def state(self) -> str:
         return self._state
 
+    @property
+    def language(self) -> str | None:
+        """Language of the recording in progress, if any."""
+        vk = self._active_vk
+        return self._hotkeys.get(vk) if vk is not None else None
+
     def handle(self, event_type: str, vk: int, injected: bool) -> None:
         fire: Callable[[], None] | None = None
         with self._lock:
             if self._state == IDLE:
-                if vk == self._hotkey_vk and event_type == "down":
+                if vk in self._hotkeys and event_type == "down":
                     self._state = RECORDING
-                    fire = self._on_start
+                    self._active_vk = vk
+                    language = self._hotkeys[vk]
+                    fire = lambda: self._on_start(language)
             elif self._state == RECORDING:
-                if vk == self._hotkey_vk:
+                if vk == self._active_vk:
                     if event_type == "up":
                         self._state = IDLE
-                        fire = self._on_stop
+                        language = self._hotkeys[vk]
+                        self._active_vk = None
+                        fire = lambda: self._on_stop(language)
                     # down = auto-repeat while held: ignore
                 elif event_type == "down" and not injected:
                     self._state = IDLE
+                    self._active_vk = None
                     reason = f"'{vk_name(vk)}' pressed mid-hold"
                     fire = lambda: self._on_abort(reason)
         if fire is not None:

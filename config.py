@@ -68,6 +68,10 @@ class LocalConfig:
 @dataclass(frozen=True)
 class Config:
     hotkey: str = "right ctrl"
+    # A dedicated key beats guessing: language detection scored a Hebrew
+    # sentence as "English 0.57" on this user's real microphone. "" = off.
+    # Avoid alt (menu activation on release) and shift (FilterKeys at 8 s).
+    english_hotkey: str = "f9"
     backend: str = "gemini"
     paste_chord: str = "ctrl+v"
     restore_delay_ms: int = 300
@@ -116,6 +120,8 @@ def load(path: Path) -> Config:
 
     cfg = Config(
         hotkey=str(data.get("hotkey", Config.hotkey)).strip().lower(),
+        english_hotkey=str(data.get("english_hotkey",
+                                    Config.english_hotkey)).strip().lower(),
         backend=str(data.get("backend", Config.backend)).strip().lower(),
         paste_chord=str(data.get("paste_chord", Config.paste_chord)).strip().lower(),
         restore_delay_ms=int(data.get("restore_delay_ms", Config.restore_delay_ms)),
@@ -157,6 +163,9 @@ def load(path: Path) -> Config:
         raise ConfigError(f"backend must be one of {VALID_BACKENDS}, got {cfg.backend!r}")
     if not cfg.hotkey:
         raise ConfigError("hotkey must not be empty")
+    if cfg.english_hotkey and cfg.english_hotkey == cfg.hotkey:
+        raise ConfigError("english_hotkey must differ from hotkey "
+                          f"(both are {cfg.hotkey!r})")
     if not (0 < cfg.min_seconds < cfg.max_seconds <= 3600):
         raise ConfigError("need 0 < min_seconds < max_seconds <= 3600")
     if cfg.restore_delay_ms < 0:

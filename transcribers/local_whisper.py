@@ -219,17 +219,24 @@ class LocalWhisperTranscriber:
                             "short English phrases may be transliterated", e)
                 self._english = None
 
-    def transcribe(self, wav_bytes: bytes) -> str:
+    def transcribe(self, wav_bytes: bytes,
+                   language: str | None = None) -> str:
+        """`language` is the caller's explicit choice (a dedicated hotkey).
+        It always wins — detection only runs when nothing was specified."""
         try:
-            model, language = self._model, self._language
-            if self._english is not None:
+            model, chosen = self._model, self._language
+            if language == "en" and self._english is not None:
+                model, chosen = self._english, "en"
+            elif language in (None, "") and self._english is not None:
                 audio = _decode_pcm(wav_bytes)
                 if audio is not None and self._pick_language(audio) == "en":
-                    model, language = self._english, "en"
+                    model, chosen = self._english, "en"
+            elif language:
+                chosen = language
 
             segments, _info = model.transcribe(
                 BytesIO(wav_bytes),
-                language=language,   # never None: see _pick_language
+                language=chosen,     # never None: see _pick_language
                 vad_filter=True,
                 beam_size=5,
                 condition_on_previous_text=False,

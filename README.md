@@ -100,7 +100,7 @@ background instance to quit.
 - **Combo abort:** pressing any other key while holding the hotkey aborts
   silently — holding Right Ctrl and pressing C does a normal copy and
   records nothing.
-- **Taps** under 0.3 s are discarded; recordings hitting 120 s are
+- **Taps** under 0.3 s are discarded; recordings hitting 400 s are
   discarded with an error beep (`max_seconds` — the runaway guard for when
   a key-release gets swallowed, e.g. by an elevated window).
 - **transcripts.log** (this folder, rotates at ~1 MB × 3): every attempt —
@@ -221,15 +221,22 @@ for `מבשרים`, all of which the local model got right.
     Whisper's autodetect completely: measured 2026-08-12, it answers
     `he` with probability **1.00 for every input, including pure English**.
     Never ask it what language it heard.
-  - **English is handled by a second, general model.** The Hebrew
-    fine-tune transliterates short pure-English phrases (`Should it
-    work?` → `שיידי וורק`), so each utterance is language-detected by the
-    general model and routed. The rule is deliberately Hebrew-biased:
-    English wins only at confidence ≥ `english_threshold` (0.8), because
-    the general model mis-detects very short Hebrew as Portuguese/Russian/
-    Dutch — always at low confidence (0.16–0.73), while English scores
-    ~1.00. Measured after routing: English 5/5 correct, 15/15 short Hebrew
-    clips still Hebrew, Hebrew WER unchanged at 10.8%.
+  - **English has its own hotkey** (`english_hotkey`, default `f9`).
+    Hold it instead of the Hebrew key and the utterance goes to a general
+    model with the language forced to English. This is the reliable path —
+    see the warning about detection below.
+  - **Automatic detection is a fallback, not the mechanism.** When no key
+    says otherwise, the general model detects the language and English
+    wins only at confidence ≥ `english_threshold` (0.8). That threshold
+    was calibrated on clean synthetic audio, where English scored ~1.00 —
+    but on a real headset it is far less certain: a *Hebrew* sentence
+    scored `en 0.57` in practice. Detection is therefore biased hard to
+    Hebrew (short Hebrew clips get mis-read as Portuguese/Russian/Dutch at
+    0.16–0.73), and you should press the English key rather than rely on
+    it. Measured on clean audio: English 5/5, 15/15 short Hebrew clips
+    still Hebrew, Hebrew WER unchanged at 10.8%.
+  - Pressing both hotkeys at once aborts the recording rather than
+    silently picking a language.
   - Both models are loaded at startup (~3 GB VRAM total), because the
     general one is the detector for *every* utterance, not a backup.
   - It only transcribes, so `cleanup.py` runs afterwards to strip
@@ -254,12 +261,13 @@ for `מבשרים`, all of which the local model got right.
 
 | key | default | meaning |
 |---|---|---|
-| `hotkey` | `right ctrl` | push-to-talk key (`f9`, `scroll lock`, ... — see names in `hotkey.py`) |
+| `hotkey` | `right ctrl` | push-to-talk key for Hebrew (`f9`, `scroll lock`, ... — see names in `hotkey.py`) |
+| `english_hotkey` | `f9` | hold for English instead; `""` disables. Avoid `right alt` (releasing Alt alone pops the menu bar and steals focus before the paste) and `right shift` (holding 8 s triggers Windows FilterKeys) |
 | `backend` | `local` | `gemini` \| `local` \| `fake` |
 | `paste_chord` | `ctrl+v` | try `shift+insert` for unusual terminals |
 | `restore_delay_ms` | `300` | wait after pasting before restoring the old clipboard (too small ⇒ the app pastes the *old* clipboard) |
 | `min_seconds` | `0.3` | shorter holds = accidental taps, discarded |
-| `max_seconds` | `120` | runaway-recording cap: stop, discard, error beep |
+| `max_seconds` | `400` | runaway-recording cap: stop, discard, error beep |
 | `[audio] sample_rate` | `16000` | falls back to the device default if refused |
 | `[audio] device` | `""` | `""` = system default; index from `--list-devices` |
 | `fallback_to_local` | `true` | use the local model when every cloud model is out of quota |

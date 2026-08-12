@@ -144,10 +144,20 @@ class GeminiTranscriber:
             cfg.thinking_config = types.ThinkingConfig(thinking_level="low")
         return cfg
 
-    def _one(self, model: str, wav_bytes: bytes) -> str:
+    def _one(self, model: str, wav_bytes: bytes,
+             language: str | None = None) -> str:
+        instruction = "Transcribe this recording following the system rules."
+        if language == "en":
+            # The system prompt is written for Hebrew; the user pressed the
+            # English key, so say so explicitly rather than let it "correct"
+            # English into Hebrew.
+            instruction = ("Transcribe this recording. The speech is "
+                           "ENGLISH — output English text only, never "
+                           "Hebrew. Follow the other system rules "
+                           "(no preamble, remove fillers, punctuate).")
         contents = [
             types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
-            "Transcribe this recording following the system rules.",
+            instruction,
         ]
         try:
             response = self._client.models.generate_content(
@@ -186,7 +196,8 @@ class GeminiTranscriber:
         raise TranscriptionError(
             f"Gemini returned no text (finish_reason={reason or '?'})")
 
-    def transcribe(self, wav_bytes: bytes) -> str:
+    def transcribe(self, wav_bytes: bytes,
+                   language: str | None = None) -> str:
         now = time.monotonic()
         soonest = None
         tried = False
@@ -197,7 +208,7 @@ class GeminiTranscriber:
                 continue
             tried = True
             try:
-                text = self._one(model, wav_bytes)
+                text = self._one(model, wav_bytes, language)
             except errors.APIError as e:
                 code = getattr(e, "code", None)
                 if code != 429:
