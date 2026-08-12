@@ -114,9 +114,12 @@ class ServerConfig:
     Off by default — it opens a socket, and that should be a decision.
     """
     enabled: bool = False
-    # "" = bind to the Tailscale address when it is up, else 127.0.0.1.
-    # Deliberately not 0.0.0.0: reachability is Tailscale's job, and there
-    # is no reason for this to answer the home LAN.
+    # "" = 127.0.0.1. Loopback is not a limitation, it is the design:
+    # `tailscale serve` proxies to localhost and terminates TLS, so nothing
+    # listens where a stranger — or the home LAN — could reach it, and the
+    # phone still gets the certificate its browser demands for microphone
+    # access. Binding the Tailscale address instead would make the server
+    # invisible to `tailscale serve`.
     host: str = ""
     port: int = 8756
 

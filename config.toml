@@ -66,7 +66,7 @@ settle_ms = 120               # how long the focused app gets to answer a copy
 # Reachability is Tailscale's job — see the README. host = "" binds to the
 # Tailscale address when it is up (and 127.0.0.1 when it is not), so this
 # never answers the home LAN.
-enabled = false
+enabled = true
 host = ""
 port = 8756
 

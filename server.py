@@ -8,11 +8,17 @@ It runs as a thread inside the running app and borrows the transcriber
 that is already loaded. A separate process would load the same two models
 again — about 3.2 GB of VRAM and ~25 s of startup for no benefit.
 
-Reachability is Tailscale's job, not ours. The socket binds to the
-Tailscale address when there is one, so the endpoint exists only on the
-private mesh: no port forwarding, no public IP, and nothing listening on
-the home LAN. A bearer token is still required — Tailscale is the wall,
-the token is the lock on the door behind it.
+Reachability is Tailscale's job, not ours. The socket binds to LOOPBACK
+and `tailscale serve` fronts it: no port forwarding, no public IP, and
+nothing listening on any interface a stranger could reach — not even the
+home LAN. Tailscale terminates TLS with a real certificate, which is not a
+nicety: phone browsers refuse the microphone without one (see below). A
+bearer token sits behind all that, because a private network is a wall,
+not a lock.
+
+Binding loopback rather than the Tailscale address is load-bearing:
+`tailscale serve` proxies to localhost, so a server bound only to
+100.x.y.z is invisible to it.
 
 Two things about browsers on phones that shape the page below:
 
@@ -64,15 +70,52 @@ def load_token() -> str:
     return token
 
 
-def tailscale_ip() -> str | None:
-    """This machine's Tailscale address, or None when it is not up."""
+def _tailscale_exe() -> str | None:
+    """The Windows installer does not put tailscale.exe on PATH."""
+    import shutil
+    found = shutil.which("tailscale")
+    if found:
+        return found
+    for guess in (r"C:\Program Files\Tailscale\tailscale.exe",
+                  r"C:\Program Files (x86)\Tailscale\tailscale.exe"):
+        if Path(guess).exists():
+            return guess
+    return None
+
+
+def run_utf8(cmd: list[str], timeout: float = 10) -> str | None:
+    """Run a command and return its stdout as text, or None on any failure.
+
+    `encoding` is the entire point. subprocess's text=True decodes with the
+    LOCALE code page, which on this machine is cp1255 (Hebrew) — so any
+    tool that emits UTF-8 blows up with UnicodeDecodeError inside
+    subprocess's reader thread and hands back stdout=None. That exception
+    is a ValueError, so a broad `except` swallows it and the caller
+    concludes the tool is missing or the service is down. Cost real
+    debugging time: the app reported Tailscale as offline while it was up.
+    """
     try:
-        out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True,
-                             text=True, timeout=5, check=False)
-    except (OSError, subprocess.SubprocessError):
+        out = subprocess.run(cmd, capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError) as e:
+        log.debug("command %r failed: %r", cmd[:1], e)
         return None
-    ip = out.stdout.strip().splitlines()
-    return ip[0].strip() if ip and ip[0].strip() else None
+    return out.stdout
+
+
+def tailscale_name() -> str | None:
+    """This machine's MagicDNS name, which is the host `tailscale serve`
+    publishes it under. None when Tailscale is not up — used only to print
+    a URL, never to decide what to bind."""
+    exe = _tailscale_exe()
+    if not exe:
+        return None
+    raw = run_utf8([exe, "status", "--json"])
+    try:
+        self_node = json.loads(raw or "{}").get("Self") or {}
+    except ValueError:
+        return None
+    return (self_node.get("DNSName") or "").strip(". ") or None
 
 
 def to_wav(raw: bytes) -> tuple[bytes, float]:
@@ -191,32 +234,27 @@ class PhoneServer:
         self.url: str | None = None
 
     def start(self) -> None:
-        host = self.cfg.server.host.strip()
-        via_tailscale = False
-        if not host:
-            found = tailscale_ip()
-            if found:
-                host, via_tailscale = found, True
-            else:
-                host = "127.0.0.1"
-                log.warning("tailscale is not up — the phone endpoint will "
-                            "listen on 127.0.0.1 only. Start Tailscale (or "
-                            "set [server] host) to reach it from the phone.")
+        port = self.cfg.server.port
+        host = self.cfg.server.host.strip() or "127.0.0.1"
         token = load_token()
-        self._srv = _Server((host, self.cfg.server.port), token,
-                            self._transcribe, self._backend_name)
+        self._srv = _Server((host, port), token, self._transcribe,
+                            self._backend_name)
         self._thread = threading.Thread(target=self._srv.serve_forever,
                                         daemon=True, name="phone-server")
         self._thread.start()
-        self.url = f"http://{host}:{self.cfg.server.port}/#t={token}"
-        log.info("phone endpoint on %s:%d%s", host, self.cfg.server.port,
-                 " (tailscale)" if via_tailscale else "")
-        log.info("open this on the phone: %s", self.url)
-        if via_tailscale:
-            log.info("note: the microphone needs https — run "
-                     "`tailscale serve --bg %d` and use the "
-                     "https://<machine>.<tailnet>.ts.net/#t=... URL",
-                     self.cfg.server.port)
+        log.info("phone endpoint on %s:%d", host, port)
+        name = tailscale_name()
+        if name:
+            self.url = f"https://{name}/#t={token}"
+            log.info("open this on the phone: %s", self.url)
+            log.info("(needs `tailscale serve --bg %d` once — without it "
+                     "there is no certificate, and the phone browser will "
+                     "refuse the microphone)", port)
+        else:
+            self.url = f"http://{host}:{port}/#t={token}"
+            log.warning("tailscale is not up — the phone cannot reach this. "
+                        "Log in to Tailscale, then restart. Local URL: %s",
+                        self.url)
 
     def stop(self) -> None:
         if self._srv is not None:

@@ -1295,6 +1295,28 @@ def test_phone_endpoint_round_trip_and_auth() -> None:
         srv.stop()
 
 
+def test_subprocess_output_survives_a_hebrew_locale() -> None:
+    """This machine's locale code page is cp1255. subprocess(text=True)
+    decodes with it, so a tool emitting UTF-8 raises UnicodeDecodeError in
+    the reader thread and returns stdout=None — and because that is a
+    ValueError, a broad except reports the tool as absent. Exactly how the
+    app came to log "tailscale is not up" while Tailscale was up."""
+    import json as json_mod
+
+    import server as server_mod
+
+    # “ is 0x9c in cp1255's undefined range — the real byte that broke it
+    payload = {"Self": {"DNSName": "yoav.example.ts.net."},
+               "note": "עברית “quoted”"}
+    script = ("import sys,io;"
+              "sys.stdout=io.TextIOWrapper(sys.stdout.buffer,encoding='utf-8');"
+              f"print({json_mod.dumps(json_mod.dumps(payload))})")
+    out = server_mod.run_utf8([sys.executable, "-c", script])
+    assert out is not None, "utf-8 stdout came back as None"
+    assert json_mod.loads(out)["Self"]["DNSName"] == "yoav.example.ts.net."
+    assert server_mod.run_utf8(["definitely-not-a-real-binary-xyz"]) is None
+
+
 def test_phone_token_is_generated_once_and_reused() -> None:
     """It travels in a URL the user bookmarks — regenerating it on every
     start would silently break the phone."""
@@ -1318,13 +1340,19 @@ def test_phone_audio_decode_accepts_a_plain_wav() -> None:
         assert w.getframerate() == 16000 and w.getnchannels() == 1
 
 
-def test_phone_endpoint_is_off_by_default_and_never_binds_the_lan() -> None:
-    """Opening a socket should be a decision, and when it is opened it has
-    no business answering the home network — that is Tailscale's job."""
+def test_phone_endpoint_never_binds_anything_but_loopback() -> None:
+    """`tailscale serve` proxies to localhost and terminates TLS. Binding
+    anywhere else both hides the server from it and puts a socket where the
+    home LAN can reach it."""
+    import server as server_mod
+    assert config_mod.ServerConfig.enabled is False   # opt in, not out
+    assert config_mod.ServerConfig.host == ""
     cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
-    assert cfg.server.enabled is False
-    assert cfg.server.host == "", cfg.server.host   # "" = tailscale or loopback
-    assert config_mod.ServerConfig.host != "0.0.0.0"
+    assert cfg.server.host in ("", "127.0.0.1", "localhost"), cfg.server.host
+    # the resolution the server actually performs
+    assert (cfg.server.host.strip() or "127.0.0.1") == "127.0.0.1"
+    # a name lookup must never influence what gets bound
+    assert "tailscale_ip" not in dir(server_mod)
 
 
 def test_needs_translation_skips_text_with_no_hebrew() -> None:
