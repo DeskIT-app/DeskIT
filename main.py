@@ -75,17 +75,33 @@ class App:
         hotkeys = {vk_for(cfg.hotkey): "he"}
         if cfg.english_hotkey:
             hotkeys[vk_for(cfg.english_hotkey)] = "en"
+        taps = {}
+        if cfg.translate_hotkey:
+            parse_chord(cfg.translate.copy_chord)        # fail fast, as above
+            parse_chord(cfg.translate.select_all_chord)
+            taps[vk_for(cfg.translate_hotkey)] = "translate"
         self.machine = PTTStateMachine(
             hotkeys,
             on_start=self._on_start, on_stop=self._on_stop,
-            on_abort=self._on_abort)
+            on_abort=self._on_abort,
+            taps=taps, on_tap=self._on_tap)
         self.hook = HookThread(self.machine)
         self.worker = threading.Thread(target=self._worker, daemon=True,
                                        name="transcribe-worker")
+        # Translation gets its own queue and thread: it is an independent
+        # action on text that is already on screen, and must not wait behind
+        # a 40 s transcription retry (or make one wait behind it).
+        self.translate_queue: queue.Queue[int] = queue.Queue()
+        self._translator = None
+        self._translating = threading.Event()
+        self.translate_worker = threading.Thread(
+            target=self._translate_worker, daemon=True,
+            name="translate-worker")
 
     def start(self) -> None:
         self.recorder.start_stream()
         self.worker.start()
+        self.translate_worker.start()
         self.hook.start()
 
     def stop(self) -> None:
@@ -125,6 +141,17 @@ class App:
     def _on_abort(self, reason: str) -> None:
         self.recorder.abort()
         log.info("aborted, nothing recorded — %s", reason)
+
+    def _on_tap(self, action: str) -> None:
+        if action != "translate":
+            return
+        # Remember WHERE the text is before anything slow happens, for the
+        # same reason _on_stop does: this runs inside the OS keyboard hook.
+        if self._translating.is_set():
+            log.info("already translating — ignoring the extra press")
+            return
+        self._translating.set()
+        self.translate_queue.put(injector.foreground_window())
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
@@ -200,6 +227,110 @@ class App:
             except Exception:
                 beep("error")
                 log.exception("unexpected failure handling a recording")
+
+    # ---- translate worker ----
+
+    def _translate_worker(self) -> None:
+        while True:
+            hwnd = self.translate_queue.get()
+            try:
+                self._translate(hwnd)
+            except Exception:
+                beep("error")
+                log.exception("unexpected failure translating")
+            finally:
+                self._translating.clear()
+
+    def _translate(self, hwnd: int) -> None:
+        """Replace the selection — or the whole field — with its English.
+
+        The clipboard is saved once around the whole thing and restored on
+        every exit path, including the failures: grabbing the text is what
+        overwrites it, so an early return without a restore would leave the
+        user's own clipboard silently destroyed.
+        """
+        import translate as translate_mod
+
+        tcfg = self.cfg.translate
+        state = injector.snapshot()
+        keep_clipboard = False
+        try:
+            text, had_selection = injector.grab(tcfg.copy_chord,
+                                                tcfg.select_all_chord,
+                                                tcfg.settle_ms / 1000)
+        except injector.ClipboardBusyError as e:
+            beep("error")
+            log.error("could not read the text to translate: %s", e)
+            return
+
+        try:
+            what = "the selection" if had_selection else "the whole field"
+            if not text.strip():
+                beep("error")
+                log.info("nothing to translate — %s is empty", what)
+                return
+            if len(text) > tcfg.max_chars:
+                beep("error")
+                log.warning(
+                    "refusing to translate %d chars from %s (max_chars=%d) "
+                    "— that looks like a whole document, not a message. "
+                    "Select the part you want and press the key again.",
+                    len(text), what, tcfg.max_chars)
+                return
+            if not translate_mod.needs_translation(text, tcfg.target):
+                beep("error")
+                log.info("no Hebrew in %s — already %s, leaving it alone",
+                         what, tcfg.target)
+                return
+
+            beep("translating")
+            log.info("translating %d chars from %s to %s...", len(text),
+                     what, tcfg.target)
+            # The original goes to the log BEFORE it is replaced on screen:
+            # this file is the recovery path if the paste goes wrong.
+            transcript_log.info("TRANSLATE-IN  | %s | %s", what, text)
+
+            started = time.monotonic()
+            if self._translator is None:
+                self._translator = translate_mod.Translator(self.cfg)
+            try:
+                english, backend = self._translator.translate(text)
+            except TranscriptionError as e:
+                beep("error")
+                log.error("translation failed: %s — your text is untouched",
+                          e)
+                return
+            latency = time.monotonic() - started
+            transcript_log.info("TRANSLATE-OUT | %.1fs | %s | %s", latency,
+                                backend, english)
+
+            if hwnd and injector.foreground_window() != hwnd:
+                # The selection belongs to a window that is no longer
+                # focused. Pasting now would overwrite whatever the user
+                # switched to.
+                injector.set_text(english)
+                keep_clipboard = True   # restoring would take it back away
+                beep("stop")
+                log.warning("you moved to another window — the translation "
+                            "is on your clipboard, press %s to paste it: %s",
+                            self.cfg.paste_chord, english)
+                return
+
+            injector.paste_text(english, self.cfg.paste_chord,
+                                self.cfg.restore_delay_ms)
+            beep("translated")
+            log.info("translated %d chars in %.1f s via %s: %s", len(english),
+                     latency, backend, english)
+        except injector.ClipboardBusyError as e:
+            beep("error")
+            log.error("paste failed: %s — the translation is in "
+                      "transcripts.log", e)
+        finally:
+            if not keep_clipboard:
+                try:
+                    injector.restore(state, "translation")
+                except injector.ClipboardBusyError as e:
+                    log.warning("could not restore your clipboard: %s", e)
 
     def _handle(self, wav: bytes, seconds: float, hwnd: int,
                 language: str | None = None) -> None:
@@ -402,6 +533,10 @@ def main() -> int:
                         help="ask a running instance to quit, then exit")
     parser.add_argument("--test-sound", action="store_true",
                         help="play every audio cue once, then exit")
+    parser.add_argument("--translate", metavar="TEXT",
+                        help="translate TEXT and print it, then exit — "
+                             "checks the translate backends without "
+                             "touching the keyboard or clipboard")
     parser.add_argument("--drain", action="store_true",
                         help="transcribe recordings kept in pending\\ "
                              "(saved when the backend was down), print them, "
@@ -411,7 +546,8 @@ def main() -> int:
 
     if args.test_sound:
         cues.ensure_files(force=True)
-        for kind in ("ready", "start", "stop", "error", "bye"):
+        for kind in ("ready", "start", "stop", "translating", "translated",
+                     "error", "bye"):
             print(f"playing '{kind}' cue...")
             cues.play(kind)
             time.sleep(1.2)
@@ -456,6 +592,23 @@ def main() -> int:
             print(f"check FAILED: {e}")
             return 1
 
+    if args.translate:
+        import translate as translate_mod
+        if not translate_mod.needs_translation(args.translate,
+                                               cfg.translate.target):
+            print(f"no Hebrew in that text — already "
+                  f"{cfg.translate.target}, nothing to do.")
+            return 0
+        started = time.monotonic()
+        try:
+            text, backend = translate_mod.Translator(cfg).translate(
+                args.translate)
+        except TranscriptionError as e:
+            print(f"translation FAILED: {e}")
+            return 1
+        print(f"[{backend}, {time.monotonic() - started:.1f}s] {text}")
+        return 0
+
     if args.drain:
         return drain(cfg)
 
@@ -491,6 +644,10 @@ def main() -> int:
              else "",
              "Ctrl+C here to quit." if HAS_CONSOLE
              else 'Double-click "Stop Dictation.vbs" to quit.')
+    if cfg.translate_hotkey:
+        log.info("tap '%s' to turn the selection — or the whole field when "
+                 "nothing is selected — into %s", cfg.translate_hotkey,
+                 cfg.translate.target)
     log.info("mic: %s | backend: %s | transcripts: %s",
              app.recorder.device_label(), cfg.backend,
              APP_DIR / "transcripts.log")

@@ -61,11 +61,26 @@ def _open_clipboard(retries: int = 10, delay_s: float = 0.05) -> None:
         % retries)
 
 
+def _format_count() -> int:
+    """0 for an empty clipboard.
+
+    win32clipboard raises on a 0 return here — the API reports "no formats"
+    and failure with the same value, and pywin32 reads it as failure. An
+    empty clipboard is a normal state (the selection probe in grab()
+    creates one deliberately), so the exception is translated back into the
+    count it actually means.
+    """
+    try:
+        return win32clipboard.CountClipboardFormats()
+    except Exception:
+        return 0
+
+
 def snapshot() -> tuple[str, str | None]:
     """('empty'|'text'|'other', text) for the current clipboard contents."""
     _open_clipboard()
     try:
-        if win32clipboard.CountClipboardFormats() == 0:
+        if _format_count() == 0:
             return ("empty", None)
         if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
             return ("text",
@@ -84,24 +99,93 @@ def set_text(text: str) -> None:
         win32clipboard.CloseClipboard()
 
 
-def inject(text: str, paste_chord: str, restore_delay_ms: int) -> str:
-    """Save clipboard -> set transcript -> paste -> restore. Returns a short
-    status string for the console."""
-    state = snapshot()
+def clear() -> None:
+    """Empty the clipboard. Used as a probe: after this, anything on the
+    clipboard demonstrably came from the copy we just sent."""
+    _open_clipboard()
+    try:
+        win32clipboard.EmptyClipboard()
+    finally:
+        win32clipboard.CloseClipboard()
+
+
+def get_text() -> str:
+    """Clipboard text, or "" when it holds nothing or holds a non-text
+    format."""
+    kind, text = snapshot()
+    return text if kind == "text" and text else ""
+
+
+def paste_text(text: str, paste_chord: str, restore_delay_ms: int) -> None:
+    """Put text on the clipboard and send the paste chord.
+
+    No save/restore of its own — the caller owns that. Split out of
+    inject() because the translate path has to snapshot the clipboard once
+    around the whole grab-then-replace: by paste time the clipboard already
+    holds the text that was grabbed, so restoring from here would put the
+    user's Hebrew back instead of what they had before.
+    """
     set_text(text)
     time.sleep(SETTLE_SECONDS)
     send_chord(paste_chord)
     # The target app reads the clipboard asynchronously after the chord
     # arrives; restoring too early would paste the OLD content.
     time.sleep(max(restore_delay_ms, 0) / 1000)
+
+
+def restore(state: tuple[str, str | None], what: str = "transcript") -> str:
+    """Put back what snapshot() saved. Returns a short status string."""
     kind, old_text = state
     if kind == "text":
         set_text(old_text or "")
         return "old clipboard restored"
     if kind == "empty":
-        return "clipboard was empty before; transcript left on it"
+        return f"clipboard was empty before; {what} left on it"
     return ("previous clipboard content was not text (image/files?) — "
-            "cannot restore it; transcript left on the clipboard")
+            f"cannot restore it; {what} left on the clipboard")
+
+
+def inject(text: str, paste_chord: str, restore_delay_ms: int) -> str:
+    """Save clipboard -> set transcript -> paste -> restore. Returns a short
+    status string for the console."""
+    state = snapshot()
+    paste_text(text, paste_chord, restore_delay_ms)
+    return restore(state)
+
+
+def grab(copy_chord: str, select_all_chord: str,
+         settle_s: float) -> tuple[str, bool]:
+    """Copy what is selected; if nothing is, select the whole field first.
+
+    Returns (text, had_selection). The clipboard is emptied first so that
+    "the copy produced nothing" is distinguishable from "the copy produced
+    what was already on the clipboard" — without that probe there is no way
+    to tell an empty selection from a lucky match.
+
+    The caller must snapshot() the clipboard before calling this and
+    restore() it afterwards: this deliberately leaves the grabbed text on
+    the clipboard so a failure further down still leaves the user holding
+    their own words.
+
+    Known corner: a few editors (VS Code) copy the CURRENT LINE when
+    nothing is selected, which reads here as had_selection=True. Pasting
+    then inserts rather than replaces, so the line ends up duplicated and
+    needs one Ctrl+Z. Chat-style inputs — the actual use case — copy
+    nothing on an empty selection and are unaffected.
+    """
+    clear()
+    time.sleep(SETTLE_SECONDS)
+    send_chord(copy_chord)
+    time.sleep(settle_s)
+    text = get_text()
+    if text.strip():
+        return text, True
+
+    send_chord(select_all_chord)
+    time.sleep(SETTLE_SECONDS)
+    send_chord(copy_chord)
+    time.sleep(settle_s)
+    return get_text(), False
 
 
 def show_placeholder(text: str, paste_chord: str,

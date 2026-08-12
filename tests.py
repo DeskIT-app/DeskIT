@@ -888,6 +888,163 @@ def test_english_model_gets_no_hebrew_prompt() -> None:
     assert seen["en"] is None, seen
 
 
+VK_F9 = 0x78
+
+
+def _tap_machine(spy, hotkey_vk=VK_RCTRL, tap_vk=VK_F9):
+    return PTTStateMachine(
+        {hotkey_vk: "he"},
+        on_start=lambda lang: spy.events.append("start"),
+        on_stop=lambda lang: spy.events.append("stop"),
+        on_abort=lambda why: spy.events.append(f"abort:{why}"),
+        taps={tap_vk: "translate"},
+        on_tap=lambda action: spy.events.append(f"tap:{action}"))
+
+
+def test_tap_key_fires_once_per_press() -> None:
+    spy = Spy()
+    m = _tap_machine(spy)
+    m.handle("down", VK_F9, injected=False)
+    m.handle("up", VK_F9, injected=False)
+    assert spy.events == ["tap:translate"], spy.events
+
+
+def test_tap_key_ignores_autorepeat() -> None:
+    """Holding the key must translate once, not once per repeat — each
+    repeat would be another paste over the previous result."""
+    spy = Spy()
+    m = _tap_machine(spy)
+    for _ in range(5):
+        m.handle("down", VK_F9, injected=False)
+    m.handle("up", VK_F9, injected=False)
+    m.handle("down", VK_F9, injected=False)   # a genuine second press
+    assert spy.events == ["tap:translate", "tap:translate"], spy.events
+
+
+def test_tap_key_mid_recording_aborts_and_does_not_translate() -> None:
+    """Pressing it while dictating means the user is doing something else —
+    it must not fire a translation at a half-finished recording."""
+    spy = Spy()
+    m = _tap_machine(spy)
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_F9, injected=False)
+    assert spy.events == ["start", "abort:'f9' pressed mid-hold"], spy.events
+    # ...and the key is still armed for a real press afterwards
+    m.handle("up", VK_F9, injected=False)
+    m.handle("up", VK_RCTRL, injected=False)
+    m.handle("down", VK_F9, injected=False)
+    assert spy.events[-1] == "tap:translate", spy.events
+
+
+def test_tap_key_cannot_double_as_a_hotkey() -> None:
+    spy = Spy()
+    try:
+        _tap_machine(spy, hotkey_vk=VK_F9, tap_vk=VK_F9)
+    except ValueError as e:
+        assert "two things" in str(e), e
+    else:
+        raise AssertionError("expected ValueError when one key means both")
+
+
+def test_translate_hotkey_must_not_collide() -> None:
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "config.toml"
+        p.write_text('hotkey = "right ctrl"\ntranslate_hotkey = "right ctrl"\n',
+                     "utf-8")
+        try:
+            config_mod.load(p)
+        except config_mod.ConfigError as e:
+            assert "translate_hotkey" in str(e), e
+        else:
+            raise AssertionError("expected ConfigError on a colliding key")
+
+
+def test_needs_translation_skips_text_with_no_hebrew() -> None:
+    """Every skipped call is one saved from a 20-per-day bucket."""
+    import translate as translate_mod
+    assert translate_mod.needs_translation("שלום עולם") is True
+    assert translate_mod.needs_translation("git commit -m 'x'") is False
+    assert translate_mod.needs_translation("   ") is False
+    assert translate_mod.needs_translation("mixed עברית here") is True
+    # a non-English target cannot be decided by script alone
+    assert translate_mod.needs_translation("hello", "French") is True
+
+
+def test_translation_output_is_unwrapped() -> None:
+    """Small models wrap output despite being told not to; a stray quote
+    would be pasted into the user's message."""
+    import translate as translate_mod
+    assert translate_mod._clean('"Hello there"') == "Hello there"
+    assert translate_mod._clean("```\nHello\n```") == "Hello"
+    # a quote INSIDE the sentence is content, not a wrapper
+    assert translate_mod._clean('He said "hi" to me') == 'He said "hi" to me'
+
+
+def test_translator_falls_back_to_ollama_when_quota_is_spent() -> None:
+    """The whole point of the fallback: a spent daily cap must not make the
+    translate key dead until midnight."""
+    import translate as translate_mod
+    from transcribers.base import RateLimitError
+
+    t = translate_mod.Translator.__new__(translate_mod.Translator)
+    t._cfg = None
+
+    class Spent:
+        name = "gemini"
+
+        def translate(self, text):
+            raise RateLimitError("all models spent", per_day=True)
+
+    class Local:
+        name = "ollama"
+
+        def translate(self, text):
+            return "translated locally"
+
+    t._cloud, t._local = Spent(), Local()
+    t._cloud_backend = lambda: t._cloud
+    t._local_backend = lambda: t._local
+    assert t.translate("שלום") == ("translated locally", "ollama")
+
+
+def test_translator_falls_back_on_a_plain_api_error_too() -> None:
+    """Observed live: a 499 timeout arrives as a bare TranscriptionError,
+    not a RateLimitError. Catching only the quota case left the press
+    dead when the local model could have answered."""
+    import translate as translate_mod
+    from transcribers.base import TranscriptionError
+
+    t = translate_mod.Translator.__new__(translate_mod.Translator)
+    t._cfg = None
+
+    class Broken:
+        name = "gemini"
+
+        def translate(self, text):
+            raise TranscriptionError("Gemini API error 499 on x")
+
+    class Local:
+        name = "ollama"
+
+        def translate(self, text):
+            return "local answer"
+
+    t._cloud_backend = lambda: Broken()
+    t._local_backend = lambda: Local()
+    assert t.translate("שלום") == ("local answer", "ollama")
+
+
+def test_translate_settings_are_present_in_the_real_config() -> None:
+    """Guards the shipped config: the fallback timeout must stay well above
+    the cloud one or the first local translation times out mid-load."""
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    assert cfg.translate_hotkey, "the translate key is not enabled"
+    assert cfg.translate_hotkey not in (cfg.hotkey, cfg.english_hotkey)
+    assert cfg.translate.ollama_timeout_s >= 120, cfg.translate.ollama_timeout_s
+    assert cfg.translate.max_chars > 0
+
+
 def test_local_backend_is_configured_and_unlimited() -> None:
     """Guards the switch to the local backend: it is the only one without a
     daily cap, so a silent revert to gemini would reintroduce the wall."""

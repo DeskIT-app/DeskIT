@@ -30,6 +30,10 @@ CUES: dict[str, list[tuple[int, int]]] = {
     "stop": [(660, 110)],                # captured, transcribing
     "error": [(330, 130), (262, 190)],   # something failed
     "bye": [(880, 90), (587, 130)],      # app stopped
+    # Translation is silent work on text already on screen, so it gets its
+    # own pair — otherwise a press is indistinguishable from a recording.
+    "translating": [(740, 90)],          # grabbed the text, asking the model
+    "translated": [(740, 80), (988, 120)],  # replaced in place
 }
 
 

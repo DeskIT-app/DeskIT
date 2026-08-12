@@ -92,8 +92,9 @@ background instance to quit.
 ## Behavior you should expect
 
 - **Beeps:** two rising = app ready; high = recording started; mid =
-  captured, transcribing; two low = error; two falling = app stopped. No
-  beep on aborts (by design).
+  captured, transcribing; single mid-high = translating; rising pair =
+  translation landed; two low = error; two falling = app stopped. No beep
+  on aborts (by design). Hear them all with `--test-sound`.
 - **Two `pythonw.exe` processes in Task Manager is normal** — a venv's
   `python.exe` is a launcher stub that runs the real interpreter as a
   child. It is one app; the single-instance guard is what proves it.
@@ -126,6 +127,53 @@ background instance to quit.
   keeps the first word from being clipped), so Windows shows the
   mic-in-use indicator, and a Bluetooth headset may sit in its
   lower-quality headset profile while the app is up.
+
+## Translating to English (tap F9)
+
+Dictation always writes what you said, in the language you said it. When
+you want the same message in English, **tap** (don't hold) `F9`:
+
+- **Something selected?** Only the selection is translated.
+- **Nothing selected?** The whole field is (the key sends Ctrl+A itself).
+
+The English replaces the Hebrew in place, and your clipboard is put back
+the way you left it. One mid beep when it starts, a rising pair when the
+text lands.
+
+This is a *different* backend from dictation, because Whisper only
+transcribes — it cannot translate. Gemini goes first (it keeps `commit`,
+`deploy` and friends in Latin script and holds your register); when its
+daily cap is spent, or it errors, a local **Ollama** model answers instead,
+so the key never dies at 20 requests. Ollama needs the model pulled:
+
+```bash
+ollama pull llama3.1:8b
+```
+
+Measured 2026-08-12: Gemini ~1–3 s. Ollama ~2.5 s warm, but **~76 s on the
+first request after it goes idle** while ~5 GB loads into VRAM — which is
+why `ollama_timeout_s` is 150 and not 30.
+
+Guards worth knowing:
+
+- **It refuses over `max_chars` (5000).** With nothing selected the key
+  presses Ctrl+A, and in a document editor that means the entire document.
+  Above the cap it beeps and changes nothing — select the part you want.
+- **The original is written to `transcripts.log` before the paste**
+  (`TRANSLATE-IN`), so nothing is lost if the replace goes wrong.
+- **Text with no Hebrew in it is skipped** rather than spending a request.
+- **Moved to another window while it worked?** It refuses to paste and
+  leaves the English on your clipboard instead.
+- **Editors that copy the current line when nothing is selected** (VS Code)
+  read as "you selected something", so the result is inserted rather than
+  replacing — one Ctrl+Z. Chat-style inputs, the actual use case, are
+  unaffected.
+
+Check it without touching the keyboard:
+
+```bash
+.venv\Scripts\python.exe main.py --translate "אני רוצה לעשות deploy מחר"
+```
 
 ## Nothing is ever lost
 
@@ -272,6 +320,7 @@ for `מבשרים`, all of which the local model got right.
 |---|---|---|
 | `hotkey` | `right ctrl` | push-to-talk key for Hebrew (`f9`, `scroll lock`, ... — see names in `hotkey.py`) |
 | `english_hotkey` | `f9` | hold for English instead; `""` disables. Avoid `right alt` (releasing Alt alone pops the menu bar and steals focus before the paste) and `right shift` (holding 8 s triggers Windows FilterKeys) |
+| `translate_hotkey` | `f9` | **tap** to turn the selection — or the whole field — into English; `""` disables. Must differ from the two hold keys |
 | `backend` | `local` | `gemini` \| `local` \| `fake` |
 | `paste_chord` | `ctrl+v` | try `shift+insert` for unusual terminals |
 | `restore_delay_ms` | `300` | wait after pasting before restoring the old clipboard (too small ⇒ the app pastes the *old* clipboard) |
@@ -293,6 +342,13 @@ for `מבשרים`, all of which the local model got right.
 | `[local] initial_prompt` | Hebrew + tech terms | biases the decoder for code-switching; empty disables |
 | `[local] english_model` | `deepdml/faster-whisper-large-v3-turbo-ct2` | general model used to detect language and transcribe English; `""` disables both |
 | `[local] english_threshold` | `0.8` | confidence needed to treat an utterance as English |
+| `[translate] target` | `English` | language the tap key translates into |
+| `[translate] max_chars` | `5000` | refuse above this — a Ctrl+A that caught a whole document, not a message |
+| `[translate] ollama_model` | `llama3.1:8b` | the fallback; must be pulled in Ollama |
+| `[translate] ollama_url` | `http://localhost:11434` | where Ollama listens |
+| `[translate] timeout_s` | `30` | Gemini request timeout |
+| `[translate] ollama_timeout_s` | `150` | much larger on purpose: 76 s cold vs 2.5 s warm while the model loads into VRAM |
+| `[translate] settle_ms` | `120` | how long the focused app gets to answer a copy |
 
 ## Design notes
 

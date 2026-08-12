@@ -102,23 +102,41 @@ class PTTStateMachine:
       The OTHER hotkey counts as "any other key" — pressing both aborts
       rather than silently picking a language.
 
+    `taps` registers keys that ACT on a press instead of being held, for
+    things that are not recordings (translating what is already at the
+    cursor). A tap key fires once per physical press — auto-repeat is
+    swallowed — and only while idle: pressed mid-recording it falls
+    through to the abort rule above, like any other key.
+
     Callbacks run on the hook thread — keep them fast.
     """
 
     def __init__(self, hotkeys: int | dict[int, str],
                  on_start: Callable[[str], None],
                  on_stop: Callable[[str], None],
-                 on_abort: Callable[[str], None]):
+                 on_abort: Callable[[str], None],
+                 taps: dict[int, str] | None = None,
+                 on_tap: Callable[[str], None] | None = None):
         # A bare vk keeps the original single-hotkey form working.
         self._hotkeys = ({hotkeys: "he"} if isinstance(hotkeys, int)
                          else dict(hotkeys))
         if not self._hotkeys:
             raise ValueError("at least one hotkey is required")
+        self._taps = dict(taps or {})
+        clash = set(self._taps) & set(self._hotkeys)
+        if clash:
+            raise ValueError(
+                f"{vk_name(next(iter(clash)))} is both a hold hotkey and a "
+                f"tap key — one key cannot mean two things")
+        if self._taps and on_tap is None:
+            raise ValueError("taps were registered without an on_tap handler")
         self._on_start = on_start
         self._on_stop = on_stop
         self._on_abort = on_abort
+        self._on_tap = on_tap
         self._state = IDLE
         self._active_vk: int | None = None
+        self._tap_held: set[int] = set()
         self._lock = threading.Lock()
 
     @property
@@ -134,12 +152,22 @@ class PTTStateMachine:
     def handle(self, event_type: str, vk: int, injected: bool) -> None:
         fire: Callable[[], None] | None = None
         with self._lock:
+            if event_type == "up":
+                # Always, whatever the state: a tap key pressed mid-recording
+                # aborts without being marked held, and must still be armed
+                # again by its release.
+                self._tap_held.discard(vk)
             if self._state == IDLE:
                 if vk in self._hotkeys and event_type == "down":
                     self._state = RECORDING
                     self._active_vk = vk
                     language = self._hotkeys[vk]
                     fire = lambda: self._on_start(language)
+                elif vk in self._taps and event_type == "down" \
+                        and vk not in self._tap_held:
+                    self._tap_held.add(vk)   # ignore Windows auto-repeat
+                    action = self._taps[vk]
+                    fire = lambda: self._on_tap(action)
             elif self._state == RECORDING:
                 if vk == self._active_vk:
                     if event_type == "up":

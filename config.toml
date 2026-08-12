@@ -8,6 +8,10 @@ hotkey = "right ctrl"         # hold = dictate Hebrew
 # "right alt" (releasing Alt alone pops the menu bar and steals focus right
 # before the paste) and "right shift" (8 s hold triggers Windows FilterKeys).
 english_hotkey = ""
+# TAP (don't hold) to turn what is already at the cursor into English:
+# whatever is selected, or the whole field when nothing is selected.
+# "" turns it off. See [translate] below.
+translate_hotkey = "f9"
 # local = unlimited, offline, ~0.3 s. Measured 2026-08-12 on 8 real Hebrew
 # clips: local 10.8% WER / 0.38 s vs gemini 15.9% WER / 2.71 s. Switch to
 # "gemini" if you ever want its stronger cleanup instead.
@@ -26,6 +30,22 @@ device = "1"                  # Arctis 7 headset mic (from --list-devices; "" = 
 enabled = true                # paste a marker at the cursor while transcribing
 placeholder = "..."           # replaced by your text when it arrives
 retry_seconds = 45            # keep retrying this long before spooling to pending\
+
+[translate]
+# Whisper only transcribes, so translating needs a language model. Gemini
+# goes first (it keeps English technical terms in Latin script and holds
+# the register); when its daily cap is spent this drops to a local Ollama
+# model, so the key never becomes another thing that dies at 20 requests.
+target = "English"
+max_chars = 5000              # a guard: above this the key refuses, on the
+                              # assumption ctrl+a caught a whole document
+ollama_model = "llama3.1:8b"  # the fallback; must be pulled in ollama
+ollama_url = "http://localhost:11434"
+timeout_s = 30                # gemini
+ollama_timeout_s = 150        # ollama loads ~5 GB into VRAM on the first
+                              # request after idling: 76 s cold, 2.5 s warm
+                              # (measured 2026-08-12)
+settle_ms = 120               # how long the focused app gets to answer a copy
 
 [gemini]
 # Free-tier quota is PER MODEL (gemini-2.5-flash = 20 requests/day), so this
