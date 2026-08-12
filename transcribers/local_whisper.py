@@ -30,6 +30,8 @@ import wave
 from io import BytesIO
 from pathlib import Path
 
+import cleanup as cleanup_mod
+
 from .base import TranscriptionError
 
 log = logging.getLogger("app")
@@ -88,7 +90,8 @@ _HALLUCINATED_SILENCE = {
 class LocalWhisperTranscriber:
     name = "local"
 
-    def __init__(self, model: str, language: str, device: str = "auto"):
+    def __init__(self, model: str, language: str, device: str = "auto",
+                 cleanup: bool = True, extra_fillers: tuple = ()):
         _register_cuda_dlls()
         try:
             from faster_whisper import WhisperModel
@@ -102,6 +105,11 @@ class LocalWhisperTranscriber:
                 "local.language must be pinned (the ivrit-ai fine-tune's "
                 "language autodetect is unreliable)")
         self._language = language
+        # Whisper transcribes but does not tidy; Gemini's prompt does both.
+        # Without this, moving to the local backend visibly regresses the
+        # output on real dictation (fillers, restarted sentences).
+        self._cleanup = cleanup
+        self._fillers = cleanup_mod.DEFAULT_FILLERS + tuple(extra_fillers)
 
         attempts = ([("cuda", "float16"), ("cpu", "int8")]
                     if device == "auto" else
@@ -145,4 +153,6 @@ class LocalWhisperTranscriber:
 
         if text.strip(" .,!?").lower() in _HALLUCINATED_SILENCE:
             return ""        # treated as "no speech", same as Gemini
+        if self._cleanup:
+            text = cleanup_mod.clean(text, self._fillers)
         return text

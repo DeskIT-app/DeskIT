@@ -654,6 +654,55 @@ def test_silence_is_not_retried_or_spooled() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_cleanup_removes_fillers_but_not_real_words() -> None:
+    from cleanup import clean
+
+    assert clean("אה, אני רוצה את זה") == "אני רוצה את זה"
+    assert clean("המ, אולי מחר") == "אולי מחר"
+    # "אמ" is a filler; "אמא" contains it but is a word
+    assert clean("אמא שלי אמרה") == "אמא שלי אמרה"
+    assert clean("תעשה את זה עכשיו") == "תעשה את זה עכשיו"
+    # English technical terms must survive untouched — they are the point
+    out = clean("אה, תוסיף את ה-commit הזה ל-branch אחר")
+    assert "commit" in out and "branch" in out, out
+    assert not out.startswith("אה"), out
+
+
+def test_cleanup_collapses_restarted_phrases() -> None:
+    from cleanup import clean
+
+    assert clean("אני אני אני רוצה") == "אני רוצה"
+    assert clean("זה זה לא עובד") == "זה לא עובד"
+    # the real case from this user's transcripts: a Hebrew prefix is left
+    # dangling by the restart and must not block the collapse
+    assert (clean("ותשאיר רק את מה ש רק את מה שאנחנו בנינו")
+            == "ותשאיר רק את מה שאנחנו בנינו")
+    # no repetition -> untouched
+    assert clean("הוא אמר לי ש הוא בא") == "הוא אמר לי ש הוא בא"
+    assert clean("זה בית ספר טוב") == "זה בית ספר טוב"
+
+
+def test_cleanup_never_empties_real_content() -> None:
+    """A transcript that is all fillers must not vanish silently — better a
+    messy paste than a lost one."""
+    from cleanup import clean
+
+    assert clean("") == ""
+    assert clean("   ") == ""
+    assert clean("אה") == "אה"        # nothing left after stripping -> keep
+    assert clean("אה אמ המ").strip() != ""
+
+
+def test_local_backend_is_configured_and_unlimited() -> None:
+    """Guards the switch to the local backend: it is the only one without a
+    daily cap, so a silent revert to gemini would reintroduce the wall."""
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    assert cfg.backend == "local", cfg.backend
+    assert cfg.local.language == "he", "autodetect is broken in this fine-tune"
+    assert cfg.local.device in ("auto", "cuda", "cpu")
+    assert cfg.local.cleanup is True
+
+
 def test_real_config_has_a_multi_model_runway() -> None:
     """Guards the actual shipped config: a single model means the daily cap
     stops dictation dead, which is the bug users feel."""

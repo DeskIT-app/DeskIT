@@ -189,7 +189,19 @@ beep. That cannot happen now.
 
 `config.toml` → `backend`:
 
-- `gemini` (default): Google `google-genai` SDK. Transcription **and**
+**Default is `local`.** Measured 2026-08-12 on 8 real Hebrew clips with
+ground-truth transcripts (`imvladikon/hebrew_speech_kan`):
+
+| backend | mean WER | mean latency | daily limit |
+|---|---|---|---|
+| **local** (ivrit-ai on GPU) | **10.8%** | **0.38 s** | none |
+| gemini | 15.9% | 2.71 s | 20 requests/model |
+
+The local model is a Hebrew-specific fine-tune; Gemini is a general model,
+and it showed it — `להבין` for `להביא`, `בחישוב` for `בחישוק`, `מבזבזים`
+for `מבשרים`, all of which the local model got right.
+
+- `gemini`: Google `google-genai` SDK. Transcription **and**
   cleanup in one call (fillers removed, self-corrections resolved, digits,
   English technical terms kept in Latin script) — this is what the local
   backend does not do.
@@ -202,14 +214,20 @@ beep. That cannot happen now.
   `thinking_level="low"`. Measured on `gemini-flash-latest`: 5.6 s → 2.5 s.
 - `fake`: instant canned Hebrew — pipeline testing (`--fake` flag does the
   same without editing config).
-- `local`: faster-whisper + `ivrit-ai/whisper-large-v3-turbo-ct2`, fully
-  offline, no quota, nothing leaves the machine. Used automatically when
-  every cloud model is spent (`fallback_to_local`), or set
-  `backend = "local"` to use it always.
+- `local` (**default**): faster-whisper + `ivrit-ai/whisper-large-v3-turbo-ct2`,
+  fully offline, no quota, nothing leaves the machine. Adds ~8 s to
+  startup while the model loads onto the GPU.
   - **The language must stay pinned to `he`** — the fine-tune broke
     Whisper's autodetect. English needs a separate model/hotkey, never
     autodetect.
-  - It only transcribes; output is rawer than Gemini's (no cleanup).
+  - It only transcribes, so `cleanup.py` runs afterwards to strip
+    hesitations (`אה`, `אמ`) and collapse restarted phrases — including
+    the Hebrew-specific case where a dangling one-letter prefix splits the
+    repetition (`רק את מה ש רק את מה שאנחנו` → `רק את מה שאנחנו`). It is
+    deliberately conservative: it leaves `כאילו` alone because it is a
+    real word as often as it is filler (add it to `[local] extra_fillers`
+    if you never mean it literally). Verified not to change WER on clean
+    speech.
   - Needs `faster-whisper` plus `nvidia-cublas-cu12` / `nvidia-cudnn-cu12`.
     Those CUDA DLLs live in `site-packages/nvidia/*/bin`, which is not on
     the DLL search path, so `local_whisper.py` prepends them to `PATH` at
@@ -225,7 +243,7 @@ beep. That cannot happen now.
 | key | default | meaning |
 |---|---|---|
 | `hotkey` | `right ctrl` | push-to-talk key (`f9`, `scroll lock`, ... — see names in `hotkey.py`) |
-| `backend` | `gemini` | `gemini` \| `local` \| `fake` |
+| `backend` | `local` | `gemini` \| `local` \| `fake` |
 | `paste_chord` | `ctrl+v` | try `shift+insert` for unusual terminals |
 | `restore_delay_ms` | `300` | wait after pasting before restoring the old clipboard (too small ⇒ the app pastes the *old* clipboard) |
 | `min_seconds` | `0.3` | shorter holds = accidental taps, discarded |
@@ -241,6 +259,8 @@ beep. That cannot happen now.
 | `[local] model` | `ivrit-ai/whisper-large-v3-turbo-ct2` | ~1.6 GB, downloaded on first use |
 | `[local] language` | `he` | **must stay pinned** — the fine-tune broke autodetect |
 | `[local] device` | `auto` | `auto` \| `cuda` \| `cpu` |
+| `[local] cleanup` | `true` | strip hesitations and collapse restarted phrases |
+| `[local] extra_fillers` | `[]` | words to also strip, e.g. `["כאילו"]` — only add words you never mean literally |
 
 ## Design notes
 

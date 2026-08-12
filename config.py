@@ -52,6 +52,10 @@ class LocalConfig:
     model: str = "ivrit-ai/whisper-large-v3-turbo-ct2"
     language: str = "he"  # pinned — the ivrit-ai fine-tune broke autodetect
     device: str = "auto"  # auto | cuda | cpu — auto tries the GPU first
+    # Whisper transcribes only; Gemini also cleans. Without this, the local
+    # backend regresses output quality on real (hesitant) dictation.
+    cleanup: bool = True
+    extra_fillers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -122,6 +126,10 @@ def load(path: Path) -> Config:
             model=str(local.get("model", LocalConfig.model)).strip(),
             language=str(local.get("language", LocalConfig.language)).strip(),
             device=str(local.get("device", LocalConfig.device)).strip().lower(),
+            cleanup=bool(local.get("cleanup", LocalConfig.cleanup)),
+            extra_fillers=tuple(str(f).strip()
+                                for f in local.get("extra_fillers", ())
+                                if str(f).strip()),
         ),
         feedback=FeedbackConfig(
             placeholder=str(feedback.get("placeholder",

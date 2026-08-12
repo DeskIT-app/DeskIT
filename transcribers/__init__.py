@@ -20,5 +20,6 @@ def get_transcriber(cfg) -> Transcriber:
     if cfg.backend == "local":
         from .local_whisper import LocalWhisperTranscriber
         return LocalWhisperTranscriber(cfg.local.model, cfg.local.language,
-                                       cfg.local.device)
+                                       cfg.local.device, cfg.local.cleanup,
+                                       cfg.local.extra_fillers)
     raise ValueError(f"unknown backend: {cfg.backend!r}")

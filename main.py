@@ -142,7 +142,9 @@ class App:
                      "run downloads it; this takes a while)...")
             self._local = LocalWhisperTranscriber(self.cfg.local.model,
                                                   self.cfg.local.language,
-                                                  self.cfg.local.device)
+                                                  self.cfg.local.device,
+                                                  self.cfg.local.cleanup,
+                                                  self.cfg.local.extra_fillers)
             log.info("local backend ready — dictation continues offline")
         except Exception as e:
             log.warning("no local fallback available: %s", e)
