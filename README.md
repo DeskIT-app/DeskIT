@@ -5,6 +5,11 @@ fillers, punctuated, self-corrections resolved) is pasted at your cursor in
 whatever window has focus. Injection is clipboard + Ctrl+V, never
 per-character typing, because per-character breaks RTL in terminals.
 
+For anything longer than a sentence, don't keep holding: tap **←** while
+still holding Right Ctrl and the recording **locks on** — let go and talk
+for as long as you want. Tap **←** again to transcribe, or **Esc** to throw
+it away. See [Long dictation](#long-dictation-lock-the-key-with-).
+
 ## Setup
 
 Everything below assumes this folder. The venv already exists with all
@@ -91,19 +96,22 @@ background instance to quit.
 
 ## Behavior you should expect
 
-- **Beeps:** two rising = app ready; high = recording started; mid =
-  captured, transcribing; single mid-high = translating; rising pair =
-  translation landed; two low = error; two falling = app stopped. No beep
-  on aborts (by design). Hear them all with `--test-sound`.
+- **Beeps:** two rising = app ready; high = recording started; high +
+  higher = locked on, you can let go; mid = captured, transcribing; single
+  mid-high = translating; rising pair = translation landed; two low =
+  error; two falling = app stopped. No beep on aborts (by design). Hear
+  them all with `--test-sound`.
 - **Two `pythonw.exe` processes in Task Manager is normal** — a venv's
   `python.exe` is a launcher stub that runs the real interpreter as a
   child. It is one app; the single-instance guard is what proves it.
 - **Combo abort:** pressing any other key while holding the hotkey aborts
   silently — holding Right Ctrl and pressing C does a normal copy and
-  records nothing.
+  records nothing. The latch key (←) is the one exception, and the rule is
+  off entirely once locked (see below).
 - **Taps** under 0.3 s are discarded; recordings hitting 400 s are
   discarded with an error beep (`max_seconds` — the runaway guard for when
-  a key-release gets swallowed, e.g. by an elevated window).
+  a key-release gets swallowed, e.g. by an elevated window). A *locked*
+  recording has no cap at all.
 - **transcripts.log** (this folder, rotates at ~1 MB × 3): every attempt —
   timestamp, duration, backend, latency, and the raw backend text. It is
   the recovery path when a paste lands nowhere, and the evidence when a
@@ -127,6 +135,42 @@ background instance to quit.
   keeps the first word from being clipped), so Windows shows the
   mic-in-use indicator, and a Bluetooth headset may sit in its
   lower-quality headset profile while the app is up.
+
+## Long dictation: lock the key with ←
+
+Push-to-talk is right for a sentence and wrong for a paragraph — your hand
+is doing nothing but holding a key down. So the hold can be handed off:
+
+1. Hold **Right Ctrl** and start talking as usual.
+2. Still holding it, **tap ←** (the left-arrow, right next to Right Ctrl —
+   reachable with the same hand, no need to let go). Two rising beeps.
+3. Let go of Right Ctrl. The recording keeps running, **with no time
+   limit**, hands free.
+4. **Tap ← again** to finish and paste, or **Esc** to discard.
+
+Details worth knowing:
+
+- **← is swallowed, but only while it is doing this job.** It has to be:
+  the arrow would otherwise move the caret, which is exactly where the
+  transcript is about to be pasted. Idle, it is an ordinary arrow key — the
+  app doesn't touch it. This is the only key the hook ever suppresses.
+- **Tapping Right Ctrl again also finishes** a locked recording, if that's
+  what your hand reaches for first.
+- **Stray keys don't abort a locked recording.** While *holding*, another
+  key means "you're typing a combo, not dictating" and cancels. Locked,
+  your hands are free on purpose, so that rule is off — otherwise one
+  keystroke would destroy several minutes of speech. Esc is the way out.
+- **The 400 s cap is lifted while locked.** `max_seconds` exists to catch a
+  key-release the OS swallowed; a locked recording has no key-release to
+  lose, so there is nothing for it to guard. Set `latch_max_seconds` if you
+  want one anyway.
+- **It is still one utterance.** The whole thing is transcribed in one go
+  when you stop, not streamed — a five-minute recording means a longer wait
+  at the end (~0.4 s per 10 s of audio on the local GPU backend) and one
+  paste of the entire text.
+- Pick a different key with `latch_hotkey`. Avoid `right shift`: **Ctrl+Shift
+  switches keyboard layout** in Windows, so it would flip you between Hebrew
+  and English mid-dictation.
 
 ## Translating to English (tap F9)
 
@@ -321,11 +365,13 @@ for `מבשרים`, all of which the local model got right.
 | `hotkey` | `right ctrl` | push-to-talk key for Hebrew (`f9`, `scroll lock`, ... — see names in `hotkey.py`) |
 | `english_hotkey` | `f9` | hold for English instead; `""` disables. Avoid `right alt` (releasing Alt alone pops the menu bar and steals focus before the paste) and `right shift` (holding 8 s triggers Windows FilterKeys) |
 | `translate_hotkey` | `f9` | **tap** to turn the selection — or the whole field — into English; `""` disables. Must differ from the two hold keys |
+| `latch_hotkey` | `left` | **tap while holding** the hotkey to lock the recording on, so a long dictation isn't a long hold; tap again to finish. Swallowed only while it does this. `""` disables. Avoid `right shift` — Ctrl+Shift switches keyboard layout |
 | `backend` | `local` | `gemini` \| `local` \| `fake` |
 | `paste_chord` | `ctrl+v` | try `shift+insert` for unusual terminals |
 | `restore_delay_ms` | `300` | wait after pasting before restoring the old clipboard (too small ⇒ the app pastes the *old* clipboard) |
 | `min_seconds` | `0.3` | shorter holds = accidental taps, discarded |
-| `max_seconds` | `400` | runaway-recording cap: stop, discard, error beep |
+| `max_seconds` | `400` | runaway-recording cap **while held**: stop, discard, error beep |
+| `latch_max_seconds` | `0` | the cap once locked; `0` = none. `max_seconds` guards against a swallowed key-up, and a locked recording has no key-up to lose |
 | `[audio] sample_rate` | `16000` | falls back to the device default if refused |
 | `[audio] device` | `""` | `""` = system default; index from `--list-devices` |
 | `fallback_to_local` | `true` | use the local model when every cloud model is out of quota |

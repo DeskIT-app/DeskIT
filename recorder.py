@@ -7,6 +7,7 @@ while an utterance is active; otherwise audio is discarded on arrival.
 from __future__ import annotations
 
 import io
+import math
 import threading
 import wave
 from typing import Callable
@@ -51,7 +52,8 @@ class Recorder:
                 samplerate=None, channels=1, dtype="int16",
                 device=device, callback=self._callback)
         self.sample_rate = int(self._stream.samplerate)
-        self._max_samples = int(max_seconds * self.sample_rate)
+        self._default_max_samples = float(max_seconds * self.sample_rate)
+        self._max_samples = self._default_max_samples
 
     def start_stream(self) -> None:
         self._stream.start()
@@ -76,7 +78,17 @@ class Recorder:
         with self._lock:
             self._chunks = []
             self._samples = 0
+            self._max_samples = self._default_max_samples  # undo any lift
             self._state = ACTIVE
+
+    def set_cap(self, seconds: float | None) -> None:
+        """Change the runaway cap for the recording in progress. None or 0
+        removes it — used when the user latches the key down, where the cap
+        no longer protects against anything (there is no key-up to swallow)
+        and would only truncate a long deliberate dictation."""
+        with self._lock:
+            self._max_samples = (math.inf if not seconds
+                                 else float(seconds * self.sample_rate))
 
     def abort(self) -> None:
         with self._lock:

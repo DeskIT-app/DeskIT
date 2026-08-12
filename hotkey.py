@@ -15,6 +15,10 @@ clean self-paste rule with no timing heuristics:
 
 PTTStateMachine is pure logic (unit-testable). HookThread runs the OS hook
 and its message pump.
+
+The hook swallows exactly one thing — the latch key, and only while it is
+acting as the latch (see PTTStateMachine). Everything else, including the
+hotkey itself, passes through to the focused app untouched.
 """
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 IDLE = "idle"
 RECORDING = "recording"
+LATCHED = "latched"
 
 # ---------------------------------------------------------------- key names
 
@@ -108,6 +113,24 @@ class PTTStateMachine:
     swallowed — and only while idle: pressed mid-recording it falls
     through to the abort rule above, like any other key.
 
+    `latch_vk` is the escape hatch from holding. Holding a key is fine for
+    a sentence and miserable for a paragraph, so tapping the latch key
+    mid-recording LOCKS the recording on: the hotkey can then be released
+    and the recording keeps running until the latch key (or a hotkey) is
+    tapped again. While latched:
+
+    - other keys do NOT abort. In hold mode a stray key means "the user is
+      typing a combo, not dictating"; latched, their hands are free by
+      design, and letting one stray keystroke destroy several minutes of
+      speech would be far worse than recording a few extra seconds.
+    - `cancel_vk` (Esc) discards the recording — the deliberate way out.
+
+    The latch key is the one key this class asks the hook to SWALLOW, and
+    only for the presses it actually consumes: it usually has a job of its
+    own in the focused app (an arrow key moves the caret, and the caret is
+    exactly where the transcript is about to be pasted). While idle it is
+    left alone completely.
+
     Callbacks run on the hook thread — keep them fast.
     """
 
@@ -116,7 +139,10 @@ class PTTStateMachine:
                  on_stop: Callable[[str], None],
                  on_abort: Callable[[str], None],
                  taps: dict[int, str] | None = None,
-                 on_tap: Callable[[str], None] | None = None):
+                 on_tap: Callable[[str], None] | None = None,
+                 latch_vk: int | None = None,
+                 on_latch: Callable[[], None] | None = None,
+                 cancel_vk: int | None = 0x1B):   # Esc
         # A bare vk keeps the original single-hotkey form working.
         self._hotkeys = ({hotkeys: "he"} if isinstance(hotkeys, int)
                          else dict(hotkeys))
@@ -128,15 +154,28 @@ class PTTStateMachine:
             raise ValueError(
                 f"{vk_name(next(iter(clash)))} is both a hold hotkey and a "
                 f"tap key — one key cannot mean two things")
+        if latch_vk is not None and latch_vk in (set(self._hotkeys)
+                                                 | set(self._taps)):
+            raise ValueError(
+                f"{vk_name(latch_vk)} is already a hotkey or tap key — one "
+                f"key cannot mean two things")
         if self._taps and on_tap is None:
             raise ValueError("taps were registered without an on_tap handler")
+        if latch_vk is not None and on_latch is None:
+            raise ValueError("a latch key was registered without an on_latch "
+                             "handler")
         self._on_start = on_start
         self._on_stop = on_stop
         self._on_abort = on_abort
         self._on_tap = on_tap
+        self._on_latch = on_latch
+        self._latch_vk = latch_vk
+        self._cancel_vk = cancel_vk
         self._state = IDLE
         self._active_vk: int | None = None
         self._tap_held: set[int] = set()
+        self._down: set[int] = set()      # physically-down keys, for repeat
+        self._swallow_latch_up = False
         self._lock = threading.Lock()
 
     @property
@@ -149,14 +188,31 @@ class PTTStateMachine:
         vk = self._active_vk
         return self._hotkeys.get(vk) if vk is not None else None
 
-    def handle(self, event_type: str, vk: int, injected: bool) -> None:
+    def handle(self, event_type: str, vk: int, injected: bool) -> bool:
+        """Feed one key event. Returns True when the hook should SWALLOW it
+        (only ever the latch key, and only for presses this consumed)."""
         fire: Callable[[], None] | None = None
+        swallow = False
         with self._lock:
+            # Auto-repeat bookkeeping, done whatever the state: a tap key
+            # pressed mid-recording aborts without being marked held, and
+            # must still be armed again by its release.
+            was_down = vk in self._down
             if event_type == "up":
-                # Always, whatever the state: a tap key pressed mid-recording
-                # aborts without being marked held, and must still be armed
-                # again by its release.
                 self._tap_held.discard(vk)
+                self._down.discard(vk)
+                if vk == self._latch_vk and self._swallow_latch_up:
+                    # Its key-DOWN was swallowed; releasing it must not
+                    # reach the app on its own either.
+                    self._swallow_latch_up = False
+                    swallow = True
+            else:
+                self._down.add(vk)
+                if vk == self._latch_vk and was_down and self._swallow_latch_up:
+                    # Auto-repeat of a press whose key-down we swallowed —
+                    # holding it down must not leak arrows into the app.
+                    swallow = True
+
             if self._state == IDLE:
                 if vk in self._hotkeys and event_type == "down":
                     self._state = RECORDING
@@ -168,6 +224,8 @@ class PTTStateMachine:
                     self._tap_held.add(vk)   # ignore Windows auto-repeat
                     action = self._taps[vk]
                     fire = lambda: self._on_tap(action)
+                # The latch key is inert while idle — it keeps its normal
+                # job in whatever app has focus.
             elif self._state == RECORDING:
                 if vk == self._active_vk:
                     if event_type == "up":
@@ -176,13 +234,46 @@ class PTTStateMachine:
                         self._active_vk = None
                         fire = lambda: self._on_stop(language)
                     # down = auto-repeat while held: ignore
+                elif vk == self._latch_vk and event_type == "down":
+                    # `was_down` means it was already held before the
+                    # recording started (the user was holding an arrow):
+                    # not a deliberate latch, so leave their input alone.
+                    if not was_down:
+                        self._state = LATCHED
+                        self._swallow_latch_up = True
+                        swallow = True
+                        fire = self._on_latch
                 elif event_type == "down" and not injected:
                     self._state = IDLE
                     self._active_vk = None
                     reason = f"'{vk_name(vk)}' pressed mid-hold"
                     fire = lambda: self._on_abort(reason)
+            elif self._state == LATCHED:
+                # `not was_down` is load-bearing for BOTH: the hotkey is
+                # still physically held at the moment of latching, and
+                # Windows keeps auto-repeating its key-down — without this
+                # the recording would stop the instant it locked.
+                finish = not was_down and (vk == self._latch_vk
+                                           or vk in self._hotkeys)
+                if finish and event_type == "down":
+                    self._state = IDLE
+                    language = self._hotkeys[self._active_vk]
+                    self._active_vk = None
+                    fire = lambda: self._on_stop(language)
+                    if vk == self._latch_vk:
+                        self._swallow_latch_up = True
+                        swallow = True
+                elif vk == self._cancel_vk and event_type == "down" \
+                        and not injected:
+                    self._state = IDLE
+                    self._active_vk = None
+                    fire = lambda: self._on_abort("esc pressed while locked")
+                # Anything else is ignored on purpose: latched, the user's
+                # hands are free, and a stray keystroke must not throw away
+                # minutes of speech.
         if fire is not None:
             fire()  # outside the lock
+        return swallow
 
 
 # ------------------------------------------------------------- the OS hook
@@ -213,8 +304,10 @@ class _KBDLLHOOKSTRUCT(ctypes.Structure):
 class HookThread:
     """Runs WH_KEYBOARD_LL + message pump; feeds a PTTStateMachine.
 
-    Never suppresses anything — the hotkey passes through to the focused
-    app (a bare Ctrl press/release is harmless in ordinary apps).
+    Suppresses only what the state machine asks it to — the latch key, for
+    the presses that lock and unlock a recording. Everything else passes
+    through to the focused app, the hotkey included (a bare Ctrl
+    press/release is harmless in ordinary apps).
     """
 
     def __init__(self, machine: PTTStateMachine):
@@ -263,12 +356,14 @@ class HookThread:
             try:
                 ks = ctypes.cast(l_param,
                                  ctypes.POINTER(_KBDLLHOOKSTRUCT)).contents
+                event = None
                 if w_param in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                    self._machine.handle("down", ks.vkCode,
-                                         bool(ks.flags & LLKHF_INJECTED))
+                    event = "down"
                 elif w_param in (WM_KEYUP, WM_SYSKEYUP):
-                    self._machine.handle("up", ks.vkCode,
-                                         bool(ks.flags & LLKHF_INJECTED))
+                    event = "up"
+                if event and self._machine.handle(
+                        event, ks.vkCode, bool(ks.flags & LLKHF_INJECTED)):
+                    return 1   # swallowed: never reaches the focused app
             except Exception:
                 pass  # never blow up inside the OS hook
         return user32.CallNextHookEx(None, n_code, w_param, l_param)

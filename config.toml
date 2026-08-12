@@ -8,6 +8,14 @@ hotkey = "right ctrl"         # hold = dictate Hebrew
 # "right alt" (releasing Alt alone pops the menu bar and steals focus right
 # before the paste) and "right shift" (8 s hold triggers Windows FilterKeys).
 english_hotkey = ""
+# Holding a key is fine for a sentence and miserable for a paragraph. TAP this
+# one WHILE still holding the hotkey and the recording LOCKS ON: let go of the
+# hotkey and keep talking with no time limit, then tap it again to transcribe
+# (or esc to discard). Pick a key the hand already on `hotkey` can reach without
+# letting go — "left" (the left-arrow) sits right next to right ctrl. It is the
+# one key the app swallows, and only while it is doing this job: idle, the arrow
+# still moves the caret as usual. "" turns it off.
+latch_hotkey = "left"
 # TAP (don't hold) to turn what is already at the cursor into English:
 # whatever is selected, or the whole field when nothing is selected.
 # "" turns it off. See [translate] below.
@@ -19,7 +27,10 @@ backend = "local"             # gemini | local | fake
 paste_chord = "ctrl+v"        # try "shift+insert" for terminals that reject ctrl+v
 restore_delay_ms = 300        # wait after pasting before restoring the old clipboard
 min_seconds = 0.3             # shorter holds are treated as accidental taps and discarded
-max_seconds = 400             # runaway-recording cap: stop, discard, error beep
+max_seconds = 400             # runaway-recording cap while HELD: stop, discard, error beep
+latch_max_seconds = 0         # the cap once latched. 0 = none — max_seconds only
+                              # guards against a key-up the OS swallowed, and a
+                              # latched recording has no key-up to lose
 fallback_to_local = true      # when every cloud model is out of quota, use local whisper
 
 [audio]

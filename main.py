@@ -22,6 +22,7 @@ import dataclasses
 import inspect
 import logging
 import logging.handlers
+import math
 import queue
 import sys
 import threading
@@ -72,6 +73,10 @@ class App:
         self._local = None       # lazily built local fallback, if enabled
         self.recorder = Recorder(cfg.audio.sample_rate, cfg.audio.device,
                                  cfg.max_seconds, self._on_overflow)
+        # The cap in force right now: max_seconds while held, lifted by a
+        # latch. Kept here purely so the log lines name the real number.
+        self._cap = cfg.max_seconds
+        self._latched = False
         hotkeys = {vk_for(cfg.hotkey): "he"}
         if cfg.english_hotkey:
             hotkeys[vk_for(cfg.english_hotkey)] = "en"
@@ -84,7 +89,9 @@ class App:
             hotkeys,
             on_start=self._on_start, on_stop=self._on_stop,
             on_abort=self._on_abort,
-            taps=taps, on_tap=self._on_tap)
+            taps=taps, on_tap=self._on_tap,
+            latch_vk=vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
+            on_latch=self._on_latch)
         self.hook = HookThread(self.machine)
         self.worker = threading.Thread(target=self._worker, daemon=True,
                                        name="transcribe-worker")
@@ -111,18 +118,21 @@ class App:
     # ---- hook-thread callbacks: keep them fast ----
 
     def _on_start(self, language: str = "he") -> None:
-        self.recorder.begin()
+        self.recorder.begin()   # also restores the cap a latch may have lifted
+        self._cap, self._latched = self.cfg.max_seconds, False
         beep("start")
-        log.info("recording %s... (release to transcribe)",
-                 "ENGLISH" if language == "en" else "Hebrew")
+        log.info("recording %s... (release to transcribe%s)",
+                 "ENGLISH" if language == "en" else "Hebrew",
+                 f", tap '{self.cfg.latch_hotkey}' to lock it on"
+                 if self.cfg.latch_hotkey else "")
 
     def _on_stop(self, language: str = "he") -> None:
         wav, seconds = self.recorder.end()
         if wav is None:
-            # overflowed at max_seconds — beep already fired at cap time
-            log.info("discarded: hit the %.0f s cap", self.cfg.max_seconds)
-            transcript_log.info("DISCARDED | %.1fs | hit max_seconds cap",
-                                seconds)
+            # overflowed at the cap — beep already fired at cap time
+            log.info("discarded: hit the %.0f s cap", self._cap)
+            transcript_log.info("DISCARDED | %.1fs | hit the %.0f s cap",
+                                seconds, self._cap)
             return
         if seconds < self.cfg.min_seconds:
             log.info("discarded: %.2f s hold is under min_seconds=%.2f "
@@ -137,6 +147,19 @@ class App:
         log.info("captured %.1f s of %s -> transcribing (%s)...", seconds,
                  "English" if language == "en" else "Hebrew",
                  self.transcriber.name)
+
+    def _on_latch(self) -> None:
+        # Lift the cap first, then beep: the cue is fire-and-forget but the
+        # ordering keeps the guarantee honest if it ever stops being.
+        self.recorder.set_cap(self.cfg.latch_max_seconds or None)
+        self._cap = self.cfg.latch_max_seconds or math.inf
+        self._latched = True
+        beep("latch")
+        log.info("locked — let go of '%s' and talk as long as you want; "
+                 "tap '%s' again to transcribe, esc to discard%s",
+                 self.cfg.hotkey, self.cfg.latch_hotkey,
+                 "" if not self.cfg.latch_max_seconds
+                 else f" (cap {self.cfg.latch_max_seconds:.0f} s)")
 
     def _on_abort(self, reason: str) -> None:
         self.recorder.abort()
@@ -155,8 +178,10 @@ class App:
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
-        log.warning("recording passed max_seconds=%.0f — discarding. "
-                    "Release the key.", self.cfg.max_seconds)
+        log.warning("recording passed the %.0f s cap — discarding. %s",
+                    self._cap,
+                    "Tap the latch key to clear it."
+                    if self._latched else "Release the key.")
 
     # ---- worker thread ----
 
@@ -644,6 +669,14 @@ def main() -> int:
              else "",
              "Ctrl+C here to quit." if HAS_CONSOLE
              else 'Double-click "Stop Dictation.vbs" to quit.')
+    if cfg.latch_hotkey:
+        log.info("long dictation: while holding '%s', tap '%s' to lock the "
+                 "recording on — then let go and talk %s. Tap '%s' again to "
+                 "transcribe, esc to discard.",
+                 cfg.hotkey, cfg.latch_hotkey,
+                 "with no time limit" if not cfg.latch_max_seconds
+                 else f"for up to {cfg.latch_max_seconds:.0f} s",
+                 cfg.latch_hotkey)
     if cfg.translate_hotkey:
         log.info("tap '%s' to turn the selection — or the whole field when "
                  "nothing is selected — into %s", cfg.translate_hotkey,

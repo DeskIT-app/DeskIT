@@ -106,11 +106,20 @@ class Config:
     # Tapped (not held) to translate the selection — or the whole field
     # when nothing is selected — into English. "" = off.
     translate_hotkey: str = ""
+    # Tapped WHILE holding the hotkey: locks the recording on, so the
+    # hotkey can be released and a long dictation does not mean a long
+    # hold. Must be reachable by the hand already on the hotkey, and is
+    # swallowed while it acts as the latch — so a key with a job of its own
+    # ("left") is fine. "" = off.
+    latch_hotkey: str = "left"
     backend: str = "gemini"
     paste_chord: str = "ctrl+v"
     restore_delay_ms: int = 300
     min_seconds: float = 0.3
     max_seconds: float = 120.0
+    # The cap once latched. 0 = none: max_seconds guards against a key-up
+    # the OS swallowed, and a latched recording has no key-up to lose.
+    latch_max_seconds: float = 0.0
     audio: AudioConfig = field(default_factory=AudioConfig)
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
     local: LocalConfig = field(default_factory=LocalConfig)
@@ -160,11 +169,15 @@ def load(path: Path) -> Config:
                                     Config.english_hotkey)).strip().lower(),
         translate_hotkey=str(data.get(
             "translate_hotkey", Config.translate_hotkey)).strip().lower(),
+        latch_hotkey=str(data.get("latch_hotkey",
+                                  Config.latch_hotkey)).strip().lower(),
         backend=str(data.get("backend", Config.backend)).strip().lower(),
         paste_chord=str(data.get("paste_chord", Config.paste_chord)).strip().lower(),
         restore_delay_ms=int(data.get("restore_delay_ms", Config.restore_delay_ms)),
         min_seconds=float(data.get("min_seconds", Config.min_seconds)),
         max_seconds=float(data.get("max_seconds", Config.max_seconds)),
+        latch_max_seconds=float(data.get("latch_max_seconds",
+                                         Config.latch_max_seconds)),
         audio=AudioConfig(
             sample_rate=int(audio.get("sample_rate", AudioConfig.sample_rate)),
             device=_parse_device(str(audio.get("device", ""))),
@@ -243,8 +256,24 @@ def load(path: Path) -> Config:
         if not cfg.translate.ollama_model:
             raise ConfigError("translate.ollama_model must not be empty (it "
                               "is the fallback when Gemini quota is spent)")
+    if cfg.latch_hotkey:
+        for other, label in ((cfg.hotkey, "hotkey"),
+                             (cfg.english_hotkey, "english_hotkey"),
+                             (cfg.translate_hotkey, "translate_hotkey")):
+            if other and cfg.latch_hotkey == other:
+                raise ConfigError(
+                    f"latch_hotkey must differ from {label} (both are "
+                    f"{other!r}) — one key cannot mean two things")
+        if cfg.latch_hotkey == "esc":
+            raise ConfigError("latch_hotkey cannot be 'esc' — esc discards a "
+                              "locked recording")
     if not (0 < cfg.min_seconds < cfg.max_seconds <= 3600):
         raise ConfigError("need 0 < min_seconds < max_seconds <= 3600")
+    if cfg.latch_max_seconds < 0:
+        raise ConfigError("latch_max_seconds must be >= 0 (0 = no cap)")
+    if 0 < cfg.latch_max_seconds <= cfg.min_seconds:
+        raise ConfigError("latch_max_seconds must be 0 (no cap) or longer "
+                          "than min_seconds")
     if cfg.restore_delay_ms < 0:
         raise ConfigError("restore_delay_ms must be >= 0")
     if cfg.audio.sample_rate <= 0:

@@ -960,6 +960,201 @@ def test_translate_hotkey_must_not_collide() -> None:
             raise AssertionError("expected ConfigError on a colliding key")
 
 
+VK_LEFT = 0x25
+VK_ESC = 0x1B
+
+
+def _latch_machine(spy, hotkeys=None, latch_vk=VK_LEFT):
+    return PTTStateMachine(
+        hotkeys or {VK_RCTRL: "he"},
+        on_start=lambda lang: spy.events.append("start"),
+        on_stop=lambda lang: spy.events.append("stop"),
+        on_abort=lambda why: spy.events.append(f"abort:{why}"),
+        latch_vk=latch_vk,
+        on_latch=lambda: spy.events.append("latch"))
+
+
+def test_latch_locks_the_recording_and_survives_the_release() -> None:
+    spy = Spy()
+    m = _latch_machine(spy)
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LEFT, injected=False)    # tapped mid-hold
+    m.handle("up", VK_LEFT, injected=False)
+    m.handle("up", VK_RCTRL, injected=False)     # let go — keeps recording
+    assert spy.events == ["start", "latch"], spy.events
+    m.handle("down", VK_LEFT, injected=False)    # tapped again -> transcribe
+    assert spy.events == ["start", "latch", "stop"], spy.events
+
+
+def test_latch_survives_hotkey_autorepeat() -> None:
+    """The hotkey is still physically down at the moment of latching, and
+    Windows keeps repeating its key-down. Treating those as a fresh press
+    would end the recording a few milliseconds after locking it."""
+    spy = Spy()
+    m = _latch_machine(spy)
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LEFT, injected=False)
+    for _ in range(6):                            # still holding right ctrl
+        m.handle("down", VK_RCTRL, injected=False)
+    m.handle("up", VK_RCTRL, injected=False)
+    assert spy.events == ["start", "latch"], spy.events
+
+
+def test_latch_key_autorepeat_does_not_stop_the_recording() -> None:
+    """Same hazard for the latch key itself if it is held rather than
+    tapped: repeat #2 would immediately un-latch."""
+    spy = Spy()
+    m = _latch_machine(spy)
+    m.handle("down", VK_RCTRL, injected=False)
+    for _ in range(5):
+        m.handle("down", VK_LEFT, injected=False)
+    assert spy.events == ["start", "latch"], spy.events
+
+
+def test_latch_key_is_swallowed_only_while_it_latches() -> None:
+    """It is an arrow: idle it must still move the caret, because that is
+    where the transcript is about to land."""
+    spy = Spy()
+    m = _latch_machine(spy)
+    assert m.handle("down", VK_LEFT, injected=False) is False
+    assert m.handle("up", VK_LEFT, injected=False) is False
+    m.handle("down", VK_RCTRL, injected=False)
+    assert m.handle("down", VK_LEFT, injected=False) is True   # latches
+    assert m.handle("down", VK_LEFT, injected=False) is True   # auto-repeat
+    assert m.handle("up", VK_LEFT, injected=False) is True     # its own up
+    m.handle("up", VK_RCTRL, injected=False)
+    assert m.handle("down", VK_LEFT, injected=False) is True   # un-latches
+    assert m.handle("up", VK_LEFT, injected=False) is True
+
+
+def test_stray_keys_do_not_abort_a_latched_recording() -> None:
+    """Latched, the user's hands are free by design — the abort rule that
+    protects a HELD recording would now throw away minutes of speech."""
+    spy = Spy()
+    m = _latch_machine(spy)
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LEFT, injected=False)
+    m.handle("up", VK_LEFT, injected=False)
+    m.handle("up", VK_RCTRL, injected=False)
+    for vk in (VK_C, VK_SHIFT, VK_LCTRL, VK_V):
+        m.handle("down", vk, injected=False)
+        m.handle("up", vk, injected=False)
+    assert spy.events == ["start", "latch"], spy.events
+    m.handle("down", VK_LEFT, injected=False)
+    assert spy.events[-1] == "stop", spy.events
+
+
+def test_esc_discards_a_latched_recording() -> None:
+    spy = Spy()
+    m = _latch_machine(spy)
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LEFT, injected=False)
+    m.handle("up", VK_RCTRL, injected=False)
+    m.handle("down", VK_ESC, injected=False)
+    assert spy.events == ["start", "latch", "abort:esc pressed while locked"], \
+        spy.events
+    m.handle("down", VK_LEFT, injected=False)   # back to idle: no stray stop
+    assert len(spy.events) == 3, spy.events
+
+
+def test_tapping_the_hotkey_again_finishes_a_latched_recording() -> None:
+    spy = Spy()
+    m = _latch_machine(spy)
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LEFT, injected=False)
+    m.handle("up", VK_LEFT, injected=False)
+    m.handle("up", VK_RCTRL, injected=False)
+    m.handle("down", VK_RCTRL, injected=False)
+    assert spy.events == ["start", "latch", "stop"], spy.events
+
+
+def test_latch_key_already_held_does_not_latch() -> None:
+    """Holding left-arrow to move the caret and then reaching for the
+    hotkey is not a latch — and their arrows must keep working."""
+    spy = Spy()
+    m = _latch_machine(spy)
+    m.handle("down", VK_LEFT, injected=False)          # held from before
+    m.handle("down", VK_RCTRL, injected=False)
+    assert m.handle("down", VK_LEFT, injected=False) is False   # repeat
+    m.handle("up", VK_RCTRL, injected=False)
+    assert spy.events == ["start", "stop"], spy.events
+
+
+def test_latch_key_cannot_double_as_a_hotkey() -> None:
+    spy = Spy()
+    try:
+        _latch_machine(spy, latch_vk=VK_RCTRL)
+    except ValueError as e:
+        assert "two things" in str(e), e
+    else:
+        raise AssertionError("expected ValueError when one key means both")
+
+
+def test_latch_hotkey_must_not_collide_in_config() -> None:
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "config.toml"
+        p.write_text('hotkey = "right ctrl"\nlatch_hotkey = "right ctrl"\n',
+                     "utf-8")
+        try:
+            config_mod.load(p)
+        except config_mod.ConfigError as e:
+            assert "latch_hotkey" in str(e), e
+        else:
+            raise AssertionError("expected ConfigError on a colliding key")
+
+
+def _bare_recorder(max_seconds: float, on_overflow):
+    """A Recorder without PortAudio — the buffering logic is what is under
+    test, and opening a real input stream needs a device."""
+    import threading
+
+    from recorder import IDLE as R_IDLE
+    from recorder import Recorder
+
+    r = Recorder.__new__(Recorder)
+    r._on_overflow = on_overflow
+    r._lock = threading.Lock()
+    r._state = R_IDLE
+    r._chunks, r._samples = [], 0
+    r.sample_rate = 16000
+    r._default_max_samples = float(max_seconds * r.sample_rate)
+    r._max_samples = r._default_max_samples
+    return r
+
+
+def test_latched_recording_is_not_capped_and_the_cap_comes_back() -> None:
+    """The whole point of the latch: max_seconds guards against a key-up
+    the OS swallowed, and a latched recording has no key-up to lose."""
+    fired: list[str] = []
+    r = _bare_recorder(2.0, lambda: fired.append("overflow"))
+    one_second = np.zeros(16000, dtype=np.int16)
+
+    r.begin()
+    r.set_cap(None)                       # what _on_latch does
+    for _ in range(10):                   # 10 s, five times the held cap
+        r._callback(one_second, len(one_second), None, None)
+    assert fired == [], fired
+    wav, seconds = r.end()
+    assert wav is not None and abs(seconds - 10.0) < 0.01, seconds
+
+    r.begin()                             # next recording is capped again
+    for _ in range(3):
+        r._callback(one_second, len(one_second), None, None)
+    assert fired == ["overflow"], fired
+    assert r.end()[0] is None, "an overflowed recording must be discarded"
+
+
+def test_real_config_has_a_reachable_latch_key() -> None:
+    """Guards the shipped config: without this the app is back to "a long
+    dictation means a long hold"."""
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    assert cfg.latch_hotkey, "latch_hotkey is off"
+    vk_for(cfg.latch_hotkey)              # must be a name the hook knows
+    assert cfg.latch_hotkey != cfg.hotkey
+    assert cfg.latch_max_seconds == 0, "0 = no cap, which is the point"
+
+
 def test_needs_translation_skips_text_with_no_hebrew() -> None:
     """Every skipped call is one saved from a 20-per-day bucket."""
     import translate as translate_mod

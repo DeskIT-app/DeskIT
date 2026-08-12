@@ -29,6 +29,9 @@ CUES: dict[str, list[tuple[int, int]]] = {
     "start": [(880, 110)],               # recording
     "stop": [(660, 110)],                # captured, transcribing
     "error": [(330, 130), (262, 190)],   # something failed
+    # Locked on — you can let go. Deliberately the "start" note plus one
+    # above it: the recording did not restart, it grew a lock.
+    "latch": [(880, 70), (1319, 110)],
     "bye": [(880, 90), (587, 130)],      # app stopped
     # Translation is silent work on text already on screen, so it gets its
     # own pair — otherwise a press is indistinguishable from a recording.
