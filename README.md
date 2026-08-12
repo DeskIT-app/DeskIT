@@ -219,6 +219,44 @@ Check it without touching the keyboard:
 .venv\Scripts\python.exe main.py --translate "אני רוצה לעשות deploy מחר"
 ```
 
+## Dictating from the phone
+
+The phone records; **this machine transcribes**. That is the whole point —
+a phone keyboard's Hebrew dictation is not the ivrit-ai fine-tune, and the
+GPU here is already holding the model. The endpoint runs inside the running
+app and borrows that loaded model, so it costs no extra VRAM.
+
+Reachability is **Tailscale's** job. No port forwarding, no public IP, no
+dynamic DNS. The socket binds to the Tailscale address when it is up, so
+the endpoint exists only on your private mesh and never answers the home
+LAN. A bearer token is required on top of that.
+
+### Setting it up
+
+1. Install Tailscale on this PC and on the phone, signed into the same
+   account. Confirm with `tailscale ip -4`.
+2. In `config.toml`, set `[server] enabled = true`, then restart the app.
+3. **Give it HTTPS.** Chrome blocks the microphone *and* the clipboard on
+   pages that are not a secure context, so plain `http://100.x.y.z:8756`
+   will load and then refuse to record:
+
+   ```bash
+   tailscale serve --bg 8756
+   ```
+
+   That fronts it with a real certificate at
+   `https://<machine>.<tailnet>.ts.net/`.
+4. The log prints the URL **including the token** (`.../#t=...`). Open that
+   once on the phone; the token moves into localStorage and the address bar
+   is cleaned, so the page can be bookmarked or added to the home screen.
+
+Hold the button, talk, release. The text appears and is copied to the
+clipboard automatically. The token lives in `server_token.txt`
+(gitignored); delete it to roll a new one.
+
+If the PC is asleep the page simply cannot reach it — set Windows to never
+sleep if you want this available while you are out.
+
 ## Words you never said
 
 Whisper does not only transcribe — when the decoder reaches the end of real
@@ -432,6 +470,9 @@ for `מבשרים`, all of which the local model got right.
 | `[translate] timeout_s` | `30` | Gemini request timeout |
 | `[translate] ollama_timeout_s` | `150` | much larger on purpose: 76 s cold vs 2.5 s warm while the model loads into VRAM |
 | `[translate] settle_ms` | `120` | how long the focused app gets to answer a copy |
+| `[server] enabled` | `false` | the phone endpoint (see [Dictating from the phone](#dictating-from-the-phone)) |
+| `[server] host` | `""` | `""` = the Tailscale address when up, else `127.0.0.1`. Deliberately never `0.0.0.0` |
+| `[server] port` | `8756` | the port `tailscale serve` should front |
 
 ## Design notes
 

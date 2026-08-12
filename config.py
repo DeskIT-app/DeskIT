@@ -108,6 +108,20 @@ class TranslateConfig:
 
 
 @dataclass(frozen=True)
+class ServerConfig:
+    """The phone endpoint: dictate from the phone, transcribe on this GPU.
+
+    Off by default — it opens a socket, and that should be a decision.
+    """
+    enabled: bool = False
+    # "" = bind to the Tailscale address when it is up, else 127.0.0.1.
+    # Deliberately not 0.0.0.0: reachability is Tailscale's job, and there
+    # is no reason for this to answer the home LAN.
+    host: str = ""
+    port: int = 8756
+
+
+@dataclass(frozen=True)
 class Config:
     hotkey: str = "right ctrl"
     # A dedicated key beats guessing: language detection scored a Hebrew
@@ -136,6 +150,7 @@ class Config:
     local: LocalConfig = field(default_factory=LocalConfig)
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
     translate: TranslateConfig = field(default_factory=TranslateConfig)
+    server: ServerConfig = field(default_factory=ServerConfig)
     # Fall back to the local backend when every cloud model is out of quota.
     fallback_to_local: bool = True
 
@@ -163,6 +178,7 @@ def load(path: Path) -> Config:
     local = data.get("local", {})
     feedback = data.get("feedback", {})
     translate = data.get("translate", {})
+    server = data.get("server", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -248,6 +264,11 @@ def load(path: Path) -> Config:
             settle_ms=int(translate.get("settle_ms",
                                         TranslateConfig.settle_ms)),
         ),
+        server=ServerConfig(
+            enabled=bool(server.get("enabled", ServerConfig.enabled)),
+            host=str(server.get("host", ServerConfig.host)).strip(),
+            port=int(server.get("port", ServerConfig.port)),
+        ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
     )
@@ -295,6 +316,8 @@ def load(path: Path) -> Config:
                           "than min_seconds")
     if cfg.restore_delay_ms < 0:
         raise ConfigError("restore_delay_ms must be >= 0")
+    if cfg.server.enabled and not (0 < cfg.server.port < 65536):
+        raise ConfigError(f"server.port is out of range: {cfg.server.port}")
     if cfg.audio.sample_rate <= 0:
         raise ConfigError("audio.sample_rate must be positive")
     if not cfg.gemini.models:

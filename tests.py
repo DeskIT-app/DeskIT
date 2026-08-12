@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import sys
+import threading
 import wave
 from pathlib import Path
 
@@ -537,6 +538,7 @@ def _worker_app(backend, spool_dir, retry_seconds=5.0):
     app = main_mod.App.__new__(main_mod.App)
     app.cfg, app.transcriber, app._local = cfg, backend, False
     app.spool = Spool(Path(spool_dir))
+    app._model_lock = threading.Lock()   # real App builds this in __init__
     return app
 
 
@@ -1238,6 +1240,91 @@ def test_boilerplate_can_be_turned_off() -> None:
         p.write_text("backend = 'local'\n[local]\n"
                      "drop_trailing_boilerplate = false\n", "utf-8")
         assert local_kwargs(config_mod.load(p))["boilerplate"] == ()
+
+
+def test_phone_endpoint_round_trip_and_auth() -> None:
+    """The endpoint is reachable from a phone, so the auth boundary is the
+    part that matters most: a wrong token must never reach the GPU."""
+    import dataclasses
+    import wave as wave_mod
+
+    import requests
+
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dataclasses.replace(
+        cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
+                                            port=8799))
+    calls: list[int] = []
+
+    def fake(wav):
+        calls.append(len(wav))
+        return "שלום", "fake"
+
+    buf = io.BytesIO()
+    with wave_mod.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(np.zeros(16000, dtype=np.int16).tobytes())
+    clip = buf.getvalue()
+
+    srv = server_mod.PhoneServer(cfg, fake, lambda: "fake")
+    srv.start()
+    base = "http://127.0.0.1:8799"
+    try:
+        token = server_mod.load_token()
+        bad = requests.post(f"{base}/transcribe", data=clip, timeout=10,
+                            headers={"Authorization": "Bearer nope"})
+        assert bad.status_code == 401, bad.status_code
+        assert not calls, "an unauthorised request reached the transcriber"
+
+        none = requests.post(f"{base}/transcribe", data=clip, timeout=10)
+        assert none.status_code == 401, none.status_code
+
+        ok = requests.post(f"{base}/transcribe", data=clip, timeout=30,
+                           headers={"Authorization": f"Bearer {token}"})
+        assert ok.status_code == 200, ok.status_code
+        assert ok.json()["text"] == "שלום", ok.json()
+        assert calls, "the transcriber was never called"
+
+        junk = requests.post(f"{base}/transcribe", data=b"xxxx", timeout=10,
+                             headers={"Authorization": f"Bearer {token}"})
+        assert junk.status_code == 400, junk.status_code
+        assert requests.get(f"{base}/nope", timeout=5).status_code == 404
+    finally:
+        srv.stop()
+
+
+def test_phone_token_is_generated_once_and_reused() -> None:
+    """It travels in a URL the user bookmarks — regenerating it on every
+    start would silently break the phone."""
+    import server as server_mod
+    first = server_mod.load_token()
+    assert len(first) >= 20, first
+    assert server_mod.load_token() == first
+
+
+def test_phone_audio_decode_accepts_a_plain_wav() -> None:
+    import wave as wave_mod
+
+    import server as server_mod
+    buf = io.BytesIO()
+    with wave_mod.open(buf, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000)
+        w.writeframes(np.zeros(32000, dtype=np.int16).tobytes())
+    wav, seconds = server_mod.to_wav(buf.getvalue())
+    assert abs(seconds - 2.0) < 0.05, seconds
+    with wave_mod.open(io.BytesIO(wav)) as w:
+        assert w.getframerate() == 16000 and w.getnchannels() == 1
+
+
+def test_phone_endpoint_is_off_by_default_and_never_binds_the_lan() -> None:
+    """Opening a socket should be a decision, and when it is opened it has
+    no business answering the home network — that is Tailscale's job."""
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    assert cfg.server.enabled is False
+    assert cfg.server.host == "", cfg.server.host   # "" = tailscale or loopback
+    assert config_mod.ServerConfig.host != "0.0.0.0"
 
 
 def test_needs_translation_skips_text_with_no_hebrew() -> None:

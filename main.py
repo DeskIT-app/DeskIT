@@ -34,6 +34,7 @@ APP_DIR = Path(__file__).resolve().parent
 import config as config_mod
 import cues
 import injector
+import server as server_mod
 import singleton
 from config import ConfigError
 from hotkey import HookThread, PTTStateMachine, parse_chord, vk_for
@@ -104,16 +105,39 @@ class App:
         self.translate_worker = threading.Thread(
             target=self._translate_worker, daemon=True,
             name="translate-worker")
+        # One Whisper model, several threads that want it (the desktop
+        # worker, and every phone request).
+        self._model_lock = threading.Lock()
+        self.phone: server_mod.PhoneServer | None = None
+        if cfg.server.enabled:
+            self.phone = server_mod.PhoneServer(
+                cfg, self._transcribe_for_phone,
+                lambda: self.transcriber.name)
 
     def start(self) -> None:
         self.recorder.start_stream()
         self.worker.start()
         self.translate_worker.start()
         self.hook.start()
+        if self.phone is not None:
+            try:
+                self.phone.start()
+            except Exception as e:      # a busy port must not kill dictation
+                log.warning("phone endpoint could not start (%s) — the "
+                            "hotkey is unaffected", e)
+                self.phone = None
 
     def stop(self) -> None:
+        if self.phone is not None:
+            self.phone.stop()
         self.hook.stop()
         self.recorder.close()
+
+    def _transcribe_for_phone(self, wav: bytes) -> tuple[str, str]:
+        """No language is passed: the phone has no per-language key, so it
+        goes through the same Hebrew/English detection the desktop uses
+        when nothing was specified."""
+        return self._transcribe(wav, language=None)
 
     # ---- hook-thread callbacks: keep them fast ----
 
@@ -226,15 +250,21 @@ class App:
 
     def _transcribe(self, wav: bytes,
                     language: str | None = None) -> tuple[str, str]:
-        """Cloud first; local only once every cloud model is out of quota."""
-        try:
-            return (self._call(self.transcriber, wav, language),
-                    self.transcriber.name)
-        except RateLimitError:
-            local = self._local_backend()
-            if local is None:
-                raise
-            return self._call(local, wav, language), local.name
+        """Cloud first; local only once every cloud model is out of quota.
+
+        Serialised: the phone endpoint runs on its own threads and would
+        otherwise hit the same Whisper model as the desktop worker at the
+        same moment. This is the one choke point both paths pass through.
+        """
+        with self._model_lock:
+            try:
+                return (self._call(self.transcriber, wav, language),
+                        self.transcriber.name)
+            except RateLimitError:
+                local = self._local_backend()
+                if local is None:
+                    raise
+                return self._call(local, wav, language), local.name
 
     def _worker(self) -> None:
         while True:

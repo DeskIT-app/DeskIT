@@ -58,6 +58,18 @@ ollama_timeout_s = 150        # ollama loads ~5 GB into VRAM on the first
                               # (measured 2026-08-12)
 settle_ms = 120               # how long the focused app gets to answer a copy
 
+[server]
+# Dictate from the PHONE, transcribe on this GPU: the phone records and
+# posts the audio here, so you keep the Hebrew fine-tune instead of falling
+# back to whatever the phone's keyboard offers. Runs inside this app and
+# borrows the model that is already loaded.
+# Reachability is Tailscale's job — see the README. host = "" binds to the
+# Tailscale address when it is up (and 127.0.0.1 when it is not), so this
+# never answers the home LAN.
+enabled = false
+host = ""
+port = 8756
+
 [gemini]
 # Free-tier quota is PER MODEL (gemini-2.5-flash = 20 requests/day), so this
 # list is a longer runway: each is tried in order and rested when it reports

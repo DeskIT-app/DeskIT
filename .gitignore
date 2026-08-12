@@ -10,3 +10,6 @@ pending/
 
 # Generated at first run by cues.py
 cues/
+
+# Generated on first run by server.py — the phone endpoint shared secret.
+server_token.txt
