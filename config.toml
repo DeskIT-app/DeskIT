@@ -1,11 +1,13 @@
 # Hebrew push-to-talk dictation — settings.
 # Hotkey names come from the table in hotkey.py ("right ctrl", "f9", "scroll lock", "a".."z"...).
 hotkey = "right ctrl"         # hold = dictate Hebrew
-# Hold = dictate English (no guessing involved). "" turns it off.
-# Deliberately NOT "right alt" (releasing Alt alone pops the menu bar in many
-# apps, stealing focus right before we paste) and NOT "right shift" (holding
-# it 8 s triggers Windows FilterKeys). f9 is inert almost everywhere.
-english_hotkey = "f9"
+# Off: one key handles Hebrew AND English in the same press, thanks to
+# [local] initial_prompt below. Set this to a key name (e.g. "f9") only if you
+# want a dedicated English key for utterances that are ENTIRELY English —
+# those are the one case the Hebrew model transliterates. If you do, avoid
+# "right alt" (releasing Alt alone pops the menu bar and steals focus right
+# before the paste) and "right shift" (8 s hold triggers Windows FilterKeys).
+english_hotkey = ""
 # local = unlimited, offline, ~0.3 s. Measured 2026-08-12 on 8 real Hebrew
 # clips: local 10.8% WER / 0.38 s vs gemini 15.9% WER / 2.71 s. Switch to
 # "gemini" if you ever want its stronger cleanup instead.
@@ -45,6 +47,11 @@ cleanup = true                # strip "אה"/"אמ" and collapse restarted phras
                               # (Whisper only transcribes; Gemini also cleans)
 extra_fillers = []            # add your own, e.g. ["כאילו"] — only add words you
                               # never mean literally; "כאילו" is a real word too
+
+# Biases the decoder towards "Hebrew with English technical terms", which is
+# how this actually gets used. Without it the model DROPS the English half of
+# a mixed sentence. Measured: Hebrew WER 10.8% -> 9.6%. Add your own jargon.
+initial_prompt = "שיחה בעברית עם מונחים טכניים באנגלית כמו commit, branch, pull request, merge, deploy, terminal, repo, bug, feature."
 
 # The Hebrew fine-tune transliterates SHORT pure-English utterances
 # ("Should it work?" -> "שיידי וורק"). Confident English is routed to a

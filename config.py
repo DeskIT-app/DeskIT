@@ -56,6 +56,12 @@ class LocalConfig:
     # backend regresses output quality on real (hesitant) dictation.
     cleanup: bool = True
     extra_fillers: tuple[str, ...] = ()
+    # Biases the decoder towards Hebrew-with-English-terms, which is how
+    # this gets used. Measured 2026-08-12: Hebrew WER 10.8% -> 9.6%, and
+    # mixed utterances stopped losing their English half entirely.
+    initial_prompt: str = ("שיחה בעברית עם מונחים טכניים באנגלית כמו "
+                           "commit, branch, pull request, merge, deploy, "
+                           "terminal, repo, bug, feature.")
     # The Hebrew fine-tune transliterates short pure-English utterances.
     # Confident English is routed to a general model instead. "" disables.
     english_model: str = "deepdml/faster-whisper-large-v3-turbo-ct2"
@@ -143,6 +149,8 @@ def load(path: Path) -> Config:
             extra_fillers=tuple(str(f).strip()
                                 for f in local.get("extra_fillers", ())
                                 if str(f).strip()),
+            initial_prompt=str(local.get("initial_prompt",
+                                         LocalConfig.initial_prompt)),
             english_model=str(local.get("english_model",
                                         LocalConfig.english_model)).strip(),
             english_threshold=float(local.get(

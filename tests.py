@@ -804,6 +804,7 @@ def test_explicit_language_beats_detection() -> None:
     t._model, t._english = FakeModel("he"), FakeModel("en")
     t._language, t._english_threshold = "he", 0.8
     t._cleanup, t._fillers = False, ()
+    t._initial_prompt = None
 
     assert t.transcribe(b"RIFF", language="en") == "hello"
     assert calls["model"] == "en" and calls["language"] == "en", calls
@@ -845,6 +846,46 @@ def test_language_router_falls_back_safely() -> None:
 
     t._english = Boom()
     assert t._pick_language(object()) == "he"
+
+
+def test_initial_prompt_is_set_for_code_switching() -> None:
+    """Guards the mixed-language fix: without an initial_prompt the decoder
+    drops the English half of a Hebrew+English sentence entirely."""
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    prompt = cfg.local.initial_prompt
+    assert prompt, "initial_prompt must not be empty"
+    assert "commit" in prompt and "branch" in prompt, prompt
+    assert any("֐" <= c <= "׿" for c in prompt), \
+        "prompt must be Hebrew so the decoder stays in Hebrew"
+
+
+def test_english_model_gets_no_hebrew_prompt() -> None:
+    """A Hebrew initial_prompt would only confuse the English model."""
+    from transcribers.local_whisper import LocalWhisperTranscriber
+
+    seen = {}
+
+    class FakeModel:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def transcribe(self, audio, **kw):
+            seen[self.tag] = kw.get("initial_prompt")
+
+            class Seg:
+                text = "x"
+            return [Seg()], None
+
+    t = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    t._model, t._english = FakeModel("he"), FakeModel("en")
+    t._language, t._english_threshold = "he", 0.8
+    t._cleanup, t._fillers = False, ()
+    t._initial_prompt = "שיחה בעברית עם commit"
+
+    t.transcribe(b"RIFF", language="he")
+    assert seen["he"] == "שיחה בעברית עם commit", seen
+    t.transcribe(b"RIFF", language="en")
+    assert seen["en"] is None, seen
 
 
 def test_local_backend_is_configured_and_unlimited() -> None:

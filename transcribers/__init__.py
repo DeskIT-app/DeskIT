@@ -23,5 +23,6 @@ def get_transcriber(cfg) -> Transcriber:
                                        cfg.local.device, cfg.local.cleanup,
                                        cfg.local.extra_fillers,
                                        cfg.local.english_model,
-                                       cfg.local.english_threshold)
+                                       cfg.local.english_threshold,
+                                       cfg.local.initial_prompt)
     raise ValueError(f"unknown backend: {cfg.backend!r}")

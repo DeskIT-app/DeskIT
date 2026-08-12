@@ -221,10 +221,19 @@ for `מבשרים`, all of which the local model got right.
     Whisper's autodetect completely: measured 2026-08-12, it answers
     `he` with probability **1.00 for every input, including pure English**.
     Never ask it what language it heard.
-  - **English has its own hotkey** (`english_hotkey`, default `f9`).
-    Hold it instead of the Hebrew key and the utterance goes to a general
-    model with the language forced to English. This is the reliable path —
-    see the warning about detection below.
+  - **Mixed Hebrew + English in one press works on the normal hotkey.**
+    `[local] initial_prompt` biases the decoder towards "Hebrew with
+    English technical terms", which is how this actually gets used.
+    Without it the decoder *drops the English half of a mixed sentence
+    outright*; with it both halves survive, and Hebrew-only accuracy
+    improves as well (WER 10.8% → 9.6%). Add your own jargon to the
+    prompt. It is not sent to the English model, where it would only
+    confuse things.
+  - **English has its own hotkey** (`english_hotkey`, default `f9`), for
+    utterances that are *entirely* English — the Hebrew fine-tune
+    transliterates those (`Should it work?` → `שיידי וורק`). Hold it and
+    the language is forced, no detection involved. For anything with
+    Hebrew in it, use the normal key.
   - **Automatic detection is a fallback, not the mechanism.** When no key
     says otherwise, the general model detects the language and English
     wins only at confidence ≥ `english_threshold` (0.8). That threshold
@@ -281,6 +290,7 @@ for `מבשרים`, all of which the local model got right.
 | `[local] device` | `auto` | `auto` \| `cuda` \| `cpu` |
 | `[local] cleanup` | `true` | strip hesitations and collapse restarted phrases |
 | `[local] extra_fillers` | `[]` | words to also strip, e.g. `["כאילו"]` — only add words you never mean literally |
+| `[local] initial_prompt` | Hebrew + tech terms | biases the decoder for code-switching; empty disables |
 | `[local] english_model` | `deepdml/faster-whisper-large-v3-turbo-ct2` | general model used to detect language and transcribe English; `""` disables both |
 | `[local] english_threshold` | `0.8` | confidence needed to treat an utterance as English |
 
