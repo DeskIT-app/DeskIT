@@ -144,7 +144,10 @@ class App:
                                                   self.cfg.local.language,
                                                   self.cfg.local.device,
                                                   self.cfg.local.cleanup,
-                                                  self.cfg.local.extra_fillers)
+                                                  self.cfg.local.extra_fillers,
+                                                  self.cfg.local.english_model,
+                                                  self.cfg.local
+                                                  .english_threshold)
             log.info("local backend ready — dictation continues offline")
         except Exception as e:
             log.warning("no local fallback available: %s", e)

@@ -218,8 +218,20 @@ for `מבשרים`, all of which the local model got right.
   fully offline, no quota, nothing leaves the machine. Adds ~8 s to
   startup while the model loads onto the GPU.
   - **The language must stay pinned to `he`** — the fine-tune broke
-    Whisper's autodetect. English needs a separate model/hotkey, never
-    autodetect.
+    Whisper's autodetect completely: measured 2026-08-12, it answers
+    `he` with probability **1.00 for every input, including pure English**.
+    Never ask it what language it heard.
+  - **English is handled by a second, general model.** The Hebrew
+    fine-tune transliterates short pure-English phrases (`Should it
+    work?` → `שיידי וורק`), so each utterance is language-detected by the
+    general model and routed. The rule is deliberately Hebrew-biased:
+    English wins only at confidence ≥ `english_threshold` (0.8), because
+    the general model mis-detects very short Hebrew as Portuguese/Russian/
+    Dutch — always at low confidence (0.16–0.73), while English scores
+    ~1.00. Measured after routing: English 5/5 correct, 15/15 short Hebrew
+    clips still Hebrew, Hebrew WER unchanged at 10.8%.
+  - Both models are loaded at startup (~3 GB VRAM total), because the
+    general one is the detector for *every* utterance, not a backup.
   - It only transcribes, so `cleanup.py` runs afterwards to strip
     hesitations (`אה`, `אמ`) and collapse restarted phrases — including
     the Hebrew-specific case where a dangling one-letter prefix splits the
@@ -261,6 +273,8 @@ for `מבשרים`, all of which the local model got right.
 | `[local] device` | `auto` | `auto` \| `cuda` \| `cpu` |
 | `[local] cleanup` | `true` | strip hesitations and collapse restarted phrases |
 | `[local] extra_fillers` | `[]` | words to also strip, e.g. `["כאילו"]` — only add words you never mean literally |
+| `[local] english_model` | `deepdml/faster-whisper-large-v3-turbo-ct2` | general model used to detect language and transcribe English; `""` disables both |
+| `[local] english_threshold` | `0.8` | confidence needed to treat an utterance as English |
 
 ## Design notes
 

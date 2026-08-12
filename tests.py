@@ -693,6 +693,55 @@ def test_cleanup_never_empties_real_content() -> None:
     assert clean("אה אמ המ").strip() != ""
 
 
+class _StubDetector:
+    def __init__(self, lang, prob):
+        self.lang, self.prob = lang, prob
+
+    def detect_language(self, audio=None, vad_filter=False):
+        return self.lang, self.prob, []
+
+
+def _router(lang, prob, threshold=0.8):
+    from transcribers.local_whisper import LocalWhisperTranscriber
+    t = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    t._language = "he"
+    t._english_threshold = threshold
+    t._english = _StubDetector(lang, prob)
+    return t._pick_language(object())
+
+
+def test_language_router_is_biased_to_hebrew() -> None:
+    """Measured 2026-08-12: the general model mis-detects very short Hebrew
+    as pt/ru/nl at LOW confidence, but nails English at ~1.00. So English
+    wins only when confident; everything else must stay Hebrew."""
+    assert _router("en", 1.00) == "en"
+    assert _router("en", 0.80) == "en"          # exactly at the bar
+    assert _router("en", 0.79) == "he"          # just under -> safe default
+    # the real misdetections that broke short Hebrew
+    assert _router("pt", 0.73) == "he"
+    assert _router("ru", 0.16) == "he"
+    assert _router("nl", 0.67) == "he"
+    # a confident non-English language is still not English
+    assert _router("fr", 0.99) == "he"
+    assert _router("he", 0.99) == "he"
+
+
+def test_language_router_falls_back_safely() -> None:
+    """No detector, or a detector that throws, must not break dictation."""
+    from transcribers.local_whisper import LocalWhisperTranscriber
+
+    t = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    t._language, t._english_threshold, t._english = "he", 0.8, None
+    assert t._pick_language(object()) == "he"   # English model unavailable
+
+    class Boom:
+        def detect_language(self, audio=None, vad_filter=False):
+            raise RuntimeError("cuda hiccup")
+
+    t._english = Boom()
+    assert t._pick_language(object()) == "he"
+
+
 def test_local_backend_is_configured_and_unlimited() -> None:
     """Guards the switch to the local backend: it is the only one without a
     daily cap, so a silent revert to gemini would reintroduce the wall."""

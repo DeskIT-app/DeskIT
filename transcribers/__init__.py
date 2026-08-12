@@ -21,5 +21,7 @@ def get_transcriber(cfg) -> Transcriber:
         from .local_whisper import LocalWhisperTranscriber
         return LocalWhisperTranscriber(cfg.local.model, cfg.local.language,
                                        cfg.local.device, cfg.local.cleanup,
-                                       cfg.local.extra_fillers)
+                                       cfg.local.extra_fillers,
+                                       cfg.local.english_model,
+                                       cfg.local.english_threshold)
     raise ValueError(f"unknown backend: {cfg.backend!r}")

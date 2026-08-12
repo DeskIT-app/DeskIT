@@ -40,3 +40,10 @@ cleanup = true                # strip "אה"/"אמ" and collapse restarted phras
                               # (Whisper only transcribes; Gemini also cleans)
 extra_fillers = []            # add your own, e.g. ["כאילו"] — only add words you
                               # never mean literally; "כאילו" is a real word too
+
+# The Hebrew fine-tune transliterates SHORT pure-English utterances
+# ("Should it work?" -> "שיידי וורק"). Confident English is routed to a
+# general model instead. Set english_model = "" to disable.
+english_model = "deepdml/faster-whisper-large-v3-turbo-ct2"
+english_threshold = 0.8       # high on purpose: mis-detected Hebrew is far worse
+                              # than a transliterated English word

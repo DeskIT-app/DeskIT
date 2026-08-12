@@ -56,6 +56,13 @@ class LocalConfig:
     # backend regresses output quality on real (hesitant) dictation.
     cleanup: bool = True
     extra_fillers: tuple[str, ...] = ()
+    # The Hebrew fine-tune transliterates short pure-English utterances.
+    # Confident English is routed to a general model instead. "" disables.
+    english_model: str = "deepdml/faster-whisper-large-v3-turbo-ct2"
+    # Deliberately high: misdetected short Hebrew is far worse than a
+    # transliterated English word, and every misdetection measured was
+    # low-confidence while correct Hebrew sat at 0.91-0.99.
+    english_threshold: float = 0.8
 
 
 @dataclass(frozen=True)
@@ -130,6 +137,10 @@ def load(path: Path) -> Config:
             extra_fillers=tuple(str(f).strip()
                                 for f in local.get("extra_fillers", ())
                                 if str(f).strip()),
+            english_model=str(local.get("english_model",
+                                        LocalConfig.english_model)).strip(),
+            english_threshold=float(local.get(
+                "english_threshold", LocalConfig.english_threshold)),
         ),
         feedback=FeedbackConfig(
             placeholder=str(feedback.get("placeholder",
@@ -165,4 +176,6 @@ def load(path: Path) -> Config:
     if not cfg.local.language:
         raise ConfigError("local.language must be pinned (the ivrit-ai "
                           "fine-tune's language autodetect is unreliable)")
+    if not (0.0 < cfg.local.english_threshold <= 1.0):
+        raise ConfigError("local.english_threshold must be in (0, 1]")
     return cfg

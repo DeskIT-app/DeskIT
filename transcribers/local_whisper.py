@@ -69,6 +69,24 @@ def _register_cuda_dlls() -> None:
     log.debug("registered %d CUDA library dirs", len(found))
 
 
+def _decode_pcm(wav_bytes: bytes):
+    """WAV bytes -> mono float32 at 16 kHz, which is what detect_language
+    wants. Returns None if the clip is not the shape the recorder produces,
+    so detection is simply skipped rather than raising."""
+    try:
+        import numpy as np
+        with wave.open(BytesIO(wav_bytes), "rb") as w:
+            if w.getsampwidth() != 2 or w.getframerate() != 16000:
+                return None
+            data = np.frombuffer(w.readframes(w.getnframes()),
+                                 dtype=np.int16)
+            if w.getnchannels() == 2:
+                data = data.reshape(-1, 2).mean(axis=1)
+        return (data.astype("float32") / 32768.0)
+    except Exception:
+        return None
+
+
 def _silence_wav(seconds: float = 0.4, rate: int = 16000) -> bytes:
     """A tiny WAV for the warm-up inference."""
     buf = BytesIO()
@@ -90,8 +108,54 @@ _HALLUCINATED_SILENCE = {
 class LocalWhisperTranscriber:
     name = "local"
 
+    def _load(self, model_name: str):
+        """Second model, loaded lazily and sharing the device we settled on."""
+        from faster_whisper import WhisperModel
+        compute = "float16" if self.device == "cuda" else "int8"
+        log.info("loading English model %s on %s...", model_name, self.device)
+        return WhisperModel(model_name, device=self.device,
+                            compute_type=compute)
+
+    def _pick_language(self, audio) -> str:
+        """Detect the language, but bias hard towards Hebrew.
+
+        Two measured facts drive this (2026-08-12):
+
+        1. The ivrit fine-tune CANNOT detect language — it answers
+           "he" with probability 1.00 for everything, including pure
+           English. So detection must run on the general model, never on
+           the Hebrew one.
+        2. The general model, left to decide freely, mangles very short
+           Hebrew: 3 of 15 one-second clips came back Portuguese, Russian
+           and Dutch. Every such failure was low-confidence (0.16-0.73)
+           while correct Hebrew sat at 0.84-1.00, and English was 1.00.
+
+        Hence: English only when the general model is confident, Hebrew for
+        everything else. Hebrew is what gets spoken here almost always, and
+        a transliterated English word is a far smaller loss than a Hebrew
+        sentence rendered as Russian.
+        """
+        detector = self._english
+        if detector is None:
+            return self._language
+        try:
+            lang, prob, _ = detector.detect_language(audio=audio,
+                                                     vad_filter=True)
+        except Exception as e:
+            log.debug("language detection failed (%s) — using Hebrew", e)
+            return self._language
+        if lang == "en" and prob >= self._english_threshold:
+            log.info("detected English (%.2f) — using the general model",
+                     prob)
+            return "en"
+        if lang != self._language:
+            log.info("detected %s (%.2f) — below the bar, using %s", lang,
+                     prob, self._language)
+        return self._language
+
     def __init__(self, model: str, language: str, device: str = "auto",
-                 cleanup: bool = True, extra_fillers: tuple = ()):
+                 cleanup: bool = True, extra_fillers: tuple = (),
+                 english_model: str = "", english_threshold: float = 0.8):
         _register_cuda_dlls()
         try:
             from faster_whisper import WhisperModel
@@ -110,6 +174,12 @@ class LocalWhisperTranscriber:
         # output on real dictation (fillers, restarted sentences).
         self._cleanup = cleanup
         self._fillers = cleanup_mod.DEFAULT_FILLERS + tuple(extra_fillers)
+        # The Hebrew fine-tune transliterates short pure-English utterances
+        # ("Should it work?" -> "שיידי וורק"). A general model handles those
+        # perfectly, so English is routed to one when clearly detected.
+        self._english_model_name = english_model
+        self._english_threshold = english_threshold
+        self._english = None
 
         attempts = ([("cuda", "float16"), ("cpu", "int8")]
                     if device == "auto" else
@@ -138,11 +208,28 @@ class LocalWhisperTranscriber:
             raise TranscriptionError(
                 f"could not load the local model {model!r}: {last}")
 
+        # Loaded eagerly, not on demand: it is the language DETECTOR for
+        # every utterance, not just a backup transcriber, so a lazy load
+        # would make the first dictation after login pay for it.
+        if self._english_model_name:
+            try:
+                self._english = self._load(self._english_model_name)
+            except Exception as e:
+                log.warning("English model unavailable (%s) — Hebrew only; "
+                            "short English phrases may be transliterated", e)
+                self._english = None
+
     def transcribe(self, wav_bytes: bytes) -> str:
         try:
-            segments, _info = self._model.transcribe(
+            model, language = self._model, self._language
+            if self._english is not None:
+                audio = _decode_pcm(wav_bytes)
+                if audio is not None and self._pick_language(audio) == "en":
+                    model, language = self._english, "en"
+
+            segments, _info = model.transcribe(
                 BytesIO(wav_bytes),
-                language=self._language,      # pinned — never autodetect
+                language=language,   # never None: see _pick_language
                 vad_filter=True,
                 beam_size=5,
                 condition_on_previous_text=False,
