@@ -16,6 +16,15 @@ Notes that cost real time to discover, keep them:
   corrections, digits) via its system prompt, so local output is rawer.
   `condition_on_previous_text=False` at least stops it looping on
   repetitions, which Whisper is prone to on hesitant speech.
+- It also HALLUCINATES A TAIL: the decoder runs past the end of real
+  speech and keeps producing fluent text from its training distribution.
+  Because this fine-tune was trained on Knesset protocols, what comes out
+  is parliamentary — observed live 2026-08-12, a dictation about adding
+  cities to an app ended "...אדוני היושב-ראש, חברי הכנסת". Two defences,
+  neither of which changes good transcriptions (measured): tightened
+  decoder guards, and a tail-only filter for that boilerplate. Silence
+  alone does NOT trigger it — that was tested and ruled out; VAD strips
+  silence and clicks and the output is empty.
 - The first construction downloads ~1.6 GB into the Hugging Face cache; the
   app therefore builds this lazily, only when it is actually needed.
 """
@@ -156,7 +165,8 @@ class LocalWhisperTranscriber:
     def __init__(self, model: str, language: str, device: str = "auto",
                  cleanup: bool = True, extra_fillers: tuple = (),
                  english_model: str = "", english_threshold: float = 0.8,
-                 initial_prompt: str = ""):
+                 initial_prompt: str = "", guard_hallucinations: bool = True,
+                 boilerplate: tuple = cleanup_mod.PARLIAMENTARY_BOILERPLATE):
         _register_cuda_dlls()
         try:
             from faster_whisper import WhisperModel
@@ -185,6 +195,21 @@ class LocalWhisperTranscriber:
         # sentence outright; with it, both halves survive and Hebrew-only
         # accuracy improves too (10.8% -> 9.6% WER, measured).
         self._initial_prompt = initial_prompt or None
+        self._boilerplate = tuple(boilerplate)
+        self.last_removed: list[str] = []
+        # Whisper's own hallucination guards. The defaults are permissive
+        # (no_speech 0.6 / logprob -1.0 / compression 2.4) and let a
+        # low-confidence trailing segment through; these tighten all three
+        # and turn on the purpose-built one, which needs word timestamps.
+        # Measured 2026-08-12 against the current settings: byte-identical
+        # output on good audio, ~8% slower (≈0.1 s on a 40 s dictation).
+        self._guards = dict(
+            no_speech_threshold=0.4,
+            log_prob_threshold=-0.7,
+            compression_ratio_threshold=2.0,
+            word_timestamps=True,
+            hallucination_silence_threshold=2.0,
+        ) if guard_hallucinations else {}
 
         attempts = ([("cuda", "float16"), ("cpu", "int8")]
                     if device == "auto" else
@@ -248,13 +273,23 @@ class LocalWhisperTranscriber:
                 # The Hebrew prompt would only confuse the English model.
                 initial_prompt=None if chosen == "en"
                 else self._initial_prompt,
+                **self._guards,
             )
             text = " ".join(s.text.strip() for s in segments).strip()
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
 
+        self.last_removed = []
         if text.strip(" .,!?").lower() in _HALLUCINATED_SILENCE:
             return ""        # treated as "no speech", same as Gemini
+        if self._boilerplate:
+            text, removed = cleanup_mod.strip_trailing_boilerplate(
+                text, self._boilerplate)
+            if removed:
+                self.last_removed = removed
+                log.warning("dropped hallucinated tail (never spoken, comes "
+                            "from the fine-tune's Knesset training data): %s",
+                            " | ".join(removed))
         if self._cleanup:
             text = cleanup_mod.clean(text, self._fillers)
         return text

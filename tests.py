@@ -805,6 +805,7 @@ def test_explicit_language_beats_detection() -> None:
     t._language, t._english_threshold = "he", 0.8
     t._cleanup, t._fillers = False, ()
     t._initial_prompt = None
+    t._guards, t._boilerplate = {}, ()
 
     assert t.transcribe(b"RIFF", language="en") == "hello"
     assert calls["model"] == "en" and calls["language"] == "en", calls
@@ -881,6 +882,7 @@ def test_english_model_gets_no_hebrew_prompt() -> None:
     t._language, t._english_threshold = "he", 0.8
     t._cleanup, t._fillers = False, ()
     t._initial_prompt = "שיחה בעברית עם commit"
+    t._guards, t._boilerplate = {}, ()
 
     t.transcribe(b"RIFF", language="he")
     assert seen["he"] == "שיחה בעברית עם commit", seen
@@ -1153,6 +1155,89 @@ def test_real_config_has_a_reachable_latch_key() -> None:
     vk_for(cfg.latch_hotkey)              # must be a name the hook knows
     assert cfg.latch_hotkey != cfg.hotkey
     assert cfg.latch_max_seconds == 0, "0 = no cap, which is the point"
+
+
+def test_the_real_hallucinated_tail_is_dropped() -> None:
+    """Verbatim from transcripts.log, 2026-08-12 19:01. The last five words
+    were never spoken — the fine-tune was trained on Knesset protocols and
+    the decoder ran past the end of the speech."""
+    import cleanup as cleanup_mod
+    observed = ("סבבה, אני מבין מה אתה אומר. שתי שאלות. יש איזה מיליון "
+                "ערים בכל העולם, אז איך נעשה את זה? "
+                "אדוני היושב-ראש, חברי הכנסת")
+    out, removed = cleanup_mod.strip_trailing_boilerplate(observed)
+    assert out.endswith("אז איך נעשה את זה?"), out
+    assert removed == ["אדוני היושב-ראש", "חברי הכנסת"], removed
+
+
+def test_boilerplate_in_the_middle_is_left_alone() -> None:
+    """If it is not at the end, the user really said it — stripping real
+    speech is a worse bug than the one being fixed."""
+    import cleanup as cleanup_mod
+    text = "אמרתי לחברי הכנסת שזה לא הגיוני ואז הלכתי הביתה"
+    out, removed = cleanup_mod.strip_trailing_boilerplate(text)
+    assert out == text and removed == [], (out, removed)
+
+
+def test_boilerplate_matching_ignores_punctuation_and_quotes() -> None:
+    import cleanup as cleanup_mod
+    for tail in ("אדוני היושב-ראש", "אדוני היושב ראש", 'אדוני היו"ר'):
+        out, removed = cleanup_mod.strip_trailing_boilerplate(
+            f"בוא נוסיף את כל הערים. {tail}")
+        assert out == "בוא נוסיף את כל הערים.", (tail, out)
+        assert removed, tail
+
+
+def test_longest_boilerplate_phrase_wins() -> None:
+    import cleanup as cleanup_mod
+    out, removed = cleanup_mod.strip_trailing_boilerplate(
+        "זה מה שרציתי. תודה רבה אדוני היושב ראש")
+    assert out == "זה מה שרציתי.", out
+    assert removed == ["תודה רבה אדוני היושב ראש"], removed
+
+
+def test_ordinary_speech_survives_the_boilerplate_filter() -> None:
+    """The filter must be inert on everything that is not the bug."""
+    import cleanup as cleanup_mod
+    for text in ("תודה רבה על העזרה",
+                 "אני חושב שצריך לשנות את הפיצר הזה",
+                 "בוא נוסיף את כל הערים בעולם",
+                 "commit the branch and deploy it"):
+        out, removed = cleanup_mod.strip_trailing_boilerplate(text)
+        assert out == text and removed == [], (text, out, removed)
+
+
+def test_boilerplate_filter_is_not_fooled_by_a_partial_phrase() -> None:
+    import cleanup as cleanup_mod
+    text = "הלכתי לכנסת"        # not "חברי הכנסת"
+    out, removed = cleanup_mod.strip_trailing_boilerplate(text)
+    assert out == text and removed == [], (out, removed)
+
+
+def test_local_backend_gets_the_guards_and_boilerplate_from_config() -> None:
+    """Both construction sites (primary backend and quota fallback) go
+    through one helper, so they cannot drift apart."""
+    import cleanup as cleanup_mod
+    from transcribers import local_kwargs
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    kw = local_kwargs(cfg)
+    assert kw["guard_hallucinations"] is True
+    assert "אדוני היושב ראש" in kw["boilerplate"]
+    assert kw["language"] == "he" and kw["initial_prompt"]
+    # every shipped phrase must be multi-word: one common word would eat
+    # real speech
+    for phrase in cleanup_mod.PARLIAMENTARY_BOILERPLATE:
+        assert len(phrase.split()) >= 2, phrase
+
+
+def test_boilerplate_can_be_turned_off() -> None:
+    import tempfile
+    from transcribers import local_kwargs
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "config.toml"
+        p.write_text("backend = 'local'\n[local]\n"
+                     "drop_trailing_boilerplate = false\n", "utf-8")
+        assert local_kwargs(config_mod.load(p))["boilerplate"] == ()
 
 
 def test_needs_translation_skips_text_with_no_hebrew() -> None:

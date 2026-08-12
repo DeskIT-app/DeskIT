@@ -69,6 +69,17 @@ class LocalConfig:
     # transliterated English word, and every misdetection measured was
     # low-confidence while correct Hebrew sat at 0.91-0.99.
     english_threshold: float = 0.8
+    # Tighten Whisper's own hallucination guards. The library defaults let
+    # a low-confidence trailing segment through; measured 2026-08-12, these
+    # cost nothing on good audio (identical text, ~8% slower).
+    guard_hallucinations: bool = True
+    # Drop parliamentary boilerplate stuck to the END of a transcript. The
+    # ivrit-ai fine-tune is trained on Knesset protocols and appends them
+    # when the decoder runs past the end of real speech.
+    drop_trailing_boilerplate: bool = True
+    # Your own phrases to treat the same way, e.g. a jingle the model keeps
+    # tacking on. Whole phrases only — single common words strip real speech.
+    extra_boilerplate: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -200,6 +211,14 @@ def load(path: Path) -> Config:
                                         LocalConfig.english_model)).strip(),
             english_threshold=float(local.get(
                 "english_threshold", LocalConfig.english_threshold)),
+            guard_hallucinations=bool(local.get(
+                "guard_hallucinations", LocalConfig.guard_hallucinations)),
+            drop_trailing_boilerplate=bool(local.get(
+                "drop_trailing_boilerplate",
+                LocalConfig.drop_trailing_boilerplate)),
+            extra_boilerplate=tuple(str(p).strip()
+                                    for p in local.get("extra_boilerplate", ())
+                                    if str(p).strip()),
         ),
         feedback=FeedbackConfig(
             placeholder=str(feedback.get("placeholder",

@@ -90,3 +90,19 @@ initial_prompt = "שיחה בעברית עם מונחים טכניים באנג�
 english_model = "deepdml/faster-whisper-large-v3-turbo-ct2"
 english_threshold = 0.8       # high on purpose: mis-detected Hebrew is far worse
                               # than a transliterated English word
+
+# --- not inventing words you never said -------------------------------------
+# Whisper keeps decoding past the end of real speech and fills the gap with
+# fluent text from its training data. This fine-tune was trained on Knesset
+# protocols, so what it fills in is parliamentary: a dictation about adding
+# cities to an app ended with "אדוני היושב-ראש, חברי הכנסת" (observed
+# 2026-08-12). Neither setting touches transcription quality — measured
+# byte-identical output on good audio.
+guard_hallucinations = true      # tighten Whisper's own confidence thresholds
+                                 # and enable hallucination_silence_threshold
+drop_trailing_boilerplate = true # drop parliamentary phrases stuck to the END
+                                 # of a transcript (never the middle — there
+                                 # they are almost certainly really yours)
+extra_boilerplate = []           # your own phrases, e.g. ["תודה שצפיתם"].
+                                 # WHOLE PHRASES only: a single common word
+                                 # here would delete real speech

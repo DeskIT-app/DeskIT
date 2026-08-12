@@ -4,7 +4,29 @@ from __future__ import annotations
 from .base import RateLimitError, Transcriber, TranscriptionError
 
 __all__ = ["Transcriber", "TranscriptionError", "RateLimitError",
-           "get_transcriber"]
+           "get_transcriber", "local_kwargs"]
+
+
+def local_kwargs(cfg) -> dict:
+    """Arguments for the local backend, in one place: it is built both as
+    the primary backend and as the fallback when cloud quota is spent, and
+    the two must not drift apart."""
+    import cleanup as cleanup_mod
+
+    boilerplate = ()
+    if cfg.local.drop_trailing_boilerplate:
+        boilerplate = (cleanup_mod.PARLIAMENTARY_BOILERPLATE
+                       + tuple(cfg.local.extra_boilerplate))
+    return dict(model=cfg.local.model,
+                language=cfg.local.language,
+                device=cfg.local.device,
+                cleanup=cfg.local.cleanup,
+                extra_fillers=cfg.local.extra_fillers,
+                english_model=cfg.local.english_model,
+                english_threshold=cfg.local.english_threshold,
+                initial_prompt=cfg.local.initial_prompt,
+                guard_hallucinations=cfg.local.guard_hallucinations,
+                boilerplate=boilerplate)
 
 
 def get_transcriber(cfg) -> Transcriber:
@@ -19,10 +41,5 @@ def get_transcriber(cfg) -> Transcriber:
         return FakeTranscriber()
     if cfg.backend == "local":
         from .local_whisper import LocalWhisperTranscriber
-        return LocalWhisperTranscriber(cfg.local.model, cfg.local.language,
-                                       cfg.local.device, cfg.local.cleanup,
-                                       cfg.local.extra_fillers,
-                                       cfg.local.english_model,
-                                       cfg.local.english_threshold,
-                                       cfg.local.initial_prompt)
+        return LocalWhisperTranscriber(**local_kwargs(cfg))
     raise ValueError(f"unknown backend: {cfg.backend!r}")

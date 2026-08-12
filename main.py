@@ -195,19 +195,11 @@ class App:
             self._local = False
             return None
         try:
+            from transcribers import local_kwargs
             from transcribers.local_whisper import LocalWhisperTranscriber
             log.info("cloud quota spent — loading the local model (first "
                      "run downloads it; this takes a while)...")
-            self._local = LocalWhisperTranscriber(self.cfg.local.model,
-                                                  self.cfg.local.language,
-                                                  self.cfg.local.device,
-                                                  self.cfg.local.cleanup,
-                                                  self.cfg.local.extra_fillers,
-                                                  self.cfg.local.english_model,
-                                                  self.cfg.local
-                                                  .english_threshold,
-                                                  self.cfg.local
-                                                  .initial_prompt)
+            self._local = LocalWhisperTranscriber(**local_kwargs(self.cfg))
             log.info("local backend ready — dictation continues offline")
         except Exception as e:
             log.warning("no local fallback available: %s", e)

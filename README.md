@@ -219,6 +219,40 @@ Check it without touching the keyboard:
 .venv\Scripts\python.exe main.py --translate "אני רוצה לעשות deploy מחר"
 ```
 
+## Words you never said
+
+Whisper does not only transcribe — when the decoder reaches the end of real
+speech it can keep going, producing fluent text drawn from its training
+data. This fine-tune was trained on **Knesset protocols**, so what it
+invents is parliamentary. Observed live on 2026-08-12: a dictation about
+adding cities to an app ended with `אדוני היושב-ראש, חברי הכנסת`.
+
+Two defences, both on by default, neither of which changes a good
+transcription (measured: byte-identical output, ~8% slower):
+
+- **Tightened decoder guards** (`[local] guard_hallucinations`) — Whisper's
+  own confidence thresholds, plus `hallucination_silence_threshold`. The
+  library defaults are permissive enough to let a low-confidence trailing
+  segment through.
+- **A tail-only boilerplate filter** (`[local] drop_trailing_boilerplate`) —
+  drops parliamentary phrases stuck to the **end** of a transcript. Never
+  the middle: there, you almost certainly really said them. When it fires
+  it logs `dropped hallucinated tail` with exactly what it removed, so you
+  can check it in `app.log`.
+
+The filter only holds whole phrases that are unmistakably parliamentary.
+Single common words are deliberately excluded — deleting real speech is a
+worse bug than the one being fixed. Add your own with `extra_boilerplate`.
+
+What this does **not** touch: `[local] cleanup` (hesitations, restarted
+phrases) and `initial_prompt` (which is what keeps English technical terms
+in Latin script and is worth 10.8% → 9.6% WER). Those are the parts that
+make the output *better*, and they stay.
+
+Note that silence alone does not cause this — that was tested and ruled
+out. VAD strips silence and key clicks and the result is empty. It takes
+real speech in front of it for the decoder to run on.
+
 ## Nothing is ever lost
 
 The failure this design exists to prevent: you speak for 20 seconds, the
@@ -388,6 +422,9 @@ for `מבשרים`, all of which the local model got right.
 | `[local] initial_prompt` | Hebrew + tech terms | biases the decoder for code-switching; empty disables |
 | `[local] english_model` | `deepdml/faster-whisper-large-v3-turbo-ct2` | general model used to detect language and transcribe English; `""` disables both |
 | `[local] english_threshold` | `0.8` | confidence needed to treat an utterance as English |
+| `[local] guard_hallucinations` | `true` | tighten Whisper's confidence thresholds and enable `hallucination_silence_threshold`; measured free on good audio |
+| `[local] drop_trailing_boilerplate` | `true` | drop Knesset boilerplate stuck to the **end** of a transcript (never the middle) |
+| `[local] extra_boilerplate` | `[]` | your own phrases to drop the same way. Whole phrases only — a single common word deletes real speech |
 | `[translate] target` | `English` | language the tap key translates into |
 | `[translate] max_chars` | `5000` | refuse above this — a Ctrl+A that caught a whole document, not a message |
 | `[translate] ollama_model` | `llama3.1:8b` | the fallback; must be pulled in Ollama |
