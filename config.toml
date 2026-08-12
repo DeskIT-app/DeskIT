@@ -1,0 +1,35 @@
+# Hebrew push-to-talk dictation — settings.
+# Hotkey names come from the table in hotkey.py ("right ctrl", "f9", "scroll lock", "a".."z"...).
+hotkey = "right ctrl"
+backend = "gemini"            # gemini | local | fake
+paste_chord = "ctrl+v"        # try "shift+insert" for terminals that reject ctrl+v
+restore_delay_ms = 300        # wait after pasting before restoring the old clipboard
+min_seconds = 0.3             # shorter holds are treated as accidental taps and discarded
+max_seconds = 120             # runaway-recording cap: stop, discard, error beep
+fallback_to_local = true      # when every cloud model is out of quota, use local whisper
+
+[audio]
+sample_rate = 16000
+device = "1"                  # Arctis 7 headset mic (from --list-devices; "" = system default)
+
+[feedback]
+enabled = true                # paste a marker at the cursor while transcribing
+placeholder = "..."           # replaced by your text when it arrives
+retry_seconds = 45            # keep retrying this long before spooling to pending\
+
+[gemini]
+# Free-tier quota is PER MODEL (gemini-2.5-flash = 20 requests/day), so this
+# list is a longer runway: each is tried in order and rested when it reports
+# its cap. Verified as supporting audio input on 2026-08-12.
+models = [
+  "gemini-2.5-flash",
+  "gemini-flash-latest",
+  "gemini-2.5-flash-lite",
+  "gemini-flash-lite-latest",
+]
+timeout_s = 30
+
+[local]
+model = "ivrit-ai/whisper-large-v3-turbo-ct2"
+language = "he"               # MUST stay pinned — the fine-tune broke language autodetect
+device = "auto"               # auto | cuda | cpu — auto tries the GPU, falls back to CPU

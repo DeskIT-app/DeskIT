@@ -1,0 +1,14 @@
+sounddevice
+numpy
+pywin32
+google-genai
+pycaw
+
+# Backend B: local Hebrew transcription (no quota, works offline).
+faster-whisper
+
+# CUDA runtime libraries CTranslate2 loads at inference time. Without these
+# the local backend silently falls back to CPU (~40x slower on this box:
+# 8.2 s vs 0.20 s for a 3 s clip). Harmless to install without an NVIDIA GPU.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12

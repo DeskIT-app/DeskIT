@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+
+# Everything below is a record of what you actually dictated — keep it off
+# any remote. app.log holds the pasted text, pending\ holds raw audio.
+transcripts.log*
+app.log*
+pending/
+
+# Generated at first run by cues.py
+cues/
