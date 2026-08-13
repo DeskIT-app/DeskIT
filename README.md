@@ -107,6 +107,12 @@ background instance to quit.
   clicking a shortcut that does nothing — so you click again. It does not
   take focus and does not appear in Alt-Tab; it vanishes once the hotkey is
   live. Turn it off with `splash = false`.
+- **A small dot sits in the top-right corner while the app runs** — blue
+  when idle, red while recording, red and breathing while a recording is
+  *locked on*, amber while transcribing. It is how you tell a running app
+  from one you never started or already closed. It is click-through, so it
+  never intercepts the close button it sits on. Turn it off with
+  `indicator = false`.
 - **Two `pythonw.exe` processes in Task Manager is normal** — a venv's
   `python.exe` is a launcher stub that runs the real interpreter as a
   child. It is one app; the single-instance guard is what proves it.
@@ -452,6 +458,7 @@ for `מבשרים`, all of which the local model got right.
 | `latch_max_seconds` | `0` | the cap once locked; `0` = none. `max_seconds` guards against a swallowed key-up, and a locked recording has no key-up to lose |
 | `[audio] sample_rate` | `16000` | falls back to the device default if refused |
 | `[audio] device` | `""` | `""` = system default; index from `--list-devices` |
+| `indicator` | `true` | the top-right status dot; click-through and never in Alt-Tab |
 | `splash` | `true` | show a small window while the models load; it does not take focus and leaves no taskbar entry |
 | `fallback_to_local` | `true` | use the local model when every cloud model is out of quota |
 | `[feedback] enabled` | `true` | paste a marker at the cursor while transcribing |

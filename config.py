@@ -160,6 +160,10 @@ class Config:
     # windowless app is indistinguishable from a shortcut that did nothing
     # for the ~25 s it takes, and the natural response is to click again.
     splash: bool = True
+    # A small always-on-top dot in the top-right corner: the app is
+    # running, and what it is doing. Click-through, because that corner is
+    # the close button of every maximised window.
+    indicator: bool = True
 
 
 def _parse_device(raw: str) -> int | str | None:
@@ -279,6 +283,7 @@ def load(path: Path) -> Config:
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
         splash=bool(data.get("splash", Config.splash)),
+        indicator=bool(data.get("indicator", Config.indicator)),
     )
 
     if cfg.backend not in VALID_BACKENDS:

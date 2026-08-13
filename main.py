@@ -36,7 +36,7 @@ import cues
 import injector
 import server as server_mod
 import singleton
-import splash as splash_mod
+import overlay as overlay_mod
 from config import ConfigError
 from hotkey import HookThread, PTTStateMachine, parse_chord, vk_for
 from recorder import Recorder
@@ -130,6 +130,10 @@ class App:
         # One Whisper model, several threads that want it (the desktop
         # worker, and every phone request).
         self._model_lock = threading.Lock()
+        # The only thing on screen once loading is done: a dot that says
+        # the app is alive, and what it is doing.
+        self.dot = (overlay_mod.StatusDot() if cfg.indicator
+                    else overlay_mod.StatusDot.off())
         self.phone: server_mod.PhoneServer | None = None
         if cfg.server.enabled:
             self.phone = server_mod.PhoneServer(
@@ -141,6 +145,7 @@ class App:
         self.worker.start()
         self.translate_worker.start()
         self.hook.start()
+        self.dot.start()
         if self.phone is not None:
             try:
                 self.phone.start()
@@ -150,6 +155,7 @@ class App:
                 self.phone = None
 
     def stop(self) -> None:
+        self.dot.stop()
         if self.phone is not None:
             self.phone.stop()
         self.hook.stop()
@@ -166,6 +172,7 @@ class App:
     def _on_start(self, language: str = "he") -> None:
         self.recorder.begin()   # also restores the cap a latch may have lifted
         self._cap, self._latched = self.cfg.max_seconds, False
+        self.dot.set_state("recording")
         beep("start")
         log.info("recording %s... (release to transcribe%s)",
                  "ENGLISH" if language == "en" else "Hebrew",
@@ -174,15 +181,18 @@ class App:
 
     def _on_stop(self, language: str = "he") -> None:
         wav, seconds = self.recorder.end()
+        self.dot.set_state("busy")
         if wav is None:
             # overflowed at the cap — beep already fired at cap time
             log.info("discarded: hit the %.0f s cap", self._cap)
             transcript_log.info("DISCARDED | %.1fs | hit the %.0f s cap",
                                 seconds, self._cap)
+            self.dot.set_state("ready")
             return
         if seconds < self.cfg.min_seconds:
             log.info("discarded: %.2f s hold is under min_seconds=%.2f "
                      "(accidental tap?)", seconds, self.cfg.min_seconds)
+            self.dot.set_state("ready")
             return
         beep("stop")
         # Remember WHERE the user was speaking. Everything slow (placeholder
@@ -200,6 +210,7 @@ class App:
         self.recorder.set_cap(self.cfg.latch_max_seconds or None)
         self._cap = self.cfg.latch_max_seconds or math.inf
         self._latched = True
+        self.dot.set_state("locked")
         beep("latch")
         log.info("locked — let go of '%s' and talk as long as you want; "
                  "tap '%s' again to transcribe, esc to discard%s",
@@ -208,6 +219,7 @@ class App:
                  else f" (cap {self.cfg.latch_max_seconds:.0f} s)")
 
     def _on_abort(self, reason: str) -> None:
+        self.dot.set_state("ready")
         self.recorder.abort()
         log.info("aborted, nothing recorded — %s", reason)
 
@@ -296,6 +308,10 @@ class App:
             except Exception:
                 beep("error")
                 log.exception("unexpected failure handling a recording")
+            finally:
+                # Back to plain "running" however it went — a dot stuck on
+                # amber would report a hang that isn't happening.
+                self.dot.set_state("ready")
 
     # ---- translate worker ----
 
@@ -691,7 +707,7 @@ def main() -> int:
     # windowless app looks like a shortcut that did nothing. Every log line
     # the app writes becomes a status update, so the splash narrates the
     # real startup instead of just spinning.
-    splash = splash_mod.Splash() if cfg.splash else splash_mod.Splash.off()
+    splash = overlay_mod.Splash() if cfg.splash else overlay_mod.Splash.off()
     splash.start()
     splash_log = SplashLog(splash)
     log.addHandler(splash_log)

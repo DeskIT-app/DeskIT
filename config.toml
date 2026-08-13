@@ -35,6 +35,9 @@ fallback_to_local = true      # when every cloud model is out of quota, use loca
 splash = true                 # show a small window while the models load (~25 s).
                               # Without it, clicking the shortcut looks like it did
                               # nothing, and the natural response is to click again
+indicator = true              # small dot, top-right: blue = running, red = recording,
+                              # red breathing = locked on, amber = transcribing.
+                              # Click-through, so it never blocks the X button
 
 [audio]
 sample_rate = 16000

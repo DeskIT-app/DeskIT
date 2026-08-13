@@ -1304,7 +1304,7 @@ def test_splash_shuts_down_without_aborting_the_process() -> None:
     import subprocess
     here = Path(__file__).resolve().parent
     script = (
-        "import time, splash;"
+        "import time, overlay as splash;"
         "s = splash.Splash(); s.start();"
         "s.status('loading…'); time.sleep(.3);"
         "s.finish('ready', linger_ms=60); time.sleep(.9);"
@@ -1317,14 +1317,74 @@ def test_splash_shuts_down_without_aborting_the_process() -> None:
     assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
 
 
+def test_status_dot_is_click_through_and_shuts_down_cleanly() -> None:
+    """It sits in the top-right corner, which is the close button of every
+    maximised window — without WS_EX_TRANSPARENT it would eat that click.
+    Also guards the same Tcl teardown bug as the splash."""
+    import subprocess
+    import overlay as overlay_mod
+    assert overlay_mod.WS_EX_TRANSPARENT == 0x20
+    for name, (fill, ring, _) in overlay_mod.STATES.items():
+        assert fill.startswith("#") and len(fill) == 7, (name, fill)
+        assert ring.startswith("#") and len(ring) == 7, (name, ring)
+    here = Path(__file__).resolve().parent
+    # The window is checked, not just the exit code. Both real bugs here
+    # (an AttributeError inside the thread, then a restyle applied before
+    # the window was realised) left a process that exited 0 with either no
+    # dot at all or a dot that ate clicks on the close button.
+    script = r"""
+import ctypes, time, overlay
+d = overlay.StatusDot(); d.start(); time.sleep(1.0)
+u = ctypes.WinDLL('user32')
+class R(ctypes.Structure):
+    _fields_ = [('l',ctypes.c_int),('t',ctypes.c_int),
+                ('r',ctypes.c_int),('b',ctypes.c_int)]
+hits = []
+def cb(h, l):
+    if u.IsWindowVisible(h):
+        rc = R(); u.GetWindowRect(h, ctypes.byref(rc))
+        if 10 < rc.r-rc.l < 60 and 10 < rc.b-rc.t < 60:
+            hits.append((u.GetWindowLongW(h,-20) & 0xffffffff, rc.l, rc.r))
+    return True
+u.EnumWindows(ctypes.WINFUNCTYPE(
+    ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(cb), None)
+assert hits, 'no dot window'
+ex, left, right = hits[0]
+assert ex & 0x20, 'not click-through: it would eat the close button'
+assert ex & 0x08000000, 'not no-activate: it would steal focus'
+assert right >= u.GetSystemMetrics(0) - 40, ('not in the top-right', right)
+for s in ('recording','locked','busy','ready'):
+    d.set_state(s); time.sleep(.1)
+d.stop(); print('ok')
+"""
+    out = subprocess.run([sys.executable, "-c", script], cwd=str(here),
+                         capture_output=True, encoding="utf-8",
+                         errors="replace", timeout=90)
+    assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
+    assert "ok" in out.stdout, out.stdout
+    assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
+
+
+def test_status_dot_ignores_states_it_does_not_know() -> None:
+    """set_state is called from the keyboard hook. A typo must not raise
+    there — an exception inside the hook makes Windows drop it."""
+    import overlay as overlay_mod
+    dot = overlay_mod.StatusDot.off()
+    dot.start(); dot.set_state("recording"); dot.set_state("nonsense")
+    dot.stop()
+    assert dot._thread is None
+    assert overlay_mod._mix("#ffffff", "#000000", 0.5) == "#808080"
+    assert overlay_mod._mix("#2d6cdf", "#0b0c0d", 1.0) == "#2d6cdf"
+
+
 def test_splash_off_is_inert_and_nothing_ever_raises() -> None:
     """It is decoration. On a machine with no display, no Tk, or a hostile
     window manager it must degrade to nothing, not take dictation down."""
-    import splash as splash_mod
-    off = splash_mod.Splash.off()
+    import overlay as overlay_mod
+    off = overlay_mod.Splash.off()
     off.start(); off.status("x"); off.finish("y")
     assert off._thread is None, "off() started a thread"
-    never_started = splash_mod.Splash()
+    never_started = overlay_mod.Splash()
     never_started.status("x"); never_started.finish()   # must not raise
 
 
