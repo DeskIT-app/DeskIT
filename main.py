@@ -175,7 +175,15 @@ class App:
         text, backend = self._transcribe(wav, language=None)
         transcript_log.info("OK | PHONE | %s | %.1fs latency | %s",
                             backend, time.monotonic() - started, text)
-        return text, backend
+        # A decoder loop means words are LOST, not garbled — surface that
+        # on the phone right away instead of letting reading discover it.
+        warning = None
+        for b in (self.transcriber, self._local or None):
+            found = getattr(b, "last_warning", None)
+            if found:
+                warning = found
+                break
+        return text, backend, warning
 
     def _translate_for_phone(self, text: str) -> tuple[str, str]:
         """The same Gemini-then-Ollama translator the F9 key uses. Shares

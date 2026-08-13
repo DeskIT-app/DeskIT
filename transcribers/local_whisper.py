@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import os
 import struct
 import sys
@@ -209,6 +210,12 @@ class LocalWhisperTranscriber:
             compression_ratio_threshold=2.0,
             word_timestamps=True,
             hallucination_silence_threshold=2.0,
+            # Against token loops: a vocalised hesitation became 222 ה's,
+            # and everything SPOKEN AFTER it was eaten (2026-08-13, twice).
+            # Measured byte-identical on clean audio; the loop itself
+            # could not be reproduced synthetically, so this is the
+            # standard knob for the mechanism, not a proven cure.
+            repetition_penalty=1.15,
         ) if guard_hallucinations else {}
 
         attempts = ([("cuda", "float16"), ("cpu", "int8")]
@@ -280,6 +287,19 @@ class LocalWhisperTranscriber:
             raise TranscriptionError(f"local transcription failed: {e}") from e
 
         self.last_removed = []
+        # A long letter-run means the decoder looped — and while it loops,
+        # the audio keeps advancing, so words spoken during and after it
+        # are usually GONE, not garbled. Cleanup below deletes the run;
+        # nothing can restore the words. The least bad thing is to say so
+        # immediately instead of letting the loss be discovered in reading.
+        self.last_warning = None
+        loop = re.search(r"([א-ת])\1{11,}", text)
+        if loop:
+            self.last_warning = ("the model looped mid-recording — words "
+                                 "around it may be lost; re-dictate that part")
+            log.warning("decoder loop: %d×%s — words spoken during/after "
+                        "it are likely missing", len(loop.group(0)),
+                        loop.group(1))
         if text.strip(" .,!?").lower() in _HALLUCINATED_SILENCE:
             return ""        # treated as "no speech", same as Gemini
         if self._boilerplate:

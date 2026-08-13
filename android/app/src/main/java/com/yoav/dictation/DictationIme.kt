@@ -292,7 +292,9 @@ class DictationIme : InputMethodService() {
                 val glue = if (before.isNullOrEmpty()
                     || before.last().isWhitespace()) "" else " "
                 ic?.commitText(glue + text, 1)
-                say("")
+                // A decoder loop means words were LOST, not garbled — say
+                // so now, not after the gap is discovered in reading.
+                say(result.warning ?: "")
                 if (Prefs.switchBack(this)) goBack()
             }
             is Transcriber.Result.Err -> say(result.message)

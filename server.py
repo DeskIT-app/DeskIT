@@ -260,15 +260,22 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": f"could not decode the audio: {e}"})
             return
         try:
-            text, backend = self.server.transcribe(wav)
+            result = self.server.transcribe(wav)
         except Exception as e:
             log.warning("phone transcription failed: %s", e)
             self._json(503, {"error": str(e)})
             return
+        # (text, backend) or (text, backend, warning) — the warning came
+        # later and the test fakes still return pairs.
+        text, backend = result[0], result[1]
+        warning = result[2] if len(result) > 2 else None
         log.info("phone: %.1f s -> %d chars via %s", seconds, len(text),
                  backend)
-        self._json(200, {"text": text, "seconds": round(seconds, 2),
-                         "backend": backend})
+        payload = {"text": text, "seconds": round(seconds, 2),
+                   "backend": backend}
+        if warning:
+            payload["warning"] = warning
+        self._json(200, payload)
 
     def _do_translate(self, raw: bytes) -> None:
         """Same job as the desktop's F9 key, for text already typed on the

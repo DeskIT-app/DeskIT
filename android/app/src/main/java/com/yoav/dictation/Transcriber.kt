@@ -15,7 +15,7 @@ import java.net.URL
 object Transcriber {
 
     sealed class Result {
-        data class Ok(val text: String) : Result()
+        data class Ok(val text: String, val warning: String? = null) : Result()
         data class Err(val message: String) : Result()
     }
 
@@ -81,7 +81,11 @@ object Transcriber {
             when {
                 code == 401 -> Result.Err("bad token — check setup")
                 code !in 200..299 -> Result.Err(errorFrom(body, code))
-                else -> Result.Ok(JSONObject(body).optString("text", ""))
+                else -> {
+                    val o = JSONObject(body)
+                    Result.Ok(o.optString("text", ""),
+                        o.optString("warning", "").ifEmpty { null })
+                }
             }
         } catch (e: IOException) {
             // By far the most likely failure in real use, and the least

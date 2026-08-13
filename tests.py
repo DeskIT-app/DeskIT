@@ -1284,7 +1284,9 @@ def test_phone_endpoint_round_trip_and_auth() -> None:
 
     def fake(wav):
         calls.append(len(wav))
-        return "שלום", "fake"
+        # 3-tuple: (text, backend, warning) — the shape the app returns
+        # since decoder-loop warnings; the server must pass it through.
+        return "שלום", "fake", "test-warning"
 
     buf = io.BytesIO()
     with wave_mod.open(buf, "wb") as w:
@@ -1309,6 +1311,7 @@ def test_phone_endpoint_round_trip_and_auth() -> None:
                            headers={"Authorization": f"Bearer {token}"})
         assert ok.status_code == 200, ok.status_code
         assert ok.json()["text"] == "שלום", ok.json()
+        assert ok.json().get("warning") == "test-warning", ok.json()
         assert calls, "the transcriber was never called"
 
         junk = requests.post(f"{base}/transcribe", data=b"xxxx", timeout=10,
