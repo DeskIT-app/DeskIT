@@ -164,8 +164,17 @@ class App:
     def _transcribe_for_phone(self, wav: bytes) -> tuple[str, str]:
         """No language is passed: the phone has no per-language key, so it
         goes through the same Hebrew/English detection the desktop uses
-        when nothing was specified."""
-        return self._transcribe(wav, language=None)
+        when nothing was specified.
+
+        Logged to transcripts.log like every desktop dictation. Without
+        this, "the transcript from my phone looked wrong" has no evidence
+        behind it at all — the raw text existed only on the phone.
+        """
+        started = time.monotonic()
+        text, backend = self._transcribe(wav, language=None)
+        transcript_log.info("OK | PHONE | %s | %.1fs latency | %s",
+                            backend, time.monotonic() - started, text)
+        return text, backend
 
     # ---- hook-thread callbacks: keep them fast ----
 
