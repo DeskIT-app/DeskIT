@@ -36,6 +36,7 @@ import cues
 import injector
 import server as server_mod
 import singleton
+import splash as splash_mod
 from config import ConfigError
 from hotkey import HookThread, PTTStateMachine, parse_chord, vk_for
 from recorder import Recorder
@@ -56,6 +57,27 @@ def report_fatal(message: str) -> None:
     if not HAS_CONSOLE:
         ctypes.windll.user32.MessageBoxW(
             None, message, "Hebrew Dictation — cannot start", 0x10)
+
+
+class SplashLog(logging.Handler):
+    """Mirrors the app's own log lines onto the splash.
+
+    Attached to the "app" logger rather than the root one on purpose: the
+    startup is full of huggingface HTTP chatter and faster-whisper
+    internals, and none of that answers "did my click do anything".
+    """
+
+    def __init__(self, splash) -> None:
+        super().__init__(level=logging.INFO)
+        self._splash = splash
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            text = record.getMessage()
+        except Exception:
+            return
+        # Long lines (the phone URL with its token) would reflow the box.
+        self._splash.status(text if len(text) <= 110 else text[:107] + "…")
 
 
 def beep(kind: str) -> None:
@@ -665,26 +687,38 @@ def main() -> int:
         report_fatal(str(e))
         return 1
 
+    # Loading two Whisper models onto the GPU takes ~25 s during which a
+    # windowless app looks like a shortcut that did nothing. Every log line
+    # the app writes becomes a status update, so the splash narrates the
+    # real startup instead of just spinning.
+    splash = splash_mod.Splash() if cfg.splash else splash_mod.Splash.off()
+    splash.start()
+    splash_log = SplashLog(splash)
+    log.addHandler(splash_log)
+
+    def fail(message: str) -> int:
+        log.removeHandler(splash_log)
+        splash.finish(linger_ms=0)
+        report_fatal(message)
+        return 1
+
     try:
+        splash.status("loading the transcription model…")
         app = App(cfg)
     except TranscriptionError as e:   # missing key, stub backend, ...
-        report_fatal(str(e))
-        return 1
+        return fail(str(e))
     except ValueError as e:           # unknown hotkey/chord name
-        report_fatal(f"bad key name in config.toml: {e}")
-        return 1
+        return fail(f"bad key name in config.toml: {e}")
     except Exception as e:            # no input device, PortAudio errors
-        report_fatal(f"could not start audio capture: {e}\n\nCheck Settings "
-                     "> Privacy & security > Microphone, and the device "
-                     "index in config.toml (see --list-devices).")
-        return 1
+        return fail(f"could not start audio capture: {e}\n\nCheck Settings "
+                    "> Privacy & security > Microphone, and the device "
+                    "index in config.toml (see --list-devices).")
 
     quit_signal = singleton.QuitSignal()
     try:
         app.start()
     except OSError as e:
-        report_fatal(str(e))
-        return 1
+        return fail(str(e))
     log.info("ready — hold '%s' for Hebrew%s, release to paste. %s",
              cfg.hotkey,
              f", '{cfg.english_hotkey}' for English" if cfg.english_hotkey
@@ -718,6 +752,8 @@ def main() -> int:
                     "and are waiting in pending\\ — run "
                     'main.py --drain to turn them into text', len(waiting))
     beep("ready")
+    log.removeHandler(splash_log)
+    splash.finish(f"ready — hold {cfg.hotkey.title()} and speak")
     try:
         quit_signal.wait()   # released by --stop; Ctrl+C also lands here
         log.info("stop requested")

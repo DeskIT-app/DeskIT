@@ -101,6 +101,12 @@ background instance to quit.
   mid-high = translating; rising pair = translation landed; two low =
   error; two falling = app stopped. No beep on aborts (by design). Hear
   them all with `--test-sound`.
+- **Startup takes ~25 s** (two Whisper models onto the GPU) and a small
+  window appears bottom-right while it happens, naming each step as it
+  goes. Without it, clicking the shortcut is indistinguishable from
+  clicking a shortcut that does nothing — so you click again. It does not
+  take focus and does not appear in Alt-Tab; it vanishes once the hotkey is
+  live. Turn it off with `splash = false`.
 - **Two `pythonw.exe` processes in Task Manager is normal** — a venv's
   `python.exe` is a launcher stub that runs the real interpreter as a
   child. It is one app; the single-instance guard is what proves it.
@@ -446,6 +452,7 @@ for `מבשרים`, all of which the local model got right.
 | `latch_max_seconds` | `0` | the cap once locked; `0` = none. `max_seconds` guards against a swallowed key-up, and a locked recording has no key-up to lose |
 | `[audio] sample_rate` | `16000` | falls back to the device default if refused |
 | `[audio] device` | `""` | `""` = system default; index from `--list-devices` |
+| `splash` | `true` | show a small window while the models load; it does not take focus and leaves no taskbar entry |
 | `fallback_to_local` | `true` | use the local model when every cloud model is out of quota |
 | `[feedback] enabled` | `true` | paste a marker at the cursor while transcribing |
 | `[feedback] placeholder` | `...` | the marker; replaced by your text (erased by backspaces, so keep it short) |

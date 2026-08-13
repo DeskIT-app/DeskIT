@@ -32,6 +32,9 @@ latch_max_seconds = 0         # the cap once latched. 0 = none — max_seconds o
                               # guards against a key-up the OS swallowed, and a
                               # latched recording has no key-up to lose
 fallback_to_local = true      # when every cloud model is out of quota, use local whisper
+splash = true                 # show a small window while the models load (~25 s).
+                              # Without it, clicking the shortcut looks like it did
+                              # nothing, and the natural response is to click again
 
 [audio]
 sample_rate = 16000

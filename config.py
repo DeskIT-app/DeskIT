@@ -156,6 +156,10 @@ class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     # Fall back to the local backend when every cloud model is out of quota.
     fallback_to_local: bool = True
+    # Show a small startup window while the models load. Without it a
+    # windowless app is indistinguishable from a shortcut that did nothing
+    # for the ~25 s it takes, and the natural response is to click again.
+    splash: bool = True
 
 
 def _parse_device(raw: str) -> int | str | None:
@@ -274,6 +278,7 @@ def load(path: Path) -> Config:
         ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
+        splash=bool(data.get("splash", Config.splash)),
     )
 
     if cfg.backend not in VALID_BACKENDS:

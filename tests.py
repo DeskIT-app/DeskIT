@@ -1295,6 +1295,65 @@ def test_phone_endpoint_round_trip_and_auth() -> None:
         srv.stop()
 
 
+def test_splash_shuts_down_without_aborting_the_process() -> None:
+    """Tk interpreters must be torn down on the thread that created them.
+    Left to the GC, the after() callbacks keep root alive in a cycle that
+    is collected on some other thread, and freeing Tcl from there aborts
+    the process — a clean shutdown was exiting with code 3. Only visible
+    at interpreter exit, so this has to be a subprocess."""
+    import subprocess
+    here = Path(__file__).resolve().parent
+    script = (
+        "import time, splash;"
+        "s = splash.Splash(); s.start();"
+        "s.status('loading…'); time.sleep(.3);"
+        "s.finish('ready', linger_ms=60); time.sleep(.9);"
+        "print('ok')"
+    )
+    out = subprocess.run([sys.executable, "-c", script], cwd=str(here),
+                         capture_output=True, encoding="utf-8",
+                         errors="replace", timeout=90)
+    assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
+    assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
+
+
+def test_splash_off_is_inert_and_nothing_ever_raises() -> None:
+    """It is decoration. On a machine with no display, no Tk, or a hostile
+    window manager it must degrade to nothing, not take dictation down."""
+    import splash as splash_mod
+    off = splash_mod.Splash.off()
+    off.start(); off.status("x"); off.finish("y")
+    assert off._thread is None, "off() started a thread"
+    never_started = splash_mod.Splash()
+    never_started.status("x"); never_started.finish()   # must not raise
+
+
+def test_splash_log_forwards_app_messages_and_trims_long_ones() -> None:
+    """The phone URL carries a token long enough to reflow the window."""
+    import logging
+
+    import main as main_mod
+
+    seen: list[str] = []
+
+    class Fake:
+        def status(self, text): seen.append(text)
+
+    handler = main_mod.SplashLog(Fake())
+    logger = logging.getLogger("splash-test")
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        logger.info("local model %s ready on %s", "ivrit", "cuda")
+        logger.debug("noise that must not appear")
+        logger.info("x" * 400)
+    finally:
+        logger.removeHandler(handler)
+    assert seen[0] == "local model ivrit ready on cuda", seen
+    assert len(seen) == 2, seen
+    assert len(seen[1]) <= 110 and seen[1].endswith("…"), len(seen[1])
+
+
 def test_subprocess_output_survives_a_hebrew_locale() -> None:
     """This machine's locale code page is cp1255. subprocess(text=True)
     decodes with it, so a tool emitting UTF-8 raises UnicodeDecodeError in
