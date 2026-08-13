@@ -25,8 +25,16 @@ object Prefs {
 
     fun token(c: Context): String = sp(c).getString(KEY_TOKEN, "") ?: ""
 
-    /** After the text lands, hop straight back to the everyday keyboard. */
-    fun switchBack(c: Context): Boolean = sp(c).getBoolean(KEY_SWITCH_BACK, true)
+    /**
+     * After the text lands, hop straight back to the everyday keyboard.
+     *
+     * Off by default. It sounded right in theory and was wrong in use:
+     * the keyboard already has a Keyboard key, leaving is one deliberate
+     * tap, and jumping away on its own breaks dictating two sentences in a
+     * row — and breaks the translate key, which needs the keyboard to
+     * still be there afterwards.
+     */
+    fun switchBack(c: Context): Boolean = sp(c).getBoolean(KEY_SWITCH_BACK, false)
 
     fun save(c: Context, url: String, token: String, switchBack: Boolean) {
         sp(c).edit()
