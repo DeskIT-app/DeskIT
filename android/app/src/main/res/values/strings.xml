@@ -32,4 +32,8 @@
     <string name="enable_keyboard">2 · הפעל את המקלדת בהגדרות</string>
     <string name="mic_granted">מיקרופון אושר</string>
     <string name="mic_denied">בלי הרשאת מיקרופון המקלדת לא תוכל להקליט</string>
+    <string name="check_update">בדוק עדכון</string>
+    <string name="up_to_date">מעודכן — ‎v%1$s‎ היא הגרסה האחרונה</string>
+    <string name="update_available">גרסה ‎%1$s‎ זמינה — מוריד…</string>
+    <string name="update_check_failed">אי אפשר לבדוק — המחשב לא זמין</string>
 </resources>

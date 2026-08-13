@@ -36,6 +36,27 @@ object Transcriber {
             "application/json; charset=utf-8", body, 180000)
     }
 
+    /**
+     * The version the PC is currently serving, from /health — the one
+     * unauthenticated route, which is fine: it exposes nothing but "up"
+     * and a version string. null when the PC is unreachable.
+     */
+    fun serverApkVersion(baseUrl: String): String? {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URL("$baseUrl/health").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10000
+                readTimeout = 15000
+            }
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            JSONObject(body).optString("apk", "").ifEmpty { null }
+        } catch (e: Exception) {
+            null
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
     private fun post(
         baseUrl: String, path: String, token: String,
         contentType: String, body: ByteArray, readTimeoutMs: Int

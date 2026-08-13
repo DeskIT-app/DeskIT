@@ -108,6 +108,10 @@ class SetupActivity : Activity() {
                 startActivity(Intent(Settings.ACTION_INPUT_METHOD_SETTINGS))
             }
         })
+        col.addView(Button(this).apply {
+            text = getString(R.string.check_update)
+            setOnClickListener { checkForUpdate() }
+        })
 
         setContentView(ScrollView(this).apply {
             addView(col, ViewGroup.LayoutParams.MATCH_PARENT,
@@ -148,6 +152,43 @@ class SetupActivity : Activity() {
                     is Transcriber.Result.Err -> {
                         result.setTextColor(Color.parseColor("#c0392b"))
                         result.text = r.message
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Compare the version the PC serves against the one installed, and
+     * only open the browser when they differ — straight at the APK, so
+     * the download starts immediately. When they match there is nothing
+     * to fetch and nothing opens.
+     */
+    private fun checkForUpdate() {
+        val url = Prefs.url(this)
+        result.setTextColor(Color.parseColor("#444c5c"))
+        result.text = getString(R.string.checking)
+        thread {
+            val remote = Transcriber.serverApkVersion(url)
+            val mine = try {
+                packageManager.getPackageInfo(packageName, 0).versionName
+            } catch (e: Exception) { "?" }
+            runOnUiThread {
+                when (remote) {
+                    null -> {
+                        result.setTextColor(Color.parseColor("#c0392b"))
+                        result.text = getString(R.string.update_check_failed)
+                    }
+                    mine -> {
+                        result.setTextColor(Color.parseColor("#1a7f37"))
+                        result.text = getString(R.string.up_to_date, mine)
+                    }
+                    else -> {
+                        result.setTextColor(Color.parseColor("#1a7f37"))
+                        result.text = getString(R.string.update_available,
+                                                remote)
+                        startActivity(Intent(Intent.ACTION_VIEW,
+                            android.net.Uri.parse("$url/app.apk")))
                     }
                 }
             }
