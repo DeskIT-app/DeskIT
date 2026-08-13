@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.Looper
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
@@ -106,6 +107,7 @@ class DictationIme : InputMethodService() {
                 ViewGroup.LayoutParams.WRAP_CONTENT
             )
         }
+        row.addView(backspaceKey(dp))
         row.addView(secondaryKey(R.string.translate_btn, dp) { translateField() })
         row.addView(secondaryKey(R.string.back_to_keyboard, dp) { goBack() })
         root.addView(row)
@@ -124,6 +126,54 @@ class DictationIme : InputMethodService() {
             }
         }
         return root
+    }
+
+    /**
+     * Backspace with hold-to-repeat: fixing one wrong letter must not mean
+     * switching keyboards. Sent as a DEL key event rather than
+     * deleteSurroundingText(1, 0), because the latter counts UTF-16 units
+     * and would cut an emoji in half; the key event lets the editor do its
+     * own grapheme-aware delete, and it clears a selection too.
+     */
+    private fun backspaceKey(dp: (Int) -> Int): TextView =
+        TextView(this).apply {
+            text = "⌫"
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#c6cfdd"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(12).toFloat()
+                setColor(Color.parseColor("#1d2330"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4); marginEnd = dp(4)
+            }
+            setOnTouchListener { _, e ->
+                when (e.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        deleteOnce()
+                        ui.postDelayed(deleteRepeat, 350)
+                        true
+                    }
+                    MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                        ui.removeCallbacks(deleteRepeat)
+                        true
+                    }
+                    else -> false
+                }
+            }
+        }
+
+    private val deleteRepeat = object : Runnable {
+        override fun run() {
+            deleteOnce()
+            ui.postDelayed(this, 50)
+        }
+    }
+
+    private fun deleteOnce() {
+        sendDownUpKeyEvents(KeyEvent.KEYCODE_DEL)
     }
 
     private fun secondaryKey(res: Int, dp: (Int) -> Int, onTap: () -> Unit) =
@@ -234,7 +284,14 @@ class DictationIme : InputMethodService() {
                 if (text.isEmpty()) { say(getString(R.string.no_speech)); return }
                 // The whole reason this is a keyboard and not a floating
                 // button: straight into the field, no clipboard involved.
-                currentInputConnection?.commitText(text, 1)
+                // The glue space matters now that the keyboard stays put:
+                // two dictations in a row would otherwise weld into
+                // "משפטראשוןמשפטשני".
+                val ic = currentInputConnection
+                val before = ic?.getTextBeforeCursor(1, 0)
+                val glue = if (before.isNullOrEmpty()
+                    || before.last().isWhitespace()) "" else " "
+                ic?.commitText(glue + text, 1)
                 say("")
                 if (Prefs.switchBack(this)) goBack()
             }
@@ -245,15 +302,20 @@ class DictationIme : InputMethodService() {
     // ---- translate what is already in the field ----
 
     /**
-     * The phone-side twin of the desktop's F9 key: replace the field's
-     * contents with its English. Reads the field through the same
-     * InputConnection it writes with, so nothing touches the clipboard.
+     * The phone-side twin of the desktop's F9 key, selection rules
+     * included: a selection translates just the selection, no selection
+     * translates the whole field. Reads through the same InputConnection
+     * it writes with, so nothing touches the clipboard.
      */
     private fun translateField() {
         if (busy) return
         val ic = currentInputConnection ?: return
-        val extracted = ic.getExtractedText(ExtractedTextRequest(), 0)
-        val existing = extracted?.text?.toString().orEmpty()
+        val selected = ic.getSelectedText(0)?.toString().orEmpty()
+        val wholeField = selected.isBlank()
+        val existing = if (wholeField)
+            ic.getExtractedText(ExtractedTextRequest(), 0)
+                ?.text?.toString().orEmpty()
+        else selected
         if (existing.isBlank()) {
             say(getString(R.string.nothing_to_translate)); return
         }
@@ -271,10 +333,15 @@ class DictationIme : InputMethodService() {
                     is Transcriber.Result.Ok -> {
                         val out = result.text.trim()
                         if (out.isEmpty()) { say(getString(R.string.no_speech)); return@post }
-                        // Replace, not append: select everything and let
-                        // commitText overwrite the selection.
+                        // Replace, not append. commitText overwrites the
+                        // current selection — for the whole-field case we
+                        // select everything first; for a user selection it
+                        // is already exactly the range to replace.
                         currentInputConnection?.let { conn ->
-                            conn.performContextMenuAction(android.R.id.selectAll)
+                            if (wholeField) {
+                                conn.performContextMenuAction(
+                                    android.R.id.selectAll)
+                            }
                             conn.commitText(out, 1)
                         }
                         say("")
@@ -317,6 +384,7 @@ class DictationIme : InputMethodService() {
 
     override fun onFinishInput() {
         super.onFinishInput()
+        ui.removeCallbacks(deleteRepeat)   // field gone mid-hold: stop deleting
         if (holding || locked) {
             holding = false; locked = false
             recorder.cancel()
