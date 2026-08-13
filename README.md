@@ -263,7 +263,25 @@ LAN. A bearer token is required on top of that.
    is cleaned, so the page can be bookmarked or added to the home screen.
 
 Hold the button, talk, release. The text appears and is copied to the
-clipboard automatically. The token lives in `server_token.txt`
+clipboard automatically.
+
+Three things that cost real time the first time round:
+
+- **`tailscale serve` does not fail when Serve is off for your tailnet — it
+  BLOCKS.** It prints "Serve is not enabled… To enable, visit <url>" and
+  then waits for you to click it. That reads exactly like a fatal error, so
+  the temptation is to run it again; don't. A second copy racing the first
+  fails with `netMap is nil` and can leave `No serve config` behind. Run it
+  once, in the background, and click the link.
+- **The tray app has to be running.** `tailscaled` (the service) alone is
+  not enough: without `tailscale-ipn.exe` the backend sits in
+  `BackendState: NoState`, `tailscale ip -4` reports nothing, and the
+  MagicDNS name stops resolving — while the service still shows as Running,
+  which makes it look like a network problem. Launch Tailscale from the
+  Start menu.
+- **The first HTTPS request takes ~30 s** while Tailscale provisions the
+  Let's Encrypt certificate, and it usually times out rather than waiting.
+  Measured here: 26.7 s for the first request, 0.65 s for the next. The token lives in `server_token.txt`
 (gitignored); delete it to roll a new one.
 
 If the PC is asleep the page simply cannot reach it — set Windows to never
