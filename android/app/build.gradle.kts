@@ -13,8 +13,8 @@ android {
         // InputMethod needs 28 and is guarded at the call site.
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildTypes {

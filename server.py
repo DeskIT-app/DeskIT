@@ -185,6 +185,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(APK.stat().st_size))
             self.send_header("Content-Disposition",
                              'attachment; filename="HebrewDictation.apk"')
+            # Without this the browser happily re-serves the previous
+            # build from cache, and a rebuilt app looks like one that
+            # silently refused to update.
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+            self.send_header("ETag", f'"{APK.stat().st_mtime_ns}"')
             self.end_headers()
             try:
                 self.wfile.write(APK.read_bytes())

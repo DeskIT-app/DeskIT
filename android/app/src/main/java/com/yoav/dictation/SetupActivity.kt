@@ -53,6 +53,12 @@ class SetupActivity : Activity() {
         }
 
         label(getString(R.string.app_name), 22f, "#101319")
+        // Version on screen: the only way to answer "did my reinstall
+        // actually take?" without guessing at the phone's behaviour.
+        val version = try {
+            packageManager.getPackageInfo(packageName, 0).versionName
+        } catch (e: Exception) { "?" }
+        label("v$version", 13f, "#8b8f99")
         label(getString(R.string.setup_intro))
 
         label(getString(R.string.paste_url_label))
