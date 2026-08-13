@@ -1159,6 +1159,30 @@ def test_real_config_has_a_reachable_latch_key() -> None:
     assert cfg.latch_max_seconds == 0, "0 = no cap, which is the point"
 
 
+def test_decoder_letter_loops_are_collapsed_and_dropped() -> None:
+    """Observed live 2026-08-13, three times: a vocalised hesitation became
+    a run of up to 222 ה characters. The decoder guards watch for silence
+    and this is a sound, so the fix is deterministic cleanup."""
+    import cleanup as cleanup_mod
+    noise = "אה" + "ה" * 222
+    out = cleanup_mod.clean(f"תרשום להם את העמוד טיקטוק שלי {noise} וזהו")
+    assert out == "תרשום להם את העמוד טיקטוק שלי וזהו", out
+    # the run alone must not survive as a message either
+    assert cleanup_mod.clean(noise) in ("", noise.strip()), \
+        cleanup_mod.clean(noise)
+    only = cleanup_mod.collapse_char_runs(noise)
+    assert only == "אהה", only
+
+
+def test_char_run_collapse_leaves_real_text_alone() -> None:
+    import cleanup as cleanup_mod
+    for text in ("הכתבתי את זה לוואטסאפ",          # ordinary Hebrew
+                 "תיכנס ל-www.example.com עכשיו",  # Latin runs survive
+                 "אמממ רגע",                        # 3-run: not touched here
+                 "commit לענף feature/aaaa"):       # Latin again
+        assert cleanup_mod.collapse_char_runs(text) == text, text
+
+
 def test_the_real_hallucinated_tail_is_dropped() -> None:
     """Verbatim from transcripts.log, 2026-08-12 19:01. The last five words
     were never spoken — the fine-tune was trained on Knesset protocols and

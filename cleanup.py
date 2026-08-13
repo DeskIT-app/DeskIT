@@ -105,6 +105,22 @@ def strip_fillers(text: str, fillers: tuple[str, ...] = DEFAULT_FILLERS) -> str:
     return _filler_pattern(fillers).sub(" ", text)
 
 
+# A vocalised hesitation ("אהhhh...") has no phonetic structure, so Whisper
+# has nothing correct to write for it — and once the decoder emits one ה,
+# each ה makes the next more likely and it loops. Observed live 2026-08-13,
+# three times, runs of up to 222 ה characters. The decoder-level guards
+# don't catch it because they watch for SILENCE, and this is a sound.
+_CHAR_RUN = re.compile(r"([א-ת])\1{3,}")
+
+
+def collapse_char_runs(text: str) -> str:
+    """No Hebrew word repeats one letter four times in a row, so any such
+    run is a decoder loop. Collapsed to a double, which turns 'אהההה…' into
+    'אהה' — a filler strip_fillers() already knows how to drop. Hebrew
+    letters only: Latin runs like 'www' in a dictated URL must survive."""
+    return _CHAR_RUN.sub(r"\1\1", text)
+
+
 def collapse_repeats(text: str, max_phrase: int = 4) -> str:
     """Collapse an immediately repeated run of words.
 
@@ -143,7 +159,8 @@ def clean(text: str, fillers: tuple[str, ...] = DEFAULT_FILLERS,
     """Full pass. Returns "" unchanged for empty input."""
     if not text or not text.strip():
         return ""
-    out = strip_fillers(text, fillers)
+    out = collapse_char_runs(text)   # before fillers: 'אהההה…' -> 'אהה'
+    out = strip_fillers(out, fillers)
     if collapse:
         out = collapse_repeats(out)
     out = tidy_spacing(out)
