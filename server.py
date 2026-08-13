@@ -47,6 +47,25 @@ APP_DIR = Path(__file__).resolve().parent
 TOKEN_FILE = APP_DIR / "server_token.txt"
 APK = (APP_DIR / "android" / "app" / "build" / "outputs" / "apk"
        / "debug" / "app-debug.apk")
+APK_GRADLE = APP_DIR / "android" / "app" / "build.gradle.kts"
+
+
+def apk_version() -> str:
+    """versionName from the build file, for the download filename.
+
+    Serving every build as "HebrewDictation.apk" means the new one lands
+    next to the old one in Downloads under the same name — and tapping the
+    stale copy reinstalls the previous version, which looks exactly like an
+    update that refused to apply. A version in the name makes the two
+    impossible to confuse.
+    """
+    try:
+        import re
+        m = re.search(r'versionName\s*=\s*"([^"]+)"',
+                      APK_GRADLE.read_text("utf-8"))
+        return m.group(1) if m else "0"
+    except OSError:
+        return "0"
 
 # Bodies are speech, not uploads. A minute of Opus is ~100 KB; this is a
 # sanity bound so a stray POST cannot buffer a gigabyte into memory.
@@ -183,8 +202,9 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type",
                              "application/vnd.android.package-archive")
             self.send_header("Content-Length", str(APK.stat().st_size))
-            self.send_header("Content-Disposition",
-                             'attachment; filename="HebrewDictation.apk"')
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="HebrewDictation-{apk_version()}.apk"')
             # Without this the browser happily re-serves the previous
             # build from cache, and a rebuilt app looks like one that
             # silently refused to update.
@@ -197,7 +217,8 @@ class _Handler(BaseHTTPRequestHandler):
                 pass
         elif path == "/health":
             self._json(200, {"ok": True,
-                             "backend": self.server.backend_name()})
+                             "backend": self.server.backend_name(),
+                             "apk": apk_version() if APK.exists() else None})
         else:
             self._json(404, {"error": "not found"})
 
@@ -378,7 +399,7 @@ PAGE = r"""<!doctype html>
 <textarea id="out" placeholder="הטקסט יופיע כאן" dir="auto"></textarea>
 <button id="copy">העתק</button>
 <div class="hint">מחזיקים, מדברים, משחררים. הטקסט מועתק אוטומטית.</div>
-<a class="hint" href="app.apk" style="color:#7fa6ee">התקן את אפליקציית המקלדת (APK)</a>
+<a class="hint" href="app.apk" style="color:#7fa6ee" id="apk">התקן את אפליקציית המקלדת (APK)</a>
 
 <script>
 const mic = document.getElementById('mic');
@@ -487,6 +508,13 @@ for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) {
 }
 mic.addEventListener('contextmenu', e => e.preventDefault());
 document.getElementById('copy').addEventListener('click', () => copy(false));
+
+// Name the version on the link, so you can see what you are about to
+// install without installing it first.
+fetch('health').then(r => r.json()).then(d => {
+  if (d.apk) document.getElementById('apk').textContent =
+    `התקן את אפליקציית המקלדת · v${d.apk}`;
+}).catch(() => {});
 </script>
 </html>
 """
