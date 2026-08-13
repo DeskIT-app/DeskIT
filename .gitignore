@@ -13,3 +13,9 @@ cues/
 
 # Generated on first run by server.py — the phone endpoint shared secret.
 server_token.txt
+
+# Android build outputs and local toolchain paths
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties

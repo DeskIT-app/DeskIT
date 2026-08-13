@@ -45,6 +45,8 @@ log = logging.getLogger("app")
 
 APP_DIR = Path(__file__).resolve().parent
 TOKEN_FILE = APP_DIR / "server_token.txt"
+APK = (APP_DIR / "android" / "app" / "build" / "outputs" / "apk"
+       / "debug" / "app-debug.apk")
 
 # Bodies are speech, not uploads. A minute of Opus is ~100 KB; this is a
 # sanity bound so a stray POST cannot buffer a gigabyte into memory.
@@ -169,6 +171,25 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/":
             self._send(200, PAGE.encode("utf-8"),
                        "text/html; charset=utf-8")
+        elif path == "/app.apk":
+            # Sideloading over the same private link the app will use:
+            # no cable, no USB debugging, no third-party file transfer.
+            # Unauthenticated on purpose — it is reachable only from the
+            # tailnet, and the APK deliberately ships no token.
+            if not APK.exists():
+                self._json(404, {"error": "no APK built yet"})
+                return
+            self.send_response(200)
+            self.send_header("Content-Type",
+                             "application/vnd.android.package-archive")
+            self.send_header("Content-Length", str(APK.stat().st_size))
+            self.send_header("Content-Disposition",
+                             'attachment; filename="HebrewDictation.apk"')
+            self.end_headers()
+            try:
+                self.wfile.write(APK.read_bytes())
+            except (BrokenPipeError, ConnectionResetError):
+                pass
         elif path == "/health":
             self._json(200, {"ok": True,
                              "backend": self.server.backend_name()})
@@ -304,6 +325,7 @@ PAGE = r"""<!doctype html>
 <textarea id="out" placeholder="הטקסט יופיע כאן" dir="auto"></textarea>
 <button id="copy">העתק</button>
 <div class="hint">מחזיקים, מדברים, משחררים. הטקסט מועתק אוטומטית.</div>
+<a class="hint" href="app.apk" style="color:#7fa6ee">התקן את אפליקציית המקלדת (APK)</a>
 
 <script>
 const mic = document.getElementById('mic');

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Hebrew Dictation</string>
+    <string name="ime_label">Hebrew Dictation (mic)</string>
+    <string name="hold_and_talk">החזק ודבר</string>
+    <string name="recording">מקליט…</string>
+    <string name="transcribing">מתמלל…</string>
+    <string name="too_short">קצר מדי</string>
+    <string name="no_speech">לא נשמע דיבור</string>
+    <string name="back_to_keyboard">חזרה למקלדת</string>
+    <string name="needs_permission">אין הרשאת מיקרופון — פתח את האפליקציה</string>
+    <string name="needs_setup">חסר טוקן — פתח את האפליקציה</string>
+    <string name="setup_intro">הטלפון מקליט, המחשב בבית מתמלל. צריך ש-Tailscale יהיה פעיל בשני הצדדים.</string>
+    <string name="paste_url_label">כתובת השרת (אפשר להדביק את הכתובת המלאה עם ‎#t=‎)</string>
+    <string name="token_label">טוקן</string>
+    <string name="switch_back_label">לחזור אוטומטית ל-Gboard אחרי שהטקסט נכנס</string>
+    <string name="save_and_test">שמור ובדוק חיבור</string>
+    <string name="checking">בודק…</string>
+    <string name="reachable">מחובר — המחשב עונה</string>
+    <string name="steps_title">שלושה צעדים</string>
+    <string name="steps_body">1. אשר הרשאת מיקרופון (הכפתור למטה).\n2. הפעל את המקלדת בהגדרות.\n3. בכל אפליקציה: לחץ על שדה טקסט, החלף מקלדת, החזק ודבר.</string>
+    <string name="grant_mic">1 · אשר מיקרופון</string>
+    <string name="enable_keyboard">2 · הפעל את המקלדת בהגדרות</string>
+    <string name="mic_granted">מיקרופון אושר</string>
+    <string name="mic_denied">בלי הרשאת מיקרופון המקלדת לא תוכל להקליט</string>
+</resources>
