@@ -196,8 +196,19 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._json(404, {"error": "not found"})
 
+    def handle_one_request(self) -> None:
+        # BaseHTTPRequestHandler prints tracebacks to stderr, which pythonw
+        # throws away — so a crash in here reached the phone as a bare 502
+        # with no trace of why anywhere. Log it.
+        try:
+            super().handle_one_request()
+        except Exception:
+            log.exception("phone request handler crashed")
+            raise
+
     def do_POST(self) -> None:
-        if self.path.split("?", 1)[0].rstrip("/") != "/transcribe":
+        route = self.path.split("?", 1)[0].rstrip("/")
+        if route not in ("/transcribe", "/translate"):
             self._json(404, {"error": "not found"})
             return
         if not self._authorised():
@@ -213,6 +224,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": f"body must be 1..{MAX_BODY} bytes"})
             return
         raw = self.rfile.read(length)
+        if route == "/translate":
+            self._do_translate(raw)
+            return
         try:
             wav, seconds = to_wav(raw)
         except Exception as e:
@@ -230,26 +244,59 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(200, {"text": text, "seconds": round(seconds, 2),
                          "backend": backend})
 
+    def _do_translate(self, raw: bytes) -> None:
+        """Same job as the desktop's F9 key, for text already typed on the
+        phone: hand back the English of whatever is in the field."""
+        if self.server.translate is None:
+            self._json(503, {"error": "translation is not available"})
+            return
+        try:
+            text = json.loads(raw.decode("utf-8")).get("text", "")
+        except (ValueError, UnicodeDecodeError):
+            self._json(400, {"error": "expected JSON with a text field"})
+            return
+        if not text.strip():
+            self._json(400, {"error": "nothing to translate"})
+            return
+        # The desktop guard applies here too: a phone field can hold a
+        # whole document, and translating one is never what was meant.
+        if len(text) > self.server.max_chars:
+            self._json(400, {"error": f"too long "
+                                      f"({len(text)} chars) to translate"})
+            return
+        try:
+            out, backend = self.server.translate(text)
+        except Exception as e:
+            log.warning("phone translation failed: %s", e)
+            self._json(503, {"error": str(e)})
+            return
+        log.info("phone: translated %d chars via %s", len(text), backend)
+        self._json(200, {"text": out, "backend": backend})
+
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, addr, token, transcribe, backend_name):
+    def __init__(self, addr, token, transcribe, backend_name, translate=None,
+                 max_chars=5000):
         super().__init__(addr, _Handler)
         self.token = token
         self.transcribe = transcribe
         self.backend_name = backend_name
+        self.translate = translate
+        self.max_chars = max_chars
 
 
 class PhoneServer:
     """Owns the socket and the thread. Never fatal: if it cannot start,
     the desktop hotkey must keep working regardless."""
 
-    def __init__(self, cfg, transcribe, backend_name):
+    def __init__(self, cfg, transcribe, backend_name, translate=None):
         self.cfg = cfg
         self._transcribe = transcribe
         self._backend_name = backend_name
+        self._translate = translate
         self._srv: _Server | None = None
         self._thread: threading.Thread | None = None
         self.url: str | None = None
@@ -259,7 +306,8 @@ class PhoneServer:
         host = self.cfg.server.host.strip() or "127.0.0.1"
         token = load_token()
         self._srv = _Server((host, port), token, self._transcribe,
-                            self._backend_name)
+                            self._backend_name, self._translate,
+                            self.cfg.translate.max_chars)
         self._thread = threading.Thread(target=self._srv.serve_forever,
                                         daemon=True, name="phone-server")
         self._thread.start()

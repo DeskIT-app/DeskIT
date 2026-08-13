@@ -138,7 +138,8 @@ class App:
         if cfg.server.enabled:
             self.phone = server_mod.PhoneServer(
                 cfg, self._transcribe_for_phone,
-                lambda: self.transcriber.name)
+                lambda: self.transcriber.name,
+                self._translate_for_phone)
 
     def start(self) -> None:
         self.recorder.start_stream()
@@ -175,6 +176,15 @@ class App:
         transcript_log.info("OK | PHONE | %s | %.1fs latency | %s",
                             backend, time.monotonic() - started, text)
         return text, backend
+
+    def _translate_for_phone(self, text: str) -> tuple[str, str]:
+        """The same Gemini-then-Ollama translator the F9 key uses. Shares
+        the instance, so the phone does not pay Ollama's 76 s cold start
+        again on its own copy."""
+        import translate as translate_mod
+        if self._translator is None:
+            self._translator = translate_mod.Translator(self.cfg)
+        return self._translator.translate(text)
 
     # ---- hook-thread callbacks: keep them fast ----
 

@@ -2,18 +2,27 @@
 <resources>
     <string name="app_name">Hebrew Dictation</string>
     <string name="ime_label">Hebrew Dictation (mic)</string>
-    <string name="hold_and_talk">החזק ודבר</string>
-    <string name="recording">מקליט…</string>
-    <string name="transcribing">מתמלל…</string>
-    <string name="too_short">קצר מדי</string>
-    <string name="no_speech">לא נשמע דיבור</string>
-    <string name="back_to_keyboard">חזרה למקלדת</string>
-    <string name="needs_permission">אין הרשאת מיקרופון — פתח את האפליקציה</string>
-    <string name="needs_setup">חסר טוקן — פתח את האפליקציה</string>
+
+    <!-- Keyboard face. English on purpose: it sits under a Hebrew text
+         field, and mixing scripts in the same glance is noise. -->
+    <string name="hold_and_talk">Hold &amp; talk</string>
+    <string name="slide_to_lock">Slide up to lock ↑</string>
+    <string name="recording">Recording…</string>
+    <string name="locked">Locked · tap to finish</string>
+    <string name="transcribing">Transcribing…</string>
+    <string name="translating">Translating…</string>
+    <string name="too_short">Too short</string>
+    <string name="no_speech">No speech</string>
+    <string name="nothing_to_translate">Nothing in the field</string>
+    <string name="translate_btn">→ EN</string>
+    <string name="back_to_keyboard">Keyboard</string>
+    <string name="needs_permission">No mic permission — open the app</string>
+    <string name="needs_setup">No token — open the app</string>
+
     <string name="setup_intro">הטלפון מקליט, המחשב בבית מתמלל. צריך ש-Tailscale יהיה פעיל בשני הצדדים.</string>
     <string name="paste_url_label">כתובת השרת (אפשר להדביק את הכתובת המלאה עם ‎#t=‎)</string>
     <string name="token_label">טוקן</string>
-    <string name="switch_back_label">לחזור אוטומטית ל-Gboard אחרי שהטקסט נכנס</string>
+    <string name="switch_back_label">לחזור אוטומטית למקלדת הקודמת אחרי שהטקסט נכנס</string>
     <string name="save_and_test">שמור ובדוק חיבור</string>
     <string name="checking">בודק…</string>
     <string name="reachable">מחובר — המחשב עונה</string>

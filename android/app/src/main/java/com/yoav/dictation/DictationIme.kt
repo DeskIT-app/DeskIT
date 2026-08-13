@@ -12,6 +12,7 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.ExtractedTextRequest
 import android.widget.LinearLayout
 import android.widget.TextView
 import kotlin.concurrent.thread
@@ -22,13 +23,16 @@ import kotlin.concurrent.thread
  * This is the only kind of app Android lets put text into someone else's
  * text field, which is the whole point: a floating button or a Quick
  * Settings tile can record just fine, but neither can do anything with the
- * result except leave it on the clipboard. Here the transcript is committed
- * straight into whatever field has the cursor, in any app.
+ * result except leave it on the clipboard. Here the transcript is
+ * committed straight into whatever field has the cursor, in any app.
  *
- * The recording itself happens on the phone; the transcription happens on
- * the PC, over Tailscale, on the Hebrew fine-tune that lives there. A phone
- * cannot run that model at a useful speed, and the point of this whole
- * project is that particular model's accuracy.
+ * Recording happens on the phone; transcription happens on the PC, over
+ * Tailscale, on the Hebrew fine-tune that lives there. A phone cannot run
+ * that model at a useful speed, and its accuracy is the point of the whole
+ * project.
+ *
+ * The face is in English deliberately. It sits directly under a Hebrew
+ * text field, and two scripts in one glance is harder to read, not easier.
  */
 class DictationIme : InputMethodService() {
 
@@ -38,10 +42,20 @@ class DictationIme : InputMethodService() {
     private lateinit var status: TextView
     private var busy = false
     private var holding = false
+    private var locked = false
+    private var downY = 0f
 
     private val idleColor = Color.parseColor("#2d6cdf")
     private val recColor = Color.parseColor("#d6392f")
+    private val lockColor = Color.parseColor("#b02a21")
     private val busyColor = Color.parseColor("#4a5262")
+
+    /** Drag distance that means "lock it on", in pixels. */
+    private val lockDistance by lazy {
+        TypedValue.applyDimension(
+            TypedValue.COMPLEX_UNIT_DIP, 48f, resources.displayMetrics
+        )
+    }
 
     override fun onCreateInputView(): View {
         val dp = { v: Int ->
@@ -54,9 +68,9 @@ class DictationIme : InputMethodService() {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
             setBackgroundColor(Color.parseColor("#10131a"))
-            setPadding(dp(16), dp(14), dp(16), dp(18))
+            setPadding(dp(14), dp(12), dp(14), dp(14))
             layoutParams = ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(230)
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(250)
             )
         }
 
@@ -71,35 +85,40 @@ class DictationIme : InputMethodService() {
                 setColor(idleColor)
             }
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(120)
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(124)
             )
         }
         root.addView(button)
 
         status = TextView(this).apply {
-            text = ""
             gravity = Gravity.CENTER
             setTextColor(Color.parseColor("#8b97ad"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setPadding(0, dp(10), 0, 0)
+            setPadding(0, dp(8), 0, dp(4))
         }
         root.addView(status)
 
-        val back = TextView(this).apply {
-            text = getString(R.string.back_to_keyboard)
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setTextColor(Color.parseColor("#8b97ad"))
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-            setPadding(dp(10), dp(12), dp(10), dp(4))
-            setOnClickListener { goBack() }
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
         }
-        root.addView(back)
+        row.addView(secondaryKey(R.string.translate_btn, dp) { translateField() })
+        row.addView(secondaryKey(R.string.back_to_keyboard, dp) { goBack() })
+        root.addView(row)
 
         button.setOnTouchListener { _, e ->
             when (e.action) {
-                MotionEvent.ACTION_DOWN -> { press(); true }
+                MotionEvent.ACTION_DOWN -> { downY = e.rawY; press(); true }
+                MotionEvent.ACTION_MOVE -> { maybeLock(e.rawY); true }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    release(e.action == MotionEvent.ACTION_CANCEL); true
+                    // Locked recordings survive the finger leaving; the
+                    // next tap is what ends them.
+                    if (!locked) release(e.action == MotionEvent.ACTION_CANCEL)
+                    true
                 }
                 else -> false
             }
@@ -107,22 +126,45 @@ class DictationIme : InputMethodService() {
         return root
     }
 
-    override fun onStartInputView(info: android.view.inputmethod.EditorInfo?, restarting: Boolean) {
-        super.onStartInputView(info, restarting)
-        if (!hasMic()) {
-            say(getString(R.string.needs_permission))
-        } else if (Prefs.token(this).isEmpty()) {
-            say(getString(R.string.needs_setup))
-        } else {
-            say("")
+    private fun secondaryKey(res: Int, dp: (Int) -> Int, onTap: () -> Unit) =
+        TextView(this).apply {
+            text = getString(res)
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#c6cfdd"))
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(12).toFloat()
+                setColor(Color.parseColor("#1d2330"))
+            }
+            layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+                marginStart = dp(4); marginEnd = dp(4)
+            }
+            setOnClickListener { onTap() }
         }
+
+    override fun onStartInputView(
+        info: android.view.inputmethod.EditorInfo?, restarting: Boolean
+    ) {
+        super.onStartInputView(info, restarting)
+        say(
+            when {
+                !hasMic() -> getString(R.string.needs_permission)
+                Prefs.token(this).isEmpty() -> getString(R.string.needs_setup)
+                else -> getString(R.string.slide_to_lock)
+            }
+        )
     }
 
-    private fun hasMic() = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED
+    private fun hasMic() =
+        checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+                PackageManager.PERMISSION_GRANTED
+
+    // ---- recording ----
 
     private fun press() {
         if (busy) return
+        if (locked) { finishLocked(); return }   // tap while locked = stop
         if (!hasMic()) { say(getString(R.string.needs_permission)); return }
         if (Prefs.token(this).isEmpty()) { say(getString(R.string.needs_setup)); return }
         try {
@@ -133,16 +175,44 @@ class DictationIme : InputMethodService() {
         holding = true
         tint(recColor)
         button.text = getString(R.string.recording)
-        say("")
+        say(getString(R.string.slide_to_lock))
+    }
+
+    /**
+     * Slide up to keep recording after letting go — the same escape hatch
+     * the desktop has on the left-arrow key. Holding a button is fine for
+     * a sentence and miserable for a paragraph.
+     */
+    private fun maybeLock(y: Float) {
+        if (!holding || locked) return
+        if (downY - y >= lockDistance) {
+            locked = true
+            tint(lockColor)
+            button.text = getString(R.string.locked)
+            say("")
+        }
+    }
+
+    private fun finishLocked() {
+        locked = false
+        holding = false
+        deliverRecording()
     }
 
     private fun release(cancelled: Boolean) {
         if (!holding) return
         holding = false
-        tint(idleColor)
-        button.text = getString(R.string.hold_and_talk)
-        if (cancelled) { recorder.cancel(); return }
+        if (cancelled) {
+            recorder.cancel()
+            reset()
+            return
+        }
+        deliverRecording()
+    }
+
+    private fun deliverRecording() {
         val wav = recorder.stop()
+        reset()
         if (wav == null) { say(getString(R.string.too_short)); return }
         busy = true
         tint(busyColor)
@@ -172,20 +242,69 @@ class DictationIme : InputMethodService() {
         }
     }
 
+    // ---- translate what is already in the field ----
+
     /**
-     * Back to the everyday keyboard. This one exists to dictate a sentence,
-     * not to be the keyboard you live in.
+     * The phone-side twin of the desktop's F9 key: replace the field's
+     * contents with its English. Reads the field through the same
+     * InputConnection it writes with, so nothing touches the clipboard.
+     */
+    private fun translateField() {
+        if (busy) return
+        val ic = currentInputConnection ?: return
+        val extracted = ic.getExtractedText(ExtractedTextRequest(), 0)
+        val existing = extracted?.text?.toString().orEmpty()
+        if (existing.isBlank()) {
+            say(getString(R.string.nothing_to_translate)); return
+        }
+        busy = true
+        tint(busyColor)
+        say(getString(R.string.translating))
+        val url = Prefs.url(this)
+        val token = Prefs.token(this)
+        thread {
+            val result = Transcriber.translate(url, token, existing)
+            ui.post {
+                busy = false
+                tint(idleColor)
+                when (result) {
+                    is Transcriber.Result.Ok -> {
+                        val out = result.text.trim()
+                        if (out.isEmpty()) { say(getString(R.string.no_speech)); return@post }
+                        // Replace, not append: select everything and let
+                        // commitText overwrite the selection.
+                        currentInputConnection?.let { conn ->
+                            conn.performContextMenuAction(android.R.id.selectAll)
+                            conn.commitText(out, 1)
+                        }
+                        say("")
+                    }
+                    is Transcriber.Result.Err -> say(result.message)
+                }
+            }
+        }
+    }
+
+    // ---- plumbing ----
+
+    /**
+     * Back to the everyday keyboard. This one exists to dictate a
+     * sentence, not to be the keyboard you live in.
      */
     private fun goBack() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             if (switchToPreviousInputMethod()) return
         }
-        // Older Androids, or nothing to go back to: offer the picker rather
-        // than stranding the user on a keyboard with no letters.
         @Suppress("DEPRECATION")
         (getSystemService(INPUT_METHOD_SERVICE)
                 as android.view.inputmethod.InputMethodManager)
             .showInputMethodPicker()
+    }
+
+    private fun reset() {
+        locked = false
+        tint(idleColor)
+        button.text = getString(R.string.hold_and_talk)
     }
 
     private fun tint(color: Int) {
@@ -198,6 +317,9 @@ class DictationIme : InputMethodService() {
 
     override fun onFinishInput() {
         super.onFinishInput()
-        if (holding) { holding = false; recorder.cancel() }
+        if (holding || locked) {
+            holding = false; locked = false
+            recorder.cancel()
+        }
     }
 }
