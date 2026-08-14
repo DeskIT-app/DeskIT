@@ -31,7 +31,8 @@ own thread and callers only ever put messages on a queue.
 from __future__ import annotations
 
 import ctypes
-import logging
+import ctypes.wintypes          # NOT "as w": Splash._build_and_loop uses w
+import logging                  # as a local for the window width
 import math
 import queue
 import threading
@@ -185,12 +186,52 @@ class Splash:
             # the process. Observed: exit code 3 on a clean shutdown.
             import gc
             try:
+                _forget_window(root)     # geometry first — see the docstring
                 root.destroy()
             except Exception:
                 pass
             animate = pump = None                       # noqa: F841
             label = bar = frame = chip = root = None    # noqa: F841
             gc.collect()
+
+
+def _forget_window(root) -> None:
+    """Make Windows repaint the desktop where an overlay used to be.
+
+    Destroying a borderless always-on-top window does not reliably force the
+    desktop underneath to redraw. On a STATIC desktop — no other windows, so
+    nothing else ever invalidates that region — the pixels of a window that
+    no longer exists can sit there indefinitely. It looks exactly like a
+    splash that refused to close, and it is not: measured 2026-08-14, the
+    splash window is destroyed 1.21 s after finish() in 3 runs of 3, while
+    its image stayed on screen for minutes.
+
+    Called with the geometry read BEFORE the window is destroyed, because
+    afterwards there is nothing left to ask.
+    """
+    try:
+        rect = ctypes.wintypes.RECT(*root_rect(root))
+    except Exception:
+        return
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        # NULL hwnd = the desktop. INVALIDATE|ERASE marks it dirty,
+        # UPDATENOW paints it before we return rather than whenever.
+        RDW_INVALIDATE, RDW_ERASE = 0x0001, 0x0004
+        RDW_ALLCHILDREN, RDW_UPDATENOW = 0x0080, 0x0100
+        user32.RedrawWindow(None, ctypes.byref(rect), None,
+                            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN
+                            | RDW_UPDATENOW)
+    except Exception as e:
+        _log.debug("could not repaint behind an overlay: %r", e)
+
+
+def root_rect(root) -> tuple[int, int, int, int]:
+    """(left, top, right, bottom) of a Tk window, padded by a pixel so a
+    1 px border never survives the repaint."""
+    x, y = root.winfo_rootx(), root.winfo_rooty()
+    return (x - 1, y - 1,
+            x + root.winfo_width() + 1, y + root.winfo_height() + 1)
 
 
 def _no_activate(root, click_through: bool = False) -> bool:
@@ -363,6 +404,7 @@ class StatusDot:
         finally:
             import gc                       # see Splash: same Tcl teardown
             try:
+                _forget_window(root)        # and the same repaint rule
                 root.destroy()
             except Exception:
                 pass
