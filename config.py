@@ -108,6 +108,73 @@ class TranslateConfig:
 
 
 @dataclass(frozen=True)
+class VocabConfig:
+    """The learned vocabulary — see vocab.py.
+
+    `terms` is the hand-written seed: your own stack, the names the model
+    has no way of knowing. It is kept in config.toml (and therefore in git)
+    rather than in vocab.json, which holds what was learned from your
+    speech and is gitignored for the same reason transcripts.log is.
+    """
+    enabled: bool = True
+    terms: tuple[str, ...] = ()
+    # Well under faster-whisper's 223-token hotword ceiling: Hebrew costs
+    # several tokens a word, and over-prompting Whisper makes it emit the
+    # prompted words unbidden. A long list is not a better list.
+    max_terms: int = 40
+    # How many independent corrections of the same garble before it is
+    # repaired automatically. 1 would let a slip in the edit box start
+    # rewriting a word you really say.
+    replace_after_hits: int = 2
+    # How many recent recordings to keep, so a correction can be tied to the
+    # audio that produced it. 0 = keep none.
+    #
+    # PRIVACY: this is raw audio of what you dictated, on this disk, in
+    # recent\. It is gitignored, capped, and the oldest is dropped as new
+    # ones arrive. Set to 0 if that trade is not worth it — everything else
+    # here still works, you just lose the ability to MEASURE whether a
+    # vocabulary change helped (--benchmark) rather than assume it did.
+    keep_audio: int = 50
+
+
+@dataclass(frozen=True)
+class PolishConfig:
+    """The context pass — see polish.py.
+
+    `when`:
+      never   — off.
+      known   — only when the transcript contains something you have
+                corrected before. The default: it costs nothing on the
+                dictations that do not need it, and only wakes an idle
+                Ollama (76 s cold) when there is evidence a repair is due.
+      always  — every dictation. Accurate and slow; try it before deciding
+                the pass is not worth it.
+    """
+    when: str = "known"
+    # Below this a "sentence" is a phrase with no context to reason from,
+    # which is precisely where a model starts inventing one.
+    min_chars: int = 20
+    # "" = reuse translate.ollama_model. A separate knob because repairing
+    # Hebrew wants a stronger model than translating does, and you may not
+    # want to pay for that on every dictation.
+    ollama_model: str = ""
+    # HOW LONG THE PASTE MAY BE HELD UP. This pass sits between the words
+    # leaving your mouth and the text reaching your cursor, so it does not
+    # get to take as long as it likes: past this, the raw transcript is
+    # pasted and the reply is thrown away when it eventually arrives.
+    #
+    # Measured 2026-08-14, and the reason this knob exists: with a cold
+    # Ollama the pass took 53.7 s. The transcript sat unpasted the whole
+    # time, the user assumed it had failed, re-dictated — and then both
+    # landed within 1.5 s of each other.
+    max_wait_s: float = 6.0
+    # Send one throwaway request at startup so the ~5 GB is already in VRAM
+    # before a dictation needs it (76 s cold vs 2.5 s warm). Costs the VRAM
+    # for the whole session; set false if you would rather pay the wait.
+    warm_up: bool = True
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     """The phone endpoint: dictate from the phone, transcribe on this GPU.
 
@@ -140,6 +207,11 @@ class Config:
     # swallowed while it acts as the latch — so a key with a job of its own
     # ("left") is fine. "" = off.
     latch_hotkey: str = "left"
+    # Tapped to open the correction box on the last transcript. Editing it
+    # teaches the vocabulary (see vocab.py) — this is the only way anything
+    # is ever learned, because the app cannot see you fix the text inside
+    # whatever window you pasted into. "" = off.
+    correct_hotkey: str = "f8"
     backend: str = "gemini"
     paste_chord: str = "ctrl+v"
     restore_delay_ms: int = 300
@@ -154,6 +226,8 @@ class Config:
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
     translate: TranslateConfig = field(default_factory=TranslateConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    vocab: VocabConfig = field(default_factory=VocabConfig)
+    polish: PolishConfig = field(default_factory=PolishConfig)
     # Fall back to the local backend when every cloud model is out of quota.
     fallback_to_local: bool = True
     # Show a small startup window while the models load. Without it a
@@ -190,6 +264,8 @@ def load(path: Path) -> Config:
     feedback = data.get("feedback", {})
     translate = data.get("translate", {})
     server = data.get("server", {})
+    vocab = data.get("vocab", {})
+    polish = data.get("polish", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -209,6 +285,8 @@ def load(path: Path) -> Config:
             "translate_hotkey", Config.translate_hotkey)).strip().lower(),
         latch_hotkey=str(data.get("latch_hotkey",
                                   Config.latch_hotkey)).strip().lower(),
+        correct_hotkey=str(data.get("correct_hotkey",
+                                    Config.correct_hotkey)).strip().lower(),
         backend=str(data.get("backend", Config.backend)).strip().lower(),
         paste_chord=str(data.get("paste_chord", Config.paste_chord)).strip().lower(),
         restore_delay_ms=int(data.get("restore_delay_ms", Config.restore_delay_ms)),
@@ -280,6 +358,24 @@ def load(path: Path) -> Config:
             host=str(server.get("host", ServerConfig.host)).strip(),
             port=int(server.get("port", ServerConfig.port)),
         ),
+        vocab=VocabConfig(
+            enabled=bool(vocab.get("enabled", VocabConfig.enabled)),
+            terms=tuple(str(t).strip() for t in vocab.get("terms", ())
+                        if str(t).strip()),
+            max_terms=int(vocab.get("max_terms", VocabConfig.max_terms)),
+            replace_after_hits=int(vocab.get(
+                "replace_after_hits", VocabConfig.replace_after_hits)),
+            keep_audio=int(vocab.get("keep_audio", VocabConfig.keep_audio)),
+        ),
+        polish=PolishConfig(
+            when=str(polish.get("when", PolishConfig.when)).strip().lower(),
+            min_chars=int(polish.get("min_chars", PolishConfig.min_chars)),
+            ollama_model=str(polish.get(
+                "ollama_model", PolishConfig.ollama_model)).strip(),
+            max_wait_s=float(polish.get("max_wait_s",
+                                        PolishConfig.max_wait_s)),
+            warm_up=bool(polish.get("warm_up", PolishConfig.warm_up)),
+        ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
         splash=bool(data.get("splash", Config.splash)),
@@ -320,6 +416,34 @@ def load(path: Path) -> Config:
         if cfg.latch_hotkey == "esc":
             raise ConfigError("latch_hotkey cannot be 'esc' — esc discards a "
                               "locked recording")
+    if cfg.correct_hotkey:
+        for other, label in ((cfg.hotkey, "hotkey"),
+                             (cfg.english_hotkey, "english_hotkey"),
+                             (cfg.translate_hotkey, "translate_hotkey"),
+                             (cfg.latch_hotkey, "latch_hotkey")):
+            if other and cfg.correct_hotkey == other:
+                raise ConfigError(
+                    f"correct_hotkey must differ from {label} (both are "
+                    f"{other!r}) — one key cannot mean two things")
+    if cfg.polish.when not in ("never", "known", "always"):
+        raise ConfigError('polish.when must be "never", "known" or "always", '
+                          f"got {cfg.polish.when!r}")
+    if cfg.polish.min_chars < 0:
+        raise ConfigError("polish.min_chars must be >= 0")
+    if cfg.polish.max_wait_s <= 0:
+        raise ConfigError(
+            "polish.max_wait_s must be > 0 — it is the longest the paste may "
+            'be delayed by the context pass. Use polish.when = "never" to '
+            "turn the pass off instead")
+    if cfg.vocab.max_terms < 0:
+        raise ConfigError("vocab.max_terms must be >= 0 (0 disables hotwords)")
+    if cfg.vocab.keep_audio < 0:
+        raise ConfigError("vocab.keep_audio must be >= 0 (0 keeps none)")
+    if cfg.vocab.replace_after_hits < 1:
+        raise ConfigError(
+            "vocab.replace_after_hits must be >= 1 — a garble is only "
+            "repaired after it has been corrected that many times, and 0 "
+            "would mean repairing one it has never been corrected for")
     if not (0 < cfg.min_seconds < cfg.max_seconds <= 3600):
         raise ConfigError("need 0 < min_seconds < max_seconds <= 3600")
     if cfg.latch_max_seconds < 0:

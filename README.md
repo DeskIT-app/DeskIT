@@ -124,6 +124,9 @@ background instance to quit.
   discarded with an error beep (`max_seconds` — the runaway guard for when
   a key-release gets swallowed, e.g. by an elevated window). A *locked*
   recording has no cap at all.
+- **It gets a word wrong? Tap `F8`, fix it, and it stops getting it
+  wrong.** See [Teaching it the words it gets
+  wrong](#teaching-it-the-words-it-gets-wrong-tap-f8).
 - **transcripts.log** (this folder, rotates at ~1 MB × 3): every attempt —
   timestamp, duration, backend, latency, and the raw backend text. It is
   the recovery path when a paste lands nowhere, and the evidence when a
@@ -265,6 +268,14 @@ LAN. A bearer token is required on top of that.
 Hold the button, talk, release. The text appears and is copied to the
 clipboard automatically.
 
+**Everything you teach it with `F8` on the desktop applies here too**, and
+there is nothing on the phone that implements it: the phone only records,
+this machine transcribes, and it does so with the same model and the same
+[learned vocabulary](#teaching-it-the-words-it-gets-wrong-tap-f8). Correct
+"xpogo" once at the desk and the phone stops producing it from the next
+dictation. The repair pass runs on this path as well, so the two cannot
+give different answers for the same audio.
+
 Three things that cost real time the first time round:
 
 - **`tailscale serve` does not fail when Serve is off for your tailnet — it
@@ -320,6 +331,171 @@ make the output *better*, and they stay.
 Note that silence alone does not cause this — that was tested and ruled
 out. VAD strips silence and key clicks and the result is empty. It takes
 real speech in front of it for the decoder to run on.
+
+## Teaching it the words it gets wrong (tap F8)
+
+Whisper does not mishear randomly. It mishears the words it was never
+trained on — your project names, your tools, your jargon. Measured from
+this machine's own `transcripts.log`, the failures split into two families
+that need opposite handling:
+
+| what you said | what it wrote | family |
+|---|---|---|
+| Expo Go | `xpogo` | never heard the name |
+| `--branch production` | `Brinth Production` | never heard the name |
+| Cowork | `בקו-ורק` | never heard the name |
+| HebrewDictation | `Hebrew reduction` | never heard the name |
+| מקלדת | `מקללת` | real word, wrong word |
+| סריקה | `סירקה` | real word, wrong word |
+
+**Fix the wrong words where they landed** — in Chrome, in Claude Code,
+wherever the transcript was pasted, which you were going to do anyway —
+then **tap `F8`**. It reads the corrected text off the screen, diffs it
+against what it produced, and learns the difference. If the field holds a
+lot of other text, select just the corrected sentence first.
+
+There is deliberately **no edit box**. The first version put the transcript
+in a Tk window to be fixed there, and Tk 8.6 has no bidi support at all:
+mixed Hebrew and English rendered visually scrambled and the caret jumped
+around as it was typed into. You are already fixing the text in an app with
+real bidi — reading it beats asking for it again in a worse editor.
+
+What happens to a correction:
+
+- **The corrected form becomes a hotword**, handed to the decoder *before*
+  it runs, so it stops producing the garble at all. This is the half that
+  matters; everything else is a safety net.
+- **After `replace_after_hits` corrections of the same garble (default 2)**
+  it is also repaired after the fact, for the times it slips through
+  anyway. Two, not one, because this pass rewrites your own words and one
+  correction could be a slip of the finger in the box.
+- **The recording is kept** (last 50, in `recent\`) with your correction
+  attached, which turns "it got this wrong" into a test case — see
+  `--benchmark` below.
+
+`python main.py --vocab` prints everything learned and the exact hotword
+list being fed to the decoder.
+
+Two things it refuses to do, both of which would poison the vocabulary:
+
+- **Learn from a field that no longer holds the transcript.** If less than
+  half the last dictation is still recognisable in what was grabbed, you
+  have moved on and it says so rather than diffing unrelated text.
+- **Learn insertions or rewrites.** Only substitutions of up to four words
+  are kept. A word the model *missed* has no misheard form to key on, and
+  editing the sentence into a different sentence is you rewriting, not
+  correcting.
+
+One known limit: a mis-hearing that is both the **last word** of the
+dictation *and* expands into more words (`xpogo` → `Expo Go`) has no
+matching word after it to anchor its end, so it is learned truncated
+(`xpogo` → `Expo`). Mid-sentence — the ordinary case, since these are
+paragraphs — it is exact. Widening the search would pull in your next
+sentence, which is a much worse thing to learn.
+
+### Why this is not just a longer `initial_prompt`
+
+Because `initial_prompt` stops working after 30 seconds, which is exactly
+where the long dictations that garble worst live.
+
+`local_whisper.py` sets `condition_on_previous_text=False`. Under that
+setting faster-whisper drops the initial prompt after the first decoder
+window: it goes into `all_tokens`, and the end of each segment loop does
+`prompt_reset_since = len(all_tokens)`. `hotwords` is re-injected per
+window inside `get_prompt()` and never touches that path. Measured
+2026-08-14 by spying on `WhisperModel.get_prompt` over 125 s of real
+speech:
+
+```
+initial_prompt='MARKERWORD'   present in 1/5 decoder windows
+hotwords='MARKERWORD'         present in 6/6 decoder windows
+```
+
+Both are used — they coexist, and the prompt becomes
+`" HOTWORDS INITIAL_PROMPT"`. The initial prompt is what sets the
+Hebrew-with-English register and is worth 10.8% → 9.6% WER on short clips;
+hotwords are what carry the vocabulary past the 30-second mark.
+
+**Budget:** faster-whisper truncates the hotword string at
+`max_length // 2 - 1` = **223 tokens**, mid-token if it has to. Hebrew
+costs several tokens a word, so `max_terms` (40) keeps the list well under
+it. Over-prompting Whisper makes it emit the prompted words unbidden — a
+longer list is not a better list.
+
+### The other family: `[polish]`
+
+`מקללת` is a real Hebrew word. No lookup table can safely rewrite it,
+because you might have meant it — only the sentence around it says
+otherwise. So a language model reads the sentence and fixes the word.
+
+It is allowed to read context. It is **not** allowed to write. The
+instruction not to invent is in the prompt *and enforced in code*: every
+reply is diffed against the transcript and thrown away if the model did
+more than swap words — more than 15% change in word count, or fewer than
+75% of the words surviving. A rejected reply is not retried and not
+reported as an error; the raw transcript goes through untouched, exactly as
+if the pass were off. Failing closed is the only acceptable failure mode
+for something sitting between your speech and your cursor.
+
+Ollama goes first here, the reverse of [translating](#translating-to-english-tap-f9),
+because this runs on dictations rather than on a key you tap — Gemini's 20
+requests/day/model would be gone before lunch and would take translation
+down with it. Default `when = "known"`: the pass only runs when the
+transcript contains something you have corrected before, so an idle Ollama
+is only ever woken (76 s cold) when there is real evidence a repair is due.
+
+**It never holds up your paste.** `max_wait_s` (6 s) is the longest the
+pass may delay the transcript reaching your cursor; past it the raw text is
+pasted and the reply is discarded whenever it turns up. `warm_up` sends one
+throwaway request at startup so the ~5 GB is already in VRAM. Both exist
+because of a measured failure on 2026-08-14: a cold Ollama took **53.7 s**,
+the transcript sat unpasted the whole time, it looked like a failure, it
+got re-dictated — and then both landed 1.5 s apart.
+
+> **The one thing this pass will get wrong, and it cannot be guarded
+> against.** Once you have taught it `להטמע` → `להטמיע`, it applies that
+> everywhere — including in a sentence where you said the wrong form *on
+> purpose*. Observed live: a dictation of "הוא רשם להטמע בלי יוד" ("it wrote
+> להטמע without a yud") came out as "הוא רשם להטמיע בלי יוד", which says
+> nothing. `_is_safe` cannot catch it, because a one-word swap is exactly
+> what this pass is for.
+>
+> **Hotwords have no such failure mode** — they bias the decoder *before*
+> it writes and never rewrite what you said. If you want the learning
+> without any risk of being edited, set `when = "never"` and
+> `replace_after_hits` high; the vocabulary still works, it just stops
+> correcting after the fact.
+
+### Proving it actually helps
+
+```bash
+.venv\Scripts\python.exe main.py --benchmark
+```
+
+Replays every recording you have corrected, with the vocabulary on and off,
+and reports the word error rate of each. This exists because "it feels
+better since I added those words" is not evidence, and a vocabulary is
+easy to believe in and hard to notice failing. If the numbers get worse it
+says so, and tells you the likely cause (a seeded term you rarely say, or
+too many of them).
+
+Known limits, so the numbers are read correctly:
+
+- These are the recordings you chose to correct, so they are the hard ones
+  by construction — not a sample of normal dictation.
+- The benefit is **unmeasured on real Hebrew speech** as of 2026-08-14. The
+  mechanism is proven (the window test above) and the cost is nil (A/B on
+  clean synthetic English: 8/8 terms both ways, no latency penalty), but
+  clean TTS gets the terms right without any help, so it cannot show the
+  gain. Your own corrected recordings are the only honest test set, which
+  is why the app now keeps them.
+
+**Privacy:** `recent\` is raw audio of what you dictated, on this disk, and
+`vocab.json` pairs words you said with what you meant. Both are gitignored
+and `recent\` is capped at `keep_audio` (50), oldest dropped first. Set
+`keep_audio = 0` to keep none — everything else still works, you just lose
+the ability to measure rather than assume. The seed terms in `config.toml`
+*are* committed: those are hand-written, not learned.
 
 ## Nothing is ever lost
 
@@ -468,6 +644,17 @@ for `מבשרים`, all of which the local model got right.
 | `english_hotkey` | `f9` | hold for English instead; `""` disables. Avoid `right alt` (releasing Alt alone pops the menu bar and steals focus before the paste) and `right shift` (holding 8 s triggers Windows FilterKeys) |
 | `translate_hotkey` | `f9` | **tap** to turn the selection — or the whole field — into English; `""` disables. Must differ from the two hold keys |
 | `latch_hotkey` | `left` | **tap while holding** the hotkey to lock the recording on, so a long dictation isn't a long hold; tap again to finish. Swallowed only while it does this. `""` disables. Avoid `right shift` — Ctrl+Shift switches keyboard layout |
+| `correct_hotkey` | `f8` | fix the transcript where it landed, then **tap** this; it reads the correction off the screen and learns the difference. `""` disables. See [Teaching it the words it gets wrong](#teaching-it-the-words-it-gets-wrong-tap-f8) |
+| `[vocab] enabled` | `true` | feed the learned vocabulary to the decoder as hotwords |
+| `[vocab] terms` | your stack | hand-written seeds, ranked ahead of anything learned |
+| `[vocab] max_terms` | `40` | cap on the hotword list; faster-whisper truncates at 223 tokens and over-prompting makes Whisper emit the words unbidden |
+| `[vocab] replace_after_hits` | `2` | corrections of the same garble before it is also repaired after the fact. `1` would let one slip in the box start rewriting a word you really say |
+| `[vocab] keep_audio` | `50` | recordings kept in `recent\` so `--benchmark` can replay them. `0` = keep none |
+| `[polish] when` | `known` | `never` \| `known` (only when a learned garble is present) \| `always` |
+| `[polish] min_chars` | `20` | below this there is no context to reason from |
+| `[polish] ollama_model` | `""` | `""` = reuse `translate.ollama_model` |
+| `[polish] max_wait_s` | `6` | longest the pass may delay your paste; past it the raw transcript is pasted and the reply discarded |
+| `[polish] warm_up` | `true` | one throwaway request at startup so the model is in VRAM before a dictation needs it |
 | `backend` | `local` | `gemini` \| `local` \| `fake` |
 | `paste_chord` | `ctrl+v` | try `shift+insert` for unusual terminals |
 | `restore_delay_ms` | `300` | wait after pasting before restoring the old clipboard (too small ⇒ the app pastes the *old* clipboard) |

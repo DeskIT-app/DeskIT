@@ -91,11 +91,27 @@ def _clean(text: str) -> str:
     return out
 
 
+def resolve_prompt(system_prompt, target: str) -> str:
+    """The system prompt for one request.
+
+    `system_prompt` overrides the translation prompt entirely, which is how
+    polish.py reuses these backends: same chat endpoints, same reply
+    cleaning, same Gemini thinking-knob rescue and Ollama error handling —
+    a different job. A CALLABLE is accepted because polish's prompt embeds
+    the learned glossary, which grows every time the user corrects
+    something; resolving it per request keeps a long-lived backend from
+    pinning the glossary it was built with.
+    """
+    if system_prompt is None:
+        return _prompt(target)
+    return system_prompt() if callable(system_prompt) else str(system_prompt)
+
+
 class GeminiTranslator:
     name = "gemini"
 
     def __init__(self, models: list[str] | str, timeout_s: int,
-                 target: str = "English"):
+                 target: str = "English", system_prompt=None):
         from google import genai
         from google.genai import types
 
@@ -108,6 +124,7 @@ class GeminiTranslator:
         if not self._models:
             raise TranslationError("no gemini models configured")
         self._target = target
+        self._system = system_prompt
         # Separate from the transcriber's dicts on purpose: a model that is
         # spent for audio is spent for text too, but each feature learning
         # that independently costs one 429 and keeps the two decoupled.
@@ -123,7 +140,8 @@ class GeminiTranslator:
         import gemini_pool
 
         cfg = self._types.GenerateContentConfig(
-            system_instruction=_prompt(self._target), temperature=0.2)
+            system_instruction=resolve_prompt(self._system, self._target),
+            temperature=0.2)
         gemini_pool.apply_thinking(cfg, model, self._thinking)
         try:
             response = self._client.models.generate_content(
@@ -164,11 +182,12 @@ class OllamaTranslator:
     name = "ollama"
 
     def __init__(self, model: str, url: str, timeout_s: int,
-                 target: str = "English"):
+                 target: str = "English", system_prompt=None):
         self._model = model
         self._url = url.rstrip("/")
         self._timeout = timeout_s
         self._target = target
+        self._system = system_prompt
 
     def translate(self, text: str) -> str:
         payload = {
@@ -176,7 +195,8 @@ class OllamaTranslator:
             "stream": False,
             "options": {"temperature": 0.2},
             "messages": [
-                {"role": "system", "content": _prompt(self._target)},
+                {"role": "system",
+                 "content": resolve_prompt(self._system, self._target)},
                 {"role": "user", "content": text},
             ],
         }

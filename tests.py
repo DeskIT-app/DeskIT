@@ -20,6 +20,7 @@ import apikey
 import config as config_mod
 import injector
 import singleton
+import vocab as vocab_mod
 from hotkey import PTTStateMachine, parse_chord, vk_for, vk_name
 from recorder import frames_to_wav
 from transcribers.fake import FakeTranscriber
@@ -522,6 +523,21 @@ class _FakeInjector:
     def set_text(self, text):
         self.calls.append(("clipboard", text))
 
+    # -- what the correction key reads off the screen --
+    on_screen = ""
+    has_selection = False
+
+    def snapshot(self):
+        return ("text", "whatever the user had")
+
+    def restore(self, state, what="transcript"):
+        self.calls.append(("restore", state[1]))
+        return "old clipboard restored"
+
+    def grab(self, copy_chord, select_all_chord, settle_s):
+        self.calls.append(("grab", self.on_screen))
+        return self.on_screen, self.has_selection
+
 
 def _worker_app(backend, spool_dir, retry_seconds=5.0):
     import dataclasses
@@ -538,7 +554,14 @@ def _worker_app(backend, spool_dir, retry_seconds=5.0):
     app = main_mod.App.__new__(main_mod.App)
     app.cfg, app.transcriber, app._local = cfg, backend, False
     app.spool = Spool(Path(spool_dir))
-    app._model_lock = threading.Lock()   # real App builds this in __init__
+    # Everything below is built by the real App.__init__; this helper has to
+    # mirror it or the worker path under test dies on a missing attribute.
+    app._model_lock = threading.Lock()
+    app.recent = None                    # no audio ring in the worker tests
+    app.vocab = vocab_mod.Vocab(Path(spool_dir) / "vocab.json")
+    app._hotwords = app.vocab.hotwords
+    app._polisher = None
+    app._last, app._last_lock = None, threading.Lock()
     return app
 
 
@@ -808,6 +831,7 @@ def test_explicit_language_beats_detection() -> None:
     t._cleanup, t._fillers = False, ()
     t._initial_prompt = None
     t._guards, t._boilerplate = {}, ()
+    t._hotwords = None       # real __init__ sets this; see local_whisper.py
 
     assert t.transcribe(b"RIFF", language="en") == "hello"
     assert calls["model"] == "en" and calls["language"] == "en", calls
@@ -885,6 +909,7 @@ def test_english_model_gets_no_hebrew_prompt() -> None:
     t._cleanup, t._fillers = False, ()
     t._initial_prompt = "שיחה בעברית עם commit"
     t._guards, t._boilerplate = {}, ()
+    t._hotwords = None       # real __init__ sets this; see local_whisper.py
 
     t.transcribe(b"RIFF", language="he")
     assert seen["he"] == "שיחה בעברית עם commit", seen
@@ -1603,6 +1628,545 @@ def test_real_config_has_a_multi_model_runway() -> None:
     assert len(cfg.gemini.models) >= 2, cfg.gemini.models
     assert cfg.feedback.enabled and cfg.feedback.placeholder
     assert cfg.fallback_to_local is True
+
+
+# --------------------------------------------------------------------------
+# Learning from corrections (vocab.py) and the context pass (polish.py)
+# --------------------------------------------------------------------------
+
+
+def _tmp_vocab(**kw):
+    import tempfile
+    return vocab_mod.Vocab(Path(tempfile.mkdtemp(prefix="vocab-"))
+                           / "vocab.json", **kw)
+
+
+def test_a_correction_teaches_only_the_words_that_changed() -> None:
+    """The whole feature in one assertion: the user fixes two words in a
+    sentence and the app learns those two words, not the sentence."""
+    raw = "תריץ את השרת של xpogo ואז תעשה Brinth production"
+    fixed = "תריץ את השרת של Expo Go ואז תעשה branch production"
+    pairs = vocab_mod.diff_corrections(raw, fixed)
+    assert ("xpogo", "Expo Go") in pairs, pairs
+    assert ("Brinth", "branch") in pairs, pairs
+    assert len(pairs) == 2, pairs
+
+
+def test_insertions_and_deletions_teach_nothing() -> None:
+    """A word the model MISSED has no misheard form to key on, and a word it
+    invented is the hallucination filter's job. Learning either would put a
+    rule in the store that can never match, or worse, one that deletes."""
+    assert vocab_mod.diff_corrections("שלום עולם",
+                                      "שלום גדול עולם") == []
+    assert vocab_mod.diff_corrections("שלום גדול עולם",
+                                      "שלום עולם") == []
+
+
+def test_a_rewritten_sentence_is_not_learned_as_a_word() -> None:
+    """Editing the box into a different sentence is the user rewriting, not
+    correcting. Learning it would teach the app to swap whole sentences."""
+    raw = "אחת שתיים שלוש ארבע חמש שש"
+    fixed = "לגמרי משהו אחר לגמרי אחר כאן עכשיו"
+    for heard, meant in vocab_mod.diff_corrections(raw, fixed):
+        assert len(heard.split()) <= vocab_mod.MAX_SPAN_WORDS, (heard, meant)
+        assert len(meant.split()) <= vocab_mod.MAX_SPAN_WORDS, (heard, meant)
+
+
+def test_repair_waits_for_the_second_correction() -> None:
+    """replace_after_hits exists because one correction could be a slip of
+    the finger in the box, and this pass rewrites the user's own words."""
+    v = _tmp_vocab(replace_after_hits=2)
+    v.learn("xpogo", "Expo Go")
+    out, applied = v.apply("תריץ את xpogo עכשיו")
+    assert out == "תריץ את xpogo עכשיו", "one correction must not be enough"
+    assert applied == []
+    v.learn("xpogo", "Expo Go")            # same mistake, second time
+    out, applied = v.apply("תריץ את xpogo עכשיו")
+    assert out == "תריץ את Expo Go עכשיו", out
+    assert applied == ["xpogo -> Expo Go"], applied
+
+
+def test_repair_never_eats_the_middle_of_a_word() -> None:
+    """A learned short garble matching inside a longer real word is how a
+    replacement pass starts corrupting speech. The end of the match must
+    always be a word boundary — even though the START tolerates a Hebrew
+    prefix (see the next test)."""
+    v = _tmp_vocab(replace_after_hits=1)
+    v.learn("הר", "Har")
+    out, applied = v.apply("יש הרבה דברים כאן")
+    assert out == "יש הרבה דברים כאן", out
+    assert applied == [], applied
+    out, _ = v.apply("הר אחד")
+    assert out == "Har אחד", out
+
+
+def test_repair_sees_through_a_hebrew_prefix() -> None:
+    """The real case from transcripts.log: the app heard "לסירקה", the user
+    corrects the bare word "סירקה", and the next transcript says "לסירקה"
+    again. Without prefix matching the lesson never fires on the words it
+    was actually taught — and the prefix must survive the swap."""
+    v = _tmp_vocab(replace_after_hits=1)
+    v.learn("סירקה", "סריקה")
+    out, applied = v.apply("העלה את זה לסירקה ציבורית")
+    assert out == "העלה את זה לסריקה ציבורית", out
+    assert applied == ["סירקה -> סריקה"], applied
+
+
+def test_hotwords_put_the_seeds_first_and_stay_bounded() -> None:
+    """The seeds are the user's own stack, hand-written in config.toml. A
+    burst of recent corrections must not push them out of the budget."""
+    v = _tmp_vocab(seed_terms=("Massif", "TripSync"), max_terms=4)
+    for i in range(20):
+        v.learn(f"garble{i}", f"Term{i}")
+    terms = v.hotwords().split()
+    assert terms[:2] == ["Massif", "TripSync"], terms
+    assert len(terms) == 4, terms
+
+
+def test_hotwords_do_not_repeat_a_seeded_term() -> None:
+    """Correcting something already seeded must not spend the budget twice
+    on the same word."""
+    v = _tmp_vocab(seed_terms=("Expo Go",), max_terms=10)
+    v.learn("xpogo", "Expo Go")
+    assert v.hotwords().split().count("Expo") == 1, v.hotwords()
+
+
+def test_hits_rank_above_recency_in_the_hotword_list() -> None:
+    """A name corrected four times is one the user says often, and it earns
+    its slot ahead of a one-off from five minutes ago."""
+    v = _tmp_vocab(max_terms=2)
+    v.learn("aaa", "Often")
+    v.learn("aaa", "Often")
+    v.learn("aaa", "Often")
+    v.learn("bbb", "Once")
+    assert v.hotwords().split()[0] == "Often", v.hotwords()
+
+
+def test_a_corrupt_vocab_file_does_not_stop_dictation() -> None:
+    """Accuracy is allowed to degrade; dictation is not allowed to stop."""
+    import tempfile
+    path = Path(tempfile.mkdtemp(prefix="vocab-")) / "vocab.json"
+    path.write_text("{not json at all", "utf-8")
+    v = vocab_mod.Vocab(path, seed_terms=("Massif",))
+    assert len(v) == 0
+    assert v.hotwords() == "Massif"
+
+
+def test_the_vocabulary_survives_a_round_trip() -> None:
+    import tempfile
+    path = Path(tempfile.mkdtemp(prefix="vocab-")) / "vocab.json"
+    a = vocab_mod.Vocab(path)
+    a.learn_from_edit("תריץ את xpogo", "תריץ את Expo Go")
+    b = vocab_mod.Vocab(path)
+    assert [(c["heard"], c["meant"]) for c in b.corrections] == \
+        [("xpogo", "Expo Go")], b.corrections
+
+
+# ---- the guard that makes the context pass safe to run at all ----
+
+
+def test_polish_accepts_a_word_swap() -> None:
+    """The case the whole pass exists for: a real Hebrew word swapped for
+    another real Hebrew word, which only the sentence disambiguates."""
+    import polish as polish_mod
+    before = "השדה נשאר למטה וגם מקללת מסתירה את מה שאני כותב"
+    after = "השדה נשאר למטה וגם מקלדת מסתירה את מה שאני כותב"
+    ok, why = polish_mod._is_safe(before, after)
+    assert ok, why
+
+
+def test_polish_rejects_an_added_sentence() -> None:
+    """"שלא ימציא משפטים חדשים" — enforced in code, not just asked for in
+    the prompt. A model that helpfully finishes the user's thought is the
+    failure mode this pass would otherwise introduce."""
+    import polish as polish_mod
+    before = "תבדוק לי את הקוד ותגיד אם יש באג בפונקציה הזאת בבקשה"
+    after = before + ". אני אשמח אם תוסיף גם בדיקות יחידה ותריץ אותן."
+    ok, why = polish_mod._is_safe(before, after)
+    assert not ok, "an appended sentence must be rejected"
+    assert "writing" in why or "grew" in why, why
+
+
+def test_polish_rejects_a_reworded_paragraph() -> None:
+    """Same length, different words: the model 'improved' the phrasing. That
+    is worse than a garble, because a garble is visible and this is not."""
+    import polish as polish_mod
+    before = "אני רוצה שתעבור על הבאגים האלה ותתקן אותם אחד אחרי השני"
+    after = "נא לבדוק את התקלות הללו ולטפל בכל אחת מהן בנפרד ובזו אחר זו"
+    ok, why = polish_mod._is_safe(before, after)
+    assert not ok, "a reworded paragraph must be rejected"
+
+
+def test_polish_rejects_dropped_content() -> None:
+    """Repetition and half-finished sentences are the speaker's own words.
+    A pass that tidies them away is deleting real speech."""
+    import polish as polish_mod
+    before = ("אני רוצה שתוסיף את הכפתור הזה למעלה ואז גם תוריד את זה "
+              "למטה ותסדר את כל העמוד מחדש בבקשה")
+    ok, why = polish_mod._is_safe(before, "אני רוצה שתוסיף את הכפתור")
+    assert not ok, "a truncated reply must be rejected"
+    assert "lost" in why or "dropped" in why, why
+
+
+def test_polish_rejects_an_empty_reply() -> None:
+    import polish as polish_mod
+    ok, _ = polish_mod._is_safe("משהו אמיתי שנאמר כאן", "   ")
+    assert not ok
+
+
+def test_polish_only_wakes_up_for_a_known_mistake() -> None:
+    """`when = "known"` is what keeps an idle Ollama (76 s cold) from being
+    woken on a dictation with nothing to repair."""
+    import dataclasses
+
+    import polish as polish_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dataclasses.replace(cfg, polish=config_mod.PolishConfig(
+        when="known", min_chars=5))
+    v = _tmp_vocab()
+    p = polish_mod.Polisher(cfg, v)
+    text = "תריץ את השרת של xpogo בבקשה ותגיד לי מה קרה"
+    assert not p.should_run(text), "nothing learned yet — must not run"
+    v.learn("xpogo", "Expo Go")
+    assert p.should_run(text), "a known garble is present — must run"
+    assert not p.should_run("משפט נקי לגמרי בלי שום בעיה ידועה כאן")
+
+
+def test_a_slow_context_pass_cannot_hold_the_paste_hostage() -> None:
+    """Measured 2026-08-14: a cold Ollama took 53.7 s, the transcript sat
+    unpasted the whole time, the user assumed it had failed and re-dictated,
+    and both landed 1.5 s apart. Past max_wait_s the raw transcript wins."""
+    import dataclasses
+    import time
+
+    import polish as polish_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dataclasses.replace(cfg, polish=config_mod.PolishConfig(
+        when="always", min_chars=1, max_wait_s=0.3))
+
+    class Molasses:
+        name = "molasses"
+
+        def translate(self, text):
+            time.sleep(30)              # a cold model loading into VRAM
+            return "never gets used"
+
+    p = polish_mod.Polisher(cfg, _tmp_vocab())
+    p._backends = lambda: iter([Molasses()])
+    raw = "תריץ את השרת בבקשה ותגיד לי מה קרה שם"
+    started = time.monotonic()
+    out, by = p.polish(raw)
+    waited = time.monotonic() - started
+
+    assert out == raw, "the raw transcript must survive a timeout"
+    assert by is None, by
+    assert waited < 3, f"waited {waited:.1f}s — the deadline did not hold"
+
+
+def test_the_warm_up_never_raises() -> None:
+    """Ollama not being installed is a normal state, not a startup error."""
+    import dataclasses
+
+    import polish as polish_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dataclasses.replace(cfg, polish=config_mod.PolishConfig(
+        when="known", max_wait_s=0.2))
+
+    class Dead:
+        name = "dead"
+
+        def translate(self, text):
+            raise OSError("connection refused")
+
+    p = polish_mod.Polisher(cfg, _tmp_vocab())
+    p._backends = lambda: iter([Dead()])
+    p.warm()          # must not raise
+
+
+def test_polish_never_runs_when_switched_off() -> None:
+    import dataclasses
+
+    import polish as polish_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dataclasses.replace(cfg, polish=config_mod.PolishConfig(
+        when="never"))
+    v = _tmp_vocab()
+    v.learn("xpogo", "Expo Go")
+    p = polish_mod.Polisher(cfg, v)
+    assert not p.should_run("תריץ את xpogo עכשיו בבקשה ותראה מה קורה")
+
+
+# ---- the plumbing that carries the vocabulary to the decoder ----
+
+
+def test_hotwords_reach_both_models() -> None:
+    """Unlike initial_prompt, which is a Hebrew sentence and is withheld
+    from the English model, hotwords is a list of NAMES — and an English
+    utterance is if anything the more likely place to say "Expo Go"."""
+    from transcribers.local_whisper import LocalWhisperTranscriber
+
+    seen = {}
+
+    class FakeModel:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def transcribe(self, audio, **kw):
+            seen[self.tag] = kw.get("hotwords")
+
+            class Seg:
+                text = "x"
+            return [Seg()], None
+
+    t = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    t._model, t._english = FakeModel("he"), FakeModel("en")
+    t._language, t._english_threshold = "he", 0.8
+    t._cleanup, t._fillers = False, ()
+    t._initial_prompt = None
+    t._guards, t._boilerplate = {}, ()
+    t._hotwords = lambda: "Expo Go EAS Cowork"
+
+    t.transcribe(b"RIFF", language="he")
+    t.transcribe(b"RIFF", language="en")
+    assert seen["he"] == "Expo Go EAS Cowork", seen
+    assert seen["en"] == "Expo Go EAS Cowork", seen
+
+
+def test_a_broken_vocabulary_does_not_break_transcription() -> None:
+    """The hotword source is user data resolved at request time. If it
+    throws, the dictation still has to come out."""
+    from transcribers.local_whisper import LocalWhisperTranscriber
+
+    seen = {}
+
+    class FakeModel:
+        def transcribe(self, audio, **kw):
+            seen["hotwords"] = kw.get("hotwords")
+
+            class Seg:
+                text = "בסדר"
+            return [Seg()], None
+
+    t = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    t._model, t._english = FakeModel(), None
+    t._language, t._english_threshold = "he", 0.8
+    t._cleanup, t._fillers = False, ()
+    t._initial_prompt = None
+    t._guards, t._boilerplate = {}, ()
+
+    def explode():
+        raise RuntimeError("vocab is on fire")
+
+    t._hotwords = explode
+    assert t.transcribe(b"RIFF", language="he") == "בסדר"
+    assert seen["hotwords"] is None, seen
+
+
+def test_an_empty_vocabulary_sends_no_hotwords() -> None:
+    """None, not "" — an empty string would still open a prompt block and
+    spend the sot_prev token for nothing."""
+    v = _tmp_vocab()
+    assert v.hotwords() == ""
+
+    from transcribers.local_whisper import LocalWhisperTranscriber
+    t = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    t._hotwords = v.hotwords
+    assert t._current_hotwords() is None
+
+
+# ---- the shipped config ----
+
+
+def test_correct_hotkey_must_not_collide() -> None:
+    import tempfile
+    bad = Path(tempfile.mkdtemp(prefix="cfg-")) / "config.toml"
+    bad.write_text('hotkey = "right ctrl"\nenglish_hotkey = ""\n'
+                   'correct_hotkey = "f9"\ntranslate_hotkey = "f9"\n',
+                   "utf-8")
+    try:
+        config_mod.load(bad)
+    except config_mod.ConfigError as e:
+        assert "correct_hotkey" in str(e), e
+    else:
+        raise AssertionError("a key that both translates and corrects was "
+                             "accepted")
+
+
+def test_polish_when_is_validated() -> None:
+    import tempfile
+    bad = Path(tempfile.mkdtemp(prefix="cfg-")) / "config.toml"
+    bad.write_text('[polish]\nwhen = "sometimes"\n', "utf-8")
+    try:
+        config_mod.load(bad)
+    except config_mod.ConfigError as e:
+        assert "polish.when" in str(e), e
+    else:
+        raise AssertionError('polish.when = "sometimes" was accepted')
+
+
+def test_the_real_config_seeds_the_names_that_actually_garble() -> None:
+    """Guards the shipped config against the measured failures in
+    transcripts.log: every one of these was observed coming out wrong."""
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    assert cfg.vocab.enabled is True
+    assert cfg.correct_hotkey, "with no correction key nothing is ever learned"
+    seeded = {t.lower() for t in cfg.vocab.terms}
+    for term in ("expo go", "eas", "cowork", "hebrewdictation", "branch"):
+        assert term in seeded, f"{term!r} garbles in practice and is not seeded"
+    assert cfg.vocab.replace_after_hits >= 2, \
+        "one correction must not be enough to start rewriting speech"
+
+
+def test_the_phone_gets_the_vocabulary_the_desktop_learned() -> None:
+    """The phone only records; THIS machine transcribes, with the same
+    transcriber the hotwords callable was given. So a word taught with F8 on
+    the desktop must stop being misheard on the phone too — with nothing
+    implemented on the Android side. Asserts both halves: the hotwords
+    reaching the decoder, and the repair pass being applied."""
+    import shutil
+    import tempfile
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-phone-"))
+    try:
+        app = _worker_app(_Flaky(fail_times=0, text="תריץ את xpogo"), tmp)
+        app.vocab.seed_terms = ("Expo Go",)
+        # taught twice on the desktop -> past replace_after_hits
+        app.vocab.learn("xpogo", "Expo Go")
+        app.vocab.learn("xpogo", "Expo Go")
+
+        seen = {}
+
+        class Recording:
+            name = "local"
+
+            def transcribe(self, wav, language=None):
+                seen["hotwords"] = app._hotwords()
+                return "תריץ את xpogo"
+
+        app.transcriber = Recording()
+        text, backend, _warning = app._transcribe_for_phone(b"RIFF")
+
+        assert "Expo Go" in seen["hotwords"], seen
+        assert text == "תריץ את Expo Go", text
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_word_error_rate_counts_word_edits() -> None:
+    import main as main_mod
+    assert main_mod.word_error_rate("אחת שתיים שלוש",
+                                    "אחת שתיים שלוש") == (0, 3)
+    assert main_mod.word_error_rate("אחת שתיים שלוש",
+                                    "אחת שבע שלוש") == (1, 3)
+    assert main_mod.word_error_rate("אחת שתיים שלוש", "אחת שלוש") == (1, 3)
+
+
+def test_a_recording_is_kept_and_the_correction_is_attached_to_it() -> None:
+    """The loop that makes any of this measurable: audio in, correction on
+    top of it, and a labelled pair on disk that --benchmark can replay."""
+    import shutil
+    import tempfile
+
+    import main as main_mod
+    from recorder import frames_to_wav
+    from spool import Spool
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-learn-"))
+    fake = _FakeInjector()
+    real_inj = main_mod.injector
+    try:
+        main_mod.injector = fake
+        app = _worker_app(
+            _Flaky(fail_times=0, text="תריץ את xpogo ותגיד לי מה קרה"), tmp)
+        app.recent = Spool(tmp / "recent", keep=10)
+        wav = frames_to_wav([np.zeros(1600, dtype=np.int16)], 16000)
+
+        app._handle(wav, 2.0, hwnd=fake.focus)
+        assert app._last and "xpogo" in app._last["final"], app._last
+        assert app._last["wav"], "the audio was not kept"
+
+        # The user fixed it in the app it was pasted into, in a chat box
+        # that also holds the rest of their message.
+        fake.on_screen = ("שלום, יש לי שאלה. תריץ את Expo Go ותגיד לי מה "
+                          "קרה. תודה רבה על העזרה")
+        app._correct(dict(app._last), hwnd=fake.focus)
+
+        assert [(c["heard"], c["meant"]) for c in app.vocab.corrections] == \
+            [("xpogo", "Expo Go")], app.vocab.corrections
+        kept = app.recent.pending()
+        assert len(kept) == 1, kept
+        assert "Expo Go" in kept[0].meta["corrected"], kept[0].meta
+        assert kept[0].read() == wav, "the audio must still be replayable"
+        assert ("restore", "whatever the user had") in fake.calls, \
+            "grab() leaves text on the clipboard — it must be put back"
+    finally:
+        main_mod.injector = real_inj
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_field_that_lost_the_transcript_teaches_nothing() -> None:
+    """The user moved on and the cursor is somewhere else entirely. Diffing
+    the transcript against unrelated text would fill the vocabulary with
+    pairs of words that have nothing to do with each other."""
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-elsewhere-"))
+    fake = _FakeInjector()
+    real_inj = main_mod.injector
+    try:
+        main_mod.injector = fake
+        app = _worker_app(_Flaky(fail_times=0), tmp)
+        fake.on_screen = "def main():\n    return some_unrelated_python_code"
+        app._correct({"final": "תריץ את xpogo בבקשה עכשיו", "raw": "",
+                      "wav": ""}, hwnd=fake.focus)
+        assert len(app.vocab) == 0, app.vocab.corrections
+    finally:
+        main_mod.injector = real_inj
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_unchanged_text_on_screen_teaches_nothing() -> None:
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-nochange-"))
+    fake = _FakeInjector()
+    real_inj = main_mod.injector
+    try:
+        main_mod.injector = fake
+        app = _worker_app(_Flaky(fail_times=0), tmp)
+        fake.on_screen = "תריץ את xpogo בבקשה עכשיו"
+        app._correct({"final": "תריץ את xpogo בבקשה עכשיו", "raw": "",
+                      "wav": ""}, hwnd=fake.focus)
+        assert len(app.vocab) == 0, app.vocab.corrections
+    finally:
+        main_mod.injector = real_inj
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_transcript_is_found_inside_a_longer_message() -> None:
+    """The key is pressed in a chat box holding a whole paragraph, of which
+    the last dictation is one sentence. Only that sentence may be diffed."""
+    shown = "תריץ את xpogo ואז תעשה Brinth production"
+    screen = ("קודם כל שלום. תריץ את Expo Go ואז תעשה branch production. "
+              "ואחר כך נמשיך לדבר על משהו אחר לגמרי")
+    span, ratio = vocab_mod.locate(shown, screen)
+    assert ratio >= vocab_mod.MIN_MATCH, ratio
+    assert "Expo Go" in span and "branch production" in span, span
+    assert "קודם כל שלום" not in span, span
+    assert "לגמרי" not in span, span
+    pairs = vocab_mod.diff_corrections(shown, span)
+    assert ("xpogo", "Expo Go") in pairs, pairs
+    assert ("Brinth", "branch") in pairs, pairs
 
 
 if __name__ == "__main__":

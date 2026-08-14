@@ -37,6 +37,7 @@ import injector
 import server as server_mod
 import singleton
 import overlay as overlay_mod
+import vocab as vocab_mod
 from config import ConfigError
 from hotkey import HookThread, PTTStateMachine, parse_chord, vk_for
 from recorder import Recorder
@@ -91,8 +92,29 @@ class App:
         self.cfg = cfg
         parse_chord(cfg.paste_chord)  # fail fast on a bad chord name
         self.queue: queue.Queue[tuple[bytes, float, int, str]] = queue.Queue()
-        self.transcriber = get_transcriber(cfg)  # fail fast (e.g. no key)
+        # Built BEFORE the transcriber: the local backend takes the hotword
+        # callable at construction, and a vocabulary that arrived afterwards
+        # would silently do nothing until the next restart.
+        self.vocab = vocab_mod.Vocab(
+            APP_DIR / "vocab.json", seed_terms=cfg.vocab.terms,
+            max_terms=cfg.vocab.max_terms,
+            replace_after_hits=cfg.vocab.replace_after_hits)
+        hotwords = self.vocab.hotwords if cfg.vocab.enabled else None
+        self.transcriber = get_transcriber(cfg, hotwords)  # fail fast: no key
+        self._hotwords = hotwords
+        self._polisher = None        # built on first use (see _polish)
+        # The last thing pasted, and what the backend actually returned.
+        # The correction key edits the FORMER: it is what the user saw, so
+        # it is what their edit is a diff against.
+        self._last: dict | None = None
+        self._last_lock = threading.Lock()
         self.spool = Spool(APP_DIR / "pending")
+        # A ring of recent recordings, kept so a correction can be tied to
+        # the audio that produced it. Without this the app can only be told
+        # that a word is wrong, never SHOWN — and no vocabulary change can
+        # ever be measured, only assumed. See --benchmark.
+        self.recent = (Spool(APP_DIR / "recent", keep=cfg.vocab.keep_audio)
+                       if cfg.vocab.keep_audio > 0 else None)
         self._local = None       # lazily built local fallback, if enabled
         self.recorder = Recorder(cfg.audio.sample_rate, cfg.audio.device,
                                  cfg.max_seconds, self._on_overflow)
@@ -108,6 +130,8 @@ class App:
             parse_chord(cfg.translate.copy_chord)        # fail fast, as above
             parse_chord(cfg.translate.select_all_chord)
             taps[vk_for(cfg.translate_hotkey)] = "translate"
+        if cfg.correct_hotkey:
+            taps[vk_for(cfg.correct_hotkey)] = "correct"
         self.machine = PTTStateMachine(
             hotkeys,
             on_start=self._on_start, on_stop=self._on_stop,
@@ -127,6 +151,13 @@ class App:
         self.translate_worker = threading.Thread(
             target=self._translate_worker, daemon=True,
             name="translate-worker")
+        # The correction box blocks for as long as the user takes to type,
+        # which is unbounded. It gets its own thread so a box left open over
+        # lunch cannot hold up a dictation or a translation.
+        self.correct_queue: queue.Queue[dict] = queue.Queue()
+        self._correcting = threading.Event()
+        self.correct_worker = threading.Thread(
+            target=self._correct_worker, daemon=True, name="correct-worker")
         # One Whisper model, several threads that want it (the desktop
         # worker, and every phone request).
         self._model_lock = threading.Lock()
@@ -145,8 +176,15 @@ class App:
         self.recorder.start_stream()
         self.worker.start()
         self.translate_worker.start()
+        self.correct_worker.start()
         self.hook.start()
         self.dot.start()
+        if self.cfg.polish.when != "never" and self.cfg.polish.warm_up:
+            # In the background and after the hotkey is live: dictation must
+            # not wait on a language model it may never need, but the model
+            # must not be cold the first time it IS needed.
+            threading.Thread(target=self._warm_polish, daemon=True,
+                             name="polish-warmup").start()
         if self.phone is not None:
             try:
                 self.phone.start()
@@ -170,11 +208,21 @@ class App:
         Logged to transcripts.log like every desktop dictation. Without
         this, "the transcript from my phone looked wrong" has no evidence
         behind it at all — the raw text existed only on the phone.
+
+        THE LEARNED VOCABULARY APPLIES HERE TOO, and most of it for free:
+        the phone only records — this machine transcribes, with the very
+        same transcriber object the hotwords callable was handed to. So a
+        word taught with F8 on the desktop stops being misheard on the
+        phone from the next dictation, with nothing to implement on the
+        Android side at all. The repair pass is run explicitly below so the
+        two paths cannot drift into giving different answers for the same
+        audio.
         """
         started = time.monotonic()
         text, backend = self._transcribe(wav, language=None)
         transcript_log.info("OK | PHONE | %s | %.1fs latency | %s",
                             backend, time.monotonic() - started, text)
+        text = self._improve(text.strip()) if text.strip() else text
         # A decoder loop means words are LOST, not garbled — surface that
         # on the phone right away instead of letting reading discover it.
         warning = None
@@ -251,6 +299,9 @@ class App:
         log.info("aborted, nothing recorded — %s", reason)
 
     def _on_tap(self, action: str) -> None:
+        if action == "correct":
+            self._tap_correct()
+            return
         if action != "translate":
             return
         # Remember WHERE the text is before anything slow happens, for the
@@ -260,6 +311,27 @@ class App:
             return
         self._translating.set()
         self.translate_queue.put(injector.foreground_window())
+
+    def _tap_correct(self) -> None:
+        """Learn from the correction the user has already made on screen.
+
+        Runs inside the keyboard hook, so it does nothing but check state
+        and enqueue — the grab sends keystrokes and waits for the focused
+        app to answer, and blocking here would make Windows drop the hook
+        and freeze every key on the machine.
+        """
+        if self._correcting.is_set():
+            log.info("still reading the last correction — ignoring the "
+                     "extra press")
+            return
+        with self._last_lock:
+            last = dict(self._last) if self._last else None
+        if not last:
+            beep("error")
+            log.info("nothing to correct yet — dictate something first")
+            return
+        self._correcting.set()
+        self.correct_queue.put((last, injector.foreground_window()))
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
@@ -284,7 +356,8 @@ class App:
             from transcribers.local_whisper import LocalWhisperTranscriber
             log.info("cloud quota spent — loading the local model (first "
                      "run downloads it; this takes a while)...")
-            self._local = LocalWhisperTranscriber(**local_kwargs(self.cfg))
+            self._local = LocalWhisperTranscriber(
+                **local_kwargs(self.cfg, self._hotwords))
             log.info("local backend ready — dictation continues offline")
         except Exception as e:
             log.warning("no local fallback available: %s", e)
@@ -339,6 +412,108 @@ class App:
                 # Back to plain "running" however it went — a dot stuck on
                 # amber would report a hang that isn't happening.
                 self.dot.set_state("ready")
+
+    # ---- correction worker ----
+
+    def _correct_worker(self) -> None:
+        while True:
+            last, hwnd = self.correct_queue.get()
+            try:
+                self._correct(last, hwnd)
+            except Exception:
+                beep("error")
+                log.exception("unexpected failure reading a correction")
+            finally:
+                self._correcting.clear()
+
+    def _correct(self, last: dict, hwnd: int = 0) -> None:
+        """Read the corrected text off the screen and learn from it.
+
+        There is no edit box, and that is deliberate. The first version put
+        the transcript in a Tk window to be fixed there, and Tk 8.6 has no
+        bidi support at all: mixed Hebrew and English came out visually
+        scrambled and the caret jumped around as it was typed into. The user
+        is ALREADY fixing the text in the app it was pasted into — Chrome,
+        Claude Code, anything with real bidi — so the correction exists on
+        screen before this key is ever pressed. Reading it beats asking for
+        it again in a worse editor.
+
+        The diff is against the text the user SAW, not the raw backend
+        output: if the repair pass already fixed something, re-learning it
+        would inflate its hit count for a mistake that no longer happens.
+        """
+        shown = last.get("final", "")
+        tcfg = self.cfg.translate
+        state = injector.snapshot()
+        try:
+            grabbed, _had_selection = injector.grab(
+                tcfg.copy_chord, tcfg.select_all_chord, tcfg.settle_ms / 1000)
+        except injector.ClipboardBusyError as e:
+            beep("error")
+            log.error("could not read the corrected text: %s", e)
+            return
+        finally:
+            # grab() deliberately leaves what it copied on the clipboard; the
+            # user never asked for that, so put theirs back either way.
+            try:
+                injector.restore(state, "clipboard")
+            except injector.ClipboardBusyError as e:
+                log.warning("could not restore your clipboard: %s", e)
+
+        if len(grabbed) > tcfg.max_chars:
+            beep("error")
+            log.warning("refusing to search %d chars for the last transcript "
+                        "(max_chars=%d) — select just the corrected text and "
+                        "press the key again", len(grabbed), tcfg.max_chars)
+            return
+
+        fixed, ratio = vocab_mod.locate(shown, grabbed)
+        if ratio < vocab_mod.MIN_MATCH:
+            beep("error")
+            log.info("could not find the last transcript where the cursor is "
+                     "(best match %.0f%%, need %.0f%%) — nothing learned. "
+                     "Press the key in the window you dictated into, or "
+                     "select the corrected text first.",
+                     ratio * 100, vocab_mod.MIN_MATCH * 100)
+            return
+        if fixed.strip() == shown.strip():
+            log.info("the text on screen is unchanged — nothing to learn")
+            return
+
+        pairs = self.vocab.learn_from_edit(shown, fixed)
+        transcript_log.info("CORRECTED | %s || %s", shown, fixed)
+        # Tie the truth to the audio. This is what turns "it got this wrong"
+        # into a test case: --benchmark replays these and reports whether a
+        # vocabulary change actually helped, instead of leaving it to
+        # impressions.
+        wav = last.get("wav")
+        if wav and self.recent is not None:
+            from spool import SpooledItem
+            try:
+                self.recent.update(SpooledItem(Path(wav)),
+                                   corrected=fixed.strip())
+            except Exception as e:
+                log.info("could not attach the correction to its audio: %s", e)
+        if not pairs:
+            # The edit was an insertion or a rewrite, not a substitution:
+            # real, but it teaches no "when you hear X, write Y" rule.
+            # Saying so is better than a silent success the user then
+            # expects to have changed something.
+            log.info("correction saved to the log, but it taught no word "
+                     "swaps (only substitutions of up to %d words are "
+                     "learned — an insertion has no misheard form to key "
+                     "on)", vocab_mod.MAX_SPAN_WORDS)
+        else:
+            log.info("learned %d correction(s): %s", len(pairs),
+                     " | ".join(f"{h} -> {m}" for h, m in pairs))
+            ready = sum(1 for c in self.vocab.corrections
+                        if int(c.get("hits", 1))
+                        >= self.cfg.vocab.replace_after_hits)
+            log.info("vocabulary now %d entries (%d repaired automatically, "
+                     "the rest are hotwords only until corrected %d times)",
+                     len(self.vocab), ready,
+                     self.cfg.vocab.replace_after_hits)
+        beep("translated")
 
     # ---- translate worker ----
 
@@ -444,6 +619,63 @@ class App:
                 except injector.ClipboardBusyError as e:
                     log.warning("could not restore your clipboard: %s", e)
 
+    def _improve(self, text: str) -> str:
+        """What was learned, applied: repair pass then context pass.
+
+        Both are strictly optional and neither may raise. This sits between
+        a person's speech and their cursor, so anything that goes wrong here
+        must degrade to "the transcript as the backend produced it" rather
+        than to no transcript at all.
+        """
+        if self.cfg.vocab.enabled:
+            try:
+                text, applied = self.vocab.apply(text)
+                if applied:
+                    log.info("repaired %d learned mishearing(s): %s",
+                             len(applied), " | ".join(applied))
+            except Exception:
+                log.exception("the vocabulary repair pass failed — using the "
+                              "transcript as it came out of the backend")
+
+        polisher = self._polish()
+        if polisher is None:
+            return text
+        try:
+            if not polisher.should_run(text):
+                return text
+            started = time.monotonic()
+            log.info("checking the transcript against %d learned "
+                     "confusion(s)...", len(self.vocab))
+            polished, by = polisher.polish(text)
+            if by:
+                transcript_log.info("POLISHED | %.1fs | %s | %s",
+                                    time.monotonic() - started, by, polished)
+                log.info("context pass (%s, %.1f s) changed: %s", by,
+                         time.monotonic() - started, polished)
+                return polished
+        except Exception:
+            log.exception("the context pass failed — using the transcript "
+                          "as it came out of the backend")
+        return text
+
+    def _warm_polish(self) -> None:
+        try:
+            polisher = self._polish()
+            if polisher is not None:
+                polisher.warm()
+        except Exception as e:
+            log.info("context-pass warm-up skipped (%s)", e)
+
+    def _polish(self):
+        """Built on first need: importing it is cheap, but constructing the
+        backends is not, and `when = "never"` must cost nothing at all."""
+        if self.cfg.polish.when == "never":
+            return None
+        if self._polisher is None:
+            import polish as polish_mod
+            self._polisher = polish_mod.Polisher(self.cfg, self.vocab)
+        return self._polisher
+
     def _handle(self, wav: bytes, seconds: float, hwnd: int,
                 language: str | None = None) -> None:
         fb = self.cfg.feedback
@@ -520,6 +752,25 @@ class App:
             if item:
                 item.discard()
             return
+
+        cleaned = self._improve(cleaned)
+        kept = None
+        if self.recent is not None:
+            try:
+                kept = self.recent.save(
+                    wav, seconds, "",
+                    extra={"text": cleaned, "raw": text.strip(),
+                           "backend": backend, "language": language or "auto"})
+            except OSError as e:
+                log.info("could not keep this recording for later "
+                         "measurement: %s", e)
+        # Remembered before the paste, not after: a transcript that landed
+        # on the clipboard because focus moved is still one worth teaching
+        # the app about.
+        with self._last_lock:
+            self._last = {"raw": text.strip(), "final": cleaned,
+                          "when": time.strftime("%Y-%m-%d %H:%M:%S"),
+                          "wav": str(kept.wav_path) if kept else ""}
 
         try:
             if shown:
@@ -621,6 +872,142 @@ def drain(cfg: config_mod.Config) -> int:
     return 0
 
 
+def word_error_rate(truth: str, guess: str) -> tuple[int, int]:
+    """(edits, reference words). Standard Levenshtein over word tokens."""
+    a, b = vocab_mod.words(truth), vocab_mod.words(guess)
+    a = [w.lower() for w in a]
+    b = [w.lower() for w in b]
+    prev = list(range(len(b) + 1))
+    for i, wa in enumerate(a, 1):
+        cur = [i]
+        for j, wb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1,
+                           prev[j - 1] + (wa != wb)))
+        prev = cur
+    return prev[-1], len(a)
+
+
+def benchmark(cfg: config_mod.Config) -> int:
+    """Replay every corrected recording with the vocabulary on and off.
+
+    This is the whole reason recent\\ exists. "It feels better since I added
+    those words" is not evidence, and the vocabulary is the kind of feature
+    that is very easy to believe in and very hard to notice failing. Every
+    recording the user has corrected is a labelled test case: the audio, and
+    what it should have said.
+
+    One model, transcribed twice — building two would double the VRAM for
+    nothing, since the only difference is a prompt.
+    """
+    recent = Spool(APP_DIR / "recent")
+    cases = [i for i in recent.pending() if i.meta.get("corrected")]
+    if not cases:
+        print("No corrected recordings yet, so there is nothing to measure.")
+        print(f"Dictate, then tap '{cfg.correct_hotkey}' and fix what it got")
+        print("wrong. Each correction becomes a test case here.")
+        if cfg.vocab.keep_audio <= 0:
+            print("\nNote: [vocab] keep_audio = 0, so no audio is being "
+                  "kept — corrections can never be replayed.")
+        return 0
+
+    v = vocab_mod.Vocab(APP_DIR / "vocab.json", seed_terms=cfg.vocab.terms,
+                        max_terms=cfg.vocab.max_terms,
+                        replace_after_hits=cfg.vocab.replace_after_hits)
+    on = {"enabled": False}
+    from transcribers import local_kwargs
+    from transcribers.local_whisper import LocalWhisperTranscriber
+
+    print(f"{len(cases)} corrected recording(s). Loading the model...")
+    t = LocalWhisperTranscriber(
+        **local_kwargs(cfg, lambda: v.hotwords() if on["enabled"] else ""))
+
+    totals = {False: [0, 0], True: [0, 0]}
+    for item in cases:
+        truth = item.meta["corrected"]
+        audio = item.read()
+        line = {}
+        for flag in (False, True):
+            on["enabled"] = flag
+            guess = t.transcribe(audio)
+            if flag:                       # the repair pass runs in real use
+                guess, _ = v.apply(guess)
+            edits, words = word_error_rate(truth, guess)
+            totals[flag][0] += edits
+            totals[flag][1] += words
+            line[flag] = (edits, words, guess)
+        before = line[False][0] / max(1, line[False][1])
+        after = line[True][0] / max(1, line[True][1])
+        flag = "  " if abs(after - before) < 1e-9 else \
+               ("->" if after < before else "!!")
+        print(f"\n{flag} {item.wav_path.name}  ({item.seconds:.1f}s)  "
+              f"WER {before:.1%} -> {after:.1%}")
+        if after != before:
+            print(f"     off: {line[False][2]}")
+            print(f"     on : {line[True][2]}")
+            print(f"     want: {truth}")
+
+    off_wer = totals[False][0] / max(1, totals[False][1])
+    on_wer = totals[True][0] / max(1, totals[True][1])
+    print(f"\n{'=' * 60}")
+    print(f"vocabulary OFF: {off_wer:.2%} WER over {totals[False][1]} words")
+    print(f"vocabulary ON : {on_wer:.2%} WER over {totals[True][1]} words")
+    if on_wer < off_wer:
+        print(f"\n{(off_wer - on_wer) / off_wer:.0%} relative improvement.")
+    elif on_wer > off_wer:
+        print("\nThe vocabulary made it WORSE on this set. Likely causes: a "
+              "term seeded that you rarely say (Whisper emits prompted words "
+              "unbidden), or too many terms — try lowering max_terms.")
+    else:
+        print("\nNo difference on this set.")
+    print("\nNote: these are the recordings you chose to correct, so they "
+          "are the hard ones by construction — not a sample of normal "
+          "dictation.")
+    return 0
+
+
+def show_vocab(cfg: config_mod.Config) -> int:
+    """What the app has learned, and what it does with it.
+
+    The store is JSON and could just be opened, but the two questions worth
+    answering — "is this term actually reaching the decoder" and "why is
+    that garble still not being repaired" — are about the derived hotword
+    list and the hit threshold, neither of which is visible in the file.
+    """
+    v = vocab_mod.Vocab(APP_DIR / "vocab.json", seed_terms=cfg.vocab.terms,
+                        max_terms=cfg.vocab.max_terms,
+                        replace_after_hits=cfg.vocab.replace_after_hits)
+    print(f"{v.path}\n")
+    if not v.corrections:
+        print("Nothing learned yet. Dictate something, then tap "
+              f"'{cfg.correct_hotkey}' and fix what it misheard.\n")
+    else:
+        print(f"{len(v.corrections)} learned correction(s) "
+              f"(repaired automatically at {cfg.vocab.replace_after_hits}+ "
+              f"hits):")
+        for c in sorted(v.corrections, key=lambda c: -int(c.get("hits", 1))):
+            hits = int(c.get("hits", 1))
+            mark = "auto" if hits >= cfg.vocab.replace_after_hits else "    "
+            print(f"  [{mark}] {hits}x  {c.get('heard','')}  ->  {c['meant']}"
+                  f"   ({c.get('last','?')})")
+        print()
+    if cfg.vocab.terms:
+        print(f"{len(cfg.vocab.terms)} seed term(s) from config.toml "
+              f"[vocab] terms\n")
+    hot = v.hotwords()
+    if not cfg.vocab.enabled:
+        print("[vocab] enabled = false — NONE of this reaches the decoder.")
+    elif not hot:
+        print("No hotwords: nothing seeded and nothing learned.")
+    else:
+        print(f"Hotwords fed to every decoder window "
+              f"({len(v.terms())} terms, capped at max_terms="
+              f"{cfg.vocab.max_terms}):\n  {hot}")
+        print(f"\n  ({len(hot)} characters. faster-whisper truncates this at "
+              f"{vocab_mod.HOTWORD_TOKEN_LIMIT} tokens, and Hebrew costs "
+              f"several tokens a word — lower max_terms if you approach it.)")
+    return 0
+
+
 def is_elevated() -> bool:
     try:
         return bool(ctypes.windll.shell32.IsUserAnAdmin())
@@ -649,6 +1036,13 @@ def main() -> int:
                         help="translate TEXT and print it, then exit — "
                              "checks the translate backends without "
                              "touching the keyboard or clipboard")
+    parser.add_argument("--benchmark", action="store_true",
+                        help="replay every recording you have corrected, "
+                             "with the learned vocabulary on and off, and "
+                             "report the word error rate of each")
+    parser.add_argument("--vocab", action="store_true",
+                        help="print what the app has learned (vocab.json) "
+                             "and the hotword list it builds, then exit")
     parser.add_argument("--drain", action="store_true",
                         help="transcribe recordings kept in pending\\ "
                              "(saved when the backend was down), print them, "
@@ -721,6 +1115,12 @@ def main() -> int:
         print(f"[{backend}, {time.monotonic() - started:.1f}s] {text}")
         return 0
 
+    if args.vocab:
+        return show_vocab(cfg)
+
+    if args.benchmark:
+        return benchmark(cfg)
+
     if args.drain:
         return drain(cfg)
 
@@ -780,6 +1180,12 @@ def main() -> int:
         log.info("tap '%s' to turn the selection — or the whole field when "
                  "nothing is selected — into %s", cfg.translate_hotkey,
                  cfg.translate.target)
+    if cfg.correct_hotkey:
+        log.info("tap '%s' to fix the last transcript — what you change "
+                 "there is what it learns (%d correction(s) so far, "
+                 "%d hotword(s) active)", cfg.correct_hotkey,
+                 len(app.vocab),
+                 len(app.vocab.terms()) if cfg.vocab.enabled else 0)
     log.info("mic: %s | backend: %s | transcripts: %s",
              app.recorder.device_label(), cfg.backend,
              APP_DIR / "transcripts.log")

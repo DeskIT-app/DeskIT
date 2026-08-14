@@ -20,6 +20,17 @@ latch_hotkey = "left"
 # whatever is selected, or the whole field when nothing is selected.
 # "" turns it off. See [translate] below.
 translate_hotkey = "f9"
+# Fix the words it got wrong RIGHT WHERE THEY LANDED — in Chrome, in Claude
+# Code, wherever you pasted — then TAP this key. It reads the corrected text
+# off the screen, diffs it against what it produced, and feeds those words to
+# the decoder from then on so it stops getting them wrong.
+# There is no edit box on purpose: Tk 8.6 has no bidi support whatsoever, so a
+# box showing mixed Hebrew and English renders scrambled and the caret jumps
+# around as you type. You are already fixing the text in an app that renders
+# Hebrew properly — reading it beats asking for it again in a worse editor.
+# Select just the corrected sentence if the field holds a lot of other text.
+# "" turns it off. See [vocab] below.
+correct_hotkey = "f8"
 # local = unlimited, offline, ~0.3 s. Measured 2026-08-12 on 8 real Hebrew
 # clips: local 10.8% WER / 0.38 s vs gemini 15.9% WER / 2.71 s. Switch to
 # "gemini" if you ever want its stronger cleanup instead.
@@ -75,6 +86,93 @@ settle_ms = 120               # how long the focused app gets to answer a copy
 enabled = true
 host = ""
 port = 8756
+
+[vocab]
+# The names Whisper has never heard, fed to the decoder BEFORE it runs so it
+# never produces the garble in the first place. This is the half of "learning"
+# that actually matters — repairing afterwards is the safety net.
+#
+# Why this exists as a separate mechanism from [local] initial_prompt, measured
+# 2026-08-14 by spying on WhisperModel.get_prompt over 125 s of real speech:
+# with condition_on_previous_text=false (which the app sets), initial_prompt is
+# DROPPED after the first 30-second window — it survived in 1 of 5 windows —
+# while hotwords is re-injected per window and survived in 6 of 6. Long
+# dictations are exactly where names garble worst, so the vocabulary has to
+# travel by the mechanism that reaches them. Both are used; they coexist.
+enabled = true
+max_terms = 40            # kept well under faster-whisper's 223-token hotword
+                          # ceiling: Hebrew costs several tokens a word, and
+                          # over-prompting Whisper makes it emit the prompted
+                          # words unbidden. A longer list is not a better one
+replace_after_hits = 2    # how many times the SAME garble must be corrected
+                          # before it is also repaired automatically. 1 would
+                          # let one slip in the correction box start rewriting
+                          # a word you really say
+keep_audio = 50           # keep this many recent recordings in recent\, so a
+                          # correction can be tied to the AUDIO that produced
+                          # it. That is what makes `main.py --benchmark` able
+                          # to prove a vocabulary change helped instead of
+                          # leaving it to impressions.
+                          # PRIVACY: raw audio of what you dictated, on this
+                          # disk. Gitignored, capped, oldest dropped first.
+                          # 0 keeps none — everything else still works, you
+                          # just lose the ability to measure.
+
+# Seeds: your own stack, written by hand. Anything you correct with the
+# correction key is added to vocab.json automatically and ranks alongside
+# these. Real mishearings from transcripts.log that these are here to stop:
+# "Expo Go" -> "xpogo", "--branch" -> "Brinth", "Cowork" -> "בקו-ורק",
+# "HebrewDictation" -> "Hebrew reduction", "Play Protect" -> "PlayProtect Scance".
+terms = [
+  # this machine's projects
+  "HebrewDictation", "Massif", "TripSync", "Cowork",
+  # the toolchain that keeps coming out wrong
+  "Expo", "Expo Go", "EAS", "npx", "APK", "Gradle", "Android Studio",
+  "Play Protect", "GitHub", "Tailscale", "Ollama", "Claude Code", "Whisper",
+  # git/dev terms — also in [local] initial_prompt, repeated here because
+  # that one stops reaching the decoder after 30 seconds
+  "commit", "branch", "pull request", "merge", "deploy", "production",
+  "repo", "terminal", "bug", "feature", "prompt", "config",
+]
+
+[polish]
+# The context pass: the half that vocab CANNOT do. Some mishearings swap a real
+# Hebrew word for another real Hebrew word — מקלדת -> מקללת, סריקה -> סירקה,
+# קירור -> קירוב — and no lookup table can fix those safely, because the heard
+# form is a word you might genuinely have said. Only the sentence around it
+# disambiguates. So a language model reads the sentence and fixes the word.
+#
+# It is allowed to read context. It is NOT allowed to write. The instruction not
+# to invent is in the prompt AND enforced in code (polish.py::_is_safe): every
+# reply is diffed against the transcript and THROWN AWAY if the model did more
+# than swap words — >15% change in word count, or <75% of the words surviving.
+# A rejected reply is not retried; the raw transcript goes through untouched.
+#
+# Ollama first here, the reverse of [translate], because this runs on dictations
+# (dozens a day) rather than on a key you tap — Gemini's 20/day/model would be
+# gone before lunch and would take translation down with it.
+when = "never"            # never | known | always
+                          # "known": only when the transcript contains something
+                          # you have corrected before. Costs nothing on the
+                          # dictations that don't need it, and only wakes an idle
+                          # Ollama (76 s cold, 2.5 s warm) when there is real
+                          # evidence a repair is due. "always" is more accurate
+                          # and much slower — try it before deciding it isn't
+                          # worth it
+min_chars = 20            # below this there is no context to reason from, which
+                          # is exactly where a model starts inventing some
+ollama_model = ""         # "" = reuse [translate] ollama_model
+max_wait_s = 6            # THE LONGEST YOUR PASTE MAY BE HELD UP. This pass
+                          # sits between your speech and your cursor, so past
+                          # this the raw transcript is pasted and the reply is
+                          # discarded whenever it turns up.
+                          # Measured 2026-08-14 and the reason this exists: a
+                          # COLD Ollama took 53.7 s. The text sat unpasted the
+                          # whole time, looked like a failure, got re-dictated,
+                          # and then both landed 1.5 s apart.
+warm_up = true            # send one throwaway request at startup so the ~5 GB
+                          # is in VRAM before a dictation needs it (76 s cold
+                          # vs 2.5 s warm). Costs that VRAM all session
 
 [gemini]
 # Free-tier quota is PER MODEL (gemini-2.5-flash = 20 requests/day), so this

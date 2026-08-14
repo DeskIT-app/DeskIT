@@ -70,7 +70,12 @@ class Spool:
         self.dir = directory
         self.keep = keep
 
-    def save(self, wav: bytes, seconds: float, note: str) -> SpooledItem:
+    def save(self, wav: bytes, seconds: float, note: str,
+             extra: dict | None = None) -> SpooledItem:
+        """`extra` is merged into the sidecar. Used by the recent-recordings
+        ring (see main.py) to store the transcript alongside its audio, which
+        is what later turns a user correction into an (audio, truth) pair
+        that hotword changes can actually be measured against."""
         self.dir.mkdir(parents=True, exist_ok=True)
         stem = f"{time.strftime(STAMP)}-{int(seconds * 10):04d}"
         wav_path = self.dir / f"{stem}.wav"
@@ -85,9 +90,20 @@ class Spool:
             "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
             "attempts": 1,
             "last_error": note,
+            **(extra or {}),
         }, ensure_ascii=False, indent=2), "utf-8")
         self._trim()
         return item
+
+    def update(self, item: SpooledItem, **fields) -> None:
+        """Merge fields into an item's sidecar, leaving the audio alone."""
+        meta = item.meta
+        meta.update(fields)
+        try:
+            item.meta_path.write_text(json.dumps(meta, ensure_ascii=False,
+                                                 indent=2), "utf-8")
+        except OSError as e:
+            log.warning("could not update %s: %s", item.meta_path.name, e)
 
     def pending(self) -> list[SpooledItem]:
         """Oldest first — speech is replayed in the order it was spoken."""

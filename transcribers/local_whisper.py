@@ -167,7 +167,8 @@ class LocalWhisperTranscriber:
                  cleanup: bool = True, extra_fillers: tuple = (),
                  english_model: str = "", english_threshold: float = 0.8,
                  initial_prompt: str = "", guard_hallucinations: bool = True,
-                 boilerplate: tuple = cleanup_mod.PARLIAMENTARY_BOILERPLATE):
+                 boilerplate: tuple = cleanup_mod.PARLIAMENTARY_BOILERPLATE,
+                 hotwords=None):
         _register_cuda_dlls()
         try:
             from faster_whisper import WhisperModel
@@ -196,6 +197,20 @@ class LocalWhisperTranscriber:
         # sentence outright; with it, both halves survive and Hebrew-only
         # accuracy improves too (10.8% -> 9.6% WER, measured).
         self._initial_prompt = initial_prompt or None
+        # The learned vocabulary (vocab.py), and the reason it is a CALLABLE
+        # rather than a string: it changes every time the user corrects
+        # something, and this object outlives any one dictation.
+        #
+        # It is a separate parameter from initial_prompt because the two
+        # reach different parts of the audio. Measured 2026-08-14 by spying
+        # on WhisperModel.get_prompt over 125 s of real speech: with
+        # condition_on_previous_text=False (set below), initial_prompt is
+        # dropped after the FIRST 30-second window — it survived in 1 of 5
+        # windows — while hotwords is re-injected per window and survived in
+        # 6 of 6. Long dictations are exactly where names garble worst, so
+        # the vocabulary has to travel by the mechanism that gets there.
+        # They coexist: the prompt becomes " HOTWORDS INITIAL_PROMPT".
+        self._hotwords = hotwords
         self._boilerplate = tuple(boilerplate)
         self.last_removed: list[str] = []
         # Whisper's own hallucination guards. The defaults are permissive
@@ -256,6 +271,24 @@ class LocalWhisperTranscriber:
                             "short English phrases may be transliterated", e)
                 self._english = None
 
+    def _current_hotwords(self) -> str | None:
+        """Resolve the vocabulary for this one request.
+
+        Never fatal: a broken vocabulary must cost accuracy, not dictation.
+        faster-whisper ignores hotwords when `prefix` is set (it is not
+        here) and truncates the string at 223 tokens.
+        """
+        source = self._hotwords
+        if source is None:
+            return None
+        try:
+            text = source() if callable(source) else str(source)
+        except Exception as e:
+            log.warning("could not build the hotword list (%s) — "
+                        "transcribing without it", e)
+            return None
+        return text.strip() or None
+
     def transcribe(self, wav_bytes: bytes,
                    language: str | None = None) -> str:
         """`language` is the caller's explicit choice (a dedicated hotkey).
@@ -280,6 +313,12 @@ class LocalWhisperTranscriber:
                 # The Hebrew prompt would only confuse the English model.
                 initial_prompt=None if chosen == "en"
                 else self._initial_prompt,
+                # Hotwords go to BOTH models, unlike initial_prompt. That
+                # one is a Hebrew sentence and means nothing to a general
+                # English model; this is a list of names ("Expo Go", "EAS"),
+                # and an English utterance is if anything the MORE likely
+                # place for them to be spoken.
+                hotwords=self._current_hotwords(),
                 **self._guards,
             )
             text = " ".join(s.text.strip() for s in segments).strip()
