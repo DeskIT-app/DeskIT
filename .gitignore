@@ -3,14 +3,17 @@
 __pycache__/
 
 # Everything below is a record of what you actually dictated — keep it off
-# any remote. app.log holds the pasted text, pending\ holds raw audio, and
-# vocab.json holds words you said paired with what you meant. (The seed
-# terms in config.toml ARE committed — those are hand-written, not learned.)
+# any remote. app.log holds the pasted text, pending\ holds raw audio,
+# vocab.json holds words you said paired with what you meant, and
+# lookup_cache.json is keyed by the literal text you selected and looked
+# up — which is a record of what you were reading. (The seed terms in
+# config.toml ARE committed — those are hand-written, not learned.)
 transcripts.log*
 app.log*
 pending/
 recent/
 vocab.json
+lookup_cache.json
 
 # Generated at first run by cues.py
 cues/

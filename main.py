@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import ctypes.wintypes
 import dataclasses
 import inspect
 import logging
@@ -32,14 +33,19 @@ from pathlib import Path
 APP_DIR = Path(__file__).resolve().parent
 
 import config as config_mod
+import control
 import cues
 import injector
+import popup as popup_mod
 import server as server_mod
 import singleton
 import overlay as overlay_mod
 import vocab as vocab_mod
 from config import ConfigError
-from hotkey import HookThread, PTTStateMachine, parse_chord, vk_for
+import hotkey as hotkey_mod
+from hotkey import (HookThread, PTTStateMachine, parse_binding,
+                    parse_chord, vk_for)
+from launch import open_dashboard
 from recorder import Recorder
 from spool import Spool
 from transcribers import RateLimitError, TranscriptionError, get_transcriber
@@ -87,11 +93,59 @@ def beep(kind: str) -> None:
     cues.play(kind)
 
 
+def language_label(language: str | None, shout: bool = False) -> str:
+    """What to call a recording in the log. None = nothing was declared and
+    the model will decide (Config.auto_language)."""
+    if language == "en":
+        return "ENGLISH" if shout else "English"
+    if language == "he":
+        return "Hebrew"
+    return "Hebrew or English"
+
+
+def cursor_point() -> tuple[int, int] | None:
+    """Where the mouse is, in screen pixels. None if it cannot be read.
+
+    This is the lookup box's anchor, and it is read on the OS hook thread
+    the instant the key goes down — which is the whole reason it is one
+    syscall and nothing else. A selection is made by dragging the mouse
+    across it, so the cursor is left sitting at the end of what was
+    selected: that is where the user is looking, and it is the only
+    cheaply-available fact that says so. Read later, on the worker, it
+    would be wherever the hand had drifted to in the meantime.
+
+    Measured 2026-08-19 on this machine: 1.2 us a call, against the
+    0.35 us the same callback already spends on foreground_window(). The
+    hook thread's budget is "do not block Windows", and this does not
+    come close to touching it.
+
+    None rather than a raise, because the box falls back to the corner it
+    used before an anchor existed. An anchor is an improvement on that,
+    never a precondition for showing an answer.
+    """
+    try:
+        pt = ctypes.wintypes.POINT()
+        if ctypes.windll.user32.GetCursorPos(ctypes.byref(pt)):
+            return int(pt.x), int(pt.y)
+    except Exception:
+        log.debug("could not read the cursor position", exc_info=True)
+    return None
+
+
 class App:
-    def __init__(self, cfg: config_mod.Config):
+    def __init__(self, cfg: config_mod.Config,
+                 config_path: Path | None = None):
         self.cfg = cfg
+        # Where a key change is written back to. Carried rather than
+        # recomputed so --config keeps pointing at the file it was given.
+        self.config_path = Path(config_path or (APP_DIR / "config.toml"))
+        self._stopping = threading.Event()
+        self._watcher: threading.Thread | None = None
         parse_chord(cfg.paste_chord)  # fail fast on a bad chord name
-        self.queue: queue.Queue[tuple[bytes, float, int, str]] = queue.Queue()
+        # The str|None is the language the key declared, None meaning it
+        # declared nothing — see App.bindings and Config.auto_language.
+        self.queue: queue.Queue[
+            tuple[bytes, float, int, str | None]] = queue.Queue()
         # Built BEFORE the transcriber: the local backend takes the hotword
         # callable at construction, and a vocabulary that arrived afterwards
         # would silently do nothing until the next restart.
@@ -122,35 +176,69 @@ class App:
         # latch. Kept here purely so the log lines name the real number.
         self._cap = cfg.max_seconds
         self._latched = False
-        hotkeys = {vk_for(cfg.hotkey): "he"}
-        if cfg.english_hotkey:
-            hotkeys[vk_for(cfg.english_hotkey)] = "en"
-        taps = {}
-        if cfg.translate_hotkey:
+        if cfg.translate_hotkey or cfg.punctuate_hotkey or cfg.lookup_hotkey:
             parse_chord(cfg.translate.copy_chord)        # fail fast, as above
+        if cfg.translate_hotkey or cfg.punctuate_hotkey:
+            # Only those two ever select. The lookup key deliberately has no
+            # select-all fallback — it never pastes over what it grabbed, so
+            # a field left fully selected would be a field the user's next
+            # keystroke wipes (injector.read_selection says it at length).
             parse_chord(cfg.translate.select_all_chord)
-            taps[vk_for(cfg.translate_hotkey)] = "translate"
-        if cfg.correct_hotkey:
-            taps[vk_for(cfg.correct_hotkey)] = "correct"
+        # Built whether or not the lookup key is bound: that key can be
+        # turned on from the dashboard while the app runs, and a box that
+        # only existed if the key had been set at startup would make the
+        # rebind do nothing until a restart. A hidden window and an idle
+        # message loop cost nothing to keep.
+        self.popup = popup_mod.Popup(max_width=cfg.lookup.max_width,
+                                     max_height=cfg.lookup.max_height)
+        hotkeys, taps, latch_vk, pause_vk = self.bindings(cfg)
+        self._lookup_vk = self._vk_of(taps, "lookup")
         self.machine = PTTStateMachine(
             hotkeys,
             on_start=self._on_start, on_stop=self._on_stop,
             on_abort=self._on_abort,
             taps=taps, on_tap=self._on_tap,
-            latch_vk=vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
-            on_latch=self._on_latch)
+            latch_vk=latch_vk, on_latch=self._on_latch,
+            pause_vk=pause_vk, on_pause=self._on_pause,
+            on_key_down=self._popup_key)
         self.hook = HookThread(self.machine)
+        # What the dot is showing, kept here so the dashboard can report the
+        # same thing in words. Every set_state goes through _set_state.
+        self._activity = "ready"
+        self._started_at = time.monotonic()
+        # Asked once. status() is polled by the dashboard several times a
+        # second and device_label() goes out to PortAudio to enumerate
+        # devices — not something to do on every frame of a window.
+        self._mic_label = self.recorder.device_label()
+        self._note = ""             # the last thing worth saying out loud
+        self._auto_paused = False   # paused BY the fullscreen watcher, so
+                                    # only it may un-pause it again
+        self._stats_lock = threading.Lock()
+        self._stats = self._fresh_stats()
+        # Repeated identical cues, suppressed. See _cue_once: the
+        # correction key can fail several times in a row for one reason,
+        # and a row of error tones says "something is badly wrong" when the
+        # truth is "that text is not on screen any more".
+        self._cue_lock = threading.Lock()
+        self._cue_last: dict[tuple[str, str], float] = {}
         self.worker = threading.Thread(target=self._worker, daemon=True,
                                        name="transcribe-worker")
-        # Translation gets its own queue and thread: it is an independent
-        # action on text that is already on screen, and must not wait behind
-        # a 40 s transcription retry (or make one wait behind it).
-        self.translate_queue: queue.Queue[int] = queue.Queue()
+        # The keys that act on text ALREADY on screen — translate and
+        # punctuate — share one queue and one thread. Two reasons, and both
+        # matter:
+        #   - they are independent of dictation, so they must not wait behind
+        #     a 40 s transcription retry (or make one wait behind it);
+        #   - they must not run at the same time as EACH OTHER. Both work by
+        #     copying the selection out and pasting a replacement back, and
+        #     this machine has exactly one clipboard and one focused window.
+        #     Serialising them is not a limitation, it is the only correct
+        #     thing to do with a shared resource.
+        self.text_queue: queue.Queue[tuple[str, int]] = queue.Queue()
         self._translator = None
-        self._translating = threading.Event()
-        self.translate_worker = threading.Thread(
-            target=self._translate_worker, daemon=True,
-            name="translate-worker")
+        self._punctuator = None
+        self._text_busy = threading.Event()
+        self.text_worker = threading.Thread(
+            target=self._text_key_worker, daemon=True, name="text-worker")
         # The correction box blocks for as long as the user takes to type,
         # which is unbounded. It gets its own thread so a box left open over
         # lunch cannot hold up a dictation or a translation.
@@ -158,9 +246,34 @@ class App:
         self._correcting = threading.Event()
         self.correct_worker = threading.Thread(
             target=self._correct_worker, daemon=True, name="correct-worker")
+        # The lookup key gets its own queue and its own thread rather than
+        # joining text_queue, and the reason is the same one that put those
+        # two together: what must not overlap is the CLIPBOARD. A lookup
+        # borrows it for a measured 20 ms and then wants 1-3 s of model
+        # time it owes nobody — sharing the text queue would make a
+        # translation wait out a lookup's model call for nothing, and make
+        # a lookup wait out a translation's. So it queues separately and
+        # takes _cursor_lock around its capture only (see _lookup).
+        # (window, anchor): where the text is, and where on screen the
+        # user was pointing when they asked. Both are read on the hook
+        # thread, because both are only true at the moment of the press.
+        self.lookup_queue: queue.Queue[
+            tuple[int, tuple[int, int] | None]] = queue.Queue()
+        self._looking_up = threading.Event()
+        self._lookup_engine = None
+        self.lookup_worker = threading.Thread(
+            target=self._lookup_worker, daemon=True, name="lookup-worker")
         # One Whisper model, several threads that want it (the desktop
         # worker, and every phone request).
         self._model_lock = threading.Lock()
+        # One cursor and one clipboard, wanted by four threads: the
+        # dictation worker, the translate/punctuate worker, the correction
+        # worker and the control thread. They could previously only collide
+        # by bad luck of timing and mostly did not, which is not the same as
+        # being safe — a translate that grabs the field while a transcript
+        # is being pasted into it corrupts both. Every stretch of code that
+        # sends keystrokes or borrows the clipboard takes this.
+        self._cursor_lock = threading.Lock()
         # The only thing on screen once loading is done: a dot that says
         # the app is alive, and what it is doing.
         self.dot = (overlay_mod.StatusDot() if cfg.indicator
@@ -172,13 +285,341 @@ class App:
                 lambda: self.transcriber.name,
                 self._translate_for_phone)
 
+    @staticmethod
+    def bindings(cfg: config_mod.Config):
+        """config -> (hold hotkeys, tap keys, latch vk, pause vk).
+
+        One place, because it is needed twice — at construction and again
+        every time a key is moved — and two copies of it would drift the
+        first time a key was added.
+
+        Only the taps go through parse_binding, and that asymmetry is the
+        point: a tap is a key you strike, so "ctrl+f8" is a sentence the
+        state machine can watch for. The other three are not struck. The
+        hold hotkey is held down for as long as you speak, the latch is a
+        toggle and the pause key another — a modifier in front of any of
+        them describes a moment, not a duration, so vk_for stays there and
+        config.check_hotkeys refuses the chord before it ever reaches
+        here.
+        """
+        # None means "no language declared — let the transcriber decide",
+        # which is exactly what the backends already read an unset language
+        # as. An English key, when there is one, still declares itself.
+        hotkeys = {vk_for(cfg.hotkey): None if cfg.auto_language else "he"}
+        if cfg.english_hotkey:
+            hotkeys[vk_for(cfg.english_hotkey)] = "en"
+        taps = {}
+        if cfg.translate_hotkey:
+            taps[parse_binding(cfg.translate_hotkey)] = "translate"
+        if cfg.punctuate_hotkey:
+            taps[parse_binding(cfg.punctuate_hotkey)] = "punctuate"
+        if cfg.correct_hotkey:
+            taps[parse_binding(cfg.correct_hotkey)] = "correct"
+        if cfg.lookup_hotkey:
+            taps[parse_binding(cfg.lookup_hotkey)] = "lookup"
+        return (hotkeys, taps,
+                vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
+                vk_for(cfg.pause_hotkey) if cfg.pause_hotkey else None)
+
+    @staticmethod
+    def _vk_of(taps: dict, action: str) -> int | None:
+        """Which key a tap action is on right now, read back out of the map
+        bindings() just built — so there is still one place that decides
+        it, and moving a key from the dashboard cannot leave a stale copy
+        of the answer behind.
+
+        The TRIGGER, not the whole binding, because the one caller
+        (_popup_key) is handed a raw vk by the hook and has nothing to
+        compare a chord against. That is the right answer for it anyway:
+        the question there is "did the key that asks the question just go
+        down", and ctrl+F8 puts F8 down exactly as bare F8 does. A plain
+        int key is still accepted so that a caller which never learned
+        about chords — tests.py binds taps={VK_F9: ...} — keeps working.
+        """
+        return next((getattr(key, "trigger", key)
+                     for key, name in taps.items() if name == action), None)
+
+    def _popup_key(self, vk: int) -> bool:
+        """Every key-down on this machine, offered to the lookup box.
+
+        The box never takes focus, so it never receives WM_KEYDOWN and the
+        hook is the only thing in the process that can see a keystroke —
+        see PTTStateMachine. True swallows the key, and the box asks for
+        two of them: Esc, which closes it, and Ctrl+C, which copies the
+        selection in it. Everything else passes through untouched — a box
+        that closed on any keystroke meant you could not press Shift while
+        reading an answer, and the owner read that as the box vanishing at
+        random.
+
+        WHICH keys those are is deliberately not decided here. popup.py
+        owns that, because the conditions are its own: whether anything is
+        selected, whether the window in front is still the one the
+        selection was made in, whether that window is a console. This
+        function's whole job is to keep the pipe open, and the one thing
+        it does decide is the exception below.
+
+        The lookup key is still kept away from the box, and the reason has
+        changed. It used to be that a press had two jobs — close the box
+        here, open a lookup there — and would have spent itself on the
+        first. Now that press only ever means "look this up", so this is
+        one integer comparison defending an invariant that main.py is the
+        module responsible for: the key that asks the question must reach
+        the code that answers it, whatever popup.py decides to swallow
+        next. It is also the one collision to avoid when rebinding —
+        bind lookup to C and popup.py never sees the Ctrl+C it would
+        otherwise take, because this returns first.
+        """
+        if self._lookup_vk is not None and vk == self._lookup_vk:
+            return False
+        return self.popup.on_key(vk)
+
+    # ---- state the dashboard reads, and the cues it should not repeat ----
+
+    @staticmethod
+    def _fresh_stats() -> dict:
+        return {"day": time.strftime("%Y-%m-%d"), "dictations": 0,
+                "seconds": 0.0, "chars": 0, "latency": 0.0, "failures": 0,
+                "translations": 0, "punctuations": 0, "learned": 0,
+                "lookups": 0}
+
+    def _bump(self, **deltas) -> None:
+        """Counters for the dashboard. Rolled over at midnight rather than
+        kept forever: "18 dictations today" answers a question someone
+        actually has, and a total since install answers none."""
+        with self._stats_lock:
+            today = time.strftime("%Y-%m-%d")
+            if self._stats["day"] != today:
+                self._stats = self._fresh_stats()
+            for name, amount in deltas.items():
+                self._stats[name] = self._stats.get(name, 0) + amount
+
+    def _set_state(self, state: str) -> None:
+        self._activity = state
+        self.dot.set_state(state)
+
+    def _cue_once(self, kind: str, reason: str, every: float = 4.0) -> None:
+        """Play a cue unless the same one just played for the same reason.
+
+        The correction key is why this exists. Every one of its failure
+        paths beeped, and the failures come in runs — the text it wants is
+        not on screen, so pressing again cannot help, and pressing again is
+        exactly what a person does when a key seems not to have worked.
+        Measured in app.log on 2026-08-14: nine presses in five seconds,
+        nine error cues, which is heard as one long fault rather than as
+        nine identical answers to the same question.
+        """
+        now = time.monotonic()
+        with self._cue_lock:
+            if now - self._cue_last.get((kind, reason), -1e9) < every:
+                return
+            self._cue_last[(kind, reason)] = now
+        beep(kind)
+
+    def _say(self, message: str) -> None:
+        """The one-line reason the dashboard shows. Logged too — this is a
+        windowless app, and the log is the only other place it could go."""
+        self._note = f"{time.strftime('%H:%M')}  {message}"
+
+    def status(self) -> dict:
+        """Everything the dashboard draws, in one reply.
+
+        One command rather than several because it is polled: five round
+        trips a second down a pipe to render one window would be silly, and
+        a status assembled from five separate answers can show a paused app
+        that is also recording.
+        """
+        with self._stats_lock:
+            stats = dict(self._stats)
+        with self._last_lock:
+            last = dict(self._last) if self._last else None
+        vocab_ready = sum(1 for c in self.vocab.corrections
+                          if int(c.get("hits", 1))
+                          >= self.cfg.vocab.replace_after_hits)
+        return {
+            "ok": True,
+            "stage": "running",
+            "paused": self.machine.paused,
+            "auto_paused": self._auto_paused,
+            "activity": "paused" if self.machine.paused else self._activity,
+            "uptime_s": round(time.monotonic() - self._started_at, 1),
+            "backend": self.transcriber.name,
+            "mic": self._mic_label,
+            "keys": {name: getattr(self.cfg, name)
+                     for name, _label in config_mod.HOTKEY_FIELDS},
+            "auto_pause_fullscreen": self.cfg.auto_pause_fullscreen,
+            "stats": stats,
+            "note": self._note,
+            # Deliberately NOT the transcript itself. The dashboard cannot
+            # render Hebrew anyway (no bidi in Tk), it has a Copy button
+            # for when the text is actually wanted, and a latched hour-long
+            # dictation embedded here would push every status poll past the
+            # pipe's message buffer. There is no reason to put what someone
+            # said down a pipe several times a second.
+            "last": None if not last else {
+                "when": last.get("when", ""),
+                "chars": len(last.get("final", "")),
+            },
+            "vocab": {"corrections": len(self.vocab),
+                      "automatic": vocab_ready,
+                      "hotwords": (len(self.vocab.terms())
+                                   if self.cfg.vocab.enabled else 0)},
+            "pending": len(self.spool.pending()),
+            "phone": (self.phone.url or "") if self.phone else "",
+        }
+
+    # ---- pause ----
+
+    def _on_pause(self, paused: bool) -> None:
+        """Runs on the hook thread (pause key) or the control thread (the
+        dashboard). Cheap on purpose: nothing is loaded or unloaded, which
+        is the entire point of pausing rather than quitting."""
+        if not paused:
+            self._auto_paused = False
+        if paused:
+            # Nothing takes this box down on its own any more — that is
+            # the point of it — so pausing has to. This key exists so the
+            # owner can start a game, and the fullscreen watcher calls it
+            # for him; an always-on-top box left sitting over that game
+            # would be exactly the intrusion pausing was asked to stop.
+            self.popup.hide()
+        self._set_state("paused" if paused else "ready")
+        beep("paused" if paused else "resumed")
+        if paused:
+            self._say("paused — the keys do nothing until you resume")
+            log.info("PAUSED — '%s' and the other keys are inert; the models "
+                     "stay loaded, so resuming is instant%s", self.cfg.hotkey,
+                     f". Tap '{self.cfg.pause_hotkey}' to resume"
+                     if self.cfg.pause_hotkey else "")
+        else:
+            self._say("listening again")
+            log.info("resumed — hold '%s' and speak", self.cfg.hotkey)
+
+    def set_paused(self, paused: bool, auto: bool = False) -> bool:
+        changed = self.machine.set_paused(paused)
+        if paused and changed:
+            self._auto_paused = auto
+        return changed
+
+    def _watch_fullscreen(self) -> None:
+        """Pause while a game owns the screen; resume when it lets go.
+
+        SHQueryUserNotificationState is the question Windows already
+        answers for its own notifications — "would showing something on top
+        of this be rude" — which is exactly the question being asked here,
+        and it needs no window enumeration or per-game special cases.
+
+        Acts on the EDGE, not the level: it pauses when the screen is taken
+        and then keeps quiet, rather than re-pausing every two seconds for
+        as long as the game is up. Level-triggered, it would undo a manual
+        resume within one tick — so tapping the pause key to dictate into
+        game chat would give a resume cue, a two-second window, and then a
+        pause cue and dead keys, with the recording in flight thrown away.
+        Dictating inside a fullscreen game is precisely what the pause key
+        exists to make possible.
+
+        Only ever undoes ITS OWN pause, for the mirror-image reason: a
+        manual pause during a game must survive alt-tabbing out of it.
+        """
+        QUNS_BUSY, QUNS_D3D_FULLSCREEN, QUNS_PRESENTATION = 2, 3, 4
+        shell32 = ctypes.windll.shell32
+        was_busy = False
+        while not self._stopping.wait(2.0):
+            # Checked every round rather than at start-up: the setting has
+            # a checkbox in the dashboard, and a thread that only read it
+            # once would go on pausing games after it was turned off.
+            if not self.cfg.auto_pause_fullscreen:
+                was_busy = False        # re-arm if it is switched back on
+                continue
+            try:
+                state = ctypes.c_int(0)
+                if shell32.SHQueryUserNotificationState(ctypes.byref(state)):
+                    continue        # non-zero HRESULT: leave things alone
+                busy = state.value in (QUNS_BUSY, QUNS_D3D_FULLSCREEN,
+                                       QUNS_PRESENTATION)
+            except Exception as e:
+                log.info("fullscreen watch stopped (%s)", e)
+                return
+            if busy and not was_busy and not self.machine.paused:
+                log.info("a fullscreen app took the screen — pausing")
+                self.set_paused(True, auto=True)
+            elif not busy and self._auto_paused:
+                log.info("the fullscreen app let go — resuming")
+                self.set_paused(False)
+            was_busy = busy
+
+    # ---- changing the keys while it runs ----
+
+    def rebind(self, field: str, key: str) -> str:
+        """Move one key, live. Returns a sentence for the dashboard.
+
+        Applied to the running hook FIRST and written to config.toml
+        second. Both have to happen — a change that only reaches the
+        running process is undone by the next restart, and one that only
+        reaches the file does nothing until then — and this order means a
+        key the state machine rejects never gets written down.
+        """
+        valid = {name for name, _label in config_mod.HOTKEY_FIELDS}
+        if field not in valid:
+            raise ValueError(f"{field!r} is not a key setting "
+                             f"({', '.join(sorted(valid))})")
+        key = (key or "").strip().lower()
+        if key:
+            # parse_binding, not vk_for: a chord typed into the dashboard
+            # is a name vk_for cannot read, and it would be rejected here
+            # as a bad key before check_hotkeys ever got to say whether it
+            # was allowed on THIS field. Which fields may take a chord is
+            # check_hotkeys' decision, and this line must not pre-empt it.
+            parse_binding(key)               # ValueError on a bad name
+        new = dataclasses.replace(self.cfg, **{field: key})
+        config_mod.check_hotkeys(new)        # ConfigError on a collision
+        if field == "hotkey" and not key:
+            raise ValueError("the dictation key cannot be turned off")
+
+        hotkeys, taps, latch_vk, pause_vk = self.bindings(new)
+        self.machine.rebind(hotkeys, taps=taps, latch_vk=latch_vk,
+                            pause_vk=pause_vk)
+        self._lookup_vk = self._vk_of(taps, "lookup")   # _popup_key reads it
+        self.cfg = new
+        config_mod.set_values(self.config_path, {field: key})
+        message = (f"{field} is now '{key}'" if key
+                   else f"{field} is off")
+        self._say(message)
+        log.info("%s (saved to %s)", message, self.config_path.name)
+        return message
+
+    def set_option(self, name: str, value) -> str:
+        """The dashboard's checkboxes. Only the settings that can be
+        honoured without a restart are here — anything else would be a
+        control that lies about having done something."""
+        if name != "auto_pause_fullscreen":
+            raise ValueError(f"{name!r} cannot be changed while it runs")
+        value = bool(value)
+        self.cfg = dataclasses.replace(self.cfg, auto_pause_fullscreen=value)
+        config_mod.set_values(self.config_path, {name: value})
+        if value and (self._watcher is None or not self._watcher.is_alive()):
+            self._watcher = threading.Thread(target=self._watch_fullscreen,
+                                             daemon=True, name="fullscreen")
+            self._watcher.start()
+        if not value and self._auto_paused:
+            self.set_paused(False)           # do not strand it paused
+        message = ("auto-pause in fullscreen apps is on" if value
+                   else "auto-pause in fullscreen apps is off")
+        self._say(message)
+        log.info("%s", message)
+        return message
+
     def start(self) -> None:
         self.recorder.start_stream()
         self.worker.start()
-        self.translate_worker.start()
+        self.text_worker.start()
         self.correct_worker.start()
+        self.lookup_worker.start()
         self.hook.start()
         self.dot.start()
+        if self.cfg.auto_pause_fullscreen:
+            self._watcher = threading.Thread(target=self._watch_fullscreen,
+                                             daemon=True, name="fullscreen")
+            self._watcher.start()
         if self.cfg.polish.when != "never" and self.cfg.polish.warm_up:
             # In the background and after the hotkey is live: dictation must
             # not wait on a language model it may never need, but the model
@@ -194,11 +635,59 @@ class App:
                 self.phone = None
 
     def stop(self) -> None:
+        self._stopping.set()      # ends the fullscreen watcher's wait()
         self.dot.stop()
+        # Its own thread and its own window, and the window is destroyed
+        # rather than hidden. That matters more than it did: the box waits
+        # to be closed now, so quitting with one on screen must take it
+        # with it — a box outliving the app that drew it would be a piece
+        # of screen furniture with nothing left alive to close it.
+        self.popup.stop()
         if self.phone is not None:
             self.phone.stop()
         self.hook.stop()
         self.recorder.close()
+
+    def control_command(self, command: str, args: dict) -> dict:
+        """One dashboard request -> one reply. Runs on the control thread.
+
+        Everything here is either a read or a flag flip: nothing waits on a
+        model, a network call or the clipboard, because the dashboard polls
+        this and a handler that blocked would render a working app as a
+        frozen one.
+        """
+        try:
+            if command == "status":
+                return self.status()
+            if command in ("pause", "resume", "toggle"):
+                want = (command == "pause" if command != "toggle"
+                        else not self.machine.paused)
+                self.set_paused(want)
+                return {"ok": True, "paused": self.machine.paused}
+            if command == "rebind":
+                return {"ok": True,
+                        "message": self.rebind(str(args.get("field", "")),
+                                               str(args.get("key", "")))}
+            if command == "option":
+                return {"ok": True,
+                        "message": self.set_option(str(args.get("name", "")),
+                                                   args.get("value"))}
+            if command == "copy_last":
+                with self._last_lock:
+                    text = (self._last or {}).get("final", "")
+                if not text:
+                    return {"ok": False, "error": "nothing dictated yet"}
+                injector.set_text(text)
+                return {"ok": True, "message": f"{len(text)} chars copied"}
+            if command == "quit":
+                singleton.request_quit()
+                return {"ok": True}
+            return {"ok": False, "error": f"unknown command {command!r}"}
+        except (ValueError, ConfigError) as e:
+            return {"ok": False, "error": str(e)}
+        except Exception as e:
+            log.exception("control command %r failed", command)
+            return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     def _transcribe_for_phone(self, wav: bytes) -> tuple[str, str]:
         """No language is passed: the phone has no per-language key, so it
@@ -222,6 +711,8 @@ class App:
         text, backend = self._transcribe(wav, language=None)
         transcript_log.info("OK | PHONE | %s | %.1fs latency | %s",
                             backend, time.monotonic() - started, text)
+        # Same blocking pass the desktop runs, under the same ceiling: both
+        # have somebody waiting on the other end of it.
         text = self._improve(text.strip()) if text.strip() else text
         # A decoder loop means words are LOST, not garbled — surface that
         # on the phone right away instead of letting reading discover it.
@@ -244,30 +735,30 @@ class App:
 
     # ---- hook-thread callbacks: keep them fast ----
 
-    def _on_start(self, language: str = "he") -> None:
+    def _on_start(self, language: str | None = "he") -> None:
         self.recorder.begin()   # also restores the cap a latch may have lifted
         self._cap, self._latched = self.cfg.max_seconds, False
-        self.dot.set_state("recording")
+        self._set_state("recording")
         beep("start")
         log.info("recording %s... (release to transcribe%s)",
-                 "ENGLISH" if language == "en" else "Hebrew",
+                 language_label(language, shout=True),
                  f", tap '{self.cfg.latch_hotkey}' to lock it on"
                  if self.cfg.latch_hotkey else "")
 
-    def _on_stop(self, language: str = "he") -> None:
+    def _on_stop(self, language: str | None = "he") -> None:
         wav, seconds = self.recorder.end()
-        self.dot.set_state("busy")
+        self._set_state("busy")
         if wav is None:
             # overflowed at the cap — beep already fired at cap time
             log.info("discarded: hit the %.0f s cap", self._cap)
             transcript_log.info("DISCARDED | %.1fs | hit the %.0f s cap",
                                 seconds, self._cap)
-            self.dot.set_state("ready")
+            self._set_state("ready")
             return
         if seconds < self.cfg.min_seconds:
             log.info("discarded: %.2f s hold is under min_seconds=%.2f "
                      "(accidental tap?)", seconds, self.cfg.min_seconds)
-            self.dot.set_state("ready")
+            self._set_state("ready")
             return
         beep("stop")
         # Remember WHERE the user was speaking. Everything slow (placeholder
@@ -276,7 +767,7 @@ class App:
         # drop the hook and freeze input.
         self.queue.put((wav, seconds, injector.foreground_window(), language))
         log.info("captured %.1f s of %s -> transcribing (%s)...", seconds,
-                 "English" if language == "en" else "Hebrew",
+                 language_label(language),
                  self.transcriber.name)
 
     def _on_latch(self) -> None:
@@ -285,7 +776,7 @@ class App:
         self.recorder.set_cap(self.cfg.latch_max_seconds or None)
         self._cap = self.cfg.latch_max_seconds or math.inf
         self._latched = True
-        self.dot.set_state("locked")
+        self._set_state("locked")
         beep("latch")
         log.info("locked — let go of '%s' and talk as long as you want; "
                  "tap '%s' again to transcribe, esc to discard%s",
@@ -294,7 +785,7 @@ class App:
                  else f" (cap {self.cfg.latch_max_seconds:.0f} s)")
 
     def _on_abort(self, reason: str) -> None:
-        self.dot.set_state("ready")
+        self._set_state("ready")
         self.recorder.abort()
         log.info("aborted, nothing recorded — %s", reason)
 
@@ -302,15 +793,24 @@ class App:
         if action == "correct":
             self._tap_correct()
             return
-        if action != "translate":
+        if action == "lookup":
+            self._tap_lookup()
+            return
+        if action not in ("translate", "punctuate"):
             return
         # Remember WHERE the text is before anything slow happens, for the
         # same reason _on_stop does: this runs inside the OS keyboard hook.
-        if self._translating.is_set():
-            log.info("already translating — ignoring the extra press")
+        #
+        # One flag for both keys, not one each: they take turns at the
+        # clipboard and the selection, so "punctuate while a translation is
+        # in flight" has to be refused for exactly the reason a second
+        # translation does.
+        if self._text_busy.is_set():
+            log.info("still working on the text at the cursor — ignoring the "
+                     "'%s' press", action)
             return
-        self._translating.set()
-        self.translate_queue.put(injector.foreground_window())
+        self._text_busy.set()
+        self.text_queue.put((action, injector.foreground_window()))
 
     def _tap_correct(self) -> None:
         """Learn from the correction the user has already made on screen.
@@ -327,11 +827,46 @@ class App:
         with self._last_lock:
             last = dict(self._last) if self._last else None
         if not last:
-            beep("error")
+            self._cue_once("noop", "nothing-yet")
+            self._say("nothing to teach yet — dictate something first")
             log.info("nothing to correct yet — dictate something first")
             return
         self._correcting.set()
         self.correct_queue.put((last, injector.foreground_window()))
+
+    def _tap_lookup(self) -> None:
+        """Look up what is selected, without touching it.
+
+        Runs inside the keyboard hook like every other tap, so it does
+        nothing but check state and read two numbers: the capture sends a
+        chord and waits for the focused app to answer it, and blocking
+        here would make Windows drop the hook and freeze every key on the
+        machine.
+
+        A press while a box is already open asks a NEW question, and does
+        not close the old one. That is a reversal. It was right while the
+        box dismissed itself — the key that opened it was the obvious key
+        to shut it — but the box now stays up until it is closed on
+        purpose, and under that rule the toggle turned the commonest use
+        of this key into a no-op: select a second word, tap, and all that
+        happens is the first answer disappearing. The box has a button of
+        its own for closing, and Esc; this key is for asking.
+        """
+        if self._looking_up.is_set():
+            # Genuinely in flight, which is a different thing from "a box
+            # is on screen": one clipboard, one selection, one answer
+            # being written. The box being up is no longer a reason to
+            # refuse anything.
+            self._cue_once("noop", "lookup-busy")
+            log.info("still looking that one up — ignoring the extra press")
+            return
+        self._looking_up.set()
+        # Both facts are only true at the moment of the press. The window
+        # is remembered for the same reason _on_stop remembers it, and is
+        # used to say so in the log; the cursor is remembered because it
+        # is where the answer has to appear — see cursor_point, and see
+        # _lookup for the caret it is measured against.
+        self.lookup_queue.put((injector.foreground_window(), cursor_point()))
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
@@ -389,6 +924,7 @@ class App:
         Serialised: the phone endpoint runs on its own threads and would
         otherwise hit the same Whisper model as the desktop worker at the
         same moment. This is the one choke point both paths pass through.
+
         """
         with self._model_lock:
             try:
@@ -411,7 +947,7 @@ class App:
             finally:
                 # Back to plain "running" however it went — a dot stuck on
                 # amber would report a hang that isn't happening.
-                self.dot.set_state("ready")
+                self._set_state("ready")
 
     # ---- correction worker ----
 
@@ -419,7 +955,8 @@ class App:
         while True:
             last, hwnd = self.correct_queue.get()
             try:
-                self._correct(last, hwnd)
+                with self._cursor_lock:
+                    self._correct(last, hwnd)
             except Exception:
                 beep("error")
                 log.exception("unexpected failure reading a correction")
@@ -441,27 +978,53 @@ class App:
         The diff is against the text the user SAW, not the raw backend
         output: if the repair pass already fixed something, re-learning it
         would inflate its hit count for a mistake that no longer happens.
+
+        Most presses of this key legitimately learn NOTHING — the text has
+        already been sent, or it was right the first time — so the three
+        "nothing to do" answers below are not errors and must not sound
+        like one. See _cue_once for what that cost before.
         """
+        # Re-read rather than trusting the snapshot _tap_correct took on the
+        # hook thread. Between that press and this worker getting the cursor
+        # lock, a deferred context-pass repair may have landed and changed
+        # the text on screen. Diffing the SCREEN (repaired) against a
+        # snapshot from BEFORE the repair would learn the model's own edit
+        # as though the user had typed it — and that pair goes straight into
+        # the glossary the repair pass reads, and into Whisper's hotwords.
+        # Matched on 'raw', which a repair never touches (it rewrites only
+        # 'final'), so this adopts the repaired text for the SAME dictation
+        # and declines to adopt a different one that arrived meanwhile.
+        with self._last_lock:
+            current = dict(self._last) if self._last else {}
+        if current and current.get("raw") == last.get("raw"):
+            last = current
         shown = last.get("final", "")
         tcfg = self.cfg.translate
         state = injector.snapshot()
+        kept = injector.claim_mark()
         try:
             grabbed, _had_selection = injector.grab(
                 tcfg.copy_chord, tcfg.select_all_chord, tcfg.settle_ms / 1000)
         except injector.ClipboardBusyError as e:
-            beep("error")
+            self._cue_once("error", "clipboard")
+            self._say("could not read the screen — the clipboard was locked")
             log.error("could not read the corrected text: %s", e)
             return
         finally:
             # grab() deliberately leaves what it copied on the clipboard; the
             # user never asked for that, so put theirs back either way.
+            # Unless they copied something themselves in the meantime —
+            # the lookup box is on screen with a copy button on it while
+            # every other key still works. injector.claim_mark() says why.
             try:
-                injector.restore(state, "clipboard")
+                injector.restore(state, "clipboard", since=kept)
             except injector.ClipboardBusyError as e:
                 log.warning("could not restore your clipboard: %s", e)
 
         if len(grabbed) > tcfg.max_chars:
-            beep("error")
+            self._cue_once("error", "too-much")
+            self._say(f"{len(grabbed)} chars is too much to search — select "
+                      f"just the sentence you fixed")
             log.warning("refusing to search %d chars for the last transcript "
                         "(max_chars=%d) — select just the corrected text and "
                         "press the key again", len(grabbed), tcfg.max_chars)
@@ -469,19 +1032,51 @@ class App:
 
         fixed, ratio = vocab_mod.locate(shown, grabbed)
         if ratio < vocab_mod.MIN_MATCH:
-            beep("error")
+            # Told apart because they need different things done about
+            # them, and because "best match 0%" is a number, not a reason.
+            if not grabbed.strip():
+                why = ("there is no text where the cursor is — click into "
+                       "the box holding what you dictated")
+            elif ratio <= 0.01:
+                why = ("what you dictated is not on screen any more — if "
+                       "you already sent it, there is nothing left to read")
+            else:
+                why = (f"only {ratio:.0%} of it is still there (needs "
+                       f"{vocab_mod.MIN_MATCH:.0%}) — select the corrected "
+                       f"sentence and press again")
+            self._cue_once("noop", "not-found")
+            self._say(f"nothing learned: {why}")
             log.info("could not find the last transcript where the cursor is "
-                     "(best match %.0f%%, need %.0f%%) — nothing learned. "
-                     "Press the key in the window you dictated into, or "
-                     "select the corrected text first.",
-                     ratio * 100, vocab_mod.MIN_MATCH * 100)
+                     "(best match %.0f%%, need %.0f%%) — %s",
+                     ratio * 100, vocab_mod.MIN_MATCH * 100, why)
             return
         if fixed.strip() == shown.strip():
+            self._cue_once("noop", "unchanged")
+            self._say("read it — the text is unchanged, so there is nothing "
+                      "to learn")
             log.info("the text on screen is unchanged — nothing to learn")
             return
 
         pairs = self.vocab.learn_from_edit(shown, fixed)
         transcript_log.info("CORRECTED | %s || %s", shown, fixed)
+        # What is on screen is now what the app believes it produced.
+        # Without this, a second press of the key diffs the SAME edit
+        # again and counts it as a second, independent correction — which
+        # is how one real fix reaches replace_after_hits = 2 on its own and
+        # starts rewriting that word automatically. Observed in app.log on
+        # 2026-08-14: "memory הרווסטר -> anthropic-skills memory-harvester"
+        # learned at 21:13:44 and re-learned at 21:14:29 from one edit.
+        with self._last_lock:
+            # Only if _last is still the dictation this correction was read
+            # for. _handle publishes a new record under _last_lock alone and
+            # only then waits on _cursor_lock, so a dictation that finished
+            # during the grab above can already have replaced it — and
+            # writing this correction into THAT record would attach one
+            # utterance's fix to another one's audio. Matched on 'raw',
+            # which neither a correction nor a repair rewrites.
+            if (self._last is not None
+                    and self._last.get("raw") == last.get("raw")):
+                self._last["final"] = fixed.strip()
         # Tie the truth to the audio. This is what turns "it got this wrong"
         # into a test case: --benchmark replays these and reports whether a
         # vocabulary change actually helped, instead of leaving it to
@@ -499,6 +1094,8 @@ class App:
             # real, but it teaches no "when you hear X, write Y" rule.
             # Saying so is better than a silent success the user then
             # expects to have changed something.
+            self._say("saved your edit, but it taught no word swaps "
+                      "(insertions have no misheard form to key on)")
             log.info("correction saved to the log, but it taught no word "
                      "swaps (only substitutions of up to %d words are "
                      "learned — an insertion has no misheard form to key "
@@ -509,24 +1106,35 @@ class App:
             ready = sum(1 for c in self.vocab.corrections
                         if int(c.get("hits", 1))
                         >= self.cfg.vocab.replace_after_hits)
+            self._say(f"learned {len(pairs)}: "
+                      + " | ".join(f"{h} -> {m}" for h, m in pairs))
+            self._bump(learned=len(pairs))
             log.info("vocabulary now %d entries (%d repaired automatically, "
                      "the rest are hotwords only until corrected %d times)",
                      len(self.vocab), ready,
                      self.cfg.vocab.replace_after_hits)
         beep("translated")
 
-    # ---- translate worker ----
+    # ---- the keys that act on text already on screen ----
 
-    def _translate_worker(self) -> None:
+    def _text_key_worker(self) -> None:
         while True:
-            hwnd = self.translate_queue.get()
+            action, hwnd = self.text_queue.get()
             try:
-                self._translate(hwnd)
+                # Held across the whole grab-model-replace, not just the
+                # keystrokes: these borrow the clipboard for the duration,
+                # and a deferred context-pass repair landing in the middle
+                # would restore a clipboard this is still using.
+                with self._cursor_lock:
+                    if action == "punctuate":
+                        self._punctuate(hwnd)
+                    else:
+                        self._translate(hwnd)
             except Exception:
                 beep("error")
-                log.exception("unexpected failure translating")
+                log.exception("unexpected failure while %sing", action)
             finally:
-                self._translating.clear()
+                self._text_busy.clear()
 
     def _translate(self, hwnd: int) -> None:
         """Replace the selection — or the whole field — with its English.
@@ -535,29 +1143,43 @@ class App:
         every exit path, including the failures: grabbing the text is what
         overwrites it, so an early return without a restore would leave the
         user's own clipboard silently destroyed.
+
+        That pair is open for as long as the model takes to answer, and
+        the lookup box can be read and copied from throughout it, so the
+        mark taken here is what stops the restore from destroying a copy
+        the user made in the middle — injector.claim_mark().
         """
         import translate as translate_mod
 
         tcfg = self.cfg.translate
         state = injector.snapshot()
+        kept = injector.claim_mark()
         keep_clipboard = False
         try:
             text, had_selection = injector.grab(tcfg.copy_chord,
                                                 tcfg.select_all_chord,
                                                 tcfg.settle_ms / 1000)
         except injector.ClipboardBusyError as e:
-            beep("error")
+            self._cue_once("error", "translate-clipboard")
+            self._say("could not read the text to translate — the clipboard "
+                      "was locked")
             log.error("could not read the text to translate: %s", e)
             return
 
         try:
+            # The same three shapes as the correction key, and the same rule:
+            # "there was nothing to do" is not a fault and must not sound
+            # like one, nor repeat while the answer stays the same.
             what = "the selection" if had_selection else "the whole field"
             if not text.strip():
-                beep("error")
+                self._cue_once("noop", "translate-empty")
+                self._say(f"nothing to translate — {what} is empty")
                 log.info("nothing to translate — %s is empty", what)
                 return
             if len(text) > tcfg.max_chars:
-                beep("error")
+                self._cue_once("error", "translate-too-much")
+                self._say(f"{len(text)} chars is too much to translate — "
+                          f"select the part you want")
                 log.warning(
                     "refusing to translate %d chars from %s (max_chars=%d) "
                     "— that looks like a whole document, not a message. "
@@ -565,7 +1187,8 @@ class App:
                     len(text), what, tcfg.max_chars)
                 return
             if not translate_mod.needs_translation(text, tcfg.target):
-                beep("error")
+                self._cue_once("noop", "translate-not-hebrew")
+                self._say(f"no Hebrew in {what} — already {tcfg.target}")
                 log.info("no Hebrew in %s — already %s, leaving it alone",
                          what, tcfg.target)
                 return
@@ -606,6 +1229,9 @@ class App:
             injector.paste_text(english, self.cfg.paste_chord,
                                 self.cfg.restore_delay_ms)
             beep("translated")
+            self._bump(translations=1)
+            self._say(f"translated {len(text)} chars to {tcfg.target} in "
+                      f"{latency:.1f} s via {backend}")
             log.info("translated %d chars in %.1f s via %s: %s", len(english),
                      latency, backend, english)
         except injector.ClipboardBusyError as e:
@@ -615,17 +1241,421 @@ class App:
         finally:
             if not keep_clipboard:
                 try:
-                    injector.restore(state, "translation")
+                    injector.restore(state, "translation", since=kept)
                 except injector.ClipboardBusyError as e:
                     log.warning("could not restore your clipboard: %s", e)
 
-    def _improve(self, text: str) -> str:
+    def _punctuate(self, hwnd: int) -> None:
+        """Put the punctuation into the selection — or the whole field.
+
+        Deliberately the same shape as _translate, down to the clipboard
+        being saved once around the whole thing and restored on every exit
+        path: grabbing the text is what overwrites it, so an early return
+        without a restore would silently destroy the user's own clipboard.
+
+        What is NOT the same is the guarantee. A translation cannot be
+        checked against its input by definition; a punctuation pass can, and
+        punctuate.py does — the reply is compared to the text letter by
+        letter with all punctuation removed, and anything that changed a
+        word is thrown away instead of pasted. That is why this key is safe
+        to press on a paragraph you are about to send.
+        """
+        import punctuate as punctuate_mod
+
+        pcfg = self.cfg.punctuate
+        # The grab mechanics live in [translate]: which chords, and how long
+        # the focused app is given to answer them. They describe this
+        # machine, not the job, so both text keys read the same ones.
+        tcfg = self.cfg.translate
+        state = injector.snapshot()
+        kept = injector.claim_mark()      # as in _translate, and for the same
+        keep_clipboard = False            # reason: see injector.claim_mark()
+        try:
+            text, had_selection = injector.grab(tcfg.copy_chord,
+                                                tcfg.select_all_chord,
+                                                tcfg.settle_ms / 1000)
+        except injector.ClipboardBusyError as e:
+            self._cue_once("error", "punctuate-clipboard")
+            self._say("could not read the text to punctuate — the clipboard "
+                      "was locked")
+            log.error("could not read the text to punctuate: %s", e)
+            return
+
+        try:
+            # The same three shapes as the other two keys, and the same
+            # rule: "there was nothing to do" is not a fault, must not sound
+            # like one, and must not repeat while the answer stays the same.
+            what = "the selection" if had_selection else "the whole field"
+            if not text.strip():
+                self._cue_once("noop", "punctuate-empty")
+                self._say(f"nothing to punctuate — {what} is empty")
+                log.info("nothing to punctuate — %s is empty", what)
+                return
+            if len(text) > pcfg.max_chars:
+                self._cue_once("error", "punctuate-too-much")
+                self._say(f"{len(text)} chars is too much to punctuate — "
+                          f"select the part you want")
+                log.warning(
+                    "refusing to punctuate %d chars from %s (max_chars=%d) "
+                    "— that looks like a whole document, not a message. "
+                    "Select the part you want and press the key again.",
+                    len(text), what, pcfg.max_chars)
+                return
+            if not punctuate_mod.needs_punctuation(text):
+                self._cue_once("noop", "punctuate-no-words")
+                self._say(f"no words in {what} — nothing to punctuate")
+                log.info("no words in %s — nothing to punctuate", what)
+                return
+
+            beep("punctuating")
+            log.info("punctuating %d chars from %s%s...", len(text), what,
+                     " (with nikud)" if pcfg.nikud else "")
+            # The original goes to the log BEFORE it is replaced on screen:
+            # this file is the recovery path if the paste goes wrong.
+            transcript_log.info("PUNCTUATE-IN  | %s | %s", what, text)
+
+            started = time.monotonic()
+            if self._punctuator is None:
+                self._punctuator = punctuate_mod.Punctuator(self.cfg)
+            try:
+                fixed, backend = self._punctuator.punctuate(text)
+            except punctuate_mod.UnsafeReply as e:
+                # Told apart from every other failure on purpose. "It could
+                # not be reached" sends someone to check Ollama; this means
+                # the model answered and rewrote their words, and the app
+                # threw that away — which is the guard working, not breaking.
+                self._cue_once("error", "punctuate-unsafe")
+                self._say(f"left it alone — the model rewrote your words "
+                          f"instead of punctuating them ({e})")
+                log.error("punctuation discarded: %s. Your text is untouched.",
+                          e)
+                return
+            except TranscriptionError as e:
+                beep("error")
+                self._say(f"could not punctuate: {e}")
+                log.error("punctuation failed: %s — your text is untouched", e)
+                return
+            latency = time.monotonic() - started
+            transcript_log.info("PUNCTUATE-OUT | %.1fs | %s | %s", latency,
+                                backend, fixed)
+
+            if fixed.strip() == text.strip():
+                self._cue_once("noop", "punctuate-unchanged")
+                self._say(f"{what} is already punctuated — nothing changed")
+                log.info("%s came back unchanged — it is already punctuated",
+                         what)
+                return
+
+            if hwnd and injector.foreground_window() != hwnd:
+                # The selection belongs to a window that is no longer
+                # focused. Pasting now would overwrite whatever the user
+                # switched to.
+                injector.set_text(fixed)
+                keep_clipboard = True   # restoring would take it back away
+                beep("stop")
+                log.warning("you moved to another window — the punctuated "
+                            "text is on your clipboard, press %s to paste "
+                            "it: %s", self.cfg.paste_chord, fixed)
+                return
+
+            injector.paste_text(fixed, self.cfg.paste_chord,
+                                self.cfg.restore_delay_ms)
+            beep("punctuated")
+            self._bump(punctuations=1)
+            self._say(f"punctuated {len(text)} chars in {latency:.1f} s "
+                      f"via {backend}")
+            log.info("punctuated %d chars in %.1f s via %s: %s", len(text),
+                     latency, backend, fixed)
+        except injector.ClipboardBusyError as e:
+            beep("error")
+            log.error("paste failed: %s — the punctuated text is in "
+                      "transcripts.log", e)
+        finally:
+            if not keep_clipboard:
+                try:
+                    injector.restore(state, "punctuated text", since=kept)
+                except injector.ClipboardBusyError as e:
+                    log.warning("could not restore your clipboard: %s", e)
+
+    # ---- the key that reads instead of writing ----
+
+    def _lookup_worker(self) -> None:
+        while True:
+            hwnd, anchor = self.lookup_queue.get()
+            try:
+                # No _cursor_lock here, unlike the other two workers: this
+                # one takes it around its capture and gives it straight
+                # back (see _lookup). Holding it across the model call
+                # would block a dictation paste for seconds to protect a
+                # clipboard nobody is using any more.
+                self._lookup(hwnd, anchor)
+            except Exception:
+                # Take the box down with it. Only TranscriptionError is
+                # caught inside _lookup and turned into a line the box can
+                # show; anything else would leave "…" on screen claiming to
+                # be thinking while the error cue said otherwise — and now
+                # that nothing dismisses the box on its own, it would go on
+                # claiming it for as long as the app runs.
+                try:
+                    self.popup.hide()
+                except Exception:
+                    pass
+                self._cue_once("error", "lookup-crash")
+                log.exception("unexpected failure looking something up")
+            finally:
+                self._looking_up.clear()
+
+    def _lookup(self, hwnd: int,
+                anchor: tuple[int, int] | None = None) -> None:
+        """Say what the selection means, and change nothing at all.
+
+        `anchor` is where the mouse was when the key went down, read on
+        the hook thread by cursor_point(). It defaults to None so the CLI
+        probe and the tests can ask for a lookup without inventing a place
+        for it; the box then falls back to the corner of the screen, which
+        is where it always used to appear.
+
+        The same shape as _translate — capture, guards, cue, transcript
+        log, model — with the paste replaced by a box on screen. Three
+        things are deliberately different, and all three come from the key
+        being read-only:
+
+          - the cursor lock is held around the CAPTURE ONLY. _translate
+            holds it for the whole 1-3 s because it is going to paste at
+            the end and the cursor has to still be where it found it; this
+            borrows the clipboard for a measured 20 ms and then owes the
+            machine nothing;
+          - there is no snapshot/restore pair. injector.read_selection
+            saves and restores every clipboard format itself, in a finally,
+            because a read-only key that destroyed your clipboard would be
+            a contradiction;
+          - focus moving away is not a failure. There is nothing to paste
+            into the wrong window, so the answer is shown anyway and the
+            move is logged rather than enforced.
+        """
+        import lookup as lookup_mod
+
+        lcfg = self.cfg.lookup
+        # The capture mechanics live in [translate], as they do for the
+        # punctuate key: which chord, and where Ollama is. They describe
+        # this machine, not the job.
+        tcfg = self.cfg.translate
+        with self._cursor_lock:
+            text, reason = injector.read_selection(
+                tcfg.copy_chord, skip_consoles=lcfg.skip_consoles, hwnd=hwnd)
+
+        def refuse(cue: str, why: str, said: str) -> None:
+            """Nothing to look up — say so, and clear the box first.
+
+            The box has to come down, and that is new. Every refusal below
+            returns without putting anything in it, and a tap no longer
+            closes an open box: it asks a fresh question. So the answer to
+            the LAST question would be left standing as the answer to this
+            one, with a cue playing over it that says otherwise. An empty
+            screen is the honest report: the key was pressed, there was
+            nothing to look up, and so there is nothing to see.
+            """
+            self.popup.hide()
+            self._cue_once(cue, why)
+            self._say(said)
+
+        if reason == "console":
+            refuse("noop", "lookup-console",
+                   "nothing looked up — a console turns the copy into an "
+                   "interrupt")
+            log.info("not looking anything up in a '%s' window: the copy "
+                     "chord becomes a real Ctrl+C there and would interrupt "
+                     "whatever is running in it. Set skip_consoles = false "
+                     "under [lookup] in config.toml to try it anyway.",
+                     injector.window_class(hwnd) or "console")
+            return
+        if reason == "clipboard-locked":
+            refuse("error", "lookup-clipboard",
+                   "could not read the selection — the clipboard was locked")
+            log.error("could not read the selection to look up: another app "
+                      "was holding the clipboard. Nothing was sent and your "
+                      "own clipboard is untouched — try again in a moment.")
+            return
+
+        what = lookup_mod.classify(text, lcfg.max_chars, lcfg.both_ways,
+                                   lcfg.hebrew_share)
+        if not what.ok:
+            # Four different nothings, told apart on purpose: "that is 6100
+            # characters", "that is a URL", "that is already Hebrew" and
+            # "you did not select anything" are four different answers, and
+            # a key that played one note for all of them would teach
+            # nothing. None of them is a fault, so none of them sounds like
+            # one — see _cue_once.
+            if what.reason == "nothing-selected":
+                refuse("noop", "lookup-no-selection",
+                       "nothing selected — select a word and tap again")
+                log.info("nothing selected to look up. This key never "
+                         "selects for you: an empty selection is an empty "
+                         "answer, not the whole page.")
+            elif what.reason == "too-much":
+                refuse("noop", "lookup-too-much",
+                       f"{len(text)} chars is too much to look up — select "
+                       f"the part you want")
+                log.info("refusing to look up %d chars (lookup.max_chars="
+                         "%d) — nothing was sent anywhere. Select the part "
+                         "you want, or use '%s' to translate the whole "
+                         "thing in place.", len(text), lcfg.max_chars,
+                         self.cfg.translate_hotkey or "the translate key")
+            elif what.reason == "already-target":
+                refuse("noop", "lookup-already-target",
+                       "that is already the target language — see "
+                       "lookup.both_ways")
+                log.info("that selection is already the target language and "
+                         "both_ways is off — set both_ways = true under "
+                         "[lookup] in config.toml to have Hebrew come back "
+                         "as English.")
+            else:
+                refuse("noop", "lookup-nothing-to-translate",
+                       "nothing to translate in that selection")
+                log.info("nothing to translate in that selection (a URL, a "
+                         "path or no words at all): %.40s", text)
+            return
+
+        rtl = what.target == "Hebrew"
+        # The box's direction is fixed when it opens, and a Hebrew line in
+        # a left-to-right box comes out backwards — popup.py measured that
+        # in pixels. So everything the app itself puts in the box has to be
+        # written in the language that lookup was asked for, including the
+        # two lines that are not the answer.
+        failed = ("לא הצלחתי לתרגם — הדגם לא ענה" if rtl
+                  else "could not look that up — the model did not answer")
+
+        def status(note: str) -> None:
+            self.popup.update(note if rtl else "loading the local model…")
+
+        # Repainted on a newline, or after 80 ms, and never per token.
+        # lookup.py hands over every token the local model writes and the
+        # box relays out and RESIZES on each one, so the rate matters:
+        # measured against real Ollama on 2026-08-19, a one-word answer is
+        # 39 tokens 24 ms apart and a longer one 54. Painted per token
+        # that is a box changing size forty times in a second, which reads
+        # as jitter and not as speed. Through this it is 12 and 15 paints,
+        # about one every 94 ms, and each one is the box gaining a line.
+        #
+        # A newline jumps the queue rather than waiting out the 80 ms,
+        # because a completed line is the thing worth showing — that is
+        # what makes the shortest gaps in the measurement 31 ms, and those
+        # are the box growing, which is the one motion it should have.
+        painted_at, painted_len = 0.0, 0
+
+        def chunk(so_far: str) -> None:
+            nonlocal painted_at, painted_len
+            now = time.monotonic()
+            if "\n" not in so_far[painted_len:] and now - painted_at < 0.08:
+                return
+            painted_at, painted_len = now, len(so_far)
+            self.popup.update(so_far)
+
+        beep("looking")
+        # The box goes up BEFORE the model is asked, holding an ellipsis:
+        # the answer is 1-3 s warm and 25 s cold, and a key that shows
+        # nothing for that long has already been pressed again.
+        #
+        # Anchored where the user was pointing, and never on top of it.
+        # The caret is preferred over the mouse where there is one, because
+        # it is the exact end of the selection rather than wherever the
+        # hand came to rest; popup.caret_anchor answers None for anything
+        # built on Chromium, which is most of what this key is used in, so
+        # the mouse point is the case that carries the feature and the
+        # caret is the improvement on it.
+        #
+        # dwell_ms is deliberately 0 and no longer reads lookup.dwell_ms.
+        # A box that took itself away was the owner's complaint — he could
+        # not tell a timer from a bug — so this one waits to be closed, by
+        # its own button or by Esc. update() re-places from this same
+        # anchor, so the answer replacing the ellipsis grows the box away
+        # from his text instead of moving it out from under his eyes.
+        # `term` is what the title bar says. The box is handed an answer
+        # and never sees the question, so the word has to travel with it:
+        # the box outlives the selection it was opened over, and once it
+        # has been dragged aside, or the highlight has gone, the bar is
+        # the only thing on screen still saying which word this is about.
+        # It goes up with the "…", so it is readable while the model is
+        # still thinking.
+        #
+        # Cut, because this is a caption and not the selection. Only 45
+        # Hebrew characters fit in the bar at the default lookup.max_width
+        # and the label is painted with DT_END_ELLIPSIS on EVERY repaint,
+        # including the one behind a selection being dragged: measured
+        # 2026-08-20, a 5000-char term — which lookup.max_chars still
+        # allows — costs 7.3 ms a paint against 0.6 ms for a whole
+        # repaint of the box. 120 is far past anything the bar can show,
+        # so the ellipsis and not this cut is what the eye ever sees.
+        self.popup.show("…", rtl=rtl, dwell_ms=0,
+                        anchor=popup_mod.caret_anchor(hwnd) or anchor,
+                        term=text[:120])
+        log.info("looking up %d chars (%s -> %s)...", len(text), what.mode,
+                 what.target)
+        # In the log before it is on screen, like every other key here.
+        # The box no longer closes on a keystroke, so this is less of a
+        # rescue than it was — but an answer the owner shut and then
+        # wanted back is still only readable from this file.
+        transcript_log.info("LOOKUP-IN  | %s | %s", what.mode, text)
+
+        if self._lookup_engine is None:
+            # Built on the first press, like the translator and the
+            # punctuator: constructing it looks for an API key and opens
+            # the answer cache, and an owner who never touches this key
+            # should pay for neither.
+            self._lookup_engine = lookup_mod.Engine(self.cfg)
+        try:
+            answer = self._lookup_engine.look_up(text, what,
+                                                 on_status=status,
+                                                 on_chunk=chunk)
+        except TranscriptionError as e:
+            self._cue_once("error", "lookup-backend")
+            self.popup.update(failed)
+            self._say(f"could not look that up: {e}")
+            log.error("lookup failed: %s — nothing was written anywhere and "
+                      "your text is untouched", e)
+            return
+
+        if not answer.text.strip():
+            # The box drops an empty string by design, which would leave the
+            # "…" up while the cue said the answer had landed. Both backends
+            # raise on an empty reply, so this is the corner where one
+            # answers with nothing but formatting.
+            self._cue_once("error", "lookup-backend")
+            self.popup.update(failed)
+            log.error("%s answered with nothing usable — your text is "
+                      "untouched", answer.backend)
+            return
+
+        transcript_log.info("LOOKUP-OUT | %.1fs | %s | %s", answer.seconds,
+                            answer.backend, answer.text)
+        self.popup.update(answer.text)
+        beep("looked")
+        self._bump(lookups=1)
+        if answer.warming:
+            log.warning("the local model was not loaded, so that one went "
+                        "to the cloud — it is warming up now and the next "
+                        "lookup stays local")
+        if hwnd and injector.foreground_window() != hwnd:
+            log.info("you moved to another window while that was looking up "
+                     "— the box is on screen anyway, because there was "
+                     "never anything to paste")
+        self._say(f"looked up {len(text)} chars -> {answer.target} in "
+                  f"{answer.seconds:.1f} s via {answer.backend}")
+        log.info("looked up %d chars in %.1f s via %s (%s -> %s): %s",
+                 len(text), answer.seconds, answer.backend, answer.mode,
+                 answer.target, answer.text)
+
+    def _improve(self, text: str, wait: bool = True,
+                 max_wait_s: float | None = None) -> str:
         """What was learned, applied: repair pass then context pass.
 
         Both are strictly optional and neither may raise. This sits between
         a person's speech and their cursor, so anything that goes wrong here
         must degrade to "the transcript as the backend produced it" rather
         than to no transcript at all.
+
+        `wait=False` runs only the vocabulary repair — instant, offline, a
+        dictionary lookup — and skips the LLM pass entirely.
         """
         if self.cfg.vocab.enabled:
             try:
@@ -637,6 +1667,18 @@ class App:
                 log.exception("the vocabulary repair pass failed — using the "
                               "transcript as it came out of the backend")
 
+        if not wait:
+            return text          # the caller will run the context pass after
+        return self._context_pass(text, max_wait_s)
+
+    def _context_pass(self, text: str,
+                      max_wait_s: float | None = None) -> str:
+        """The LLM repair, run to completion. Returns the text either way.
+
+        Never raises: this is optional work sitting near a person's words,
+        and the failure mode has to be "the transcript as the backend
+        produced it", never "no transcript".
+        """
         polisher = self._polish()
         if polisher is None:
             return text
@@ -646,7 +1688,7 @@ class App:
             started = time.monotonic()
             log.info("checking the transcript against %d learned "
                      "confusion(s)...", len(self.vocab))
-            polished, by = polisher.polish(text)
+            polished, by = polisher.polish(text, max_wait_s)
             if by:
                 transcript_log.info("POLISHED | %.1fs | %s | %s",
                                     time.monotonic() - started, by, polished)
@@ -681,13 +1723,29 @@ class App:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
-        if fb.enabled and hwnd and injector.foreground_window() == hwnd:
-            try:
-                injector.show_placeholder(placeholder, self.cfg.paste_chord,
-                                          self.cfg.restore_delay_ms)
-                shown = True
-            except injector.ClipboardBusyError as e:
-                log.warning("could not show the placeholder: %s", e)
+        if fb.enabled and hwnd:
+            # BOUNDED, unlike the paste below, and the focus test is INSIDE
+            # the lock rather than in front of it. A translate or punctuate
+            # holds this lock across its whole model call (up to
+            # translate.ollama_timeout_s = 150 s); waiting that out would
+            # park the worker before transcription had even started, for a
+            # marker that is only cosmetic. And show_placeholder pastes
+            # wherever focus is when it finally runs, so a check made before
+            # the wait would be a check of the wrong moment.
+            if self._cursor_lock.acquire(timeout=1.0):
+                try:
+                    if injector.foreground_window() == hwnd:
+                        injector.show_placeholder(placeholder,
+                                                  self.cfg.paste_chord,
+                                                  self.cfg.restore_delay_ms)
+                        shown = True
+                except injector.ClipboardBusyError as e:
+                    log.warning("could not show the placeholder: %s", e)
+                finally:
+                    self._cursor_lock.release()
+            else:
+                log.info("something else is working at the cursor — "
+                         "transcribing without the marker")
 
         started = time.monotonic()
         deadline = started + fb.retry_seconds
@@ -730,8 +1788,12 @@ class App:
             # Nothing to paste. Take the marker back down so the user is not
             # left with a stray "..." in their document.
             if shown:
-                injector.clear_placeholder(placeholder, hwnd)
+                with self._cursor_lock:
+                    injector.clear_placeholder(placeholder, hwnd)
             beep("error")
+            self._bump(failures=1)
+            self._say(f"gave up after {latency:.0f} s — the audio is kept in "
+                      f"pending\\, run --drain later")
             transcript_log.info("ERROR | %.1fs | %s | %s | kept: %s", seconds,
                                 self.transcriber.name, last_error,
                                 item.wav_path.name if item else "NOT SAVED")
@@ -747,13 +1809,28 @@ class App:
         cleaned = text.strip()
         if not cleaned:
             if shown:
-                injector.clear_placeholder(placeholder, hwnd)
+                with self._cursor_lock:
+                    injector.clear_placeholder(placeholder, hwnd)
             log.info("empty transcript (no speech heard) — not pasting")
             if item:
                 item.discard()
             return
 
-        cleaned = self._improve(cleaned)
+        # IN FRONT OF THE PASTE, on purpose, and this is the one decision
+        # the whole module is arranged around.
+        #
+        # It was moved BEHIND the paste for a while: paste instantly, repair
+        # the text on screen a few seconds later. That is measurably faster
+        # to first text and it was rejected for a reason no benchmark shows
+        # — the user could no longer tell when the text was FINISHED. A
+        # sentence that may still rewrite itself in three seconds is a
+        # sentence you cannot send, so the saved seconds were spent waiting
+        # anyway, just without knowing what you were waiting for.
+        #
+        # So the placeholder is the contract: while "..." is on screen
+        # nothing is final, and when the text appears it is done and will
+        # not move again. polish.max_wait_s bounds how long that can take.
+        cleaned = self._improve(cleaned, wait=True)
         kept = None
         if self.recent is not None:
             try:
@@ -773,22 +1850,24 @@ class App:
                           "wav": str(kept.wav_path) if kept else ""}
 
         try:
-            if shown:
-                status = injector.replace_placeholder(
-                    placeholder, cleaned, self.cfg.paste_chord,
-                    self.cfg.restore_delay_ms, hwnd)
-            elif hwnd and injector.foreground_window() != hwnd:
-                # No placeholder because focus had already moved when the
-                # worker picked this up. Pasting now would drop the text into
-                # a window the user never dictated into.
-                raise injector.FocusChangedError(
-                    "focus moved before the transcript was ready")
-            else:
-                status = injector.inject(cleaned, self.cfg.paste_chord,
-                                         self.cfg.restore_delay_ms)
+            with self._cursor_lock:
+                if shown:
+                    status = injector.replace_placeholder(
+                        placeholder, cleaned, self.cfg.paste_chord,
+                        self.cfg.restore_delay_ms, hwnd)
+                elif hwnd and injector.foreground_window() != hwnd:
+                    # No placeholder because focus had already moved when
+                    # the worker picked this up. Pasting now would drop the
+                    # text into a window the user never dictated into.
+                    raise injector.FocusChangedError(
+                        "focus moved before the transcript was ready")
+                else:
+                    status = injector.inject(cleaned, self.cfg.paste_chord,
+                                             self.cfg.restore_delay_ms)
         except injector.FocusChangedError:
             # Do NOT fire backspaces into whatever the user switched to.
-            injector.set_text(cleaned)
+            with self._cursor_lock:
+                injector.set_text(cleaned)
             beep("stop")
             log.warning("you moved to another window — the transcript is on "
                         "your clipboard, press %s to paste it: %s",
@@ -803,6 +1882,10 @@ class App:
 
         if item:                      # transcribed at last: audio no longer
             item.discard()            # needed, drop it from the spool
+        self._bump(dictations=1, seconds=seconds, chars=len(cleaned),
+                   latency=latency)
+        self._say(f"{seconds:.1f} s spoken -> {len(cleaned)} chars in "
+                  f"{latency:.1f} s via {backend}")
         log.info("pasted %d chars (%.1f s round trip via %s; %s): %s",
                  len(cleaned), latency, backend, status, cleaned)
 
@@ -1036,6 +2119,17 @@ def main() -> int:
                         help="translate TEXT and print it, then exit — "
                              "checks the translate backends without "
                              "touching the keyboard or clipboard")
+    parser.add_argument("--punctuate", metavar="TEXT",
+                        help="punctuate TEXT and print it, then exit — "
+                             "checks the punctuation backends (and the "
+                             "safety check that guards them) without "
+                             "touching the keyboard or clipboard")
+    parser.add_argument("--lookup", metavar="TEXT",
+                        help="look TEXT up and print the answer, then exit "
+                             "— which way round it went, which backend "
+                             "answered and how long it took, without the "
+                             "keyboard, the clipboard or the box. Safe to "
+                             "run while dictation is running.")
     parser.add_argument("--benchmark", action="store_true",
                         help="replay every recording you have corrected, "
                              "with the learned vocabulary on and off, and "
@@ -1047,13 +2141,22 @@ def main() -> int:
                         help="transcribe recordings kept in pending\\ "
                              "(saved when the backend was down), print them, "
                              "then exit")
+    parser.add_argument("--dashboard", action="store_true",
+                        help="open the control window (start/pause/stop and "
+                             "the keys), then exit")
     args = parser.parse_args()
     setup_logging()
 
+    if args.dashboard:
+        import dashboard
+        return dashboard.main()
+
     if args.test_sound:
         cues.ensure_files(force=True)
-        for kind in ("ready", "start", "stop", "translating", "translated",
-                     "error", "bye"):
+        # Every cue there is, not a hand-written list: the last two added
+        # (pause and resume) were exactly the ones a list would have missed,
+        # and they are the ones you most need to recognise by ear.
+        for kind in cues.CUES:
             print(f"playing '{kind}' cue...")
             cues.play(kind)
             time.sleep(1.2)
@@ -1079,7 +2182,10 @@ def main() -> int:
     try:
         cfg = config_mod.load(Path(args.config))
     except ConfigError as e:
-        log.error("%s", e)
+        # report_fatal, not a bare log line: launched windowless there is
+        # nowhere for this to be seen, and a config.toml can now be edited
+        # from the dashboard — so "it stopped starting" has to say why.
+        report_fatal(str(e))
         return 1
     if args.fake:
         cfg = dataclasses.replace(cfg, backend="fake")
@@ -1115,6 +2221,54 @@ def main() -> int:
         print(f"[{backend}, {time.monotonic() - started:.1f}s] {text}")
         return 0
 
+    if args.punctuate:
+        import punctuate as punctuate_mod
+        if not punctuate_mod.needs_punctuation(args.punctuate):
+            print("no words in that text — nothing to punctuate.")
+            return 0
+        started = time.monotonic()
+        try:
+            text, backend = punctuate_mod.Punctuator(cfg).punctuate(
+                args.punctuate)
+        except punctuate_mod.UnsafeReply as e:
+            # Its own exit path: this is the guard doing its job, not the
+            # backends failing, and the difference is the whole point of
+            # being able to run it from a console.
+            print(f"punctuation DISCARDED — {e}")
+            return 1
+        except TranscriptionError as e:
+            print(f"punctuation FAILED: {e}")
+            return 1
+        print(f"[{backend}, {time.monotonic() - started:.1f}s] {text}")
+        return 0
+
+    # `is not None`, and not a truth test like the two probes above: an
+    # empty --lookup "" would otherwise fall through to the singleton lock
+    # and start the whole app — global hook, two Whisper models — when what
+    # was asked for was a probe.
+    if args.lookup is not None:
+        import lookup as lookup_mod
+        # Classified first and printed as a refusal, not as an error: the
+        # key spends nothing on a URL or on 6000 characters, and running
+        # this is how you check that without watching a box appear.
+        what = lookup_mod.classify(args.lookup, cfg.lookup.max_chars,
+                                   cfg.lookup.both_ways,
+                                   cfg.lookup.hebrew_share)
+        if not what.ok:
+            print(f"nothing to look up — {what.reason}.")
+            return 0
+        try:
+            answer = lookup_mod.Engine(cfg).look_up(args.lookup, what)
+        except TranscriptionError as e:
+            print(f"lookup FAILED: {e}")
+            return 1
+        print(f"[{answer.backend}, {answer.mode} -> {answer.target}, "
+              f"{answer.seconds:.1f}s] {answer.text}")
+        if answer.warming:
+            print(f"({cfg.lookup.model} was not loaded — that one went to "
+                  f"the cloud and the local model is warming up now)")
+        return 0
+
     if args.vocab:
         return show_vocab(cfg)
 
@@ -1126,9 +2280,27 @@ def main() -> int:
 
     try:
         lock = singleton.InstanceLock()
-    except singleton.AlreadyRunning as e:
-        report_fatal(str(e))
-        return 1
+    except singleton.AlreadyRunning:
+        # It is already up, so the click was almost certainly "let me see
+        # it" rather than "start a second one". Show the dashboard instead
+        # of a modal complaint — and keep the complaint for the case where
+        # even that will not open.
+        if not open_dashboard():
+            report_fatal(
+                "Hebrew dictation is already running (only one instance may "
+                "run — two would paste every transcript twice), and the "
+                "dashboard could not be opened.")
+            return 1
+        return 0
+
+    # Created HERE, the moment the mutex is held — NOT after the models
+    # load. request_quit() is OpenEventW, which fails outright when the
+    # event does not exist yet, so an event that only appeared ~25 s later
+    # would make every Stop in that window a silent no-op: the dashboard
+    # would say "nothing to stop" (it enables the button as soon as the
+    # mutex says an instance exists) and the app would come up behind it
+    # anyway, hook live. Same hole for "Stop Dictation.vbs".
+    quit_signal = singleton.QuitSignal()
 
     # Loading two Whisper models onto the GPU takes ~25 s during which a
     # windowless app looks like a shortcut that did nothing. Every log line
@@ -1139,31 +2311,83 @@ def main() -> int:
     splash_log = SplashLog(splash)
     log.addHandler(splash_log)
 
+    # The dashboard has to be able to see this instance BEFORE it is
+    # usable, not just after: the ~25 s of model loading is exactly when
+    # someone is looking at the window wondering whether their click did
+    # anything. So the control channel opens first, answering "starting"
+    # with the same line the splash is showing, and is handed the App the
+    # moment there is one.
+    stage: dict = {"stage": "starting", "line": "starting…", "app": None}
+
+    class StageLog(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            try:
+                stage["line"] = record.getMessage()
+            except Exception:
+                pass
+
+    stage_log = StageLog(level=logging.INFO)
+    log.addHandler(stage_log)
+
+    def on_command(command: str, command_args: dict) -> dict:
+        app = stage["app"]
+        if app is not None:
+            return app.control_command(command, command_args)
+        if command == "quit":
+            singleton.request_quit()
+            return {"ok": True}
+        if command == "status":
+            return {"ok": True, "stage": stage["stage"], "note": stage["line"],
+                    "paused": False, "activity": "starting"}
+        return {"ok": False, "error": "still starting up — try again in a "
+                                      "moment"}
+
+    channel = control.ControlServer(on_command)
+    channel.start()
+
     def fail(message: str) -> int:
         log.removeHandler(splash_log)
+        log.removeHandler(stage_log)
         splash.finish(linger_ms=0)
+        channel.stop()
         report_fatal(message)
         return 1
 
     try:
         splash.status("loading the transcription model…")
-        app = App(cfg)
+        app = App(cfg, config_path=Path(args.config))
     except TranscriptionError as e:   # missing key, stub backend, ...
         return fail(str(e))
-    except ValueError as e:           # unknown hotkey/chord name
+    except (ValueError, ConfigError) as e:   # unknown hotkey/chord name
         return fail(f"bad key name in config.toml: {e}")
     except Exception as e:            # no input device, PortAudio errors
         return fail(f"could not start audio capture: {e}\n\nCheck Settings "
                     "> Privacy & security > Microphone, and the device "
                     "index in config.toml (see --list-devices).")
 
-    quit_signal = singleton.QuitSignal()
+    if quit_signal.is_set():
+        # Stop was pressed while the models were loading. Bringing the
+        # global hook up now — for the fraction of a second before the wait
+        # below returns — would put live hotkeys on a machine whose owner
+        # has already said they want them gone.
+        log.info("stop was requested during startup — not installing the "
+                 "hotkey")
+        splash.finish(linger_ms=0)
+        log.removeHandler(splash_log)
+        log.removeHandler(stage_log)
+        channel.stop()
+        quit_signal.close()
+        lock.release()
+        return 0
     try:
         app.start()
     except OSError as e:
         return fail(str(e))
-    log.info("ready — hold '%s' for Hebrew%s, release to paste. %s",
+    stage["app"] = app
+    stage["stage"] = "running"
+    log.info("ready — hold '%s' for %s%s, release to paste. %s",
              cfg.hotkey,
+             "Hebrew or English" if cfg.auto_language else "Hebrew",
              f", '{cfg.english_hotkey}' for English" if cfg.english_hotkey
              else "",
              "Ctrl+C here to quit." if HAS_CONSOLE
@@ -1180,12 +2404,34 @@ def main() -> int:
         log.info("tap '%s' to turn the selection — or the whole field when "
                  "nothing is selected — into %s", cfg.translate_hotkey,
                  cfg.translate.target)
+    if cfg.punctuate_hotkey:
+        log.info("tap '%s' to punctuate the selection — or the whole field "
+                 "when nothing is selected%s. The words cannot change: a "
+                 "reply that altered one is discarded, not pasted.",
+                 cfg.punctuate_hotkey,
+                 " (and add nikud)" if cfg.punctuate.nikud else "")
     if cfg.correct_hotkey:
         log.info("tap '%s' to fix the last transcript — what you change "
                  "there is what it learns (%d correction(s) so far, "
                  "%d hotword(s) active)", cfg.correct_hotkey,
                  len(app.vocab),
                  len(app.vocab.terms()) if cfg.vocab.enabled else 0)
+    if cfg.lookup_hotkey:
+        log.info("tap '%s' to look the selection up — the answer appears in "
+                 "a small box beside what you selected and nothing on "
+                 "screen is touched, so it works on a web page or a PDF "
+                 "too%s. It stays until you close it: click the x in its "
+                 "corner, or press Esc. Tapping '%s' again looks up "
+                 "whatever is selected now.", cfg.lookup_hotkey,
+                 "" if cfg.lookup.both_ways
+                 else "; Hebrew only, see lookup.both_ways",
+                 cfg.lookup_hotkey)
+    if cfg.pause_hotkey:
+        log.info("tap '%s' to pause every key above without unloading "
+                 "anything (for games), and again to resume%s",
+                 cfg.pause_hotkey,
+                 "; fullscreen apps pause it automatically"
+                 if cfg.auto_pause_fullscreen else "")
     log.info("mic: %s | backend: %s | transcripts: %s",
              app.recorder.device_label(), cfg.backend,
              APP_DIR / "transcripts.log")
@@ -1210,6 +2456,8 @@ def main() -> int:
         log.info("interrupted")
     finally:
         beep("bye")
+        channel.stop()
+        log.removeHandler(stage_log)
         app.stop()
         quit_signal.close()
         lock.release()

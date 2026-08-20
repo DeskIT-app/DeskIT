@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -179,20 +180,134 @@ class GeminiTranslator:
 
 
 class OllamaTranslator:
+    """One local chat request, shared by four keys that want different
+    things from it.
+
+    translate.py, polish.py, punctuate.py and lookup.py all build this
+    class, so anything added here is added to all four at once. The two
+    keyword-only parameters below are therefore OPT-IN and default to
+    None, and when they are None the request body this builds is
+    byte-identical to the one it built before they existed: `stream`
+    evaluates False exactly as the literal did, and no `keep_alive` key is
+    written at all. The reply path — _clean, the empty-reply raise, the
+    404 that names self._setting, all four except clauses — is shared and
+    identical whichever way the body was built, which is the point: a
+    streamed answer must fail the way a whole one does, or a caller ends
+    up showing half a reply as though it were the reply.
+
+    `on_chunk(text_so_far)` turns the single read into a line-by-line one
+    and is called with everything received up to that moment. It rides on
+    the CONSTRUCTOR and not on translate() because lookup.Engine calls
+    backend.translate(text) polymorphically over this class and
+    GeminiTranslator, and that one signature has to stay uniform.
+
+    `keep_alive` is how long Ollama should hold the model after this
+    request. Measured 2026-08-19 on Ollama 0.32.11: it is a property of
+    the loaded RUNNER and not of the request, so a value sent by one key
+    is retained and re-armed by the bare requests of every other key
+    sharing that model. That is deliberate here (see [lookup] keep_alive
+    in config.toml) but it is shared state, so only the caller that means
+    it passes it.
+    """
+
     name = "ollama"
 
     def __init__(self, model: str, url: str, timeout_s: int,
-                 target: str = "English", system_prompt=None):
+                 target: str = "English", system_prompt=None,
+                 setting: str = "translate.ollama_model", *,
+                 keep_alive: str | None = None, on_chunk=None):
         self._model = model
         self._url = url.rstrip("/")
         self._timeout = timeout_s
         self._target = target
         self._system = system_prompt
+        # Which config key to name when the model is missing. polish.py
+        # reuses this class with a DIFFERENT key, and telling someone to
+        # edit translate.ollama_model when the polish model is the one that
+        # failed sends them to the wrong line of the file.
+        self._setting = setting
+        self._keep_alive = keep_alive
+        self._on_chunk = on_chunk
+
+    def _read(self, response) -> str:
+        """The reply, whole or a line at a time — the same string either
+        way.
+
+        Called from inside the caller's `with` and `try`, which is
+        load-bearing rather than tidy: a stream that drops half way then
+        raises out of the same clauses a whole request does, so the caller
+        gets a TranslationError and moves to the next backend instead of
+        keeping whatever arrived before the wire went quiet.
+
+        Streamed for the lookup key because the wait is the model's, not
+        ours: gemma3:12b generates at 42-46 tok/s, so a word's headline —
+        the one line usually being read — lands at 0.72 s against 1.6 s
+        for the finished answer, and a paragraph shows its first text at
+        0.53 s instead of 5.4 s of nothing (measured 2026-08-19).
+
+        The deadline below is what streaming COSTS, and it has to be paid
+        back by hand. urllib's timeout is per socket operation, and it
+        was bounding the whole request only by accident of stream=false:
+        the server says nothing for the entire generation, so the first
+        recv times out. Streamed, a token lands every ~23 ms and no recv
+        ever waits, so timeout stops meaning anything. Measured
+        2026-08-19 against a server that streamed for 8.0 s with
+        timeout=3: 394 chunks, no timeout raised. That matters because a
+        model that loops is a thing this repo has already met (see the
+        repetition penalty in transcribers/local_whisper.py) and Ollama
+        is sent no num_predict — which cannot be added here, because the
+        request is shared with three keys whose answers it would change.
+        The lookup key holds `_looking_up` for the length of the call, so
+        without this the key answers nothing and refuses every press for
+        as long as the model keeps writing.
+        """
+        if self._on_chunk is None:
+            body = json.loads(response.read().decode("utf-8"))
+            return (body.get("message") or {}).get("content", "")
+        # From the first byte and not from the request: the cold-model
+        # load (22-25 s, and it can be far more on a card that is busy)
+        # is silence on the socket, which is exactly what the per-recv
+        # timeout already covers. This bounds the WRITING.
+        deadline = time.monotonic() + self._timeout
+        parts: list[str] = []
+        for line in response:
+            if time.monotonic() > deadline:
+                # Out through the caller's `except Exception`, which is
+                # the whole point of _read being called from inside it: a
+                # stream that overruns has to fail the way a whole
+                # request does, or a caller that has been painting
+                # partial text keeps half an answer as though it were
+                # the answer.
+                raise TimeoutError(
+                    f"the model was still writing after {self._timeout}s "
+                    f"({len(''.join(parts))} characters so far)")
+            if not line.strip():
+                continue
+            event = json.loads(line.decode("utf-8"))
+            piece = (event.get("message") or {}).get("content", "")
+            if not piece:
+                continue
+            parts.append(piece)
+            try:
+                self._on_chunk("".join(parts))
+            except Exception:
+                # Whatever is drawing this is not worth the answer. Log it
+                # and keep reading: a box that cannot repaint must not
+                # cost the reply it was going to paint.
+                log.exception("on_chunk failed")
+        return "".join(parts)
 
     def translate(self, text: str) -> str:
         payload = {
             "model": self._model,
-            "stream": False,
+            "stream": self._on_chunk is not None,
+            # temperature and num_predict are per-request. num_ctx and
+            # num_gpu are NOT: sending a num_ctx that differs from the
+            # resident instance's forces a full reload, and the reloaded
+            # runner keeps the new value. Measured 2026-08-19 — num_ctx
+            # 2048 against a runner at 4096 cost 25.83 s here and then
+            # 23.72 s for the next request that wanted the default. Four
+            # keys share this model, so neither belongs in this dict.
             "options": {"temperature": 0.2},
             "messages": [
                 {"role": "system",
@@ -200,6 +315,8 @@ class OllamaTranslator:
                 {"role": "user", "content": text},
             ],
         }
+        if self._keep_alive is not None:
+            payload["keep_alive"] = self._keep_alive
         request = urllib.request.Request(
             f"{self._url}/api/chat",
             data=json.dumps(payload).encode("utf-8"),
@@ -207,7 +324,7 @@ class OllamaTranslator:
         try:
             with urllib.request.urlopen(request,
                                         timeout=self._timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                content = self._read(response)
         except urllib.error.HTTPError as e:
             detail = ""
             try:
@@ -218,7 +335,7 @@ class OllamaTranslator:
                 raise TranslationError(
                     f"Ollama has no model {self._model!r} — run "
                     f"'ollama pull {self._model}' or change "
-                    f"translate.ollama_model in config.toml") from e
+                    f"{self._setting} in config.toml") from e
             raise TranslationError(
                 f"Ollama returned HTTP {e.code}: {detail}") from e
         except urllib.error.URLError as e:
@@ -228,7 +345,7 @@ class OllamaTranslator:
         except Exception as e:
             raise TranslationError(f"Ollama request failed: {e}") from e
 
-        out = _clean((body.get("message") or {}).get("content", ""))
+        out = _clean(content)
         if not out:
             raise TranslationError("Ollama returned an empty translation")
         return out

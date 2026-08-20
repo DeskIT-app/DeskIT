@@ -37,6 +37,39 @@ CUES: dict[str, list[tuple[int, int]]] = {
     # own pair — otherwise a press is indistinguishable from a recording.
     "translating": [(740, 90)],          # grabbed the text, asking the model
     "translated": [(740, 80), (988, 120)],  # replaced in place
+    # Punctuation is the same shape of work on the same text, so it gets the
+    # same shape of cue a fourth lower: a press that went to the wrong one of
+    # the two keys should be obvious by ear, without being a new language.
+    "punctuating": [(523, 90)],
+    "punctuated": [(523, 80), (784, 120)],
+    # Looking a word up is the same shape of work again — grab the text,
+    # ask the model, come back — so it gets the same shape of cue a third
+    # time, on a note BETWEEN the other two (523 · 622 · 740). Three keys
+    # that feel identical under the finger need to be three sounds you can
+    # tell apart without thinking, and the ear places a pitch inside a pair
+    # it already knows far more reliably than it identifies one in
+    # isolation. The rise is a fourth, like "translated": nothing was
+    # changed on screen, so the second note says "here it is", not "done".
+    "looking": [(622, 90)],
+    "looked": [(622, 80), (831, 120)],
+    # Pause is usually pressed with a game on screen and the dot hidden
+    # behind it, so the cue is the whole confirmation. Two notes, falling
+    # to stop and rising to start, so which one happened is obvious
+    # without looking — the key is a toggle and both presses feel the same
+    # under the finger.
+    "paused": [(660, 90), (440, 140)],
+    "resumed": [(440, 90), (660, 140)],
+    # "I heard you, and there was nothing to do." Deliberately ONE short
+    # neutral note and not the error pair: the correction key lands here
+    # whenever the text it wants is not on screen any more, which is a
+    # normal thing to happen and not a failure worth two falling tones.
+    "noop": [(494, 85)],
+    # The opposite of "noop", and it needs its own sound BECAUSE it is the
+    # opposite: the context pass just rewrote text that is already on
+    # screen, without being asked. It starts on the neutral note and rises,
+    # like every other "it landed" cue here — recognisably related to the
+    # note you know, and unmistakably not it.
+    "repaired": [(494, 80), (740, 110)],
 }
 
 

@@ -1,36 +1,195 @@
 # Hebrew push-to-talk dictation — settings.
-# Hotkey names come from the table in hotkey.py ("right ctrl", "f9", "scroll lock", "a".."z"...).
+# Hotkey names come from the table in hotkey.py ("right ctrl", "f8",
+# "scroll lock", "a".."z", "f1".."f24"...).
+#
+# WHY THESE KEYS AND NOT THE OBVIOUS ONES
+# The hook takes keys GLOBALLY and it does not swallow the four TAP keys:
+# each one fires its action AND still reaches whatever has focus. So a tap
+# key is only as good as the app it is pressed in — and on this machine
+# that is one app, Chrome, holding Google Docs/Sheets/Drive/Gmail/Calendar,
+# Microsoft 365 on the web, WhatsApp Web and Spotify. Between them they
+# have taken nearly the whole keyboard. Checked 2026-08 against Chrome 151
+# and Edge 151 (driven by SendInput against a page that logged what
+# arrived) and against each vendor's published shortcut list:
+#
+#   MEASURED free   : f2, f13-f24, pause, scroll lock, and every ctrl+F
+#                     tried (f1, f2, f3, f5, f6, f10-f16) — each reached
+#                     the page and neither browser did anything with it
+#   MEASURED taken  : f1, f3, f4, f5, f6, f10, f11, f12 — reload, full
+#                     screen, or the caret leaving the page
+#   NOT measured    : f7, f8, f9 and every chord on them. The probe never
+#                     pressed them, so `f8`, `ctrl+f8` and `ctrl+f9` — the
+#                     three keys shipped below — rest on their neighbours
+#                     being clear and on published shortcut lists, not on
+#                     a measurement. README says so at more length.
+#
+# Everything else bare is spoken for, and this is the list the defaults
+# below were chosen out of: f1 help, f3 find, f4 the address bar and
+# Excel's $A$1 toggle, f5 reload, f6 the address bar (Excel calls the same
+# key the ribbon), f7 Chrome's caret-browsing PROMPT and Docs' spelling
+# check, f10 the menu, f11 full screen, f12 DevTools and Steam's
+# screenshot, insert Outlook's flag and overtype everywhere else, and
+# every bare letter and digit — Gmail binds most of the alphabet, and
+# Calendar binds j and k. Everything in this paragraph except f4 and the
+# f1-f12 browser behaviour comes from vendor documentation, not from the
+# probe: it is a page in a browser and cannot see inside Docs or Spotify.
+#
+# CHORDS
+# The four tap keys accept "modifier+key": ctrl, shift or alt, either side
+# ("ctrl+f8") or one named side ("left ctrl+f8"), with the key LAST.
+# "f8+ctrl", "ctrl+shift" and "win+f8" are all refused with a sentence. A
+# bare key still means exactly what it always meant, and "f8" and
+# "ctrl+f8" are two different bindings that may both be bound: the chord
+# wins when its modifiers match exactly, the bare key catches everything
+# else, and only ever one of them fires. `hotkey`, `english_hotkey`,
+# `latch_hotkey` and `pause_hotkey` REFUSE a modifier — they are held,
+# latched and toggled rather than tapped, and a chord would mean something
+# different for each of them.
+#
+# USE CTRL. NOT SHIFT, NOT ALT — and that is a rule about this app, not
+# about Windows. A tap key injects ctrl+a / ctrl+c / ctrl+v within about
+# 50 ms of firing (injector.SETTLE_SECONDS) and hotkey.send_chord does not
+# release the modifier your hand is still holding. Ctrl is free of that
+# because every chord this app sends already begins with ctrl, so ctrl
+# held over ctrl+c is still ctrl+c. Shift is not: it turns that copy into
+# ctrl+shift+c, which is Inspect Element in Chrome, and the select-all
+# into ctrl+shift+a, which is Search Tabs and takes the focus the paste
+# was about to land in. Alt is worse again — the NVIDIA overlay owns
+# alt+f1/f2/f3/f9/f10 on this machine, alt+f4 sits one key from alt+f5,
+# and left alt+shift switches keyboard layout. ctrl+alt is AltGr, which on
+# the Hebrew layout is the niqqud level, and WhatsApp Web's entire
+# shortcut scheme lives in ctrl+alt besides.
+# Press a ctrl chord with the LEFT ctrl. The right one is `hotkey`, so it
+# starts a recording and the tap then aborts it: nothing is transcribed
+# and nothing happens, which is a confusing way to press a key twice.
 hotkey = "right ctrl"         # hold = dictate Hebrew
-# Off: one key handles Hebrew AND English in the same press, thanks to
-# [local] initial_prompt below. Set this to a key name (e.g. "f9") only if you
-# want a dedicated English key for utterances that are ENTIRELY English —
-# those are the one case the Hebrew model transliterates. If you do, avoid
-# "right alt" (releasing Alt alone pops the menu bar and steals focus right
-# before the paste) and "right shift" (8 s hold triggers Windows FilterKeys).
+# ON: `hotkey` above no longer declares "Hebrew" before the model has heard
+# anything — the model decides per utterance, so one key covers both
+# languages. Mixed sentences were already handled by [local] initial_prompt;
+# this is for the utterance that is ENTIRELY English, the one case the
+# Hebrew fine-tune transliterates ("Mac mini" -> "מקמיני").
+#
+# The earlier decision to pin the key to Hebrew rested on a single bad
+# number — a Hebrew sentence once scored "English 0.57". Re-measured
+# 2026-08-20 against the 50 real recordings in recent\, comparing what each
+# model actually PRODUCED rather than trusting the label: 8 clips crossed
+# the 0.8 bar, all 8 were genuinely English, 6 of them came out strictly
+# better and 2 identical, and no Hebrew recording crossed it at all.
+#
+# Cost: one extra encoder pass per dictation, median 0.18 s (p90 0.26 s).
+# The ~2 s first pass is spent at startup instead. false = back to Hebrew.
+auto_language = true
+# A dedicated English key, from before `auto_language` existed. Redundant
+# now, and still here for anyone who would rather declare it by hand than
+# let the model decide. If you set one, avoid "right alt" (releasing Alt
+# alone pops the menu bar and steals focus right before the paste) and
+# "right shift" (8 s hold triggers Windows FilterKeys).
 english_hotkey = ""
-# Holding a key is fine for a sentence and miserable for a paragraph. TAP this
-# one WHILE still holding the hotkey and the recording LOCKS ON: let go of the
-# hotkey and keep talking with no time limit, then tap it again to transcribe
-# (or esc to discard). Pick a key the hand already on `hotkey` can reach without
-# letting go — "left" (the left-arrow) sits right next to right ctrl. It is the
-# one key the app swallows, and only while it is doing this job: idle, the arrow
-# still moves the caret as usual. "" turns it off.
+# Holding a key is fine for a sentence and miserable for a paragraph. TAP
+# this one WHILE still holding the hotkey and the recording LOCKS ON: let
+# go of the hotkey and keep talking with no time limit, then tap it again
+# to transcribe (or esc to discard). Pick a key the hand already on
+# `hotkey` can reach without letting go — "left" (the left-arrow) sits
+# right next to right ctrl. It is the one key the app swallows, and only
+# while it is doing this job: idle, the arrow still moves the caret as
+# usual. "" turns it off.
 latch_hotkey = "left"
 # TAP (don't hold) to turn what is already at the cursor into English:
 # whatever is selected, or the whole field when nothing is selected.
+# WAS BARE f9, which was never free and nobody noticed: Edge opens
+# Immersive Reader on it, Excel for the web recalculates the workbook, and
+# f9 is the breakpoint key in every IDE there is. Adding ctrl clears all
+# three at once — ctrl+f9 is claimed by nothing in Chrome, Edge, any
+# Google app, Word, Excel, PowerPoint, Outlook, Teams, WhatsApp Web,
+# Spotify or the NVIDIA overlay. The finger does not move.
 # "" turns it off. See [translate] below.
-translate_hotkey = "f9"
-# Fix the words it got wrong RIGHT WHERE THEY LANDED — in Chrome, in Claude
-# Code, wherever you pasted — then TAP this key. It reads the corrected text
-# off the screen, diffs it against what it produced, and feeds those words to
-# the decoder from then on so it stops getting them wrong.
-# There is no edit box on purpose: Tk 8.6 has no bidi support whatsoever, so a
-# box showing mixed Hebrew and English renders scrambled and the caret jumps
-# around as you type. You are already fixing the text in an app that renders
-# Hebrew properly — reading it beats asking for it again in a worse editor.
-# Select just the corrected sentence if the field holds a lot of other text.
+translate_hotkey = "ctrl+f9"
+# TAP to put the PUNCTUATION into what is already at the cursor: whatever
+# is selected, or the whole field when nothing is selected. Whisper
+# transcribes sounds, not sentences — the local Hebrew model gives you a
+# run of words with barely a comma or a full stop in it, and [polish] is
+# forbidden from adding them (it may only fix MISHEARINGS), so nothing
+# else puts them there either. So: dictate, read it, tap this. The words
+# are guaranteed untouched — the reply is compared to your text letter by
+# letter with the punctuation removed, and anything that changed a word is
+# thrown away rather than pasted.
+# WAS f7, which was the worst binding in this file. Bare f7 is Chrome's
+# caret-browsing key and Chrome answers it with a MODAL DIALOG asking
+# whether to turn caret browsing on, so every punctuate in the browser
+# asked a question first; it is also Docs' spelling-and-grammar key and
+# cmd's command-history popup. f2 does nothing whatsoever in Chrome or
+# Edge — verified both ways, once with the page blocking the key and once
+# letting it through. What does claim f2 claims it as "rename or edit what
+# is selected" (Drive, Explorer, VS Code, Excel and PowerPoint on the
+# web), and none of those is a place you punctuate dictated prose.
+# "" turns it off. See [punctuate] below.
+punctuate_hotkey = "f2"
+# Fix the words it got wrong RIGHT WHERE THEY LANDED — in Chrome, in
+# Claude Code, wherever you pasted — then TAP this key. It reads the
+# corrected text off the screen, diffs it against what it produced, and
+# feeds those words to the decoder from then on so it stops getting them
+# wrong.
+# There is no edit box on purpose: Tk 8.6 has no bidi support whatsoever,
+# so a box showing mixed Hebrew and English renders scrambled and the
+# caret jumps around as you type. You are already fixing the text in an
+# app that renders Hebrew properly — reading it beats asking for it again
+# in a worse editor. Select just the corrected sentence if the field holds
+# a lot of other text.
+# WAS BARE f8, and f8 was the one binding in this file that was already
+# right. It moved only because the lookup key needed it more (see below).
+# ctrl+f8 is free in everything measured, including the two places bare f8
+# is not: a console, where f8 searches the command history, and VS Code,
+# where it jumps to the next problem. Sharing a trigger with lookup is
+# deliberate — both keys only READ the field, so a ctrl that did not
+# register costs you a translation box instead of a lesson and changes
+# nothing on screen.
 # "" turns it off. See [vocab] below.
 correct_hotkey = "f8"
+# The key that looks something up without touching it. Select a word or a
+# sentence, tap this, and a small box appears with the Hebrew — or with
+# the English, if what you selected was already Hebrew. Nothing is typed,
+# nothing is pasted, nothing on screen changes, and the box closes on Esc
+# or on the x in its corner. It fires ONLY on this key and never on a
+# selection: a box that appeared every time you selected something would
+# also appear on the selection you made in order to delete it.
+# WAS "j", which was indefensible in both directions. Every j you typed
+# sent a ctrl+c into the focused app, opened a box and spent GPU time on
+# it — and bare j is a Gmail shortcut (older conversation) and a Calendar
+# one (next period) besides.
+# It gets f8, the cleanest bare key on this keyboard, because it is the
+# most-tapped of the four, the only one tapped mid-sentence with the other
+# hand still on the mouse, and the only one where a bare binding's
+# catch-all behaviour helps: it fires even with a stray modifier held.
+# Nothing in Chrome, Edge, any of the seven Google apps, Word, Excel,
+# PowerPoint, Outlook, Teams, WhatsApp Web, Spotify or the NVIDIA overlay
+# binds f8.
+# "" turns it off.
+lookup_hotkey = "ctrl+f8"
+# TAP to make every key above inert — without unloading anything. This is
+# the key for "I am about to play a game and I do not want right ctrl
+# starting a recording every time I hold it". Quitting the app does the
+# same job and costs ~25 s of loading two Whisper models back onto the GPU
+# to undo; this costs nothing in either direction, because nothing is
+# unloaded.
+# It is the ONE key that still works while paused (it has to be — a key
+# that only worked while the app was listening could never turn listening
+# back on), and it never means anything else. The phone endpoint keeps
+# working: this pauses the KEYBOARD.
+# "insert" is shipped, and it is the compromise it looks like. It costs
+# you overtype in Word and most editors and the flag key in Outlook on the
+# web, and it lives in the right-hand island — which is exactly wrong for
+# a key tapped thirty times a day and exactly right for one tapped twice,
+# deliberately, before a game. "scroll lock" is the cleaner key: nothing
+# in any browser or any app measured here binds it at all, and many
+# keyboards light it up, so the LED becomes the paused indicator.
+# "" turns it off.
+pause_hotkey = "insert"
+# Pause by itself while a game or a presentation owns the whole screen, and
+# resume when it lets go. OFF by default on purpose: it is the only setting
+# here that can stop dictation working without anyone asking it to, and
+# "my hotkey stopped responding" is a much worse half hour than tapping
+# pause_hotkey yourself. Turn it on from the dashboard if you want it.
+auto_pause_fullscreen = false
 # local = unlimited, offline, ~0.3 s. Measured 2026-08-12 on 8 real Hebrew
 # clips: local 10.8% WER / 0.38 s vs gemini 15.9% WER / 2.71 s. Switch to
 # "gemini" if you ever want its stronger cleanup instead.
@@ -68,12 +227,201 @@ target = "English"
 max_chars = 5000              # a guard: above this the key refuses, on the
                               # assumption ctrl+a caught a whole document
 ollama_model = "llama3.1:8b"  # the fallback; must be pulled in ollama
-ollama_url = "http://localhost:11434"
+# 127.0.0.1 and NOT localhost, and the difference is not cosmetic: this
+# machine's getaddrinfo("localhost") hands back ::1 first, Ollama listens on
+# IPv4 only, and the refused connection takes ~2.05 s to come back before
+# Python retries the IPv4 address in under a millisecond. Measured 2026-08-19,
+# three calls each: localhost 2078/2043/2059 ms against 127.0.0.1 21/15/5 ms.
+# That toll was being paid by [polish] on EVERY dictation.
+ollama_url = "http://127.0.0.1:11434"
 timeout_s = 30                # gemini
 ollama_timeout_s = 150        # ollama loads ~5 GB into VRAM on the first
                               # request after idling: 76 s cold, 2.5 s warm
                               # (measured 2026-08-12)
 settle_ms = 120               # how long the focused app gets to answer a copy
+                              # (the punctuate key reads this one too)
+
+[punctuate]
+# The comma-and-full-stop key. Same mechanics as [translate] — it grabs the
+# selection or the whole field and replaces it — for the job Whisper does not
+# do at all: it transcribes sounds, not sentences.
+#
+# The words are guaranteed untouched, and not just asked for: punctuate.py
+# strips every non-letter from the reply AND from your text and demands they
+# be identical. A model that rewrote a word, dropped a hesitation, translated
+# a term or answered your text instead of punctuating it fails that check and
+# its reply is discarded — your text stays exactly as it was.
+max_chars = 5000              # same guard as translate.max_chars: with nothing
+                              # selected this takes the WHOLE field
+prefer = "gemini"             # gemini | ollama. Measured on real dictations
+                              # 2026-08-15: gemini put in every comma, full
+                              # stop and question mark and took 0.6-3.2 s;
+                              # llama3.1:8b passed the safety check too but
+                              # came back with only a full stop on one of the
+                              # two, and took 17.7 s on the first request
+                              # after idling, 3.6 s after. So gemini first —
+                              # "is this a question?" is a judgement call, and
+                              # this is a key you tap rather than something
+                              # that runs on every dictation.
+                              # Switch to "ollama" if you end up tapping it
+                              # after EVERY dictation: the free tier is 20
+                              # requests/day/model and translation draws on
+                              # the same bucket
+ollama_model = ""             # "" = reuse [translate] ollama_model
+nikud = false                 # also add Hebrew VOWEL POINTS, not just
+                              # punctuation. A much bigger change to the text;
+                              # the same letter-for-letter check covers it,
+                              # because nikud are combining marks and drop out
+                              # of the comparison exactly like a comma does
+
+[lookup]
+# THE BOX, first, because there is no knob for any of it and this is the
+# file you read. It never takes focus, so whatever you were typing into
+# keeps the caret and you can go on typing with the answer up. It is
+# dragged by its TITLE BAR and by nothing else — the body is text to be
+# selected, the way every other window on this machine works. The bar
+# names the word that was looked up, so an answer read an hour later, or
+# dragged away from the sentence it came from, still says what it is
+# answering. The button beside the x copies the whole answer; drag over
+# the lines you want and a second button appears that copies only those,
+# or press Ctrl+C. A copy made in the box SURVIVES — no other key in this
+# app will put your old clipboard back over it, however long its model
+# takes to answer. The box closes on the x or on Esc, and on nothing
+# else: see dwell_ms below for why nothing takes it away on a timer.
+#
+# Which way to translate is decided per selection, by counting WORDS and
+# not letters. "תעשה commit לפני ה-merge" is 9 Hebrew letters against 11
+# Latin ones, so a letter count calls that sentence English; Hebrew is
+# written without vowels, which makes words the only fair unit. At or above
+# this share of Hebrew words the selection goes to English, below it to
+# Hebrew. Ties go to Hebrew-as-target. Reasoned and test-covered, not tuned
+# on a corpus.
+hebrew_share = 0.34
+
+# Both directions, or Hebrew only. Off, a Hebrew selection plays the "there
+# was nothing to do" note instead of coming back as English.
+both_ways = true
+
+# Over this, the key refuses and spends nothing. A 100-word paragraph
+# already costs 7.4 s locally, and by then you wanted the paragraph
+# translated in place — which is what F9 is for.
+max_chars = 5000
+
+# Which backend goes first, and this is deliberately the OPPOSITE of
+# [translate] and [punctuate]. The free Gemini tier is 20 requests per
+# model per day across 4 models — about 80 — and app.log shows F9 and F7
+# alone spending 34 / 39 / 17 / 18 of them on working days and running into
+# 429s on seven separate days. This key is tapped while READING, costs you
+# nothing to press, and would plausibly run 30-60 times a day; sent to the
+# cloud first it would take the whole pool and break the two keys whose
+# local fallback is the weak one. Measured warm over 127.0.0.1, gemma3:12b
+# answers a word in 1.9-3.1 s and a sentence in 1.0-2.0 s — about a second
+# behind Gemini's 0.8-1.3 s, and free.
+prefer = "ollama"
+
+# Already resident for [polish] (warm_up, when = "always"), and Ollama
+# serves one copy to every caller, so this costs no extra VRAM: nvidia-smi
+# showed 14689 of 16311 MiB in use with it and Whisper both loaded. Do not
+# put qwen2.5:7b here — measured, it returned '?");' for "brittle",
+# ".FactoryReset" for "Restore Defaults", and one sample with its meaning
+# inverted.
+#
+# Three faster models were then measured properly, on the same 10 real
+# selections in both directions (2026-08-19), and all three were rejected
+# for the same reason: they are quicker at being wrong on the ONE line you
+# read.
+#   gemma3:4b       0.75 s a word, half the time — and 3 headlines in 10
+#                   wrong: "brittle" -> "שבור" (broken, not brittle),
+#                   "idempotent" -> "חזרתי" (repetitive), and the question
+#                   "מה שלומך היום" -> "Hello".
+#   aya-expanse:8b  invents parts of speech outside the closed list on
+#                   nearly every word, coins "ידועת-מפעול" for
+#                   "idempotent", and on 2 in 10 omits the headline line
+#                   altogether — the whole point of the box.
+#   dictalm2.0      genuinely fast (0.19 s to the first line) and unusable:
+#                   never writes the headline-first shape, and on 3 in 10
+#                   echoed this file's own prompt rules back into the
+#                   answer, where the box would have shown them to you.
+# gemma3:12b was the only one of the four that got the headline right and
+# held the shape every time.
+model = "gemma3:12b"
+
+# If the model is not resident, Ollama loads it first: 24.4 s to the first
+# token, 25.3 s in total. Rather than make you watch that, a cold model
+# sends this one lookup to the cloud and warms the local one in the
+# background. Bounded at about one cloud request per idle keep_alive
+# period, and any dictation resets that clock because [polish] keeps the
+# same model alive.
+cold_to_gemini = true
+
+# How long Ollama holds the model after a lookup. It matters because
+# Ollama's own default is FIVE MINUTES and nothing here used to override
+# it, so the model fell out from under any reading session that had no
+# dictation in it: measured 2026-08-19, /api/ps said the model expired at
+# 21:43:36 after the last dictation at 21:38:36, and the next lookup nine
+# minutes later paid 23.19 s. That is the wait this line removes, and it
+# costs nothing — it is one field on a request that was being sent anyway.
+#
+# READ THIS BEFORE CHANGING IT: keep_alive belongs to the loaded RUNNER,
+# not to the request. Verified on Ollama 0.32.11 — after one request sets
+# it, later requests that say nothing about it re-arm the timer at the
+# retained value, not at the five-minute default. So this line is also
+# [polish]'s keep_alive, and F9's, and F7's, because all four ask the same
+# model. That is the intent (polish currently gets five minutes and pays
+# ~23 s after any real pause), but it is one key deciding for four, which
+# is why the knob is here to put it back.
+#
+# 30m rather than 8h because gemma3:12b is 7672 MiB of a 16 GB card and
+# Whisper wants the rest: half an hour covers a reading session and a
+# meeting, and lets the VRAM go if you walk away to play something (see
+# pause_hotkey). Raise it to "8h" if this machine never does anything
+# else. A plain number is seconds, "-1" holds it until Ollama stops, and
+# "" says nothing at all and leaves Ollama on its own default.
+keep_alive = "30m"
+
+# gemma3:12b writes plain Hebrew and then, on a particular input, falls
+# into fully vowel-pointed transliteration for the whole line: "The
+# decoder loops on a hesitation and eats the words after it." came back
+# as "הדקוּדר עוֹלֶה בלופּ על היסוֹר וְאוֹכֵל את המילים אחריו." It is not
+# random but INPUT-specific, which is what makes it worth fixing:
+# measured 2026-08-19, 3 runs in 12 across four inputs — that is 3 of 3
+# on that one sentence and 0 of 9 on the rest — and 4 of 4 on it when
+# measured again. The prompt cannot reach it (adding "Never add niqqud"
+# to the rules gave 2 in 12 instead of 3, i.e. noise), so it is stripped
+# from the answer instead, where it is 4 of 4 the other way. Maqaf is
+# left alone — dropping that would weld "בית־הספר" into one word. Set
+# false if you want the vowels; the key that adds them on purpose is
+# [punctuate] nikud, and that one writes into your own text.
+strip_niqqud = true
+
+dwell_ms   = 12000  # DEAD. Nothing reads this any more — main.py passes a
+                    # literal 0. The box waits to be closed, by the x in
+                    # its corner or by Esc, because a box that took itself
+                    # away on a timer was indistinguishable from one that
+                    # vanished because of a bug, and that was the
+                    # complaint. Still parsed and still validated so an
+                    # old config file does not fail to load.
+max_width  = 460    # pixels. 60 words wrapped to 9 lines measured 512 px
+max_height = 520    # unbounded, and a 22-sentence paragraph made a 896 px
+                    # tall window — taller than some work areas. Both are
+                    # capped and the overflow is trimmed with an ellipsis.
+
+# Answers are stable — "brittle" means the same thing tomorrow — and
+# lookups repeat across days, which is the whole point of the key, so they
+# are kept in lookup_cache.json next to vocab.json and survive a restart.
+# Measured 134 bytes an entry: 500 of them is about 67 KB. A repeat costs
+# 0.0 s instead of 2.3 s and one saved request. Only selections under 200
+# chars are kept; a paragraph translation is a one-off that would bloat the
+# file for nothing.
+cache_entries = 500
+
+# Windows Terminal turns the copy into a real Ctrl+C for whatever is
+# running there when nothing is selected — reproduced 5 times out of 5, and
+# ctrl+shift+c interrupts too, so there is no safe chord to use instead.
+# With this on, the key refuses in console windows rather than killing your
+# build. VS Code's integrated terminal does not announce itself as a
+# console and is not covered.
+skip_consoles = true
 
 [server]
 # Dictate from the PHONE, transcribe on this GPU: the phone records and
@@ -148,29 +496,63 @@ terms = [
 # than swap words — >15% change in word count, or <75% of the words surviving.
 # A rejected reply is not retried; the raw transcript goes through untouched.
 #
-# Ollama first here, the reverse of [translate], because this runs on dictations
-# (dozens a day) rather than on a key you tap — Gemini's 20/day/model would be
-# gone before lunch and would take translation down with it.
-when = "never"            # never | known | always
-                          # "known": only when the transcript contains something
-                          # you have corrected before. Costs nothing on the
-                          # dictations that don't need it, and only wakes an idle
-                          # Ollama (76 s cold, 2.5 s warm) when there is real
-                          # evidence a repair is due. "always" is more accurate
-                          # and much slower — try it before deciding it isn't
-                          # worth it
+# LOCAL ONLY — there is NO Gemini fallback here, unlike [translate] and
+# [punctuate]. This runs on dictations (dozens a day) rather than on a key you
+# tap, so a stopped Ollama falling back to the cloud would burn the
+# 20/day/model free tier before lunch and take F9 and F7 down with it. No local
+# model means no repair: the transcript stays exactly as pasted, and the only
+# trace is one line in app.log.
+#
+# IT SITS IN FRONT OF YOUR CURSOR, and that costs you seconds. It was tried
+# the other way — paste instantly, rewrite the text on screen a few seconds
+# later — and moved back, because text that might still change is text you
+# cannot send: you never know whether what you are looking at is the final
+# version. So the rule is simple and worth relying on:
+#
+#     "..." on screen  = not finished
+#     text on screen   = finished, and it will not change again
+when = "always"           # never | known | always
+                          # "known" only runs when the transcript contains
+                          # something you have corrected before, which keeps
+                          # most dictations fast and misses most repairs.
+                          # "always" is the default because the pass is worth
+                          # its wait when it fires: 17.9% -> 13.9% WER on the
+                          # corrected clips, 3 better and 0 worse
 min_chars = 20            # below this there is no context to reason from, which
                           # is exactly where a model starts inventing some
-ollama_model = ""         # "" = reuse [translate] ollama_model
-max_wait_s = 6            # THE LONGEST YOUR PASTE MAY BE HELD UP. This pass
-                          # sits between your speech and your cursor, so past
-                          # this the raw transcript is pasted and the reply is
-                          # discarded whenever it turns up.
-                          # Measured 2026-08-14 and the reason this exists: a
-                          # COLD Ollama took 53.7 s. The text sat unpasted the
-                          # whole time, looked like a failure, got re-dictated,
-                          # and then both landed 1.5 s apart.
-warm_up = true            # send one throwaway request at startup so the ~5 GB
+ollama_model = "gemma3:12b"
+                          # Measured 2026-08-17 on the 11 recordings in recent\
+                          # that you corrected by hand, so the intended words
+                          # are known:
+                          #     raw transcript       14.2% WER
+                          #     gemma3:12b           10.9% / 10.7% on two runs
+                          #                                  4-5 better, 0 worse
+                          #     qwen2.5-coder:14b    13.8%   4 better, 2 worse
+                          #     llama3.1:8b          16.0%   3 better, 3 WORSE
+                          #     aya-expanse:8b       15.7%   0 better, 2 worse
+                          #     dictalm2.0 (Hebrew)  14.2%   all 11 rejected
+                          # The Hebrew-native model was the obvious bet and it
+                          # lost — it will not hold the output format (one reply
+                          # came back 158 words against a 2-word transcript).
+                          # llama3.1:8b, which this used to default to, makes
+                          # your transcript WORSE than leaving it alone.
+                          # "" = reuse [translate] ollama_model.
+                          # Smaller is NOT faster enough to be worth it,
+                          # measured 2026-08-17 on the same clips:
+                          #     gemma3:4b   18.9% WER (WORSE than raw), 3.0 s
+                          #     qwen2.5:7b  17.6% WER (a wash),         3.0 s
+                          # 2.5 s saved for the whole benefit lost.
+                          # NOTE ON VRAM: gemma3:12b is ~8.5 GB and the two
+                          # Whisper models are ~6 GB. On a 16 GB card that fits
+                          # with little to spare
+max_wait_s = 10           # THE LONGEST YOUR PASTE MAY BE HELD UP. Past this
+                          # the unrepaired transcript is pasted and the reply
+                          # is discarded whenever it turns up.
+                          # 10 and not 6: gemma3:12b averages 4.7-5.5 s and
+                          # peaks at 6.2 s, so 6 would time out on exactly the
+                          # long dictations that need it most. It also caps a
+                          # COLD Ollama, which took 53.7 s (2026-08-14)
+warm_up = true            # send one throwaway request at startup so the model
                           # is in VRAM before a dictation needs it (76 s cold
                           # vs 2.5 s warm). Costs that VRAM all session
 

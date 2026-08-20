@@ -1,11 +1,27 @@
-"""Config loading and validation (config.toml, stdlib tomllib)."""
+"""Config loading and validation (config.toml, stdlib tomllib).
+
+Writing it back is here too, and it is a line editor rather than a TOML
+serialiser on purpose: config.toml is two thirds comments, and most of
+those comments are measurements that cost hours to obtain. A round trip
+through a TOML writer would silently delete every one of them the first
+time the dashboard changed a hotkey.
+"""
 from __future__ import annotations
 
+import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 VALID_BACKENDS = ("gemini", "local", "fake")
+
+# What Ollama accepts for keep_alive: a Go duration ("30m", "8h", "1h30m")
+# or a bare number of seconds, either of them negative to mean "hold it
+# until Ollama stops". Written down here because the only other place that
+# knows is Ollama, and it says so with an HTTP 400.
+_DURATION = re.compile(r"-?(?:\d+(?:\.\d+)?(?:ns|us|µs|ms|s|m|h))+|"
+                       r"-?\d+")
 
 
 class ConfigError(Exception):
@@ -93,7 +109,7 @@ class TranslateConfig:
     # replacing a file's worth of text.
     max_chars: int = 5000
     ollama_model: str = "llama3.1:8b"
-    ollama_url: str = "http://localhost:11434"
+    ollama_url: str = "http://127.0.0.1:11434"
     timeout_s: int = 30
     # Deliberately much larger than timeout_s. Ollama loads the model into
     # VRAM on the first request after it goes idle: measured 2026-08-12,
@@ -105,6 +121,111 @@ class TranslateConfig:
     # How long the focused app is given to answer a copy. Chromium inputs
     # answer in well under 50 ms; this is slack for a busy machine.
     settle_ms: int = 120
+
+
+@dataclass(frozen=True)
+class PunctuateConfig:
+    """The tap-to-punctuate key: puts the commas, full stops and question
+    marks into text already at the cursor — see punctuate.py.
+
+    Whisper transcribes sounds, not sentences, and the local Hebrew
+    fine-tune produces almost no punctuation at all. The grab mechanics
+    (which chords, how long the focused app is given to answer) are
+    deliberately NOT repeated here: they belong to the app and the machine,
+    not to the job, so this key reads them from [translate].
+    """
+    # The same guard as translate.max_chars and for the same reason: with
+    # nothing selected the key takes the whole field, which in a document
+    # editor is the whole document.
+    max_chars: int = 5000
+    # Gemini first (see punctuate.py) — "ollama" reverses it, which is the
+    # setting to reach for if this key gets tapped after every dictation
+    # and starts eating the free-tier requests translation also needs.
+    prefer: str = "gemini"
+    # "" = reuse translate.ollama_model.
+    ollama_model: str = ""
+    # Also add Hebrew vowel points, not only punctuation. Off by default:
+    # it is a much bigger change to the text, and the same safety check
+    # covers it either way (nikud are combining marks, so they vanish from
+    # the letters-only comparison exactly like a comma does).
+    nikud: bool = False
+
+
+@dataclass(frozen=True)
+class LookupConfig:
+    """The key that reads instead of writing — see lookup.py and popup.py.
+
+    Select a word or a sentence anywhere, tap the key, and a small box
+    appears with the translation. It never types, never pastes and never
+    changes anything on screen, which is the whole point: it works on a
+    web page, a PDF, a chat window — every place F9 and F7 have nothing
+    they are allowed to write to.
+
+    It has exactly one way of changing anything, and it is the one you
+    ask for: the copy buttons in the box, and the Ctrl+C behind them.
+    That copy is meant to outlive whatever else the app is doing —
+    injector.claim_mark() is what stops the other keys putting your old
+    clipboard back over it.
+
+    Like [punctuate], the grab mechanics are deliberately NOT repeated
+    here. The copy chord and the Ollama endpoint belong to the machine and
+    are read from [translate]; what is here is the job.
+    """
+    # Which way to translate is decided per selection, by counting WORDS
+    # and not letters: "תעשה commit לפני ה-merge" is 9 Hebrew letters
+    # against 11 Latin ones, so a letter count calls that sentence
+    # English. Hebrew is written without vowels, which makes words the
+    # only fair unit. Ties go to Hebrew-as-target.
+    hebrew_share: float = 0.34
+    # Both directions, or Hebrew only.
+    both_ways: bool = True
+    # Over this the key refuses and spends nothing. A 100-word paragraph
+    # already costs 7.4 s locally, and by then you wanted the paragraph
+    # translated in place — which is what F9 is for.
+    max_chars: int = 5000
+    # The OPPOSITE of [translate] and [punctuate], deliberately. The free
+    # Gemini tier is 20 requests per model per day and those two keys
+    # already spend 34/39/17/18 of them on a working day; a key tapped
+    # while READING would take the rest of the pool and break the two keys
+    # whose local fallback is the weak one.
+    prefer: str = "ollama"
+    # "" = reuse translate.ollama_model. Its own knob because this key
+    # wants the model [polish] already keeps resident, not the fallback:
+    # measured, qwen2.5:7b answered "brittle" with '?");'.
+    model: str = "gemma3:12b"
+    # A cold Ollama is 22-25 s to the first token. Rather than make you
+    # watch that, a cold model sends this one lookup to the cloud and
+    # warms the local one in the background.
+    cold_to_gemini: bool = True
+    # How long Ollama holds the model after a lookup. Its own default is
+    # five minutes, which a reading session outlasts: measured
+    # 2026-08-19, a lookup nine minutes after the last dictation paid
+    # 23.19 s. This is SHARED — keep_alive belongs to the loaded runner,
+    # so what this key sends [polish] then inherits. "" sends nothing.
+    keep_alive: str = "30m"
+    # gemma3:12b sometimes answers in vowel-pointed Hebrew (3 runs in 12,
+    # input-specific, and a prompt rule does not fix it). The box is for
+    # reading a meaning off, not for learning to pronounce it.
+    strip_niqqud: bool = True
+    # Dead: main.py passes popup.show a literal 0 and never reads this.
+    # The box waits to be closed, by the x in its corner or by Esc. Kept
+    # so an existing config.toml still loads, and validated below so a
+    # negative one is still refused rather than silently ignored.
+    dwell_ms: int = 12000
+    # Pixels. Both are caps and the overflow is trimmed with an ellipsis:
+    # measure() is unbounded, and a 22-sentence paragraph made a 896 px
+    # tall window — taller than some work areas.
+    max_width: int = 460
+    max_height: int = 520
+    # Answers are stable and lookups repeat, which is the whole point of
+    # the key, so they are kept in lookup_cache.json next to vocab.json.
+    # Measured 134 bytes an entry. 0 keeps none.
+    cache_entries: int = 500
+    # Windows Terminal turns the copy into a real Ctrl+C for whatever is
+    # running there when nothing is selected — reproduced 5 times out of
+    # 5. With this on, the key refuses in console windows rather than
+    # killing your build.
+    skip_consoles: bool = True
 
 
 @dataclass(frozen=True)
@@ -144,30 +265,47 @@ class PolishConfig:
     `when`:
       never   — off.
       known   — only when the transcript contains something you have
-                corrected before. The default: it costs nothing on the
-                dictations that do not need it, and only wakes an idle
-                Ollama (76 s cold) when there is evidence a repair is due.
-      always  — every dictation. Accurate and slow; try it before deciding
-                the pass is not worth it.
+                corrected before. Keeps most dictations fast and misses
+                most repairs; the setting to reach for if the wait bites.
+      always  — every dictation. THE DEFAULT: it adds ~5 s to every paste
+                and earns it, catching the mishearings that have never been
+                corrected before, which is most of them (17.9% -> 13.9% WER
+                on the corrected clips, 3 better and 0 worse).
     """
-    when: str = "known"
+    when: str = "always"
     # Below this a "sentence" is a phrase with no context to reason from,
     # which is precisely where a model starts inventing one.
     min_chars: int = 20
     # "" = reuse translate.ollama_model. A separate knob because repairing
     # Hebrew wants a stronger model than translating does, and you may not
     # want to pay for that on every dictation.
-    ollama_model: str = ""
-    # HOW LONG THE PASTE MAY BE HELD UP. This pass sits between the words
-    # leaving your mouth and the text reaching your cursor, so it does not
-    # get to take as long as it likes: past this, the raw transcript is
-    # pasted and the reply is thrown away when it eventually arrives.
     #
-    # Measured 2026-08-14, and the reason this knob exists: with a cold
-    # Ollama the pass took 53.7 s. The transcript sat unpasted the whole
-    # time, the user assumed it had failed, re-dictated — and then both
-    # landed within 1.5 s of each other.
-    max_wait_s: float = 6.0
+    # Measured 2026-08-17 on the 11 recordings in recent\ that carry a
+    # `corrected` field — real dictations with the intended words known,
+    # because the user typed them:
+    #     raw transcript       14.2% WER
+    #     gemma3:12b           10.9% / 10.7% on two runs, 4-5 better, 0 worse
+    #     qwen2.5-coder:14b    13.8%   4 better, 2 worse
+    #     llama3.1:8b          16.0%   3 better, 3 WORSE, 5 rejected
+    #     aya-expanse:8b       15.7%   0 better, 2 worse, 9 rejected
+    #     dictalm2.0-instruct  14.2%   0 better, all 11 rejected
+    # The Hebrew-native model was the obvious bet and it lost: it does not
+    # hold the output format, and one reply came back 158 words long against
+    # a 2-word transcript. General ability at following a narrow instruction
+    # beat Hebrew specialisation. llama3.1:8b — what this defaulted to
+    # before — makes the transcript WORSE than leaving it alone.
+    ollama_model: str = "gemma3:12b"
+    # HOW LONG THE PASTE MAY BE HELD UP. This pass sits between the words
+    # leaving your mouth and the text reaching your cursor: past this, the
+    # unrepaired transcript is pasted and the reply is thrown away when it
+    # eventually arrives.
+    #
+    # 10 s, not 6: gemma3:12b averages 4.7-5.5 s and peaks at 6.2 s, so 6
+    # would time out on exactly the long dictations that need it most. It is
+    # deliberately NOT generous beyond that — every second here is a second
+    # of staring at "..." — and it also caps the damage from a cold Ollama
+    # (76 s on the first request after it idles, measured 2026-08-12).
+    max_wait_s: float = 10.0
     # Send one throwaway request at startup so the ~5 GB is already in VRAM
     # before a dictation needs it (76 s cold vs 2.5 s warm). Costs the VRAM
     # for the whole session; set false if you would rather pay the wait.
@@ -194,13 +332,32 @@ class ServerConfig:
 @dataclass(frozen=True)
 class Config:
     hotkey: str = "right ctrl"
-    # A dedicated key beats guessing: language detection scored a Hebrew
-    # sentence as "English 0.57" on this user's real microphone. "" = off.
-    # Avoid alt (menu activation on release) and shift (FilterKeys at 8 s).
+    # A dedicated key that declares "this one is English". Redundant once
+    # auto_language is on, and kept for the case where a key is wanted
+    # anyway. "" = off. Avoid alt (menu activation on release) and shift
+    # (FilterKeys at 8 s).
     english_hotkey: str = "f9"
+    # One key, both languages: the recording is no longer labelled Hebrew
+    # before the model has heard it — the model decides per utterance.
+    #
+    # This replaces an earlier judgement made on one bad number ("English
+    # 0.57" on a Hebrew sentence). Measured 2026-08-20 over the 50 real
+    # recordings in recent\: the detector routed 8 of them to the English
+    # model and every one WAS English — 6 strictly better ("מקמיני" ->
+    # "Mac mini", "מי?" -> "Me.", "לייק איי." -> "Like I"), 2 identical —
+    # and not one Hebrew recording crossed the 0.8 bar. The pass costs a
+    # median 0.18 s per dictation (p90 0.26 s).
+    #
+    # False pins the key to Hebrew again, which is what it meant before.
+    auto_language: bool = True
     # Tapped (not held) to translate the selection — or the whole field
     # when nothing is selected — into English. "" = off.
     translate_hotkey: str = ""
+    # Tapped to put the punctuation into the selection — or the whole
+    # field when nothing is selected — in place. Whisper transcribes
+    # sounds, not sentences, so dictated text arrives with almost none.
+    # "" = off.
+    punctuate_hotkey: str = ""
     # Tapped WHILE holding the hotkey: locks the recording on, so the
     # hotkey can be released and a long dictation does not mean a long
     # hold. Must be reachable by the hand already on the hotkey, and is
@@ -212,6 +369,23 @@ class Config:
     # is ever learned, because the app cannot see you fix the text inside
     # whatever window you pasted into. "" = off.
     correct_hotkey: str = "f8"
+    # Tapped to READ instead of to write: whatever is selected comes back
+    # translated in a small box, and nothing on screen changes. On by
+    # default because it cannot damage anything it is pressed over — the
+    # one key here with no way to be sorry you pressed it. "" = off.
+    lookup_hotkey: str = "f6"
+    # Tapped to make every key above inert without unloading anything —
+    # for playing a game without Right Ctrl starting recordings. Quitting
+    # would do the same, and costs ~25 s of reloading two Whisper models
+    # onto the GPU to undo; this costs nothing either way. It is the one
+    # key that still works while paused. "" = off.
+    pause_hotkey: str = ""
+    # Pause automatically while a game or a presentation owns the screen,
+    # and resume when it lets go. Off by default and deliberately so: it
+    # is the only thing here that stops dictation working without anyone
+    # asking it to, and "why did my hotkey stop responding" is a much
+    # worse half-hour than pressing the pause key yourself.
+    auto_pause_fullscreen: bool = False
     backend: str = "gemini"
     paste_chord: str = "ctrl+v"
     restore_delay_ms: int = 300
@@ -225,6 +399,8 @@ class Config:
     local: LocalConfig = field(default_factory=LocalConfig)
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
     translate: TranslateConfig = field(default_factory=TranslateConfig)
+    punctuate: PunctuateConfig = field(default_factory=PunctuateConfig)
+    lookup: LookupConfig = field(default_factory=LookupConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     vocab: VocabConfig = field(default_factory=VocabConfig)
     polish: PolishConfig = field(default_factory=PolishConfig)
@@ -238,6 +414,110 @@ class Config:
     # running, and what it is doing. Click-through, because that corner is
     # the close button of every maximised window.
     indicator: bool = True
+
+
+# The key fields, in the order the dashboard lists them, with the label it
+# shows. Everything that has to enumerate the keys — validation, the
+# rebind command, the dashboard rows — reads this instead of repeating the
+# list, so adding a key later cannot leave one of them behind.
+HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("hotkey", "Dictate (hold)"),
+    ("english_hotkey", "Dictate English (hold)"),
+    ("latch_hotkey", "Lock the recording on"),
+    ("translate_hotkey", "Translate (tap)"),
+    ("punctuate_hotkey", "Punctuate (tap)"),
+    ("correct_hotkey", "Teach it a word (tap)"),
+    ("lookup_hotkey", "Look up (tap)"),
+    ("pause_hotkey", "Pause / resume"),
+)
+
+
+# The keys that may carry modifiers ("ctrl+f6"). Only the taps: they are
+# pressed and released in an instant, which is the only thing a chord can
+# describe. A chord on the hold hotkey would mean keeping ctrl down for
+# the length of a dictation (which changes what a click and the scroll
+# wheel do in the browser underneath); the latch is pressed mid-recording
+# and swallowed, so a chord there means swallowing two keys; and the pause
+# key is the one that has to work when everything else is confusing.
+CHORD_FIELDS: frozenset[str] = frozenset((
+    "translate_hotkey", "punctuate_hotkey", "correct_hotkey",
+    "lookup_hotkey",
+))
+
+
+def check_hotkeys(cfg: "Config") -> None:
+    """Every key rule in one place: the names are real, and no two mean the
+    same thing. Raises ConfigError.
+
+    Split out of load() because it is now needed twice. The dashboard can
+    change a key while the app is not running, which means writing
+    config.toml with nothing loaded to check it — and a config.toml that
+    only fails at the next launch is one that fails windowless, with a
+    message box, at the moment the user wanted to dictate.
+    """
+    # Local imports: keeps config.py importable on its own.
+    from hotkey import binding_name, parse_binding
+
+    if not cfg.hotkey:
+        raise ConfigError("hotkey must not be empty")
+    seen: dict[str, str] = {}
+    bindings: dict[str, tuple] = {}     # field -> hotkey.Binding
+    for field_name, _label in HOTKEY_FIELDS:
+        key = getattr(cfg, field_name)
+        if not key:
+            continue
+        try:
+            bound = parse_binding(key)
+        except ValueError as e:
+            raise ConfigError(f"{field_name}: {e}") from e
+        if bound.mods and field_name not in CHORD_FIELDS:
+            raise ConfigError(
+                f"{field_name} cannot take modifiers ({key!r}) — it is "
+                f"held, latched or toggled rather than tapped, and a chord "
+                f"means something different for each. Only "
+                f"{', '.join(sorted(CHORD_FIELDS))} take chords")
+        # Compared canonicalised, not as written: "ctrl+f6" and "f6+ctrl"
+        # are one binding, and the duplicate test is the only thing
+        # standing between the two spellings and two settings on one key.
+        name = binding_name(bound)
+        if name in seen:
+            raise ConfigError(
+                f"{field_name} must differ from {seen[name]} (both are "
+                f"{name!r}) — one key cannot mean two things")
+        seen[name] = field_name
+        bindings[field_name] = bound
+    # A tap whose TRIGGER is one of these could never fire, whatever
+    # modifiers it asks for: the state machine tests them first (pause in
+    # every state, the holds before the taps), so the tap branch is never
+    # reached. Refused here rather than at the next launch, where the
+    # symptom is a key that does nothing and says nothing.
+    for field_name in sorted(CHORD_FIELDS):
+        bound = bindings.get(field_name)
+        if bound is None:
+            continue
+        for owner in ("hotkey", "english_hotkey", "pause_hotkey"):
+            other = bindings.get(owner)
+            if other is not None and other.trigger == bound.trigger:
+                raise ConfigError(
+                    f"{field_name} is on the same key as {owner} "
+                    f"({binding_name(other)!r}), which is checked first — "
+                    f"one key cannot mean two things")
+    # esc is checked on the TRIGGER, so that "ctrl+esc" cannot slip past
+    # (and ctrl+esc opens the Start menu, which is its own reason).
+    for field_name in ("latch_hotkey", "pause_hotkey"):
+        bound = bindings.get(field_name)
+        if bound is not None and bound.trigger == 0x1B:
+            raise ConfigError(f"{field_name} cannot be 'esc' — esc discards "
+                              f"a locked recording")
+    # The tap keys were never checked for this, which mattered the moment
+    # one of them opened a window: bound to esc, the lookup key would be
+    # excluded from the box's own dismissal rule (a key cannot both open a
+    # box and close it) while still discarding a locked recording.
+    for field_name in sorted(CHORD_FIELDS):
+        bound = bindings.get(field_name)
+        if bound is not None and bound.trigger == 0x1B:
+            raise ConfigError(f"{field_name} cannot be 'esc' — esc discards "
+                              f"a locked recording and closes the lookup box")
 
 
 def _parse_device(raw: str) -> int | str | None:
@@ -263,6 +543,8 @@ def load(path: Path) -> Config:
     local = data.get("local", {})
     feedback = data.get("feedback", {})
     translate = data.get("translate", {})
+    punctuate = data.get("punctuate", {})
+    lookup = data.get("lookup", {})
     server = data.get("server", {})
     vocab = data.get("vocab", {})
     polish = data.get("polish", {})
@@ -283,10 +565,19 @@ def load(path: Path) -> Config:
                                     Config.english_hotkey)).strip().lower(),
         translate_hotkey=str(data.get(
             "translate_hotkey", Config.translate_hotkey)).strip().lower(),
+        punctuate_hotkey=str(data.get(
+            "punctuate_hotkey", Config.punctuate_hotkey)).strip().lower(),
         latch_hotkey=str(data.get("latch_hotkey",
                                   Config.latch_hotkey)).strip().lower(),
         correct_hotkey=str(data.get("correct_hotkey",
                                     Config.correct_hotkey)).strip().lower(),
+        lookup_hotkey=str(data.get("lookup_hotkey",
+                                   Config.lookup_hotkey)).strip().lower(),
+        pause_hotkey=str(data.get("pause_hotkey",
+                                  Config.pause_hotkey)).strip().lower(),
+        auto_language=bool(data.get("auto_language", Config.auto_language)),
+        auto_pause_fullscreen=bool(data.get(
+            "auto_pause_fullscreen", Config.auto_pause_fullscreen)),
         backend=str(data.get("backend", Config.backend)).strip().lower(),
         paste_chord=str(data.get("paste_chord", Config.paste_chord)).strip().lower(),
         restore_delay_ms=int(data.get("restore_delay_ms", Config.restore_delay_ms)),
@@ -353,6 +644,39 @@ def load(path: Path) -> Config:
             settle_ms=int(translate.get("settle_ms",
                                         TranslateConfig.settle_ms)),
         ),
+        punctuate=PunctuateConfig(
+            max_chars=int(punctuate.get("max_chars",
+                                        PunctuateConfig.max_chars)),
+            prefer=str(punctuate.get(
+                "prefer", PunctuateConfig.prefer)).strip().lower(),
+            ollama_model=str(punctuate.get(
+                "ollama_model", PunctuateConfig.ollama_model)).strip(),
+            nikud=bool(punctuate.get("nikud", PunctuateConfig.nikud)),
+        ),
+        lookup=LookupConfig(
+            hebrew_share=float(lookup.get("hebrew_share",
+                                          LookupConfig.hebrew_share)),
+            both_ways=bool(lookup.get("both_ways",
+                                      LookupConfig.both_ways)),
+            max_chars=int(lookup.get("max_chars", LookupConfig.max_chars)),
+            prefer=str(lookup.get(
+                "prefer", LookupConfig.prefer)).strip().lower(),
+            model=str(lookup.get("model", LookupConfig.model)).strip(),
+            cold_to_gemini=bool(lookup.get("cold_to_gemini",
+                                           LookupConfig.cold_to_gemini)),
+            keep_alive=str(lookup.get("keep_alive",
+                                      LookupConfig.keep_alive)).strip(),
+            strip_niqqud=bool(lookup.get("strip_niqqud",
+                                         LookupConfig.strip_niqqud)),
+            dwell_ms=int(lookup.get("dwell_ms", LookupConfig.dwell_ms)),
+            max_width=int(lookup.get("max_width", LookupConfig.max_width)),
+            max_height=int(lookup.get("max_height",
+                                      LookupConfig.max_height)),
+            cache_entries=int(lookup.get("cache_entries",
+                                         LookupConfig.cache_entries)),
+            skip_consoles=bool(lookup.get("skip_consoles",
+                                          LookupConfig.skip_consoles)),
+        ),
         server=ServerConfig(
             enabled=bool(server.get("enabled", ServerConfig.enabled)),
             host=str(server.get("host", ServerConfig.host)).strip(),
@@ -384,47 +708,76 @@ def load(path: Path) -> Config:
 
     if cfg.backend not in VALID_BACKENDS:
         raise ConfigError(f"backend must be one of {VALID_BACKENDS}, got {cfg.backend!r}")
-    if not cfg.hotkey:
-        raise ConfigError("hotkey must not be empty")
-    if cfg.english_hotkey and cfg.english_hotkey == cfg.hotkey:
-        raise ConfigError("english_hotkey must differ from hotkey "
-                          f"(both are {cfg.hotkey!r})")
+    check_hotkeys(cfg)
     if cfg.translate_hotkey:
-        for other, label in ((cfg.hotkey, "hotkey"),
-                             (cfg.english_hotkey, "english_hotkey")):
-            if other and cfg.translate_hotkey == other:
-                raise ConfigError(
-                    f"translate_hotkey must differ from {label} (both are "
-                    f"{other!r}) — one key cannot both record and translate")
         if cfg.translate.max_chars <= 0:
             raise ConfigError("translate.max_chars must be positive")
-        if cfg.translate.settle_ms < 0:
-            raise ConfigError("translate.settle_ms must be >= 0")
         if not cfg.translate.target:
             raise ConfigError("translate.target must name a language")
+    if cfg.punctuate_hotkey and cfg.punctuate.max_chars <= 0:
+        raise ConfigError("punctuate.max_chars must be positive")
+    if cfg.punctuate.prefer not in ("gemini", "ollama"):
+        raise ConfigError('punctuate.prefer must be "gemini" or "ollama", '
+                          f"got {cfg.punctuate.prefer!r}")
+    # All three text keys read the grab mechanics out of [translate] — the
+    # chords and the settle time belong to the machine, not to the job —
+    # so this is checked whenever ANY of them is bound.
+    if cfg.translate_hotkey or cfg.punctuate_hotkey or cfg.lookup_hotkey:
+        if cfg.translate.settle_ms < 0:
+            raise ConfigError("translate.settle_ms must be >= 0")
+    # The Ollama fallback is shared by only two of them: the lookup key
+    # brings its own model (see below), because it is Ollama-FIRST rather
+    # than Ollama-when-the-quota-is-gone.
+    if cfg.translate_hotkey or cfg.punctuate_hotkey:
         if not cfg.translate.ollama_model:
             raise ConfigError("translate.ollama_model must not be empty (it "
-                              "is the fallback when Gemini quota is spent)")
-    if cfg.latch_hotkey:
-        for other, label in ((cfg.hotkey, "hotkey"),
-                             (cfg.english_hotkey, "english_hotkey"),
-                             (cfg.translate_hotkey, "translate_hotkey")):
-            if other and cfg.latch_hotkey == other:
-                raise ConfigError(
-                    f"latch_hotkey must differ from {label} (both are "
-                    f"{other!r}) — one key cannot mean two things")
-        if cfg.latch_hotkey == "esc":
-            raise ConfigError("latch_hotkey cannot be 'esc' — esc discards a "
-                              "locked recording")
-    if cfg.correct_hotkey:
-        for other, label in ((cfg.hotkey, "hotkey"),
-                             (cfg.english_hotkey, "english_hotkey"),
-                             (cfg.translate_hotkey, "translate_hotkey"),
-                             (cfg.latch_hotkey, "latch_hotkey")):
-            if other and cfg.correct_hotkey == other:
-                raise ConfigError(
-                    f"correct_hotkey must differ from {label} (both are "
-                    f"{other!r}) — one key cannot mean two things")
+                              "is the fallback when Gemini quota is spent, "
+                              "for translating and for punctuating)")
+    # The lookup key reads [translate] as well — the copy chord and the
+    # Ollama endpoint — but not settle_ms (it polls the clipboard sequence
+    # number instead of sleeping through a fixed wait) and not
+    # ollama_model, because looking a word up wants the model [polish]
+    # already keeps resident rather than the fallback. What it cannot do
+    # without is a model in one of the two places.
+    if cfg.lookup_hotkey:
+        if cfg.lookup.max_chars <= 0:
+            raise ConfigError("lookup.max_chars must be positive")
+        if not (cfg.lookup.model or cfg.translate.ollama_model):
+            raise ConfigError("lookup.model must name an Ollama model (or "
+                              "translate.ollama_model must, which lookup "
+                              "falls back to) — the lookup key has nothing "
+                              "to ask otherwise")
+    if cfg.lookup.prefer not in ("ollama", "gemini"):
+        raise ConfigError('lookup.prefer must be "ollama" or "gemini", got '
+                          f"{cfg.lookup.prefer!r}")
+    if not (0.0 <= cfg.lookup.hebrew_share <= 1.0):
+        raise ConfigError("lookup.hebrew_share must be between 0 and 1 — it "
+                          "is the share of HEBREW WORDS at or above which a "
+                          "selection is translated into English, got "
+                          f"{cfg.lookup.hebrew_share!r}")
+    if cfg.lookup.dwell_ms < 0:
+        raise ConfigError("lookup.dwell_ms must be >= 0 (and nothing reads "
+                          "it any more: the box waits for its close button "
+                          "or for Esc)")
+    if cfg.lookup.max_width < 160 or cfg.lookup.max_height < 64:
+        raise ConfigError("lookup.max_width must be >= 160 and "
+                          "lookup.max_height >= 64 — a box smaller than that "
+                          "cannot hold one word, and every answer would come "
+                          "back as an ellipsis")
+    if cfg.lookup.cache_entries < 0:
+        raise ConfigError("lookup.cache_entries must be >= 0 (0 remembers "
+                          "nothing between presses)")
+    if cfg.lookup.keep_alive and not _DURATION.fullmatch(
+            cfg.lookup.keep_alive):
+        # Checked here because Ollama rejects a malformed one with an HTTP
+        # 400 and this key SURVIVES that: it would quietly fall through to
+        # Gemini on every press and spend the pool it exists to protect.
+        # Loud at startup beats slow and cloudy forever.
+        raise ConfigError(
+            'lookup.keep_alive must be a duration like "30m", "8h" or '
+            '"90s" (a plain number is seconds, "-1" holds the model until '
+            'Ollama stops, "" leaves it to Ollama), got '
+            f"{cfg.lookup.keep_alive!r}")
     if cfg.polish.when not in ("never", "known", "always"):
         raise ConfigError('polish.when must be "never", "known" or "always", '
                           f"got {cfg.polish.when!r}")
@@ -473,3 +826,120 @@ def load(path: Path) -> Config:
     if not (0.0 < cfg.local.english_threshold <= 1.0):
         raise ConfigError("local.english_threshold must be in (0, 1]")
     return cfg
+
+
+# ------------------------------------------------------- writing it back
+
+_ASSIGNMENT = r"^(\s*)({key})(\s*)=(\s*)(.*)$"
+
+
+def _format(value: object) -> str:
+    if isinstance(value, bool):          # before int: bool IS an int
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{text}"'
+
+
+def _comment_at(rest: str) -> int | None:
+    """Index of the '#' that starts a trailing comment, ignoring any '#'
+    inside a quoted value. None if the line has no comment."""
+    quote = ""
+    i = 0
+    while i < len(rest):
+        char = rest[i]
+        if quote:
+            if char == "\\" and quote == '"':
+                i += 2
+                continue
+            if char == quote:
+                quote = ""
+        elif char in "\"'":
+            quote = char
+        elif char == "#":
+            return i
+        i += 1
+    return None
+
+
+def set_values(path: Path, updates: dict[str, object]) -> None:
+    """Change top-level settings in place, keeping every comment.
+
+    Only the top-level block is touched — the keys the dashboard edits all
+    live there, and stopping at the first [table] means a key name that
+    also appears inside a section (`enabled`, `model`) can never be
+    rewritten by accident.
+
+    The result is parsed and fully validated BEFORE it replaces the real
+    file, and swapped in with one atomic rename. A config.toml this app
+    cannot read is a config.toml that turns the next launch into a message
+    box, and it must not be possible to get there by clicking a key in a
+    dashboard.
+    """
+    if not path.exists():
+        raise ConfigError(f"Config file not found: {path}")
+    raw = path.read_text("utf-8")
+    lines = raw.splitlines(keepends=True)
+    eol = "\r\n" if raw.count("\r\n") else "\n"
+
+    limit = len(lines)
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("["):
+            limit = index
+            break
+
+    for key, value in updates.items():
+        formatted = _format(value)
+        pattern = re.compile(_ASSIGNMENT.format(key=re.escape(key)))
+        for index in range(limit):
+            body = lines[index].rstrip("\r\n")
+            match = pattern.match(body)
+            if not match:
+                continue
+            indent, name, before, after, rest = match.groups()
+            at = _comment_at(rest)
+            if at is None:
+                pad, comment = "", ""
+            else:
+                code, comment = rest[:at], rest[at:]
+                # Keep the gap that lined the comment up, but never let the
+                # value and the '#' end up welded together.
+                pad = code[len(code.rstrip()):] or " "
+            tail = lines[index][len(body):]
+            lines[index] = (f"{indent}{name}{before}={after}"
+                            f"{formatted}{pad}{comment}{tail}")
+            break
+        else:
+            # Not there at all (an older config.toml). Put it with the
+            # other top-level settings, not after them: below the last
+            # assignment is still above whatever comment block introduces
+            # the first [table].
+            last = 0
+            for index in range(limit):
+                if re.match(r"^\s*[A-Za-z_][\w-]*\s*=", lines[index]):
+                    last = index + 1
+            lines.insert(last, f"{key} = {formatted}{eol}")
+            limit += 1
+
+    text = "".join(lines)
+    # Per-process staging name. With one shared "config.toml.new", two
+    # writers DESTROY the file: the cleanup path below deletes the temp by
+    # name, and DeleteFileW marks it delete-on-close — so if the other
+    # process is renaming that same file onto config.toml at that moment,
+    # the pending delete follows it through the rename and takes the real
+    # config with it. Reproduced 4 runs out of 4; afterwards nothing loads
+    # and the app will not start. Two writers is not exotic: every launch
+    # while an instance is running opens another dashboard, and each one
+    # writes this file.
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.new")
+    tmp.write_text(text, "utf-8")
+    try:
+        load(tmp)
+    except ConfigError:
+        tmp.unlink(missing_ok=True)
+        raise
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        raise ConfigError(f"the edited config would not load: {e}") from e
+    os.replace(tmp, path)
