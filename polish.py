@@ -39,25 +39,38 @@ substitute words:
 A rejected reply is not retried and not surfaced as an error — the raw
 transcript simply goes through untouched, exactly as it would if this
 module were switched off. Failing closed is the only acceptable failure
-mode for something that sits between a person's speech and their cursor.
+mode for something that stands this close to a person's words.
 
 --------------------------------------------------------------------------
-BACKEND ORDER IS THE REVERSE OF translate.py, ON PURPOSE
+THIS RUNS IN FRONT OF THE PASTE, AND THAT IS A DELIBERATE CHOICE
 
-translate.py goes Gemini first, Ollama second. This goes Ollama first.
+It was moved BEHIND the paste for a while — paste instantly, rewrite the
+text on screen a few seconds later — because the model that helps
+(gemma3:12b, see main.py::_improve for the table) costs 4.7-5.5 s and that
+is a long time to watch a placeholder.
 
-The difference is frequency. Translation is a key the user taps when they
-want it — a handful of times a day, comfortably inside the free tier's 20
-requests/day/model. Polishing runs on dictations, which is dozens of times
-a day, and would drain every model in the rotation before lunch and take
-translation down with it. Ollama has no cap.
+It was moved back, and no benchmark shows why: a sentence that may still
+rewrite itself in three seconds is a sentence you cannot send, because you
+cannot tell whether you are looking at the final version. The seconds saved
+were spent waiting anyway, without knowing what for. So the placeholder is
+the contract — "..." means not finished, text means done — and this pass
+runs inside it.
 
-The cost of that choice is Ollama's cold start: measured 2026-08-12,
-**76 s on the first request after it goes idle** against 2.5 s warm, while
-~5 GB loads into VRAM. Which is why `when = "known"` is the default — the
-pass only runs when the transcript actually contains something the user has
-corrected before, so an idle Ollama is woken for a repair that is known to
-be needed rather than on the off chance.
+  - max_wait_s (10 s) is therefore the longest a paste may be held up, and
+    past it the unrepaired transcript wins;
+  - `when = "always"` because the repair is worth the wait when it fires
+    (WER 17.9% -> 13.9% on the corrected clips, 3 better and 0 worse).
+
+--------------------------------------------------------------------------
+LOCAL ONLY — NO CLOUD FALLBACK, unlike translate.py and punctuate.py
+
+Both of those fall back to Gemini, and this one used to. It must not any
+more, and the reason is exactly the change above: running on every dictation
+with no wait to limit it, a stopped Ollama would quietly send dozens of
+requests a day to Gemini and burn the 20/day/model free-tier bucket that F9
+and F7 draw on. Those are keys the user deliberately presses; this is a pass
+nobody asked for on any particular sentence, and it does not get to starve
+them. See _backends.
 """
 from __future__ import annotations
 
@@ -115,6 +128,29 @@ def _prompt(glossary: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
+# A NOTE ON AN IDEA THAT DID NOT SURVIVE MEASUREMENT, so nobody spends a
+# day rebuilding it. _is_safe cannot tell a justified substitution from an
+# unjustified one — a one-word swap is a tiny word-level edit whichever word
+# it was — so the obvious refinement is to let Whisper arbitrate: it reports
+# a probability per word (word_timestamps, already on for the hallucination
+# guards), and a word decoded at p=0.99 looks like one no model should be
+# allowed to "fix".
+#
+# Built and measured 2026-08-17 against the 11 corrected clips in recent\,
+# refusing any substitution on a word scored above a floor:
+#
+#                       no veto        floor 0.85      floor 0.95
+#   gemma3:12b          10.7% WER      12.4% WER       12.4% WER
+#   llama3.1:8b         13.9% WER      16.2% WER       16.2% WER
+#
+# It makes BOTH models worse, including the weak one it was designed to
+# rescue. The premise is simply false on this fine-tune: the repairs it
+# blocked were correct ones, so Whisper is confidently wrong often enough
+# that its confidence cannot gate anything. Removed rather than shipped
+# switched off — a knob that only harms whoever turns it on is worse than
+# no knob.
+
+
 def _is_safe(original: str, candidate: str) -> tuple[bool, str]:
     """The guarantee. Returns (ok, reason_if_not).
 
@@ -146,14 +182,14 @@ def _is_safe(original: str, candidate: str) -> tuple[bool, str]:
 
 
 class Polisher:
-    """Ollama first, Gemini when Ollama cannot answer. Both built lazily —
-    nothing is contacted until a transcript actually needs repairing."""
+    """Local only, built lazily — nothing is contacted until a transcript
+    actually needs repairing. See _backends for why there is no cloud
+    fallback here even though translate.py and punctuate.py both have one."""
 
     def __init__(self, cfg, vocab):
         self._cfg = cfg
         self._vocab = vocab
         self._ollama = None
-        self._gemini = None      # None = not built, False = unavailable
 
     def _system_prompt(self) -> str:
         """Rebuilt per request — the glossary grows every time the user
@@ -172,28 +208,32 @@ class Polisher:
                 or self._cfg.translate.ollama_model,
                 self._cfg.translate.ollama_url,
                 self._cfg.translate.ollama_timeout_s,
-                system_prompt=self._system_prompt)
+                system_prompt=self._system_prompt,
+                setting="polish.ollama_model")
         yield self._ollama
-        if self._gemini is None:
-            try:
-                self._gemini = translate_mod.GeminiTranslator(
-                    list(self._cfg.gemini.models),
-                    self._cfg.translate.timeout_s,
-                    system_prompt=self._system_prompt)
-            except Exception as e:
-                log.info("no Gemini available to polish (%s)", e)
-                self._gemini = False
-        if self._gemini:
-            yield self._gemini
+        # AND THAT IS THE ONLY BACKEND. Gemini used to be the fallback here,
+        # from when this pass ran at most a few times a day (when = "known",
+        # in front of the paste, where every run cost the user a wait).
+        #
+        # It now runs on EVERY dictation, and the wait that used to limit it
+        # is gone. A machine with Ollama stopped — or simply without
+        # polish.ollama_model pulled — would quietly send dozens of
+        # dictations a day to Gemini and burn the 20-requests/day/model
+        # bucket that the translate (F9) and punctuate (F7) keys draw on.
+        # Those are keys the user presses deliberately; this is a pass they
+        # never asked for on any particular sentence. It must not be able to
+        # starve them.
+        #
+        # So a missing local model means no repair, logged once per attempt,
+        # and the transcript stays exactly as it was pasted.
 
     def should_run(self, text: str) -> bool:
         """`when`: never | known | always.
 
-        "known" is the default and the interesting one: run only when the
-        transcript contains a string this user has corrected before. It
-        makes the pass free on the dictations that do not need it, and it
-        means an idle Ollama is only ever woken (76 s cold) for a repair
-        there is real evidence to expect.
+        "always" is the default: the pass earns its ~5 s when it fires.
+        "known" — run only when the transcript holds a string this user has
+        corrected before — keeps most dictations fast and misses most
+        repairs, and is the setting to reach for if the wait bites.
         """
         when = self._cfg.polish.when
         if when == "never" or not text.strip():
@@ -228,7 +268,8 @@ class Polisher:
                      "repair will be slow, or skipped if it exceeds "
                      "polish.max_wait_s", str(e).splitlines()[0][:120])
 
-    def _within_deadline(self, backend, text: str) -> str:
+    def _within_deadline(self, backend, text: str,
+                         max_wait_s: float | None = None) -> str:
         """Run one request, but give up waiting after max_wait_s.
 
         The request is ABANDONED, not cancelled — there is no way to cancel
@@ -247,32 +288,42 @@ class Polisher:
 
         t = threading.Thread(target=run, daemon=True,
                              name=f"polish-{backend.name}")
+        limit = (self._cfg.polish.max_wait_s if max_wait_s is None
+                 else max_wait_s)
         t.start()
-        t.join(self._cfg.polish.max_wait_s)
+        t.join(limit)
         if t.is_alive():
             raise TimeoutError(
-                f"{backend.name} did not answer within "
-                f"{self._cfg.polish.max_wait_s:.0f}s")
+                f"{backend.name} did not answer within {limit:.0f}s")
         if "error" in box:
             raise box["error"]
         return box.get("text", "")
 
-    def polish(self, text: str) -> tuple[str, str | None]:
+    def polish(self, text: str,
+               max_wait_s: float | None = None) -> tuple[str, str | None]:
         """Returns (text, backend_name). On any failure — unreachable
         backend, unsafe reply, timeout — returns the input unchanged with a
-        backend of None. This never raises and never blocks a paste for
-        longer than polish.max_wait_s."""
+        backend of None. This never raises.
+
+        `max_wait_s` overrides polish.max_wait_s for this one call. The
+        configured value (30 s) is sized for the DESKTOP path, where nobody
+        is waiting: the transcript is already at the cursor and the repair
+        lands behind it. The phone endpoint holds an HTTP response open
+        instead, so it passes something a person will actually sit through.
+        """
         for backend in self._backends():
             try:
-                candidate = self._within_deadline(backend, text)
+                candidate = self._within_deadline(backend, text, max_wait_s)
             except TimeoutError as e:
-                # Loud: the user is staring at a placeholder that is about to
-                # be filled with the unrepaired text, and the reason belongs
-                # in the log rather than in their imagination.
-                log.warning("%s — pasting the transcript unrepaired. If this "
-                            "keeps happening the model is too slow to sit in "
-                            "front of a paste; raise polish.max_wait_s or set "
-                            'polish.when = "never".', e)
+                # The text was pasted seconds ago and is fine; this only
+                # means it will not be improved. Still worth a warning: a
+                # model that never answers is a model doing nothing but
+                # holding VRAM.
+                log.warning("%s — the transcript stays as it was pasted. If "
+                            "this keeps happening the model is too slow to be "
+                            "worth loading; raise polish.max_wait_s, pick a "
+                            'smaller polish.ollama_model, or set polish.when '
+                            '= "never".', e)
                 return text, None
             except (RateLimitError, TranscriptionError) as e:
                 log.info("polish via %s unavailable (%s)", backend.name, e)
@@ -285,7 +336,8 @@ class Polisher:
                 # Loud on purpose. This is the guard doing its job, and if
                 # it fires often the prompt or the model is wrong.
                 log.warning("polish REJECTED from %s — %s. Keeping the raw "
-                            "transcript.", backend.name, why)
+                            "transcript.\n  wanted: %s", backend.name, why,
+                            candidate.strip()[:300])
                 return text, None
             if candidate.strip() == text.strip():
                 return text, None          # nothing to say about a no-op

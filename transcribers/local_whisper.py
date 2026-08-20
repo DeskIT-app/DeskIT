@@ -115,6 +115,38 @@ _HALLUCINATED_SILENCE = {
 }
 
 
+def hallucination_guards(enabled: bool) -> dict:
+    """Whisper's own guards, tightened. {} when they are switched off.
+
+    The defaults are permissive (no_speech 0.6 / logprob -1.0 / compression
+    2.4) and let a low-confidence trailing segment through; these tighten
+    all three and turn on the purpose-built one. Measured 2026-08-12 against
+    the previous settings: byte-identical output on good audio, ~8% slower
+    (≈0.1 s on a 40 s dictation).
+
+    A module-level function rather than a literal inside __init__ so a test
+    can assert on it without putting a model on the GPU. Nothing pinned it
+    before, and word_timestamps in particular is easy to mistake for a
+    debugging leftover: hallucination_silence_threshold does not work
+    without it.
+    """
+    if not enabled:
+        return {}
+    return dict(
+        no_speech_threshold=0.4,
+        log_prob_threshold=-0.7,
+        compression_ratio_threshold=2.0,
+        word_timestamps=True,
+        hallucination_silence_threshold=2.0,
+        # Against token loops: a vocalised hesitation became 222 ה's, and
+        # everything SPOKEN AFTER it was eaten (2026-08-13, twice).
+        # Measured byte-identical on clean audio; the loop itself could not
+        # be reproduced synthetically, so this is the standard knob for the
+        # mechanism, not a proven cure.
+        repetition_penalty=1.15,
+    )
+
+
 class LocalWhisperTranscriber:
     name = "local"
 
@@ -144,6 +176,14 @@ class LocalWhisperTranscriber:
         everything else. Hebrew is what gets spoken here almost always, and
         a transliterated English word is a far smaller loss than a Hebrew
         sentence rendered as Russian.
+
+        Re-measured 2026-08-20 over the 50 real recordings in recent\\, this
+        time comparing what each model ACTUALLY produced rather than trusting
+        the label: 8 clips crossed the 0.8 bar and all 8 were genuinely
+        English (6 strictly better this way — "מקמיני" -> "Mac mini" — and 2
+        identical), while every Hebrew recording stayed Hebrew. That is what
+        allows the main hotkey to leave the language unset by default; see
+        Config.auto_language.
         """
         detector = self._english
         if detector is None:
@@ -213,25 +253,7 @@ class LocalWhisperTranscriber:
         self._hotwords = hotwords
         self._boilerplate = tuple(boilerplate)
         self.last_removed: list[str] = []
-        # Whisper's own hallucination guards. The defaults are permissive
-        # (no_speech 0.6 / logprob -1.0 / compression 2.4) and let a
-        # low-confidence trailing segment through; these tighten all three
-        # and turn on the purpose-built one, which needs word timestamps.
-        # Measured 2026-08-12 against the current settings: byte-identical
-        # output on good audio, ~8% slower (≈0.1 s on a 40 s dictation).
-        self._guards = dict(
-            no_speech_threshold=0.4,
-            log_prob_threshold=-0.7,
-            compression_ratio_threshold=2.0,
-            word_timestamps=True,
-            hallucination_silence_threshold=2.0,
-            # Against token loops: a vocalised hesitation became 222 ה's,
-            # and everything SPOKEN AFTER it was eaten (2026-08-13, twice).
-            # Measured byte-identical on clean audio; the loop itself
-            # could not be reproduced synthetically, so this is the
-            # standard knob for the mechanism, not a proven cure.
-            repetition_penalty=1.15,
-        ) if guard_hallucinations else {}
+        self._guards = hallucination_guards(guard_hallucinations)
 
         attempts = ([("cuda", "float16"), ("cpu", "int8")]
                     if device == "auto" else
@@ -266,10 +288,36 @@ class LocalWhisperTranscriber:
         if self._english_model_name:
             try:
                 self._english = self._load(self._english_model_name)
+                self._warm_detector()
             except Exception as e:
                 log.warning("English model unavailable (%s) — Hebrew only; "
                             "short English phrases may be transliterated", e)
                 self._english = None
+
+    def _warm_detector(self) -> None:
+        """Pay the first-inference cost at startup, not on the first
+        dictation.
+
+        Detection is a full encoder pass, and the first one on a freshly
+        loaded model costs ~2 s against ~0.18 s warm (measured 2026-08-20
+        over the recordings in recent\\). With the language left unset by
+        default, that first pass falls on a real dictation — so it is spent
+        here instead, where the user is already waiting for the models.
+        Silence is enough: nothing is read from the result.
+
+        Both passes matter. vad_filter=True loads Silero, which is its own
+        first-call cost; vad_filter=False guarantees the encoder actually
+        runs, because VAD strips silence down to nothing. Never fatal — a
+        warm-up that fails only means the first dictation is slow.
+        """
+        audio = _decode_pcm(_silence_wav())
+        if audio is None or self._english is None:
+            return
+        for vad in (True, False):
+            try:
+                self._english.detect_language(audio=audio, vad_filter=vad)
+            except Exception as e:
+                log.debug("detector warm-up (vad=%s) skipped: %s", vad, e)
 
     def _current_hotwords(self) -> str | None:
         """Resolve the vocabulary for this one request.

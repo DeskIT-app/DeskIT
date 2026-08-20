@@ -27,6 +27,22 @@ Three things neither may do, all of which a naive overlay gets wrong:
 
 Tk is not thread-safe, so everything Tk touches happens on the overlay's
 own thread and callers only ever put messages on a queue.
+
+NEITHER OVERLAY MAY CALL mainloop() OR quit(), and that is not a style
+preference — it is the fix for a bug that took a reproduction to find.
+`quitMainLoop` in CPython's _tkinter is a MODULE-LEVEL GLOBAL, not a
+per-interpreter flag: `quit()` sets it, and whichever mainloop looks at it
+first returns and clears it. With a splash and a dot alive at once, that is
+a coin toss. Measured 2026-08-14 over ten runs of the real startup
+sequence, instrumented: five times the splash's quit() ended the SPLASH's
+loop (correct), and five times it ended the DOT's loop instead — leaving
+the dot destroyed and never shown, and the splash animating on screen
+forever because nothing was ever going to stop it.
+
+That is exactly what "the loading box never goes away and I have no dot"
+looks like from outside, and why it came and went at random. So each
+overlay drives its own interpreter with update() and stops on its own
+Event. No shared flag, nothing to steal.
 """
 from __future__ import annotations
 
@@ -36,6 +52,7 @@ import logging                  # as a local for the window width
 import math
 import queue
 import threading
+import time
 
 # Style bits, set after Tk creates the window (Tk exposes neither).
 GWL_EXSTYLE = -20
@@ -50,9 +67,30 @@ ACCENT = "#2d6cdf"
 
 _DONE = object()   # sentinel: close the window
 
+# How often an overlay's own event loop turns over. It replaces mainloop()
+# (see the module docstring); 15 ms is well under the 28 ms animation tick,
+# so nothing looks slower for it.
+TICK_S = 0.015
+
 # Overlays are decoration and must never be fatal — but a swallowed
 # failure is how a missing window looks exactly like a working one.
 _log = logging.getLogger("app")
+
+
+def _pump_until(root, closing: threading.Event) -> None:
+    """Run one interpreter's event loop until asked to stop.
+
+    Deliberately update() in a loop rather than mainloop(): see the module
+    docstring. update() drains this interpreter's queue — timers, redraws,
+    window messages — and touches no state shared with any other Tk in the
+    process, so one overlay closing can no longer close the other.
+    """
+    while not closing.is_set():
+        try:
+            root.update()
+        except Exception:
+            return          # window destroyed underneath us: nothing to do
+        time.sleep(TICK_S)
 
 
 class Splash:
@@ -65,6 +103,7 @@ class Splash:
         self._first = status
         self._thread: threading.Thread | None = None
         self._alive = threading.Event()
+        self._closing = threading.Event()
         self._enabled = True
 
     @classmethod
@@ -164,9 +203,11 @@ class Splash:
                 while True:
                     item = self._q.get_nowait()
                     if isinstance(item, tuple):     # (_DONE, linger_ms)
-                        # quit(), not destroy(): let mainloop return so the
-                        # teardown below runs on THIS thread (see finally).
-                        root.after(max(0, item[1]), root.quit)
+                        # Sets OUR event; the loop below then returns so the
+                        # teardown runs on THIS thread (see finally). Never
+                        # root.quit() — that flag is shared with every other
+                        # Tk in the process and the dot would eat it.
+                        root.after(max(0, item[1]), self._closing.set)
                     else:
                         label.config(text=item)
             except queue.Empty:
@@ -176,7 +217,7 @@ class Splash:
         animate()
         pump()
         try:
-            root.mainloop()
+            _pump_until(root, self._closing)
         finally:
             # Tcl_AsyncDelete: the interpreter MUST be torn down on the
             # thread that created it. Left to Python's GC, the after()
@@ -201,10 +242,21 @@ def _forget_window(root) -> None:
     Destroying a borderless always-on-top window does not reliably force the
     desktop underneath to redraw. On a STATIC desktop — no other windows, so
     nothing else ever invalidates that region — the pixels of a window that
-    no longer exists can sit there indefinitely. It looks exactly like a
-    splash that refused to close, and it is not: measured 2026-08-14, the
-    splash window is destroyed 1.21 s after finish() in 3 runs of 3, while
-    its image stayed on screen for minutes.
+    no longer exists can sit there indefinitely, which looks exactly like a
+    window that refused to close.
+
+    CAVEAT, and a warning about this comment's own history: "the splash
+    will not go away" was blamed on that for a while, on the strength of 3
+    runs in which the window was destroyed 1.21 s after finish(). The real
+    cause of the reports was somewhere else entirely — a shared quit flag,
+    see the module docstring — and those 3 runs were simply the half of the
+    time it worked. Enumerating the process's windows would have settled it
+    in one command, and eventually did: the "leftover pixels" turned out to
+    be a live, visible, still-animating window.
+
+    This is kept because the repaint hazard is real and the call is cheap.
+    It is NOT evidence that a stuck overlay is a repaint problem — check
+    whether the window still exists before assuming that again.
 
     Called with the geometry read BEFORE the window is destroyed, because
     afterwards there is nothing left to ask.
@@ -278,6 +330,11 @@ STATES = {
     "recording":  ("#e0352b", "#3a0f0c", False),   # red: capturing now
     "locked":     ("#e0352b", "#3a0f0c", True),    # red, breathing: latched
     "busy":       ("#e0a32b", "#332304", False),   # amber: transcribing
+    # Grey: loaded and alive, but the keys are inert. Deliberately still
+    # VISIBLE — a paused app that showed nothing would be indistinguishable
+    # from one that was never started, which is the whole problem the dot
+    # exists to solve.
+    "paused":     ("#8b97ad", "#1b2029", False),
 }
 
 
@@ -301,6 +358,7 @@ class StatusDot:
         self._margin = (margin_x, margin_y)
         self._thread: threading.Thread | None = None
         self._alive = threading.Event()
+        self._closing = threading.Event()
         self._enabled = True
 
     @classmethod
@@ -389,7 +447,7 @@ class StatusDot:
                 while True:
                     item = self._q.get_nowait()
                     if item is _DONE:
-                        root.quit()
+                        self._closing.set()   # ours alone — never root.quit()
                         return
                     state["name"] = item
                     state["phase"] = 0.0
@@ -400,7 +458,7 @@ class StatusDot:
         paint()
         pump()
         try:
-            root.mainloop()
+            _pump_until(root, self._closing)
         finally:
             import gc                       # see Splash: same Tcl teardown
             try:
