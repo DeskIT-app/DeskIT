@@ -15,6 +15,12 @@ recent/
 vocab.json
 lookup_cache.json
 
+# Saved web pages parked in the folder while testing the lookup and
+# translate keys (ch/pp/cp_play/np_passport and friends). Like the logs
+# above, they are a record of what you were reading — and they are not
+# part of the app.
+/*.html
+
 # Generated at first run by cues.py
 cues/
 
