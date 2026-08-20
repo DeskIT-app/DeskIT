@@ -449,12 +449,17 @@ class App:
             "auto_pause_fullscreen": self.cfg.auto_pause_fullscreen,
             "stats": stats,
             "note": self._note,
-            # Deliberately NOT the transcript itself. The dashboard cannot
-            # render Hebrew anyway (no bidi in Tk), it has a Copy button
-            # for when the text is actually wanted, and a latched hour-long
-            # dictation embedded here would push every status poll past the
-            # pipe's message buffer. There is no reason to put what someone
-            # said down a pipe several times a second.
+            # Deliberately NOT the transcript itself, and this outlived
+            # the reason first given for it ("the dashboard cannot render
+            # Hebrew anyway") — the dashboard now draws transcripts with
+            # DrawTextW, exactly so it can (see dashboard.py's docstring
+            # for the two measurements behind that). The remaining reason
+            # is the better one: a latched hour-long dictation embedded
+            # here would push every status poll past the pipe's message
+            # buffer, and there is no reason to put what someone said
+            # down a pipe several times a second. The dashboard shows the
+            # sentence by reading transcripts.log, which it can do with
+            # nothing running.
             "last": None if not last else {
                 "when": last.get("when", ""),
                 "chars": len(last.get("final", "")),

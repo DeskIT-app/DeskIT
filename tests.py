@@ -6726,6 +6726,623 @@ def test_a_second_tap_asks_again_instead_of_closing_the_box() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# ------------------------------------------- reading the log back out
+#
+# transcripts.log is the record. The history screen is a READER of it, and
+# everything below is about the three places where "one line" and "one
+# thing that happened" are not the same number.
+
+
+def _log_with(lines: list[str], monkey=None):
+    """A transcripts.log of our own, with history pointed at it."""
+    import history as history_mod
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-history-"))
+    path = tmp / "transcripts.log"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    history_mod.LOG = path
+    return tmp, path
+
+
+def _restore_log(tmp) -> None:
+    import shutil
+
+    import history as history_mod
+    history_mod.LOG = history_mod.APP_DIR / "transcripts.log"
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_translation_is_one_entry_and_keeps_both_halves() -> None:
+    """TRANSLATE-IN and TRANSLATE-OUT are one act — asking for a
+    translation — written down twice because that is how a log works."""
+    import history as history_mod
+    tmp, _path = _log_with([
+        "2026-08-20 10:00:00,000 | TRANSLATE-IN  | selection | שלום עולם",
+        "2026-08-20 10:00:01,000 | TRANSLATE-OUT | 0.8s | gemini | Hello world",
+    ])
+    try:
+        events = history_mod.load(10)
+        assert len(events) == 1, events
+        assert events[0].kind == "translate"
+        assert events[0].text == "Hello world"
+        assert events[0].source == "שלום עולם", events[0].source
+        # The row is stamped when it was ASKED for, not when the answer
+        # came back: sorted by the reply, a slow translation jumps ahead of
+        # the dictation that came after it.
+        assert events[0].when.second == 0, events[0].when
+    finally:
+        _restore_log(tmp)
+
+
+def test_a_polished_dictation_is_one_entry_not_two() -> None:
+    """OK is what Whisper heard and POLISHED is the same sentence with the
+    misheard words repaired. Two rows means the sentence twice, one of
+    them wrong."""
+    import history as history_mod
+    tmp, _path = _log_with([
+        "2026-08-20 10:00:00,000 | OK | 4.0s | local | 0.5s latency | ראש הממשלה",
+        "2026-08-20 10:00:02,000 | POLISHED | 1.2s | ollama | ראש הממשלה נאם",
+    ])
+    try:
+        events = history_mod.load(10)
+        assert len(events) == 1, events
+        assert events[0].polished, "the row does not say it was polished"
+        assert events[0].text == "ראש הממשלה נאם"
+        assert events[0].source == "ראש הממשלה", "the raw text was thrown away"
+        assert "polished" in events[0].meta()
+    finally:
+        _restore_log(tmp)
+
+
+def test_a_correction_becomes_the_words_that_changed() -> None:
+    """CORRECTED is two whole sentences that differ in one word. The pair
+    is what the eye wants; the sentences are what the file has."""
+    import history as history_mod
+    tmp, _path = _log_with([
+        "2026-08-20 10:00:00,000 | CORRECTED | אני רוצה היוזר || אני רוצה ה-user",
+    ])
+    try:
+        events = history_mod.load(10)
+        assert len(events) == 1
+        assert events[0].pairs == [("היוזר", "ה-user")], events[0].pairs
+        assert events[0].note == "1 word", events[0].note
+    finally:
+        _restore_log(tmp)
+
+
+def test_a_rewritten_sentence_claims_no_word_pairs() -> None:
+    """Different lengths mean the correction was not a word swap, and
+    guessing pairs out of it would put a change on screen that nobody
+    made."""
+    import history as history_mod
+    assert history_mod.changed_words("one two three", "one two") == []
+    assert history_mod.changed_words("", "") == []
+
+
+def test_a_transcript_containing_a_pipe_is_not_cut_in_half() -> None:
+    """The fields are separated by pipes and the last field is a sentence
+    somebody said out loud. Say "pipe" and Whisper writes one down."""
+    import history as history_mod
+    tmp, _path = _log_with([
+        "2026-08-20 10:00:00,000 | OK | 4.0s | local | 0.5s latency | "
+        "run a | b | c and see",
+    ])
+    try:
+        events = history_mod.load(10)
+        assert events[0].text == "run a | b | c and see", events[0].text
+    finally:
+        _restore_log(tmp)
+
+
+def test_a_dictated_newline_does_not_become_its_own_entry() -> None:
+    """A transcript is written raw, newlines and all. A reader that takes
+    every line as a record shows half a sentence with the wrong time on
+    it."""
+    import history as history_mod
+    tmp, _path = _log_with([
+        "2026-08-20 10:00:00,000 | OK | 4.0s | local | 0.5s latency | first",
+        "second line of the same thing",
+    ])
+    try:
+        events = history_mod.load(10)
+        assert len(events) == 1, events
+        assert "second line" in events[0].text, events[0].text
+    finally:
+        _restore_log(tmp)
+
+
+def test_the_newest_thing_that_happened_is_at_the_top() -> None:
+    import history as history_mod
+    tmp, _path = _log_with([
+        "2026-08-20 10:00:00,000 | OK | 1.0s | local | 0.1s latency | older",
+        "2026-08-20 11:00:00,000 | OK | 1.0s | local | 0.1s latency | newer",
+    ])
+    try:
+        events = history_mod.load(10)
+        assert [e.text for e in events] == ["newer", "older"], events
+    finally:
+        _restore_log(tmp)
+
+
+def test_a_phone_dictation_says_where_it_came_from() -> None:
+    """The phone route has no backend field, so reading it like a desktop
+    dictation puts the latency where the engine goes."""
+    import history as history_mod
+    tmp, _path = _log_with([
+        "2026-08-20 10:00:00,000 | OK | PHONE | 3.1s | 0.4s latency | from afar",
+    ])
+    try:
+        event = history_mod.load(10)[0]
+        assert event.phone and "from the phone" in event.meta()
+        assert event.text == "from afar", event.text
+        assert event.seconds == 3.1 and event.latency == 0.4
+    finally:
+        _restore_log(tmp)
+
+
+def test_a_broken_line_is_skipped_rather_than_repaired() -> None:
+    """Half a line is what a log looks like when the process died mid
+    write. It must cost that entry and nothing else."""
+    import history as history_mod
+    tmp, _path = _log_with([
+        "this is not a log line at all",
+        "2026-08-20 99:99:99,000 | OK | 1.0s | local | 0.1s latency | bad stamp",
+        "2026-08-20 10:00:00,000 | OK | 1.0s | local | 0.1s latency | good",
+    ])
+    try:
+        events = history_mod.load(10)
+        assert [e.text for e in events] == ["good"], events
+    finally:
+        _restore_log(tmp)
+
+
+def test_the_filters_only_offer_kinds_the_reader_can_produce() -> None:
+    """A chip for a kind nothing is ever tagged with is a filter that
+    always comes back empty."""
+    import history as history_mod
+    for name, kind in history_mod.FILTERS:
+        assert name, "a chip with no label"
+        assert kind is None or kind in history_mod.KINDS, kind
+
+
+def test_searching_looks_at_what_went_in_as_well_as_what_came_out() -> None:
+    import history as history_mod
+    tmp, _path = _log_with([
+        "2026-08-20 10:00:00,000 | TRANSLATE-IN  | selection | ברוכים הבאים",
+        "2026-08-20 10:00:01,000 | TRANSLATE-OUT | 0.8s | gemini | welcome",
+    ])
+    try:
+        events = history_mod.load(10)
+        assert history_mod.filtered(events, None, "welcome")
+        assert history_mod.filtered(events, None, "ברוכים"), \
+            "the text that was translated is not searchable"
+        assert not history_mod.filtered(events, "dictation", "welcome")
+    finally:
+        _restore_log(tmp)
+
+
+# ------------------------------------------------- the window's drawing kit
+
+
+def _tk_or_skip():
+    """A Tk root, or None with a note — the same shape as the icon test."""
+    import tkinter as tk
+
+    import ui as ui_mod
+    try:
+        ui_mod.forget_images()
+        return tk.Tk()
+    except Exception as e:
+        print(f"    (skipped: no Tk window — {e})")
+        return None
+
+
+def test_wrapping_never_overflows_the_box_it_was_measured_for() -> None:
+    """The whole point of measuring here rather than letting Tk wrap is
+    that the height of a row and the text in it agree. A line wider than
+    the box it was drawn for is the failure that reaches the screen."""
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        samples = [
+            "אני רוצה שתעשה משהו כזה תסתכל על האפליקציה שלי ותבצע כזה דבר "
+            "כרגע היא נראית נורא ישנה",
+            "a short one",
+            "supercalifragilisticexpialidociousandthensome" * 3,
+            "",
+        ]
+        for text in samples:
+            for width in (120, 300, 546):
+                shown, lines = ui_mod.clamp(text, ui_mod.TEXT, 11, width, 2)
+                assert lines <= 2, (lines, text[:20])
+                assert lines == len(shown.split("\n")) or not shown
+                for line in shown.split("\n"):
+                    got = ui_mod.text_width(line, ui_mod.TEXT, 11)
+                    assert got <= width, (got, width, line)
+    finally:
+        root.destroy()
+
+
+def test_a_wrapped_line_keeps_every_word_it_started_with() -> None:
+    """Estimating where the break goes is only allowed to move the break."""
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        text = "one two three four five six seven eight nine ten"
+        shown, _lines = ui_mod.clamp(text, ui_mod.UI, 9, 400, 4)
+        assert shown.replace("\n", " ") == text, shown
+    finally:
+        root.destroy()
+
+
+def test_a_hundred_rows_of_the_same_size_share_one_bitmap() -> None:
+    """Every rounded rectangle is a decoded image. A hundred history rows
+    that each make their own is a hundred times the memory and the wait."""
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        first = ui_mod.rounded(680, 66, 12, ui_mod.CARD, ui_mod.PANE)
+        again = ui_mod.rounded(680, 66, 12, ui_mod.CARD, ui_mod.PANE)
+        assert first is again, "the bitmap cache is not being hit"
+        assert ui_mod.rounded(680, 67, 12, ui_mod.CARD, ui_mod.PANE) is not first
+    finally:
+        root.destroy()
+
+
+def test_the_direction_of_a_line_comes_from_its_first_strong_letter() -> None:
+    """Tk cannot be told which way a paragraph runs — the renderer decides
+    from the first strong character. Aligning a box by a different rule
+    than the one the text is laid out by is how a sentence ends up
+    right-aligned and left-to-right at the same time."""
+    import ui as ui_mod
+    assert ui_mod.is_rtl("שלום עולם")
+    assert ui_mod.is_rtl("  \"שלום\" said the man") is True
+    assert not ui_mod.is_rtl("Chrome ואז עברית")
+    assert not ui_mod.is_rtl("12.5 s")          # no strong letter at all
+    assert not ui_mod.is_rtl("")
+
+
+def _arrows(canvas) -> list[str]:
+    """The arrow glyphs on a canvas. itemcget(_, "text") raises on the
+    image items, which is most of a pill."""
+    return [canvas.itemcget(i, "text") for i in canvas.find_all()
+            if canvas.type(i) == "text"
+            and canvas.itemcget(i, "text") in ("←", "→")]
+
+
+def test_a_correction_pill_points_away_from_the_word_that_was_wrong() -> None:
+    """Photographed as one "wrong -> right" string, two Hebrew words lay
+    out right-to-left, U+2192 came back unmirrored, and the arrow pointed
+    at the word it came from. The three runs are drawn separately so the
+    direction is chosen here."""
+    import tkinter as tk
+
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        canvas = tk.Canvas(root, width=400, height=60)
+        ui_mod.pair_pill(canvas, 380, 4, "היוזר", "ה-user", "#161b25")
+        assert _arrows(canvas) == ["←"], _arrows(canvas)
+        canvas.delete("all")
+        ui_mod.pair_pill(canvas, 380, 4, "there", "their", "#161b25")
+        assert _arrows(canvas) == ["→"], _arrows(canvas)
+    finally:
+        root.destroy()
+
+
+# ------------------------------------------------------- the window itself
+
+
+@contextlib.contextmanager
+def _window(log=None):
+    """A dashboard with nothing behind it.
+
+    Three things are borrowed and given back: the pipe (an answer of None
+    is what "nothing is running" looks like, and it is instant), the
+    instance check, and the log reader — because the poller re-reads
+    transcripts.log on its own, and a test that sets three rows and then
+    counts a hundred is a test measuring this machine's real history.
+    """
+    import control as control_mod
+    import history as history_mod
+    import singleton as singleton_mod
+
+    import dashboard as dash
+    saved = (control_mod.send, singleton_mod.is_running, history_mod.load)
+    control_mod.send = lambda *a, **k: None
+    singleton_mod.is_running = lambda *a, **k: False
+    history_mod.load = lambda *a, **k: list(log or [])
+    board = None
+    try:
+        try:
+            board = dash.Dashboard()
+        except Exception as e:
+            print(f"    (skipped: no Tk window — {e})")
+            yield None
+            return
+        board.log = list(log or [])
+        yield board
+    finally:
+        if board is not None:
+            board.closing = True
+            try:
+                board.root.destroy()
+            except Exception:
+                pass
+        control_mod.send, singleton_mod.is_running, history_mod.load = saved
+
+
+def test_every_screen_of_the_window_builds() -> None:
+    """Four screens, built by four methods, and only the one you are
+    looking at exists at any moment — so a mistake on the Settings screen
+    is invisible until somebody clicks Settings."""
+    import dashboard as dash
+    with _window() as board:
+        if board is None:
+            return
+        for _key, name in dash.NAV:
+            board._show(name)
+            assert board.screen == name
+            assert board.pane.winfo_children(), f"{name} drew nothing"
+
+
+def test_every_key_in_hotkey_fields_gets_a_row_to_click() -> None:
+    """HOTKEY_FIELDS is the one place a new key is registered. The Keys
+    screen groups them by hand, so a key added there and not here would
+    have no way to be rebound."""
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Keys")
+        shown = set(board.parts["caps"])
+        expected = {field for field, _label in config_mod.HOTKEY_FIELDS}
+        assert shown == expected, expected - shown
+
+
+def test_every_kind_the_log_can_hold_has_a_badge_and_a_colour() -> None:
+    """A kind with no icon raises a KeyError while drawing a row, i.e. one
+    entry in the middle of the list takes the whole list down."""
+    import history as history_mod
+
+    import dashboard as dash
+    import ui as ui_mod
+    for kind, (label, icon, colour) in history_mod.KINDS.items():
+        assert label, kind
+        assert icon in ui_mod.ICON, (kind, icon)
+        assert colour in dash.COLOURS, (kind, colour)
+
+
+def test_a_second_window_in_one_process_can_still_draw() -> None:
+    """A PhotoImage and a Font belong to the interpreter that made them.
+    The caches in ui.py are module-level, so the second Tk in a process —
+    which is what this test file is — gets handed images from the first
+    unless they are dropped."""
+    with _window() as board:
+        if board is None:
+            return
+    with _window() as again:
+        if again is None:
+            return
+        again._show("History")
+        assert again.pane.winfo_children()
+
+
+def test_the_history_screen_filters_and_searches_what_it_was_given() -> None:
+    import datetime
+
+    import history as history_mod
+    when = datetime.datetime(2026, 8, 20, 10, 0, 0)
+    log = [history_mod.Event(when, "dictation", text="hello there"),
+           history_mod.Event(when, "lookup", text="שלום"),
+           history_mod.Event(when, "learned", text="x y",
+                             pairs=[("x", "y")])]
+    with _window(log) as board:
+        if board is None:
+            return
+
+        def rows() -> int:
+            # The list is drawn a screenful at a time between frames, so
+            # the count is only true once the queue has drained.
+            while board._rows_left:
+                board.root.update()
+            board.root.update()
+            return len(board.parts["list"].inner.winfo_children())
+
+        board._show("History")
+        assert rows() == 3, rows()
+        board._filter_to("lookup")
+        assert rows() == 1, rows()
+        board._filter_to(None)
+        board._search("hello")
+        assert rows() == 1, rows()
+        board._search("nothing like this")
+        assert rows() == 0, rows()
+        assert board.parts["empty"].cget("text")
+
+
+def test_the_window_says_something_when_there_is_no_log_at_all() -> None:
+    """A fresh install has no transcripts.log. An empty list with no
+    sentence in it reads as a broken screen."""
+    with _window([]) as board:
+        if board is None:
+            return
+        board._show("History")
+        board.root.update()
+        assert board.parts["empty"].cget("text"),             "an empty history says nothing at all"
+        board._show("Overview")
+        board._paint_overview()
+        assert "Nothing dictated yet" in board.parts["last_text"].cget("text")
+
+
+def test_the_transcript_font_actually_holds_hebrew() -> None:
+    """The scrambling of 2026-08-20: "Segoe UI Variable" has no Hebrew
+    glyphs, the per-word font fallback breaks bidi reordering, and every
+    Hebrew word rendered letter-reversed. The faces ui resolves for user
+    text must therefore EXIST and COVER Hebrew, as measured by GDI — not
+    merely be names Tk accepts, because Tk accepts anything."""
+    import ui as ui_mod
+    for face in (ui_mod.TEXT, ui_mod.UI, ui_mod.DISPLAY):
+        exists, hebrew = ui_mod._gdi_face(face)
+        assert exists, f"{face!r} is not installed"
+        assert hebrew, f"{face!r} cannot spell Hebrew"
+    assert "variable" not in ui_mod.TEXT.lower(), \
+        "a Variable cut has no Hebrew and scrambles words"
+
+
+def test_face_picking_falls_back_to_segoe() -> None:
+    import ui as ui_mod
+    assert ui_mod.pick_face(["NoSuchFaceZZZ"]) == "Segoe UI"
+    assert ui_mod.pick_face(["Segoe UI Variable Text"]) == "Segoe UI", \
+        "a face without Hebrew must be passed over"
+
+
+def test_drawn_text_matches_the_rtl_reference() -> None:
+    """ui.draw_text exists because Tk lays the runs of a mixed line out
+    backwards (measured against DrawTextW+DT_RTLREADING, 2026-08-20).
+    This compares ui.draw_text's bitmap to that same reference render —
+    if the two engines ever disagree, the history screen is showing
+    sentences in the wrong order again."""
+    import ctypes
+    import ctypes.wintypes as cw
+
+    from PIL import Image, ImageTk
+
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        LINE = "תתפרע, אני רוצה שהאתר הזה יהיה sick אתה יודע"
+        WIDTH = 640
+        photo, height, lines = ui_mod.draw_text(
+            LINE, pt=12, width=WIDTH, max_lines=1, colour=ui_mod.FG,
+            bg=ui_mod.CARD)
+        assert lines == 1
+
+        user, gdi = ctypes.windll.user32, ctypes.windll.gdi32
+        px = ui_mod._px(12)
+        hdc_screen = user.GetDC(0)
+        hdc = gdi.CreateCompatibleDC(hdc_screen)
+        bmp = gdi.CreateCompatibleBitmap(hdc_screen, WIDTH, height)
+        gdi.SelectObject(hdc, bmp)
+        rect = cw.RECT(0, 0, WIDTH, height)
+        user.FillRect(hdc, ctypes.byref(rect),
+                      gdi.CreateSolidBrush(ui_mod._colorref(ui_mod.CARD)))
+        font = gdi.CreateFontW(-px, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 5, 0,
+                               ui_mod.TEXT)
+        gdi.SelectObject(hdc, font)
+        gdi.SetTextColor(hdc, ui_mod._colorref(ui_mod.FG))
+        gdi.SetBkMode(hdc, 1)
+        DT = 0x2 | 0x20 | 0x800 | 0x20000   # RIGHT|SINGLELINE|NOPREFIX|RTL
+        user.DrawTextW(hdc, LINE, -1, ctypes.byref(rect), DT)
+
+        class Header(ctypes.Structure):
+            _fields_ = [("size", cw.DWORD), ("w", cw.LONG), ("h", cw.LONG),
+                        ("planes", cw.WORD), ("bits", cw.WORD),
+                        ("comp", cw.DWORD), ("imgsize", cw.DWORD),
+                        ("xppm", cw.LONG), ("yppm", cw.LONG),
+                        ("used", cw.DWORD), ("important", cw.DWORD)]
+        info = Header(ctypes.sizeof(Header), WIDTH, -height, 1, 32,
+                      0, 0, 0, 0, 0, 0)
+        raw = ctypes.create_string_buffer(WIDTH * height * 4)
+        gdi.GetDIBits(hdc, bmp, 0, height, raw, ctypes.byref(info), 0)
+        gdi.DeleteObject(bmp)
+        gdi.DeleteDC(hdc)
+        user.ReleaseDC(0, hdc_screen)
+        reference = np.array(Image.frombuffer(
+            "RGBA", (WIDTH, height), raw.raw, "raw", "BGRA", 0,
+            1).convert("L"), dtype=float)
+
+        ours = np.array(ImageTk.getimage(photo).convert("L"), dtype=float)
+        # Ink-per-column correlation: word POSITIONS, robust to a pixel
+        # of anti-aliasing difference.
+        a = np.clip(reference - 40, 0, None).sum(axis=0)
+        b = np.clip(ours - 40, 0, None).sum(axis=0)
+        a, b = a - a.mean(), b - b.mean()
+        denominator = np.sqrt((a * a).sum() * (b * b).sum())
+        similarity = float((a * b).sum() / denominator) if denominator else 0
+        assert similarity > 0.98, f"run order drifted ({similarity:.3f})"
+    finally:
+        root.destroy()
+
+
+def test_pinning_the_window_relaunches_the_dashboard_not_python() -> None:
+    """Pin the window and Windows builds the tile from the EXECUTABLE —
+    pythonw.exe: Python's icon, "Python" in the menu, a bare interpreter
+    on click. The relaunch properties on the HWND are what override that,
+    so they have to actually be there, pointing at Dashboard.vbs."""
+    import ctypes
+    from ctypes import POINTER, wintypes
+
+    from comtypes import COMMETHOD, GUID, HRESULT, IUnknown
+
+    class PROPERTYKEY(ctypes.Structure):
+        _fields_ = [("fmtid", GUID), ("pid", wintypes.DWORD)]
+
+    class PROPVARIANT(ctypes.Structure):
+        _fields_ = [("vt", wintypes.USHORT), ("r1", wintypes.USHORT),
+                    ("r2", wintypes.USHORT), ("r3", wintypes.USHORT),
+                    ("pwszVal", wintypes.LPWSTR), ("pad", ctypes.c_void_p)]
+
+    class IPropertyStore(IUnknown):
+        _iid_ = GUID("{886d8eeb-8cf2-4446-8d02-cdba1dbdcf99}")
+        _methods_ = [
+            COMMETHOD([], HRESULT, "GetCount",
+                      (["out"], POINTER(wintypes.DWORD), "count")),
+            COMMETHOD([], HRESULT, "GetAt",
+                      (["in"], wintypes.DWORD, "index"),
+                      (["out"], POINTER(PROPERTYKEY), "key")),
+            COMMETHOD([], HRESULT, "GetValue",
+                      (["in"], POINTER(PROPERTYKEY), "key"),
+                      (["out"], POINTER(PROPVARIANT), "value")),
+            COMMETHOD([], HRESULT, "SetValue",
+                      (["in"], POINTER(PROPERTYKEY), "key"),
+                      (["in"], POINTER(PROPVARIANT), "value")),
+            COMMETHOD([], HRESULT, "Commit"),
+        ]
+
+    with _window() as board:
+        if board is None:
+            return
+        board.root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(int(board.root.winfo_id()))
+        store = POINTER(IPropertyStore)()
+        hr = ctypes.windll.shell32.SHGetPropertyStoreForWindow(
+            hwnd, ctypes.byref(IPropertyStore._iid_), ctypes.byref(store))
+        assert hr == 0, f"no property store: {hr:#x}"
+        fmtid = GUID("{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}")
+        expectations = {2: "Dashboard.vbs", 3: "icon.ico",
+                        4: "Hebrew Dictation"}
+        for pid, needle in expectations.items():
+            value = store.GetValue(PROPERTYKEY(fmtid, pid))
+            held = value.pwszVal or ""
+            assert needle in held, (pid, needle, held)
+
+
+def test_the_breathing_lamp_reuses_its_frames() -> None:
+    """A breath is a dozen cached bitmaps being swapped, not a bitmap per
+    frame — the glow is quantised before it becomes a cache key."""
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        one = ui_mod.lamp(26, ui_mod.RED, "#131822", 0.301)
+        two = ui_mod.lamp(26, ui_mod.RED, "#131822", 0.309)
+        other = ui_mod.lamp(26, ui_mod.RED, "#131822", 0.80)
+        assert one is two, "nearby glows must share a frame"
+        assert one is not other, "far glows must not"
+    finally:
+        root.destroy()
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

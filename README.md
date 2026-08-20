@@ -88,7 +88,11 @@ reply or the exact problem.
 console window and no taskbar entry. **Two rising beeps = it is listening.**
 To quit: double-click `Stop Hebrew Dictation` — two falling beeps confirm.
 
-Or open **`Dashboard.vbs`** and drive all of it from one window — see
+Run **`install_fonts.py`** once to install Rubik for your user (no
+admin) — the dashboard's typeface, designed for Hebrew and Latin
+together; without it the window falls back to Segoe UI and stays
+correct, just plainer. Then open **`Dashboard.vbs`** and drive all of it
+from one window — see
 [The dashboard](#the-dashboard) below. Double-clicking `Hebrew Dictation`
 while it is *already* running opens the dashboard too, instead of the old
 "already running" complaint.
@@ -141,26 +145,114 @@ own taskbar identity (`SetCurrentProcessExplicitAppUserModelID`) and sets
 Tk's own `iconbitmap()` is not enough — measured here, it reports success
 and leaves `WM_GETICON` returning 0.
 
+**Pinning it works too.** A pin is built from the process *executable*,
+so pinning this window used to produce a tile with Python's icon that
+said "Python" and relaunched a bare interpreter. The window now carries
+relaunch properties on its own HWND (`SHGetPropertyStoreForWindow`:
+command, display name, icon), so the pin launches `Dashboard.vbs` with
+the right name and face. If you pinned it before this existed, unpin and
+pin it again — the shell reads these when the pin is created.
+
+**Four screens down the side, not one long column.** Everything that was
+in that column is still here; it stopped being one scroll of unrelated
+things. The state and the three buttons that change it are on
+**Overview**; everything you have said is on **History**; the keys are on
+**Keys**; what it is using and where its files are is on **Settings**. The
+status dot stays in the corner of the sidebar on all four, because "is it
+on?" is the question the window exists to answer and it must never be a
+click away.
+
 ```
-● RUNNING                                    up 2h 15m
-local · Headset Microphone (Arctis 7) @ 16000 Hz
-
-   [ Start ]   [ Pause ]   [ Stop ]
-
-KEYS                          (click one, then press the key you want)
-   Dictate (hold)                            Right Ctrl
-   Lock the recording on                     Left
-   Translate (tap)                           Ctrl+F9
-   Punctuate (tap)                           F2
-   Teach it a word (tap)                     Ctrl+F8
-   Look up (tap)                             F8
-   Pause / resume                            Insert
-   [ ] Pause by itself while a game is fullscreen
-
-TODAY   18 dictations · 6.2 min spoken · 4210 chars · 0.5 s each
-        15 learned (1 repaired automatically) · 39 hotwords
-        3 translated · 7 punctuated · 12 looked up
+┌──────────────────┬──────────────────────────────────────────────────┐
+│ ▣ Hebrew Dictation│ Overview                                        │
+│   hold Right Ctrl │                                                 │
+│                   │  ● RUNNING                                      │
+│ ▸ Overview        │    gemini · Arctis 7 @ 16000 Hz                 │
+│   History         │    4.2 s spoken -> 96 characters pasted         │
+│   Keys            │                       [Start] [Pause] [Stop]    │
+│   Settings        │                                                 │
+│                   │  DICTATIONS  SPOKEN    CHARACTERS  AVERAGE WAIT │
+│                   │  18          6.2 min   4,210       0.5 s        │
+│                   │                                                 │
+│                   │  LAST DICTATION                          21:23  │
+│                   │      … the sentence itself, right-aligned …     │
+│                   │  23.3 s · local · 3.4 s latency                 │
+│                   │  [Copy text] [Show in history]                  │
+│ ● RUNNING         │                                                 │
+│   up 2h 14m       │  VOCABULARY 98 words   PHONE endpoint is live   │
+└──────────────────┴──────────────────────────────────────────────────┘
 ```
+
+The window is drawn rather than assembled: Tk 8.6 cannot round a corner
+or anti-alias one, so every card, pill, switch and key cap in it is a
+pre-rendered Pillow bitmap with widgets sitting on the flat middle of it
+(`ui.py`). The palette is the one this window has always had.
+
+### Everything you said, in the window
+
+**The History screen is `transcripts.log`, read back.** The last hundred
+entries, newest first, one row for each thing *you did* rather than one
+for each line the code wrote:
+
+```
+  21:23   ▣    … what you said, up to two lines of it …            ⧉
+  20 Aug       Dictation · 23.3 s · local · 3.4 s latency · polished
+
+  21:08   ▣    [ heard ← meant ]  [ heard ← meant ]                ⧉
+  20 Aug       Learned · 2 words
+```
+
+Three places where "one line" and "one thing that happened" are not the
+same number, and `history.py` exists to reconcile them:
+
+- **A translation is two lines** (`TRANSLATE-IN`, `TRANSLATE-OUT`) and one
+  act. Joined, the row can show what went in as well as what came out —
+  and the search box looks at both. Punctuation and lookups are the same
+  shape.
+- **A polished dictation is two lines** (`OK`, then `POLISHED`). Shown as
+  two rows it is the same sentence twice, one of them with the misheard
+  words still in it. The polish is folded into the dictation it belongs
+  to and the row says `polished`.
+- **A correction is a diff written as prose** (`CORRECTED | before ||
+  after`): two whole sentences that differ in two words. The row shows the
+  two words.
+
+Filter chips across the top, and a search box that matches what you said,
+what it answered, and which engine answered. **Click a row to copy it** —
+the whole text, not the two lines the row had room for.
+
+Nothing here writes to the log; a malformed line is skipped rather than
+repaired. The log is still the record, `Open transcripts.log` is still
+there, and everything older than the last hundred is still in it.
+
+**Why the Hebrew is on screen at all.** This window used to show the last
+dictation as `4.2 s -> 96 chars` with a Copy button, because Tk was
+believed to have no bidi at all. The truth, measured on 2026-08-20 (Tk
+8.6.12, Windows 11), has two layers:
+
+- **The font.** "Segoe UI Variable" holds no Hebrew glyphs
+  (`GetGlyphIndicesW` says so), and the per-word font fallback that
+  papers over it breaks bidi segmentation — every Hebrew word rendered
+  **letter-reversed** (בדקתי drawn as יתבדק), which looks exactly like a
+  transcription bug. `ui.pick_face()` measures existence *and* Hebrew
+  coverage before a face may carry a transcript. The face it prefers is
+  **Rubik** (designed for Hebrew+Latin, SIL OFL, vendored in `fonts\`,
+  installed per-user by `install_fonts.py`); the floor is Segoe UI.
+- **The base direction.** With a Hebrew-capable face, Tk shapes each run
+  correctly but lays the *runs* of a mixed line out left-to-right, so the
+  two Hebrew halves of a sentence swap around an English word — the exact
+  failure the lookup box was built to avoid (see [Why the box is a Win32
+  window and not Tk](#why-the-box-is-a-win32-window-and-not-tk)).
+  Directional control characters change nothing; Tk strips them. So
+  transcripts are not Labels: `ui.draw_text` renders them with
+  `DrawTextW`+`DT_RTLREADING` — the same call the lookup box has already
+  proven — into bitmaps, wrapping and the trailing … included, and a test
+  holds the result against that reference render pixel-for-pixel.
+
+Pure-Hebrew lines are a single run, which is why quick probes look fine
+and the second layer stayed hidden until a mixed sentence landed on the
+overview. The chrome stays English on purpose: a label is one direction
+by construction.
 
 ### Pause, and why it is not "stop"
 
@@ -183,7 +275,8 @@ start a recording every time.
 - **The phone endpoint keeps working.** This pauses the keyboard.
 - `auto_pause_fullscreen` does it by itself while a game or a
   presentation owns the screen (it asks Windows the same question it asks
-  before showing its own notifications). **Off by default**: it is the one
+  before showing its own notifications), and the switch for it is on the
+  dashboard's **Settings** screen. **Off by default**: it is the one
   setting that can stop dictation without anyone asking it to, and "my
   hotkey stopped responding" is a much worse half hour than tapping the
   pause key yourself. It only ever un-pauses *its own* pause.
@@ -1071,9 +1164,10 @@ against what it produced, and learns the difference. If the field holds a
 lot of other text, select just the corrected sentence first.
 
 There is deliberately **no edit box**. The first version put the transcript
-in a Tk window to be fixed there, and Tk 8.6 has no bidi support at all:
-mixed Hebrew and English rendered visually scrambled and the caret jumped
-around as it was typed into. You are already fixing the text in an app with
+in a Tk window to be fixed there, and Tk 8.6 is a bad place to *edit*
+right-to-left text: the base direction cannot be set, so a line that
+begins with a Latin word lays out around it, and the caret jumps as it is
+typed into. You are already fixing the text in an app with
 real bidi — reading it beats asking for it again in a worse editor.
 
 What happens to a correction:
