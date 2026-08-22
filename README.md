@@ -154,6 +154,12 @@ From a terminal instead of the window:
 .venv\Scripts\python.exe versions.py switch classic
 ```
 
+**Or from the dashboard.** The sidebar has a **Version** screen: it names
+what is running and offers one *Use this* button per other version.
+Switching from there is the same stop–flip–restart, with progress shown in
+the window, and the Overview status line leads with the current version's
+name so "which one am I on?" never needs a click.
+
 ### What fast costs and needs
 
 - **A key.** Put `CEREBRAS_API_KEY=...` in `.env` (console.cerebras.ai,
@@ -199,25 +205,26 @@ command, display name, icon), so the pin launches `Dashboard.vbs` with
 the right name and face. If you pinned it before this existed, unpin and
 pin it again — the shell reads these when the pin is created.
 
-**Four screens down the side, not one long column.** Everything that was
+**Five screens down the side, not one long column.** Everything that was
 in that column is still here; it stopped being one scroll of unrelated
 things. The state and the three buttons that change it are on
 **Overview**; everything you have said is on **History**; the keys are on
-**Keys**; what it is using and where its files are is on **Settings**. The
-status dot stays in the corner of the sidebar on all four, because "is it
-on?" is the question the window exists to answer and it must never be a
-click away.
+**Keys**; which whole-app version is running, and the one-click way to
+change it, is on **Version**; what it is using and where its files are is
+on **Settings**. The status dot stays in the corner of the sidebar on all
+of them, because "is it on?" is the question the window exists to answer
+and it must never be a click away.
 
 ```
 ┌──────────────────┬──────────────────────────────────────────────────┐
 │ ▣ Hebrew Dictation│ Overview                                        │
 │   hold Right Ctrl │                                                 │
 │                   │  ● RUNNING                                      │
-│ ▸ Overview        │    gemini · Arctis 7 @ 16000 Hz                 │
+│ ▸ Overview        │    fast · local · Arctis 7 @ 16000 Hz           │
 │   History         │    4.2 s spoken -> 96 characters pasted         │
 │   Keys            │                       [Start] [Pause] [Stop]    │
-│   Settings        │                                                 │
-│                   │  DICTATIONS  SPOKEN    CHARACTERS  AVERAGE WAIT │
+│   Version         │                                                 │
+│   Settings        │  DICTATIONS  SPOKEN    CHARACTERS  AVERAGE WAIT │
 │                   │  18          6.2 min   4,210       0.5 s        │
 │                   │                                                 │
 │                   │  LAST DICTATION                          21:23  │
