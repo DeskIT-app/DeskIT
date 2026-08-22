@@ -408,6 +408,14 @@ class CerebrasTranslator:
     key_names = ("CEREBRAS_API_KEY",)
     setting_hint = "[polish] cerebras_model"
     provider_label = "Cerebras"
+    # Provider-specific request-body additions (see GroqTranslator's twin
+    # below); empty by default.
+    extra_body: dict = {}
+    # Floor for the reply cap: reasoning models spend hidden tokens BEFORE
+    # writing any visible text, so a tight cap can be eaten entirely by
+    # thought and the content arrives EMPTY — measured live. Non-reasoning
+    # providers keep the caller's number untouched.
+    min_max_tokens = 1
 
     @staticmethod
     def _missing_key_message() -> str:
@@ -430,8 +438,14 @@ class CerebrasTranslator:
         self._system = system_prompt
         # Sized by the caller from the text being repaired: the honest
         # reply is never much longer than its input, so a cap converts a
-        # runaway generation into a bounded failure the fallback absorbs.
-        self._max_tokens = max_tokens
+        # runaway generation into a bounded failure the fallback absorbs —
+        # but never below the provider's reasoning floor above, or a
+        # reasoning model spends the whole budget thinking and the answer
+        # arrives empty (measured: cap 96 → zero visible tokens).
+        if max_tokens is not None:
+            self._max_tokens = max(max_tokens, type(self).min_max_tokens)
+        else:
+            self._max_tokens = None
 
     def translate(self, text: str) -> str:
         body: dict = {
@@ -446,6 +460,8 @@ class CerebrasTranslator:
         }
         if self._max_tokens is not None:
             body["max_tokens"] = self._max_tokens
+        if type(self).extra_body:
+            body.update(type(self).extra_body)
         request = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(body).encode("utf-8"),
@@ -514,6 +530,14 @@ class GroqTranslator(CerebrasTranslator):
     def _missing_key_message() -> str:
         from apikey import GROQ_MISSING_KEY_MESSAGE
         return GROQ_MISSING_KEY_MESSAGE
+
+    # The default model (openai/gpt-oss-120b) is a REASONING model: it
+    # thinks before answering, and 'low' keeps that thought short. Measured
+    # 2026-08-22 on a real mishearing: 297 ms with this, ~800 ms and a
+    # <think> monologue on qwen3.6-27b without a knob at all.
+    extra_body = {"reasoning_effort": "low"}
+    # Hidden reasoning tokens come out of the same budget as the answer.
+    min_max_tokens = 256
 
 
 class Translator:

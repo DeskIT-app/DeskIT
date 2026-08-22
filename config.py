@@ -316,12 +316,13 @@ class PolishConfig:
     # Gemini is deliberately not on this list, here or anywhere in this
     # pass — see polish.py for why that rule survived the rewrite.
     prefer: str = "groq"
-    # Which Groq model to ask. llama-3.3-70b-versatile holds instructions
-    # tightly and answers sub-second; 'openai/gpt-oss-120b' is the other
-    # strong free candidate if you want to benchmark both. The letter-for-
-    # letter safety check (_is_safe) covers any of them, so a weaker model
-    # wastes a request rather than your words.
-    groq_model: str = "llama-3.3-70b-versatile"
+    # Which Groq model to ask. openai/gpt-oss-120b is the strongest on
+    # their free catalog (measured 2026-08-22; llama-3.3 is no longer
+    # offered) and, with reasoning_effort=low set by the translator,
+    # answers a repaired sentence in ~0.3 s. The letter-for-letter safety
+    # check (_is_safe) covers any of them, so a weaker model wastes a
+    # request rather than your words.
+    groq_model: str = "openai/gpt-oss-120b"
     # Separate knob per provider: a warm Groq answer lands in well under
     # 2 s, so past this something is wrong and the fallback should have
     # the work instead.
