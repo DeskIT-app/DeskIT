@@ -37,14 +37,21 @@ kernel32.OpenMutexW.restype = w.HANDLE
 kernel32.WaitForSingleObject.argtypes = [w.HANDLE, w.DWORD]
 
 
-def is_running(name: str = MUTEX_NAME) -> bool:
+def is_running(name: str | None = None) -> bool:
     """Is an instance up? Asked by the dashboard, several times a minute.
 
     The MUTEX and not the quit event, because the mutex is taken as the
     first thing a launch does. (Both now exist from the same moment — see
     QuitSignal — but the mutex is still the thing that DEFINES "an instance
     exists", and the event is how you talk to it.)
+
+    `name=None` resolves MUTEX_NAME NOW, not at definition time: the test
+    suite repoints MUTEX_NAME at a private name so it can exercise this
+    machinery beside a live instance, and a default bound once at def-time
+    would silently keep testing the REAL mutex instead.
     """
+    if name is None:
+        name = MUTEX_NAME
     handle = kernel32.OpenMutexW(SYNCHRONIZE, False, name)
     if not handle:
         return False
@@ -95,9 +102,19 @@ class AlreadyRunning(Exception):
 
 
 class InstanceLock:
-    """Holds the mutex for this process's lifetime."""
+    """Holds the mutex for this process's lifetime.
 
-    def __init__(self, name: str = MUTEX_NAME) -> None:
+    `name=None` resolves MUTEX_NAME at CALL time, deliberately: a default
+    written as `name: str = MUTEX_NAME` binds the ORIGINAL string once at
+    class definition, so repointing singleton.MUTEX_NAME (what the test
+    suite does to stay beside a live instance) renamed nothing — the lock
+    silently went on using the real name, and every "private name" claim
+    in the tests was false until this was measured the hard way.
+    """
+
+    def __init__(self, name: str | None = None) -> None:
+        if name is None:
+            name = MUTEX_NAME
         handle = kernel32.CreateMutexW(None, False, name)
         if not handle:
             raise OSError(f"CreateMutex failed: {ctypes.get_last_error()}")
