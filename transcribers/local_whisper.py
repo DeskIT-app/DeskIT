@@ -150,6 +150,11 @@ def hallucination_guards(enabled: bool) -> dict:
 class LocalWhisperTranscriber:
     name = "local"
 
+    # Class-level default, not just an __init__ one: the test suite builds
+    # instances with __new__ to reach single methods without loading a
+    # model, and those must transcribe too.
+    _beam_size = 5
+
     def _load(self, model_name: str):
         """Second model, loaded lazily and sharing the device we settled on."""
         from faster_whisper import WhisperModel
@@ -208,7 +213,7 @@ class LocalWhisperTranscriber:
                  english_model: str = "", english_threshold: float = 0.8,
                  initial_prompt: str = "", guard_hallucinations: bool = True,
                  boilerplate: tuple = cleanup_mod.PARLIAMENTARY_BOILERPLATE,
-                 hotwords=None):
+                 hotwords=None, beam_size: int = 5):
         _register_cuda_dlls()
         try:
             from faster_whisper import WhisperModel
@@ -252,6 +257,10 @@ class LocalWhisperTranscriber:
         # They coexist: the prompt becomes " HOTWORDS INITIAL_PROMPT".
         self._hotwords = hotwords
         self._boilerplate = tuple(boilerplate)
+        # Decoder beam width. 5 is what this always ran; [local] beam_size
+        # exists so a faster width (2, or 1 = greedy) can be measured with
+        # --benchmark and kept only if the WER trade is worth it.
+        self._beam_size = max(1, int(beam_size))
         self.last_removed: list[str] = []
         self._guards = hallucination_guards(guard_hallucinations)
 
@@ -356,7 +365,7 @@ class LocalWhisperTranscriber:
                 BytesIO(wav_bytes),
                 language=chosen,     # never None: see _pick_language
                 vad_filter=True,
-                beam_size=5,
+                beam_size=self._beam_size,
                 condition_on_previous_text=False,
                 # The Hebrew prompt would only confuse the English model.
                 initial_prompt=None if chosen == "en"

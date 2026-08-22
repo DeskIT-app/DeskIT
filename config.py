@@ -89,6 +89,11 @@ class LocalConfig:
     # a low-confidence trailing segment through; measured 2026-08-12, these
     # cost nothing on good audio (identical text, ~8% slower).
     guard_hallucinations: bool = True
+    # Beam width for the decoder. 5 is what this always ran; lower (try 2)
+    # transcribes faster on exactly the short clips dictation produces, at
+    # a small accuracy cost — measure both ways with --benchmark before
+    # keeping a change. 1 = greedy.
+    beam_size: int = 5
     # Drop parliamentary boilerplate stuck to the END of a transcript. The
     # ivrit-ai fine-tune is trained on Knesset protocols and appends them
     # when the decoder runs past the end of real speech.
@@ -295,6 +300,25 @@ class PolishConfig:
     # beat Hebrew specialisation. llama3.1:8b — what this defaulted to
     # before — makes the transcript WORSE than leaving it alone.
     ollama_model: str = "gemma3:12b"
+    # Which backend repairs first, and which waits as the fallback.
+    #
+    #   "cerebras" — Cerebras' free API (~1M tokens/day, no card). Turns
+    #                the pass's 4.7-5.5 s into well under a second. Needs
+    #                CEREBRAS_API_KEY in .env; without one it is skipped
+    #                automatically and this setting costs nothing.
+    #   "ollama"   — exactly classic: local gemma3:12b, no cloud ever.
+    #
+    # Gemini is deliberately not on this list, here or anywhere in this
+    # pass — see polish.py for why that rule survived the rewrite.
+    prefer: str = "cerebras"
+    # Which Cerebras model to ask. gpt-oss-120b is their strongest free
+    # model; the letter-for-letter safety check (_is_safe) covers any of
+    # them, so a weaker model wastes a request rather than your words.
+    cerebras_model: str = "gpt-oss-120b"
+    # Separate from translate.timeout_s because it is a different provider:
+    # warm answers land in well under 2 s, so past this something is wrong
+    # and the fallback should have the work instead.
+    cerebras_timeout_s: int = 20
     # HOW LONG THE PASTE MAY BE HELD UP. This pass sits between the words
     # leaving your mouth and the text reaching your cursor: past this, the
     # unrepaired transcript is pasted and the reply is thrown away when it
@@ -609,6 +633,7 @@ def load(path: Path) -> Config:
                 "english_threshold", LocalConfig.english_threshold)),
             guard_hallucinations=bool(local.get(
                 "guard_hallucinations", LocalConfig.guard_hallucinations)),
+            beam_size=int(local.get("beam_size", LocalConfig.beam_size)),
             drop_trailing_boilerplate=bool(local.get(
                 "drop_trailing_boilerplate",
                 LocalConfig.drop_trailing_boilerplate)),
@@ -696,6 +721,12 @@ def load(path: Path) -> Config:
             min_chars=int(polish.get("min_chars", PolishConfig.min_chars)),
             ollama_model=str(polish.get(
                 "ollama_model", PolishConfig.ollama_model)).strip(),
+            prefer=str(polish.get(
+                "prefer", PolishConfig.prefer)).strip().lower(),
+            cerebras_model=str(polish.get(
+                "cerebras_model", PolishConfig.cerebras_model)).strip(),
+            cerebras_timeout_s=int(polish.get(
+                "cerebras_timeout_s", PolishConfig.cerebras_timeout_s)),
             max_wait_s=float(polish.get("max_wait_s",
                                         PolishConfig.max_wait_s)),
             warm_up=bool(polish.get("warm_up", PolishConfig.warm_up)),
@@ -781,6 +812,19 @@ def load(path: Path) -> Config:
     if cfg.polish.when not in ("never", "known", "always"):
         raise ConfigError('polish.when must be "never", "known" or "always", '
                           f"got {cfg.polish.when!r}")
+    if cfg.polish.prefer not in ("ollama", "cerebras"):
+        raise ConfigError('polish.prefer must be "ollama" or "cerebras", '
+                          f"got {cfg.polish.prefer!r}")
+    if cfg.polish.cerebras_timeout_s <= 0:
+        raise ConfigError("polish.cerebras_timeout_s must be positive")
+    if not cfg.polish.cerebras_model and cfg.polish.prefer == "cerebras":
+        raise ConfigError(
+            "polish.cerebras_model must not be empty while "
+            'polish.prefer = "cerebras" (name a model, or set prefer to '
+            '"ollama" to stay local instead)')
+    if cfg.local.beam_size < 1:
+        raise ConfigError("local.beam_size must be >= 1 (1 is greedy; this "
+                          "app shipped at 5)")
     if cfg.polish.min_chars < 0:
         raise ConfigError("polish.min_chars must be >= 0")
     if cfg.polish.max_wait_s <= 0:

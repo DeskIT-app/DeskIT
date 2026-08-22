@@ -208,7 +208,7 @@ def test_api_key_file_parsing(tmp_lines=None) -> None:
                       encoding="utf-8")
     try:
         apikey.ENV_FILE = sample
-        os_key = apikey._from_env_file()
+        os_key = apikey._from_env_file(apikey._GEMINI_NAMES)
         assert os_key is not None, "key file not parsed"
         assert os_key[0] == "abc-123", os_key
     finally:
@@ -2587,7 +2587,7 @@ def test_a_slow_context_pass_is_abandoned_rather_than_waited_out() -> None:
             return "never gets used"
 
     p = polish_mod.Polisher(cfg, _tmp_vocab())
-    p._backends = lambda: iter([Molasses()])
+    p._backends = lambda text: iter([Molasses()])
     raw = "תריץ את השרת בבקשה ותגיד לי מה קרה שם"
     started = time.monotonic()
     out, by = p.polish(raw)
@@ -2599,17 +2599,153 @@ def test_a_slow_context_pass_is_abandoned_rather_than_waited_out() -> None:
 
 
 def test_the_context_pass_never_reaches_for_gemini() -> None:
-    """It runs on EVERY dictation now, with no wait to limit it. A stopped
-    Ollama must not turn that into dozens of Gemini requests a day — that
-    bucket is 20/model/day and the translate (F9) and punctuate (F7) keys
-    spend from it deliberately. This pass does not get to starve them."""
+    """The old rule, restated for the fast version: GEMINI is still never a
+    repair backend — its 20/model/day bucket belongs to the translate (F9)
+    and punctuate (F2) keys. What may appear is Cerebras, whose free tier
+    is ~1M tokens/day on its own bucket, with Ollama behind it as the
+    fallback classic always had."""
+    import apikey as apikey_mod
     import polish as polish_mod
 
     cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
     polisher = polish_mod.Polisher(cfg, _tmp_vocab())
-    names = [getattr(b, "name", "?") for b in polisher._backends()]
-    assert names == ["ollama"], (
-        f"the context pass offered a cloud backend: {names}")
+    text = "תריץ את השרת בבקשה ותגיד לי מה קרה שם"
+    original = apikey_mod.find_cerebras_key
+    try:
+        # A machine without a key: Cerebras cannot be built, so the pass
+        # must degrade to exactly what classic ran — ollama alone.
+        apikey_mod.find_cerebras_key = lambda: (None, "not found")
+        names = [b.name for b in polisher._backends(text)]
+        assert "gemini" not in names, names
+        assert names == ["ollama"], (
+            f"without a key the pass must be classic-shaped: {names}")
+
+        # With a key: cerebras first, ollama behind it.
+        apikey_mod.find_cerebras_key = lambda: ("test-key", "test")
+        names = [b.name for b in polisher._backends(text)]
+        assert names == ["cerebras", "ollama"], names
+    finally:
+        apikey_mod.find_cerebras_key = original
+
+
+def test_polish_prefer_ollama_reverses_the_repair_order() -> None:
+    """prefer = "ollama" must mean local-first with cloud as the fallback,
+    not local-only — the other backend still catches a dead primary."""
+    import dataclasses
+
+    import apikey as apikey_mod
+    import polish as polish_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dataclasses.replace(cfg, polish=dataclasses.replace(
+        cfg.polish, prefer="ollama"))
+    polisher = polish_mod.Polisher(cfg, _tmp_vocab())
+    original = apikey_mod.find_cerebras_key
+    try:
+        apikey_mod.find_cerebras_key = lambda: ("test-key", "test")
+        names = [b.name for b in polisher._backends("משפט לבדיקה בבקשה")]
+    finally:
+        apikey_mod.find_cerebras_key = original
+    assert names == ["ollama", "cerebras"], names
+
+
+def test_reply_caps_are_sized_from_the_text() -> None:
+    """The honest reply is the input with words swapped; anything longer
+    was never going to pass _is_safe. The cap turns that case from an
+    unbounded generation into a bounded one the fallback absorbs."""
+    from polish import _token_cap
+
+    assert _token_cap("תעשה commit") == 96, "short clips get the floor"
+    assert _token_cap(" ".join(["word"] * 500)) == 1024, "the ceiling holds"
+    assert 96 < _token_cap(" ".join(["word"] * 100)) < 1024
+
+
+def test_a_missing_cerebras_key_names_the_fix() -> None:
+    """The message must say exactly which line in .env to add — a bare
+    'no key' sends someone hunting through three providers."""
+    import apikey as apikey_mod
+    import translate as translate_mod
+    from transcribers.base import TranscriptionError
+
+    original = apikey_mod.find_cerebras_key
+    apikey_mod.find_cerebras_key = lambda: (None, "not found")
+    try:
+        translate_mod.CerebrasTranslator("gpt-oss-120b", 20)
+    except TranscriptionError as e:
+        assert "CEREBRAS_API_KEY" in str(e), e
+        assert ".env" in str(e), e
+    else:
+        raise AssertionError("a missing key must stop construction")
+    finally:
+        apikey_mod.find_cerebras_key = original
+
+
+def test_ollama_num_predict_stays_out_of_shared_requests() -> None:
+    """OllamaTranslator serves four keys. The repair pass may cap its own
+    replies; nobody else's request body may change by a byte."""
+    import json as json_mod
+
+    import translate as translate_mod
+
+    captured: dict = {}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b'{"message":{"content":"ok"}}'
+
+    def fake_urlopen(request, timeout=None):
+        captured["body"] = json_mod.loads(request.data.decode("utf-8"))
+        return _Resp()
+
+    original = translate_mod.urllib.request.urlopen
+    translate_mod.urllib.request.urlopen = fake_urlopen
+    try:
+        plain = translate_mod.OllamaTranslator(
+            "m", "http://127.0.0.1:11434", 5)
+        assert plain.translate("x") == "ok"
+        assert "num_predict" not in captured["body"]["options"], \
+            captured["body"]
+
+        capped = translate_mod.OllamaTranslator(
+            "m", "http://127.0.0.1:11434", 5, num_predict=128)
+        assert capped.translate("x") == "ok"
+        assert captured["body"]["options"]["num_predict"] == 128
+    finally:
+        translate_mod.urllib.request.urlopen = original
+
+
+def test_the_fast_knobs_validate_and_default_classic_shaped() -> None:
+    """beam_size and the cerebras trio must refuse nonsense loudly, and a
+    config.toml that predates them entirely must still load — landing on
+    the fast defaults without anyone editing it."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "c.toml"
+        p.write_text('backend = "local"\n', "utf-8")
+        cfg = config_mod.load(p)
+        assert cfg.polish.prefer == "cerebras"
+        assert cfg.local.beam_size == 5
+
+        for bad, needle in (
+                ('[polish]\nprefer = "gemini"\n', "prefer"),
+                ('[polish]\nprefer = "cerebras"\ncerebras_model = ""\n',
+                 "cerebras_model"),
+                ('[polish]\ncerebras_timeout_s = 0\n', "cerebras_timeout"),
+                ("[local]\nbeam_size = 0\n", "beam_size")):
+            p.write_text(bad, "utf-8")
+            try:
+                config_mod.load(p)
+            except config_mod.ConfigError as e:
+                assert needle in str(e), (bad, e)
+            else:
+                raise AssertionError(f"must be refused: {bad!r}")
 
 
 def test_the_transcript_is_final_when_it_lands() -> None:
@@ -2637,7 +2773,7 @@ def test_the_transcript_is_final_when_it_lands() -> None:
                 return "המקלדת מסתירה את השדה"
 
         polisher = polish_mod.Polisher(app.cfg, app.vocab)
-        polisher._backends = lambda: iter([Reply()])
+        polisher._backends = lambda text: iter([Reply()])
         app._polisher = polisher
 
         fake = _FakeInjector()
@@ -2681,7 +2817,7 @@ def test_the_warm_up_never_raises() -> None:
             raise OSError("connection refused")
 
     p = polish_mod.Polisher(cfg, _tmp_vocab())
-    p._backends = lambda: iter([Dead()])
+    p._backends = lambda text: iter([Dead()])
     p.warm()          # must not raise
 
 

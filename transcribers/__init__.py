@@ -34,6 +34,7 @@ def local_kwargs(cfg, hotwords=None) -> dict:
                 english_threshold=cfg.local.english_threshold,
                 initial_prompt=cfg.local.initial_prompt,
                 guard_hallucinations=cfg.local.guard_hallucinations,
+                beam_size=cfg.local.beam_size,
                 boilerplate=boilerplate)
 
 

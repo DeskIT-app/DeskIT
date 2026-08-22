@@ -127,6 +127,52 @@ pipeline with a canned Hebrew string instead of the API — good for testing
 paste behavior in a new target app. `--stop` from anywhere asks a running
 background instance to quit.
 
+## Two versions: classic and fast
+
+This folder carries **two whole versions of the app**, kept as git
+branches, and you choose between them by double-clicking **`Versions`**
+(`Versions.vbs` here):
+
+- **classic** — the app exactly as it was when this system was added:
+  local Whisper + the ~5 s `gemma3:12b` repair pass. Frozen.
+- **fast** — the same dictation pipeline with the repair pass sent to
+  **Cerebras' free API first** (~sub-second instead of ~5 s), falling back
+  to the identical local path classic uses. Also adds two knobs:
+  `[polish] prefer = "cerebras" | "ollama"` and `[local] beam_size`.
+
+Switching stops the running instance, flips the branch, restarts the app,
+and **carries your `config.toml` across untouched** — both versions commit
+byte-identical settings, so your keys, seeds and vocabulary never change
+underneath you. `.env`, `vocab.json`, `transcripts.log`, `recent\` are
+gitignored and simply shared. A switch refuses if any *other* tracked file
+has uncommitted edits, rather than guessing what to keep.
+
+From a terminal instead of the window:
+
+```
+.venv\Scripts\python.exe versions.py list
+.venv\Scripts\python.exe versions.py switch classic
+```
+
+### What fast costs and needs
+
+- **A key.** Put `CEREBRAS_API_KEY=...` in `.env` (console.cerebras.ai,
+  free tier ~1M tokens/day, no credit card). Without a key the fast
+  version runs the repair pass locally, exactly like classic — the setting
+  costs nothing until the key exists.
+- **Privacy, stated plainly:** the repair pass sends the *transcript
+  text* to Cerebras under their free-tier terms. Your audio never leaves
+  this machine. If even text-in-the-cloud is unacceptable, set
+  `[polish] prefer = "ollama"` — that IS classic's behavior.
+- **The safety check is unchanged.** Every repaired reply still goes
+  through `_is_safe()` (word-level diff, ±15% growth cap); a model that
+  rewrites instead of repairing gets thrown out exactly as before. Replies
+  are also length-capped from the input size now, so a runaway generation
+  is bounded rather than waited on.
+- **Gemini stays out of the repair pass**, as before: its tiny 20/day pool
+  belongs to Ctrl+F9 and F2. Cerebras is its own bucket and cannot starve
+  them.
+
 ## The dashboard
 
 `Dashboard.vbs` opens one window that answers "is it on?", turns it on and

@@ -208,6 +208,14 @@ class OllamaTranslator:
     sharing that model. That is deliberate here (see [lookup] keep_alive
     in config.toml) but it is shared state, so only the caller that means
     it passes it.
+
+    `num_predict` caps how many TOKENS the model may write. Opt-in like
+    everything above because a cap IS an answer-changer: the lookup key
+    wants whole paragraphs, so a blanket cap would truncate them mid-word.
+    The repair pass (polish.py) is the opposite — its honest output can
+    never be much longer than its input — so IT passes a bound sized from
+    the text, which turns a runaway generation from an unbounded wait
+    into a bounded one.
     """
 
     name = "ollama"
@@ -215,7 +223,8 @@ class OllamaTranslator:
     def __init__(self, model: str, url: str, timeout_s: int,
                  target: str = "English", system_prompt=None,
                  setting: str = "translate.ollama_model", *,
-                 keep_alive: str | None = None, on_chunk=None):
+                 keep_alive: str | None = None, on_chunk=None,
+                 num_predict: int | None = None):
         self._model = model
         self._url = url.rstrip("/")
         self._timeout = timeout_s
@@ -228,6 +237,7 @@ class OllamaTranslator:
         self._setting = setting
         self._keep_alive = keep_alive
         self._on_chunk = on_chunk
+        self._num_predict = num_predict
 
     def _read(self, response) -> str:
         """The reply, whole or a line at a time — the same string either
@@ -315,6 +325,8 @@ class OllamaTranslator:
                 {"role": "user", "content": text},
             ],
         }
+        if self._num_predict is not None:
+            payload["options"]["num_predict"] = self._num_predict
         if self._keep_alive is not None:
             payload["keep_alive"] = self._keep_alive
         request = urllib.request.Request(
@@ -348,6 +360,105 @@ class OllamaTranslator:
         out = _clean(content)
         if not out:
             raise TranslationError("Ollama returned an empty translation")
+        return out
+
+
+CEREBRAS_URL = "https://api.cerebras.ai/v1"
+
+
+class CerebrasTranslator:
+    """One chat request to Cerebras' wafer-scale inference API.
+
+    Why this exists: the repair pass (polish.py) is the one thing that
+    stands between speech and the cursor on EVERY dictation, and the local
+    model it uses costs 4.7-5.5 s a request. Cerebras' free tier answers
+    in well under a second and allows ~1M tokens a day — orders of
+    magnitude past what dozens of dictations spend — so it turns the
+    longest fixed wait in the pipeline into the shortest, at zero cost.
+
+    OpenAI-compatible over plain urllib, like OllamaTranslator above: no
+    new pip dependency, no contact until first use, and the constructor
+    raises (rather than translating badly) when no key is configured, so
+    callers can simply fall through to the next backend.
+
+    PRIVACY, stated plainly because the README states Gemini's: this sends
+    TEXT — the transcript of what you said — to Cerebras under their free-
+    tier terms. Your AUDIO never leaves this machine; that stays true of
+    every path here except the Gemini dictation backend you already opt
+    into. If even transcript-text-in-the-cloud is unacceptable,
+    [polish] prefer = "ollama" puts everything back where classic had it.
+    """
+
+    name = "cerebras"
+
+    def __init__(self, model: str, timeout_s: int, target: str = "English",
+                 system_prompt=None, max_tokens: int | None = None):
+        from apikey import (CEREBRAS_MISSING_KEY_MESSAGE,
+                            find_cerebras_key)
+
+        key, self.key_source = find_cerebras_key()
+        if not key:
+            raise TranslationError(CEREBRAS_MISSING_KEY_MESSAGE)
+        self._key = key
+        self._model = model
+        self._timeout = timeout_s
+        self._target = target
+        self._system = system_prompt
+        # Sized by the caller from the text being repaired: the honest
+        # reply is never much longer than its input, so a cap converts a
+        # runaway generation into a bounded failure the fallback absorbs.
+        self._max_tokens = max_tokens
+
+    def translate(self, text: str) -> str:
+        body: dict = {
+            "model": self._model,
+            "temperature": 0.2,
+            "stream": False,
+            "messages": [
+                {"role": "system",
+                 "content": resolve_prompt(self._system, self._target)},
+                {"role": "user", "content": text},
+            ],
+        }
+        if self._max_tokens is not None:
+            body["max_tokens"] = self._max_tokens
+        request = urllib.request.Request(
+            f"{CEREBRAS_URL}/chat/completions",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {self._key}"})
+        try:
+            with urllib.request.urlopen(request,
+                                        timeout=self._timeout) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            detail = ""
+            try:
+                detail = e.read().decode("utf-8", "replace")[:200]
+            except Exception:
+                pass
+            if e.code == 429:
+                raise RateLimitError(
+                    f"Cerebras rate limit reached ({detail})") from e
+            if e.code == 404:
+                raise TranslationError(
+                    f"Cerebras has no model {self._model!r} — change "
+                    f"[polish] cerebras_model in config.toml") from e
+            raise TranslationError(
+                f"Cerebras returned HTTP {e.code}: {detail}") from e
+        except urllib.error.URLError as e:
+            raise TranslationError(
+                f"cannot reach Cerebras at {CEREBRAS_URL} ({e.reason})") \
+                from e
+        except Exception as e:
+            raise TranslationError(f"Cerebras request failed: {e}") from e
+
+        choices = data.get("choices") or []
+        content = (choices[0].get("message") or {}).get("content", "") \
+            if choices else ""
+        out = _clean(content)
+        if not out:
+            raise TranslationError("Cerebras returned an empty reply")
         return out
 
 
