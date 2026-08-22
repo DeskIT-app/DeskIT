@@ -364,41 +364,65 @@ class OllamaTranslator:
 
 
 CEREBRAS_URL = "https://api.cerebras.ai/v1"
+GROQ_URL = "https://api.groq.com/openai/v1"
+
+# A named User-Agent, and this is not cosmetic: api.cerebras.ai sits behind
+# Cloudflare, which answers Python's default signature (Python-urllib/3.x)
+# with 403 / error 1010 "banned based on your browser's signature" —
+# measured live with the user's own key. Any named client passes.
+USER_AGENT = "hebrew-dictation/1.0"
 
 
 class CerebrasTranslator:
-    """One chat request to Cerebras' wafer-scale inference API.
+    """One chat request to an OpenAI-compatible inference API.
 
     Why this exists: the repair pass (polish.py) is the one thing that
     stands between speech and the cursor on EVERY dictation, and the local
-    model it uses costs 4.7-5.5 s a request. Cerebras' free tier answers
-    in well under a second and allows ~1M tokens a day — orders of
-    magnitude past what dozens of dictations spend — so it turns the
-    longest fixed wait in the pipeline into the shortest, at zero cost.
+    model it uses costs 4.7-5.5 s a request. A fast cloud tier answers in
+    well under a second, turning the longest fixed wait in the pipeline
+    into the shortest — at zero cost where a free tier still exists.
 
     OpenAI-compatible over plain urllib, like OllamaTranslator above: no
     new pip dependency, no contact until first use, and the constructor
     raises (rather than translating badly) when no key is configured, so
-    callers can simply fall through to the next backend.
+    callers can simply fall through to the next backend. GroqTranslator
+    below is this exact class pointed at a different host.
 
-    PRIVACY, stated plainly because the README states Gemini's: this sends
-    TEXT — the transcript of what you said — to Cerebras under their free-
-    tier terms. Your AUDIO never leaves this machine; that stays true of
-    every path here except the Gemini dictation backend you already opt
-    into. If even transcript-text-in-the-cloud is unacceptable,
+    HISTORY WORTH KEEPING: Cerebras was chosen first, on published free-
+    tier terms of ~1M tokens/day. Measured live on 2026-08-22 with the
+    user's fresh account: balance $0.00, every model HTTP 402 "payment
+    required", subscription tiers $1,500+/month and sold out. The free
+    tier does not exist any more; Groq's does. This class stays because it
+    costs nothing to keep and quota may return.
+
+    PRIVACY, stated plainly because the README states Gemini's: these send
+    TEXT — the transcript of what you said — to the provider under their
+    terms. Your AUDIO never leaves this machine; that stays true of every
+    path here except the Gemini dictation backend you already opt into.
+    If even transcript-text-in-the-cloud is unacceptable,
     [polish] prefer = "ollama" puts everything back where classic had it.
     """
 
     name = "cerebras"
+    base_url = CEREBRAS_URL
+    key_names = ("CEREBRAS_API_KEY",)
+    setting_hint = "[polish] cerebras_model"
+    provider_label = "Cerebras"
+
+    @staticmethod
+    def _missing_key_message() -> str:
+        from apikey import CEREBRAS_MISSING_KEY_MESSAGE
+        return CEREBRAS_MISSING_KEY_MESSAGE
 
     def __init__(self, model: str, timeout_s: int, target: str = "English",
                  system_prompt=None, max_tokens: int | None = None):
-        from apikey import (CEREBRAS_MISSING_KEY_MESSAGE,
-                            find_cerebras_key)
+        import apikey
 
-        key, self.key_source = find_cerebras_key()
+        # find_key directly, not a per-provider helper: the subclass below
+        # changes only key_names, and one lookup covers both.
+        key, self.key_source = apikey.find_key(type(self).key_names)
         if not key:
-            raise TranslationError(CEREBRAS_MISSING_KEY_MESSAGE)
+            raise TranslationError(type(self)._missing_key_message())
         self._key = key
         self._model = model
         self._timeout = timeout_s
@@ -423,10 +447,11 @@ class CerebrasTranslator:
         if self._max_tokens is not None:
             body["max_tokens"] = self._max_tokens
         request = urllib.request.Request(
-            f"{CEREBRAS_URL}/chat/completions",
+            f"{self.base_url}/chat/completions",
             data=json.dumps(body).encode("utf-8"),
             headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {self._key}"})
+                     "Authorization": f"Bearer {self._key}",
+                     "User-Agent": USER_AGENT})
         try:
             with urllib.request.urlopen(request,
                                         timeout=self._timeout) as response:
@@ -437,29 +462,58 @@ class CerebrasTranslator:
                 detail = e.read().decode("utf-8", "replace")[:200]
             except Exception:
                 pass
+            label = type(self).provider_label
+            if e.code == 402:
+                raise RateLimitError(
+                    f"{label} reports no quota for this key ({detail}) "
+                    "— falling through to the next repair backend") from e
             if e.code == 429:
                 raise RateLimitError(
-                    f"Cerebras rate limit reached ({detail})") from e
+                    f"{label} rate limit reached ({detail})") from e
             if e.code == 404:
                 raise TranslationError(
-                    f"Cerebras has no model {self._model!r} — change "
-                    f"[polish] cerebras_model in config.toml") from e
+                    f"{label} has no model {self._model!r} — change "
+                    f"{type(self).setting_hint} in config.toml") from e
             raise TranslationError(
-                f"Cerebras returned HTTP {e.code}: {detail}") from e
+                f"{label} returned HTTP {e.code}: {detail}") from e
         except urllib.error.URLError as e:
             raise TranslationError(
-                f"cannot reach Cerebras at {CEREBRAS_URL} ({e.reason})") \
-                from e
+                f"cannot reach {type(self).provider_label} at "
+                f"{self.base_url} ({e.reason})") from e
         except Exception as e:
-            raise TranslationError(f"Cerebras request failed: {e}") from e
+            raise TranslationError(
+                f"{type(self).provider_label} request failed: {e}") from e
 
         choices = data.get("choices") or []
         content = (choices[0].get("message") or {}).get("content", "") \
             if choices else ""
         out = _clean(content)
         if not out:
-            raise TranslationError("Cerebras returned an empty reply")
+            raise TranslationError(
+                f"{type(self).provider_label} returned an empty reply")
         return out
+
+
+class GroqTranslator(CerebrasTranslator):
+    """The same wire format, pointed at Groq.
+
+    THE free cloud tier as of Aug 2026: no credit card, generous daily
+    request limits measured in thousands, and LPU inference at hundreds of
+    tokens a second — sub-second for replies the size of a repaired
+    sentence. Reached over the identical chat/completions format, so this
+    subclass changes four class attributes and nothing else.
+    """
+
+    name = "groq"
+    base_url = GROQ_URL
+    key_names = ("GROQ_API_KEY",)
+    setting_hint = "[polish] groq_model"
+    provider_label = "Groq"
+
+    @staticmethod
+    def _missing_key_message() -> str:
+        from apikey import GROQ_MISSING_KEY_MESSAGE
+        return GROQ_MISSING_KEY_MESSAGE
 
 
 class Translator:

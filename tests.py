@@ -2601,36 +2601,43 @@ def test_a_slow_context_pass_is_abandoned_rather_than_waited_out() -> None:
 def test_the_context_pass_never_reaches_for_gemini() -> None:
     """The old rule, restated for the fast version: GEMINI is still never a
     repair backend — its 20/model/day bucket belongs to the translate (F9)
-    and punctuate (F2) keys. What may appear is Cerebras, whose free tier
-    is ~1M tokens/day on its own bucket, with Ollama behind it as the
-    fallback classic always had."""
+    and punctuate (F2) keys. What may appear is Groq (the one cloud free
+    tier that exists as of Aug 2026) and Cerebras, with Ollama behind both
+    as the fallback classic always had."""
     import apikey as apikey_mod
     import polish as polish_mod
 
     cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
     polisher = polish_mod.Polisher(cfg, _tmp_vocab())
     text = "תריץ את השרת בבקשה ותגיד לי מה קרה שם"
-    original = apikey_mod.find_cerebras_key
+    original = apikey_mod.find_key
+
+    def no_keys(names):
+        return None, "not found"
+
+    def all_keys(names):
+        return "test-key", "test"
+
     try:
-        # A machine without a key: Cerebras cannot be built, so the pass
-        # must degrade to exactly what classic ran — ollama alone.
-        apikey_mod.find_cerebras_key = lambda: (None, "not found")
+        # A machine without any cloud key: neither fast backend can be
+        # built, so the pass must degrade to exactly what classic ran.
+        apikey_mod.find_key = no_keys
         names = [b.name for b in polisher._backends(text)]
         assert "gemini" not in names, names
         assert names == ["ollama"], (
-            f"without a key the pass must be classic-shaped: {names}")
+            f"without keys the pass must be classic-shaped: {names}")
 
-        # With a key: cerebras first, ollama behind it.
-        apikey_mod.find_cerebras_key = lambda: ("test-key", "test")
+        # With keys: groq first (prefer's default), everything behind it.
+        apikey_mod.find_key = all_keys
         names = [b.name for b in polisher._backends(text)]
-        assert names == ["cerebras", "ollama"], names
+        assert names == ["groq", "cerebras", "ollama"], names
     finally:
-        apikey_mod.find_cerebras_key = original
+        apikey_mod.find_key = original
 
 
 def test_polish_prefer_ollama_reverses_the_repair_order() -> None:
     """prefer = "ollama" must mean local-first with cloud as the fallback,
-    not local-only — the other backend still catches a dead primary."""
+    not local-only — the other backends still catch a dead primary."""
     import dataclasses
 
     import apikey as apikey_mod
@@ -2640,13 +2647,13 @@ def test_polish_prefer_ollama_reverses_the_repair_order() -> None:
     cfg = dataclasses.replace(cfg, polish=dataclasses.replace(
         cfg.polish, prefer="ollama"))
     polisher = polish_mod.Polisher(cfg, _tmp_vocab())
-    original = apikey_mod.find_cerebras_key
+    original = apikey_mod.find_key
     try:
-        apikey_mod.find_cerebras_key = lambda: ("test-key", "test")
+        apikey_mod.find_key = lambda names: ("test-key", "test")
         names = [b.name for b in polisher._backends("משפט לבדיקה בבקשה")]
     finally:
-        apikey_mod.find_cerebras_key = original
-    assert names == ["ollama", "cerebras"], names
+        apikey_mod.find_key = original
+    assert names == ["ollama", "groq", "cerebras"], names
 
 
 def test_reply_caps_are_sized_from_the_text() -> None:
@@ -2667,8 +2674,8 @@ def test_a_missing_cerebras_key_names_the_fix() -> None:
     import translate as translate_mod
     from transcribers.base import TranscriptionError
 
-    original = apikey_mod.find_cerebras_key
-    apikey_mod.find_cerebras_key = lambda: (None, "not found")
+    original = apikey_mod.find_key
+    apikey_mod.find_key = lambda names: (None, "not found")
     try:
         translate_mod.CerebrasTranslator("gpt-oss-120b", 20)
     except TranscriptionError as e:
@@ -2677,7 +2684,7 @@ def test_a_missing_cerebras_key_names_the_fix() -> None:
     else:
         raise AssertionError("a missing key must stop construction")
     finally:
-        apikey_mod.find_cerebras_key = original
+        apikey_mod.find_key = original
 
 
 def test_ollama_num_predict_stays_out_of_shared_requests() -> None:
@@ -2721,7 +2728,7 @@ def test_ollama_num_predict_stays_out_of_shared_requests() -> None:
 
 
 def test_the_fast_knobs_validate_and_default_classic_shaped() -> None:
-    """beam_size and the cerebras trio must refuse nonsense loudly, and a
+    """beam_size and the cloud trio must refuse nonsense loudly, and a
     config.toml that predates them entirely must still load — landing on
     the fast defaults without anyone editing it."""
     import tempfile
@@ -2730,11 +2737,14 @@ def test_the_fast_knobs_validate_and_default_classic_shaped() -> None:
         p = Path(d) / "c.toml"
         p.write_text('backend = "local"\n', "utf-8")
         cfg = config_mod.load(p)
-        assert cfg.polish.prefer == "cerebras"
+        assert cfg.polish.prefer == "groq"
         assert cfg.local.beam_size == 5
 
         for bad, needle in (
                 ('[polish]\nprefer = "gemini"\n', "prefer"),
+                ('[polish]\nprefer = "groq"\ngroq_model = ""\n',
+                 "groq_model"),
+                ('[polish]\ngroq_timeout_s = 0\n', "groq_timeout"),
                 ('[polish]\nprefer = "cerebras"\ncerebras_model = ""\n',
                  "cerebras_model"),
                 ('[polish]\ncerebras_timeout_s = 0\n', "cerebras_timeout"),

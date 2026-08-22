@@ -302,18 +302,32 @@ class PolishConfig:
     ollama_model: str = "gemma3:12b"
     # Which backend repairs first, and which waits as the fallback.
     #
-    #   "cerebras" — Cerebras' free API (~1M tokens/day, no card). Turns
-    #                the pass's 4.7-5.5 s into well under a second. Needs
-    #                CEREBRAS_API_KEY in .env; without one it is skipped
-    #                automatically and this setting costs nothing.
+    #   "groq"     — Groq's free API (console.groq.com, no credit card,
+    #                thousands of requests a day). Sub-second repairs.
+    #                Needs GROQ_API_KEY in .env; without one it is skipped
+    #                automatically and this setting costs nothing. THE
+    #                DEFAULT because it is the only cloud free tier that
+    #                actually exists as of Aug 2026 — Cerebras, the first
+    #                choice here, went paid-only ($1,500+/month tiers,
+    #                measured live on a fresh account).
+    #   "cerebras" — kept working for whoever holds quota there. Paid now.
     #   "ollama"   — exactly classic: local gemma3:12b, no cloud ever.
     #
     # Gemini is deliberately not on this list, here or anywhere in this
     # pass — see polish.py for why that rule survived the rewrite.
-    prefer: str = "cerebras"
-    # Which Cerebras model to ask. gpt-oss-120b is their strongest free
-    # model; the letter-for-letter safety check (_is_safe) covers any of
-    # them, so a weaker model wastes a request rather than your words.
+    prefer: str = "groq"
+    # Which Groq model to ask. llama-3.3-70b-versatile holds instructions
+    # tightly and answers sub-second; 'openai/gpt-oss-120b' is the other
+    # strong free candidate if you want to benchmark both. The letter-for-
+    # letter safety check (_is_safe) covers any of them, so a weaker model
+    # wastes a request rather than your words.
+    groq_model: str = "llama-3.3-70b-versatile"
+    # Separate knob per provider: a warm Groq answer lands in well under
+    # 2 s, so past this something is wrong and the fallback should have
+    # the work instead.
+    groq_timeout_s: int = 20
+    # Which Cerebras model to ask. Only relevant while quota exists there;
+    # kept so returning to it later means editing config.toml, not code.
     cerebras_model: str = "gpt-oss-120b"
     # Separate from translate.timeout_s because it is a different provider:
     # warm answers land in well under 2 s, so past this something is wrong
@@ -723,6 +737,10 @@ def load(path: Path) -> Config:
                 "ollama_model", PolishConfig.ollama_model)).strip(),
             prefer=str(polish.get(
                 "prefer", PolishConfig.prefer)).strip().lower(),
+            groq_model=str(polish.get(
+                "groq_model", PolishConfig.groq_model)).strip(),
+            groq_timeout_s=int(polish.get(
+                "groq_timeout_s", PolishConfig.groq_timeout_s)),
             cerebras_model=str(polish.get(
                 "cerebras_model", PolishConfig.cerebras_model)).strip(),
             cerebras_timeout_s=int(polish.get(
@@ -812,9 +830,16 @@ def load(path: Path) -> Config:
     if cfg.polish.when not in ("never", "known", "always"):
         raise ConfigError('polish.when must be "never", "known" or "always", '
                           f"got {cfg.polish.when!r}")
-    if cfg.polish.prefer not in ("ollama", "cerebras"):
-        raise ConfigError('polish.prefer must be "ollama" or "cerebras", '
-                          f"got {cfg.polish.prefer!r}")
+    if cfg.polish.prefer not in ("groq", "cerebras", "ollama"):
+        raise ConfigError('polish.prefer must be "groq", "cerebras" or '
+                          f'"ollama", got {cfg.polish.prefer!r}')
+    if cfg.polish.groq_timeout_s <= 0:
+        raise ConfigError("polish.groq_timeout_s must be positive")
+    if not cfg.polish.groq_model and cfg.polish.prefer == "groq":
+        raise ConfigError(
+            "polish.groq_model must not be empty while "
+            'polish.prefer = "groq" (name a model, or set prefer to '
+            '"ollama" to stay local instead)')
     if cfg.polish.cerebras_timeout_s <= 0:
         raise ConfigError("polish.cerebras_timeout_s must be positive")
     if not cfg.polish.cerebras_model and cfg.polish.prefer == "cerebras":

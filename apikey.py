@@ -23,6 +23,7 @@ ENV_FILE = APP_DIR / ".env"
 # not provider-specific.
 _GEMINI_NAMES = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
 _CEREBRAS_NAMES = ("CEREBRAS_API_KEY",)
+_GROQ_NAMES = ("GROQ_API_KEY",)
 
 
 def _from_environment(names: tuple[str, ...]) -> tuple[str, str] | None:
@@ -69,6 +70,10 @@ def find_cerebras_key() -> tuple[str | None, str]:
     return find_key(_CEREBRAS_NAMES)
 
 
+def find_groq_key() -> tuple[str | None, str]:
+    return find_key(_GROQ_NAMES)
+
+
 MISSING_KEY_MESSAGE = (
     "No Gemini API key found.\n"
     f"  Easiest fix: put this single line in {ENV_FILE}\n"
@@ -82,6 +87,14 @@ CEREBRAS_MISSING_KEY_MESSAGE = (
     "  Free tier: 1M tokens/day, no credit card — console.cerebras.ai\n"
     f"  Then put this single line in {ENV_FILE}:\n"
     "      CEREBRAS_API_KEY=your-key-here\n"
+    "  Until then the repair pass stays on the local model, exactly as "
+    "classic runs it.")
+
+GROQ_MISSING_KEY_MESSAGE = (
+    "No Groq API key found.\n"
+    "  Free tier, no credit card — console.groq.com\n"
+    f"  Then put this single line in {ENV_FILE}:\n"
+    "      GROQ_API_KEY=your-key-here\n"
     "  Until then the repair pass stays on the local model, exactly as "
     "classic runs it.")
 

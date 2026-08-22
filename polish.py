@@ -227,6 +227,12 @@ class Polisher:
 
         prefer = self._cfg.polish.prefer
 
+        def groq(cap: int):
+            return translate_mod.GroqTranslator(
+                self._cfg.polish.groq_model,
+                self._cfg.polish.groq_timeout_s,
+                system_prompt=self._system_prompt, max_tokens=cap)
+
         def cerebras(cap: int):
             return translate_mod.CerebrasTranslator(
                 self._cfg.polish.cerebras_model,
@@ -244,10 +250,9 @@ class Polisher:
                 system_prompt=self._system_prompt,
                 setting="polish.ollama_model", num_predict=cap)
 
-        order = [("cerebras", cerebras), ("ollama", ollama)]
-        if prefer == "ollama":
-            order.reverse()
-        return order
+        order = {"groq": groq, "cerebras": cerebras, "ollama": ollama}
+        ranked = ([prefer] + [name for name in order if name != prefer])
+        return [(name, order[name]) for name in ranked]
 
     def _backends(self, text: str):
         """Yield ready backends in preference order for THIS text.
