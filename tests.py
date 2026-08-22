@@ -3781,14 +3781,22 @@ def test_stop_works_during_the_model_loading_window() -> None:
 
 
 def test_a_quit_asked_for_before_the_wait_is_not_missed() -> None:
-    signal = singleton.QuitSignal()
+    """Under a PRIVATE event name. This test used to create and signal the
+    REAL quit event — which a running instance is waiting on — so running
+    the suite stopped the app mid-session. Twice observed live."""
+    original = singleton.QUIT_EVENT_NAME
+    singleton.QUIT_EVENT_NAME = r"Local\HebrewDictation.selftest.quit2"
+    signal = None
     try:
+        signal = singleton.QuitSignal()
         assert signal.is_set() is False
         assert singleton.request_quit() is True
         assert signal.is_set() is True, \
             "a quit sent before wait() was called would be lost"
     finally:
-        signal.close()
+        if signal is not None:
+            signal.close()
+        singleton.QUIT_EVENT_NAME = original
 
 
 def test_nothing_listening_is_not_the_same_as_a_refusal() -> None:
