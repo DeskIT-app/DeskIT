@@ -351,14 +351,13 @@ class Dashboard:
         # A whole-app version switch in flight: while it runs, the Version
         # screen's buttons are dead and a second press must do nothing.
         self._switching = False
-        # The branch this folder is on, cached ONCE: the Overview meta line
-        # and the Version screen read this rather than shelling out to git
-        # on every 800 ms poll. Refreshed after a successful switch.
-        try:
-            import versions as versions_mod
-            self.branch = versions_mod.current_branch()
-        except Exception:
-            self.branch = "?"
+        # The branch this folder is on, for the Overview meta line and the
+        # Version screen. Resolved OFF this thread by the warm-up below —
+        # asking git synchronously here delayed the whole window opening,
+        # and every click on Version paid the same tax again.
+        self.branch = "?"
+        threading.Thread(target=self._warm_versions, daemon=True,
+                         name="versions-warmup").start()
         # Latched, not re-derived, because the pause taken by the key
         # dialog has to be undone from wherever that dialog's life ends —
         # including a route that never runs its own close handler.
@@ -1197,6 +1196,25 @@ class Dashboard:
         p["auto"].set(bool(auto))
 
     # ------------------------------------------------------------- version
+
+    def _warm_versions(self) -> None:
+        """Fill the branch caches before anyone clicks Version.
+
+        versions.py spawns git, and git under pythonw allocates a console
+        per spawn unless suppressed — hundreds of ms each, fatal on the UI
+        thread (it froze the Version screen solid). Both facts are handled
+        inside versions.py now; this thread's job is only to pay even that
+        smaller cost while the window is still opening, not when a tab is
+        clicked. The answer lands back on the Tk thread through _events,
+        like every other off-thread result.
+        """
+        try:
+            import versions as versions_mod
+            here = versions_mod.current_branch()
+            versions_mod.known_versions()
+        except Exception:
+            return
+        self._events.put(lambda: setattr(self, "branch", here))
 
     def _screen_version(self) -> None:
         """Which whole-app version is running, and the one-click way to

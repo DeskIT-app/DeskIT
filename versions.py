@@ -65,6 +65,18 @@ VERSIONS: dict[str, dict[str, str]] = {
 
 STOP_WAIT_S = 20.0        # how long to wait for a running instance to exit
 
+# Git is a console program and this tool usually runs under pythonw, which
+# has none: without CREATE_NO_WINDOW every spawned git ALLOCATES A NEW
+# CONSOLE (conhost.exe) — visible flicker and hundreds of ms each, all on
+# the caller's thread. Measured as the reason the dashboard's Version
+# screen froze it solid.
+_CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
+# Branches change only through switch(), which clears these. Between
+# switches the answers cannot change, and re-asking git for them was what
+# made every click pay the spawn tax above.
+_cache: dict = {}
+
 
 class SwitchError(Exception):
     """A switch refused or failed halfway. str(e) is user-facing."""
@@ -75,7 +87,8 @@ def _git(*args: str) -> str:
     try:
         proc = subprocess.run(
             ["git", *args], cwd=APP_DIR, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=60)
+            encoding="utf-8", errors="replace", timeout=15,
+            creationflags=_CREATE_NO_WINDOW)
     except FileNotFoundError:
         raise SwitchError(
             "git was not found on PATH — the versions system needs it to "
@@ -89,8 +102,10 @@ def _git(*args: str) -> str:
 
 
 def current_branch() -> str:
-    out = _git("rev-parse", "--abbrev-ref", "HEAD").strip()
-    return out or "(unknown)"
+    if "branch" not in _cache:
+        out = _git("rev-parse", "--abbrev-ref", "HEAD").strip()
+        _cache["branch"] = out or "(unknown)"
+    return str(_cache["branch"])
 
 
 def _exists(name: str) -> bool:
@@ -102,8 +117,15 @@ def _exists(name: str) -> bool:
 
 
 def known_versions() -> list[str]:
-    """The registry entries that actually exist as local branches."""
-    return [name for name in VERSIONS if _exists(name)]
+    """The registry entries that actually exist as local branches.
+
+    Cached: every caller asks for the same two names, each ask was a git
+    spawn, and the answer only changes through switch() — which drops the
+    cache on its way out.
+    """
+    if "known" not in _cache:
+        _cache["known"] = [name for name in VERSIONS if _exists(name)]
+    return list(_cache["known"])
 
 
 def _assert_switchable() -> None:
@@ -198,6 +220,9 @@ def switch(target: str) -> None:
             config_path.write_bytes(saved)
 
     print(f"switched {here!r} -> {target!r}")
+    # The branch facts this module cached no longer hold. Clear BEFORE the
+    # restart so the first question any window asks afterwards re-asks git.
+    _cache.clear()
     if was_running:
         _start_instance()
         print("the app was running — restarted it on the new version "
