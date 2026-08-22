@@ -112,7 +112,7 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
            "faint": ui.FAINT}
 
 NAV = (("overview", "Overview"), ("history", "History"),
-       ("keys", "Keys"), ("settings", "Settings"))
+       ("keys", "Keys"), ("version", "Version"), ("settings", "Settings"))
 
 # Which keys belong together on the Keys screen. HOTKEY_FIELDS is still
 # the one place a new key has to be added: anything not named here lands
@@ -348,6 +348,17 @@ class Dashboard:
         self.status: dict = {}
         self.running = False
         self.closing = False
+        # A whole-app version switch in flight: while it runs, the Version
+        # screen's buttons are dead and a second press must do nothing.
+        self._switching = False
+        # The branch this folder is on, cached ONCE: the Overview meta line
+        # and the Version screen read this rather than shelling out to git
+        # on every 800 ms poll. Refreshed after a successful switch.
+        try:
+            import versions as versions_mod
+            self.branch = versions_mod.current_branch()
+        except Exception:
+            self.branch = "?"
         # Latched, not re-derived, because the pause taken by the key
         # dialog has to be undone from wherever that dialog's life ends —
         # including a route that never runs its own close handler.
@@ -516,6 +527,7 @@ class Dashboard:
         {"Overview": self._screen_overview,
          "History": self._screen_history,
          "Keys": self._screen_keys,
+         "Version": self._screen_version,
          "Settings": self._screen_settings}[name]()
         self._refresh(self.status or None)
         self._slide_in()
@@ -724,6 +736,11 @@ class Dashboard:
         p["hero_bar"].config(image=ui.rounded(4, 112, 2, colour, ui.CARD))
 
         bits = []
+        # The version leads: it is the one fact on this line that changes
+        # what the rest of the words mean ("local" under fast is a
+        # different repair pass than "local" under classic).
+        if getattr(self, "branch", "") not in ("", "?"):
+            bits.append(self.branch)
         if status.get("backend"):
             bits.append(status["backend"])
         if status.get("mic"):
@@ -1179,6 +1196,147 @@ class Dashboard:
             auto = self._read_keys().get("_auto", False)
         p["auto"].set(bool(auto))
 
+    # ------------------------------------------------------------- version
+
+    def _screen_version(self) -> None:
+        """Which whole-app version is running, and the one-click way to
+        change it. Versions are git branches of this very folder;
+        versions.py owns the mechanics (stop the instance, carry
+        config.toml across untouched, flip the branch, restart). This
+        screen is its face."""
+        self._title("Version", "two whole apps in one folder")
+        p = self.parts
+
+        try:
+            import versions as versions_mod
+            here = self.branch if self.branch != "?" \
+                else versions_mod.current_branch()
+            known = versions_mod.known_versions()
+            registry = versions_mod.VERSIONS
+        except Exception as e:
+            # No git must not blank the screen: say what is missing where
+            # the version would have been.
+            card = ui.Card(self.sheet, CW, 96, pad=18)
+            card.place(x=PAD, y=64)
+            tk.Label(card.body, text="VERSIONS UNAVAILABLE", bg=ui.CARD,
+                     fg=ui.FAINT, font=(ui.UI, 8)).place(x=0, y=0)
+            tk.Label(card.body, text=str(e)[:300], bg=ui.CARD, fg=ui.DIM,
+                     font=(ui.UI, 9), wraplength=CW - 72,
+                     justify="left").place(x=0, y=24)
+            return
+
+        info = registry.get(here, {"label": here, "desc": ""})
+        now = ui.Card(self.sheet, CW, 122, pad=18)
+        now.place(x=PAD, y=64)
+        tk.Label(now.body, text="RUNNING NOW", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 8)).place(x=0, y=0)
+        tk.Label(now.body, text=info["label"], bg=ui.CARD,
+                 fg=ui.ACCENT_TEXT,
+                 font=(ui.DISPLAY, 19, "bold")).place(x=0, y=16)
+        tk.Label(now.body, text=f"branch '{here}'", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 8)).place(x=0, y=48)
+        tk.Label(now.body, text=info["desc"], bg=ui.CARD, fg=ui.DIM,
+                 font=(ui.UI, 8), wraplength=CW - 36,
+                 justify="left").place(x=0, y=66)
+
+        others = [n for n in known if n != here]
+        row_h = 58
+        card_h = 62 + len(others) * row_h + 62
+        card = ui.Card(self.sheet, CW, card_h, pad=18)
+        card.place(x=PAD, y=198)
+        tk.Label(card.body, text="SWITCH TO", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 8)).place(x=0, y=0)
+        row = 26
+        for name in others:
+            oinfo = registry.get(name, {"label": name, "desc": ""})
+            tk.Label(card.body, text=ui.ICON["version"], bg=ui.CARD,
+                     fg=ui.ACCENT, font=(ui.ICONS, 11)).place(x=0, y=row + 7)
+            tk.Label(card.body, text=f"{oinfo['label']}  ({name})",
+                     bg=ui.CARD, fg=ui.FG,
+                     font=(ui.UI, 10)).place(x=26, y=row + 1)
+            tk.Label(card.body, text=oinfo["desc"], bg=ui.CARD, fg=ui.FAINT,
+                     font=(ui.UI, 8), wraplength=CW - 210,
+                     justify="left").place(x=26, y=row + 21)
+            btn = ui.Button(card.body, "Use this",
+                            lambda t=name: self._use_version(t),
+                            w=96, h=32, quiet=True, icon=ui.ICON["play"])
+            btn.place(x=CW - 36 - 96, y=row + 6)
+            p[f"use_{name}"] = btn
+            row += row_h
+        if not others:
+            tk.Label(card.body, text="no other version exists on this "
+                                     "machine — see versions.py",
+                     bg=ui.CARD, fg=ui.FAINT,
+                     font=(ui.UI, 9)).place(x=0, y=row)
+
+        p["ver_status"] = tk.Label(card.body, text="", bg=ui.CARD,
+                                   fg=ui.AMBER, font=(ui.UI, 8),
+                                   wraplength=CW - 36, justify="left")
+        p["ver_status"].place(x=0, y=row + 6)
+        tk.Label(card.body,
+                 text="switching stops the app, flips the folder and starts "
+                      "it again (~25 s of model loading). your settings come "
+                      "across untouched; a switch refuses while any file "
+                      "other than config.toml has uncommitted changes.",
+                 bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                 wraplength=CW - 36, justify="left").place(x=0, y=row + 28)
+
+    def _use_version(self, target: str) -> None:
+        """Switch whole-app version, entirely off the Tk thread.
+
+        versions.switch stops the running instance, waits for it to exit,
+        flips the branch and restarts it — tens of seconds, all of it
+        blocking, none of it allowed near the UI loop. The poller keeps
+        asking its question throughout and watches the app vanish and come
+        back on its own; completion arrives through _events like every
+        other off-thread answer.
+        """
+        if self._switching:
+            return
+        try:
+            import versions as versions_mod
+        except Exception as e:
+            self._note(f"cannot switch: {e}")
+            return
+
+        self._switching = True
+        for key, widget in list(self.parts.items()):
+            if key.startswith("use_"):
+                widget.enable(False)
+        if "ver_status" in self.parts:
+            self.parts["ver_status"].config(
+                text=f"switching to {target} — stopping, flipping, "
+                     "restarting…")
+
+        def work() -> None:
+            error: str | None = None
+            try:
+                versions_mod.switch(target)
+            except Exception as e:      # SwitchError, git failures, timeouts
+                error = str(e)
+            self._events.put(
+                lambda: self._switch_done(target, error))
+
+        threading.Thread(target=work, daemon=True,
+                         name="version-switch").start()
+
+    def _switch_done(self, target: str, error: str | None) -> None:
+        self._switching = False
+        if error:
+            if "ver_status" in self.parts:
+                self.parts["ver_status"].config(
+                    text=f"NOT switched — {error}")
+            for key, widget in list(self.parts.items()):
+                if key.startswith("use_"):
+                    widget.enable(True)
+            return
+        self.branch = target
+        self._note(f"now running {target}")
+        # Rebuild the screen rather than patching it: the running-version
+        # card and the rows under it are laid out from who IS current.
+        if self.screen == "Version":
+            self._show("Version")
+
     # ------------------------------------------------- talking to the app
 
     def _poller(self) -> None:
@@ -1602,6 +1760,7 @@ class Dashboard:
 
         {"Overview": self._paint_overview, "History": lambda: None,
          "Keys": self._paint_keys,
+         "Version": lambda: None,
          "Settings": self._paint_settings}[self.screen]()
 
     # ------------------------------------------------------------ shutdown

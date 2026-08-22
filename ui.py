@@ -120,6 +120,7 @@ ICON = {
     "translate": "\ue8c1", "punctuate": "\ue8bd", "learned": "\ue90f",
     "error": "\uea39", "discarded": "\ue74d", "file": "\ue8a5",
     "page": "\ue7c3", "folder": "\ue8b7", "engine": "\ue9d9",
+    "version": "\ue895",
 }
 
 _cache: dict = {}
