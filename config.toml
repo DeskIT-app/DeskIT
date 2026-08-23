@@ -555,7 +555,14 @@ when = "always"           # never | known | always
 min_chars = 20            # below this there is no context to reason from, which
                           # is exactly where a model starts inventing some
 
-prefer = "groq"           # groq | cerebras | ollama — WHICH BACKEND REPAIRS
+prefer = "groq"           # FAST VERSION ONLY — classic ignores this key and
+                          # the four below it, and always repairs locally.
+                          # They are written here anyway because both versions
+                          # commit a byte-identical config.toml (see
+                          # versions.py) and because a knob you cannot find is
+                          # a knob you do not have.
+                          #
+                          # groq | cerebras | ollama — WHICH BACKEND REPAIRS
                           # FIRST. The others follow in order underneath it,
                           # ollama always among them, so this is a preference
                           # and never a commitment.
@@ -680,6 +687,18 @@ english_threshold = 0.8       # high on purpose: mis-detected Hebrew is far wors
 # byte-identical output on good audio.
 guard_hallucinations = true      # tighten Whisper's own confidence thresholds
                                  # and enable hallucination_silence_threshold
+
+beam_size = 5                    # FAST VERSION ONLY — classic ignores this key
+                                 # and always decodes at 5.
+                                 # Beam width for the decoder. 5 is what this
+                                 # app has always run; lower (try 2) transcribes
+                                 # faster on exactly the short clips dictation
+                                 # produces, at some accuracy cost, and 1 is
+                                 # greedy. DO NOT change it on a hunch: replay
+                                 # the recordings in recent\ with
+                                 # `main.py --benchmark` both ways and keep the
+                                 # change only if the WER trade is one you want.
+                                 # This is the whole reason the knob exists
 drop_trailing_boilerplate = true # drop parliamentary phrases stuck to the END
                                  # of a transcript (never the middle — there
                                  # they are almost certainly really yours)
