@@ -70,16 +70,19 @@ PYTHONW = APP_DIR / ".venv" / "Scripts" / "pythonw.exe"
 VERSIONS: dict[str, dict[str, str]] = {
     "classic": {
         "label": "Classic",
-        "desc": ("Today's proven behavior. Local Whisper + the gemma3:12b "
-                 "repair pass (~5 s per dictation). Nothing new."),
+        "desc": ("Proven behavior, nothing in the cloud. Local Whisper "
+                 "and the gemma3:12b repair pass, ~5 s per dictation. "
+                 "Every other feature is the same as Fast: same box, "
+                 "same history, same hot words."),
     },
     "fast": {
         "label": "Fast",
-        "desc": ("Experiment. The repair pass tries Cerebras' free API "
-                 "first (~sub-second) and falls back to the exact classic "
-                 "path. Adds [local] beam_size and [polish] cerebras_* "
-                 "knobs; needs CEREBRAS_API_KEY in .env to go fast, works "
-                 "without it (just classic-slow)."),
+        "desc": ("The same app with the repair pass sent to Groq's free "
+                 "API first, ~0.3-0.6 s instead of ~5 s, falling back to "
+                 "the exact Classic path when it cannot. Sends your "
+                 "TRANSCRIPT TEXT to Groq — never your audio. Needs "
+                 "GROQ_API_KEY in .env; without one it simply runs "
+                 "Classic-slow. Also adds [local] beam_size."),
     },
 }
 
