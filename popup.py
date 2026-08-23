@@ -275,6 +275,92 @@ the chord is an accelerator on top of it, because a swallowed Ctrl+C that
 was meant for the window underneath is a silent theft: nothing lands on
 the clipboard that the user expects, and there is no error to see.
 
+WHY THE ANSWER SHRINKS BEFORE IT IS CUT
+---------------------------------------
+The box is capped — max_width x max_height, config's knobs, the work-area
+argument in _place() says why — and an answer taller than the cap used to
+lose its tail to an ellipsis at the normal face, full stop. The owner's
+report was a paragraph translation whose last lines never arrived: "the
+text doesn't enter the box". His spec, verbatim: there is a maximum size
+the box opens to, and the text size should change so everything fits.
+
+So _layout() now descends: measure at the default face; if anything was
+trimmed, measure again one step smaller (every role scaled off the same
+base, headline and senses together); stop at the first size where nothing
+is trimmed, or at min_font_px — 11 px — where Hebrew in Segoe UI stops
+being readable and an unreadable whole answer loses to a readable one
+with an ellipsis. Only past the floor do words get given up, and they are
+given up from the floor-sized layout, which shows strictly more of the
+answer than the old default-size trim did.
+
+The descent re-wraps per size because it must: line breaks depend on the
+face (measured disagreement between engines at ONE width is the reason
+_wrap() exists at all), so there is no honest shortcut from one size's
+breaks to another's. Cost is bounded and measured, 2026-08-22 on this
+machine: the binary search over every 1 px step from the default down to
+the floor — five layouts in the worst case, trim included — runs in
+0.7 ms median for a dictionary answer, 2.1 ms for the 60-word sample,
+11.9 ms for 180 words, and 21.7 ms median / 24.6 ms worst for a
+4056-char answer near lookup.max_chars' guard. That is on this window's
+own thread, where latency answers to a human reading and not to a
+keyboard hook's 300 ms guillotine — and since the same day, a DRAG never
+pays it inline: the frame moves first (see _resize_to) and the search
+runs on the _REFIT_MS throttle. It was NOT free to get here either: with
+the old word-boundary binary-search _trim the same descent measured
+699 ms median, which is why trim now keeps whole wrapped lines (one wrap)
+instead of re-wrapping a candidate prefix per probe, and why _run_width
+memoizes chunks across one descent.
+
+A hand can buy the rest back: the resizer below sets a bigger cap, and
+the gesture refits from the FULL answer (`_answer`), so words an earlier
+cap cut off return as the box grows.
+
+WHY THERE IS A RESIZER, AND WHY IT LIVES IN BOTH BOTTOM CORNERS
+---------------------------------------------------------------
+Auto-fit trades legibility for completeness when the cap is small. The
+hand should be allowed to make the opposite trade — more screen, bigger
+type — and every other window on this machine offers exactly that grip.
+There are TWO of them here, an _RESIZE square in EACH bottom corner, and
+that is a correction measured in the field: the first cut had one, in
+whichever corner was DIAGONALLY OPPOSITE the close button — bottom-right
+on a Hebrew box, bottom-left on an English one — and which corner worked
+therefore depended on the ANSWER's language. The same grab on the same
+spot grew one box and did nothing at all to the next ("I drag the
+bottom-right corner down-down-down and it does nothing. If I move it to
+the right, it opens; to the left, it opens and moves it down", the owner,
+2026-08-22). Both corners resize now, each against its own fixed top
+corner, and pulling OUTWARD is growth everywhere. The press routing is
+still the same single-decision function as everything else: _zone_at()
+answers once, at the press, and a resize gesture can no more turn into a
+selection than a move gesture can.
+
+The first cut of this let the box HUG its text within the requested cap —
+every pixel honest, and in the field, broken: once the answer fitted, the
+corner stopped under the cursor, and catching up meant dragging far past
+where you wanted the edge ("it gets stuck … I have to really go down … it
+doesn't go down with me", the owner, 2026-08-22). So now the window IS
+the size the hand asked for, verbatim, every move — up to the FULL
+monitor rect, again on his words ("any size I want, to the point where
+it's full screen"; the old monitor-minus-margin cap was a ceiling he hit
+long before the screen ran out) — and auto-fit lays the answer out INSIDE
+that frame.
+
+And inside that frame the type ZOOMS. The third report was "I'm trying
+to enlarge it, but it's not growing": with the face capped at the 19 px
+default, enlarging only piled invisible dark slack under short answers —
+the frame obeyed and nothing appeared to happen. So a HAND-SET frame
+searches faces on both sides of the default (see _layout): growing the
+box grows the type, continuously in 1 px steps up to _FACE_MAX, until
+the answer fills what you made or hits the ceiling. Direct manipulation
+first, typography second — but typography still follows, which is the
+whole point of making the frame bigger.
+
+The size is a property OF THE ANSWER, like the position: kept across
+update() (same question, the "…" becoming the reply) and dropped by the
+next show(), exactly as a dragged position is dropped by a new anchor. A
+box that reopened huge for a two-word answer would be the tail wagging
+the dog.
+
 THREE THINGS IT MUST NOT DO, the same list as overlay.py
 --------------------------------------------------------
 - Steal focus. You may well be typing. WS_EX_NOACTIVATE, plus
@@ -348,6 +434,10 @@ SM_CXSCREEN, SM_CYSCREEN = 0, 1
 # DragWidth/DragHeight), 4 px each on a default install.
 SM_CXDRAG, SM_CYDRAG = 68, 69
 IDC_ARROW, IDC_IBEAM, IDC_SIZEALL = 32512, 32513, 32646
+# The two diagonal resize cursors. Which one a grip wears follows the
+# corner it lives in: a bottom-right grip drags the south-east edge and
+# takes the NWSE cursor, a bottom-left grip the mirror image.
+IDC_SIZENWSE, IDC_SIZENESW = 32642, 32643
 HTCLIENT = 1
 VK_ESCAPE = 0x1B
 # The copy chord, and the three modifiers that must NOT be down with it.
@@ -364,6 +454,16 @@ _TIMER_ID = 1
 # before the next question is asked.
 _FLASH_TIMER_ID = 2
 _FLASH_MS = 1400
+# The third timer: how often a drag REFLOWS the answer inside the frame
+# its grip has already drawn. THE FRAME IS NEVER ON THIS TIMER — it moves
+# in the same message the mouse arrives in, verbatim, which is the whole
+# lesson of 2026-08-22: re-laying the text out inline made the frame wait
+# behind wraps and measures, and a fast hand out-ran it — stick, stick,
+# JUMP. Fifty milliseconds is twice a display's refresh budget and a
+# quarter of the way to invisible; the text trails the edge by less than
+# the eye holds.
+_RESIZE_TIMER_ID = 3
+_REFIT_MS = 50
 # How hard the copy button tries to get the clipboard. See _copy_now: the
 # contention this covers is another THREAD OF THIS PROCESS, which
 # injector's own retry cannot see.
@@ -437,6 +537,51 @@ _GRIP = 44
 _SEL_GROW = 4
 # The zones that are buttons, as opposed to the handle and the text.
 _BUTTONS = ("close", "copy", "copysel")
+
+# AUTO-FIT, or: the answer shrinks before it is cut. An answer taller
+# than max_height used to lose its tail to an ellipsis at the normal face,
+# full stop. Now the whole layout is re-measured at smaller faces first —
+# every role scaled off the same base, so headline and senses shrink
+# together — and only when even the floor cannot fit the text does the
+# old trim take over. The owner's words: "there is a maximum size the box
+# opens to, and the text size should change accordingly so everything
+# fits inside".
+#
+# The floor is a readability line, not a vanity: Segoe UI Hebrew below ~11
+# px stops being something you read and becomes something you squint at,
+# and an unreadable complete answer loses to a readable one with an
+# ellipsis. Measured 2026-08-22 on this machine: three copies of the
+# 60-word _PARAGRAPH sample, cut at the default 19 px, fit complete inside
+# max_height at 16 px; four copies still do not fit even at the floor —
+# too much text, whatever the type — which is why the trim has to survive.
+_FONT_FLOOR = 11
+# The ZOOM ceiling, for frames the hand set. Auto-fit inside a CONFIGURED
+# cap searches downward from the default face only — max_width/max_height
+# are maximums, and their whole point was a box that never covers the
+# screen. Inside a HAND-SET frame the question inverts: the owner's words
+# were "I want to enlarge the text as much as I want, to the point where
+# it's full screen", and what he had could not answer them — the face
+# stopped at 19 px forever, so enlarging only piled invisible slack under
+# the text and looked like the box refusing to grow. So a hand-set frame
+# is searched on BOTH sides of the default, and the largest face that
+# fits wins, up to this ceiling. 120 px is not a reading size, it is a
+# guard: beyond ~400 px a letter is taller than a quarter of a 1440p
+# screen — poster size, past which the binary search would spend probes
+# and GDI glyph memory on faces nobody can read at reading distance. The
+# owner asked for headroom past the old 120 px ceiling he kept hitting;
+# 400 gives a fullscreen frame around a short answer room to more than
+# triple that.
+_FACE_MAX = 400
+
+# THE RESIZER GRIP. A second handle, for size where the bar was for
+# position: an _RESIZE square in the bottom corner DIAGONALLY OPPOSITE the
+# close button (bottom-right on a Hebrew box, whose close sits top-left;
+# bottom-left on an English one). The diagonal keeps the two gestures'
+# corners apart — move at the reading end, resize at the far one — the
+# same mirror rule every other piece of chrome in this window follows.
+_RESIZE = 18
+# (The minimum resized size is not a module constant: it follows the bar's
+# own furniture and the padding, which are per-instance — see __init__.)
 
 
 class WNDCLASSW(ctypes.Structure):
@@ -1025,12 +1170,18 @@ class _Line:
     double-click takes.
     """
 
-    __slots__ = ("text", "role", "rect", "hit", "block")
+    __slots__ = ("text", "role", "rect", "hit", "block", "size_px")
 
     def __init__(self, text: str, role: str, rect: w.RECT,
-                 block: int) -> None:
+                 block: int, size_px: int) -> None:
         self.text, self.role, self.rect = text, role, rect
         self.block = block
+        # The face this line was measured in. One answer can now hold
+        # lines from ONE layout only — but that layout's face is not
+        # necessarily the instance's default any more (auto-fit), and a
+        # line is the unit painting and the hit test both work on, so the
+        # size travels with the thing that needs it.
+        self.size_px = size_px
         self.hit = (rect.top, rect.bottom)
 
 
@@ -1061,6 +1212,44 @@ class _Drag:
         self.active = False
 
 
+class _Resize:
+    """One press on a resize grip that might turn into a resize.
+
+    The move gesture's sibling, built the same way on purpose: SetCapture
+    for the gesture, the OS's own DragWidth/DragHeight as the threshold a
+    wobble fails, and `active` never going back once set. A press on an
+    18 px square shifts a pixel or two as the finger comes down, and that
+    is a click, not a resize.
+
+    `grip_right` says WHICH of the two bottom corners is held, because it
+    decides two things: the corner the box grows against (`fix_x`/
+    `fix_y`, the one diagonally opposite the held grip) and the diagonal
+    of the cursor. Every move recomputes the size wanted from the
+    cursor's DISTANCE FROM THAT CORNER, not from how far the hand has
+    travelled, which is what makes the gesture self-correcting the way
+    _drag_to is: a late or coalesced move cannot accumulate error, it
+    just lands where the hand is.
+
+    `cap_w`/`cap_h` are the bounds the box's monitor allows — its FULL
+    rect, at the owner's request ("any size I want, to the point where
+    it's full screen"); the old monitor-minus-margin cap was measured as
+    a ceiling he kept hitting before the screen ever ran out.
+    """
+
+    __slots__ = ("grip_right", "fix_x", "fix_y", "cap_w", "cap_h",
+                 "start_x", "start_y", "slop_x", "slop_y", "active")
+
+    def __init__(self, grip_right: bool, fix_x: int, fix_y: int,
+                 cap_w: int, cap_h: int, start_x: int,
+                 start_y: int, slop_x: int, slop_y: int) -> None:
+        self.grip_right = grip_right
+        self.fix_x, self.fix_y = fix_x, fix_y
+        self.cap_w, self.cap_h = cap_w, cap_h
+        self.start_x, self.start_y = start_x, start_y
+        self.slop_x, self.slop_y = slop_x, slop_y
+        self.active = False
+
+
 class _Layout:
     """Everything _paint() is allowed to know. Built once, in _layout().
 
@@ -1074,15 +1263,26 @@ class _Layout:
     `blocks` and `lines` are two views of the same text and neither is
     redundant: a block is what was MEASURED and trimmed, a line is what
     is painted and what a press selects.
+
+    `size_px` is the base face the whole layout was measured at — the
+    default, or whatever auto-fit descended to. `truncated` says whether
+    the cap had to cut something off at that size; it is the one bit the
+    fit loop reads to decide whether a smaller face would still help.
+    `resizer_l`/`resizer_r` are the drag-to-resize squares in BOTH bottom
+    corners: whichever the hand grabs, pulling OUTWARD grows, so no answer
+    language can make a corner lie about what it does.
     """
 
     __slots__ = ("text", "rtl", "width", "height", "blocks", "lines",
                  "rule", "bar", "button", "copy", "copysel", "grip",
-                 "label", "label_rect", "show_copy")
+                 "label", "label_rect", "show_copy", "size_px", "truncated",
+                 "resizer_l", "resizer_r")
 
     def __init__(self, text: str, rtl: bool) -> None:
         self.text, self.rtl = text, rtl
         self.width = self.height = 0
+        self.size_px = 0
+        self.truncated = False
         self.blocks: list[_Block] = []
         self.lines: list[_Line] = []
         self.rule: w.RECT | None = None
@@ -1091,6 +1291,8 @@ class _Layout:
         self.copy = w.RECT(0, 0, 0, 0)
         self.copysel = w.RECT(0, 0, 0, 0)
         self.grip = w.RECT(0, 0, 0, 0)
+        self.resizer_l = w.RECT(0, 0, 0, 0)
+        self.resizer_r = w.RECT(0, 0, 0, 0)
         self.label_rect = w.RECT(0, 0, 0, 0)
         self.label = ""
         self.show_copy = False
@@ -1123,16 +1325,35 @@ class Popup:
     def __init__(self, *, max_width: int = 460, max_height: int = 520,
                  font: str = "Segoe UI", size_px: int = 19, pad: int = 16,
                  margin: int = 24, alpha: int = 255, corner: int = 10,
-                 gap: int = 18) -> None:
+                 gap: int = 18, min_font_px: int = _FONT_FLOOR) -> None:
         self.max_width = max(160, int(max_width))
         self.max_height = max(64, int(max_height))
         self.font_name, self.size_px = font, int(size_px)
+        # The auto-fit floor. Nothing below this is reading any more; see
+        # _FONT_FLOOR above for where the line comes from.
+        self.min_font_px = max(9, int(min_font_px))
         self.pad, self.margin = int(pad), int(margin)
         self.alpha, self.corner = int(alpha), int(corner)
         self.gap = max(0, int(gap))
+        # How small a hand may make the box: the bar's own
+        # three-buttons-and-a-label minimum plus padding across, and the
+        # bar plus one line of body plus padding down — exactly the "…"
+        # box, so a fully shrunk box is never smaller than the smallest
+        # useful one.
+        self._min_w = max(self.max_width // 3 + 1,
+                          _BAR_MIN + 2 * self.pad)
+        self._min_h = max(_BAR + 2 * self.pad + self.size_px,
+                          _BAR + 6 + self.min_font_px + self.pad)
 
         self._hwnd: int | None = None
-        self._fonts: dict[str, int] = {}
+        self._fonts: dict[tuple[str, int], int] = {}
+        # Chunk-width memo for ONE auto-fit descent at a time; see
+        # _run_width. None whenever a layout is not running.
+        self._wcache: dict[tuple[int, str], int] | None = None
+        # The face the last layout was measured at — what a bare
+        # _font(role) call means. Real layout and paint paths pass their
+        # size explicitly; this only serves callers outside a layout.
+        self._active_px = self.size_px
         self._font_lock = threading.Lock()
         self._text, self._rtl = "", True
         # What the clipboard gets: the answer as it ARRIVED, before
@@ -1179,6 +1400,18 @@ class Popup:
         # see _ctrl_c_is_ours().
         self._sel_fg = 0
         self._drag: _Drag | None = None
+        # The resize gesture, the move gesture's sibling — same capture,
+        # same threshold, different axis. See _begin_resize.
+        self._resizing: _Resize | None = None
+        # A content reflow is owed to a running resize (the _REFIT_MS
+        # tick is on the clock). The frame never waits for it; this only
+        # stops a second timer being set while one is pending.
+        self._refit_scheduled = False
+        # A size the hand set, overriding (max_width, max_height) as the
+        # cap this box fits itself inside. Reset by every NEW question —
+        # a fresh lookup is a fresh box at its natural size, exactly as a
+        # fresh lookup forgets where the last one was dragged to.
+        self._user_size: tuple[int, int] | None = None
         # Where the user put it, once he has. None means "nobody has
         # moved this box", which is what lets update() re-place a box
         # from its anchor and leave a dragged one alone.
@@ -1380,7 +1613,9 @@ class Popup:
         return self._hwnd
 
     def measure(self, text: str, *, rtl: bool) -> tuple[int, int]:
-        """The window size `text` would need, after capping and trimming.
+        """The window size `text` would need, once auto-fit has had its
+        say — every face tried down to the floor, then capped and
+        trimmed.
 
         Never larger than (max_width, max_height): that is the point of
         it. Public because sizing is the one part of a popup that can be
@@ -1533,7 +1768,12 @@ class Popup:
         # and a box that reopened three screens away from the word you
         # just asked about would be the corner problem all over again.
         self._end_drag()
+        self._end_resize()
         self._moved_to = None
+        # ...and fresh at the size it fits itself: a size the hand set was
+        # for THAT answer, and this one has not been seen yet.
+        self._user_size = None
+        self._refit_scheduled = False
         self._render()
 
     def _do_update(self, text: str) -> None:
@@ -1562,15 +1802,18 @@ class Popup:
         # Esc can land mid-drag, and a window that is hidden while it
         # still holds the mouse keeps every other window from seeing the
         # button come up. Mid-SELECTION is the same capture and the same
-        # problem.
+        # problem — and mid-RESIZE the third way to be holding this
+        # window's capture, ended here for the same reason.
         self._end_drag()
+        self._end_resize()
         self._forget_selection()
         user32.KillTimer(self._hwnd, ctypes.c_void_p(_TIMER_ID))
         user32.KillTimer(self._hwnd, ctypes.c_void_p(_FLASH_TIMER_ID))
+        user32.KillTimer(self._hwnd, ctypes.c_void_p(_RESIZE_TIMER_ID))
         user32.ShowWindow(self._hwnd, SW_HIDE)
 
     def _render(self) -> None:
-        lay = self._layout(self._text, self._rtl)
+        lay = self._fit_window(self._text, self._rtl)
         self._lay, self._text = lay, lay.text
         if self._moved_to is None:
             x, y = self._place(lay.width, lay.height, self._anchor,
@@ -1604,6 +1847,8 @@ class Popup:
                 user32.KillTimer(self._hwnd, ctypes.c_void_p(_TIMER_ID))
                 user32.KillTimer(self._hwnd,
                                  ctypes.c_void_p(_FLASH_TIMER_ID))
+                user32.KillTimer(self._hwnd,
+                                 ctypes.c_void_p(_RESIZE_TIMER_ID))
                 _INSTANCES.pop(self._hwnd, None)
                 user32.DestroyWindow(self._hwnd)
             self._hwnd = None
@@ -1831,20 +2076,31 @@ class Popup:
 
     # ------------------------------------------------------------ layout
 
-    def _font(self, role: str) -> int:
+    def _font(self, role: str, size_px: int | None = None) -> int:
         # Locked because measure() is callable from any thread while the
         # popup thread is painting: two CreateFontW calls race, the loser's
         # handle is overwritten and never deleted (+1 GDI object over 800
         # calls from 4 threads, measured 2026-08-19).
+        #
+        # Keyed by (role, size) and not by role alone since auto-fit: one
+        # process now measures at several faces across its life, and a
+        # cache keyed by role would hand the 13 px layout the 19 px title
+        # font and measure it into the wrong box. The size argument is
+        # None only for callers outside a layout — the tests' — which get
+        # whatever the last laid-out face was.
+        if size_px is None:
+            size_px = self._active_px
+        key = (role, int(size_px))
         with self._font_lock:
-            handle = self._fonts.get(role)
+            handle = self._fonts.get(key)
             if handle is None:
                 delta, weight, _ = self._FACE.get(role, self._FACE["body"])
+                px = max(9, key[1] + delta)
                 handle = gdi32.CreateFontW(
-                    -max(9, self.size_px + delta), 0, 0, 0, weight, 0, 0, 0,
+                    -px, 0, 0, 0, weight, 0, 0, 0,
                     DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0,
                     self.font_name)
-                self._fonts[role] = handle
+                self._fonts[key] = handle
             return handle
 
     def _flags(self, rtl: bool) -> int:
@@ -1925,10 +2181,28 @@ class Popup:
                 len(lines) * self._face_height(hdc))
 
     def _run_width(self, hdc: int, text: str) -> int:
+        # The auto-fit descent measures the SAME chunks several times over
+        # — _wrap, then _trim's rebuild, then _block's re-check, all at
+        # one face — so a descent-wide cache collapses that to one
+        # DrawTextW per distinct (face, chunk). Keyed by face because
+        # nothing carries over between faces; scoped to ONE _layout()
+        # call (set/cleared there) because a process-lifetime cache would
+        # grow with every answer ever shown. Concurrent measure() from
+        # another thread can interleave resets: worst case it re-measures
+        # something, never that a wrong width is served — the key carries
+        # the face.
+        if self._wcache is not None:
+            key = (self._active_px, text)
+            hit = self._wcache.get(key)
+            if hit is not None:
+                return hit
         r = w.RECT(0, 0, 0, 0)
         user32.DrawTextW(hdc, text, -1, ctypes.byref(r),
                          DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX)
-        return r.right - r.left
+        width = r.right - r.left
+        if self._wcache is not None:
+            self._wcache[key] = width
+        return width
 
     def _face_height(self, hdc: int) -> int:
         """One line of whatever font is in the DC right now.
@@ -1970,8 +2244,123 @@ class Popup:
         """
         return _BAR + max(6, self.pad - 5)
 
+    def _caps(self) -> tuple[int, int]:
+        """The box this layout has to fit inside: the hand's size when it
+        has set one, (max_width, max_height) when it has not."""
+        if self._user_size is not None:
+            return self._user_size
+        return self.max_width, self.max_height
+
+    def _fit_window(self, text: str, rtl: bool) -> _Layout:
+        """What the window shows AND the rectangle the window occupies.
+
+        _layout() measures CONTENT: its width and height hug the text,
+        capped by but never filled out to the hand's size. A resize built
+        on that alone measured beautifully and felt broken — the owner
+        pulled the corner down and the box stopped where the words
+        stopped ("it gets stuck … it doesn't go down with me",
+        2026-08-22) — because a grip that does not stay under the hand is
+        not a handle, it is a suggestion. So whenever a hand-set size
+        exists, the WINDOW IS that size, the way every window on this
+        machine answers an edge drag: the answer lays out inside it from
+        the top, auto-fit recovering the face while there is room for it,
+        and whatever slack is left at the bottom stays background like an
+        editor's page. The bar furniture is recomputed against the real
+        frame so the grip sits in the corner of the WINDOW — the pixel
+        under the finger — not in the corner of the text.
+        """
+        lay = self._layout(text, rtl)
+        if self._user_size is None:
+            return lay
+        w, h = self._user_size
+        lay.width = max(int(w), self._min_w)
+        lay.height = max(int(h), self._min_h)
+        # The rectangles were laid out for the hugged frame: the bar's
+        # label span and, above all, the resizer's own square are
+        # functions of width/height, so they follow the frame here or
+        # the hand would be holding a corner the box no longer believes
+        # in.
+        self._bar(lay)
+        return lay
+
     def _layout(self, text: str, rtl: bool) -> _Layout:
         """What to draw, where, and the window size it all fits in.
+
+        The entry point runs AUTO-FIT and then hands over to
+        _layout_at(), which measures ONE face: first at the default, and
+        if that had to trim anything — lay.truncated — again smaller,
+        because the owner's rule is "there is a maximum size the box opens
+        to, and the text size should change accordingly so everything fits
+        inside". Only when NO face down to min_font_px fits does anything
+        give words up, and then the cut is taken from the FLOOR-sized
+        layout: an unreadable-but-whole answer loses to a readable one
+        with an ellipsis, but both lose to readable-and-whole.
+
+        WHICH smaller faces get tried matters as much as that any do. A
+        descent in coarse lumps (19 -> 15 -> 12 -> floor was the first
+        cut) made the text snap between them while the hand dragged:
+        nothing, nothing, ten centimetres. So the fit is BINARY-SEARCHED
+        over every 1 px step down to the floor and the LARGEST face that
+        fits wins — enlarging the box recovers type at the first pixel
+        that can hold it, shrinking gives it up the same way. "Fits"
+        is treated as monotone in the face (smaller glyphs wrap into no
+        more height), which held for every sample measured; if a
+        pathological string ever breaks that, the search still returns an
+        actually-fitting size, only possibly not the largest one.
+
+        Every role scales off the same base, headline and senses together;
+        a layout whose title shrank while its body did not would stop
+        looking like one answer.
+        """
+        limit_w, limit_h = self._caps()
+        size = self.size_px
+        floor = self.min_font_px
+        # A HAND-SET frame inverts the question. Configured caps are
+        # maximums, so inside them the search runs DOWNWARD from the
+        # default and stops there. Inside a frame the hand drew, the
+        # owner's ask was "enlarge the text as much as I want, to the
+        # point where it's full screen" — so the search spans BOTH sides
+        # of the default up to _FACE_MAX, and the largest face that fits
+        # wins: growing the box ZOOMS the type instead of piling
+        # invisible slack under it, which is exactly why the first cut
+        # looked like a box that refused to grow.
+        hi = _FACE_MAX if self._user_size is not None else size
+        self._wcache = {}
+        try:
+            lay = self._layout_at(size, text, rtl, limit_w, limit_h)
+            if (lay.truncated or hi != size) and hi > floor:
+                best = lay if not lay.truncated else None
+                lo, top = floor, hi
+                while lo <= top:
+                    mid = (lo + top) // 2
+                    cand = (lay if mid == size else
+                            self._layout_at(mid, text, rtl,
+                                            limit_w, limit_h))
+                    if cand.truncated:
+                        top = mid - 1
+                    else:
+                        best, lo = cand, mid + 1
+                if best is not None:
+                    lay = best
+                elif lay.truncated:
+                    # Nothing anywhere fits: cut from the FLOOR layout,
+                    # which shows strictly more than the default-size
+                    # trim this used to end at.
+                    lay = self._layout_at(floor, text, rtl,
+                                          limit_w, limit_h)
+        finally:
+            self._wcache = None
+        return lay
+
+    def _layout_at(self, size_px: int, text: str, rtl: bool,
+                   max_w: int, max_h: int) -> _Layout:
+        """One candidate layout, measured entirely at `size_px`.
+
+        Everything here is the original single-size layout with two
+        numbers made parameters (`max_w`, `max_h` are the caps this pass
+        must obey — the hand's resize sets them, config otherwise). The
+        one new output bit is `truncated`: whether THIS size had to give
+        words up, which is the signal the caller descends on.
 
         _wrap() asks the function that will do the drawing how tall each
         block wraps, so the box is measured rather than guessed — but
@@ -2008,18 +2397,22 @@ class Popup:
         living on another. Untested: no such hardware here.
         """
         lay = _Layout(text, rtl)
+        lay.size_px = int(size_px)
+        # What a bare _font(role) means until the next layout: see the
+        # cache comment. Set before anything selects a font.
+        self._active_px = lay.size_px
         pad = self.pad
         top = self._body_top()
-        inner = max(40, self.max_width - 2 * pad)
-        cap_h = max(20, self.max_height - top - pad)
+        inner = max(40, max_w - 2 * pad)
+        cap_h = max(20, max_h - top - pad)
 
         hdc = user32.GetDC(None)
         sized: list[tuple[str, str, int, int, list[str], int]] = []
-        line_h, y, widest, previous = self.size_px, 0, 0, ""
+        line_h, y, widest, previous = lay.size_px, 0, 0, ""
         try:
-            line_h = self._line_height(hdc)
+            line_h = self._line_height(hdc, lay.size_px)
             for role, body in self._split(text):
-                old = gdi32.SelectObject(hdc, self._font(role))
+                old = gdi32.SelectObject(hdc, self._font(role, lay.size_px))
                 try:
                     body = self._break_long_tokens(hdc, body, inner)
                     lead = self._lead(previous, role)
@@ -2027,9 +2420,15 @@ class Popup:
                     bw, bh = self._block(hdc, body, inner)
                     if bh > room:
                         if room < line_h:
-                            break       # not even one line left: drop it
+                            # Not even one line left at this size. A
+                            # smaller face might still buy a line, so
+                            # this is truncation the caller can descend
+                            # on — but the block is dropped either way.
+                            lay.truncated = True
+                            break
                         body = self._trim(hdc, body, inner, room)
                         bw, bh = self._block(hdc, body, inner)
+                        lay.truncated = True
                     rows = self._wrap(hdc, body, inner)
                     face = self._face_height(hdc)
                 finally:
@@ -2043,12 +2442,12 @@ class Popup:
             user32.ReleaseDC(None, hdc)
 
         # A box narrower than its own bar is a smudge, not a box — but
-        # max_width still wins, because measure() promises never to
-        # exceed it and config.py lets it go to 160.
+        # the cap still wins, because measure() promises never to exceed
+        # it and config.py lets it go to 160.
         inner_w = max(min(widest, inner),
                       min(max(0, _BAR_MIN - 2 * pad), inner))
-        lay.width = min(inner_w + 2 * pad, self.max_width)
-        lay.height = min(top + max(y, line_h) + pad, self.max_height)
+        lay.width = min(inner_w + 2 * pad, max_w)
+        lay.height = min(top + max(y, line_h) + pad, max_h)
         for role, body, block_top, bh, rows, face in sized:
             block = len(lay.blocks)
             lay.blocks.append(_Block(body, role,
@@ -2059,7 +2458,8 @@ class Popup:
                 row_top = top + block_top + i * face
                 lay.lines.append(_Line(row, role,
                                        w.RECT(pad, row_top, pad + inner_w,
-                                              row_top + face), block))
+                                              row_top + face), block,
+                                       lay.size_px))
             if role == "title":
                 # The hairline sits halfway down the gap under the
                 # headline, so the two spaces above and below it are
@@ -2121,6 +2521,18 @@ class Popup:
         two other buttons shuffle sideways the instant you press on a
         sense, moving the close button out from under a finger that was
         on its way to it.
+
+        The resizers are placed here too, one in EACH bottom corner. They
+        used to be a single mirrored square — far corner from the close
+        button only — and that mirror was measured in the field as a trap:
+        which corner works depends on the ANSWER's language, so the same
+        grab on the same spot of the screen grows one box and does nothing
+        at all to the next ("I drag the bottom-right down-down-down and it
+        does nothing"). Both corners now resize, each against its own
+        fixed top corner, and pulling OUTWARD is growth everywhere. They
+        are in the body's territory, not the bar's: _zone_at() tests them
+        after the bar and before falling through to "body", so they steal
+        exactly their own squares from the selection and nothing else.
         """
         lay.bar = w.RECT(0, 0, lay.width, _BAR)
         lay.show_copy = bool(lay.blocks) and lay.text != WAITING
@@ -2158,6 +2570,10 @@ class Popup:
             lay.label_rect = w.RECT(_BUTTON_PAD + 2, 0,
                                     max(_BUTTON_PAD + 2, right), _BAR - 1)
         lay.label = self._bar_label(lay.rtl)
+        lay.resizer_r = w.RECT(lay.width - _RESIZE, lay.height - _RESIZE,
+                               lay.width, lay.height)
+        lay.resizer_l = w.RECT(0, lay.height - _RESIZE, _RESIZE,
+                               lay.height)
 
     def _bar_label(self, rtl: bool) -> str:
         """What the bar says: the term that was looked up, or failing
@@ -2189,9 +2605,9 @@ class Popup:
             return 20               # room for the hairline, half each side
         return 5 if role == "sense" else 10
 
-    def _line_height(self, hdc: int) -> int:
+    def _line_height(self, hdc: int, size_px: int) -> int:
         """One line of body text, for the "is there room left" test."""
-        old = gdi32.SelectObject(hdc, self._font("body"))
+        old = gdi32.SelectObject(hdc, self._font("body", size_px))
         tm = TEXTMETRICW()
         gdi32.GetTextMetricsW(hdc, ctypes.byref(tm))
         gdi32.SelectObject(hdc, old)
@@ -2240,26 +2656,55 @@ class Popup:
 
     def _trim(self, hdc: int, text: str, inner_w: int,
               inner_h: int) -> str:
-        """Cut to the last whole word that fits, and say so with a "…".
+        """Cut to the last whole LINE that fits, and say so with a "…".
 
-        The cut is at a word boundary rather than a character, and the
-        character-level fallback skips combining marks, because Hebrew
-        niqqud are combining marks: cutting between a letter and its
-        vowel points leaves the points orphaned onto whatever follows.
+        The cut keeps whole visual lines rather than hunting a word
+        boundary, and that is a measured necessity, not a shortcut: this
+        ran before as a binary search over word cuts, re-wrapping the
+        whole candidate from scratch per probe — 2026-08-22, a 4056-char
+        paragraph, 699 ms median for ONE auto-fit descent past it, which
+        is most of a second of popup thread per mouse move. Wrapping ONCE
+        and keeping the lines that fit measures the same strings with the
+        same engine and costs one wrap; the disagreement risk the old
+        caution was about does not arise because nothing is re-wrapped at
+        all — the lines kept are the lines _wrap produced.
+
+        The one place a word boundary still matters is the LAST kept
+        line, which carries the "…" and may have to give tokens back
+        until both fit the width together. Tokens, so Hebrew niqqud are
+        never split from their letters (they are combining marks INSIDE a
+        token); a line with no spaces at all falls back to shaving
+        characters the way the old cut did.
         """
-        cuts = [i for i, ch in enumerate(text) if ch.isspace()]
-        if not cuts:
-            cuts = [i for i in range(1, len(text))
-                    if not unicodedata.combining(text[i])]
-        lo, hi, best = 0, len(cuts) - 1, ""
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            cand = text[:cuts[mid]].rstrip() + " " + ELLIPSIS
-            if self._block(hdc, cand, inner_w)[1] <= inner_h:
-                best, lo = cand, mid + 1
-            else:
-                hi = mid - 1
-        return best or ELLIPSIS
+        lines = self._wrap(hdc, text, inner_w)
+        face = self._face_height(hdc)
+        keep = max(1, int(inner_h) // max(1, face))
+        if len(lines) <= keep:
+            return text             # already fits by count; nothing to cut
+        kept = lines[:keep]
+        tail = kept[-1]
+        marker = tail.rstrip() + " " + ELLIPSIS if tail.strip() else ELLIPSIS
+        while marker != ELLIPSIS \
+                and self._run_width(hdc, marker) > inner_w:
+            stripped = marker[:-len(ELLIPSIS)].rstrip()
+            cut = stripped.rfind(" ")
+            if cut > 0:
+                marker = stripped[:cut].rstrip() + " " + ELLIPSIS
+                continue
+            # No break left in the line: shave characters off the end,
+            # never stranding a combining mark on the cut edge.
+            i = len(stripped)
+            while i > 0:
+                if not unicodedata.combining(stripped[i - 1]):
+                    cand = stripped[:i].rstrip() + " " + ELLIPSIS
+                    if self._run_width(hdc, cand) <= inner_w:
+                        marker = cand
+                        break
+                i -= 1
+            if i <= 0:
+                marker = ELLIPSIS
+        kept[-1] = marker
+        return "\n".join(kept)
 
     # ----------------------------------------------------------- messages
 
@@ -2277,7 +2722,8 @@ class Popup:
                 y - 0x10000 if y >= 0x8000 else y)
 
     def _zone_at(self, x: int, y: int) -> str:
-        """"close", "copy", "copysel", "bar" or "body" for a client point.
+        """"close", "copy", "copysel", "bar", "resize" or "body" for a
+        client point.
 
         The one place the box decides what a press means, and the order
         matters: the buttons are cut out of the bar, so they are tested
@@ -2287,10 +2733,17 @@ class Popup:
         the bar moves, but a press on an invisible button is a press on
         the bar and takes hold of the box like the rest of it.
 
-        "body" is everything under the bar, and it takes TEXT: a press
-        selects the line under it, and a drag the range. It cannot fight
-        the window move for the gesture, because this function has
-        already decided which one the press was.
+        "resize" is the corner grip, and it is cut out of the BODY the
+        same way the buttons are cut out of the bar: tested after the bar
+        and before the fall-through to text. It costs the selection
+        exactly its own 18 px square in one corner of the body and
+        nothing else — the same trade every window with a grip makes.
+
+        "body" is everything under the bar that is left, and it takes
+        TEXT: a press selects the line under it, and a drag the range. It
+        cannot fight the window move or the resize for the gesture,
+        because this function has already decided which one the press
+        was.
         """
         lay = self._lay
         if lay is None:
@@ -2304,6 +2757,8 @@ class Popup:
             return "close"
         if _inside(lay.bar, x, y):
             return "bar"
+        if _inside(lay.resizer_r, x, y) or _inside(lay.resizer_l, x, y):
+            return "resize"
         return "body"
 
     def _zone(self, lparam: int) -> str:
@@ -2395,7 +2850,8 @@ class Popup:
                      max(row.rect.right - row.rect.left, 0))
         hdc = user32.GetDC(None)        # the desktop DC, as _layout uses
         try:
-            old = gdi32.SelectObject(hdc, self._font(row.role))
+            old = gdi32.SelectObject(hdc,
+                                     self._font(row.role, row.size_px))
             try:
                 # RTL lines are right-aligned, so the glyphs start a
                 # gap in from the left edge of the row rectangle and the
@@ -2856,6 +3312,178 @@ class Popup:
                                      if self._cursor_zone() == "bar"
                                      else IDC_ARROW))
 
+    def _begin_resize(self, hwnd: int, x: int, y: int) -> None:
+        """Take hold of a corner, without taking the focus.
+
+        Called from the RESIZER and nowhere else — the discipline
+        _begin_drag holds to for the bar. Nothing here resizes anything:
+        the press is only recorded, and it becomes a size in _resize_to()
+        or it becomes nothing. SetCapture is what makes the rest of the
+        gesture arrive after the pointer has left an 18 px square — a few
+        pixels of real hand movement — and it activates, focuses and
+        raises nothing, for all the same reasons the drag's capture does
+        not.
+
+        WHICH grip was grabbed is decided here from the press point,
+        because both bottom corners resize and each grows against its own
+        fixed top corner. The corner and the bounds of the monitor are
+        read NOW, at the press, and carried in the _Resize: mid-gesture
+        neither may move under the hand.
+        """
+        lay = self._lay
+        r, pt = w.RECT(), w.POINT()
+        if lay is None or not (self._hwnd
+                               and user32.GetWindowRect(hwnd,
+                                                        ctypes.byref(r))
+                               and user32.GetCursorPos(ctypes.byref(pt))):
+            return
+        if _inside(lay.resizer_l, x, y):
+            # Grip bottom-left: the top-right corner stays put.
+            grip_right, fix_x, fix_y = False, int(r.right), int(r.top)
+        else:
+            # Grip bottom-right (and any stray press): top-left stays put.
+            grip_right, fix_x, fix_y = True, int(r.left), int(r.top)
+        centre = w.POINT((r.left + r.right) // 2, (r.top + r.bottom) // 2)
+        mi = MONITORINFO()
+        mi.cbSize = ctypes.sizeof(MONITORINFO)
+        mon = user32.MonitorFromPoint(centre, MONITOR_DEFAULTTONEAREST)
+        if not (mon and user32.GetMonitorInfoW(mon, ctypes.byref(mi))):
+            mi.rcMonitor = w.RECT(0, 0,
+                                  user32.GetSystemMetrics(SM_CXSCREEN),
+                                  user32.GetSystemMetrics(SM_CYSCREEN))
+        # The FULL monitor rect, at the owner's request — "any size I
+        # want, to the point where it's full screen". A margin here was a
+        # ceiling he kept hitting long before the screen ran out.
+        cap_w = max(self._min_w, mi.rcMonitor.right - mi.rcMonitor.left)
+        cap_h = max(self._min_h, mi.rcMonitor.bottom - mi.rcMonitor.top)
+        self._resizing = _Resize(
+            grip_right=grip_right, fix_x=fix_x, fix_y=fix_y,
+            cap_w=cap_w, cap_h=cap_h,
+            start_x=int(pt.x), start_y=int(pt.y),
+            slop_x=max(1, user32.GetSystemMetrics(SM_CXDRAG)),
+            slop_y=max(1, user32.GetSystemMetrics(SM_CYDRAG)))
+        user32.SetCapture(hwnd)
+
+    def _resize_to(self, hwnd: int) -> None:
+        """Follow the cursor: grow or shrink against the far corner.
+
+        THE FRAME FIRST, AND ALWAYS. The size the hand asks for is applied
+        to the window IN THIS MESSAGE, verbatim, before anything else — a
+        SetWindowPos costs microseconds, and applying it first is the
+        difference the owner was pointing at when he said a Chrome window
+        "really moves millimeter by millimeter with my mouse". The first
+        cut re-laid the answer out inline before every move, and whenever
+        that work out-lasted the gap between moves — any long answer, any
+        fast hand — the moves piled up behind it and the frame caught up
+        in bursts: stick, nothing, ten centimetres. A frame that waits on
+        typography is not tracking; it is queueing.
+
+        The CONTENT catches up on a throttle instead: at most one reflow
+        per _REFIT_MS, always against the LATEST size (earlier requests
+        are superseded, never queued), so the text trails the edge by less
+        than the eye holds and never costs the frame a pixel. The release
+        runs one last exact refit, so what you let go of is what you get.
+        Auto-fit still has its say INSIDE the frame — growing recovers
+        type toward the default first, shrinking spends the face's slack
+        before it spends words — and the refit works from the FULL
+        answer, so pulling outward can bring back lines an earlier cap
+        cut off.
+        """
+        rz, pt = self._resizing, w.POINT()
+        if rz is None or not user32.GetCursorPos(ctypes.byref(pt)):
+            return
+        if not rz.active:
+            # SM_CXDRAG/SM_CYDRAG, read exactly as the move gesture reads
+            # them: a press that wobbles within the slop is a click on
+            # nothing, not a resize.
+            if (abs(pt.x - rz.start_x) < rz.slop_x
+                    and abs(pt.y - rz.start_y) < rz.slop_y):
+                return
+            rz.active = True
+            # Set here and not left to WM_SETCURSOR because Windows sends
+            # none while a capture is held — measured and written down in
+            # the drag's WM_SETCURSOR case — so the cursor would stick on
+            # whatever it was showing at the press.
+            user32.SetCursor(_cursor(IDC_SIZENWSE if rz.grip_right
+                                     else IDC_SIZENESW))
+        wanted_w = pt.x - rz.fix_x if rz.grip_right else rz.fix_x - pt.x
+        wanted_h = pt.y - rz.fix_y
+        wanted_w = min(max(wanted_w, self._min_w), rz.cap_w)
+        wanted_h = min(max(wanted_h, self._min_h), rz.cap_h)
+        if self._user_size == (wanted_w, wanted_h):
+            return                  # the hand has not asked for anything new
+        self._user_size = (wanted_w, wanted_h)
+        x = rz.fix_x if rz.grip_right else rz.fix_x - wanted_w
+        y = rz.fix_y
+        # The frame, THIS message. Nothing stands between the cursor and
+        # the edge — least of all a wrap-and-measure of the answer.
+        user32.SetWindowPos(hwnd, None, int(x), int(y),
+                            int(wanted_w), int(wanted_h),
+                            SWP_NOZORDER | SWP_NOACTIVATE)
+        if not self._refit_scheduled:
+            self._refit_scheduled = True
+            user32.SetTimer(hwnd, ctypes.c_void_p(_RESIZE_TIMER_ID),
+                            _REFIT_MS, None)
+
+    def _refit_now(self) -> None:
+        """Bring the text up to date with the frame the hand has drawn.
+
+        Runs on the popup thread, from the resize tick and from the
+        release. The window is ALREADY the right size — this only lays
+        the answer out inside it, so nothing here may move the window:
+        _fit_window returns the hand's own dimensions and they are
+        believed, never re-applied.
+        """
+        if not (self._hwnd and self.visible()):
+            return
+        lay = self._fit_window(self._answer or self._text, self._rtl)
+        self._lay = lay
+        user32.InvalidateRect(self._hwnd, None, True)
+        user32.UpdateWindow(self._hwnd)
+
+    def _end_resize(self) -> None:
+        """Let go of the corner — whatever it was that let go for us.
+
+        Four ways in, the same list _end_drag keeps: the button coming up,
+        the WM_CAPTURECHANGED ReleaseCapture sends straight back, a
+        capture TAKEN AWAY by something else, and a button-less mouse
+        move. Idempotent like its sibling, so hide() and show() may call
+        it blind.
+
+        What survives is the SIZE — keeping it was the point — and never
+        the cursor: putting the diagonal away when the hand has moved on
+        to the bar or the body hands the arrow back, the same zone rule
+        the drag ends under.
+        """
+        rz, self._resizing = self._resizing, None
+        if rz is None:
+            return
+        if self._refit_scheduled:
+            # A tick was still owed when the hand let go: pay it now,
+            # once, exactly — what is released must be what is shown.
+            user32.KillTimer(self._hwnd, ctypes.c_void_p(_RESIZE_TIMER_ID))
+            self._refit_scheduled = False
+        cap = user32.GetCapture()
+        if cap and self._hwnd and int(cap) == self._hwnd:
+            user32.ReleaseCapture()
+        if rz.active:
+            self._refit_now()
+            zone = self._cursor_zone()
+            if zone == "resize":
+                # Which corner the hand came to rest on decides the
+                # diagonal — both are live now, so this is asked of the
+                # rects and not of the answer's language.
+                cpt = self._cursor_point()
+                cur = self._lay
+                on_right = _inside(cur.resizer_r, *cpt) \
+                    if (cur is not None and cpt is not None) else True
+                ident = IDC_SIZENWSE if on_right else IDC_SIZENESW
+            elif zone == "bar":
+                ident = IDC_SIZEALL
+            else:
+                ident = IDC_ARROW
+            user32.SetCursor(_cursor(ident))
+
     def _on_message(self, hwnd: int, msg: int, wparam: int, lparam: int):
         """Return None for anything DefWindowProcW should handle."""
         if msg == WM_PAINT:
@@ -2900,6 +3528,16 @@ class Popup:
                                            else "body")
             if zone == "bar":
                 ident = IDC_SIZEALL
+            elif zone == "resize":
+                # The diagonal that matches the corner held — bottom-right
+                # drags the south-east edge (NWSE arrows), bottom-left the
+                # mirror. Both corners resize now, so this is decided by
+                # WHICH square is under the hand, not by the answer's
+                # language.
+                cur = self._lay
+                on_right = cur is not None and _inside(
+                    cur.resizer_r, pt[0], pt[1]) if pt else True
+                ident = IDC_SIZENWSE if on_right else IDC_SIZENESW
             elif self._selecting or (zone == "body" and pt is not None
                                      and self._line_at(pt[1]) is not None):
                 ident = IDC_IBEAM
@@ -2951,6 +3589,17 @@ class Popup:
                 # re-subscribes the leave this branch skips.
                 self._drag_to(hwnd)
                 return 0
+            if (self._resizing is not None and not (wparam & MK_LBUTTON)
+                    and int(user32.GetCapture() or 0) != hwnd):
+                # The resize's own copy of the same backstop: a capture
+                # taken away by something that also swallowed the
+                # button-up must not leave the corner growing under a
+                # hand that let go long ago. This ends the GESTURE; the
+                # size it reached stays — that was the point of it.
+                self._end_resize()
+            if self._resizing is not None:
+                self._resize_to(hwnd)
+                return 0
             # The button being physically down is read off the message
             # rather than remembered, because a release OUTSIDE the window
             # is never delivered to it: without this the box would still
@@ -2991,6 +3640,12 @@ class Popup:
             self._set_hot(on_button, on_button)
             if zone == "bar":
                 self._begin_drag(hwnd)
+            elif zone == "resize":
+                # The corner opposite the bar's handle — either one of
+                # the two bottom squares now. Same discipline: the press
+                # is only recorded, and it becomes a resize in
+                # _resize_to or it becomes nothing.
+                self._begin_resize(hwnd, x, y)
             elif zone == "body":
                 if msg == WM_LBUTTONDBLCLK:
                     self._select_word(self._point_at(x, y))
@@ -3009,12 +3664,22 @@ class Popup:
             # the last one before the release is not guaranteed to
             # exist. A capture taken away mid-gesture is covered by the
             # button-less move above instead, which is the same backstop
-            # the drag has.
+            # the drag has. The resize has no such ordering problem — a
+            # corner held mid-gesture keeps nothing the release needs —
+            # so it ends here like the drag does.
             self._end_drag()
+            self._end_resize()
             return 0
         if msg == WM_LBUTTONUP:
             if self._drag is not None:
                 self._end_drag()
+                return 0
+            if self._resizing is not None:
+                # The release is the commit: whatever size the corner
+                # reached is the size the box keeps until the next new
+                # question. Nothing to fire, unlike a button — a click on
+                # the grip that never moved is a no-op either way.
+                self._end_resize()
                 return 0
             if self._selecting:
                 # Where the button came up, from the message rather than
@@ -3044,6 +3709,15 @@ class Popup:
                 self._flash = None
                 self._repaint_bar()
                 return 0
+            if int(wparam) == _RESIZE_TIMER_ID:
+                # The content catch-up a running drag owed. The frame
+                # itself never waited on this — see _resize_to — so all
+                # it does is bring the text to the size the hand has
+                # already drawn.
+                user32.KillTimer(hwnd, ctypes.c_void_p(_RESIZE_TIMER_ID))
+                self._refit_scheduled = False
+                self._refit_now()
+                return 0
             self._do_hide("dwell")
             return 0
         if msg == WM_DESTROY:
@@ -3072,6 +3746,7 @@ class Popup:
             gdi32.SetBkMode(hdc, TRANSPARENT)
             self._paint_bar(hdc, lay)
             self._paint_body(hdc, lay)
+            self._paint_resizer(hdc, lay)
             if lay.rule is not None:
                 user32.FillRect(hdc, ctypes.byref(lay.rule), _brush(EDGE))
         finally:
@@ -3098,13 +3773,47 @@ class Popup:
         flags = self._flags(lay.rtl)
         for i, line in enumerate(lay.lines):
             span = self._span_on(i)
-            old = gdi32.SelectObject(hdc, self._font(line.role))
+            old = gdi32.SelectObject(hdc,
+                                     self._font(line.role, line.size_px))
             gdi32.SetTextColor(hdc, self._FACE.get(
                 line.role, self._FACE["body"])[2])
             try:
                 self._paint_line(hdc, lay, line, span, flags)
             finally:
                 gdi32.SelectObject(hdc, old)
+
+    def _paint_resizer(self, hdc: int, lay: _Layout) -> None:
+        """Three nested diagonals in EACH bottom corner.
+
+        The glyph every resize grip on this machine draws, at the
+        smallest size it stays legible: three 1 px hairlines parallel to
+        the corner's hypotenuse, stepping four pixels out from it. DIM,
+        and deliberately nothing more: the move handle next door — the
+        bar — has no visible affordance either, and this box's handles
+        announce themselves with the CURSOR, which arrives the moment
+        the hand does. A brighter grip would be a permanent decoration
+        on a window whose whole point is to sit quietly over somebody
+        else's text.
+
+        BOTH corners carry the glyph, because both corners resize: a
+        single mirrored grip was measured in the field as a trap, since
+        which corner was live depended on the answer's language and the
+        same grab grew one box and did nothing to the next.
+        """
+        old_pen = gdi32.SelectObject(hdc, _pen(DIM))
+        try:
+            for b in (lay.resizer_r, lay.resizer_l):
+                for k in range(3):
+                    if b is lay.resizer_r:
+                        x0, y0 = b.right - 5 - k * 4, b.bottom - 1
+                        x1, y1 = b.right - 1, b.bottom - 5 - k * 4
+                    else:
+                        x0, y0 = b.left + 5 + k * 4, b.bottom - 1
+                        x1, y1 = b.left + 1, b.bottom - 5 - k * 4
+                    gdi32.MoveToEx(hdc, x0, y0, None)
+                    gdi32.LineTo(hdc, x1, y1)
+        finally:
+            gdi32.SelectObject(hdc, old_pen)
 
     def _paint_line(self, hdc: int, lay: _Layout, line: _Line,
                     span: tuple[int, int] | None, flags: int) -> None:
@@ -3218,7 +3927,7 @@ class Popup:
         if self._flash is not None:
             text, colour = self._flash_words(lay.rtl)
         if text:
-            old = gdi32.SelectObject(hdc, self._font("bar"))
+            old = gdi32.SelectObject(hdc, self._font("bar", lay.size_px))
             gdi32.SetTextColor(hdc, colour)
             box = w.RECT(lay.label_rect.left, lay.label_rect.top,
                          lay.label_rect.right, lay.label_rect.bottom)
@@ -3382,11 +4091,17 @@ def _main(argv: list[str] | None = None) -> int:
     --anchor-mouse and --anchor 'x,y' put the box where a selection would
     have been, which is the only way to see the placement rules without
     the whole app running. Whatever it opens on, it can then be dragged
-    BY ITS TITLE BAR and by nothing else: the last line printed says how
-    far it ended up from where it opened, so a drag from the body should
-    print 0,0 and a drag from the bar should not. --delay is the one to
-    run to see that an answer arriving does not take the box back, and
-    --term fills the bar with a word the way a real lookup will.
+    BY ITS TITLE BAR, resized BY THE DIAGONAL GRIP IN THE FAR BOTTOM
+    CORNER, and by nothing else: the last line printed says how far it
+    ended up from where it opened, so a drag from the body should print
+    0,0 and a drag from the bar should not. --delay is the one to run to
+    see that an answer arriving does not take the box back, and --term
+    fills the bar with a word the way a real lookup will.
+
+    Auto-fit is worth seeing on purpose: text too tall for --height comes
+    back at a smaller face instead of trimmed, down to --min-font, past
+    which the ellipsis takes over. The chosen face is printed with the
+    rect.
 
     Press on a line of the answer and it is taken; drag down and the
     range is; double-click and the whole sense is. A third button appears
@@ -3435,6 +4150,8 @@ def _main(argv: list[str] | None = None) -> int:
                         "passes the selection here)")
     p.add_argument("--width", type=int, default=460)
     p.add_argument("--height", type=int, default=520)
+    p.add_argument("--min-font", type=int, default=_FONT_FLOOR,
+                   help="the smallest face auto-fit may descend to")
     args = p.parse_args(argv)
 
     if args.word:
@@ -3465,7 +4182,8 @@ def _main(argv: list[str] | None = None) -> int:
 
     logging.basicConfig(level=logging.DEBUG,
                         format="%(levelname)s %(message)s")
-    box = Popup(max_width=args.width, max_height=args.height)
+    box = Popup(max_width=args.width, max_height=args.height,
+                min_font_px=args.min_font)
     if args.delay:
         box.show(WAITING, rtl=rtl, dwell_ms=args.dwell, anchor=anchor,
                  term=args.term)
@@ -3480,12 +4198,17 @@ def _main(argv: list[str] | None = None) -> int:
     if box.hwnd:
         user32.GetWindowRect(box.hwnd, ctypes.byref(r))
         opened = (r.left, r.top)
+        face = box._lay.size_px if box._lay else 0
         print(f"hwnd 0x{box.hwnd:X}  rect {r.left},{r.top} "
-              f"{r.right - r.left}x{r.bottom - r.top}  "
+              f"{r.right - r.left}x{r.bottom - r.top}  face {face}px  "
               f"anchor={anchor}  rtl={rtl}  chars={len(text)}")
         print("drag it BY THE TITLE BAR — across monitors if you like; "
               "a press in the body moves nothing, and a wobble in the "
               "bar is not a move either")
+        print("resize it by the diagonal grip in EITHER bottom corner — "
+              "pull outward and it grows, up to the full screen; the text "
+              "zooms with it, and a bigger box can bring back words a "
+              "smaller cap cut off")
         print("the copy button is next to the x: press it, watch for the "
               "tick, and paste — the whole answer is on the clipboard "
               "and stays there")

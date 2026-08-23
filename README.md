@@ -153,25 +153,26 @@ command, display name, icon), so the pin launches `Dashboard.vbs` with
 the right name and face. If you pinned it before this existed, unpin and
 pin it again — the shell reads these when the pin is created.
 
-**Four screens down the side, not one long column.** Everything that was
+**Five screens down the side, not one long column.** Everything that was
 in that column is still here; it stopped being one scroll of unrelated
 things. The state and the three buttons that change it are on
 **Overview**; everything you have said is on **History**; the keys are on
-**Keys**; what it is using and where its files are is on **Settings**. The
-status dot stays in the corner of the sidebar on all four, because "is it
-on?" is the question the window exists to answer and it must never be a
-click away.
+**Keys**; which whole-app version is running, and the one-click way to
+change it, is on **Version**; what it is using and where its files are is
+on **Settings**. The status dot stays in the corner of the sidebar on all
+of them, because "is it on?" is the question the window exists to answer
+and it must never be a click away.
 
 ```
 ┌──────────────────┬──────────────────────────────────────────────────┐
 │ ▣ Hebrew Dictation│ Overview                                        │
 │   hold Right Ctrl │                                                 │
 │                   │  ● RUNNING                                      │
-│ ▸ Overview        │    gemini · Arctis 7 @ 16000 Hz                 │
+│ ▸ Overview        │    classic · local · Arctis 7 @ 16000 Hz        │
 │   History         │    4.2 s spoken -> 96 characters pasted         │
 │   Keys            │                       [Start] [Pause] [Stop]    │
-│   Settings        │                                                 │
-│                   │  DICTATIONS  SPOKEN    CHARACTERS  AVERAGE WAIT │
+│   Version         │                                                 │
+│   Settings        │  DICTATIONS  SPOKEN    CHARACTERS  AVERAGE WAIT │
 │                   │  18          6.2 min   4,210       0.5 s        │
 │                   │                                                 │
 │                   │  LAST DICTATION                          21:23  │
@@ -677,6 +678,24 @@ pasted, nothing on screen moves, and the box stays until you close it.
   Hebrew comes back as English — one key, one habit. `both_ways = false`
   if you only ever want the Hebrew direction.
 
+**An answer too tall for the box shrinks before it is cut.** The box opens
+no bigger than `[lookup] max_width` × `max_height` — that cap is the point,
+so the answer never covers half your screen — but when an answer needs more
+room than the cap leaves, the whole layout is re-measured at smaller faces
+first (headline and senses scaling together), in one-pixel steps down to
+the ~11 px floor, taking the LARGEST face that fits. Only past that floor
+does an ellipsis take the tail, and it trims the floor-sized layout, so
+more of the answer shows than the old default-size cut ever did. Measured
+2026-08-22 on this machine: three copies of the 60-word sample, which used
+to lose their last lines at the default face, now fit complete at 16 px;
+the whole search costs 0.7 ms for a dictionary word and 22 ms median for a
+4056-character answer — near the key's own guard — against 699 ms under
+the old word-hunting trim.
+
+**And if even that is not enough room, drag the box bigger by hand** — see
+the resizer below; enlarging can bring back words a cap cut off, because
+the resize re-fits the full answer, not just what was showing.
+
 ```
 תעשה commit לפני ה-merge
 ->
@@ -727,6 +746,48 @@ text — one press cannot both move a window and take a line out of it, so
 the box had to pick one. It picks per press now, and the whole decision
 lives in one function: the buttons first, then the bar, then the body.
 
+### The resizer: grips in both bottom corners, and what they buy
+
+**The exceptions to "the body is only text" are two diagonal grips, one
+in EACH bottom corner** — whichever your hand finds, that one works. The
+first cut had a single mirrored grip whose live corner depended on the
+*answer's* language: bottom-right on Hebrew, bottom-left on English, so
+the same grab on the same spot of the screen grew one box and did nothing
+at all to the next ("I drag the bottom-right down-down-down and it does
+nothing"). Both corners resize now, each growing against its own fixed
+top corner, and pulling OUTWARD is growth everywhere.
+
+Drag either grip and **the edge tracks your hand pixel for pixel**: the
+window is resized in the very same message the mouse arrives in, before
+any other work — a Chrome-style edge. The *text* catches up just behind
+it, throttled to about twenty reflows a second and always against your
+latest size, then exactly once more when you let go; two earlier cuts
+failed here in instructive ways — one let the box hug its content so a
+short answer's corner stopped following at all ("it gets stuck … it
+doesn't go down with me"), the next re-laid the text out inline before
+every move, and whenever that work out-lasted the gaps between moves the
+frame fell behind and caught up in bursts ("it jumps ten centimeters …
+it takes time to open").
+
+**And inside the frame you drew, the type zooms with it.** A hand-set
+size is searched on both sides of the normal face — enlarge the box past
+what 19 px needs and the letters themselves grow, continuously in 1 px
+steps, until the answer fills what you made or hits a generous ceiling;
+shrink it and the face gives way the same gradual way before any word
+is cut. The first version of this kept the face capped at 19 px forever,
+which is why enlarging looked like nothing happening ("I'm trying to
+enlarge it, but it's not growing"): the window obeyed and piled invisible
+dark slack under short answers. Growth runs to **the full screen** — the
+monitor's whole rect, no margin held back ("can I define it to any size I
+want, to the point where it's full screen") — and because the gesture
+re-fits the *full* answer rather than what was showing, pulling a corner
+outward can also bring back lines an earlier cap cut off. The size
+belongs to the answer you resized for; a fresh lookup opens at its
+natural size again, exactly as it forgets where you dragged the last box.
+As everywhere else in this box, the cursor announces a press before the
+press means anything: move arrows on the bar, the diagonal on a grip, an
+I-beam over text.
+
 **The bar names the word you asked about**, which the box otherwise has no
 way to know — it is handed an answer, never the question. That matters most
 once the box has outlived the selection: drag it away from your text, or
@@ -739,9 +800,11 @@ which is the box telling you which way the model actually answered.
 **Two copy buttons, and `Ctrl+C`:**
 
 - The **first** button, next to the `×`, copies the whole answer — *the
-  whole* answer, not what fitted. A long one is trimmed on screen to the
-  520 px cap; the button still hands over all of it. Measured on a
-  1762-character answer showing 565 of them: the clipboard got 1762.
+  whole* answer, not what fitted. A long one is shown within the 520 px
+  cap, its face shrinking before anything is trimmed; whatever still does
+  not fit even at the smallest readable face shows an ellipsis, and the
+  button still hands over all of it. Measured on a 1762-character answer
+  showing 565 of them: the clipboard got 1762.
 - **Press a line to take it, drag for a range, double-click for the whole
   sense** however many lines it wrapped to. A **third** button appears in
   the bar while something is lit and copies exactly that and nothing else.
@@ -815,13 +878,13 @@ which makes words the only fair unit. At or above `hebrew_share` (0.34) of
 Hebrew words the selection goes to English, below it to Hebrew.
 
 It refuses — the soft "nothing to do" note, **no request spent** — on an
-empty selection, on more than `max_chars` (5000: a paragraph is what Ctrl+F9 is
-for), on digits, punctuation or emoji alone, and on a lone URL, path or
-e-mail address. Identifiers are deliberately *not* refused; `commit` is
-exactly what this key exists for. Any of them takes the box down first: a
-box that waits to be closed would otherwise leave the answer to the *last*
-question standing as the answer to this one, with the note playing over it
-saying otherwise.
+empty selection, on more than `max_chars` (20000: past it even the
+chunked local model would run for minutes), on digits, punctuation or
+emoji alone, and on a lone URL, path or e-mail address. Identifiers are
+deliberately *not* refused; `commit` is exactly what this key exists
+for. Any of them takes the box down first: a box that waits to be closed
+would otherwise leave the answer to the *last* question standing as the
+answer to this one, with the note playing over it saying otherwise.
 
 **A second tap asks a new question.** It used to close the box instead,
 which was right while the box dismissed itself — the key that opened it
@@ -1656,7 +1719,7 @@ for `מבשרים`, all of which the local model got right.
 | `[punctuate] nikud` | `false` | also add Hebrew vowel points, not just punctuation. The same letter-for-letter safety check covers it |
 | `[lookup] hebrew_share` | `0.34` | share of Hebrew **words** — not letters — at or above which a selection is sent to English rather than to Hebrew |
 | `[lookup] both_ways` | `true` | off, a Hebrew selection gets the soft "nothing to do" note instead of coming back as English |
-| `[lookup] max_chars` | `5000` | above this it refuses and spends nothing. A 100-word paragraph already costs 7.4 s locally, and by then you wanted Ctrl+F9 |
+| `[lookup] max_chars` | `20000` | above this it refuses and spends nothing. WAS 5000, which select-all kept hitting ("it didn't translate") — long selections now reach the local model in ~3800-char parts with the box naming each part, so a page translates in visible stages. Still minutes of local time at the cap; a whole document is Ctrl+F9's job |
 | `[lookup] prefer` | `ollama` | `ollama` \| `gemini`, and deliberately the **opposite** of the other two keys: this one is tapped while reading and would eat the whole 20/day/model tier that Ctrl+F9 and F2 depend on |
 | `[lookup] model` | `gemma3:12b` | the Ollama model. Already resident for `[polish]`, so it costs no extra VRAM. Not `qwen2.5:7b` — measured, it answered `?");` for `brittle` |
 | `[lookup] cold_to_gemini` | `true` | when the local model is not loaded, send *that one* lookup to the cloud and warm the local one in the background rather than make you wait 24.4 s |
@@ -1664,7 +1727,7 @@ for `מבשרים`, all of which the local model got right.
 | `[lookup] strip_niqqud` | `true` | drop the vowel points the model sometimes decorates its Hebrew with (8 marks in 4 runs out of 4 on one input). Combining marks only: the maqaf is left alone, or `בית־הספר` would come back welded into `ביתהספר` |
 | `[lookup] dwell_ms` | `12000` | **dead — nothing reads it.** The box waits to be closed, by its `×` or by `Esc`. A box that took itself away on a timer was the complaint this key's rewrite answered, and a timer you cannot tell from a bug is worse than no timer |
 | `[lookup] max_width` | `460` | pixels. 60 words wrapped to 9 lines measured 512 px wide unbounded |
-| `[lookup] max_height` | `520` | pixels; a 22-sentence paragraph made an 896 px window, taller than some work areas. Overflow is trimmed with an ellipsis |
+| `[lookup] max_height` | `520` | pixels; a 22-sentence paragraph made an 896 px window, taller than some work areas. Past the cap the face shrinks (19 px down to an ~11 px floor) before overflow is trimmed with an ellipsis; a hand-dragged grip overrides both for that one answer |
 | `[lookup] cache_entries` | `500` | answers kept in `lookup_cache.json` (~134 bytes each). A repeat is 0.00 s and one saved request; only selections under 200 chars are stored. `0` = no cache |
 | `[lookup] skip_consoles` | `true` | refuse in console windows, where the copy chord becomes a real Ctrl+C for whatever is running there (reproduced 5/5) |
 | `[server] enabled` | `false` | the phone endpoint (see [Dictating from the phone](#dictating-from-the-phone)) |

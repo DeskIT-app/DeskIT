@@ -179,10 +179,13 @@ class LookupConfig:
     hebrew_share: float = 0.34
     # Both directions, or Hebrew only.
     both_ways: bool = True
-    # Over this the key refuses and spends nothing. A 100-word paragraph
-    # already costs 7.4 s locally, and by then you wanted the paragraph
-    # translated in place — which is what F9 is for.
-    max_chars: int = 5000
+    # Over this the key refuses and spends nothing. WAS 5000, which the
+    # owner kept hitting with select-all ("it didn't translate") — now
+    # the local model is fed in ~3800-char parts (see lookup._LOCAL_CHUNK),
+    # so a long page translates in visible stages instead of being
+    # refused. Still a ceiling: 20000 chars is minutes locally, and past
+    # the Ollama runner's context window even chunks would degrade.
+    max_chars: int = 20000
     # The OPPOSITE of [translate] and [punctuate], deliberately. The free
     # Gemini tier is 20 requests per model per day and those two keys
     # already spend 34/39/17/18 of them on a working day; a key tapped
@@ -212,9 +215,10 @@ class LookupConfig:
     # so an existing config.toml still loads, and validated below so a
     # negative one is still refused rather than silently ignored.
     dwell_ms: int = 12000
-    # Pixels. Both are caps and the overflow is trimmed with an ellipsis:
-    # measure() is unbounded, and a 22-sentence paragraph made a 896 px
-    # tall window — taller than some work areas.
+    # Pixels. Both cap what the box OPENS at: measure() is unbounded and
+    # a 22-sentence paragraph made a 896 px tall window — taller than some
+    # work areas. Past the caps the face shrinks first (19 px down to an
+    # 11 px floor) and only then is overflow trimmed with an ellipsis.
     max_width: int = 460
     max_height: int = 520
     # Answers are stable and lookups repeat, which is the whole point of
@@ -762,8 +766,8 @@ def load(path: Path) -> Config:
     if cfg.lookup.max_width < 160 or cfg.lookup.max_height < 64:
         raise ConfigError("lookup.max_width must be >= 160 and "
                           "lookup.max_height >= 64 — a box smaller than that "
-                          "cannot hold one word, and every answer would come "
-                          "back as an ellipsis")
+                          "cannot hold one word even at the smallest face, "
+                          "and every answer would come back as an ellipsis")
     if cfg.lookup.cache_entries < 0:
         raise ConfigError("lookup.cache_entries must be >= 0 (0 remembers "
                           "nothing between presses)")

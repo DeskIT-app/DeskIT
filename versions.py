@@ -3,10 +3,30 @@
 There are two, kept as git branches of this very folder:
 
   classic — the app exactly as it was the day this file was added. Frozen:
-            bugfixes aside, nothing about it changes.
-  fast    — the experiment: the context pass goes to Cerebras' free API
-            first (sub-second instead of ~5 s) and falls back to the same
+            the REPAIR PASS is what is frozen, and nothing else. Fixes and
+            shared features land here too (see below), or the two versions
+            would drift into two different programs.
+  fast    — the same app with the context pass sent to Groq's free API
+            first (~0.3-0.6 s instead of ~5 s), falling back to the same
             local Ollama model classic uses; Whisper gains tuning knobs.
+            It was Cerebras until 2026-08-22, when their free tier was
+            measured dead (HTTP 402 on every model); the setting to go
+            back is kept, the default is not.
+
+WHAT ACTUALLY DIFFERS, AND WHAT MUST NOT
+----------------------------------------
+Only the repair pass and its settings: polish.py, translate.py, the
+[polish] backend fields and [local] beam_size in config.py, and the tests
+covering them. EVERYTHING ELSE IS THE SAME FILE ON BOTH BRANCHES —
+popup.py, lookup.py, main.py, this module, config.toml — and additive
+work on those gets mirrored across rather than committed to one side.
+
+That is not tidiness. Switching is a `git checkout` of this very folder,
+so a file that exists on one branch and not the other DISAPPEARS when you
+switch, and a shared feature committed to fast alone is a feature the user
+loses by pressing a button labelled "use classic". The owner's rule, in
+his words: both versions must stay "the same application, with the same
+history and the same hot words".
 
 Switching must never be able to lose anything, so the rules are strict:
 
