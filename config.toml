@@ -516,12 +516,26 @@ terms = [
 # than swap words — >15% change in word count, or <75% of the words surviving.
 # A rejected reply is not retried; the raw transcript goes through untouched.
 #
-# LOCAL ONLY — there is NO Gemini fallback here, unlike [translate] and
-# [punctuate]. This runs on dictations (dozens a day) rather than on a key you
-# tap, so a stopped Ollama falling back to the cloud would burn the
-# 20/day/model free tier before lunch and take F9 and F7 down with it. No local
-# model means no repair: the transcript stays exactly as pasted, and the only
-# trace is one line in app.log.
+# NO GEMINI HERE, unlike [translate] and [punctuate], and that rule has never
+# moved. This runs on dictations (dozens a day) rather than on a key you tap,
+# so a stopped backend falling back to Gemini would burn the 20/day/model free
+# tier before lunch and take F9 and F7 down with it. Those are keys you press
+# on purpose; this is a pass you never asked for on any particular sentence,
+# and it does not get to starve them.
+#
+# What DID move is that the pass is no longer local-only: see `prefer` below.
+# Groq is a different provider with its own bucket that nothing else in this
+# app draws on, so it cannot starve anything, and it answers in ~0.3-0.6 s
+# against the local model's 4.7-5.5 s. The local model stays as the fallback
+# underneath it, which is exactly what classic runs, so a missing key or a
+# dead network costs SPEED and never repairs. No backend at all means no
+# repair: the transcript stays exactly as pasted, and the only trace is one
+# line in app.log.
+#
+# THE CLOUD LEG SENDS TRANSCRIPT TEXT OFF THIS MACHINE. Your audio never
+# leaves it — ASR is local whatever this says — but the words do, to Groq,
+# under their free-tier terms. prefer = "ollama" declines that entirely and
+# costs you the seconds back.
 #
 # IT SITS IN FRONT OF YOUR CURSOR, and that costs you seconds. It was tried
 # the other way — paste instantly, rewrite the text on screen a few seconds
@@ -540,6 +554,54 @@ when = "always"           # never | known | always
                           # corrected clips, 3 better and 0 worse
 min_chars = 20            # below this there is no context to reason from, which
                           # is exactly where a model starts inventing some
+
+prefer = "groq"           # groq | cerebras | ollama — WHICH BACKEND REPAIRS
+                          # FIRST. The others follow in order underneath it,
+                          # ollama always among them, so this is a preference
+                          # and never a commitment.
+                          #   "groq"     Groq's free API (console.groq.com).
+                          #              No credit card, ~1,000 requests a day
+                          #              against the dozens a working day of
+                          #              dictation spends, and a repair in
+                          #              ~0.3-0.6 s instead of ~5 s. Needs
+                          #              GROQ_API_KEY in .env; without one it
+                          #              is skipped with one log line and this
+                          #              setting costs you nothing.
+                          #   "cerebras" WAS the default, on a documented ~1M
+                          #              tokens/day free tier. That tier is
+                          #              gone — verified live on a fresh
+                          #              account 2026-08-22: HTTP 402 on every
+                          #              model, cheapest plan $1,500+/month.
+                          #              Kept working for whoever still holds
+                          #              quota there.
+                          #   "ollama"   local gemma3:12b, no cloud ever.
+                          #              This IS the classic version's
+                          #              behavior, in one line.
+groq_model = "openai/gpt-oss-120b"
+                          # The strongest model on Groq's free catalog,
+                          # measured 2026-08-22. NOT llama-3.3-70b-versatile:
+                          # it was the obvious pick and it is no longer
+                          # offered — their catalog drifts, so list /v1/models
+                          # before trusting a name here.
+                          # IT IS A REASONING MODEL: it spends hidden tokens
+                          # before answering, and with a tight token cap the
+                          # reply arrives EMPTY. translate.py::GroqTranslator
+                          # sets reasoning_effort=low and floors the cap at
+                          # 256 to stop that; a model you swap in here inherits
+                          # both. The letter-for-letter safety check covers
+                          # whatever answers, so a weaker model wastes a
+                          # request rather than your words
+groq_timeout_s = 20       # a warm Groq answer lands in well under 2 s, so past
+                          # this something is wrong and the fallback should
+                          # have the work instead. Separate from the Cerebras
+                          # and Ollama timeouts because it is a different
+                          # provider with a different failure shape
+cerebras_model = "gpt-oss-120b"
+                          # only relevant while quota exists there. Kept so
+                          # that going back later is a config edit and not a
+                          # code change
+cerebras_timeout_s = 20   # same reasoning as groq_timeout_s, same number
+
 ollama_model = "gemma3:12b"
                           # Measured 2026-08-17 on the 11 recordings in recent\
                           # that you corrected by hand, so the intended words

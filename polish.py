@@ -71,15 +71,42 @@ that same bucket. A stopped Ollama quietly sending dozens of dictations a
 day into it would starve two keys the user presses deliberately. That
 reason stands, and Gemini is still NOT a backend here.
 
-What changed is Cerebras ([polish] prefer): a separate provider whose free
-tier is ~1M tokens a day — hundreds of times what dozens of dictations
-spend — so it cannot be burned through by accident, and it does not share
-a bucket with any other key in this app. It goes FIRST because it turns
-the pass's 4.7-5.5 s into well under a second; the local Ollama model
-stays SECOND as the fallback, exactly the path classic always took, so a
-missing key, a rate limit or an unreachable API degrades to today's
-behavior rather than to no repair. A rejected or unsafe reply was never
-retried against anything and still is not.
+What changed is a SECOND cloud provider that does not share that bucket
+([polish] prefer). The pass is no longer local-only, and Gemini is still
+not the reason why.
+
+  - "groq" — THE DEFAULT, and the one that is actually free: no credit
+    card, ~1,000 requests a day against dozens of dictations, its own
+    bucket that nothing else in this app draws on. It turns the pass's
+    4.7-5.5 s into ~0.3-0.6 s. Needs GROQ_API_KEY in .env; without one
+    _backends skips it in one log line and the fallback below runs.
+  - "cerebras" — WAS the first choice here, on a documented ~1M-tokens-a-
+    day free tier. That tier is gone: verified live on a fresh account,
+    2026-08-22, HTTP 402 on every model, cheapest plan $1,500+/month. The
+    backend is kept working for whoever holds quota there rather than
+    deleted, because a demoted provider is one config line to return to
+    and a deleted one is a rewrite.
+  - "ollama" — local gemma3:12b. Exactly the path classic always took.
+
+Whichever is preferred goes first and THE OTHERS FOLLOW IN ORDER, ollama
+included, so a missing key, a rate limit or an unreachable API degrades to
+classic's behavior rather than to no repair. That is also why ollama is
+warmed at startup even when the cloud goes first: the day you need the
+fallback is the day the network is down, which is the worst possible day
+to also pay 76 s of cold load.
+
+The cloud leg sends TRANSCRIPT TEXT off the machine. Audio never leaves;
+that trade was made knowingly and is written down in AGENTS.md. Setting
+prefer = "ollama" declines it entirely.
+
+One trap that is not obvious from the config: gpt-oss-120b is a REASONING
+model and spends hidden tokens before it answers. Without
+reasoning_effort=low and a max_tokens floor the reply comes back EMPTY —
+handled inside translate.py::GroqTranslator, which is why _token_cap's
+result is passed as a cap and not as a budget.
+
+A rejected or unsafe reply was never retried against anything and still is
+not.
 """
 from __future__ import annotations
 
@@ -257,11 +284,12 @@ class Polisher:
     def _backends(self, text: str):
         """Yield ready backends in preference order for THIS text.
 
-        A backend that cannot be built at all (no Cerebras key in .env is
-        the normal case on classic-shaped machines) is skipped with one
-        log line rather than failing the pass: the fallback below it is
-        exactly what classic ran, so missing cloud setup must cost speed,
-        never repairs.
+        A backend that cannot be built at all (no GROQ_API_KEY in .env is
+        the normal case on a classic-shaped machine; CEREBRAS_API_KEY is
+        the normal case everywhere now that their free tier is gone) is
+        skipped with one log line rather than failing the pass: the
+        fallback below it is exactly what classic ran, so missing cloud
+        setup must cost speed, never repairs.
         """
         cap = _token_cap(text)
         for name, build in self._builders():
@@ -296,9 +324,12 @@ class Polisher:
 
         Ollama pays ~76 s on the first request after it goes idle while
         ~5 GB loads, against 2.5 s warm — and it is still the fallback
-        here even when Cerebras goes first, so it is warmed too: insurance
-        you only notice when the network is down, which is exactly when
-        you cannot afford to also wait 76 s.
+        here even when Groq goes first, so it is warmed too: insurance you
+        only notice when the network is down, which is exactly when you
+        cannot afford to also wait 76 s. The cloud backends are warmed in
+        the same pass and it costs them nothing measurable; what it buys
+        is finding out at startup, in app.log, that a key is missing —
+        rather than on the first dictation that needed it.
 
         Fire-and-forget. Never raises: no key installed and Ollama not
         being installed are perfectly normal states and must not be

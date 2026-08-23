@@ -2343,6 +2343,37 @@ def test_translate_settings_are_present_in_the_real_config() -> None:
     assert cfg.translate.max_chars > 0
 
 
+def test_the_repair_pass_ships_its_backend_choice_in_the_real_config(
+) -> None:
+    """Guards the shipped config against the drift that already happened
+    once: the fast branch moved the repair pass to Groq in config.py and
+    config.toml went on saying nothing about it, so the file the owner
+    reads described a local-only pass that had not been local-only for
+    days. A default that lives only in code is a default nobody can find.
+
+    The reasoning model is pinned by name here, and not only in
+    translate.py's own tests, because its failure is SILENT: gpt-oss-120b
+    spends hidden tokens before it answers, and a cap tighter than
+    GroqTranslator's floor gets an empty reply rather than an error.
+    """
+    here = Path(__file__).resolve().parent / "config.toml"
+    text = here.read_text(encoding="utf-8")
+    cfg = config_mod.load(here)
+    assert cfg.polish.prefer == "groq", cfg.polish.prefer
+    assert "\nprefer = " in text, (
+        "polish.prefer is not written down in config.toml")
+    assert "groq_model" in text, (
+        "polish.groq_model is not written down in config.toml")
+    # A reasoning model, and named as one: see AGENTS.md's trap list.
+    assert cfg.polish.groq_model == "openai/gpt-oss-120b", (
+        cfg.polish.groq_model)
+    assert cfg.polish.groq_timeout_s > 0
+    # The fallback under it is what classic runs. Losing that is losing
+    # every repair the moment a key expires or the network goes.
+    assert cfg.polish.ollama_model, "no local fallback model configured"
+    assert cfg.polish.when in ("never", "known", "always")
+
+
 def test_local_backend_is_configured_and_unlimited() -> None:
     """Guards the switch to the local backend: it is the only one without a
     daily cap, so a silent revert to gemini would reintroduce the wall."""

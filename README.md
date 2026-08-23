@@ -1408,16 +1408,50 @@ reported as an error; the raw transcript goes through untouched, exactly as
 if the pass were off. Failing closed is the only acceptable failure mode
 for something sitting between your speech and your cursor.
 
-**This pass is local only — there is no Gemini fallback**, unlike
+**There is no Gemini fallback here**, unlike
 [translating](#translating-to-english) and
 [punctuating](#punctuating-what-you-just-dictated). It used to have
 one, back when it ran a few times a day and every run cost you a wait. It
-now runs on *every* dictation with nothing to limit it, so a stopped Ollama
-would quietly send dozens of requests a day to Gemini and burn the
-20/day/model free tier that `Ctrl+F9` and `F2` depend on. Those are keys you
-press on purpose; this is a pass you never asked for on any particular
-sentence, and it does not get to starve them. No local model means no
-repair, and your transcript stays exactly as pasted.
+now runs on *every* dictation with nothing to limit it, so a stopped backend
+falling through to Gemini would quietly send dozens of requests a day into
+the 20/day/model free tier that `Ctrl+F9` and `F2` depend on. Those are keys
+you press on purpose; this is a pass you never asked for on any particular
+sentence, and it does not get to starve them. That rule has never moved.
+
+**What did move is that the pass is no longer local-only** — on the fast
+version, `[polish] prefer` chooses which backend repairs first:
+
+| `prefer` | what it is | typical repair |
+|---|---|---|
+| **`groq`** *(default on fast)* | Groq's free API — no credit card, ~1,000 requests a day, **its own bucket** that nothing else in this app draws on, so it cannot starve `Ctrl+F9` or `F2` the way Gemini would | ~0.3–0.6 s |
+| `cerebras` | the *former* first choice. Their free tier is gone — verified live 2026-08-22 on a fresh account: HTTP 402 on every model, cheapest plan $1,500+/month. Kept working rather than deleted, for whoever holds quota there | ~0.5 s |
+| `ollama` | local `gemma3:12b`, no cloud ever. **This is exactly what classic runs** | ~4.7–5.5 s |
+
+Whichever you name goes first and **the others follow underneath it**, the
+local model always among them — so a missing key, a rate limit or a dead
+network costs you *speed* and never repairs. That is also why the local
+model is still warmed at startup even when the cloud goes first: the day
+you need the fallback is the day the network is down, which is the worst
+possible day to also pay 76 s of cold load. With no backend reachable at
+all there is no repair, and your transcript stays exactly as pasted.
+
+**The cloud leg sends transcript *text* off this machine.** Your audio never
+does — the speech recognition is local whatever this setting says — but the
+words go to Groq under their free-tier terms. `prefer = "ollama"` declines
+that entirely, and costs you the seconds back.
+
+<details>
+<summary>One trap worth knowing before you swap <code>groq_model</code></summary>
+
+`openai/gpt-oss-120b` is a **reasoning model**: it spends hidden tokens
+thinking before it writes an answer. Given a token cap tight enough to
+cover only the reply, it burns the whole budget reasoning and returns
+**empty** — no error, no reply, just nothing. `translate.py`'s Groq backend
+sets `reasoning_effort=low` and floors the cap at 256 to stop that, and a
+model you name here inherits both. Their catalog also drifts:
+`llama-3.3-70b-versatile` was the obvious pick and is no longer offered, so
+list `/v1/models` and make one real call before trusting a name.
+</details>
 
 **It runs in front of your paste, and it costs you seconds.** The rule that
 makes that bearable is the placeholder:
@@ -1734,7 +1768,12 @@ for `מבשרים`, all of which the local model got right.
 | `[vocab] keep_audio` | `50` | recordings kept in `recent\` so `--benchmark` can replay them. `0` = keep none |
 | `[polish] when` | `always` | `never` \| `known` (only when a learned garble is present) \| `always`. Adds ~5 s to every paste; worth it when it fires |
 | `[polish] min_chars` | `20` | below this there is no context to reason from |
-| `[polish] ollama_model` | `gemma3:12b` | measured best of five on real clips; `""` = reuse `translate.ollama_model` |
+| `[polish] prefer` | `groq` | `groq` \| `cerebras` \| `ollama` — which backend repairs **first**; the others follow underneath it, the local one always among them, so this is a preference and never a commitment. `ollama` IS classic's behavior |
+| `[polish] groq_model` | `openai/gpt-oss-120b` | strongest on Groq's free catalog (measured 2026-08-22). A **reasoning model**: without `reasoning_effort=low` and a 256-token floor — both set in `translate.py` — the reply comes back *empty*. Catalogs drift; `llama-3.3-70b-versatile` is gone |
+| `[polish] groq_timeout_s` | `20` | a warm Groq answer lands well under 2 s, so past this something is wrong and the fallback should have the work |
+| `[polish] cerebras_model` | `gpt-oss-120b` | only relevant while quota exists there — their free tier ended. Kept so returning is a config edit, not a code change |
+| `[polish] cerebras_timeout_s` | `20` | same reasoning as `groq_timeout_s` |
+| `[polish] ollama_model` | `gemma3:12b` | measured best of five on real clips; `""` = reuse `translate.ollama_model`. This is the fallback under whatever `prefer` names, so it matters even on the cloud path |
 | `[polish] max_wait_s` | `10` | longest your paste may be held up; past it the unrepaired transcript is pasted |
 | `[polish] warm_up` | `true` | one throwaway request at startup so the model is in VRAM before a dictation needs it |
 | `backend` | `local` | `gemini` \| `local` \| `fake` |

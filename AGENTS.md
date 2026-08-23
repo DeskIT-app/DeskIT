@@ -80,7 +80,7 @@ back.
 
 ## Traps we already paid for — do not re-arm them
 
-- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 276 of
+- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 285 of
   them, safe to run while dictation is live (two bugs that used to kill
   the app mid-suite are fixed; see git log). Run them BEFORE claiming done.
 - **Subprocesses under pythonw allocate consoles.** Every `subprocess.run`
@@ -98,6 +98,13 @@ back.
 - **Model catalogs drift.** `llama-3.3-70b-versatile` vanished from Groq;
   Cerebras' free tier vanished entirely. Before trusting a model id or a
   pricing page, list `/v1/models` and make one real call.
+- **The lookup box's frame must never wait on its text.** `popup.py`
+  resizes the window in the same message the mouse arrives in and reflows
+  the answer on a 50 ms throttle behind it. Laying out inline first was
+  measured as stick-stick-jump on any long answer. Related: `_trim` keeps
+  whole wrapped lines instead of binary-searching word cuts — the old way
+  cost 699 ms per auto-fit descent on a 4056-char answer, against 22 ms
+  now. Don't "simplify" either back.
 - **Hebrew in console output** shows as garbage unless
   `$env:PYTHONIOENCODING='utf-8'` — display-only, data is fine.
 - **Branch switches restart the running instance** (~25 s of model
