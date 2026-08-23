@@ -278,8 +278,11 @@ nikud = false                 # also add Hebrew VOWEL POINTS, not just
 # THE BOX, first, because there is no knob for any of it and this is the
 # file you read. It never takes focus, so whatever you were typing into
 # keeps the caret and you can go on typing with the answer up. It is
-# dragged by its TITLE BAR and by nothing else — the body is text to be
-# selected, the way every other window on this machine works. The bar
+# dragged by its TITLE BAR and by nothing else — except resized by the
+# diagonal grips in BOTH bottom corners (pull outward, either hand): the
+# frame may be grown to the full screen and the text zooms with it; the
+# rest of the body stays text to be selected, the way every other window
+# on this machine works. The bar
 # names the word that was looked up, so an answer read an hour later, or
 # dragged away from the sentence it came from, still says what it is
 # answering. The button beside the x copies the whole answer; drag over
@@ -288,6 +291,15 @@ nikud = false                 # also add Hebrew VOWEL POINTS, not just
 # app will put your old clipboard back over it, however long its model
 # takes to answer. The box closes on the x or on Esc, and on nothing
 # else: see dwell_ms below for why nothing takes it away on a timer.
+#
+# An answer taller than max_height is NOT cut off any more — not while
+# anything helps, anyway: the whole layout is first re-measured at
+# smaller faces (19 px down to an 11 px floor) until everything fits.
+# Only past that floor does the ellipsis trim take over, and it trims the
+# floor-sized layout, so more of the answer survives than ever used to.
+# Enlarging the box afterwards can bring back even what was cut: the
+# resize re-fits the FULL answer, and a new lookup forgets your size
+# exactly as it forgets where you dragged the last one.
 #
 # Which way to translate is decided per selection, by counting WORDS and
 # not letters. "תעשה commit לפני ה-merge" is 9 Hebrew letters against 11
@@ -302,10 +314,15 @@ hebrew_share = 0.34
 # was nothing to do" note instead of coming back as English.
 both_ways = true
 
-# Over this, the key refuses and spends nothing. A 100-word paragraph
-# already costs 7.4 s locally, and by then you wanted the paragraph
-# translated in place — which is what F9 is for.
-max_chars = 5000
+# Over this, the key refuses and spends nothing. WAS 5000 — the owner
+# kept hitting it with select-all on a page ("it didn't translate"). Now
+# long selections are fed to the local model in ~3800-char parts, with
+# the box showing which part is being translated, so select-all works
+# within reason. Still a ceiling, for two honest reasons: minutes of
+# local model time at this size, and past it even the parts would run
+# into Ollama's default context window and degrade silently. For a whole
+# document you still want F9.
+max_chars = 20000
 
 # Which backend goes first, and this is deliberately the OPPOSITE of
 # [translate] and [punctuate]. The free Gemini tier is 20 requests per
@@ -403,8 +420,11 @@ dwell_ms   = 12000  # DEAD. Nothing reads this any more — main.py passes a
                     # old config file does not fail to load.
 max_width  = 460    # pixels. 60 words wrapped to 9 lines measured 512 px
 max_height = 520    # unbounded, and a 22-sentence paragraph made a 896 px
-                    # tall window — taller than some work areas. Both are
-                    # capped and the overflow is trimmed with an ellipsis.
+                    # tall window — taller than some work areas. Both cap
+                    # what the box OPENS at; past them the face shrinks
+                    # (19 px down to an 11 px floor) before an ellipsis
+                    # trims anything, and a hand-dragged grip overrides
+                    # both for that one answer
 
 # Answers are stable — "brittle" means the same thing tomorrow — and
 # lookups repeat across days, which is the whole point of the key, so they

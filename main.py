@@ -1533,6 +1533,19 @@ class App:
         def status(note: str) -> None:
             self.popup.update(note if rtl else "loading the local model…")
 
+        # Long selections reach the local model in parts (lookup.
+        # translate_chunked); between parts the box says which one is
+        # being translated, because minutes of model time with a silent
+        # box is exactly the "it didn't translate" this used to be read
+        # as. Written in the answer's language, like everything else the
+        # app puts in it — a Hebrew line in an LTR box comes out
+        # backwards (popup.py measured that in pixels).
+        def progress(i: int, n: int) -> None:
+            note = (f"מתרגם חלק {i} מתוך {n}…"
+                    if rtl else f"translating part {i} of {n}…")
+            self.popup.update(note)
+            log.info("lookup part %d of %d...", i, n)
+
         # Repainted on a newline, or after 80 ms, and never per token.
         # lookup.py hands over every token the local model writes and the
         # box relays out and RESIZES on each one, so the rate matters:
@@ -1611,7 +1624,8 @@ class App:
         try:
             answer = self._lookup_engine.look_up(text, what,
                                                  on_status=status,
-                                                 on_chunk=chunk)
+                                                 on_chunk=chunk,
+                                                 on_progress=progress)
         except TranscriptionError as e:
             self._cue_once("error", "lookup-backend")
             self.popup.update(failed)

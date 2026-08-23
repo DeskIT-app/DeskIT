@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import gc
 import io
 import queue
 import sys
@@ -5556,7 +5557,17 @@ def test_the_title_bar_is_the_only_handle_and_the_body_is_text() -> None:
             for i in range(len(lay.lines)):
                 assert box._zone_at(*_line_mid(box, i)) == "body", \
                     f"line {i} is not body"
-            assert box._zone_at(2, lay.height - 2) == "body", \
+
+            # BOTH bottom corners are the resizer's own 18 px squares —
+            # which corner used to depend on the answer's language, and a
+            # grab on the dead one did nothing. Everything between them
+            # along the bottom is still body.
+            for grip in (lay.resizer_r, lay.resizer_l):
+                assert grip.top >= lay.bar.bottom, \
+                    "a resize grip reaches into the title bar"
+                assert zone(grip) == "resize", zone(grip)
+            pad_x = lay.width // 2        # clear of both corner squares
+            assert box._zone_at(pad_x, lay.height - 2) == "body", \
                 "the padding below the answer is not body"
 
             # ...and the gesture. The body may not move the window.
@@ -5572,6 +5583,269 @@ def test_the_title_bar_is_the_only_handle_and_the_body_is_text() -> None:
             assert box._moved_to is None, \
                 "a body drag left the box marked as moved by hand"
             assert box.selection(), "a body drag selected nothing at all"
+    finally:
+        user32.SetCursorPos(parked.x, parked.y)
+        box.stop()
+
+
+def test_an_answer_that_does_not_fit_shrinks_its_face_instead_of_losing_words()\
+        -> None:
+    """Auto-fit — the owner's spec, his words: "there is a maximum size
+    that the text box opens to, and the text size should change
+    accordingly so that everything fits inside the box".
+
+    Three copies of the 60-word sample do not fit 460x520 at the default
+    face and used to lose their tail to an ellipsis there, whatever the
+    screen behind them could have held. The premise is pinned first, so
+    if faces or samples ever change enough that the default pass fits,
+    this says so instead of passing for nothing; then the whole answer
+    must come back at a smaller face, every word of it, inside the cap.
+    """
+    import popup as popup_mod
+
+    box = popup_mod.Popup()
+    try:
+        clean = popup_mod._clean(popup_mod._PARAGRAPH * 3)
+        assert box._layout_at(box.size_px, clean, True,
+                              box.max_width, box.max_height).truncated, \
+            "the default face fits after all; find longer sample text"
+        lay = box._layout(clean, True)
+        assert not lay.truncated, "words were lost above the floor"
+        assert 0 < lay.size_px < box.size_px, \
+            f"face {lay.size_px} is not a real descent from {box.size_px}"
+        assert lay.width <= box.max_width, lay.width
+        assert lay.height <= box.max_height, lay.height
+        assert popup_mod.ELLIPSIS not in lay.text, "cut without saying so"
+        # The type may shrink; the text may not change by a word.
+        want = [t for t in clean.split() if t]
+        got = [t for t in lay.text.split() if t]
+        assert got == want, f"{len(want)} words in, {len(got)} words out"
+    finally:
+        box.stop()
+
+
+def test_past_the_floor_the_ellipsis_takes_over_again() -> None:
+    """The floor exists because below ~11 px Segoe UI Hebrew stops being
+    reading and starts being squinting: an unreadable whole answer loses
+    to a readable one with an ellipsis. Both halves of that rule are
+    pinned here — the descent lands EXACTLY on min_font_px and no
+    further, and what it hands back is still capped and still says what
+    it cut."""
+    import popup as popup_mod
+
+    box = popup_mod.Popup(max_height=120)
+    try:
+        lay = box._layout(popup_mod._clean(popup_mod._PARAGRAPH), True)
+        assert lay.truncated, "a 120 px cap held the whole paragraph?"
+        assert lay.size_px == box.min_font_px, \
+            f"descended to {lay.size_px}, not the floor {box.min_font_px}"
+        assert popup_mod.ELLIPSIS in lay.text, "cut without saying so"
+        assert lay.height <= box.max_height, lay.height
+    finally:
+        box.stop()
+
+
+def test_dragging_the_grip_resizes_and_a_new_lookup_forgets_it() -> None:
+    """"I want to be able to enlarge and shrink the text box" — the
+    second half of the same request, driven through the REAL corner with
+    the REAL cursor, because _resize_to reads GetCursorPos on purpose.
+
+    The gesture's own promises are what get asserted: the release ends
+    it; a Hebrew box grows against its top-left corner (the fixed corner
+    is the far one, so the answer stays where the eye left it); the hand
+    asks for more than the content needs, which is exactly how the face
+    recovers; and the size belongs to THIS answer only — the next
+    question forgets it, exactly as a fresh lookup forgets where the last
+    box was dragged to.
+    """
+    import ctypes
+    import time as time_mod
+
+    import popup as popup_mod
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    box = popup_mod.Popup()
+    if box.hwnd is None:
+        print("        (no popup window here — skipping)")
+        return
+    parked = POINT()
+    user32.GetCursorPos(ctypes.byref(parked))
+    try:
+        lay = _shown(box, popup_mod._PARAGRAPH * 3, time_mod)
+        assert box.visible(), "the box never went up"
+        before = _win_rect(box.hwnd, user32, ctypes)
+        b = lay.resizer_r         # the bottom-right square of the box
+        start = (before[0] + (b.left + b.right) // 2,
+                 before[1] + (b.top + b.bottom) // 2)
+        if not _drag_box(box, user32, ctypes, time_mod, start,
+                         (start[0] + 160, start[1] + 130)):
+            print("        (the cursor could not be aimed — skipping)")
+            return
+        after = _win_rect(box.hwnd, user32, ctypes)
+        assert box._resizing is None, "the release did not end the gesture"
+        assert box._user_size is not None, "the drag left no size behind"
+        assert box._user_size[0] > before[2] - before[0], \
+            f"asked wider than {before[2] - before[0]}, got {box._user_size}"
+        assert (after[0], after[1]) == (before[0], before[1]), \
+            "a Hebrew box must grow against its top-left corner"
+        assert after[2] > before[2], "the box did not actually grow"
+        # The window IS the size the hand asked for — verbatim, not
+        # whatever the text could use. A corner that stops under the
+        # cursor is the bug this pins.
+        got_wh = (after[2] - after[0], after[3] - after[1])
+        assert got_wh == tuple(box._user_size), \
+            f"window {got_wh} is not the size asked for {box._user_size}"
+        # The size was this answer's, not the session's.
+        _shown(box, "שביר\n1. שם תואר - נשבר בקלות", time_mod)
+        assert box._user_size is None, \
+            "a new lookup kept the hand-set size"
+    finally:
+        user32.SetCursorPos(parked.x, parked.y)
+        box.stop()
+
+
+def test_the_corner_follows_the_hand_even_when_the_answer_is_short()\
+        -> None:
+    """"It gets stuck … I have to really go down … it doesn't go down
+    with me" — the owner, 2026-08-22, on a SHORT answer.
+
+    The first cut sized the window to its CONTENT inside the request, so
+    enlarging a box whose answer already fitted moved nothing at all: the
+    grip detached from the hand the moment it passed the text's edge, and
+    catching up meant dragging far past where you wanted the edge. The
+    contract now is direct manipulation: whatever the answer needs, the
+    window ends up exactly the size the drag asked for — slack becomes
+    background below the last line, and the grip sits in the corner of
+    the NEW frame, still under the finger.
+    """
+    import ctypes
+    import time as time_mod
+
+    import popup as popup_mod
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    box = popup_mod.Popup()
+    if box.hwnd is None:
+        print("        (no popup window here — skipping)")
+        return
+    parked = POINT()
+    user32.GetCursorPos(ctypes.byref(parked))
+    try:
+        lay = _shown(box, "שביר\n1. שם תואר - נשבר בקלות", time_mod)
+        assert box.visible(), "the box never went up"
+        before = _win_rect(box.hwnd, user32, ctypes)
+        b = lay.resizer_r         # the bottom-right square of the box
+        start = (before[0] + (b.left + b.right) // 2,
+                 before[1] + (b.top + b.bottom) // 2)
+        if not _drag_box(box, user32, ctypes, time_mod, start,
+                         (start[0] + 150, start[1] + 120)):
+            print("        (the cursor could not be aimed — skipping)")
+            return
+        after = _win_rect(box.hwnd, user32, ctypes)
+        want_w = before[2] - before[0]
+        want_h = before[3] - before[1]
+        got_w, got_h = after[2] - after[0], after[3] - after[1]
+        assert got_w >= want_w + 120 and got_h >= want_h + 90, \
+            f"the window stayed behind the hand: {got_w}x{got_h} from " \
+            f"{want_w}x{want_h}"
+        assert (after[0], after[1]) == (before[0], before[1]), \
+            "the fixed corner must not move"
+        # And the grip is in the corner of the NEW frame.
+        r = box._lay.resizer_r
+        assert r.right >= got_w and r.bottom >= got_h, \
+            "the resizer no longer sits in the window's bottom-right"
+    finally:
+        user32.SetCursorPos(parked.x, parked.y)
+        box.stop()
+
+
+def test_enlarging_the_frame_zooms_the_text_past_its_normal_size()\
+        -> None:
+    """"I'm trying to enlarge it, but it's not growing" — 2026-08-22.
+
+    With the face capped at the 19 px default, a hand-set frame could
+    only pile invisible dark slack under short answers: the window grew
+    and nothing appeared to happen. Inside a HAND-SET frame the fit now
+    searches BOTH sides of the default up to _FACE_MAX and takes the
+    largest face that fits — bigger frame, bigger type, until the answer
+    fills what you made or the ceiling is reached. Configured caps keep
+    the old downward-only search: they are maximums, and that is their
+    whole point.
+    """
+    import popup as popup_mod
+
+    box = popup_mod.Popup()
+    try:
+        clean = popup_mod._clean(popup_mod._WORD_HE)
+        plain = box._layout(clean, True)
+        assert not plain.truncated and plain.size_px == box.size_px, \
+            "the sample must sit untouched at the default face"
+        faces = []
+        for width, height in ((700, 600), (1100, 900), (1500, 1200)):
+            box._user_size = (width, height)
+            lay = box._fit_window(clean, True)
+            assert not lay.truncated, "zooming lost words"
+            assert lay.width <= width and lay.height <= height, \
+                (lay.width, lay.height, width, height)
+            assert lay.size_px > box.size_px, \
+                f"a {width}x{height} frame did not zoom past default"
+            faces.append(lay.size_px)
+        assert faces[0] <= faces[1] <= faces[2], \
+            f"the face did not grow with the frame: {faces}"
+    finally:
+        box._user_size = None
+        box.stop()
+
+
+def test_either_bottom_corner_grows_against_its_far_corner() -> None:
+    """Which corner was live used to depend on the ANSWER's language:
+    bottom-right on Hebrew, bottom-left on English — so the same grab on
+    the same spot grew one box and did nothing to the next ("I drag the
+    bottom-right down-down-down and it does nothing"). Both corners
+    resize now, each against its own fixed top corner. This drives the
+    LEFT grip of an ENGLISH box outward-left-and-down and pins the two
+    promises that makes: the far (top-right) corner holds still, and
+    pulling OUTWARD grows.
+    """
+    import ctypes
+    import time as time_mod
+
+    import popup as popup_mod
+
+    class POINT(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    box = popup_mod.Popup()
+    if box.hwnd is None:
+        print("        (no popup window here — skipping)")
+        return
+    parked = POINT()
+    user32.GetCursorPos(ctypes.byref(parked))
+    try:
+        lay = _shown(box, "brittle\n1. adjective - easily broken\n"
+                          "2. adjective - unyielding", time_mod, rtl=False)
+        assert box.visible(), "the box never went up"
+        before = _win_rect(box.hwnd, user32, ctypes)
+        b = lay.resizer_l         # the bottom-left square of the box
+        start = (before[0] + (b.left + b.right) // 2,
+                 before[1] + (b.top + b.bottom) // 2)
+        if not _drag_box(box, user32, ctypes, time_mod, start,
+                         (start[0] - 150, start[1] + 120)):
+            print("        (the cursor could not be aimed — skipping)")
+            return
+        after = _win_rect(box.hwnd, user32, ctypes)
+        assert after[2] == before[2], \
+            "a left-corner drag must hold the top-RIGHT corner still"
+        assert after[0] < before[0], "pulling outward-left did not grow"
+        assert after[3] > before[3], "pulling outward-down did not grow"
+        assert box._user_size is not None, "the drag left no size behind"
     finally:
         user32.SetCursorPos(parked.x, parked.y)
         box.stop()
@@ -5660,7 +5934,9 @@ def test_a_drag_takes_the_characters_it_crossed_and_not_whole_lines()\
         assert got.count("\n") == len(lines) - 2, repr(got)
 
         # A press in the padding lets go — and does NOT close the box.
-        _box_click(box, user32, (4, lay.height - 2))
+        # Mid-width along the bottom edge: both corners are resize
+        # grips now, and a press on one would begin a gesture instead.
+        _box_click(box, user32, (lay.width // 2, lay.height - 2))
         assert box.selection() == "", box.selection()
         assert box.visible(), "letting a selection go closed the box"
     finally:
@@ -6254,7 +6530,7 @@ def _lookup_app(tmp, fake_injector, answer):
             self.answer, self.asked = reply, []
 
         def look_up(self, text, decision=None, on_status=None,
-                    on_chunk=None):
+                    on_chunk=None, on_progress=None):
             self.asked.append(text)
             if isinstance(self.answer, Exception):
                 raise self.answer
@@ -6324,11 +6600,12 @@ def test_the_word_that_was_looked_up_goes_in_the_title_bar() -> None:
     which word this is an answer to.
 
     Cut, because it is a caption and not the selection. lookup.max_chars
-    allows 5000 characters and only about 45 Hebrew ones fit in the bar,
+    allows 20000 characters and only about 45 Hebrew ones fit in the bar,
     which paints the label with DT_END_ELLIPSIS on every repaint —
-    measured 2026-08-20, a 5000-char term costs 7.3 ms a paint against
-    0.6 ms for a whole repaint of the box, and a repaint happens on every
-    mouse move while a selection is being dragged inside it.
+    measured 2026-08-20 (at the then-cap of 5000), a maxed-out term costs
+    7.3 ms a paint against 0.6 ms for a whole repaint of the box, and a
+    repaint happens on every mouse move while a selection is being
+    dragged inside it.
     """
     import shutil
     import tempfile
@@ -6345,7 +6622,7 @@ def test_the_word_that_was_looked_up_goes_in_the_title_bar() -> None:
         app._lookup(fake.focus)
         assert app.popup.terms == ["brittle"], app.popup.terms
 
-        fake.selection = "brittle " * 900          # a paragraph, refused
+        fake.selection = "brittle " * 2600        # 20800 chars, refused
         app._lookup(fake.focus)                    # nothing new on screen
         assert len(app.popup.terms) == 1, app.popup.terms
 
@@ -6441,7 +6718,7 @@ def test_a_backend_that_will_not_answer_says_so_in_the_box() -> None:
 def test_a_selection_it_refuses_costs_no_request_at_all() -> None:
     """The refusals are the cheap half of this key: they happen before
     anything is contacted, so a mistaken press spends nothing. They are
-    told apart on purpose — "that is 10000 characters" and "that is a URL"
+    told apart on purpose — "that is 22000 characters" and "that is a URL"
     are two different answers, and each gets its own once-per-4s budget
     even though the note is the same one."""
     import shutil
@@ -6455,7 +6732,7 @@ def test_a_selection_it_refuses_costs_no_request_at_all() -> None:
     played, restore = _cue_spy(main_mod)
     try:
         app = _lookup_app(tmp, fake, "never reached")
-        fake.selection = "word " * 2000        # past lookup.max_chars
+        fake.selection = "word " * 4400        # past lookup.max_chars
         for _ in range(3):
             app._lookup(fake.focus)
         assert app._lookup_engine.asked == [], app._lookup_engine.asked
@@ -6473,6 +6750,85 @@ def test_a_selection_it_refuses_costs_no_request_at_all() -> None:
         restore()
         main_mod.injector = real_inj
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_long_selections_reach_the_local_model_in_parts() -> None:
+    """Select-all used to be refused outright at lookup.max_chars = 5000,
+    which the owner read as "it didn't translate". Now the LOCAL path
+    feeds gemma3 in ~3800-char pieces — inside the runner's context
+    window — joined with newlines, with progress between parts. Gemini is
+    never chunked: its API takes the whole selection in one request and
+    always did.
+    """
+    import lookup as lookup_mod
+
+    class Backend:
+        name = "ollama"
+
+        def __init__(self):
+            self.asked = []
+
+        def translate(self, text):
+            self.asked.append(len(text))
+            return f"[{len(self.asked)}]"
+
+    text = "\n".join(f"paragraph {i} " + "word " * 90
+                     for i in range(120))          # ~12k chars of prose
+    assert len(text) > lookup_mod._LOCAL_CHUNK * 2, \
+        "the sample must force several parts"
+
+    backend = Backend()
+    got = lookup_mod.translate_chunked(backend, text)
+    assert len(backend.asked) >= 2, "one request for 12k chars"
+    assert all(n <= lookup_mod._LOCAL_CHUNK for n in backend.asked), \
+        backend.asked
+    assert sum(backend.asked) <= len(text), "parts grew beyond the source"
+    assert got.startswith("[1]") and got.count("[") == len(backend.asked)
+
+    # Progress fires before each part AFTER the first, never before it.
+    seen = []
+    second = Backend()
+    lookup_mod.translate_chunked(second, text,
+                                 lambda i, n: seen.append((i, n)))
+    assert seen[0] == (2, len(second.asked)), seen
+    assert seen[-1] == (len(second.asked), len(second.asked)), seen
+
+    # A Gemini-shaped backend takes the whole thing in one request.
+    class Cloud(Backend):
+        name = "gemini"
+
+    cloud = Cloud()
+    lookup_mod.translate_chunked(cloud, text)
+    assert cloud.asked == [len(text)], cloud.asked
+
+
+def test_the_local_splitter_cuts_where_prose_allows() -> None:
+    """The parts must each fit the request, must never start or end in
+    stray whitespace, and — unless a paragraph has no sentence end at all
+    — must cut at a sentence boundary rather than mid-word."""
+    import lookup as lookup_mod
+
+    limit = 400
+    sentences = ("משפט ראשון נגמר כאן. משפט שני בא אחריו. "
+                 "והנה משפט שלישי ארוך יחסית במידה זו. ")
+    text = sentences * 60                      # ~5k chars, one paragraph
+    parts = lookup_mod._split_for_local(text, limit)
+    assert len(parts) >= 2, "one part for 5k chars against a 400 limit"
+    total = 0
+    for part in parts:
+        assert 0 < len(part) <= limit, (len(part), limit)
+        assert part == part.strip(), repr(part[:20])
+        assert part.rstrip().endswith((".")), repr(part[-20:])
+        total += len(part)
+    assert total >= int(len(text) * 0.9), (total, len(text))
+
+    # No sentence punctuation anywhere: the hard-cut last resort still
+    # bounds every piece.
+    run = "אבגד" * 1500                         # 6000 chars, no breaks
+    hard = lookup_mod._split_for_local(run, limit)
+    assert all(len(part) <= limit for part in hard), \
+        [len(p) for p in hard]
+    assert "".join(hard) == run, "the hard cut lost characters"
 
 
 def test_the_clipboard_comes_back_on_every_way_out() -> None:
@@ -6564,7 +6920,7 @@ def test_a_lookup_holds_the_cursor_only_while_it_reads() -> None:
         engine = app._lookup_engine
         asked = engine.look_up
 
-        def watched(text, decision=None, on_status=None, on_chunk=None):
+        def watched(text, decision=None, on_status=None, on_chunk=None, on_progress=None):
             seen.append(("asking the model", app._cursor_lock.locked()))
             return asked(text, decision, on_status, on_chunk)
 
@@ -6703,7 +7059,7 @@ def test_a_refusal_takes_down_the_answer_to_the_last_question() -> None:
         # Every refusal, one at a time, each starting from a box that is
         # up: a URL, nothing selected, and more than max_chars.
         for selection in ("https://example.com/a/b", "   ",
-                          "word " * 4000):
+                          "word " * 4400):
             before = len(app._lookup_engine.asked)
             fake.selection = selection
             app._lookup(fake.focus, (400, 300))
@@ -6802,7 +7158,7 @@ def test_the_answer_is_painted_by_the_line_and_never_by_the_token() -> None:
             asked: list[str] = []
 
             def look_up(self, text, decision=None, on_status=None,
-                        on_chunk=None):
+                        on_chunk=None, on_progress=None):
                 import lookup as lookup_mod
                 self.asked.append(text)
                 so_far = ""
@@ -7500,9 +7856,18 @@ def test_the_breathing_lamp_reuses_its_frames() -> None:
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
-    print(f"running {len(tests)} tests")
+    print(f"running {len(tests)} tests", flush=True)
     for test_name, fn in tests:
         check(test_name, fn)
+        # Collected HERE, on the main thread, and not left to whenever a
+        # worker thread next allocates. The splash/status-dot tests stand
+        # up real Tcl interpreters on their own threads, and a Tk object
+        # that dies in a GC pass run by ANOTHER thread hard-aborts the
+        # process ("Tcl_AsyncDelete: async handler deleted by the wrong
+        # thread") — measured 2026-08-22, mid-suite at whatever test came
+        # after them once allocation timing shifted. One collect per test
+        # makes the thread that owns Tcl the one that buries it.
+        gc.collect()
     if FAILURES:
         print(f"\n{len(FAILURES)} FAILED: {', '.join(FAILURES)}")
         sys.exit(1)

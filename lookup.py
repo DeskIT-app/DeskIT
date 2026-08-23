@@ -172,6 +172,84 @@ def needs_hebrew(text: str, max_chars: int = 5000) -> bool:
     return lookup_target(text, max_chars, both_ways=False) == "Hebrew"
 
 
+# The most text one LOCAL model request is fed. The Ollama runner's
+# default context window is finite (4096 tokens unless something raised
+# it) and gemma3:12b reads Hebrew at roughly two to three characters a
+# token, so a chunk this size leaves room for the prompt AND the
+# translation inside one window instead of silently truncating the input.
+# Gemini is not bounded by this: its API takes the whole selection in one
+# request and answers in seconds.
+_LOCAL_CHUNK = 3800
+
+
+def _split_for_local(text: str, limit: int = _LOCAL_CHUNK) -> list[str]:
+    """`text` cut into local-model-sized pieces, never mid-word.
+
+    Paragraph breaks first (they are free boundaries in prose), then
+    sentence ends inside an oversized paragraph, then — for a paragraph
+    with no sentence punctuation at all — a hard cut, because a token too
+    long to feed the model helps nobody. Concatenating the parts is the
+    original text minus only the whitespace each cut consumed; joining
+    translations with a newline keeps the parts readable without claiming
+    they were separated by anything in the source.
+    """
+    if len(text) <= limit:
+        return [text]
+    parts: list[str] = []
+    current = ""
+    paragraphs = text.split("\n")
+    for para in paragraphs:
+        candidate = f"{current}\n{para}" if current else para
+        if len(candidate) <= limit or not current:
+            # A single paragraph longer than `limit` falls through to
+            # sentence cuts below rather than being sent whole.
+            while len(candidate) > limit:
+                window = candidate[:limit]
+                cut = max(window.rfind(". "), window.rfind("? "),
+                          window.rfind("! "))
+                if cut <= 0:
+                    cut = limit          # no sentence end: hard cut
+                else:
+                    cut += 1             # keep the full stop on the part
+                head, candidate = (candidate[:cut].rstrip(),
+                                   candidate[cut:].lstrip())
+                if head:
+                    parts.append(head)
+                current = ""
+            current = candidate
+        else:
+            parts.append(current.strip())
+            current = para
+    if current.strip():
+        parts.append(current.strip())
+    return parts
+
+
+def translate_chunked(backend, text: str, on_progress=None) -> str:
+    """One backend answer, fed in pieces when the backend is local.
+
+    The owner selected ALL the text on a page and got silence, because
+    lookup.max_chars refused what one request could not safely carry. The
+    cap now sits higher and the LOCAL path carries long selections as
+    several requests, joined with newlines; Gemini takes the whole thing
+    at once, exactly as before. `on_progress(i, n)` fires before each
+    part after the first, so the box can say which part is translating
+    instead of hanging between silent minutes.
+    """
+    if getattr(backend, "name", "") != "ollama" or len(text) <= _LOCAL_CHUNK:
+        return backend.translate(text)
+    parts = _split_for_local(text)
+    out: list[str] = []
+    for i, piece in enumerate(parts, 1):
+        if i > 1 and on_progress is not None:
+            try:
+                on_progress(i, len(parts))
+            except Exception:
+                log.exception("lookup progress callback failed")
+        out.append(backend.translate(piece))
+    return "\n".join(out)
+
+
 def is_word_lookup(text: str) -> bool:
     """True when a DICTIONARY answer is wanted rather than a translation.
 
@@ -680,7 +758,8 @@ class Engine:
     # ---- the one call the app makes ----
 
     def look_up(self, text: str, decision: Decision | None = None,
-                on_status=None, on_chunk=None) -> Answer | None:
+                on_status=None, on_chunk=None, on_progress=None) \
+            -> Answer | None:
         """Translate one selection. None when there was nothing to do.
 
         `decision` is accepted so the caller can classify first — it has to
@@ -691,6 +770,11 @@ class Engine:
         the reply is going to be slow for a reason worth naming (the local
         model is loading). The popup is already up by then; this is what
         turns a hung-looking box into an explained one.
+
+        `on_progress(i, n)` is called before each PART after the first
+        when the local model is fed a long selection in pieces — see
+        translate_chunked. It is the same bargain as on_status: minutes of
+        local model time must never look like a hung box.
 
         `on_chunk(text_so_far)` is called repeatedly while the local model
         writes, so the box can show the answer arriving instead of an
@@ -729,7 +813,7 @@ class Engine:
                           time.monotonic() - started)
 
         answer = self._ask_backends(text, target, mode, on_status, on_chunk,
-                                    started)
+                                    started, on_progress)
         self.cache.put(target, mode, text, answer.text)
         return answer
 
@@ -738,7 +822,8 @@ class Engine:
         return strip_niqqud(text) if self._cfg.lookup.strip_niqqud else text
 
     def _ask_backends(self, text: str, target: str, mode: str, on_status,
-                      on_chunk, started: float) -> Answer:
+                      on_chunk, started: float,
+                      on_progress=None) -> Answer:
         prefer = self._cfg.lookup.prefer
         # Short-circuited: with prefer = "gemini" the probe is not even
         # sent, because the answer would not change anything.
@@ -770,7 +855,11 @@ class Engine:
                 # in 0.8-1.3 s and it is the fallback, not the path.
                 self._state.on_chunk = on_chunk
                 try:
-                    out = backend.translate(text)
+                    # Chunked on the LOCAL path only: one request per
+                    # ~3800 chars, progress called between parts. See
+                    # translate_chunked for why (context window, and a
+                    # select-all that used to be refused outright).
+                    out = translate_chunked(backend, text, on_progress)
                 except RateLimitError as e:
                     log.warning("%s — looking that up with the next backend",
                                 e)
