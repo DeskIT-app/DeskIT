@@ -342,9 +342,13 @@ class App:
         if cfg.lookup_hotkey:
             taps[parse_binding(cfg.lookup_hotkey)] = "lookup"
         # The kill switch is [visual_qa] enabled = false: no key, no tap,
-        # nothing anywhere in the state machine.
-        if cfg.visual_qa.enabled and cfg.visual_qa.hotkey:
-            taps[parse_binding(cfg.visual_qa.hotkey)] = "visual_qa"
+        # nothing anywhere in the state machine. getattr, not an attribute
+        # read: classic's Config has no visual_qa section at all, and this
+        # one file is byte-identical on both branches (the shared-half
+        # test enforces it) — on classic this line registers nothing.
+        vqa = getattr(cfg, "visual_qa", None)
+        if vqa is not None and vqa.enabled and vqa.hotkey:
+            taps[parse_binding(vqa.hotkey)] = "visual_qa"
         return (hotkeys, taps,
                 vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
                 vk_for(cfg.pause_hotkey) if cfg.pause_hotkey else None)
@@ -668,7 +672,8 @@ class App:
             # must not be cold the first time it IS needed.
             threading.Thread(target=self._warm_polish, daemon=True,
                              name="polish-warmup").start()
-        if self.cfg.visual_qa.enabled and self.cfg.visual_qa.warmup:
+        vqa_cfg = getattr(self.cfg, "visual_qa", None)
+        if vqa_cfg is not None and vqa_cfg.enabled and vqa_cfg.warmup:
             # Same bargain, vision edition: the projector behind gemma3's
             # image input costs 22.6 s on the FIRST image of a session
             # (measured 2026-08-25) and ~0.4 s warm, so one dummy-image,
@@ -1811,8 +1816,8 @@ class App:
         shown = False
         # A screen question owns the next dictation: no marker in the app
         # underneath, because nothing will ever be pasted over it.
-        diverting = (self.cfg.visual_qa.enabled
-                     and self.cfg.visual_qa.hotkey
+        vqa_cfg = getattr(self.cfg, "visual_qa", None)
+        diverting = (vqa_cfg is not None and vqa_cfg.enabled
                      and self.vqa.sink_active)
         if fb.enabled and hwnd and not diverting:
             # BOUNDED, unlike the paste below, and the focus test is INSIDE
@@ -1914,7 +1919,8 @@ class App:
         # swap still applies (instant, offline); the context pass does
         # NOT — a vision model is robust to one misheard word, and the
         # question path stays free, fast and quota-neutral by design.
-        if self.cfg.visual_qa.enabled and self.vqa.sink_active:
+        if vqa_cfg is not None and vqa_cfg.enabled \
+                and self.vqa.sink_active:
             if shown:
                 # The marker was pasted before the window opened; it is
                 # not where the answer is going any more.
@@ -2543,17 +2549,18 @@ def main() -> int:
                  "" if cfg.lookup.both_ways
                  else "; Hebrew only, see lookup.both_ways",
                  cfg.lookup_hotkey)
-    if cfg.visual_qa.enabled and cfg.visual_qa.hotkey:
+    vqa_cfg = getattr(cfg, "visual_qa", None)
+    if vqa_cfg is not None and vqa_cfg.enabled and vqa_cfg.hotkey:
         log.info("tap '%s' to select part of the screen and ASK about it — "
                  "drag a rectangle, then hold '%s' to speak your question "
                  "(or type it). Answers locally via %s%s; screenshots are "
                  "never written to disk%s.",
-                 cfg.visual_qa.hotkey, cfg.hotkey,
-                 cfg.visual_qa.ollama_model,
-                 ", cloud upload OFF" if not cfg.visual_qa.allow_screenshot_upload
-                 else f", then {cfg.visual_qa.groq_model} (upload is ON)",
-                 "" if cfg.visual_qa.speak == "off"
-                 else f"; speak = '{cfg.visual_qa.speak}'")
+                 vqa_cfg.hotkey, cfg.hotkey,
+                 vqa_cfg.ollama_model,
+                 ", cloud upload OFF" if not vqa_cfg.allow_screenshot_upload
+                 else f", then {vqa_cfg.groq_model} (upload is ON)",
+                 "" if vqa_cfg.speak == "off"
+                 else f"; speak = '{vqa_cfg.speak}'")
     if cfg.pause_hotkey:
         log.info("tap '%s' to pause every key above without unloading "
                  "anything (for games), and again to resume%s",
