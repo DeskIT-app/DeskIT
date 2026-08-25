@@ -1652,11 +1652,16 @@ class Dashboard:
                       field=field, key=key)
             return
         try:
-            import dataclasses
             current = config_mod.load(CONFIG_PATH)
-            config_mod.check_hotkeys(dataclasses.replace(current,
-                                                         **{field: key}))
-            config_mod.set_values(CONFIG_PATH, {field: key})
+            # with_field, not a bare replace: most keys live at the top
+            # level, but one (visual_qa_hotkey) is nested in its section,
+            # and replace() cannot assign through that. One helper, both
+            # this window and main.rebind.
+            config_mod.check_hotkeys(config_mod.with_field(current, field,
+                                                           key))
+            write_key = ("visual_qa.visual_qa_hotkey"
+                         if field == "visual_qa_hotkey" else field)
+            config_mod.set_values(CONFIG_PATH, {write_key: key})
             self._note(f"{field} is now '{key}'" if key
                        else f"{field} is off")
             self._refresh(None)

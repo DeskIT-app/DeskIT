@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 import tomllib
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -448,6 +449,24 @@ CHORD_FIELDS: frozenset[str] = frozenset((
     "lookup_hotkey",
 ))
 
+
+def with_field(cfg: "Config", name: str, value) -> "Config":
+    """A copy of `cfg` with one setting changed, nested ones included.
+
+    The generic rebind paths (main.rebind, dashboard._apply_key) used to
+    spell this dataclasses.replace(cfg, **{name: value}), which cannot
+    assign to the visual_qa_hotkey property. One helper, both callers,
+    and a new nested field later means editing this and nothing else.
+
+    The hasattr guard keeps this file honest on classic, which has no
+    [visual_qa] section to assign into: there the nested branch simply
+    cannot fire, because classic's HOTKEY_FIELDS has no such row.
+    """
+    if name == "visual_qa_hotkey" and hasattr(cfg, "visual_qa"):
+        return dataclasses.replace(
+            cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
+                                               hotkey=str(value)))
+    return dataclasses.replace(cfg, **{name: value})
 
 def check_hotkeys(cfg: "Config") -> None:
     """Every key rule in one place: the names are real, and no two mean the
