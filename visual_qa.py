@@ -2089,7 +2089,7 @@ class _CardSurface:
                 (pad, ph - CARD_FOOT_H + 8))
 
         # ---- the ready-made questions ----
-        cy = ph - 178
+        cy = ph - 152
         cx = pw - pad
         for i, label in enumerate(QUICK_ASKS):
             t = text_pil(label, 220, pt=12.5, colour=(206, 224, 248),
@@ -2858,7 +2858,10 @@ class AskWindow:
         the frame waiting on its content, which is the rule AGENTS.md
         sets for the lookup box and it holds here too.
         """
-        rail_y = self._cy + self._h - CARD_FOOT_H + 30
+        # the rail rides the very top of the foot, above the status
+        # line: the two used to be six pixels apart and a status
+        # message landed on top of the ready-made questions
+        rail_y = self._cy + self._h - CARD_FOOT_H
         if self.busy:
             width = max(1, self._w - CARD_PAD * 2)
             self._chip_x += 5.0
