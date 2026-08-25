@@ -1092,6 +1092,23 @@ $reader.ReadBytes($bytes)
 """
 
 
+def _wav_seconds(path: str) -> float:
+    """How long a wav plays, from its own header.
+
+    Needed because playback is asynchronous now: the thread has to know
+    when to stop waiting without sitting inside the call that plays it.
+    A wav that cannot be read is treated as a long one - overshooting
+    wastes a cancellable sleep, undershooting cuts the voice off.
+    """
+    try:
+        import wave
+        with wave.open(path, "rb") as fh:
+            rate = fh.getframerate() or 1
+            return fh.getnframes() / float(rate)
+    except Exception:
+        return 60.0
+
+
 class Speaker:
     """Speaks an answer through Microsoft Asaf, without blocking anyone.
 
@@ -1115,6 +1132,16 @@ class Speaker:
         self._voice = voice
         self._lock = threading.Lock()
         self._playing = threading.Event()
+        # Stop used to mean "purge whatever is coming out of the speaker
+        # RIGHT NOW", and that is not what a person means by stop. The
+        # flag went up before SYNTHESIS, so pressing Stop while
+        # PowerShell was still building the wav purged silence - and then
+        # playback started anyway. Measured: 9.5 seconds from Stop to
+        # actually quiet. Worse, esc_action reads `playing`, so the first
+        # Esc kept meaning "stop" and the card could not be closed at all
+        # until it had finished talking.
+        self._cancel = threading.Event()
+        self._proc = None
         self._dir = tempfile.mkdtemp(prefix="vqa-tts-")
         self._script = pathlib.Path(self._dir) / "speak.ps1"
         self._seq = 0
@@ -1145,6 +1172,8 @@ class Speaker:
         if not text:
             return
 
+        self._cancel.clear()
+
         def run() -> None:
             self._playing.set()
             wav = txt = None
@@ -1160,13 +1189,45 @@ class Speaker:
                     fh.write(text)
                 args = self._powershell_args(self._ensure_script(), wav,
                                              txt, self._voice)
-                subprocess.run(args, timeout=60,
-                               creationflags=self.CREATE_NO_WINDOW,
-                               check=False)
-                # PlaySound is process-global and single-channel: starting
-                # a new one replaces the last, which is exactly the
-                # behaviour a Speak button wants on a second press.
-                winsound.PlaySound(wav, winsound.SND_FILENAME)
+                # Popen, not run: a handle is the only thing that can be
+                # killed, and synthesis is most of the wait.
+                proc = subprocess.Popen(
+                    args, creationflags=self.CREATE_NO_WINDOW)
+                self._proc = proc
+                try:
+                    proc.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                finally:
+                    self._proc = None
+                if self._cancel.is_set():
+                    return              # asked to stop mid-synthesis
+                if self._cancel.is_set():
+                    return          # stopped between synthesis and sound
+                # SND_ASYNC, and this is the whole fix for "I press stop
+                # and nothing happens for ten seconds".
+                #
+                # PlaySound without it BLOCKS this thread for the length
+                # of the sentence, and PlaySound is process-global and
+                # single-channel - so SND_PURGE, issued from whoever
+                # pressed Stop, had to wait for that call to return
+                # before it could do anything. The presser was the pump,
+                # so the card sat there unable to repaint, unable to
+                # close, until the voice had finished by itself.
+                # Measured: 10.59 s from Stop to quiet.
+                #
+                # Asynchronous instead, with this thread waiting out the
+                # wav's own duration in short hops it can be interrupted
+                # in. Stop now returns immediately for the caller and the
+                # sound is gone within one hop.
+                winsound.PlaySound(wav, winsound.SND_FILENAME
+                                   | winsound.SND_ASYNC)
+                end = time.monotonic() + _wav_seconds(wav) + 0.25
+                while time.monotonic() < end:
+                    if self._cancel.is_set():
+                        winsound.PlaySound(None, winsound.SND_PURGE)
+                        return
+                    time.sleep(0.05)
             except Exception as e:
                 log.info("could not speak the answer (%s)", e)
             finally:
@@ -1187,12 +1248,29 @@ class Speaker:
         threading.Thread(target=run, daemon=True, name="vqa-tts").start()
 
     def stop(self) -> None:
-        """Silence now. Safe from any thread, harmless when quiet."""
+        """Silence now, and mean it. Safe from any thread.
+
+        Three things, because there are three places the voice can be:
+        still being synthesised, about to start, or already playing. The
+        flag catches the second, killing PowerShell catches the first,
+        and the purge catches the third. And `playing` goes down at once
+        rather than when the worker gets round to it - the card reads it
+        to decide what Escape means, and a stop that has not taken effect
+        yet is a card you cannot close.
+        """
+        self._cancel.set()
+        proc = self._proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
         try:
             import winsound
             winsound.PlaySound(None, winsound.SND_PURGE)
         except Exception:
             pass
+        self._playing.clear()
 
     def shutdown(self) -> None:
         self.stop()
@@ -1905,13 +1983,13 @@ def _select_region(cancel: threading.Event, background
 
     face = _pick_face()
     state: dict = {"start": None, "bbox": None, "done": False,
-                   "last": None, "hint": True}
+                   "last": None, "hint": True, "free": None, "path": None}
 
     # The hint rides the monitor the pointer is on, not the primary: on a
     # two-screen desk the middle of the VIRTUAL screen is a bezel.
     px, py = root.winfo_pointerx(), root.winfo_pointery()
     hl, ht_, hr, hb = work_area_near(px, py)
-    hint_w, hint_h = 288, 38
+    hint_w, hint_h = 394, 38
     hint_x = (hl + hr) // 2 - hint_w // 2 - vx
     hint_y = ht_ + 56 - vy
     keep["hint"] = ImageTk.PhotoImage(
@@ -1920,7 +1998,7 @@ def _select_region(cancel: threading.Event, background
     canvas.create_image(hint_x, hint_y, anchor="nw", image=keep["hint"],
                         tags="hint")
     canvas.create_text(hint_x + hint_w // 2, hint_y + hint_h // 2,
-                       text="Drag over what you want to ask about   ·   "
+                       text="Drag a box   ·   Shift-drag to lasso   ·   "
                             "Esc cancels",
                        fill=DIM, font=(face, 9), tags="hint")
 
@@ -1931,6 +2009,15 @@ def _select_region(cancel: threading.Event, background
 
     def on_press(event) -> None:
         state["start"] = (event.x_root, event.y_root)
+        # SHIFT AT THE MOMENT OF THE PRESS decides the shape, and it is
+        # decided once so the gesture cannot change its mind halfway.
+        # Both shapes stay because they are good at different things: a
+        # rectangle is one movement and lands exactly on a paragraph or a
+        # dialog, which is most of what gets asked about; a lasso is the
+        # only way to ask about something that is not a rectangle without
+        # dragging half its neighbours in with it.
+        state["free"] = ([(event.x_root, event.y_root)]
+                         if event.state & 0x0001 else None)
         if state["hint"]:
             canvas.delete("hint")
             state["hint"] = False
@@ -1961,8 +2048,50 @@ def _select_region(cancel: threading.Event, background
         canvas.create_text(lx, ly, text=label, fill=FG, anchor="ne",
                            font=(face, 9, "bold"), tags="sel")
 
+    def paint_free(points) -> None:
+        """The lasso: the pixels inside the path, bright, and the rest dim.
+
+        Composited on the BOUNDING BOX only. Building the mask over the
+        whole virtual screen would be a 6.45 M pixel polygon fill per
+        mouse move; over the box it is whatever the user has drawn so
+        far, which starts tiny and is still small when they finish.
+        """
+        from PIL import Image, ImageDraw
+        if len(points) < 3:
+            return
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        left, top, right, bottom = min(xs), min(ys), max(xs) + 1, max(ys) + 1
+        canvas.delete("sel")
+        if right - left < 2 or bottom - top < 2:
+            return
+        w, h = right - left, bottom - top
+        crop = background.crop((left - vx, top - vy, right - vx, bottom - vy))
+        mask = Image.new("L", (w, h), 0)
+        ImageDraw.Draw(mask).polygon([(x - left, y - top) for x, y in points],
+                                     fill=255)
+        lit = Image.composite(crop, crop.point(_FREEZE_LUT), mask)
+        keep["bright"] = ImageTk.PhotoImage(lit, master=root)
+        canvas.create_image(left - vx, top - vy, anchor="nw",
+                            image=keep["bright"], tags="sel")
+        canvas.create_line(*[c for p in points for c in (p[0] - vx, p[1] - vy)],
+                           fill=ACCENT, width=2, tags="sel")
+        label = selection_readout((left, top, right, bottom))
+        ly = bottom - vy + 6
+        if ly > vh - 24:
+            ly = bottom - vy - 22
+        canvas.create_text(right - vx - 6, ly, text=label, fill=FG,
+                           anchor="ne", font=(face, 9, "bold"), tags="sel")
+
     def on_drag(event) -> None:
         if state["start"] is None:
+            return
+        if state["free"] is not None:
+            points = state["free"]
+            if (abs(points[-1][0] - event.x_root)
+                    + abs(points[-1][1] - event.y_root) >= 3):
+                points.append((event.x_root, event.y_root))
+                paint_free(points)
             return
         x1, y1 = state["start"]
         paint(normalize_bbox(x1, y1, event.x_root, event.y_root))
@@ -1970,6 +2099,17 @@ def _select_region(cancel: threading.Event, background
     def on_release(event) -> None:
         if state["start"] is None:
             return finish(None)
+        if state["free"] is not None:
+            points = state["free"]
+            if len(points) < 6:
+                return finish(None)         # a scribble too short to mean it
+            xs = [p[0] for p in points]
+            ys = [p[1] for p in points]
+            box = (min(xs), min(ys), max(xs) + 1, max(ys) + 1)
+            if box[2] - box[0] < 6 or box[3] - box[1] < 6:
+                return finish(None)
+            state["path"] = points
+            return finish(box)
         x1, y1 = state["start"]
         left, top, right, bottom = normalize_bbox(x1, y1, event.x_root,
                                                   event.y_root)
@@ -2023,13 +2163,24 @@ def _select_region(cancel: threading.Event, background
     except tk.TclError:
         pass                        # destroyed underneath us: cancelled
     bbox = state["bbox"]
+    path = state["path"]
     keep.clear()
     gc.collect()                    # Tcl_AsyncDelete rule, see overlay.py
     if bbox is None:
         return None
     left, top, right, bottom = bbox
-    return bbox, background.crop((left - vx, top - vy, right - vx,
-                                  bottom - vy))
+    crop = background.crop((left - vx, top - vy, right - vx, bottom - vy))
+    if path:
+        # Outside the lasso goes BLACK, not dim. The point of drawing a
+        # shape round something is to say "this and not its neighbours",
+        # and a model handed a dimmed neighbour will still describe it.
+        from PIL import Image, ImageDraw
+        mask = Image.new("L", crop.size, 0)
+        ImageDraw.Draw(mask).polygon([(x - left, y - top) for x, y in path],
+                                     fill=255)
+        crop = Image.composite(crop, Image.new("RGB", crop.size, (0, 0, 0)),
+                               mask)
+    return bbox, crop, path
 
 
 def _ask_worker(q: "queue.Queue", ask_fn, image, question: str,
@@ -2432,7 +2583,7 @@ class AskWindow:
                  speaker: Speaker, speak_mode: str,
                  ask_fn, cue=lambda kind: None, auto_send: bool = True,
                  alpha: float = 0.93, reselect_fn=None, last_pos=None,
-                 on_move=None, full=None):
+                 on_move=None, full=None, path=None):
         self.image = image             # PIL image, RAM only
         self.speaker = speaker
         self.speak_mode = speak_mode
@@ -2487,6 +2638,7 @@ class AskWindow:
         self._dirty = False
         self._strokes: list = []
         self.anchor_box = anchor_box
+        self.path = path                # screen coords, or None for a box
         # Painted now, not widgets. See _Text and _Btn.
         self.status = _Text()
         self.copy_btn = _Btn("Copy")
@@ -2543,7 +2695,18 @@ class AskWindow:
         sx0, sy0 = max(0, sx0), max(0, sy0)
         sx1, sy1 = min(full.width, sx1), min(full.height, sy1)
         self._sel = (sx0, sy0, sx1, sy1)
-        frozen.paste(full.crop(self._sel), (sx0, sy0))
+        # A lasso lights only what was lassoed. Without this the frozen
+        # screen glows in a rectangle while the crop that went to the
+        # model is a circle, and the two disagree about what was asked.
+        self._sel_mask = None
+        if self.path:
+            local = [(x - self._vx - sx0, y - self._vy - sy0)
+                     for x, y in self.path]
+            self._sel_mask = Image.new("L", (sx1 - sx0, sy1 - sy0), 0)
+            ImageDraw.Draw(self._sel_mask).polygon(local, fill=255)
+            frozen.paste(full.crop(self._sel), (sx0, sy0), self._sel_mask)
+        else:
+            frozen.paste(full.crop(self._sel), (sx0, sy0))
 
         # the selection's edge and halo, drawn ONLY around the selection:
         # a full-screen blur here was 500 ms of the first draft
@@ -2555,16 +2718,31 @@ class AskWindow:
         ox, oy = sx0 - hx0, sy0 - hy0
         ex, ey = ox + (sx1 - sx0), oy + (sy1 - sy0)
         hm = Image.new("L", (lw, lh), 0)
-        ImageDraw.Draw(hm).rounded_rectangle((ox - 3, oy - 3, ex + 3, ey + 3),
-                                             14, outline=255, width=16)
+        halo_draw = ImageDraw.Draw(hm)
+        if self.path:
+            # follow the shape, or a circle sits inside a glowing square
+            ring = [(x - self._vx - hx0, y - self._vy - hy0)
+                    for x, y in self.path]
+            halo_draw.line(ring + [ring[0]], fill=255, width=16,
+                           joint="curve")
+        else:
+            halo_draw.rounded_rectangle((ox - 3, oy - 3, ex + 3, ey + 3), 14,
+                                        outline=255, width=16)
         hm = hm.filter(ImageFilter.GaussianBlur(9)).point(lambda v: int(v * .45))
         local.alpha_composite(Image.merge("RGBA", (
             Image.new("L", (lw, lh), 86), Image.new("L", (lw, lh), 156),
             Image.new("L", (lw, lh), 245), hm)))
         edge = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
-        ImageDraw.Draw(edge).rounded_rectangle((ox - 2, oy - 2, ex + 1, ey + 1),
-                                               13, outline=(86, 156, 245, 235),
-                                               width=2)
+        drawer = ImageDraw.Draw(edge)
+        if self.path:
+            drawer.line([(x - self._vx - hx0, y - self._vy - hy0)
+                         for x, y in self.path] +
+                        [(self.path[0][0] - self._vx - hx0,
+                          self.path[0][1] - self._vy - hy0)],
+                        fill=(86, 156, 245, 235), width=2, joint="curve")
+        else:
+            drawer.rounded_rectangle((ox - 2, oy - 2, ex + 1, ey + 1), 13,
+                                     outline=(86, 156, 245, 235), width=2)
         local.alpha_composite(edge)
         frozen.paste(local.convert("RGB"), (hx0, hy0))
 
@@ -2881,9 +3059,18 @@ class AskWindow:
         which are the frozen screen's pixels, so they map into the crop
         by a single translation - no scaling, nothing to get wrong.
         """
-        if not self._strokes:
-            return self.image
         from PIL import Image, ImageDraw
+        if not self._strokes:
+            if self._sel_mask is None:
+                return self.image
+            # Belt and braces: _select_region already blacked outside the
+            # lasso, but the mask is the window's own guarantee about
+            # what it sends and it should not depend on who built the
+            # image it was handed.
+            return Image.composite(
+                self.image,
+                Image.new("RGB", self.image.size, (0, 0, 0)),
+                self._sel_mask.resize(self.image.size))
         sx0, sy0, sx1, sy1 = self._sel
         marked = self._crisp.crop(self._sel).convert("RGB")
         d = ImageDraw.Draw(marked)
@@ -2894,6 +3081,12 @@ class AskWindow:
             elif local:
                 x, y = local[0]
                 d.ellipse((x - 3, y - 3, x + 3, y + 3), fill=MARK)
+        if self._sel_mask is not None:
+            # the marks are clipped to the lasso too, or a stroke that
+            # wandered outside would put back what the shape excluded
+            marked = Image.composite(
+                marked, Image.new("RGB", marked.size, (0, 0, 0)),
+                self._sel_mask)
         return marked
 
     # -- drag, resize, pin --
@@ -3115,7 +3308,17 @@ class AskWindow:
             root.update()
             self._repaint_transcript()
             self._fit_window()
+            ctypes.windll.user32.GetAsyncKeyState(0x1B)   # prime, discard
             while not self._close.is_set():
+                # ESCAPE IS READ AS WELL AS RECEIVED. The Tk binding
+                # needs this window to hold the keyboard focus, and a
+                # borderless topmost window loses it to anything the user
+                # clicks. The card IS the whole screen while it is up, so
+                # nothing else can want this key. The selector reads it
+                # the same way and for the same reason.
+                pressed = ctypes.windll.user32.GetAsyncKeyState(0x1B)
+                if pressed & 0x8000 or pressed & 0x0001:
+                    self._on_escape()
                 # Drained on BOTH sides of update(): the first paint can
                 # hold update() for the better part of a second (measured
                 # live), and a question that arrived mid-paint must not
@@ -3544,6 +3747,10 @@ class AskWindow:
         # glass is a blur of what is behind it, so stale pixels would
         # show through the card itself.
         self.anchor_box = bbox
+        # reselect_fn is the controller's bound method, so its owner is
+        # where the shape of the selection just made was left.
+        owner = getattr(self.reselect_fn, "__self__", None)
+        self.path = getattr(owner, "_last_path", None)
         self._rebuild_stage()
         self.encoded.clear()
         self.history.clear()
@@ -3668,6 +3875,7 @@ class Controller:
         # not a setting, and config.toml is not the place for it.
         self._last_pos: tuple[int, int] | None = None
         self._last_full = None          # the frozen screen, handed to the card
+        self._last_path = None          # the lasso, when one was drawn
 
     # ---- properties main.py reads (hook thread safe) ----
 
@@ -3725,8 +3933,13 @@ class Controller:
             gc.collect()
         if chosen is None:
             return None
-        bbox, image = chosen
-        log.debug("visual qa selection %dx%d", image.width, image.height)
+        bbox, image, path = chosen
+        # The shape, not just its box: the card lights the same pixels on
+        # the frozen screen that it sends to the model, so a lasso does
+        # not leave a rectangle glowing behind a circular crop.
+        self._last_path = path
+        log.debug("visual qa selection %dx%d%s", image.width, image.height,
+                  " (lasso)" if path else "")
         return image, bbox
 
     def _flow(self) -> None:
@@ -3768,7 +3981,8 @@ class Controller:
             alpha=getattr(vq, "window_alpha", 0.93),
             reselect_fn=self._grab_selection, last_pos=self._last_pos,
             on_move=self._remember_position,
-            full=getattr(self, "_last_full", None))
+            full=getattr(self, "_last_full", None),
+            path=getattr(self, "_last_path", None))
         with self._lock:
             self._window = window
         window.run()

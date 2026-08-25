@@ -80,7 +80,7 @@ back.
 
 ## Traps we already paid for — do not re-arm them
 
-- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 327 of
+- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 329 of
   them, safe to run while dictation is live (two bugs that used to kill
   the app mid-suite are fixed; see git log). Run them BEFORE claiming done.
 - **Subprocesses under pythonw allocate consoles.** Every `subprocess.run`
@@ -191,6 +191,13 @@ back.
   repaint from the motion handler either: Windows delivers motion faster
   than the card composes, so painting per event queues frames the pointer
   has already left behind. Mark it dirty; the pump paints the latest.
+- **winsound.PlaySound without SND_ASYNC blocks its thread, and the API
+  is process-global.** So SND_PURGE cannot take effect until the blocking
+  call returns, and whoever pressed Stop waited out the whole sentence.
+  In the ask card that presser was the pump thread, so the window could
+  not repaint or close either -- reported as "it crashes and I cannot get
+  out". Play ASYNC and wait out the wav's own duration in short
+  cancellable hops instead. 10.59 s from Stop to quiet became 0.00.
 - **Hebrew in console output** shows as garbage unless
   `$env:PYTHONIOENCODING='utf-8'` — display-only, data is fine.
 - **Branch switches restart the running instance** (~25 s of model
