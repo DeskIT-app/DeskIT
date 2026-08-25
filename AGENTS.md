@@ -80,7 +80,14 @@ back.
 
 ## Traps we already paid for — do not re-arm them
 
-- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 281 of
+- **A disabled Tk widget repaints itself in SYSTEM colours.** `bg` is
+  only the NORMAL state: disable an Entry and Tk falls back to
+  `disabledbackground`, which defaults to the platform grey, so a dark
+  field goes white the instant it is disabled. Found in a live
+  screenshot, not in a test — nothing here asserts colour. Set
+  `disabledbackground` / `disabledforeground` / `readonlybackground`
+  whenever you set `bg` on something that can be disabled.
+- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 316 of
   them, safe to run while dictation is live (two bugs that used to kill
   the app mid-suite are fixed; see git log). Run them BEFORE claiming done.
 - **Subprocesses under pythonw allocate consoles.** Every `subprocess.run`

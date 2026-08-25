@@ -556,6 +556,23 @@ voice = "Microsoft Asaf"       # he-IL. CAUTION: the legacy SAPI
                                # WinRT writing a WAV to a temp file that is
                                # deleted after playback (winsound, async).
                                # Measured: 30 ms to synthesize a 5.9 s clip
+auto_send = true               # a SPOKEN question sends itself the moment
+                               # the transcript lands — the Enter after
+                               # speaking was the one manual step left in a
+                               # flow that is otherwise hands-free. It also
+                               # turns speaking again into a BARGE-IN: the
+                               # answer in flight is abandoned, what you
+                               # just said is appended to what you already
+                               # asked, and the model answers all of it in
+                               # one reply. false restores type-or-speak,
+                               # then Enter, for editing before sending
+window_alpha = 0.93            # the floating card's opacity, and it goes
+                               # fully opaque while the pointer is over it.
+                               # popup.py measured the trade this rides on
+                               # ("ClearType over a translucent window is
+                               # exactly where Hebrew stops being crisp") —
+                               # 0.93 is the most translucency Hebrew text
+                               # survives here. 1.0 turns the effect off
 warmup = true                  # one dummy-image, num_predict=1 call at
                                # startup, in the background, so the first
                                # real question costs ~4 s instead of the

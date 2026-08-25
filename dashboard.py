@@ -120,7 +120,8 @@ NAV = (("overview", "Overview"), ("history", "History"),
 KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Recording", ("hotkey", "english_hotkey", "latch_hotkey")),
     ("What to do with the text", ("translate_hotkey", "punctuate_hotkey",
-                                  "correct_hotkey", "lookup_hotkey")),
+                                  "correct_hotkey", "lookup_hotkey",
+                                  "visual_qa_hotkey")),
     ("The app itself", ("pause_hotkey",)),
 )
 
@@ -1046,6 +1047,20 @@ class Dashboard:
     # --------------------------------------------------------------- keys
 
     def _screen_keys(self) -> None:
+        """Every bindable key, in a column that scrolls.
+
+        It scrolls because the arithmetic ran out. The window is a fixed
+        940x648 (deliberately — every bitmap in it is cached against that
+        size), the title takes the first 64 px, and three cards of 3, 4
+        and 1 rows ended at y=640: eight pixels of headroom. Adding
+        ask-the-screen made the fourth key of its group land at y=654 and
+        the card below it start off the bottom of the window, where it was
+        invisible with no way to reach it — which is exactly how it
+        shipped, because the test only asserted the row EXISTED. A
+        Scroller costs nothing while everything fits (it paints no thumb
+        at all until it has to) and means the next key added is a one-line
+        change again.
+        """
         self._title("Keys", "click a key, then press the one you want")
         p = self.parts
         p["caps"] = {}
@@ -1061,12 +1076,15 @@ class Dashboard:
         if extra:
             groups.append(("Other keys", extra))
 
-        y = 64
+        scroller = ui.Scroller(self.sheet, CW + 10, H - 64 - 24)
+        scroller.place(x=PAD, y=64)
+        p["keys_list"] = scroller
         for title, fields in groups:
             if not fields:
                 continue
-            card = ui.Card(self.sheet, CW, 60 + len(fields) * 46, pad=18)
-            card.place(x=PAD, y=y)
+            card = ui.Card(scroller.inner, CW, 60 + len(fields) * 46,
+                           pad=18)
+            card.pack(anchor="w", pady=(0, 14))
             tk.Label(card.body, text=title.upper(), bg=ui.CARD, fg=ui.FAINT,
                      font=(ui.UI, 8)).place(x=0, y=0)
             row = 24
@@ -1082,7 +1100,7 @@ class Dashboard:
                 cap.place(x=CW - 36 - 122, y=row)
                 p["caps"][field] = cap
                 row += 46
-            y += 60 + len(fields) * 46 + 14
+            scroller.bind_wheel(card)
 
     def _paint_keys(self) -> None:
         caps = self.parts.get("caps")

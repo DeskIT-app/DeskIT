@@ -7825,9 +7825,10 @@ except ImportError:
 # a second spelling of the key drifting out of sync with its section.
 
 def test_bbox_normalization_from_all_four_drag_directions() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """A drag is legal in all four directions and every one of them means
     the same rectangle."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import visual_qa as vq
 
     cases = {
@@ -7842,9 +7843,10 @@ def test_bbox_normalization_from_all_four_drag_directions() -> None:
 
 
 def test_downscale_caps_the_long_side_and_never_upscales() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """Aspect preserved, long side capped, and a small grab stays small:
     enlarging pixels adds tokens on some providers and sharpness nowhere."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import visual_qa as vq
 
     assert vq.scale_to(4480, 1440, 1344) == (1344, 432)
@@ -7856,9 +7858,10 @@ def test_downscale_caps_the_long_side_and_never_upscales() -> None:
 
 
 def test_the_screenshot_pipeline_is_bytes_in_bytes_out() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """No file path anywhere in the pipeline's signatures, and encoding
     yields bytes: the screenshot lives in RAM or it does not exist."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import inspect
 
     import visual_qa as vq
@@ -7879,11 +7882,12 @@ def test_the_screenshot_pipeline_is_bytes_in_bytes_out() -> None:
 
 
 def test_screenshot_upload_gate_keeps_cloud_out_of_the_chain() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """THE privacy test. With allow_screenshot_upload = false the built
     chain contains NO cloud backend — asserted against the built list,
     never against the flag, because a runtime `if` is exactly the kind of
     guard a refactor silently deletes."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import dataclasses
 
     import visual_qa as vq
@@ -7933,10 +7937,11 @@ def _bare_groq_vision():
 
 
 def test_groq_vision_request_shape() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """"reasoning_effort 'low' is an HTTP 400" and "Cloudflare eats the
     default User-Agent" are both measured facts from 2026-08-25; these
     asserts are where they stay true."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import visual_qa as vq
 
     g = _bare_groq_vision()
@@ -7963,10 +7968,11 @@ def test_groq_vision_request_shape() -> None:
 
 
 def test_ollama_vision_history_reuses_one_image() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """The image rides the FIRST user message only; Ollama's prompt-prefix
     cache makes later turns nearly free (0.35 s measured) — but only if
     the prefix really is identical."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import visual_qa as vq
 
     o = vq.OllamaVision("gemma3:12b", "http://127.0.0.1:11434", 120, 400)
@@ -7983,10 +7989,11 @@ def test_ollama_vision_history_reuses_one_image() -> None:
 
 
 def test_tts_command_names_voice_and_never_flashes_a_console() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """The PowerShell subprocess is where a console window would flash —
     CREATE_NO_WINDOW (0x08000000) is load-bearing, this repo froze a
     dashboard once without it."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import visual_qa as vq
 
     args = vq.Speaker._powershell_args("speak.ps1", "a.wav", "a.txt",
@@ -8000,12 +8007,13 @@ def test_tts_command_names_voice_and_never_flashes_a_console() -> None:
 
 
 def test_tiny_warmup_image_is_a_real_png_and_needs_no_pillow() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """"The warm-up must not import Pillow" is the point of shipping it
     as a constant — the startup path stays stdlib-only. And it must be a
     VALID png: the first draft here was hand-typoed, Ollama answered HTTP
     400, and nothing but a decode check would have caught it (the warm-up
     correctly refused to crash startup)."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import base64 as b64mod
     import io
     import struct
@@ -8024,9 +8032,10 @@ def test_tiny_warmup_image_is_a_real_png_and_needs_no_pillow() -> None:
 
 
 def test_speak_switch_off_button_auto() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """off hides the control, button shows it, auto reads everything —
     and config refuses anything that is not one of the three."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import visual_qa as vq
 
     assert vq.speak_button_visible("button")
@@ -8052,7 +8061,8 @@ def test_speak_switch_off_button_auto() -> None:
 
 
 def test_visual_qa_section_parses_with_defaults_and_overrides() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import shutil
     import tempfile
     tmp = Path(tempfile.mkdtemp(prefix="vqa-config-"))
@@ -8092,9 +8102,10 @@ def test_visual_qa_section_parses_with_defaults_and_overrides() -> None:
 
 
 def test_visual_qa_hotkey_write_back_is_nested_and_keeps_comments() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """The key lives INSIDE [visual_qa], so the write-back must be dotted;
     set_values' line editor keeps every comment byte while doing it."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import shutil
     tmp, path = _temp_config()
     try:
@@ -8124,9 +8135,10 @@ def test_visual_qa_hotkey_write_back_is_nested_and_keeps_comments() -> None:
 
 
 def test_visual_qa_key_binds_and_the_kill_switch_unbinds_it() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """enabled = false unregisters the key ENTIRELY: no tap, nothing in
     the state machine, whatever the key string still says."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import dataclasses
 
     import main as main_mod
@@ -8148,9 +8160,10 @@ def test_visual_qa_key_binds_and_the_kill_switch_unbinds_it() -> None:
 
 
 def test_visual_qa_key_collision_is_refused_like_every_other() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """One key cannot mean two things — including when one of them is
     nested in a section nobody typed at the top level."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     import dataclasses
 
     import main as main_mod
@@ -8171,69 +8184,401 @@ def test_visual_qa_key_collision_is_refused_like_every_other() -> None:
 
 
 def test_the_dashboard_lists_the_visual_qa_key() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
     """HOTKEY_FIELDS is the one place a new key is registered — the Keys
     screen, the live rebind and the validation all read it."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
     fields = dict(config_mod.HOTKEY_FIELDS)
     assert "visual_qa_hotkey" in fields, fields
     assert fields["visual_qa_hotkey"], "the row would have no label"
 
 
-def test_a_dictated_question_routes_into_the_ask_window() -> None:
-    if not _VQA: return   # classic: no such feature, nothing to assert
-    """The full diversion contract, against a real window on its own
-    thread: deliver_transcript's post lands in the entry (replacing any
-    draft), an answer replaces the busy state, and closing stops cleanly.
+def test_the_thumbnail_caps_both_sides_and_never_upscales() -> None:
+    """One arithmetic, three bugs. Capping the WIDTH alone let a tall
+    narrow selection decide the card's height before an answer existed,
+    and scaling a small grab up handed back a blur of pixels the user
+    could already see sharply."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import visual_qa as vq
 
-    Run as a SUBPROCESS, like the overlay tests: the window owns a Tk
-    interpreter plus widget and image objects, and burying those from the
-    suite's main thread after the window thread is gone is exactly the
-    Tcl_AsyncDelete abort the overlay tests were written to avoid."""
+    assert vq.thumb_size(2000, 300) == (190, 28)     # wide: width binds
+    assert vq.thumb_size(300, 2000) == (16, 110)     # tall: HEIGHT binds
+    assert vq.thumb_size(120, 80) == (120, 80), "no upscaling"
+    assert vq.thumb_size(1, 1) == (1, 1)
+    w, h = vq.thumb_size(760, 440)
+    assert w <= vq.THUMB_MAX_W and h <= vq.THUMB_MAX_H
+    assert abs(w / h - 760 / 440) < 0.02, "aspect ratio drifted"
+
+
+def test_the_selector_says_how_big_the_selection_is() -> None:
+    """The readout is the only number on that screen; the sign in it is
+    U+00D7, because a letter x at 9 pt reads as part of a word."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import visual_qa as vq
+
+    assert vq.selection_readout((10, 20, 522, 308)) == "512 × 288"
+    assert "x" not in vq.selection_readout((0, 0, 5, 5))
+
+
+def test_escape_stops_the_speaking_before_it_closes_the_card() -> None:
+    """One key, two jobs, in the order a person wants them: the first Esc
+    silences an answer being read aloud, the second closes."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import visual_qa as vq
+
+    assert vq.esc_action(True) == "stop"
+    assert vq.esc_action(False) == "close"
+
+
+def test_a_streamed_answer_repaints_on_a_line_or_every_80ms() -> None:
+    """The lookup box's measured rule, reused: tokens land ~24 ms apart
+    and a window resizing forty times a second reads as jitter, so a
+    completed line jumps the queue and 80 ms is the floor for the rest."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import visual_qa as vq
+
+    assert vq.should_repaint(1.000, 0.990, "abcd", 0) is False, \
+        "10 ms after the last paint, with no newline, is too soon"
+    assert vq.should_repaint(1.100, 0.990, "abcd", 0) is True
+    assert vq.should_repaint(1.000, 0.990, "ab\ncd", 2) is True, \
+        "a completed line must not wait for the 80 ms floor"
+    assert vq.should_repaint(9.000, 0.000, "abcd", 4) is False, \
+        "text that has not grown is never repainted"
+    assert vq.should_repaint(9.000, 0.000, "abc", 4) is False
+
+
+def test_the_card_goes_back_where_it_was_put() -> None:
+    """A card the user parked somewhere is a card they chose the place
+    of, and a new selection is not a reason to move it back. The parked
+    position is dropped only when it no longer fits a real monitor —
+    clamping into the virtual screen instead teleports a window on the
+    left monitor onto the primary (popup.py measured that)."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import visual_qa as vq
+
+    work = (0, 0, 1920, 1040)
+    anchor = (100, 100, 400, 300)
+
+    assert vq.plan_placement(anchor, work, (400, 200)) == (100, 318), \
+        "with no memory it sits under the selection"
+    assert vq.plan_placement(anchor, work, (400, 200), (50, 60)) == (50, 60)
+    assert vq.plan_placement(anchor, work, (400, 200), (1800, 60)) \
+        == (100, 318), "a remembered spot that no longer fits is dropped"
+
+    # The left monitor: negative coordinates are a place, not an error.
+    left = (-1920, 0, 0, 1040)
+    assert vq.plan_placement((-1800, 100, -1500, 300), left, (400, 200),
+                             (-1700, 400)) == (-1700, 400)
+
+    # Flip above when there is no room below, and clamp to the work area.
+    high = vq.plan_placement((100, 700, 400, 1000), work, (400, 300))
+    assert high[1] + 300 <= 1040, high
+    wide = vq.plan_placement((1900, 100, 1910, 300), work, (400, 200))
+    assert wide[0] + 400 <= 1920, wide
+
+
+def test_a_streamed_reply_arrives_a_piece_at_a_time_and_adds_up() -> None:
+    """Ollama's streamed shape is line-delimited JSON, and on_chunk is
+    handed the WHOLE answer so far rather than the piece — the window
+    paints a string, not a diff."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import json as json_mod
+
+    import visual_qa as vq
+
+    backend = vq.OllamaVision("gemma3:12b", "http://127.0.0.1:11434", 30,
+                              400)
+    lines = [json_mod.dumps({"message": {"content": piece}}).encode("utf-8")
+             for piece in ("שלום ", "עולם", "")]
+    seen: list[str] = []
+    whole = backend._read(lines, seen.append, None)
+    assert whole == "שלום עולם", whole
+    assert seen == ["שלום ", "שלום עולם"], seen
+
+    class Whole:
+        @staticmethod
+        def read():
+            return json_mod.dumps(
+                {"message": {"content": "בבת אחת"}}).encode("utf-8")
+
+    assert backend._read(Whole, None, None) == "בבת אחת"
+
+
+def test_a_stream_that_never_ends_is_cut_by_its_own_deadline() -> None:
+    """Streaming disarms urllib's timeout — it is per socket operation,
+    and a token every 24 ms means no recv ever waits. translate.py
+    measured 8 s of streaming under timeout=3 with nothing raised. So the
+    deadline is kept by hand, and a model that loops has to hit it."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import json as json_mod
+
+    import visual_qa as vq
+
+    backend = vq.OllamaVision("gemma3:12b", "http://127.0.0.1:11434", 0,
+                              400)
+
+    def forever():
+        while True:
+            yield json_mod.dumps(
+                {"message": {"content": "עוד "}}).encode("utf-8")
+
+    try:
+        backend._read(forever(), lambda _so_far: None, None)
+    except TimeoutError as e:
+        assert "still writing" in str(e), e
+    else:
+        raise AssertionError("the endless stream was never cut off")
+
+
+def test_speaking_again_cancels_the_answer_mid_token() -> None:
+    """Barge-in has to reach the wire, not just the window: the reader
+    checks the cancel event per line, which bounds the abort at one
+    token."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import json as json_mod
+    import threading as threading_mod
+
+    import visual_qa as vq
+
+    backend = vq.OllamaVision("gemma3:12b", "http://127.0.0.1:11434", 30,
+                              400)
+    cancel = threading_mod.Event()
+    cancel.set()
+    lines = [json_mod.dumps({"message": {"content": "לא"}}).encode("utf-8")]
+    try:
+        backend._read(lines, lambda _s: None, cancel)
+    except vq.Cancelled:
+        pass
+    else:
+        raise AssertionError("a cancelled stream kept reading")
+
+
+def test_a_cancelled_question_never_falls_through_to_the_cloud() -> None:
+    """Cancelled is not a refusal. QAError means "this backend said no,
+    try the next one"; a superseded question must not be re-asked of Groq
+    with the user's next sentence already on its way — that would spend a
+    cloud request, and a screenshot, on text nobody is waiting for."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import visual_qa as vq
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    chain = vq.Chain(cfg)
+    reached: list[str] = []
+
+    class Superseded:
+        name = "ollama"
+
+        @staticmethod
+        def ask(*_a, **_kw):
+            reached.append("ollama")
+            raise vq.Cancelled("superseded while the model was writing")
+
+    class MustNotRun:
+        name = "groq"
+
+        @staticmethod
+        def ask(*_a, **_kw):
+            reached.append("groq")
+            return "לא היה צריך לקרות"
+
+    chain._backends = lambda: iter([Superseded(), MustNotRun()])
+    from PIL import Image
+    try:
+        chain.ask(Image.new("RGB", (32, 32)), "שאלה", [])
+    except vq.Cancelled:
+        pass
+    else:
+        raise AssertionError("Cancelled was swallowed as a backend failure")
+    assert reached == ["ollama"], \
+        f"the next backend was consulted anyway: {reached}"
+
+
+def test_one_image_is_encoded_once_per_backend() -> None:
+    """A follow-up asks about the same pixels, and redoing the downscale
+    plus the base64 costs ~60 ms and ~143 K characters for a
+    byte-identical string. The cache belongs to the CALLER: a Chain
+    outlives every card, and a Chain holding a screenshot is the one
+    thing this module promises not to do."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import inspect
+
+    import visual_qa as vq
+    from PIL import Image
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    chain = vq.Chain(cfg)
+    image = Image.new("RGB", (900, 450), (20, 30, 40))
+    cache: dict = {}
+    first = chain._encode_for("ollama", image, cache)
+    assert list(cache) == [("ollama", cfg.visual_qa.max_side_px)], cache
+    assert chain._encode_for("ollama", image, cache) is first, \
+        "the second ask re-encoded the same image"
+    assert chain._encode_for("ollama", image, None) == first, \
+        "no cache must still produce the same bytes"
+    assert not [a for a in inspect.signature(vq.Chain).parameters
+                if "image" in a], "the Chain must not hold an image"
+
+
+def test_the_card_never_borrows_the_dashboard_s_bitmaps() -> None:
+    """A PhotoImage belongs to the interpreter that made it, and this
+    module stands up a fresh Tk per press on its own thread. ui.rounded()
+    caches PhotoImages in a module-level dict against whichever root came
+    first, so one call from here is "main thread is not in main loop" the
+    moment two interpreters exist. ui.rounded_pil() returns pixels
+    instead, and every caller wraps them with a master of its own."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import io
+    import tokenize
+
+    source = (Path(__file__).resolve().parent
+              / "visual_qa.py").read_text("utf-8")
+    # Tokens, not text: this file EXPLAINS the rule in its comments, and a
+    # test that reads prose would fail on the sentence describing itself.
+    code = "".join(
+        tok.string for tok in
+        tokenize.generate_tokens(io.StringIO(source).readline)
+        if tok.type not in (tokenize.COMMENT, tokenize.STRING))
+    for forbidden in ("ui.rounded(", "ui_mod.rounded(", "ui.Button(",
+                      "ui_mod.Button(", "ui.Card(", "ui.draw_text(",
+                      "ui_mod.draw_text("):
+        assert forbidden not in code, \
+            f"visual_qa.py calls {forbidden} — that bitmap has a foreign root"
+    assert "rounded_pil" in code, "the PIL-level helper is not being used"
+    assert "master=" in code, "a PhotoImage here without a master is a bug"
+
+    import ui as ui_mod
+    image = ui_mod.rounded_pil(40, 20, 6, "#161b25", "#10131a", "#2a3242")
+    assert image.size == (40, 20), image.size
+    assert not hasattr(image, "width_"), "rounded_pil must return a PIL image"
+    assert image.getpixel((20, 10)) != image.getpixel((0, 0)), \
+        "the corner and the middle came out the same colour"
+
+
+def test_every_registered_key_has_a_place_on_the_keys_screen() -> None:
+    """HOTKEY_FIELDS is the one place a key is registered; KEY_GROUPS is
+    where it is shown. A key in the first and not the second lands in an
+    "Other keys" catch-all, which is a net for a mistake and not a place
+    to leave one — ask-the-screen shipped in it, at a y the fixed window
+    could not reach."""
+    import dashboard as dash
+
+    named = {field for _title, fields in dash.KEY_GROUPS
+             for field in fields}
+    for field, _label in config_mod.HOTKEY_FIELDS:
+        assert field in named, \
+            f"{field} is registered but not named in a KEY_GROUPS group"
+
+
+def test_the_keys_screen_can_reach_every_key_it_lists() -> None:
+    """The assertion the first version of this was missing. Listing a key
+    is not showing it: the card holding ask-the-screen was built at y=654
+    in a 648 px window that does not scroll, so the row existed, the old
+    test passed on the row existing, and the owner could not find the key.
+
+    Asserted against the LAST registered key rather than a named one, so
+    it asks the real question — can the bottom of this screen be reached
+    — on whichever branch it runs, and keeps asking it when the next key
+    is added."""
+    import dashboard as dash
+
+    try:
+        board = dash.Dashboard()
+    except Exception as e:                      # no display: nothing to test
+        print(f"    (skipped: no Tk window — {e})")
+        return
+    try:
+        board.closing = True
+        board._show("Keys")
+        board.root.update()
+        caps = board.parts["caps"]
+        for field, _label in config_mod.HOTKEY_FIELDS:
+            assert field in caps, f"{field} has no key cap on the screen"
+        scroller = board.parts["keys_list"]
+        scroller.canvas.yview_moveto(1.0)
+        board.root.update()
+        last = config_mod.HOTKEY_FIELDS[-1][0]
+        cap = caps[last]
+        top = cap.winfo_rooty() - scroller.canvas.winfo_rooty()
+        assert 0 <= top, f"{last} sits above the viewport ({top})"
+        assert top + cap.winfo_height() <= scroller.canvas.winfo_height(), \
+            (f"{last} ends {top + cap.winfo_height()} px into a "
+             f"{scroller.canvas.winfo_height()} px viewport — unreachable")
+    finally:
+        try:
+            board.root.destroy()
+        except Exception:
+            pass
+
+
+def test_visual_qa_conversation_knobs_parse_and_are_bounded() -> None:
+    """auto_send is what makes the thing a conversation; window_alpha is
+    how see-through the card is, and a card you cannot read is not a
+    feature."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import shutil
+    import tempfile
+
+    defaults = config_mod.VisualQAConfig()
+    assert defaults.auto_send is True
+    assert defaults.window_alpha == 0.93
+
+    tmp = Path(tempfile.mkdtemp(prefix="vqa-talk-"))
+    path = tmp / "config.toml"
+    try:
+        path.write_text('hotkey = "right ctrl"\n[visual_qa]\n'
+                        "auto_send = false\nwindow_alpha = 0.6\n", "utf-8")
+        cfg = config_mod.load(path)
+        assert cfg.visual_qa.auto_send is False
+        assert abs(cfg.visual_qa.window_alpha - 0.6) < 1e-9
+
+        path.write_text('hotkey = "right ctrl"\n[visual_qa]\n'
+                        "window_alpha = 0.05\n", "utf-8")
+        try:
+            config_mod.load(path)
+        except config_mod.ConfigError as e:
+            assert "window_alpha" in str(e), e
+        else:
+            raise AssertionError("a card at 5% opacity was accepted")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    tmp2, live = _temp_config()
+    try:
+        config_mod.set_values(live, {"visual_qa.auto_send": False})
+        assert config_mod.load(live).visual_qa.auto_send is False
+        marker = "# a SPOKEN question sends itself the moment"
+        assert marker in live.read_text("utf-8"), \
+            "set_values ate the comment that explains the key"
+    finally:
+        shutil.rmtree(tmp2, ignore_errors=True)
+
+
+def _run_window_script(body: str) -> None:
+    """Run a card-building script as a SUBPROCESS, like the overlay tests.
+
+    The card owns a Tcl interpreter plus widgets and images, and burying
+    those from the suite's main thread after the card's thread is gone is
+    exactly the Tcl_AsyncDelete abort those tests were written to avoid.
+    """
     import subprocess
     import tempfile
     here = Path(__file__).resolve().parent
-    script = '''
-import threading, time, os
-from PIL import Image
-import visual_qa as vq
-
-img = Image.new("RGB", (320, 160), (30, 30, 30))
-holder = {}
-ready = threading.Event()
-
-def flow():
-    win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
-                       lambda i, q, h: "תשובה בעברית")
-    holder["win"] = win
-    ready.set()
-    try:
-        win.run()
-    except Exception:
-        pass
-
-t = threading.Thread(target=flow, daemon=True)
-t.start()
-assert ready.wait(5), "window never came up"
-win = holder["win"]
-deadline = time.monotonic() + 5
-win.post(("voice", "מה המספר שמופיע בחלון?"))
-while win.last_voice is None and time.monotonic() < deadline:
-    time.sleep(0.05)
-assert win.last_voice == "מה המספר שמופיע בחלון?", win.last_voice
-win.post(("answer", (win.last_voice, "מאה — 42 + 58 = 100", 2.2)))
-while not win.answer_text and time.monotonic() < deadline:
-    time.sleep(0.05)
-assert win.answer_text == "מאה — 42 + 58 = 100", win.answer_text
-assert len(win.history) == 2, win.history
-win.close_soon()
-t.join(3)
-assert not t.is_alive(), "window thread did not exit on close"
-os._exit(0)
-'''
-    with tempfile.NamedTemporaryFile("w", suffix="_vqa_route.py",
+    with tempfile.NamedTemporaryFile("w", suffix="_vqa_win.py",
                                      dir=str(here), delete=False,
                                      encoding="utf-8") as fh:
-        fh.write(script)
+        fh.write(body)
         path = Path(fh.name)
     try:
         out = subprocess.run([sys.executable, str(path)], cwd=str(here),
@@ -8243,6 +8588,359 @@ os._exit(0)
         path.unlink(missing_ok=True)
     assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
     assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
+    assert "Traceback" not in (out.stderr or ""), out.stderr
+
+
+def test_a_dictated_question_asks_itself_without_a_keypress() -> None:
+    """The whole point of auto_send: a spoken question is COMPLETE when
+    the transcript lands — it has been through Whisper and the learned
+    vocabulary already — so the Enter that used to follow it was the one
+    manual step left in a flow that is otherwise hands-free.
+
+    Also the diversion contract: the transcript reaches the card's entry
+    and nothing is pasted into the app underneath."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import threading, time, os
+from PIL import Image
+import visual_qa as vq
+
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+asked = []
+holder = {}
+ready = threading.Event()
+
+def ask(image, question, history, on_chunk=None, cancel=None,
+        encoded_cache=None):
+    asked.append(question)
+    return ("ארבעים ושתיים", "test")
+
+def flow():
+    win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off", ask,
+                       auto_send=True)
+    holder["win"] = win
+    ready.set()
+    try:
+        win.run()
+    except Exception:
+        pass
+
+t = threading.Thread(target=flow, daemon=True)
+t.start()
+assert ready.wait(10), "the card never came up"
+win = holder["win"]
+deadline = time.monotonic() + 10
+win.post(("voice", "מה המספר שמופיע בחלון?"))
+while not win.answer_text and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert win.last_voice == "מה המספר שמופיע בחלון?", win.last_voice
+assert asked == ["מה המספר שמופיע בחלון?"], asked
+assert win.answer_text == "ארבעים ושתיים", win.answer_text
+assert len(win.history) == 2, win.history
+assert win.history[0]["content"] == "מה המספר שמופיע בחלון?"
+win.close_soon()
+t.join(5)
+assert not t.is_alive(), "the card's thread did not exit on close"
+os._exit(0)
+''')
+
+
+def test_talking_over_an_answer_folds_both_sentences_into_one_question() -> None:
+    """The phone-call rule the owner asked for. Speaking again while the
+    model is writing abandons that answer mid-token, appends what was just
+    said to what was already asked, and re-asks the LOT — so the reply
+    covers everything said so far instead of half of it.
+
+    Two guarantees are asserted, and both are the kind that rot quietly:
+    the abandoned answer must be DROPPED when it finally lands (a
+    generation counter, not a flag, because it lands after the new
+    question was sent), and the dictated words must never be lost — v1
+    put them in the entry and then wiped the entry when the stale answer
+    arrived."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import threading, time, os
+from PIL import Image
+import visual_qa as vq
+
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+asked, holder = [], {}
+ready, gate = threading.Event(), threading.Event()
+
+def ask(image, question, history, on_chunk=None, cancel=None,
+        encoded_cache=None):
+    asked.append(question)
+    if len(asked) == 1:
+        # The first answer is still being written when the user speaks
+        # again; it must notice the cancel rather than finish and win.
+        for _ in range(500):
+            if cancel is not None and cancel.is_set():
+                raise vq.Cancelled("superseded")
+            if gate.wait(0.02):
+                break
+        return ("התשובה הישנה", "test")
+    return ("התשובה על הכל", "test")
+
+def flow():
+    win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off", ask,
+                       auto_send=True)
+    holder["win"] = win
+    ready.set()
+    try:
+        win.run()
+    except Exception:
+        pass
+
+t = threading.Thread(target=flow, daemon=True)
+t.start()
+assert ready.wait(10), "the card never came up"
+win = holder["win"]
+
+win.post(("voice", "מה כתוב פה"))
+deadline = time.monotonic() + 10
+while not asked and time.monotonic() < deadline:
+    time.sleep(0.02)
+while not win.busy and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert win.busy, "the first question never went out"
+
+win.post(("voice", "ותרגם לאנגלית"))
+while len(asked) < 2 and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert asked[1] == "מה כתוב פה ותרגם לאנגלית", asked
+gate.set()                      # let the abandoned answer land, late
+
+while not win.answer_text and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert win.answer_text == "התשובה על הכל", win.answer_text
+assert len(win.history) == 2, win.history
+assert win.history[0]["content"] == "מה כתוב פה ותרגם לאנגלית", win.history
+time.sleep(0.4)                 # give the stale answer every chance to win
+assert win.answer_text == "התשובה על הכל", "the abandoned answer landed"
+assert len(win.history) == 2, win.history
+win.close_soon()
+t.join(5)
+assert not t.is_alive(), "the card's thread did not exit on close"
+os._exit(0)
+''')
+
+
+def test_the_card_grows_to_fit_a_long_answer_and_then_scrolls() -> None:
+    """Tk does NOT grow a toplevel once an explicit geometry has been set
+    — measured, a child's requested height went 21 -> 477 and the window
+    stayed 21 px tall. v1 pinned its geometry once, before any answer
+    existed, which is why every long answer was clipped with no way to
+    see the rest. Every content change now re-issues the geometry, and
+    the growth stops at a share of the work area rather than running off
+    the bottom of the screen."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import os
+from PIL import Image
+import visual_qa as vq
+
+# Built and driven on the MAIN thread: this test never pumps, so the
+# interpreter is owned, used and buried by one thread throughout.
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
+                   lambda *a, **k: ("", "test"))
+try:
+    win.root.update()
+    before = win.root.winfo_height()
+    win.history.append({"role": "user", "content": "מה כתוב במסך הזה?"})
+    win.history.append({"role": "assistant", "content": "שורה. " * 220})
+    win._repaint_transcript()
+    win._fit_window()
+    win.root.update()
+    after = win.root.winfo_height()
+    assert after > before, (before, after)
+    assert win._content_h > 0
+    cap = win._view_cap()
+    assert win.transcript.winfo_height() <= cap + 1, \\
+        (win.transcript.winfo_height(), cap)
+    region = win.transcript.cget("scrollregion").split()
+    assert int(region[3]) >= win.transcript.winfo_height(), region
+finally:
+    win.root.destroy()
+os._exit(0)
+''')
+
+
+def test_a_busy_clipboard_is_a_message_not_a_traceback() -> None:
+    """injector.set_text raises ClipboardBusyError when another program
+    is holding the clipboard — a thing that happens — and v1 let it out
+    of a Tk callback, where it became a traceback on stderr and no
+    feedback at all in the window."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import os
+from PIL import Image
+import injector
+import visual_qa as vq
+
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
+                   lambda *a, **k: ("", "test"))
+try:
+    win.root.update()
+    win.answer_text = "תשובה להעתקה"
+
+    real = injector.set_text
+    injector.set_text = lambda _t: (_ for _ in ()).throw(
+        injector.ClipboardBusyError("held by something else"))
+    win._copy()
+    assert "clipboard busy" in win.status.cget("text"), \\
+        win.status.cget("text")
+    assert win.status.cget("fg") == vq.AMBER, win.status.cget("fg")
+
+    copied = []
+    injector.set_text = copied.append
+    win._copy()
+    assert copied == ["תשובה להעתקה"], copied
+    assert win.status.cget("text") == "copied", win.status.cget("text")
+    assert win.status.cget("fg") == vq.GREEN, win.status.cget("fg")
+    injector.set_text = real
+finally:
+    win.root.destroy()
+os._exit(0)
+''')
+
+
+def test_a_new_selection_starts_a_new_conversation() -> None:
+    """The image rides the FIRST user turn in every backend's message
+    list, so history carried across a re-selection would leave the model
+    answering about pixels that are no longer on screen — while the card
+    showed the new ones. The old encodings go too: they are a screenshot,
+    in base64, and this module keeps none of those."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import os
+from PIL import Image
+import visual_qa as vq
+
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+fresh = Image.new("RGB", (640, 200), (90, 20, 20))
+win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
+                   lambda *a, **k: ("", "test"),
+                   reselect_fn=lambda: (fresh, (0, 0, 640, 200)))
+try:
+    win.root.update()
+    win.history.append({"role": "user", "content": "שאלה ישנה"})
+    win.history.append({"role": "assistant", "content": "תשובה ישנה"})
+    win.answer_text = "תשובה ישנה"
+    win.encoded[("ollama", 1344)] = "stale-base64"
+    win._repaint_transcript()
+    was = (win._thumb.width(), win._thumb.height())
+
+    win._on_reselect()
+    win.root.update()
+    assert win.history == [], win.history
+    assert win.answer_text == "", win.answer_text
+    assert win.encoded == {}, win.encoded
+    assert win.image is fresh
+    now = (win._thumb.width(), win._thumb.height())
+    assert now != was, (was, now)
+finally:
+    win.root.destroy()
+os._exit(0)
+''')
+
+
+def test_an_arriving_answer_never_eats_what_you_typed_while_waiting() -> None:
+    """Anything in the box when an answer lands was typed WHILE the model
+    was writing, which makes it the next question. v1 cleared the box on
+    every answer, so a follow-up dictated a second too early vanished
+    without a word — and the box is not disabled any more precisely so
+    that typing over an answer works the way talking over one does."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import os
+from PIL import Image
+import visual_qa as vq
+
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
+                   lambda *a, **k: ("", "test"))
+try:
+    win.root.update()
+    assert str(win.entry.cget("state")) == "normal", win.entry.cget("state")
+
+    win.busy = True
+    win._gen = 1
+    win._pending_q = "מה כתוב פה"
+    win.entry.insert(0, "ואיך מתקנים את זה")
+    win._on_answer((1, "מה כתוב פה", "ככה וככה", "test", 1.2))
+    win.root.update()
+
+    assert win.entry.get() == "ואיך מתקנים את זה", win.entry.get()
+    assert win.answer_text == "ככה וככה", win.answer_text
+    assert len(win.history) == 2, win.history
+
+    # ...and an answer for a question that was already superseded is
+    # dropped on the floor rather than overwriting the real one.
+    win._on_answer((0, "שאלה ישנה", "תשובה ישנה", "test", 9.9))
+    assert win.answer_text == "ככה וככה", win.answer_text
+    assert len(win.history) == 2, win.history
+finally:
+    win.root.destroy()
+os._exit(0)
+''')
+
+
+def test_the_card_is_a_borderless_pane_that_can_be_moved() -> None:
+    """It is the lookup box's family, not a dialog: no caption, no
+    taskbar button, translucent until the pointer is on it, and dragged
+    by its own title strip. Everything Windows used to draw for us is
+    hand-built, so each piece is worth one assert."""
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import ctypes, os
+from PIL import Image
+import visual_qa as vq
+
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
+                   lambda *a, **k: ("", "test"), alpha=0.9)
+try:
+    win.root.update()
+    assert win.root.overrideredirect(), "the card grew a title bar"
+    assert abs(float(win.root.attributes("-alpha")) - 0.9) < 0.02, \\
+        win.root.attributes("-alpha")
+
+    WS_CAPTION = 0x00C00000
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    hwnd = user32.GetParent(int(win.root.winfo_id())) or int(win.root.winfo_id())
+    style = user32.GetWindowLongW(hwnd, -16)          # GWL_STYLE
+    assert not style & WS_CAPTION, hex(style)
+
+    win.root.geometry("+300+300")
+    win.root.update()
+
+    class E:
+        x_root, y_root = 340, 330
+    win._drag_start(E)
+    E.x_root, E.y_root = 420, 380
+    win._drag_move(E)
+    win.root.update()
+    assert (win.root.winfo_x(), win.root.winfo_y()) == (380, 350), \\
+        (win.root.winfo_x(), win.root.winfo_y())
+
+    moved = []
+    win.on_move = moved.append
+    win._drag_end()
+    assert moved == [(380, 350)], moved
+finally:
+    win.root.destroy()
+os._exit(0)
+''')
+
 
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
