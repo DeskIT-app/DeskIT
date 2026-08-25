@@ -803,7 +803,11 @@ class App:
         # module to import even if something asked it to.
         vqa = getattr(self, "_vqa", None)
         if vqa is not None and vqa.sink_active:
-            vqa.notify_recording()
+            # The meter rides along so the card can draw the wave from the
+            # real microphone. A bound method of the recorder, not the
+            # recorder: the card is given a way to READ a level and no way
+            # to touch anything else.
+            vqa.notify_recording(level=self.recorder.meter)
         beep("start")
         log.info("recording %s... (release to transcribe%s)",
                  language_label(language, shout=True),
