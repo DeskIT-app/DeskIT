@@ -218,7 +218,10 @@ QUESTION_PT = 10
 # wrapping every second line: measured on the live card against a real
 # gemma3 answer, 380 broke "Error: connection refused (ECONNREFUSED)"
 # across three lines and 460 holds it on one.
-CARD_MIN_W, CARD_INIT_W, CARD_MAX_W = 380, 460, 760
+# Wider than v1's 460. The owner asked for room to SEE the picture
+# he is asking about, and a chat with 40-character lines is not a
+# chat, it is a receipt.
+CARD_MIN_W, CARD_INIT_W, CARD_MAX_W = 420, 580, 900
 FLASH_MS = 1400          # popup.py's confirmation dwell, same number
 
 # The palette is ui.py's, imported rather than re-typed: a second copy of
@@ -1139,6 +1142,300 @@ class Speaker:
 
 # -------------------------------------------------------------- rendering
 
+# ----------------------------------------------------------- liquid glass
+#
+# WHY THIS EXISTS AT ALL, AND WHY IT CAN.
+#
+# Tk has no compositor. A tk.Frame is an opaque rectangle and always will
+# be, so a card built out of widgets can never be glass — which is what
+# the first version of this window was, and why the owner said it worked
+# but was not something he wanted to look at.
+#
+# The way out is that the screen is FROZEN. The hotkey grabs the whole
+# virtual screen before anything is shown, so the pixels behind the card
+# are not a guess: we own them. That turns "blur what is behind the
+# window" from a compositor trick into an ordinary image operation on a
+# bitmap we already have, and it makes the blur EXACT rather than faked.
+#
+# So every surface here is painted into one PIL image and shown as a
+# single PhotoImage. Nothing is a widget except the entry, which has to
+# be one to carry a caret.
+#
+# MEASURED, 2026-08-25, on the 4480x1440 virtual screen: 62 ms to grab,
+# 172 ms to paint the whole scene, 109 ms to hand it to Tk. The first
+# draft of the painter took 734 ms for the same picture; the difference
+# is entirely that effects which touch a few hundred pixels around one
+# rectangle are computed on a CROP instead of on all 6.45 M, and that two
+# per-pixel Python loops (the specular gradient and the grain) moved into
+# Pillow's C. Do not put them back.
+
+GLASS_BASE = (10, 22, 44)        # smoked navy under the tint: glass that
+                                 # carries text is a SMOKED window, not a
+                                 # clear one, and without this the text
+                                 # loses to any busy wallpaper
+GLASS_TINT = (74, 144, 226)      # the app's blue
+GLASS_RIM = (255, 255, 255)
+INK = (238, 245, 255)
+INK_DIM = (168, 194, 226)
+INK_FAINT = (134, 162, 198)
+MARK = (255, 214, 64)            # the pencil's ink: the one warm colour
+                                 # on the whole surface, so a mark can
+                                 # never be mistaken for chrome
+
+# dim the frozen screen and pull it toward night blue in ONE lookup pass
+_FREEZE_LUT = ([min(255, int(v * .34) + 5) for v in range(256)]
+               + [min(255, int(v * .34) + 11) for v in range(256)]
+               + [min(255, int(v * .34) + 24) for v in range(256)])
+
+
+def _rounded_mask(size, radius: int, scale: int = 4):
+    """An antialiased rounded-rect mask. Drawn big, shrunk down.
+
+    Tk antialiases nothing, so every soft edge in this module has to be
+    baked into the bitmap before Tk ever sees it.
+    """
+    from PIL import Image, ImageDraw
+    w, h = size
+    big = Image.new("L", (w * scale, h * scale), 0)
+    ImageDraw.Draw(big).rounded_rectangle(
+        (0, 0, w * scale - 1, h * scale - 1), radius * scale, fill=255)
+    return big.resize((w, h), Image.LANCZOS)
+
+
+def rr_layer(size, radius: int, fill, outline=None, width: int = 1,
+             scale: int = 4):
+    """A translucent rounded rectangle as its OWN RGBA layer.
+
+    ImageDraw's fill REPLACES pixels rather than blending them, so drawing
+    a half-transparent shape straight onto the glass punches a hole in it
+    instead of tinting it. Everything soft is built here and composited.
+    """
+    from PIL import Image, ImageDraw
+    w, h = size
+    big = Image.new("RGBA", (w * scale, h * scale), (0, 0, 0, 0))
+    ImageDraw.Draw(big).rounded_rectangle(
+        (0, 0, w * scale - 1, h * scale - 1), radius * scale,
+        fill=fill, outline=outline, width=width * scale)
+    return big.resize((w, h), Image.LANCZOS)
+
+
+def glass_plate(backdrop, box, *, radius: int = 30, base_a: int = 158,
+                tint_a: int = 84, blur: int = 26, lens: float = 1.06):
+    """An RGBA liquid-glass panel for `box` of `backdrop`.
+
+    The order IS the recipe, and each step earns its place:
+      1. crop what is behind, blur it, and scale it 6% about the centre —
+         the LENSING. Without it the panel reads as frosted plastic laid
+         flat on the wallpaper rather than as something with thickness.
+      2. saturate: glass carries colour more strongly than air does.
+      3. the smoked base, then the blue. Base first, or the blue turns
+         grey over a dark backdrop.
+      4. a vertical sheen, so the panel has an up and a down.
+      5. grain, because a perfectly smooth surface reads as flat colour.
+      6. the specular rim — the one thing that actually says GLASS. A
+         bright hairline strongest at the top-left and gone by the
+         bottom-right, a dim hairline all the way round so there is still
+         an edge where the specular has faded, and an outer glow.
+    """
+    from PIL import Image, ImageDraw, ImageFilter, ImageEnhance, ImageChops
+    x0, y0, x1, y1 = box
+    w, h = x1 - x0, y1 - y0
+
+    pad = int(max(w, h) * (lens - 1) / 2) + blur
+    src = backdrop.crop((x0 - pad, y0 - pad, x1 + pad, y1 + pad))
+    src = src.filter(ImageFilter.GaussianBlur(blur))
+    bw, bh = int(src.width * lens), int(src.height * lens)
+    src = src.resize((bw, bh), Image.LANCZOS)
+    cx, cy = bw // 2, bh // 2
+    plate = src.crop((cx - w // 2, cy - h // 2,
+                      cx - w // 2 + w, cy - h // 2 + h)).convert("RGB")
+    plate = ImageEnhance.Color(plate).enhance(1.4).convert("RGBA")
+
+    plate = Image.alpha_composite(
+        plate, Image.new("RGBA", (w, h), GLASS_BASE + (base_a,)))
+    plate = Image.alpha_composite(
+        plate, Image.new("RGBA", (w, h), GLASS_TINT + (tint_a,)))
+
+    sheen = Image.new("L", (1, h))
+    sheen.putdata([int(46 * (1 - i / max(1, h - 1)) ** 1.6) for i in range(h)])
+    plate = Image.alpha_composite(
+        plate, Image.merge("RGBA", (Image.new("L", (w, h), 255),) * 3
+                           + (sheen.resize((w, h)),)))
+
+    grain = Image.effect_noise((w, h), 8).point(lambda v: 128 + (v - 128) // 3)
+    plate = Image.composite(
+        ImageChops.add(plate.convert("RGB"), grain.convert("RGB"), 2, -128)
+        .convert("RGBA"), plate, Image.new("L", (w, h), 45))
+
+    inner = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(inner).rounded_rectangle(
+        (1, 1, w - 2, h - 2), max(1, radius - 1), outline=255, width=2)
+    # the falloff is SMOOTH, so it does not need a value per pixel: 64x64
+    # stretched is identical to the eye, and was half of a 297 ms panel
+    g = 64
+    small = Image.new("L", (g, g))
+    small.putdata([int(255 * max(0.0, 1 - ((x / g) * .55 + (y / g) * .8)))
+                   for y in range(g) for x in range(g)])
+    grad = small.resize((w, h), Image.BILINEAR)
+    plate = Image.alpha_composite(plate, Image.merge("RGBA", (
+        Image.new("L", (w, h), GLASS_RIM[0]),
+        Image.new("L", (w, h), GLASS_RIM[1]),
+        Image.new("L", (w, h), GLASS_RIM[2]),
+        ImageChops.multiply(inner, grad))))
+
+    edge = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(edge).rounded_rectangle((0, 0, w - 1, h - 1), radius,
+                                           outline=255, width=1)
+    plate = Image.alpha_composite(plate, Image.merge("RGBA", (
+        Image.new("L", (w, h), 200), Image.new("L", (w, h), 225),
+        Image.new("L", (w, h), 255), edge.point(lambda v: v // 3))))
+
+    glow = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(glow).rounded_rectangle((0, 0, w - 1, h - 1), radius,
+                                           outline=255, width=12)
+    plate = Image.alpha_composite(plate, Image.merge("RGBA", (
+        Image.new("L", (w, h), 150), Image.new("L", (w, h), 190),
+        Image.new("L", (w, h), 255),
+        glow.filter(ImageFilter.GaussianBlur(8)).point(lambda v: v // 6))))
+
+    plate.putalpha(_rounded_mask((w, h), radius))
+    return plate
+
+
+ANTIALIASED_QUALITY = 4
+
+
+def text_pil(text: str, width: int, *, pt: float = 14.5,
+             face: str | None = None, colour=INK, rtl: bool = True,
+             weight: int = 400, single: bool = False):
+    """Hebrew/mixed text as an RGBA image with a REAL alpha channel.
+
+    render_answer below draws the same bidi text correctly, but onto a
+    solid background and into a Tk PhotoImage — no use at all when the
+    glyphs have to sit on glass. Two changes make it composable:
+    ANTIALIASED_QUALITY instead of ClearType, so the antialiasing is grey
+    rather than coloured subpixels; and white-on-black, so the luminance
+    IS the alpha. After that the glyphs can be any colour over anything.
+
+    Same DrawTextW + DT_RTLREADING call popup.py validated glyph by
+    glyph. Tk's own text layout is LTR-based and scrambles the mixed
+    Hebrew-and-Latin line that is the COMMON case here.
+    """
+    from PIL import Image
+    text = text or " "
+    if not single:
+        text = "\n".join(" ".join(line.split())
+                         for line in text.splitlines()).strip("\n") or " "
+    face = face or _pick_face()
+    user, gdi = ctypes.windll.user32, ctypes.windll.gdi32
+    hdc_screen = user.GetDC(0)
+    dpi = gdi.GetDeviceCaps(hdc_screen, 90)
+    px = max(1, round(pt * dpi / 72))
+    hdc = gdi.CreateCompatibleDC(hdc_screen)
+    font = gdi.CreateFontW(-px, 0, 0, 0, weight, 0, 0, 0, 0, 0, 0,
+                           ANTIALIASED_QUALITY, 0, face)
+    old_font = gdi.SelectObject(hdc, font)
+    try:
+        flags = DT_NOPREFIX | (DT_SINGLELINE if single else DT_WORDBREAK)
+        if rtl:
+            flags |= DT_RTLREADING | DT_RIGHT
+        rect = w.RECT(0, 0, max(20, width), 0)
+        user.DrawTextW(hdc, text, -1, ctypes.byref(rect), flags | DT_CALCRECT)
+        height = max(1, rect.bottom) + 2
+
+        bmp = gdi.CreateCompatibleBitmap(hdc_screen, width, height)
+        old_bmp = gdi.SelectObject(hdc, bmp)
+        paint = w.RECT(0, 0, width, height)
+        brush = gdi.CreateSolidBrush(0x000000)
+        user.FillRect(hdc, ctypes.byref(paint), brush)
+        gdi.DeleteObject(brush)
+        gdi.SetTextColor(hdc, 0xFFFFFF)
+        gdi.SetBkMode(hdc, 1)
+        user.DrawTextW(hdc, text, -1, ctypes.byref(paint), flags)
+
+        class Header(ctypes.Structure):
+            _fields_ = [("size", w.DWORD), ("wd", w.LONG), ("ht", w.LONG),
+                        ("planes", w.WORD), ("bits", w.WORD),
+                        ("comp", w.DWORD), ("imgsize", w.DWORD),
+                        ("xppm", w.LONG), ("yppm", w.LONG),
+                        ("used", w.DWORD), ("important", w.DWORD)]
+        info = Header(ctypes.sizeof(Header), width, -height, 1, 32,
+                      0, 0, 0, 0, 0, 0)
+        raw = ctypes.create_string_buffer(width * height * 4)
+        gdi.GetDIBits(hdc, bmp, 0, height, raw, ctypes.byref(info), 0)
+        gdi.SelectObject(hdc, old_bmp)
+        gdi.DeleteObject(bmp)
+
+        lit = Image.frombuffer("RGBA", (width, height), raw.raw, "raw",
+                               "BGRA", 0, 1).convert("L")
+        out = Image.new("RGBA", (width, height), tuple(colour) + (0,))
+        out.putalpha(lit)
+        return out
+    finally:
+        gdi.SelectObject(hdc, old_font)
+        gdi.DeleteObject(font)
+        gdi.DeleteDC(hdc)
+        user.ReleaseDC(0, hdc_screen)
+
+
+DT_SINGLELINE = 0x0020
+
+
+def _icon(kind: str, size: int = 21, colour=INK, width: int = 2):
+    """One line icon, drawn at 4x and shrunk. Tk antialiases nothing."""
+    from PIL import Image, ImageDraw
+    s = 4
+    n = size * s
+    img = Image.new("RGBA", (n, n), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    c = tuple(colour)
+    lw = width * s
+    if kind == "pencil":
+        d.line([(n * .22, n * .78), (n * .70, n * .30)], fill=c, width=lw)
+        d.line([(n * .70, n * .30), (n * .80, n * .40)], fill=c, width=lw)
+        d.line([(n * .80, n * .40), (n * .32, n * .88)], fill=c, width=lw)
+        d.polygon([(n * .18, n * .92), (n * .34, n * .87), (n * .23, n * .76)],
+                  fill=c)
+    elif kind == "mic":
+        d.rounded_rectangle((n * .38, n * .14, n * .62, n * .58), n * .12,
+                            outline=c, width=lw)
+        d.arc((n * .26, n * .34, n * .74, n * .76), 0, 180, fill=c, width=lw)
+        d.line([(n * .5, n * .76), (n * .5, n * .90)], fill=c, width=lw)
+    elif kind == "send":
+        d.line([(n * .5, n * .82), (n * .5, n * .18)], fill=c, width=lw)
+        d.line([(n * .5, n * .18), (n * .24, n * .44)], fill=c, width=lw)
+        d.line([(n * .5, n * .18), (n * .76, n * .44)], fill=c, width=lw)
+    elif kind == "undo":
+        d.arc((n * .18, n * .22, n * .84, n * .80), 200, 20, fill=c, width=lw)
+        d.line([(n * .20, n * .20), (n * .20, n * .46)], fill=c, width=lw)
+        d.line([(n * .20, n * .20), (n * .44, n * .20)], fill=c, width=lw)
+    elif kind == "trash":
+        d.line([(n * .20, n * .28), (n * .80, n * .28)], fill=c, width=lw)
+        d.rounded_rectangle((n * .28, n * .28, n * .72, n * .86), n * .08,
+                            outline=c, width=lw)
+        d.line([(n * .40, n * .18), (n * .60, n * .18)], fill=c, width=lw)
+    elif kind == "close":
+        d.line([(n * .28, n * .28), (n * .72, n * .72)], fill=c, width=lw)
+        d.line([(n * .72, n * .28), (n * .28, n * .72)], fill=c, width=lw)
+    elif kind == "pin":
+        d.line([(n * .5, n * .58), (n * .5, n * .88)], fill=c, width=lw)
+        d.polygon([(n * .30, n * .52), (n * .70, n * .52), (n * .60, n * .20),
+                   (n * .40, n * .20)], outline=c, width=lw)
+    elif kind == "speak":
+        d.polygon([(n * .18, n * .38), (n * .34, n * .38), (n * .52, n * .18),
+                   (n * .52, n * .82), (n * .34, n * .62), (n * .18, n * .62)],
+                  outline=c, width=lw)
+        d.arc((n * .48, n * .28, n * .82, n * .72), 300, 60, fill=c, width=lw)
+    elif kind == "copy":
+        d.rounded_rectangle((n * .18, n * .18, n * .62, n * .62), n * .08,
+                            outline=c, width=lw)
+        d.rounded_rectangle((n * .38, n * .38, n * .82, n * .82), n * .08,
+                            outline=c, width=lw)
+    else:
+        raise ValueError(f"no such icon: {kind}")
+    return img.resize((size, size), Image.LANCZOS)
+
+
 def _pick_face() -> str:
     """Rubik if installed, Segoe UI otherwise (ui.py's own probe)."""
     try:
@@ -1624,6 +1921,241 @@ def _ask_worker(q: "queue.Queue", ask_fn, image, question: str,
         q.put(("error", (gen, f"{e}")))
 
 
+def _hex_rgb(value: str) -> tuple[int, int, int]:
+    value = (value or "#ffffff").lstrip("#")
+    return tuple(int(value[i:i + 2], 16) for i in (0, 2, 4))
+
+
+class _Text:
+    """Everything a tk.Label was carrying here: a string and a colour.
+
+    The status line is PAINTED now, so a widget for it would be a widget
+    that is never mapped. This keeps config()/cget() so the rest of the
+    window goes on talking to it exactly as it did.
+    """
+
+    def __init__(self, text: str = "", fg: str = DIM):
+        self._d = {"text": text, "fg": fg}
+
+    def config(self, **kw) -> None:
+        self._d.update(kw)
+
+    configure = config
+
+    def cget(self, key: str):
+        return self._d[key]
+
+
+class _Btn:
+    """A painted control's state, with the API the old RoundButton had."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.enabled = False
+
+    def enable(self, on: bool) -> None:
+        self.enabled = bool(on)
+
+    def config_text(self, text: str) -> None:
+        self.text = text
+
+
+# The card, in numbers. The transcript is whatever is left between the
+# header and the foot, so only these two are fixed.
+CARD_PAD = 22
+CARD_HEAD_H = 52          # title row and the hairline under it
+CARD_FOOT_H = 192         # the status line, the chips, the pill, the hint
+CARD_RADIUS = 30
+PILL_H = 58
+
+# The three questions that are already written for you. THEY STAY IN
+# HEBREW while the rest of the chrome is English, and that is not an
+# oversight: a chip is not a label, it is the PROMPT. A model answers in
+# the language it was asked in, and Hebrew is the language the answers
+# are wanted in.
+QUICK_ASKS = ("מה כתוב כאן?", "תרגם לאנגלית", "תסביר בקצרה")
+
+
+class _CardSurface:
+    """Paints the card, and remembers where everything landed.
+
+    One PIL image per repaint: glass, transcript, chips, pill, hint. The
+    only live widget on top of it is the entry, because a caret cannot be
+    painted. Clicks are hit-tested against `boxes`, which this fills in
+    AS it draws - so the picture and the hit targets cannot disagree,
+    which is the failure mode of every hand-maintained coordinate table.
+    """
+
+    def __init__(self, backdrop, opacity: float = 0.93):
+        self.backdrop = backdrop        # the frozen screen, dimmed
+        # [visual_qa] window_alpha used to be Tk's whole-window -alpha,
+        # which made the TEXT translucent too and was half of why the old
+        # card was hard to read. It now scales how SOLID the glass is,
+        # which is the thing that knob was always reaching for.
+        self.base_a = max(90, min(220, int(158 * (opacity / 0.93))))
+        self.boxes: dict = {}
+        self.entry_bg = CARD
+        self._plate = None
+        self._plate_key = None
+
+    def rebase(self, backdrop) -> None:
+        self.backdrop = backdrop
+        self._plate_key = None
+
+    def plate(self, box):
+        """The glass, cached. Re-blur only when the card moves or grows."""
+        if self._plate_key != box:
+            self._plate = glass_plate(self.backdrop, box, radius=CARD_RADIUS,
+                                      base_a=self.base_a)
+            self._plate_key = box
+        return self._plate
+
+    def compose(self, box, state):
+        """The card as an RGB image, corners and all.
+
+        The corners are the REAL desktop: the glass is pasted onto a copy
+        of the crisp backdrop through an antialiased rounded mask, so
+        outside the radius the pixels are bit for bit what was already
+        there. No chroma key, no WS_EX_LAYERED, no SetWindowRgn, and so
+        none of the dark fringe a 1-bit colour key leaves behind.
+        """
+        from PIL import Image
+        x0, y0, x1, y1 = box
+        pw, ph = x1 - x0, y1 - y0
+        self.boxes = {}
+
+        out = self.backdrop.crop(box).convert("RGBA")
+        out.alpha_composite(self.plate(box))
+
+        pad = CARD_PAD
+        y = 20
+
+        # ---- header ----
+        out.alpha_composite(
+            text_pil("ASK THE SCREEN", 200, pt=9.5, rtl=False,
+                     colour=(140, 186, 238), single=True, weight=600),
+            (pad, y + 3))
+        thumb = state.get("thumb")
+        if thumb is not None:
+            tw, th = thumb.size
+            tx, ty = pad + 128, y - 6
+            out.alpha_composite(rr_layer((tw + 4, th + 4), 7,
+                                         (255, 255, 255, 34)),
+                                (tx - 2, ty - 2))
+            out.paste(thumb, (tx, ty))
+            self.boxes["thumb"] = (tx, ty, tx + tw, ty + th)
+
+        icons = [("close", INK_DIM, True), ("pin", INK, state.get("pinned"))]
+        if state.get("speak_on") is not None:
+            icons.append(("speak", INK, state.get("speak_ready")))
+        icons.append(("copy", INK, state.get("copy_ready")))
+        ix = pw - pad - 18
+        for name, lit, on in icons:
+            out.alpha_composite(
+                _icon(name, 18, lit if on else INK_FAINT), (ix, y + 1))
+            self.boxes[name] = (ix - 7, y - 6, ix + 25, y + 26)
+            ix -= 30
+        y += 32
+        out.alpha_composite(rr_layer((pw - pad * 2, 1), 0,
+                                     (255, 255, 255, 34)), (pad, y))
+        y += 20
+        self.boxes["strip"] = (0, 0, pw, y)      # the drag handle
+
+        # ---- the conversation ----
+        view_top = y
+        view_h = max(40, ph - CARD_FOOT_H - view_top)
+        rows = state.get("rows") or []
+        content_h = max(1, state.get("content_h", 1))
+        strip = Image.new("RGBA", (max(1, pw - pad * 2), content_h),
+                          (0, 0, 0, 0))
+        ry = 0
+        for (skin, sx), (body, bx) in rows:
+            strip.alpha_composite(skin, (sx, ry))
+            strip.alpha_composite(body, (bx, ry + 13))
+            ry += skin.height + 12
+        offset = int(state.get("scroll", 0))
+        if strip.height > view_h:
+            strip = strip.crop((0, offset, strip.width, offset + view_h))
+        out.alpha_composite(strip, (pad, view_top))
+        self.boxes["view"] = (pad, view_top, pw - pad, view_top + view_h)
+
+        # ---- the status line, on the rail's row ----
+        status = state.get("status") or ""
+        if status:
+            out.alpha_composite(
+                text_pil(status, pw - pad * 2, pt=10.5,
+                         colour=state.get("status_rgb", INK_DIM),
+                         single=True, rtl=False),
+                (pad, ph - CARD_FOOT_H + 8))
+
+        # ---- the ready-made questions ----
+        cy = ph - 178
+        cx = pw - pad
+        for i, label in enumerate(QUICK_ASKS):
+            t = text_pil(label, 220, pt=12.5, colour=(206, 224, 248),
+                         single=True)
+            bb = t.getbbox()
+            t = t.crop(bb) if bb else t
+            cw = t.width + 26
+            out.alpha_composite(rr_layer((cw, 32), 16, (255, 255, 255, 22),
+                                         outline=(255, 255, 255, 50)),
+                                (cx - cw, cy))
+            out.alpha_composite(t, (cx - cw + 13, cy + 7))
+            self.boxes[f"ask{i}"] = (cx - cw, cy, cx, cy + 32)
+            cx -= cw + 8
+
+        # ---- the text bar. At the BOTTOM, which is where a chat keeps it
+        pill_y = ph - PILL_H - 48
+        out.alpha_composite(
+            rr_layer((pw - pad * 2, PILL_H), PILL_H // 2,
+                     (255, 255, 255, 30), outline=(255, 255, 255, 76)),
+            (pad, pill_y))
+        self.boxes["pill"] = (pad, pill_y, pw - pad, pill_y + PILL_H)
+
+        # The pencil is in BOTH places at once, always: here, and over the
+        # bright area itself. Two ways in to the same tool, and neither of
+        # them is a mode you can be in without seeing it.
+        armed = state.get("drawing")
+        if armed:
+            out.alpha_composite(rr_layer((38, 38), 19, (86, 156, 245, 165)),
+                                (pad + 7, pill_y + 10))
+        out.alpha_composite(_icon("pencil", 21, INK if armed else INK_DIM),
+                            (pad + 16, pill_y + 18))
+        self.boxes["pencil"] = (pad + 5, pill_y + 8, pad + 49, pill_y + 50)
+        if state.get("strokes"):
+            out.alpha_composite(_icon("undo", 19, INK_DIM),
+                                (pad + 56, pill_y + 19))
+            self.boxes["undo"] = (pad + 48, pill_y + 10, pad + 84,
+                                  pill_y + 48)
+
+        out.alpha_composite(_icon("mic", 21, INK),
+                            (pw - pad - 104, pill_y + 18))
+        self.boxes["mic"] = (pw - pad - 114, pill_y + 8,
+                             pw - pad - 72, pill_y + 50)
+        out.alpha_composite(rr_layer((42, 42), 21, (86, 156, 245, 232)),
+                            (pw - pad - 54, pill_y + 8))
+        out.alpha_composite(_icon("send", 20, (255, 255, 255)),
+                            (pw - pad - 43, pill_y + 19))
+        self.boxes["send"] = (pw - pad - 54, pill_y + 8,
+                              pw - pad - 12, pill_y + 50)
+
+        ex0 = pad + (92 if state.get("strokes") else 56)
+        ex1 = pw - pad - 118
+        self.boxes["entry"] = (ex0, pill_y + 16, ex1, pill_y + PILL_H - 16)
+
+        out.alpha_composite(
+            text_pil(state.get("hint", ""), pw - pad * 2, pt=10.5,
+                     colour=INK_FAINT, single=True, rtl=False),
+            (pad, ph - 32))
+
+        rgb = out.convert("RGB")
+        # the entry cannot be translucent, so it borrows the colour of the
+        # glass it sits on - sampled from the finished pixels, not guessed
+        self.entry_bg = "#%02x%02x%02x" % rgb.getpixel(
+            (max(0, min(rgb.width - 1, ex0 + 30)), pill_y + PILL_H // 2))
+        return rgb
+
+
 class AskWindow:
     """The floating card: a conversation about ONE screenshot.
 
@@ -1648,7 +2180,7 @@ class AskWindow:
                  speaker: Speaker, speak_mode: str,
                  ask_fn, cue=lambda kind: None, auto_send: bool = True,
                  alpha: float = 0.93, reselect_fn=None, last_pos=None,
-                 on_move=None):
+                 on_move=None, full=None):
         self.image = image             # PIL image, RAM only
         self.speaker = speaker
         self.speak_mode = speak_mode
@@ -1678,237 +2210,417 @@ class AskWindow:
         self._chip_x = 0.0
         self._photos: list = []
         self._rendered: dict = {}
-        self._content_h = 0
-        self._w = CARD_MIN_W
+        self._rows_cache: list = []
+        self._content_h = 1
+        self._scroll = 0
+        self._w = CARD_INIT_W
+        self._h = 420
+        self._cx = self._cy = 0
+        self._drawing = False
+        self._press_target = None
+        self._cursor = None
+        self._strokes: list = []
+        self.anchor_box = anchor_box
+        # Painted now, not widgets. See _Text and _Btn.
+        self.status = _Text()
+        self.copy_btn = _Btn("Copy")
+        self.speak_btn = (_Btn("Speak")
+                          if speak_button_visible(speak_mode) else None)
 
         import tkinter as tk
         self.tk = tk
         self.root = tk.Tk()
-        root = self.root
-        root.overrideredirect(True)
-        root.attributes("-topmost", True)
-        root.attributes("-alpha", self._alpha)
-        root.configure(bg=STROKE)      # the 1 px hairline round the card
-        self.slabs = _Slabs(root)
+        self._build_stage(full)
+        self.surface = _CardSurface(self.backdrop, opacity=self._alpha)
+        self._build_thumb()
         self._build_widgets()
+        self._repaint_transcript()
         self._place(anchor_box, last_pos)
+        root = self.root
         root.bind("<Escape>", self._on_escape)
         root.bind("<Return>", self._on_enter)
-        root.bind("<Enter>", self._on_pointer_in)
-        root.bind("<Leave>", self._on_pointer_out)
         self.cue("looking")
 
     # -- construction --
 
-    def _build_widgets(self) -> None:
-        import tkinter as tk
+    def _build_stage(self, full) -> None:
+        """The frozen screen: one full-virtual-screen surface, opaque.
+
+        THE CARD DOES NOT FLOAT OVER YOUR DESKTOP ANY MORE - it floats
+        over a PHOTOGRAPH of it. That is what the owner asked for ("the
+        rectangle I marked stays on the screen and nothing can be
+        clicked"), and it is also what makes the glass possible at all:
+        blurring what is behind a window needs the pixels behind the
+        window, and a compositor is the only other way to get them. Tk
+        has no compositor. A frozen screen we grabbed ourselves has every
+        pixel.
+
+        So there is exactly ONE window here, not a card plus an overlay,
+        and it is the same shape the selector already used. Its corners
+        need no rounding, no chroma key and no SetWindowRgn: the card is
+        composited onto this surface through an antialiased mask, and
+        outside the radius the pixels are the desktop's own.
+        """
+        from PIL import Image, ImageDraw, ImageFilter, ImageGrab
+
+        self._vx, self._vy, vw, vh = virtual_screen()
+        if full is None:
+            full = ImageGrab.grab(all_screens=True).convert("RGB")
+        self._crisp = full
+        # one pass, whole screen, no alpha anywhere: dim it and pull it
+        # toward night blue at the same time
+        frozen = full.point(_FREEZE_LUT)
+
+        sx0, sy0, sx1, sy1 = [v - o for v, o in
+                              zip(self.anchor_box, (self._vx, self._vy) * 2)]
+        sx0, sy0 = max(0, sx0), max(0, sy0)
+        sx1, sy1 = min(full.width, sx1), min(full.height, sy1)
+        self._sel = (sx0, sy0, sx1, sy1)
+        frozen.paste(full.crop(self._sel), (sx0, sy0))
+
+        # the selection's edge and halo, drawn ONLY around the selection:
+        # a full-screen blur here was 500 ms of the first draft
+        pad = 46
+        hx0, hy0 = max(0, sx0 - pad), max(0, sy0 - pad)
+        hx1, hy1 = min(frozen.width, sx1 + pad), min(frozen.height, sy1 + pad)
+        local = frozen.crop((hx0, hy0, hx1, hy1)).convert("RGBA")
+        lw, lh = local.size
+        ox, oy = sx0 - hx0, sy0 - hy0
+        ex, ey = ox + (sx1 - sx0), oy + (sy1 - sy0)
+        hm = Image.new("L", (lw, lh), 0)
+        ImageDraw.Draw(hm).rounded_rectangle((ox - 3, oy - 3, ex + 3, ey + 3),
+                                             14, outline=255, width=16)
+        hm = hm.filter(ImageFilter.GaussianBlur(11)).point(lambda v: int(v * .6))
+        local.alpha_composite(Image.merge("RGBA", (
+            Image.new("L", (lw, lh), 86), Image.new("L", (lw, lh), 156),
+            Image.new("L", (lw, lh), 245), hm)))
+        edge = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
+        ImageDraw.Draw(edge).rounded_rectangle((ox - 2, oy - 2, ex + 1, ey + 1),
+                                               13, outline=(86, 156, 245, 235),
+                                               width=2)
+        local.alpha_composite(edge)
+        frozen.paste(local.convert("RGB"), (hx0, hy0))
+
+        self._frozen_clean = frozen          # without any pencil marks
+        self.backdrop = frozen.copy()
+        self._strokes: list = []             # [[(x, y), ...], ...] canvas px
 
         root = self.root
-        shell = tk.Frame(root, bg=PANE)
-        shell.pack(fill="both", expand=True, padx=1, pady=1)
-        self.shell = shell
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.geometry(f"{vw}x{vh}+{self._vx}+{self._vy}")
+        root.configure(bg=SELECT_BG)
 
-        # Title strip: the drag handle, and the only chrome that says what
-        # this window is now that Windows draws no caption for it.
-        strip = tk.Frame(shell, bg=PANE, height=26)
-        strip.pack(fill="x", padx=6, pady=(5, 0))
-        strip.pack_propagate(False)
-        self._close_chip = _Chip(strip, "close", self.close,
-                                 slabs=self.slabs)
-        self._close_chip.pack(side="right")
-        self._pin_chip = _Chip(strip, "pin", self._toggle_pin,
-                               slabs=self.slabs)
-        self._pin_chip.pack(side="right", padx=(0, 2))
-        title = tk.Label(strip, text="Ask the screen", bg=PANE, fg=DIM,
-                         font=(self._face, 9), anchor="w")
-        title.pack(side="left", padx=(6, 0))
-        for widget in (strip, title):
-            widget.bind("<ButtonPress-1>", self._drag_start)
-            widget.bind("<B1-Motion>", self._drag_move)
-            widget.bind("<ButtonRelease-1>", self._drag_end)
+    def _build_widgets(self) -> None:
+        """One canvas, one painted card, one live widget.
 
-        top = tk.Frame(shell, bg=PANE)
-        top.pack(fill="x", padx=12, pady=(6, 4))
-        self._thumb_label = tk.Label(top, bd=0, bg=PANE)
-        self._thumb_label.pack(side="left")
-        self._build_thumb()
+        Everything that used to be a Frame or a Label is pixels now,
+        because a tk.Frame is an opaque rectangle and no arrangement of
+        opaque rectangles will ever look like glass. What stays a real
+        widget is the entry - a caret cannot be painted - and the busy
+        rail, a plain canvas rectangle so its animation never has to
+        recompose the card sixteen times a second.
+        """
+        import tkinter as tk
+        from PIL import ImageTk
 
-        column = tk.Frame(top, bg=PANE)
-        column.pack(side="left", fill="both", expand=True, padx=(10, 0))
-        tk.Label(column, text="Hold Right Ctrl and talk — or type",
-                 bg=PANE, fg=FAINT, font=(self._face, 8),
-                 anchor="w").pack(fill="x")
-        field = tk.Frame(column, bg=LINE, padx=1, pady=1)
-        field.pack(fill="x", pady=(4, 0))
-        self._field = field
-        # disabledbackground is not decoration: Tk falls back to the
-        # SYSTEM colour for a disabled Entry, so the field went white on a
-        # dark card the moment a question was in flight (seen in the live
-        # screenshot). The field is never disabled any more — typing over
-        # an answer supersedes it, exactly like speaking over one — but a
-        # dark disabled face costs nothing and closes the trap for good.
-        self.entry = tk.Entry(field, font=(self._face, 11), bg=CARD,
-                              fg=FG, insertbackground=ACCENT,
+        root = self.root
+        self.canvas = tk.Canvas(root, bg=SELECT_BG, highlightthickness=0,
+                                bd=0, cursor="arrow")
+        self.canvas.pack(fill="both", expand=True)
+        self._bg_photo = ImageTk.PhotoImage(self.backdrop, master=root)
+        self._bg_item = self.canvas.create_image(0, 0, anchor="nw",
+                                                 image=self._bg_photo)
+        self._card_item = None
+        self._card_photo = None
+
+        self.entry = tk.Entry(self.canvas, font=(self._face, 12),
+                              bg=CARD, fg=FG, insertbackground=ACCENT,
                               disabledbackground=CARD, disabledforeground=DIM,
-                              readonlybackground=CARD,
-                              relief="flat", highlightthickness=0, bd=6)
-        self.entry.pack(fill="x")
-        self.entry.bind("<FocusIn>", lambda _e: field.config(bg=ACCENT))
-        self.entry.bind("<FocusOut>", lambda _e: field.config(bg=LINE))
+                              readonlybackground=CARD, justify="right",
+                              relief="flat", highlightthickness=0, bd=0)
+        self._entry_item = self.canvas.create_window(
+            0, 0, window=self.entry, anchor="nw", width=10, height=10)
+        # The native edit control does its own bidi, so a Hebrew question
+        # is laid out correctly WHILE it is typed. Everything else Hebrew
+        # here is drawn by DrawTextW - a canvas text item has no bidi at
+        # all (AGENTS.md, and popup.py proved it glyph by glyph).
         self.entry.focus_force()
 
-        self.status = tk.Label(shell, text="", bg=PANE, fg=DIM,
-                               font=(self._face, 9), anchor="w",
-                               justify="left")
-        self.status.pack(fill="x", padx=12, pady=(6, 0))
+        self._rail = self.canvas.create_rectangle(0, 0, 0, 0, fill=ACCENT,
+                                                  width=0, state="hidden")
 
-        # The busy bar is overlay.py's splash animation, at the pump's own
-        # period: a 96 px chip sliding through a 4 px rail. v1 cycled
-        # "thinking..." dots on every 15 ms tick, which is sixteen text
-        # changes a second — a strobe, not an animation.
-        self.busybar = tk.Canvas(shell, height=3, bg=LINE,
-                                 highlightthickness=0, bd=0)
-        self.busybar.pack(fill="x", padx=12, pady=(6, 0))
-        self._chip = self.busybar.create_rectangle(-96, 0, 0, 3,
-                                                   fill=ACCENT, width=0)
-
-        self.transcript = tk.Canvas(shell, bg=PANE, highlightthickness=0,
-                                    bd=0, height=1)
-        self.transcript.pack(fill="x", padx=12, pady=(8, 0))
-        self.transcript.bind("<MouseWheel>", self._wheel)
-
-        # The right padding is 22, not 12, so the resize grip in the
-        # corner has a corner to live in instead of two pixels of the
-        # Speak button.
-        bar = tk.Frame(shell, bg=PANE)
-        bar.pack(fill="x", padx=(12, 22), pady=(8, 9))
-        self.speak_btn = None
-        if speak_button_visible(self.speak_mode):
-            self.speak_btn = RoundButton(bar, "Speak", self._toggle_speak,
-                                         face=self._face, slabs=self.slabs,
-                                         primary=True).pack(side="right")
-            self.speak_btn.enable(False)
-        self.copy_btn = RoundButton(bar, "Copy", self._copy,
-                                    face=self._face, slabs=self.slabs,
-                                    width=74).pack(side="right",
-                                                   padx=(0, 6))
-        self.copy_btn.enable(False)
-        self._hint = tk.Label(bar, text=self._resting_hint(), bg=PANE,
-                              fg=FAINT, font=(self._face, 8), anchor="w")
-        self._hint.pack(side="left")
-
-        # The resize grip sits ON the shell's bottom-right corner rather
-        # than in the button row: a corner is where a hand looks for one.
-        self._grip = tk.Canvas(shell, width=14, height=14, bg=PANE,
-                               highlightthickness=0, bd=0,
-                               cursor="size_nw_se")
-        for offset in (3, 7, 11):
-            self._grip.create_line(13, offset, offset, 13, fill=FAINT,
-                                   width=1)
-        self._grip.place(relx=1.0, rely=1.0, anchor="se")
-        self._grip.bind("<ButtonPress-1>", self._resize_start)
-        self._grip.bind("<B1-Motion>", self._resize_move)
-        self._grip.bind("<ButtonRelease-1>", self._resize_end)
+        self.canvas.bind("<ButtonPress-1>", self._on_press)
+        self.canvas.bind("<B1-Motion>", self._on_motion)
+        self.canvas.bind("<ButtonRelease-1>", self._on_release)
+        self.canvas.bind("<MouseWheel>", self._wheel)
+        self.canvas.bind("<Motion>", self._on_hover)
 
     def _resting_hint(self) -> str:
-        return ("speak or type · Enter asks · Esc closes"
-                if self.auto_send else "Enter asks · Esc closes")
+        return ("Hold Right Ctrl to talk  ·  Enter asks  ·  Esc closes"
+                if self.auto_send else "Enter asks  ·  Esc closes")
 
     def _build_thumb(self) -> None:
-        from PIL import Image, ImageTk
+        """The selection, small, in the card's own header.
 
-        size = thumb_size(self.image.width, self.image.height)
-        small = self.image.copy().resize(size, Image.LANCZOS)
-        # master= is load-bearing: see render_answer's docstring.
-        self._thumb = ImageTk.PhotoImage(small, master=self.root)
-        self._thumb_label.config(image=self._thumb)
+        Kept even though the selection is lit up on the frozen screen
+        behind: the card can be dragged anywhere, and when it has been,
+        this is the only thing on it that says WHICH pixels the
+        conversation is about.
+        """
+        from PIL import Image
 
-    # -- geometry --
+        source = self.marked_image()
+        size = thumb_size(source.width, source.height, max_w=96, max_h=52)
+        self._thumb = source.copy().resize(size, Image.LANCZOS)
+
+    # -- geometry. One coordinate system: the backdrop image. Screen
+    #    coordinates are these plus the virtual-screen origin, which on
+    #    this machine is negative because the second monitor is left of
+    #    the primary.
+
+    def _card_box(self) -> tuple[int, int, int, int]:
+        return (self._cx, self._cy, self._cx + self._w, self._cy + self._h)
+
+    def _screen_xy(self) -> tuple[int, int]:
+        return self._cx + self._vx, self._cy + self._vy
+
+    def _clamp(self, x: int, y: int) -> tuple[int, int]:
+        return (max(0, min(self.backdrop.width - self._w, x)),
+                max(0, min(self.backdrop.height - self._h, y)))
 
     def _place(self, anchor_box, last_pos) -> None:
-        root = self.root
-        root.update_idletasks()
-        self._w = max(CARD_INIT_W, min(CARD_MAX_W, root.winfo_reqwidth()))
-        height = root.winfo_reqheight()
-        left, top = anchor_box[0], anchor_box[1]
-        work = work_area_near(*(last_pos if last_pos else (left, top)))
-        x, y = plan_placement(anchor_box, work, (self._w, height), last_pos)
-        root.geometry(f"{self._w}x{height}+{x}+{y}")
-        # Force the WM to honour the geometry NOW and verify it landed:
-        # measured live, a geometry string issued before first map could
-        # leave the window at the WM's cascade position.
-        root.update()
-        if (root.winfo_x(), root.winfo_y()) != (x, y):
-            root.geometry(f"+{x}+{y}")
-            root.update()
-        self._round_corners()
-        log.info("ask card placed %dx%d at +%d+%d", root.winfo_width(),
-                 root.winfo_height(), root.winfo_x(), root.winfo_y())
+        self._h = self._wanted_height()
+        work = work_area_near(*(last_pos if last_pos
+                                else (anchor_box[0], anchor_box[1])))
+        x, y = plan_placement(anchor_box, work, (self._w, self._h), last_pos)
+        self._cx, self._cy = self._clamp(x - self._vx, y - self._vy)
+        self.root.update_idletasks()
+        self.root.update()
+        self._repaint()
+        log.info("ask card placed %dx%d at +%d+%d", self._w, self._h,
+                 *self._screen_xy())
         self._take_foreground()
 
     def _round_corners(self) -> None:
-        """Round the card's corners with a window region.
+        """Nothing to round any more, and that is the point.
 
-        SetWindowRgn and not DWMWA_WINDOW_CORNER_PREFERENCE: DWM rounds
-        the NON-CLIENT area, and an overrideredirect window has none —
-        popup.py keeps the same call as its pre-Windows-11 fallback for
-        exactly this reason. The region has to be re-cut after every
-        resize, and Windows takes ownership of it, so it is never deleted
-        here.
+        The card has no window of its own: it is composited onto the
+        full-screen surface through an antialiased rounded mask, so
+        outside the radius the pixels are the desktop's own, bit for bit.
+        SetWindowRgn cut a HARD edge and DWM will not round a borderless
+        window at all (AGENTS.md) - this route has neither problem. Kept
+        as a no-op because the geometry paths still call it and a reader
+        deserves to be told why it does nothing.
         """
-        try:
-            root = self.root
-            hwnd = ctypes.windll.user32.GetParent(int(root.winfo_id())) \
-                or int(root.winfo_id())
-            width, height = root.winfo_width(), root.winfo_height()
-            region = ctypes.windll.gdi32.CreateRoundRectRgn(
-                0, 0, width + 1, height + 1, 13, 13)
-            ctypes.windll.user32.SetWindowRgn(hwnd, region, True)
-        except Exception:
-            log.debug("visual qa could not round the card", exc_info=True)
+        return
 
     def _view_cap(self) -> int:
         """How tall the transcript may grow before it starts scrolling."""
-        _wl, wt, _wr, wb = work_area_near(self.root.winfo_x(),
-                                          self.root.winfo_y())
+        _wl, wt, _wr, wb = work_area_near(*self._screen_xy())
         return max(120, int((wb - wt) * 0.55))
 
-    def _fit_window(self) -> None:
-        """Re-issue the geometry so the card is exactly as tall as it needs.
+    def _view_h(self) -> int:
+        return self._h - CARD_HEAD_H - 20 - CARD_FOOT_H
 
-        Tk does NOT grow a toplevel once an explicit geometry has been
-        set — measured: a child's requested height went 21 -> 477 and the
-        window stayed 21 px tall. That is why v1 clipped every long
-        answer: it pinned the geometry once, before any answer existed.
-        Every content change ends here.
-        """
-        root = self.root
-        want = (self._user_view_h if self._user_view_h is not None
+    def _wanted_height(self) -> int:
+        view = (self._user_view_h if self._user_view_h is not None
                 else min(self._content_h, self._view_cap()))
-        want = max(1, want)
-        self.transcript.config(height=want)
-        root.update_idletasks()
-        height = root.winfo_reqheight()
-        x, y = root.winfo_x(), root.winfo_y()
+        return CARD_HEAD_H + 20 + max(70, view) + CARD_FOOT_H
+
+    def _fit_window(self) -> None:
+        """Grow the card to its content, then stop and let it scroll."""
+        self._h = self._wanted_height()
+        x, y = self._screen_xy()
         wl, wt, wr, wb = work_area_near(x, y)
-        if y + height > wb:
-            y = max(wt, wb - height)
-        x = max(wl - 8, min(x, wr - 40))
-        root.geometry(f"{self._w}x{height}+{x}+{y}")
-        root.update_idletasks()
-        self._round_corners()
+        if y + self._h > wb:
+            y = max(wt, wb - self._h)
+        self._cx, self._cy = self._clamp(x - self._vx, y - self._vy)
+        # Growing the card grew the view with it, so a scroll offset
+        # computed against the OLD height now points past the end. Clamp
+        # after the height settles, never before it.
+        self._scroll = max(0, min(self._scroll,
+                                  self._content_h - self._view_h()))
+        self._repaint()
+
+    # -- pointer: one press handler, hit-tested against what was painted --
+
+    def _hit(self, x: int, y: int) -> str | None:
+        lx, ly = x - self._cx, y - self._cy
+        for name, (x0, y0, x1, y1) in self.surface.boxes.items():
+            if name != "entry" and x0 <= lx < x1 and y0 <= ly < y1:
+                return name
+        if 0 <= lx < self._w and 0 <= ly < self._h:
+            return "card"
+        sx0, sy0, sx1, sy1 = self._sel
+        if sx0 <= x < sx1 and sy0 <= y < sy1:
+            return "selection"
+        return None
+
+    def _on_press(self, event) -> None:
+        self._press_target = None
+        hit = self._hit(event.x, event.y)
+        if hit == "selection" and self._drawing:
+            self._strokes.append([(event.x, event.y)])
+            return
+        if hit in ("strip", "card", "thumb"):
+            lx, ly = event.x - self._cx, event.y - self._cy
+            if lx > self._w - 24 and ly > self._h - 24:
+                self._resize_from = (event.x_root, event.y_root, self._w,
+                                     self._view_h())
+            else:
+                self._drag_off = (event.x_root - self._screen_xy()[0],
+                                  event.y_root - self._screen_xy()[1])
+            return
+        self._press_target = hit
+
+    def _on_motion(self, event) -> None:
+        if self._drawing and self._strokes and self._press_target is None \
+                and self._drag_off is None and self._resize_from is None:
+            self._extend_stroke(event.x, event.y)
+        elif self._drag_off is not None:
+            self._drag_move(event)
+        elif self._resize_from is not None:
+            self._resize_move(event)
+
+    def _on_release(self, event) -> None:
+        if self._drawing and self._strokes and self._press_target is None                 and self._drag_off is None and self._resize_from is None:
+            self._ink_changed()
+            self._repaint()
+            return
+        if self._drag_off is not None:
+            self._drag_end()
+            return
+        if self._resize_from is not None:
+            self._resize_end()
+            return
+        target, self._press_target = self._press_target, None
+        if target is None or self._hit(event.x, event.y) != target:
+            return
+        if target == "close":
+            self.close()
+        elif target == "pin":
+            self._toggle_pin()
+        elif target == "pencil":
+            self._toggle_pencil()
+        elif target == "undo":
+            self._undo_stroke()
+        elif target == "copy":
+            self._copy()
+        elif target == "speak":
+            self._toggle_speak()
+        elif target == "mic":
+            self._status("hold Right Ctrl and talk", ttl_ms=FLASH_MS)
+            self._repaint()
+        elif target == "send":
+            self._ask_or_extend(self.entry.get())
+        elif target.startswith("ask"):
+            self._ask_or_extend(QUICK_ASKS[int(target[3:])])
+
+    def _on_hover(self, event) -> None:
+        hit = self._hit(event.x, event.y)
+        if self._drawing and hit == "selection":
+            want = "pencil"
+        elif hit in ("close", "pin", "pencil", "mic", "send", "undo",
+                     "copy", "speak") or (hit or "").startswith("ask"):
+            want = "hand2"
+        else:
+            want = "arrow"
+        if want != self._cursor:
+            self._cursor = want
+            try:
+                self.canvas.config(cursor=want)
+            except Exception:
+                pass
+
+    # -- the pencil --
+
+    def _extend_stroke(self, x: int, y: int) -> None:
+        """Draw as the mouse moves, and keep the POINTS.
+
+        The live line is a canvas item, so it costs nothing per motion
+        event. The points are what matter: the image that goes to the
+        model is built by replaying them into the pristine crop with
+        Pillow, never by grabbing the screen back - grabbing would be a
+        race against our own topmost window, and it comes back black.
+        """
+        if not self._strokes:
+            return
+        pts = self._strokes[-1]
+        if pts and abs(pts[-1][0] - x) + abs(pts[-1][1] - y) < 2:
+            return
+        pts.append((x, y))
+        if len(pts) >= 2:
+            self.canvas.create_line(*pts[-2], *pts[-1], fill="#ffd640",
+                                    width=6, capstyle="round",
+                                    smooth=True, tags="ink")
+        self.canvas.tag_raise("ink")
+        self.canvas.tag_raise(self._card_item)
+        self.canvas.tag_raise(self._entry_item)
+
+    def _ink_changed(self) -> None:
+        """A mark changed, so the cached base64 is of the wrong picture.
+
+        encoded is keyed by backend and long side, not by content - it
+        was written when the image could not change under it. It can now.
+        """
+        self.encoded.clear()
+        self._build_thumb()
+
+    def _undo_stroke(self) -> None:
+        if self._strokes:
+            self._strokes.pop()
+        self._ink_changed()
+        self.canvas.delete("ink")
+        for pts in self._strokes:
+            if len(pts) >= 2:
+                self.canvas.create_line(*[c for p in pts for c in p],
+                                        fill="#ffd640", width=6,
+                                        capstyle="round", smooth=True,
+                                        tags="ink")
+        self._status("undone" if self._strokes else "no marks left",
+                     ttl_ms=FLASH_MS)
+        self._repaint()
+
+    def marked_image(self):
+        """The selection with the pencil marks burned in.
+
+        What actually goes to the model. Strokes live in canvas pixels,
+        which are the frozen screen's pixels, so they map into the crop
+        by a single translation - no scaling, nothing to get wrong.
+        """
+        if not self._strokes:
+            return self.image
+        from PIL import Image, ImageDraw
+        sx0, sy0, sx1, sy1 = self._sel
+        marked = self._crisp.crop(self._sel).convert("RGB")
+        d = ImageDraw.Draw(marked)
+        for pts in self._strokes:
+            local = [(x - sx0, y - sy0) for x, y in pts]
+            if len(local) >= 2:
+                d.line(local, fill=MARK, width=6, joint="curve")
+            elif local:
+                x, y = local[0]
+                d.ellipse((x - 3, y - 3, x + 3, y + 3), fill=MARK)
+        return marked
 
     # -- drag, resize, pin --
 
     def _drag_start(self, event) -> None:
-        self._drag_off = (event.x_root - self.root.winfo_x(),
-                          event.y_root - self.root.winfo_y())
+        self._drag_off = (event.x_root - self._screen_xy()[0],
+                          event.y_root - self._screen_xy()[1])
 
     def _drag_move(self, event) -> None:
         if self._drag_off is None:
             return
-        self.root.geometry(f"+{event.x_root - self._drag_off[0]}"
-                           f"+{event.y_root - self._drag_off[1]}")
+        # The backdrop is frozen, so moving the card means re-blurring
+        # what it now sits over. Pillow's blur is a box approximation, so
+        # the cost does not grow with the radius; it is the one place a
+        # drag pays for the glass.
+        self._cx, self._cy = self._clamp(
+            event.x_root - self._drag_off[0] - self._vx,
+            event.y_root - self._drag_off[1] - self._vy)
+        self._repaint()
 
     def _drag_end(self, _event=None) -> None:
         self._drag_off = None
@@ -1916,20 +2628,17 @@ class AskWindow:
 
     def _resize_start(self, event) -> None:
         self._resize_from = (event.x_root, event.y_root, self._w,
-                             self.transcript.winfo_height())
+                             self._view_h())
 
     def _resize_move(self, event) -> None:
         if self._resize_from is None:
             return
         x0, y0, w0, view0 = self._resize_from
-        width = max(CARD_MIN_W, min(CARD_MAX_W,
-                                    w0 + (event.x_root - x0)))
-        self._user_view_h = max(1, view0 + (event.y_root - y0))
+        width = max(CARD_MIN_W, min(CARD_MAX_W, w0 + (event.x_root - x0)))
+        self._user_view_h = max(70, view0 + (event.y_root - y0))
         if width != self._w:
             self._w = width
-            # Width decides the wrap, so the whole column has to be drawn
-            # again — but on a throttle. AGENTS.md's rule for the lookup
-            # box applies unchanged: the FRAME must never wait on its text.
+            # Width decides the wrap, so the whole column is drawn again.
             self._rendered.clear()
             self._repaint_transcript()
         self._fit_window()
@@ -1940,34 +2649,34 @@ class AskWindow:
     def _toggle_pin(self) -> None:
         self._pinned = not self._pinned
         self.root.attributes("-topmost", self._pinned)
-        self._pin_chip.set_on(self._pinned)
         self._status("pinned on top" if self._pinned
                      else "no longer on top", ttl_ms=FLASH_MS)
+        self._repaint()
+
+    def _toggle_pencil(self) -> None:
+        """Arm the pencil, or put it down.
+
+        It marks the IMAGE, not the card: the strokes are burned into the
+        pixels that get sent, which is the whole reason it is here.
+        Circling the thing you mean is faster than describing it, and it
+        is the one gesture that survives a bad transcription.
+        """
+        self._drawing = not self._drawing
+        self._status("draw on the bright area — your marks are sent with it"
+                     if self._drawing else "pencil down", ttl_ms=FLASH_MS)
+        self._repaint()
 
     def _on_pointer_in(self, _event=None) -> None:
-        self.root.attributes("-alpha", 1.0)
+        return          # the glass IS the translucency now; no -alpha
 
     def _on_pointer_out(self, _event=None) -> None:
-        # Tk fires <Leave> when the pointer crosses into a CHILD widget
-        # too, so the event alone would flicker the card every time the
-        # mouse moved from the strip to the entry. Ask where the pointer
-        # actually is instead.
-        root = self.root
-        try:
-            x, y = root.winfo_pointerx(), root.winfo_pointery()
-            inside = (root.winfo_x() <= x < root.winfo_x() + root.winfo_width()
-                      and root.winfo_y() <= y
-                      < root.winfo_y() + root.winfo_height())
-        except Exception:
-            inside = False
-        if not inside:
-            root.attributes("-alpha", self._alpha)
+        return
 
     def _remember_position(self) -> None:
         if self.on_move is None:
             return
         try:
-            self.on_move((self.root.winfo_x(), self.root.winfo_y()))
+            self.on_move(self._screen_xy())
         except Exception:
             pass
 
@@ -2037,7 +2746,7 @@ class AskWindow:
             self._remember_position()
             self._photos = []
             self._rendered.clear()
-            self.slabs.clear()
+            self._rows_cache = []
             try:
                 root.destroy()
             except Exception:
@@ -2072,7 +2781,60 @@ class AskWindow:
         except queue.Empty:
             pass
 
-    # -- status, animation --
+    # -- painting --
+
+    def _repaint(self) -> None:
+        """Compose the card and put it on the surface.
+
+        The glass is cached per (position, size), so a repaint that only
+        changed some text costs the content pass plus a PhotoImage paste
+        - measured under a millisecond - while a repaint after a drag
+        pays for the blur as well.
+        """
+        from PIL import ImageTk
+
+        state = {
+            "rows": self._rows_cache,
+            "content_h": self._content_h,
+            "scroll": self._scroll,
+            "status": self.status.cget("text"),
+            "status_rgb": _hex_rgb(self.status.cget("fg")),
+            "hint": self._resting_hint(),
+            "pinned": self._pinned,
+            "drawing": self._drawing,
+            "strokes": bool(self._strokes),
+            "thumb": self._thumb,
+            "speak_on": None if self.speak_btn is None else self.speak_btn.text,
+            "speak_ready": self.speak_btn is not None
+            and self.speak_btn.enabled,
+            "copy_ready": self.copy_btn.enabled,
+        }
+        image = self.surface.compose(self._card_box(), state)
+
+        if (self._card_photo is None
+                or (self._card_photo.width(), self._card_photo.height())
+                != image.size):
+            self._card_photo = ImageTk.PhotoImage(image, master=self.root)
+            if self._card_item is not None:
+                self.canvas.delete(self._card_item)
+            self._card_item = self.canvas.create_image(
+                self._cx, self._cy, anchor="nw", image=self._card_photo)
+        else:
+            # Reusing the PhotoImage rather than building a new one: 0.9 ms
+            # against 1.8 ms, and no churn of Tk image objects on a window
+            # that repaints on every streamed chunk.
+            self._card_photo.paste(image)
+            self.canvas.coords(self._card_item, self._cx, self._cy)
+
+        ex0, ey0, ex1, ey1 = self.surface.boxes["entry"]
+        self.entry.config(bg=self.surface.entry_bg,
+                          disabledbackground=self.surface.entry_bg,
+                          readonlybackground=self.surface.entry_bg)
+        self.canvas.coords(self._entry_item, self._cx + ex0, self._cy + ey0)
+        self.canvas.itemconfig(self._entry_item, width=max(10, ex1 - ex0),
+                               height=max(10, ey1 - ey0))
+        self.canvas.tag_raise(self._card_item)
+        self.canvas.tag_raise(self._entry_item)
 
     def _status(self, text: str, colour: str = DIM,
                 ttl_ms: int | None = None) -> None:
@@ -2081,27 +2843,38 @@ class AskWindow:
         Both text AND colour, always: v1 set the colour per message and
         never reset it, so every line after a green "copied" stayed green
         and every line after an amber failure stayed amber. `ttl_ms` is
-        for the transient confirmations — the pump puts the resting hint
-        back when it expires, which is what popup.py's copy flash does.
+        for the transient confirmations - the pump clears it when it
+        expires, which is what popup.py's copy flash does.
         """
         self.status.config(text=text, fg=colour)
         self._status_until = (time.monotonic() + ttl_ms / 1000.0
                               if ttl_ms else 0.0)
 
     def _animate(self) -> None:
+        """The busy rail, and nothing else, sixteen times a second.
+
+        A plain canvas rectangle rather than part of the painted card: an
+        animation that recomposed the whole bitmap every tick would be
+        the frame waiting on its content, which is the rule AGENTS.md
+        sets for the lookup box and it holds here too.
+        """
+        rail_y = self._cy + self._h - CARD_FOOT_H + 30
         if self.busy:
-            width = max(1, self.busybar.winfo_width())
+            width = max(1, self._w - CARD_PAD * 2)
             self._chip_x += 5.0
             if self._chip_x > width:
                 self._chip_x = -96.0
-            self.busybar.coords(self._chip, self._chip_x, 0,
-                                self._chip_x + 96, 3)
+            x = self._cx + CARD_PAD + self._chip_x
+            self.canvas.coords(self._rail, x, rail_y, x + 96, rail_y + 3)
+            self.canvas.itemconfig(self._rail, state="normal")
+            self.canvas.tag_raise(self._rail)
         elif self._chip_x != -96.0:
             self._chip_x = -96.0
-            self.busybar.coords(self._chip, -96, 0, 0, 3)
+            self.canvas.itemconfig(self._rail, state="hidden")
         if self._status_until and time.monotonic() > self._status_until:
             self._status_until = 0.0
             self.status.config(text="", fg=DIM)
+            self._repaint()
 
     # -- the transcript --
 
@@ -2113,52 +2886,62 @@ class AskWindow:
         return rows
 
     def _render_row(self, role: str, text: str, width: int):
+        """One bubble: a skin layer and a text layer, both RGBA.
+
+        Cached on (role, text, width) because a streamed answer repaints
+        on every chunk while only the LAST row has changed - putting the
+        whole conversation back through DrawTextW each time was
+        measurably the most expensive thing this window did.
+        """
         key = (role, text, width)
         got = self._rendered.get(key)
         if got is None:
             question = role == "user"
-            got = render_answer(
-                text, width - (8 if question else 0), face=self._face,
-                pt=QUESTION_PT if question else ANSWER_PT,
-                colour=ACCENT_TEXT if question else FG, bg=PANE,
-                master=self.root)
+            body = text_pil(text, max(60, width - 32),
+                            pt=QUESTION_PT if question else ANSWER_PT,
+                            face=self._face,
+                            colour=INK if question else (231, 240, 255))
+            height = body.height + 26
+            if question:
+                skin = rr_layer((width, height), 18, (86, 156, 245, 88),
+                                outline=(255, 255, 255, 60))
+            else:
+                skin = rr_layer((width, height), 18, (255, 255, 255, 26),
+                                outline=(255, 255, 255, 42))
+            got = (skin, body, 16)
             self._rendered[key] = got
         return got
 
     def _repaint_transcript(self) -> None:
-        """Every turn, drawn by Windows' own bidi, newest at the bottom.
+        """Every turn as a bubble, newest at the bottom.
 
-        The question is echoed here as a BITMAP the moment it is sent, and
-        that is the honest half of the Hebrew story: Tk's Entry has no
-        bidi at all, so a dictated question mixing Hebrew with a Latin
-        term is laid out backwards inside the box it was typed into. It
-        cannot be fixed there — AGENTS.md says so and popup.py proved it —
-        but with auto_send the box is a place text passes through, and the
-        line the user actually reads is this one, which is correct to the
-        glyph.
+        The question is echoed here as a BITMAP the moment it is sent,
+        and that is the honest half of the Hebrew story: Windows lays the
+        bidi out through DrawTextW + DT_RTLREADING, the only thing in
+        this process that gets a mixed Hebrew-and-Latin line right. The
+        entry itself can be typed into correctly because the native edit
+        control does its own bidi; a canvas text item could not.
         """
-        canvas = self.transcript
-        canvas.delete("all")
-        self._photos = []
-        width = max(240, self._w - 26)
+        strip_w = max(200, self._w - CARD_PAD * 2)
+        wide = max(160, strip_w - 44)
+        rows = []
         y = 0
         for role, text in self._rows():
-            photo, height = self._render_row(role, text, width)
-            canvas.create_image(0, y, anchor="nw", image=photo)
-            self._photos.append(photo)
-            if role == "user":
-                # The marker goes on the RIGHT: these lines are laid out
-                # right-to-left, so that is where they begin.
-                canvas.create_rectangle(width - 2, y + 1, width,
-                                        y + height - 1, fill=ACCENT,
-                                        width=0)
-            y += height + (6 if role == "user" else 14)
-        self._content_h = max(0, y - 14)
-        canvas.config(scrollregion=(0, 0, width, self._content_h))
-        canvas.yview_moveto(1.0)
+            skin, body, bx = self._render_row(role, text, wide)
+            x = strip_w - wide if role == "user" else 0
+            rows.append(((skin, x), (body, x + bx)))
+            y += skin.height + 12
+        self._rows_cache = rows
+        self._content_h = max(1, y - 12)
+        self._scroll = max(0, self._content_h - self._view_h())
+        self._repaint()
 
     def _wheel(self, event) -> None:
-        self.transcript.yview_scroll(int(-event.delta / 60), "units")
+        top = max(0, self._content_h - self._view_h())
+        if top <= 0:
+            return
+        self._scroll = max(0, min(top, self._scroll - event.delta // 4))
+        self._repaint()
 
     # -- asking --
 
@@ -2215,7 +2998,7 @@ class AskWindow:
         # on it.
         threading.Thread(
             target=_ask_worker,
-            args=(self._q, self.ask_fn, self.image, question,
+            args=(self._q, self.ask_fn, self.marked_image(), question,
                   list(self.history), self.encoded, gen, cancel),
             daemon=True, name="vqa-ask").start()
 
@@ -2325,8 +3108,15 @@ class AskWindow:
         self._take_foreground()
         if got is None:
             return
-        image, _bbox = got
+        image, bbox = got
         self.image = image
+        # The frozen screen is now a photograph of a DIFFERENT moment,
+        # and a different rectangle is the bright one. Rebuild the whole
+        # stage rather than repainting the card over stale pixels — the
+        # glass is a blur of what is behind it, so stale pixels would
+        # show through the card itself.
+        self.anchor_box = bbox
+        self._rebuild_stage()
         self.encoded.clear()
         self.history.clear()
         self._pending_q = None
@@ -2341,6 +3131,17 @@ class AskWindow:
         self._fit_window()
         self._status("new selection — ask away")
         self.cue("looking")
+
+    def _rebuild_stage(self) -> None:
+        """Re-freeze the screen around a new selection, marks and all gone."""
+        from PIL import ImageTk
+
+        self.canvas.delete("ink")
+        self._build_stage(None)
+        self.surface.rebase(self.backdrop)
+        self._bg_photo = ImageTk.PhotoImage(self.backdrop, master=self.root)
+        self.canvas.itemconfig(self._bg_item, image=self._bg_photo)
+        self._drawing = False
 
     # -- the two buttons --
 
@@ -2438,6 +3239,7 @@ class Controller:
         # persisted: a position is a fact about the screen you had open,
         # not a setting, and config.toml is not the place for it.
         self._last_pos: tuple[int, int] | None = None
+        self._last_full = None          # the frozen screen, handed to the card
 
     # ---- properties main.py reads (hook thread safe) ----
 
@@ -2474,6 +3276,10 @@ class Controller:
         from PIL import ImageGrab
         started = time.monotonic()
         full = ImageGrab.grab(all_screens=True)
+        # Kept for the card: it freezes the SAME screen the selector
+        # showed, so there is no second grab and no chance of the two
+        # disagreeing about what the screen looked like.
+        self._last_full = full.convert("RGB")
         log.debug("visual qa froze %dx%d in %.0f ms", full.width,
                   full.height, (time.monotonic() - started) * 1000)
         try:
@@ -2507,6 +3313,7 @@ class Controller:
         finally:
             with self._lock:
                 self._window = None
+            self._last_full = None      # 19 MB of screenshot, not a cache
             # ONLY HERE is the card unreachable. run()'s collect fired
             # while _open_ask's local and self._window still held it, and
             # a Tk widget tree is always cyclic, so dropping the last
@@ -2532,7 +3339,8 @@ class Controller:
             cue=self._cue, auto_send=getattr(vq, "auto_send", True),
             alpha=getattr(vq, "window_alpha", 0.93),
             reselect_fn=self._grab_selection, last_pos=self._last_pos,
-            on_move=self._remember_position)
+            on_move=self._remember_position,
+            full=getattr(self, "_last_full", None))
         with self._lock:
             self._window = window
         window.run()

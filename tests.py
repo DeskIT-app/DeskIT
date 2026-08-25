@@ -8884,20 +8884,22 @@ win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
                    lambda *a, **k: ("", "test"))
 try:
     win.root.update()
-    before = win.root.winfo_height()
+    # The WINDOW is the whole frozen screen now and never changes
+    # size. What grows is the card painted on it, so measure that.
+    before = win._h
     win.history.append({"role": "user", "content": "מה כתוב במסך הזה?"})
-    win.history.append({"role": "assistant", "content": "שורה. " * 220})
+    win.history.append({"role": "assistant", "content": "שורה. " * 700})
     win._repaint_transcript()
     win._fit_window()
     win.root.update()
-    after = win.root.winfo_height()
+    after = win._h
     assert after > before, (before, after)
     assert win._content_h > 0
     cap = win._view_cap()
-    assert win.transcript.winfo_height() <= cap + 1, \\
-        (win.transcript.winfo_height(), cap)
-    region = win.transcript.cget("scrollregion").split()
-    assert int(region[3]) >= win.transcript.winfo_height(), region
+    assert win._view_h() <= cap + 1, (win._view_h(), cap)
+    # taller than it can show, so it scrolls -- and sits at the END
+    assert win._content_h > win._view_h(), (win._content_h, win._view_h())
+    assert win._scroll == win._content_h - win._view_h(), win._scroll
 finally:
     win.root.destroy()
 os._exit(0)
@@ -8966,7 +8968,7 @@ try:
     win.answer_text = "תשובה ישנה"
     win.encoded[("ollama", 1344)] = "stale-base64"
     win._repaint_transcript()
-    was = (win._thumb.width(), win._thumb.height())
+    was = win._thumb.size
 
     win._on_reselect()
     win.root.update()
@@ -8974,7 +8976,7 @@ try:
     assert win.answer_text == "", win.answer_text
     assert win.encoded == {}, win.encoded
     assert win.image is fresh
-    now = (win._thumb.width(), win._thumb.height())
+    now = win._thumb.size
     assert now != was, (was, now)
 finally:
     win.root.destroy()
@@ -9159,7 +9161,11 @@ win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
 try:
     win.root.update()
     assert win.root.overrideredirect(), "the card grew a title bar"
-    assert abs(float(win.root.attributes("-alpha")) - 0.9) < 0.02, \\
+    # NOT -alpha any more. Whole-window alpha made the TEXT
+    # translucent too, which was half of why the old card was hard
+    # to read; the card is opaque pixels now and the see-through
+    # is painted into them.
+    assert float(win.root.attributes("-alpha")) == 1.0, \\
         win.root.attributes("-alpha")
 
     WS_CAPTION = 0x00C00000
@@ -9168,8 +9174,11 @@ try:
     style = user32.GetWindowLongW(hwnd, -16)          # GWL_STYLE
     assert not style & WS_CAPTION, hex(style)
 
-    win.root.geometry("+300+300")
-    win.root.update()
+    # The window IS the frozen screen; the card is a position
+    # painted on it, so a drag moves the painting, not the window.
+    vx, vy, _vw, _vh = vq.virtual_screen()
+    win._cx, win._cy = 300 - vx, 300 - vy
+    win._repaint()
 
     class E:
         x_root, y_root = 340, 330
@@ -9177,8 +9186,7 @@ try:
     E.x_root, E.y_root = 420, 380
     win._drag_move(E)
     win.root.update()
-    assert (win.root.winfo_x(), win.root.winfo_y()) == (380, 350), \\
-        (win.root.winfo_x(), win.root.winfo_y())
+    assert win._screen_xy() == (380, 350), win._screen_xy()
 
     moved = []
     win.on_move = moved.append
