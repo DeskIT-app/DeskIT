@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 import tomllib
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -238,6 +239,45 @@ class LookupConfig:
 
 
 @dataclass(frozen=True)
+class VisualQAConfig:
+    """Ask-the-screen: drag a rectangle, ask about it by voice or keyboard
+    — see visual_qa.py.
+
+    LOCAL-FIRST BY DEFAULT, and stricter than every other feature here:
+    `allow_screenshot_upload = false` does not merely prefer the local
+    model, it makes the cloud builders UNCONSTRUCTABLE — a screenshot can
+    hold mail, banking, anything on screen, so it is treated as strictly
+    more sensitive than transcript text (which [polish] may already send).
+    The gate is enforced in the backend-chain builder, not at request time,
+    and there is a test asserting the chain is cloud-free while it is off.
+    """
+    # false unregisters the hotkey entirely — the kill switch.
+    enabled: bool = True
+    # Named so nobody can misread it. false (the default) makes the cloud
+    # vision backends unconstructable — see the class docstring above.
+    allow_screenshot_upload: bool = False
+    hotkey: str = "ctrl+f10"
+    # Which backend asks first; the others follow underneath it, ollama
+    # always among them. Cloud names only matter while the upload gate
+    # above is true.
+    prefer: str = "ollama"
+    # The repair model this app already keeps resident IS a vision model
+    # (gemma3:12b reports capabilities ['completion', 'vision']) — no new
+    # pull, no new VRAM residency.
+    ollama_model: str = "gemma3:12b"
+    groq_model: str = "qwen/qwen3.6-27b"
+    # Include the shared Gemini pool after Groq when uploading is allowed.
+    gemini_fallback: bool = True
+    max_side_px: int = 1344
+    num_predict: int = 400
+    speak: str = "button"
+    voice: str = "Microsoft Asaf"
+    warmup: bool = True
+    ollama_timeout_s: int = 120
+    cloud_timeout_s: int = 30
+
+
+@dataclass(frozen=True)
 class VocabConfig:
     """The learned vocabulary — see vocab.py.
 
@@ -447,6 +487,21 @@ class Config:
     server: ServerConfig = field(default_factory=ServerConfig)
     vocab: VocabConfig = field(default_factory=VocabConfig)
     polish: PolishConfig = field(default_factory=PolishConfig)
+    visual_qa: VisualQAConfig = field(default_factory=VisualQAConfig)
+
+    @property
+    def visual_qa_hotkey(self) -> str:
+        """The ask-the-screen key, read out of [visual_qa].
+
+        A property and not a field on purpose: the section is the one
+        place the key lives, and a second copy of the value would drift
+        the first time one of them was written. Everything that reads keys
+        generically (check_hotkeys, status(), the dashboard rows) goes
+        through getattr and is served by this; the two places that WRITE
+        (main.rebind, dashboard._apply_key) go through with_field() below,
+        because dataclasses.replace cannot assign to a property.
+        """
+        return self.visual_qa.hotkey
     # Fall back to the local backend when every cloud model is out of quota.
     fallback_to_local: bool = True
     # Show a small startup window while the models load. Without it a
@@ -471,6 +526,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
     ("punctuate_hotkey", "Punctuate (tap)"),
     ("correct_hotkey", "Teach it a word (tap)"),
     ("lookup_hotkey", "Look up (tap)"),
+    ("visual_qa_hotkey", "Ask the screen (tap)"),
     ("pause_hotkey", "Pause / resume"),
 )
 
@@ -484,8 +540,23 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
 # key is the one that has to work when everything else is confusing.
 CHORD_FIELDS: frozenset[str] = frozenset((
     "translate_hotkey", "punctuate_hotkey", "correct_hotkey",
-    "lookup_hotkey",
+    "lookup_hotkey", "visual_qa_hotkey",
 ))
+
+
+def with_field(cfg: "Config", name: str, value) -> "Config":
+    """A copy of `cfg` with one setting changed, nested ones included.
+
+    The generic rebind paths (main.rebind, dashboard._apply_key) used to
+    spell this dataclasses.replace(cfg, **{name: value}), which cannot
+    assign to the visual_qa_hotkey property. One helper, both callers,
+    and a new nested field later means editing this and nothing else.
+    """
+    if name == "visual_qa_hotkey":
+        return dataclasses.replace(
+            cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
+                                               hotkey=str(value)))
+    return dataclasses.replace(cfg, **{name: value})
 
 
 def check_hotkeys(cfg: "Config") -> None:
@@ -591,6 +662,7 @@ def load(path: Path) -> Config:
     server = data.get("server", {})
     vocab = data.get("vocab", {})
     polish = data.get("polish", {})
+    visual_qa = data.get("visual_qa", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -754,6 +826,38 @@ def load(path: Path) -> Config:
                                         PolishConfig.max_wait_s)),
             warm_up=bool(polish.get("warm_up", PolishConfig.warm_up)),
         ),
+        visual_qa=VisualQAConfig(
+            enabled=bool(visual_qa.get("enabled",
+                                       VisualQAConfig.enabled)),
+            allow_screenshot_upload=bool(visual_qa.get(
+                "allow_screenshot_upload",
+                VisualQAConfig.allow_screenshot_upload)),
+            hotkey=str(visual_qa.get(
+                "visual_qa_hotkey",
+                VisualQAConfig.hotkey)).strip().lower(),
+            prefer=str(visual_qa.get(
+                "prefer", VisualQAConfig.prefer)).strip().lower(),
+            ollama_model=str(visual_qa.get(
+                "ollama_model", VisualQAConfig.ollama_model)).strip(),
+            groq_model=str(visual_qa.get(
+                "groq_model", VisualQAConfig.groq_model)).strip(),
+            gemini_fallback=bool(visual_qa.get(
+                "gemini_fallback", VisualQAConfig.gemini_fallback)),
+            max_side_px=int(visual_qa.get(
+                "max_side_px", VisualQAConfig.max_side_px)),
+            num_predict=int(visual_qa.get(
+                "num_predict", VisualQAConfig.num_predict)),
+            speak=str(visual_qa.get("speak",
+                                    VisualQAConfig.speak)).strip().lower(),
+            voice=str(visual_qa.get("voice",
+                                    VisualQAConfig.voice)).strip(),
+            warmup=bool(visual_qa.get("warmup",
+                                      VisualQAConfig.warmup)),
+            ollama_timeout_s=int(visual_qa.get(
+                "ollama_timeout_s", VisualQAConfig.ollama_timeout_s)),
+            cloud_timeout_s=int(visual_qa.get(
+                "cloud_timeout_s", VisualQAConfig.cloud_timeout_s)),
+        ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
         splash=bool(data.get("splash", Config.splash)),
@@ -862,6 +966,24 @@ def load(path: Path) -> Config:
             "polish.max_wait_s must be > 0 — it is the longest the paste may "
             'be delayed by the context pass. Use polish.when = "never" to '
             "turn the pass off instead")
+    if cfg.visual_qa.prefer not in ("ollama", "groq", "gemini"):
+        raise ConfigError('visual_qa.prefer must be "ollama", "groq" or '
+                          f'"gemini", got {cfg.visual_qa.prefer!r}')
+    if cfg.visual_qa.speak not in ("off", "button", "auto"):
+        raise ConfigError('visual_qa.speak must be "off", "button" or '
+                          f'"auto", got {cfg.visual_qa.speak!r}')
+    if not 128 <= cfg.visual_qa.max_side_px <= 4096:
+        raise ConfigError("visual_qa.max_side_px must be between 128 and "
+                          "4096 — below 128 a screenshot stops carrying "
+                          "readable text, above 4096 it is a raw screen")
+    if cfg.visual_qa.num_predict < 64:
+        raise ConfigError("visual_qa.num_predict must be >= 64 — answers "
+                          "shorter than that are cut mid-sentence, and the "
+                          "cap exists to bound a rambling model, not the "
+                          "honest ones")
+    if cfg.visual_qa.ollama_timeout_s <= 0 \
+            or cfg.visual_qa.cloud_timeout_s <= 0:
+        raise ConfigError("visual_qa timeouts must be positive")
     if cfg.vocab.max_terms < 0:
         raise ConfigError("vocab.max_terms must be >= 0 (0 disables hotwords)")
     if cfg.vocab.keep_audio < 0:
@@ -937,13 +1059,36 @@ def _comment_at(rest: str) -> int | None:
     return None
 
 
-def set_values(path: Path, updates: dict[str, object]) -> None:
-    """Change top-level settings in place, keeping every comment.
+def _section_span(lines: list[str], section: str) -> tuple[int, int]:
+    """(start, end) line indexes of the assignments inside [section].
 
-    Only the top-level block is touched — the keys the dashboard edits all
-    live there, and stopping at the first [table] means a key name that
-    also appears inside a section (`enabled`, `model`) can never be
-    rewritten by accident.
+    start is the line AFTER the header, end the line BEFORE the next
+    header (or EOF). A missing section is a ConfigError: silently editing
+    nothing would report success while changing no file.
+    """
+    header = f"[{section}]"
+    for index, line in enumerate(lines):
+        if line.strip() != header:
+            continue
+        lo = index + 1
+        hi = len(lines)
+        for probe in range(lo, len(lines)):
+            stripped = lines[probe].lstrip()
+            if stripped.startswith("["):
+                hi = probe
+                break
+        return lo, hi
+    raise ConfigError(f"no [{section}] section in config.toml")
+
+
+def set_values(path: Path, updates: dict[str, object]) -> None:
+    """Change settings in place, keeping every comment.
+
+    Top-level keys are matched in the top-level block only. A dotted name
+    ("visual_qa.hotkey") is matched inside the [section] it names — the
+    same comment-preserving line edit, scoped to that one table, so a key
+    name that repeats across sections (`enabled`, `model`, `hotkey`) can
+    never be rewritten by accident.
 
     The result is parsed and fully validated BEFORE it replaces the real
     file, and swapped in with one atomic rename. A config.toml this app
@@ -965,8 +1110,16 @@ def set_values(path: Path, updates: dict[str, object]) -> None:
 
     for key, value in updates.items():
         formatted = _format(value)
-        pattern = re.compile(_ASSIGNMENT.format(key=re.escape(key)))
-        for index in range(limit):
+        section = None
+        bare = key
+        if "." in key:
+            section, _, bare = key.partition(".")
+        if section is None:
+            lo, hi = 0, limit
+        else:
+            lo, hi = _section_span(lines, section)
+        pattern = re.compile(_ASSIGNMENT.format(key=re.escape(bare)))
+        for index in range(lo, hi):
             body = lines[index].rstrip("\r\n")
             match = pattern.match(body)
             if not match:
@@ -985,6 +1138,10 @@ def set_values(path: Path, updates: dict[str, object]) -> None:
                             f"{formatted}{pad}{comment}{tail}")
             break
         else:
+            if section is not None:
+                raise ConfigError(
+                    f"no {bare!r} under [{section}] to write — the "
+                    "line editor only changes keys that are already there")
             # Not there at all (an older config.toml). Put it with the
             # other top-level settings, not after them: below the last
             # assignment is still above whatever comment block introduces

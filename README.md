@@ -1164,6 +1164,91 @@ It prints which way round it went, which backend answered and how long it
 took, and it refuses exactly what the key refuses. Safe to run while
 dictation is running.
 
+## Asking about the screen (`ctrl+f10`)
+
+Tap `ctrl+f10` and every monitor dims. Drag a rectangle over anything — a
+paragraph in a browser, an error dialog, a chart — and a small window opens
+showing **what was captured** (a thumbnail, so you always know what you are
+asking about) above a question box. Hold **Right Ctrl and speak the
+question** — the same Whisper path as dictation, routed into the box
+instead of pasted at the cursor — or just type it and press Enter. The
+screenshot goes, as bytes in memory, with your question to a vision model,
+and the Hebrew answer lands under it with **Copy** and **Speak** buttons.
+A follow-up question in the same window reuses the same screenshot plus
+the Q&A so far — measured, Ollama caches the prompt prefix and answers a
+follow-up turn in ~0.35 s against ~4 s for the first. Esc closes, and
+closing stops any speaking.
+
+It is the lookup key, but for pixels instead of selected text.
+
+### The screenshot is the most sensitive thing this app has ever handled
+
+A screenshot can hold mail, banking, anything ever shown on this screen —
+strictly more than the transcript text the repair pass may already send
+out. So this feature is **local-first where every other key is merely
+local-preferred**:
+
+- The default chain is **Ollama `gemma3:12b` only** — the repair model the
+  app already keeps resident reports `capabilities: ['completion',
+  'vision']`, so asking it for pixels costs no new pull and no new VRAM
+  (measured with both Whisper models loaded: 14,710 / 16,311 MiB, nothing
+  evicted).
+- `allow_screenshot_upload` defaults to **false**, and false does not
+  mean "cloud second" — it means the cloud backends are **never built**,
+  enforced in the chain builder and asserted by a test against the built
+  list, not against the flag. With the gate shut and Ollama down, the
+  window says so; it does not helpfully fall through to the cloud on its
+  own initiative. Flip it to true and the chain becomes ollama → groq →
+  gemini-pool.
+- The screenshot is **never written to disk**, never logged, never cached
+  — the screen changes between presses, so unlike `lookup_cache.json`
+  there is nothing worth keeping — and it dies with its window. The
+  question text is a dictation like any other and lands in
+  `transcripts.log`; the answer is logged at debug level with backend and
+  latency.
+
+### What it costs, measured on this machine (2026-08-25)
+
+| step | time |
+|---|---|
+| grab the rectangle (`ImageGrab`, both monitors) | 47–57 ms whole virtual screen |
+| downscale 4480×1440 → long side 1344 + JPEG | ~63 ms, ~105 KB |
+| gemma3:12b vision, warm | 2.2–2.4 s chain-only, **3.9 s** question→answer end to end |
+| gemma3:12b vision, first image after idle | ~23 s **once** — the vision projector loads; `warm_up = true` pays it at startup |
+| Groq `qwen/qwen3.6-27b` (upload on) | 0.5 s, but ~830 prompt tokens/image against an 8,000 tokens/min cap — 1–2 screenshots a minute before 429, so it is the fallback, never the primary |
+| Gemini flash-lite (upload on) | 2.2 s, from the shared 20 req/day/model pool F9/F7 drink from |
+
+Small selections are faster than big ones precisely because
+`max_side_px = 1344` keeps a full-screen grab bounded; a 900×450 region
+answers in ~3.9 s warm. Questions deliberately **skip the repair pass**:
+a vision model is robust to one misheard word, and the question path
+stays free, fast and quota-neutral.
+
+### Speaking the answer
+
+`speak = "button"` (the default) puts a Speak control on every answer —
+press again to stop. `"auto"` reads every answer aloud as it lands;
+`"off"` hides the control. The voice is **Microsoft Asaf (he-IL)**, spoken
+through Windows' own WinRT speech synthesizer — the legacy SAPI API cannot
+see the OneCore Hebrew voices at all — synthesized by a PowerShell
+subprocess into a temp WAV that is deleted the moment playback finishes.
+Synthesis measured 30 ms for a 5.9-second clip.
+
+### Check it by hand
+
+1. **A browser paragraph** — drag over it, ask "מה כתוב כאן?" by voice. The
+   answer must quote the paragraph, right-to-left, full stop on the left.
+2. **The thumbnail is the contract** — it must show exactly the rectangle
+   you dragged, on whichever monitor you dragged it.
+3. **Esc mid-drag cancels with nothing on screen**; so does a click
+   without a drag.
+4. **Dictate while it is open** — Right Ctrl records (the dot goes red),
+   and the transcript lands in the question box, **not** in the app
+   underneath. Nothing may be pasted behind that window.
+5. **Speak, then Esc** — the speaking stops with the window.
+6. **With `allow_screenshot_upload = false`, stop Ollama and ask** — the
+   window must say it failed, and no cloud request may appear anywhere.
+
 ## Dictating from the phone
 
 The phone records; **this machine transcribes**. That is the whole point —

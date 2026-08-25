@@ -133,6 +133,12 @@ def cursor_point() -> tuple[int, int] | None:
 
 
 class App:
+    # Class-level defaults for the two visual-QA slots on purpose: the
+    # test suite builds half-initialised Apps by hand (no __init__), and
+    # _popup_key/_handle must degrade to "feature absent", not crash.
+    _vqa = None
+    _vqa_vk = None
+
     def __init__(self, cfg: config_mod.Config,
                  config_path: Path | None = None):
         self.cfg = cfg
@@ -191,8 +197,14 @@ class App:
         # message loop cost nothing to keep.
         self.popup = popup_mod.Popup(max_width=cfg.lookup.max_width,
                                      max_height=cfg.lookup.max_height)
+        # Ask-the-screen, same logic: built lazily but always AVAILABLE,
+        # because its key moves through rebind() like every other one.
+        # Constructing the controller imports stdlib only; Pillow and Tk
+        # wait for the first press or the background warm-up.
+        self._vqa = None
         hotkeys, taps, latch_vk, pause_vk = self.bindings(cfg)
         self._lookup_vk = self._vk_of(taps, "lookup")
+        self._vqa_vk = self._vk_of(taps, "visual_qa")
         self.machine = PTTStateMachine(
             hotkeys,
             on_start=self._on_start, on_stop=self._on_stop,
@@ -285,6 +297,18 @@ class App:
                 lambda: self.transcriber.name,
                 self._translate_for_phone)
 
+    @property
+    def vqa(self):
+        """The ask-the-screen controller, built on first touch."""
+        vqa = getattr(self, "_vqa", None)
+        if vqa is None:
+            import visual_qa as visual_qa_mod
+            # A callable, not the object: keys move through rebind() and
+            # every use should read what config.toml says NOW.
+            vqa = visual_qa_mod.Controller(lambda: self.cfg)
+            self._vqa = vqa
+        return vqa
+
     @staticmethod
     def bindings(cfg: config_mod.Config):
         """config -> (hold hotkeys, tap keys, latch vk, pause vk).
@@ -317,6 +341,10 @@ class App:
             taps[parse_binding(cfg.correct_hotkey)] = "correct"
         if cfg.lookup_hotkey:
             taps[parse_binding(cfg.lookup_hotkey)] = "lookup"
+        # The kill switch is [visual_qa] enabled = false: no key, no tap,
+        # nothing anywhere in the state machine.
+        if cfg.visual_qa.enabled and cfg.visual_qa.hotkey:
+            taps[parse_binding(cfg.visual_qa.hotkey)] = "visual_qa"
         return (hotkeys, taps,
                 vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
                 vk_for(cfg.pause_hotkey) if cfg.pause_hotkey else None)
@@ -370,6 +398,8 @@ class App:
         otherwise take, because this returns first.
         """
         if self._lookup_vk is not None and vk == self._lookup_vk:
+            return False
+        if self._vqa_vk is not None and vk == self._vqa_vk:
             return False
         return self.popup.on_key(vk)
 
@@ -575,7 +605,7 @@ class App:
             # was allowed on THIS field. Which fields may take a chord is
             # check_hotkeys' decision, and this line must not pre-empt it.
             parse_binding(key)               # ValueError on a bad name
-        new = dataclasses.replace(self.cfg, **{field: key})
+        new = config_mod.with_field(self.cfg, field, key)
         config_mod.check_hotkeys(new)        # ConfigError on a collision
         if field == "hotkey" and not key:
             raise ValueError("the dictation key cannot be turned off")
@@ -584,8 +614,15 @@ class App:
         self.machine.rebind(hotkeys, taps=taps, latch_vk=latch_vk,
                             pause_vk=pause_vk)
         self._lookup_vk = self._vk_of(taps, "lookup")   # _popup_key reads it
+        self._vqa_vk = self._vk_of(taps, "visual_qa")
         self.cfg = new
-        config_mod.set_values(self.config_path, {field: key})
+        # Nested settings are written under their section name; the file
+        # keeps one spelling of each key and so does this call. The TOML
+        # key is visual_qa_hotkey (config.toml's own naming), the dataclass
+        # field it loads into is hotkey.
+        write_key = ("visual_qa.visual_qa_hotkey"
+                     if field == "visual_qa_hotkey" else field)
+        config_mod.set_values(self.config_path, {write_key: key})
         message = (f"{field} is now '{key}'" if key
                    else f"{field} is off")
         self._say(message)
@@ -631,6 +668,13 @@ class App:
             # must not be cold the first time it IS needed.
             threading.Thread(target=self._warm_polish, daemon=True,
                              name="polish-warmup").start()
+        if self.cfg.visual_qa.enabled and self.cfg.visual_qa.warmup:
+            # Same bargain, vision edition: the projector behind gemma3's
+            # image input costs 22.6 s on the FIRST image of a session
+            # (measured 2026-08-25) and ~0.4 s warm, so one dummy-image,
+            # num_predict=1 call goes out in the background now.
+            threading.Thread(target=self.vqa.warm, daemon=True,
+                             name="vqa-warmup").start()
         if self.phone is not None:
             try:
                 self.phone.start()
@@ -648,6 +692,8 @@ class App:
         # with it — a box outliving the app that drew it would be a piece
         # of screen furniture with nothing left alive to close it.
         self.popup.stop()
+        if self._vqa is not None:
+            self._vqa.stop()
         if self.phone is not None:
             self.phone.stop()
         self.hook.stop()
@@ -801,6 +847,9 @@ class App:
         if action == "lookup":
             self._tap_lookup()
             return
+        if action == "visual_qa":
+            self._tap_visual_qa()
+            return
         if action not in ("translate", "punctuate"):
             return
         # Remember WHERE the text is before anything slow happens, for the
@@ -872,6 +921,24 @@ class App:
         # is where the answer has to appear — see cursor_point, and see
         # _lookup for the caret it is measured against.
         self.lookup_queue.put((injector.foreground_window(), cursor_point()))
+
+    def _tap_visual_qa(self) -> None:
+        """Start the select-a-region-and-ask flow.
+
+        Runs inside the keyboard hook like every other tap: check one
+        flag, spawn a thread, return. Everything slow (the fullscreen
+        overlay, the grab, the model) happens on the controller's own
+        thread, and blocking here would make Windows drop the hook and
+        freeze every key on the machine.
+        """
+        if self.vqa.busy:
+            self._cue_once("noop", "vqa-busy")
+            log.info("a screen question is already open — ignoring the "
+                     "extra press")
+            return
+        if self.vqa.begin_selection():
+            log.info("select the part of the screen to ask about — esc or "
+                     "a click cancels")
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
@@ -1742,7 +1809,12 @@ class App:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
-        if fb.enabled and hwnd:
+        # A screen question owns the next dictation: no marker in the app
+        # underneath, because nothing will ever be pasted over it.
+        diverting = (self.cfg.visual_qa.enabled
+                     and self.cfg.visual_qa.hotkey
+                     and self.vqa.sink_active)
+        if fb.enabled and hwnd and not diverting:
             # BOUNDED, unlike the paste below, and the focus test is INSIDE
             # the lock rather than in front of it. A translate or punctuate
             # holds this lock across its whole model call (up to
@@ -1833,6 +1905,32 @@ class App:
             log.info("empty transcript (no speech heard) — not pasting")
             if item:
                 item.discard()
+            return
+
+        # THE ASK-THE-SCREEN DIVERSION. While the visual-QA window is up,
+        # a dictation is a QUESTION, not a paste: the transcript goes into
+        # that window's entry and nothing may leak into the app underneath
+        # — no placeholder, no repair pass, no clipboard. The vocabulary
+        # swap still applies (instant, offline); the context pass does
+        # NOT — a vision model is robust to one misheard word, and the
+        # question path stays free, fast and quota-neutral by design.
+        if self.cfg.visual_qa.enabled and self.vqa.sink_active:
+            if shown:
+                # The marker was pasted before the window opened; it is
+                # not where the answer is going any more.
+                with self._cursor_lock:
+                    injector.clear_placeholder(placeholder, hwnd)
+            try:
+                cleaned, _applied = self.vocab.apply(cleaned)
+            except Exception:
+                log.exception("the vocabulary repair failed on a screen "
+                              "question — using the raw transcript")
+            if item:
+                item.discard()
+            if not self.vqa.deliver_transcript(cleaned):
+                log.warning("the screen-question window vanished before "
+                            "the transcription landed — text is in "
+                            "transcripts.log only")
             return
 
         # IN FRONT OF THE PASTE, on purpose, and this is the one decision
@@ -2445,6 +2543,17 @@ def main() -> int:
                  "" if cfg.lookup.both_ways
                  else "; Hebrew only, see lookup.both_ways",
                  cfg.lookup_hotkey)
+    if cfg.visual_qa.enabled and cfg.visual_qa.hotkey:
+        log.info("tap '%s' to select part of the screen and ASK about it — "
+                 "drag a rectangle, then hold '%s' to speak your question "
+                 "(or type it). Answers locally via %s%s; screenshots are "
+                 "never written to disk%s.",
+                 cfg.visual_qa.hotkey, cfg.hotkey,
+                 cfg.visual_qa.ollama_model,
+                 ", cloud upload OFF" if not cfg.visual_qa.allow_screenshot_upload
+                 else f", then {cfg.visual_qa.groq_model} (upload is ON)",
+                 "" if cfg.visual_qa.speak == "off"
+                 else f"; speak = '{cfg.visual_qa.speak}'")
     if cfg.pause_hotkey:
         log.info("tap '%s' to pause every key above without unloading "
                  "anything (for games), and again to resume%s",

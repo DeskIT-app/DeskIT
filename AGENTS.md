@@ -98,6 +98,16 @@ back.
 - **Model catalogs drift.** `llama-3.3-70b-versatile` vanished from Groq;
   Cerebras' free tier vanished entirely. Before trusting a model id or a
   pricing page, list `/v1/models` and make one real call.
+- **WinRT TTS from PowerShell has two teeth.** (1)
+  `SynthesizeTextToStreamAsync` returns `IAsyncOperation<SpeechSynthesisStream>`
+  — awaiting it as `<IRandomAccessStream>` (the folk recipe) dies with
+  "System.__ComObject cannot be converted"; AsTask must be made generic
+  over `SpeechSynthesisStream`. (2) Build WinRT objects with type
+  literals (`[Windows.Media...SpeechSynthesizer]::new()`), never
+  `New-Object` — only the literal path projects instance members
+  (measured: `AllVoices` full through the static accessor, empty through
+  a New-Object'd instance). Both in `visual_qa.py::_TTS_PS`, paid for in
+  six probes on 2026-08-25.
 - **The lookup box's frame must never wait on its text.** `popup.py`
   resizes the window in the same message the mouse arrives in and reflows
   the answer on a 50 ms throttle behind it. Laying out inline first was
@@ -123,6 +133,7 @@ back.
 | `cleanup.py` / `vocab.py` | filler removal, learned words |
 | `injector.py` | clipboard paste, placeholder, focus checks |
 | `punctuate.py` / `lookup.py` | F2 rewrite-in-place / reading box |
+| `visual_qa.py` | ask-the-screen: region select, vision chain, answer window, TTS |
 | `dashboard.py` + `ui.py` | control window incl. the Version screen |
 | `versions.py` | whole-app version switching |
 | `tests.py` | the suite; run it |

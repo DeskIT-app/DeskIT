@@ -443,6 +443,133 @@ cache_entries = 500
 # console and is not covered.
 skip_consoles = true
 
+[visual_qa]
+# ASK THE SCREEN: tap the key, every monitor dims, drag a rectangle over
+# anything — a paragraph in a browser, an error dialog, a chart — and a
+# small window opens showing what was captured plus a question box. Hold
+# right ctrl and SPEAK the question (the same Whisper path as dictation,
+# routed into the box instead of pasted at the cursor) or just type it.
+# The screenshot goes, base64 from RAM, to a vision model together with
+# your question; the Hebrew answer lands under it with Copy and Speak
+# buttons. Follow-up questions reuse the SAME screenshot plus the Q/A so
+# far — measured 2026-08-25, Ollama caches the prompt prefix and answers
+# a follow-up turn in ~0.35 s against ~4 s for the first.
+#
+# PRIVACY IS THE DESIGN HERE, not a preference. A screenshot can hold
+# mail, banking, anything ever shown on this screen, which makes it
+# strictly more sensitive than transcript text (the one thing [polish] may
+# already send out). So the default chain is LOCAL ONLY and
+# allow_screenshot_upload below defaults to FALSE, where false does not
+# mean "cloud second" — it means the cloud backends are never even built,
+# enforced in visual_qa.py's chain builder and asserted by a test. With
+# the gate shut and Ollama down, the window says so instead of falling
+# through to the cloud on its own initiative. The screenshot is never
+# written to disk, never logged, never cached — the screen changes between
+# presses, so there is nothing worth caching — and it dies with its window.
+#
+# Everything latency-related below was measured live on this machine on
+# 2026-08-25 rather than taken from anyone's documentation:
+#   ImageGrab.grab(bbox), full virtual screen   47-57 ms
+#   resize 4480x1440 -> long side 1344          61 ms, JPEG q85 ~105 KB
+#   gemma3:12b vision, first image of session   22.6 s cold (the vision
+#     projector loads once; warm_up below pays it at startup)
+#   gemma3:12b vision, warm                     3.9 s @900x450 region,
+#                                               5.7 s whole-screen@1344
+#   Groq qwen/qwen3.6-27b                       0.48-0.51 s, but ~830
+#     prompt tokens for one modest image against an 8000 tokens/min cap:
+#     real screenshots are 1-2 requests a MINUTE before HTTP 429
+#   Gemini 2.5-flash-lite                       2.2-2.3 s, from the shared
+#     20 req/day/model pool that F9 and F7 also drink from
+enabled = true                 # false unregisters the hotkey entirely
+                               # — the kill switch
+visual_qa_hotkey = "ctrl+f10"  # measured-free like the other ctrl+F keys:
+                               # everything the 2026-08 probe pressed
+                               # (f1-f6, f10-f16 under ctrl) reached the
+                               # page untouched in Chrome and Edge. Rebind
+                               # from the dashboard like any other key.
+allow_screenshot_upload = false
+                               # NAMED SO NOBODY CAN MISREAD IT. false = no
+                               # cloud backend for screenshots exists, full
+                               # stop. true turns the chain into ollama ->
+                               # groq -> gemini-pool. The trade if you flip
+                               # it: pixels leave the machine under Groq/
+                               # Google's terms, in exchange for speed when
+                               # the local model cannot answer.
+prefer = "ollama"              # ollama | groq | gemini — who asks first;
+                               # the others follow underneath when allowed,
+                               # ollama always among them, exactly the
+                               # [polish] prefer shape
+ollama_model = "gemma3:12b"    # the repair model this app already keeps
+                               # resident IS a vision model (it reports
+                               # capabilities ['completion','vision']) —
+                               # no new pull, no new VRAM residency:
+                               # nvidia-smi read 14710/16311 MiB with both
+                               # Whisper models AND this loaded, nothing
+                               # evicted. Do NOT put qwen2.5:7b here
+                               # without measuring: lookup.model tried it
+                               # for text and got '?");' for "brittle".
+groq_model = "qwen/qwen3.6-27b"
+                               # llama-4 scout/maverick were the obvious
+                               # picks and are GONE from Groq's catalog
+                               # (their catalog drifts; list /v1/models
+                               # before trusting a name). This one is a
+                               # reasoning model whose knob differs from
+                               # gpt-oss: reasoning_effort takes ONLY
+                               # "none"/"default" — "low" is HTTP 400 — and
+                               # its endpoint sits behind Cloudflare, which
+                               # 403s Python's default User-Agent (error
+                               # 1010); translate.py::USER_AGENT answers
+                               # that. Handled inside visual_qa.py.
+gemini_fallback = true         # include the shared pool after Groq when
+                               # uploading is allowed. It answered an image
+                               # question in 2.2-2.3 s, but it drinks from
+                               # the same 20 req/day/model bucket as F9/F7
+                               # — see [lookup] prefer for what happens
+                               # when a casual key shares that bucket
+max_side_px = 1344             # cap the screenshot's LONG side before
+                               # sending. 1344 because gemma3's image
+                               # encoder works in tiles up to about that
+                               # size — bigger buys no detail, only bytes.
+                               # Measured: a full 4480x1440 screen resized
+                               # to 1344 costs 61 ms and answers warm in
+                               # 5.7 s against 3.9 s for a 900x450 REGION —
+                               # small selections stay fast precisely
+                               # because this knob keeps big ones bounded.
+                               # Never upscales: a 400 px grab stays 400 px
+num_predict = 400              # hard reply cap. Answers here are generated
+                               # text, NOT your words — polish._is_safe's
+                               # word-diff deliberately does not apply — so
+                               # this cap is what stops a rambling model
+                               # hanging the window. 64 is the floor config
+                               # accepts; honest Hebrew paragraphs fit in
+                               # ~200 tokens at 42-46 tok/s
+speak = "button"               # off | button | auto — whether the answer is
+                               # READ ALOUD in Hebrew. button shows a Speak
+                               # control (press again to stop); auto reads
+                               # every answer as it lands; off hides the
+                               # control entirely
+voice = "Microsoft Asaf"       # he-IL. CAUTION: the legacy SAPI
+                               # System.Speech API does not SEE the OneCore
+                               # voices (it lists only Zira en-US here);
+                               # WinRT SpeechSynthesizer does. Synthesis is
+                               # therefore a PowerShell subprocess over
+                               # WinRT writing a WAV to a temp file that is
+                               # deleted after playback (winsound, async).
+                               # Measured: 30 ms to synthesize a 5.9 s clip
+warmup = true                  # one dummy-image, num_predict=1 call at
+                               # startup, in the background, so the first
+                               # real question costs ~4 s instead of the
+                               # 22.6 s projector load
+ollama_timeout_s = 120         # generous on purpose: a COLD local model can
+                               # spend minutes loading ([translate]
+                               # measures 76 s for a text-only load), and
+                               # there is no cloud fallback while the
+                               # upload gate is off
+cloud_timeout_s = 30           # Groq answers in half a second and Gemini in
+                               # ~2 s when they are healthy; past 30 s they
+                               # are not, and the next backend should have
+                               # the work
+
 [server]
 # Dictate from the PHONE, transcribe on this GPU: the phone records and
 # posts the audio here, so you keep the Hebrew fine-tune instead of falling

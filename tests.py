@@ -7984,6 +7984,420 @@ def test_the_breathing_lamp_reuses_its_frames() -> None:
         root.destroy()
 
 
+# -------------------------------------------------------- ask-the-screen
+#
+# The screenshot is the most sensitive data this app has ever handled — a
+# region of the screen can hold mail, banking, anything. So the tests
+# below are weighted towards what must NEVER happen: pixels reaching a
+# cloud backend while the upload gate is shut, the image touching disk,
+# a second spelling of the key drifting out of sync with its section.
+
+def test_bbox_normalization_from_all_four_drag_directions() -> None:
+    """A drag is legal in all four directions and every one of them means
+    the same rectangle."""
+    import visual_qa as vq
+
+    cases = {
+        (100, 200, 300, 400): (100, 200, 300, 400),   # down-right
+        (300, 400, 100, 200): (100, 200, 300, 400),   # up-left
+        (300, 200, 100, 400): (100, 200, 300, 400),   # down-left
+        (100, 400, 300, 200): (100, 200, 300, 400),   # up-right
+        (5, 5, 5, 5): (5, 5, 5, 5),                   # a click, no drag
+    }
+    for corners, expected in cases.items():
+        assert vq.normalize_bbox(*corners) == expected, corners
+
+
+def test_downscale_caps_the_long_side_and_never_upscales() -> None:
+    """Aspect preserved, long side capped, and a small grab stays small:
+    enlarging pixels adds tokens on some providers and sharpness nowhere."""
+    import visual_qa as vq
+
+    assert vq.scale_to(4480, 1440, 1344) == (1344, 432)
+    assert vq.scale_to(1440, 4480, 1344) == (432, 1344)
+    assert vq.scale_to(900, 450, 1344) == (900, 450), "no upscaling"
+    assert vq.scale_to(400, 200, 1344) == (400, 200)
+    w, h = vq.scale_to(2000, 1500, 1000)
+    assert (w, h) == (1000, 750) and abs(w / h - 2000 / 1500) < 1e-9
+
+
+def test_the_screenshot_pipeline_is_bytes_in_bytes_out() -> None:
+    """No file path anywhere in the pipeline's signatures, and encoding
+    yields bytes: the screenshot lives in RAM or it does not exist."""
+    import inspect
+
+    import visual_qa as vq
+
+    for fn in (vq.encode_jpeg, vq.Chain.ask, vq.Chain._encode_for,
+               vq.OllamaVision.ask, vq.GroqVision.ask):
+        params = inspect.signature(fn).parameters
+        bad = [p for p in params if "path" in p.lower()
+               or p.lower() in ("file", "filename")]
+        assert not bad, f"{fn.__qualname__} takes {bad}"
+
+    from PIL import Image
+    img = Image.new("RGB", (600, 300), (40, 40, 40))
+    blob = vq.encode_jpeg(img, 300)
+    assert isinstance(blob, bytes) and blob[:2] == b"\xff\xd8"
+    again = vq.encode_jpeg(img, 300)
+    assert blob == again
+
+
+def test_screenshot_upload_gate_keeps_cloud_out_of_the_chain() -> None:
+    """THE privacy test. With allow_screenshot_upload = false the built
+    chain contains NO cloud backend — asserted against the built list,
+    never against the flag, because a runtime `if` is exactly the kind of
+    guard a refactor silently deletes."""
+    import dataclasses
+
+    import visual_qa as vq
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    assert cfg.visual_qa.allow_screenshot_upload is False
+    shut = [name for name, _build in vq.Chain(cfg)._builders()]
+    assert shut == ["ollama"], \
+        f"the gate leaked cloud builders into the chain: {shut}"
+    # Even a config that PREFERS the cloud cannot build it while shut.
+    sneaky = dataclasses.replace(
+        cfg, visual_qa=dataclasses.replace(cfg.visual_qa, prefer="groq"))
+    assert [n for n, _ in vq.Chain(sneaky)._builders()] == ["ollama"]
+
+    # Gate open: ollama first by default, then groq, then the shared pool.
+    open_cfg = dataclasses.replace(
+        cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
+                                           allow_screenshot_upload=True))
+    names = [n for n, _ in vq.Chain(open_cfg)._builders()]
+    assert names == ["ollama", "groq", "gemini"], names
+    prefer_groq = dataclasses.replace(
+        cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
+                                           allow_screenshot_upload=True,
+                                           prefer="groq"))
+    assert [n for n, _ in vq.Chain(prefer_groq)._builders()] == \
+        ["groq", "ollama", "gemini"]
+    no_gemini = dataclasses.replace(
+        cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
+                                           allow_screenshot_upload=True,
+                                           gemini_fallback=False))
+    assert [n for n, _ in vq.Chain(no_gemini)._builders()] == \
+        ["ollama", "groq"]
+
+
+def _bare_groq_vision():
+    """A GroqVision without touching .env: every wire fact below is in
+    the request builder, not the key lookup."""
+    import visual_qa as vq
+
+    g = vq.GroqVision.__new__(vq.GroqVision)
+    g._key = "test-key"
+    g._model = "qwen/qwen3.6-27b"
+    g._timeout = 20
+    g._num_predict = 300
+    g.key_source = "test"
+    return g
+
+
+def test_groq_vision_request_shape() -> None:
+    """"reasoning_effort 'low' is an HTTP 400" and "Cloudflare eats the
+    default User-Agent" are both measured facts from 2026-08-25; these
+    asserts are where they stay true."""
+    import visual_qa as vq
+
+    g = _bare_groq_vision()
+    body = g.request_body("B64IMG==", "מה כתוב כאן?",
+                          [{"role": "user", "content": "קודמת"},
+                           {"role": "assistant", "content": "תשובה"}])
+    assert body["model"] == "qwen/qwen3.6-27b"
+    assert body["reasoning_effort"] == "none"
+    assert body["max_tokens"] == 300
+    parts = body["messages"][1]["content"]
+    kinds = {part["type"] for part in parts}
+    assert kinds == {"image_url", "text"}, kinds
+    url = next(p for p in parts if p["type"] == "image_url")[
+        "image_url"]["url"]
+    assert url.startswith("data:image/jpeg;base64,B64IMG=="), url[:60]
+    # History turns carry NO image — only the FIRST user message does.
+    assert len(body["messages"]) == 4
+    assert isinstance(body["messages"][3]["content"], str)
+
+    headers = g._headers()
+    assert headers["User-Agent"] == "hebrew-dictation/1.0", \
+        "Cloudflare 403s Python's default UA (error 1010)"
+    assert headers["Authorization"] == "Bearer test-key"
+
+
+def test_ollama_vision_history_reuses_one_image() -> None:
+    """The image rides the FIRST user message only; Ollama's prompt-prefix
+    cache makes later turns nearly free (0.35 s measured) — but only if
+    the prefix really is identical."""
+    import visual_qa as vq
+
+    o = vq.OllamaVision("gemma3:12b", "http://127.0.0.1:11434", 120, 400)
+    msgs = o._messages("B64IMG==", "וזה?", [{"role": "user",
+                                             "content": "ראשונה"},
+                                            {"role": "assistant",
+                                             "content": "תשובה"}])
+    with_images = [m for m in msgs if m.get("images")]
+    assert len(with_images) == 1, with_images
+    assert with_images[0]["content"] == "ראשונה"
+    assert msgs[-1]["role"] == "user" and msgs[-1]["content"] == "וזה?"
+    assert "images" not in msgs[-1]
+    assert any(m.get("role") == "system" for m in msgs)
+
+
+def test_tts_command_names_voice_and_never_flashes_a_console() -> None:
+    """The PowerShell subprocess is where a console window would flash —
+    CREATE_NO_WINDOW (0x08000000) is load-bearing, this repo froze a
+    dashboard once without it."""
+    import visual_qa as vq
+
+    args = vq.Speaker._powershell_args("speak.ps1", "a.wav", "a.txt",
+                                        "Microsoft Asaf")
+    assert args[0] == "powershell" and "-NoProfile" in args
+    assert "-File" in args
+    assert args[args.index("-voice") + 1] == "Microsoft Asaf"
+    assert args[args.index("-textfile") + 1] == "a.txt", \
+        "the question text travels by UTF-8 file, not the command line"
+    assert vq.Speaker.CREATE_NO_WINDOW == 0x08000000
+
+
+def test_tiny_warmup_image_is_a_real_png_and_needs_no_pillow() -> None:
+    """"The warm-up must not import Pillow" is the point of shipping it
+    as a constant — the startup path stays stdlib-only. And it must be a
+    VALID png: the first draft here was hand-typoed, Ollama answered HTTP
+    400, and nothing but a decode check would have caught it (the warm-up
+    correctly refused to crash startup)."""
+    import base64 as b64mod
+    import io
+    import struct
+
+    import visual_qa as vq
+
+    raw = b64mod.b64decode(vq._TINY_PNG_B64)
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n"
+    assert len(raw) < 200
+    # stdlib-only integrity walk: signature, IHDR, IEND present and the
+    # IHDR length field is exactly 13 bytes.
+    assert raw[12:16] == b"IHDR"
+    ihdr_len = struct.unpack(">I", raw[8:12])[0]
+    assert ihdr_len == 13
+    assert raw[-8:-4] == b"IEND"
+
+
+def test_speak_switch_off_button_auto() -> None:
+    """off hides the control, button shows it, auto reads everything —
+    and config refuses anything that is not one of the three."""
+    import visual_qa as vq
+
+    assert vq.speak_button_visible("button")
+    assert vq.speak_button_visible("auto")
+    assert not vq.speak_button_visible("off")
+
+    tmp, path = _temp_config()
+    try:
+        config_mod.set_values(path, {"visual_qa.speak": "auto"})
+        assert config_mod.load(path).visual_qa.speak == "auto"
+        before = path.read_text("utf-8")
+        try:
+            config_mod.set_values(path, {"visual_qa.speak": "loudly"})
+        except config_mod.ConfigError:
+            pass
+        else:
+            raise AssertionError("'loudly' was accepted as a speak mode")
+        assert path.read_text("utf-8") == before, \
+            "a rejected value must not touch the file"
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_visual_qa_section_parses_with_defaults_and_overrides() -> None:
+    import shutil
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="vqa-config-"))
+    path = tmp / "config.toml"
+    try:
+        path.write_text(
+            'hotkey = "right ctrl"\n'
+            "[visual_qa]\n"
+            "enabled = false\n"
+            'visual_qa_hotkey = "f15"\n'
+            "allow_screenshot_upload = true\n"
+            'prefer = "groq"\n'
+            "max_side_px = 900\n"
+            "num_predict = 256\n"
+            'speak = "auto"\n',
+            "utf-8")
+        cfg = config_mod.load(path)
+        vq = cfg.visual_qa
+        assert vq.enabled is False
+        assert vq.hotkey == "f15"          # the TOML key's real name
+        assert cfg.visual_qa_hotkey == "f15"   # ...and its public face
+        assert vq.allow_screenshot_upload is True
+        assert vq.prefer == "groq"
+        assert vq.max_side_px == 900
+        assert vq.num_predict == 256
+        assert vq.speak == "auto"
+        assert vq.voice == "Microsoft Asaf"     # untouched default
+        assert vq.groq_model == "qwen/qwen3.6-27b"
+
+        defaults = config_mod.VisualQAConfig()
+        assert defaults.allow_screenshot_upload is False, \
+            "the privacy default is OFF and must stay off"
+        assert defaults.hotkey == "ctrl+f10"
+        assert defaults.max_side_px == 1344
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_visual_qa_hotkey_write_back_is_nested_and_keeps_comments() -> None:
+    """The key lives INSIDE [visual_qa], so the write-back must be dotted;
+    set_values' line editor keeps every comment byte while doing it."""
+    import shutil
+    tmp, path = _temp_config()
+    try:
+        before = path.read_text("utf-8")
+        marker = "# measured-free like the other ctrl+F keys"
+        assert marker in before, "the comment this test protects vanished"
+        config_mod.set_values(path, {"visual_qa.visual_qa_hotkey": "f16"})
+        after = path.read_text("utf-8")
+        assert config_mod.load(path).visual_qa.hotkey == "f16"
+        assert marker in after
+        assert 'visual_qa_hotkey = "f16"' in after
+        # Nothing else moved: the top-level hotkey line is byte-identical.
+        def hotkey_line(text: str) -> str:
+            return next(line for line in text.splitlines()
+                        if line.startswith("hotkey "))
+        assert hotkey_line(before) == hotkey_line(after)
+
+        # And the section editor refuses to invent keys.
+        try:
+            config_mod.set_values(path, {"visual_qa.nonexistent": "1"})
+        except config_mod.ConfigError:
+            assert config_mod.load(path).visual_qa.hotkey == "f16"
+        else:
+            raise AssertionError("set_values invented visual_qa.nonexistent")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_visual_qa_key_binds_and_the_kill_switch_unbinds_it() -> None:
+    """enabled = false unregisters the key ENTIRELY: no tap, nothing in
+    the state machine, whatever the key string still says."""
+    import dataclasses
+
+    import main as main_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    _hotkeys, taps, _latch, _pause = main_mod.App.bindings(cfg)
+    assert taps[parse_binding("ctrl+f10")] == "visual_qa", taps
+    assert main_mod.App._vk_of(taps, "visual_qa") == vk_for("f10")
+
+    off = dataclasses.replace(cfg, visual_qa=dataclasses.replace(
+        cfg.visual_qa, enabled=False))
+    _hotkeys, taps_off, _l, _p = main_mod.App.bindings(off)
+    assert all(name != "visual_qa" for name in taps_off.values()), taps_off
+
+    unbound = dataclasses.replace(cfg, visual_qa=dataclasses.replace(
+        cfg.visual_qa, enabled=True, hotkey=""))
+    _hotkeys, taps_empty, _l, _p = main_mod.App.bindings(unbound)
+    assert all(name != "visual_qa" for name in taps_empty.values())
+
+
+def test_visual_qa_key_collision_is_refused_like_every_other() -> None:
+    """One key cannot mean two things — including when one of them is
+    nested in a section nobody typed at the top level."""
+    import dataclasses
+
+    import main as main_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    clash = config_mod.with_field(cfg, "visual_qa_hotkey", "ctrl+f8")
+    assert clash.visual_qa.hotkey == "ctrl+f8"
+    assert cfg.visual_qa.hotkey == "ctrl+f10", "the original changed"
+    try:
+        config_mod.check_hotkeys(clash)
+    except config_mod.ConfigError as e:
+        assert "lookup_hotkey" in str(e), e
+    else:
+        raise AssertionError("ctrl+f8 collided with lookup and was allowed")
+
+    free = config_mod.with_field(cfg, "visual_qa_hotkey", "f14")
+    config_mod.check_hotkeys(free)      # must not raise
+
+
+def test_the_dashboard_lists_the_visual_qa_key() -> None:
+    """HOTKEY_FIELDS is the one place a new key is registered — the Keys
+    screen, the live rebind and the validation all read it."""
+    fields = dict(config_mod.HOTKEY_FIELDS)
+    assert "visual_qa_hotkey" in fields, fields
+    assert fields["visual_qa_hotkey"], "the row would have no label"
+
+
+def test_a_dictated_question_routes_into_the_ask_window() -> None:
+    """The full diversion contract, against a real window on its own
+    thread: deliver_transcript's post lands in the entry (replacing any
+    draft), an answer replaces the busy state, and closing stops cleanly.
+
+    Run as a SUBPROCESS, like the overlay tests: the window owns a Tk
+    interpreter plus widget and image objects, and burying those from the
+    suite's main thread after the window thread is gone is exactly the
+    Tcl_AsyncDelete abort the overlay tests were written to avoid."""
+    import subprocess
+    import tempfile
+    here = Path(__file__).resolve().parent
+    script = '''
+import threading, time, os
+from PIL import Image
+import visual_qa as vq
+
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+holder = {}
+ready = threading.Event()
+
+def flow():
+    win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
+                       lambda i, q, h: "תשובה בעברית")
+    holder["win"] = win
+    ready.set()
+    try:
+        win.run()
+    except Exception:
+        pass
+
+t = threading.Thread(target=flow, daemon=True)
+t.start()
+assert ready.wait(5), "window never came up"
+win = holder["win"]
+deadline = time.monotonic() + 5
+win.post(("voice", "מה המספר שמופיע בחלון?"))
+while win.last_voice is None and time.monotonic() < deadline:
+    time.sleep(0.05)
+assert win.last_voice == "מה המספר שמופיע בחלון?", win.last_voice
+win.post(("answer", (win.last_voice, "מאה — 42 + 58 = 100", 2.2)))
+while not win.answer_text and time.monotonic() < deadline:
+    time.sleep(0.05)
+assert win.answer_text == "מאה — 42 + 58 = 100", win.answer_text
+assert len(win.history) == 2, win.history
+win.close_soon()
+t.join(3)
+assert not t.is_alive(), "window thread did not exit on close"
+os._exit(0)
+'''
+    with tempfile.NamedTemporaryFile("w", suffix="_vqa_route.py",
+                                     dir=str(here), delete=False,
+                                     encoding="utf-8") as fh:
+        fh.write(script)
+        path = Path(fh.name)
+    try:
+        out = subprocess.run([sys.executable, str(path)], cwd=str(here),
+                             capture_output=True, encoding="utf-8",
+                             errors="replace", timeout=120)
+    finally:
+        path.unlink(missing_ok=True)
+    assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
+    assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
