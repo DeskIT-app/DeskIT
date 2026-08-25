@@ -8360,6 +8360,31 @@ def test_speaking_again_cancels_the_answer_mid_token() -> None:
     else:
         raise AssertionError("a cancelled stream kept reading")
 
+    # ...and the other half of barge-in, which cost a measurement to find:
+    # per-line checking cannot reach a request that has not produced a
+    # line yet, and a COLD vision projector produces none for 23 s. The
+    # watchdog closes the response instead, and the socket dying under a
+    # cancel has to read as the cancel arriving rather than as a broken
+    # backend — otherwise the chain moves on to the cloud with it.
+    class Dying:
+        @staticmethod
+        def __iter__():
+            raise OSError("socket closed under us")
+
+    try:
+        backend._read(Dying(), lambda _s: None, cancel)
+    except vq.Cancelled:
+        pass
+    else:
+        raise AssertionError("a closed socket under a cancel was not one")
+
+    try:
+        backend._read(Dying(), lambda _s: None, threading_mod.Event())
+    except OSError:
+        pass
+    else:
+        raise AssertionError("a genuinely broken stream was swallowed")
+
 
 def test_a_cancelled_question_never_falls_through_to_the_cloud() -> None:
     """Cancelled is not a refusal. QAError means "this backend said no,
