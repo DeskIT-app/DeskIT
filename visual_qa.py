@@ -2065,7 +2065,7 @@ class _Btn:
 # header and the foot, so only these two are fixed.
 CARD_PAD = 22
 CARD_HEAD_H = 52          # title row and the hairline under it
-CARD_FOOT_H = 192         # the status line, the chips, the pill, the hint
+CARD_FOOT_H = 168         # status, chips, the composer row, the hint
 CARD_RADIUS = 30
 PILL_H = 58
 
@@ -2096,7 +2096,7 @@ class _CardSurface:
         self.base_a = max(90, min(220, int(158 * (opacity / 0.93))))
         self.boxes: dict = {}
         self.entry_bg = CARD
-        self.wave_span = None
+        self.dot_centre = None
         self._plate = None
         self._plate_key = None
 
@@ -2188,10 +2188,10 @@ class _CardSurface:
                 text_pil(status, pw - pad * 2, pt=10.5,
                          colour=state.get("status_rgb", INK_DIM),
                          single=True, rtl=False),
-                (pad, ph - CARD_FOOT_H + 8))
+                (pad, ph - CARD_FOOT_H + 6))
 
         # ---- the ready-made questions ----
-        cy = ph - 152
+        cy = ph - 134
         cx = pw - pad
         for i, label in enumerate(QUICK_ASKS):
             t = text_pil(label, 220, pt=12.5, colour=(206, 224, 248),
@@ -2206,81 +2206,89 @@ class _CardSurface:
             self.boxes[f"ask{i}"] = (cx - cw, cy, cx, cy + 30)
             cx -= cw + 8
 
-        # ---- the composer. VOICE by default: no text field at all, a
-        #      wave that is the microphone, and one key-shaped button for
-        #      the times you would rather type. The owner's brief - "in
-        #      the default state there is no text field, only if someone
-        #      wants to open it".
-        bar_h = 62
-        bar_y = ph - bar_h - 46
-        out.alpha_composite(
-            rr_layer((pw - pad * 2, bar_h), 16, (255, 255, 255, 24),
-                     outline=(255, 255, 255, 58)), (pad, bar_y))
-        self.boxes["pill"] = (pad, bar_y, pw - pad, bar_y + bar_h)
-        mid = bar_y + bar_h // 2
+        # ---- the composer. There is no bar here at rest, because a bar
+        #      at rest is a box that says "type in me" all day in a window
+        #      whose point is that you talk to it. What is here instead is
+        #      a small circle to talk at, a key to press if you would
+        #      rather not, and a pencil. The field OPENS from the key,
+        #      right to left, and only when it is asked for.
+        mid = ph - 64
+        opened = float(state.get("open", 0.0))
 
-        # the pencil, on the left, in both modes
+        px = pad
         armed = state.get("drawing")
-        px = pad + 12
         if armed:
             out.alpha_composite(rr_layer((34, 34), 11, (86, 156, 245, 165)),
                                 (px, mid - 17))
         out.alpha_composite(_icon("pencil", 19, INK if armed else INK_DIM),
                             (px + 8, mid - 10))
         self.boxes["pencil"] = (px, mid - 17, px + 34, mid + 17)
-        px += 34
+        px += 40
         if state.get("strokes"):
-            out.alpha_composite(_icon("undo", 18, INK_DIM), (px + 8, mid - 9))
+            out.alpha_composite(_icon("undo", 18, INK_DIM), (px + 7, mid - 9))
             self.boxes["undo"] = (px, mid - 17, px + 34, mid + 17)
-            px += 34
+            px += 40
 
-        # the one round button on the right: a keyboard while you are
-        # talking, an arrow once there is something typed to send
-        typing = state.get("mode") == "text"
-        bx = pw - pad - 12 - 40
-        out.alpha_composite(rr_layer((40, 40), 14, (86, 156, 245, 232)
-                                     if typing else (255, 255, 255, 26),
-                                     outline=None if typing
-                                     else (255, 255, 255, 60)),
-                            (bx, mid - 20))
+        key_x = pw - pad - 38
         out.alpha_composite(
-            _icon("send" if typing else "keyboard", 19,
-                  (255, 255, 255) if typing else INK),
-            (bx + 10, mid - 10))
-        self.boxes["keyboard" if not typing else "send"] = (
-            bx, mid - 20, bx + 40, mid + 20)
+            rr_layer((38, 38), 12,
+                     (86, 156, 245, 190) if opened > .5
+                     else (255, 255, 255, 22),
+                     outline=None if opened > .5 else (255, 255, 255, 52)),
+            (key_x, mid - 19))
+        out.alpha_composite(
+            _icon("keyboard", 19, (255, 255, 255) if opened > .5 else INK_DIM),
+            (key_x + 9, mid - 10))
+        self.boxes["keyboard"] = (key_x, mid - 19, key_x + 38, mid + 19)
 
-        self.wave_span = (px + 14, mid, bx - 14)  # where the wave goes
-        if typing:
-            self.boxes["entry"] = (px + 14, mid - 15, bx - 14, mid + 15)
+        # the circle you talk at. It shrinks away as the field opens.
+        dot_r = int(17 * (1.0 - opened))
+        dot_cx, dot_cy = key_x - 22 - 17, mid
+        self.dot_centre = (dot_cx, dot_cy) if dot_r > 4 else None
+        if dot_r > 4:
+            out.alpha_composite(
+                rr_layer((dot_r * 2, dot_r * 2), dot_r, (255, 255, 255, 20),
+                         outline=(160, 200, 245, 150)),
+                (dot_cx - dot_r, dot_cy - dot_r))
+            inner = max(2, dot_r // 3)
+            out.alpha_composite(
+                rr_layer((inner * 2, inner * 2), inner, (140, 190, 245, 220)),
+                (dot_cx - inner, dot_cy - inner))
+            self.boxes["talk"] = (dot_cx - dot_r, dot_cy - dot_r,
+                                  dot_cx + dot_r, dot_cy + dot_r)
+
+        # the field, sweeping open from under the key towards the left
+        right = key_x - 12
+        full_left = px + 44
+        left = int(right - opened * max(40, right - full_left))
+        if opened > 0.02:
+            out.alpha_composite(
+                rr_layer((max(8, right - left), 38), 12,
+                         (255, 255, 255, 26), outline=(255, 255, 255, 60)),
+                (left, mid - 19))
+        if opened > 0.6:
+            out.alpha_composite(rr_layer((34, 34), 11, (86, 156, 245, 232)),
+                                (px, mid - 17))
+            out.alpha_composite(_icon("send", 18, (255, 255, 255)),
+                                (px + 8, mid - 9))
+            self.boxes["send"] = (px, mid - 17, px + 34, mid + 17)
+            self.boxes["entry"] = (left + 12, mid - 14, right - 12, mid + 14)
         else:
-            # no field at all, and the entry parked off the card
+            # no field, so the entry is parked right off the card
             self.boxes["entry"] = (-4000, -4000, -3990, -3990)
-            if not state.get("listening"):
-                # while the wave is up it IS the invitation, and text
-                # behind moving bars is just noise
-                said = state.get("hint_voice") or "Hold Right Ctrl to talk"
-                t = text_pil(said, max(60, bx - px - 28), pt=12.5,
-                             colour=INK_DIM, single=True, rtl=False)
-                bb = t.getbbox()
-                if bb:
-                    t = t.crop(bb)
-                    out.alpha_composite(
-                        t, ((px + 14 + bx - 14) // 2 - t.width // 2,
-                            mid - 8))
 
         out.alpha_composite(
             text_pil(state.get("hint", ""), pw - pad * 2, pt=10.5,
                      colour=INK_FAINT, single=True, rtl=False),
-            (pad, ph - 32))
+            (pad, ph - 30))
 
         rgb = out.convert("RGB")
         # the entry cannot be translucent, so it borrows the colour of the
         # glass it sits on - sampled from the finished pixels, not guessed
-        x0, y0, _x1, _y1 = self.boxes["pill"]
-        self.entry_bg = "#%02x%02x%02x" % rgb.getpixel(
-            (max(0, min(rgb.width - 1, x0 + 90)),
-             max(0, min(rgb.height - 1, y0 + 30))))
+        ex0, ey0, _ex1, _ey1 = self.boxes["entry"]
+        sx = max(0, min(rgb.width - 1, ex0 + 20))
+        sy = max(0, min(rgb.height - 1, ey0 + 14))
+        self.entry_bg = "#%02x%02x%02x" % rgb.getpixel((sx, sy))
         return rgb
 
 
@@ -2350,6 +2358,12 @@ class AskWindow:
         # default state has no text field at all, because the whole point
         # of this thing is that you talk to it.
         self._mode = "voice"
+        # How far the text field is open, 0..1. A number and not a flag
+        # because it SWEEPS: the owner asked for a field that opens, not
+        # one that appears, and a control that changes without moving is
+        # a control the eye has to re-find.
+        self._open = 0.0
+        self._open_to = 0.0
         self._level_fn = None
         self._wave: list[float] = []
         self._wave_items: list = []
@@ -2593,10 +2607,25 @@ class AskWindow:
     # -- pointer: one press handler, hit-tested against what was painted --
 
     def _hit(self, x: int, y: int) -> str | None:
+        """What is under the pointer: the SMALLEST thing that contains it.
+
+        Not the first match. The composer registers its whole strip as a
+        box and the pencil sits inside that strip, so first-match order
+        meant every click on the pencil or the keyboard was swallowed by
+        the strip and nothing happened - which is exactly what the owner
+        reported. Smallest-wins needs no ordering discipline at all, and
+        an ordering discipline is the kind that rots.
+        """
         lx, ly = x - self._cx, y - self._cy
+        best, best_area = None, None
         for name, (x0, y0, x1, y1) in self.surface.boxes.items():
-            if name != "entry" and x0 <= lx < x1 and y0 <= ly < y1:
-                return name
+            if name == "entry" or not (x0 <= lx < x1 and y0 <= ly < y1):
+                continue
+            area = (x1 - x0) * (y1 - y0)
+            if best_area is None or area < best_area:
+                best, best_area = name, area
+        if best is not None:
+            return best
         if 0 <= lx < self._w and 0 <= ly < self._h:
             return "card"
         sx0, sy0, sx1, sy1 = self._sel
@@ -2610,7 +2639,7 @@ class AskWindow:
         if hit == "selection" and self._drawing:
             self._strokes.append([(event.x, event.y)])
             return
-        if hit in ("strip", "card", "thumb"):
+        if hit in ("strip", "card", "thumb", "pill", "view"):
             lx, ly = event.x - self._cx, event.y - self._cy
             if lx > self._w - 24 and ly > self._h - 24:
                 self._resize_from = (event.x_root, event.y_root, self._w,
@@ -2656,8 +2685,9 @@ class AskWindow:
             self._copy()
         elif target == "speak":
             self._toggle_speak()
-        elif target == "keyboard":
-            self._type_instead()
+        elif target in ("keyboard", "talk"):
+            self._toggle_keyboard() if target == "keyboard" else                 self._status("hold Right Ctrl and talk", ttl_ms=FLASH_MS)
+            self._repaint()
         elif target == "send":
             self._ask_or_extend(self.entry.get())
         elif target.startswith("ask"):
@@ -2668,7 +2698,7 @@ class AskWindow:
         if self._drawing and hit == "selection":
             want = "pencil"
         elif hit in ("close", "pin", "pencil", "keyboard", "send", "undo",
-                     "copy", "speak") or (hit or "").startswith("ask"):
+                     "copy", "speak", "talk") or (hit or "").startswith("ask"):
             want = "hand2"
         else:
             want = "arrow"
@@ -2821,7 +2851,9 @@ class AskWindow:
         like every other chat box.
         """
         self._mode = "text"
-        self._repaint()
+        self._open_to = 1.0
+        if self.status.cget("text").startswith("listening"):
+            self.status.config(text="", fg=DIM)   # not any more, you are not
         try:
             self.entry.focus_force()
         except Exception:
@@ -2829,8 +2861,29 @@ class AskWindow:
 
     def _talk_instead(self) -> None:
         self._mode = "voice"
+        self._open_to = 0.0
         self.entry.delete(0, "end")
-        self._repaint()
+
+    def _toggle_keyboard(self) -> None:
+        if self._mode == "text":
+            self._talk_instead()
+        else:
+            self._type_instead()
+
+    def _step_open(self) -> bool:
+        """Move the field one frame towards open or shut. True if it moved.
+
+        Eased, and it stops dead on the target rather than creeping at it
+        forever - a sweep that never quite finishes repaints the card for
+        the rest of the session.
+        """
+        if abs(self._open - self._open_to) < 0.02:
+            if self._open != self._open_to:
+                self._open = self._open_to
+                return True
+            return False
+        self._open += (self._open_to - self._open) * 0.34
+        return True
 
     def _on_typed(self, event) -> None:
         """A printable key in voice mode opens the field and keeps the key.
@@ -2848,36 +2901,42 @@ class AskWindow:
         self.entry.insert("end", event.char)
 
     def _pump_wave(self) -> None:
-        """Draw the microphone, as canvas items over the painted card.
+        """Rings around the circle, breathing with the microphone.
 
-        Items and not pixels: a repaint of the card is tens of
+        Canvas items and not pixels: a repaint of the card is tens of
         milliseconds and this runs on every 15 ms tick, so painting the
-        wave into the bitmap would be the frame waiting on its content -
-        the same rule the busy rail follows and AGENTS.md sets for the
-        lookup box.
+        rings into the bitmap would be the frame waiting on its content -
+        the rule AGENTS.md sets for the lookup box, and the busy rail
+        already follows it.
+
+        Rings rather than a strip of bars because the owner asked for a
+        circle "with waves around it", and because a wave that radiates
+        from the thing you are talking at says WHERE the sound is going.
+        Each ring is one moment of loudness travelling outward: the
+        newest is tight round the dot, the oldest is faint and wide.
         """
         for item in self._wave_items:
             self.canvas.delete(item)
         self._wave_items = []
-        if self._mode == "text" or not self._wave:
+        centre = self.surface.dot_centre
+        if centre is None or not self._wave:
             return
-        span = self.surface.wave_span
-        if span is None:
-            return
-        x0, mid, x1 = span
-        x0 += self._cx
-        x1 += self._cx
-        mid += self._cy
-        bars = self._wave[-min(len(self._wave), max(8, (x1 - x0) // 7)):]
-        if not bars:
-            return
-        step = (x1 - x0) / len(bars)
-        for i, value in enumerate(bars):
-            half = max(1.0, value * 22)
-            x = x0 + i * step + step / 2
-            self._wave_items.append(self.canvas.create_line(
-                x, mid - half, x, mid + half, fill="#7fb4f7",
-                width=max(2, int(step) - 2), capstyle="round"))
+        cx = centre[0] + self._cx
+        cy = centre[1] + self._cy
+        # FOUR rings, and none of them wider than the composer row. The
+        # first try radiated to 70 px, which crossed the chips above, the
+        # key beside it and the edge of the card - "relatively big" was
+        # exactly the complaint this is answering.
+        rings = self._wave[-4:]
+        for age, value in enumerate(reversed(rings)):
+            radius = 13 + age * 3.5 + value * 6
+            fade = max(0, 190 - age * 46)
+            shade = "#%02x%02x%02x" % (int(58 + fade * .26),
+                                       int(108 + fade * .36),
+                                       int(168 + fade * .42))
+            self._wave_items.append(self.canvas.create_oval(
+                cx - radius, cy - radius, cx + radius, cy + radius,
+                outline=shade, width=2 if age == 0 else 1))
         for item in self._wave_items:
             self.canvas.tag_raise(item)
 
@@ -3013,6 +3072,7 @@ class AskWindow:
             "strokes": bool(self._strokes),
             "thumb": self._thumb,
             "mode": self._mode,
+            "open": self._open,
             "listening": self._level_fn is not None,
             "hint_voice": "Hold Right Ctrl to talk",
             "speak_on": None if self.speak_btn is None else self.speak_btn.text,
@@ -3085,6 +3145,8 @@ class AskWindow:
         elif self._chip_x != -96.0:
             self._chip_x = -96.0
             self.canvas.itemconfig(self._rail, state="hidden")
+        if self._step_open():
+            self._repaint()
         if self._level_fn is not None:
             try:
                 value, still = self._level_fn()
@@ -3092,7 +3154,7 @@ class AskWindow:
                 value, still = 0.0, False
             if still:
                 self._wave.append(min(1.0, float(value) * 2.6))
-                del self._wave[:-120]
+                del self._wave[:-40]
             else:
                 # The hold ended. Let the wave fall away rather than
                 # vanish - a line that snaps to nothing reads as a bug.

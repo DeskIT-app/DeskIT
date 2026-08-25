@@ -9096,6 +9096,78 @@ assert freed == 0, f"the ask thread left {freed} objects behind"
 ''')
 
 
+def test_every_painted_control_is_clickable_where_it_is_painted() -> None:
+    """The owner reported that the keyboard and the pencil did nothing.
+
+    Both were painted, both had hit boxes, and both were unreachable: the
+    composer registers its whole row as a box, the small controls sit
+    INSIDE that row, and the hit test returned the first match in dict
+    order -- which was the row. Every click was swallowed by the strip it
+    landed on.
+
+    Smallest-box-wins fixes it without any ordering discipline, and this
+    test is the one that would have caught it: it clicks each control at
+    the centre of the rectangle THE PAINTER recorded, so the picture and
+    the targets are checked against each other rather than against a
+    hand-written table of coordinates.
+    """
+    _run_window_script('''
+import os, time
+from PIL import Image
+import visual_qa as vq
+
+img = Image.new("RGB", (400, 240), (30, 30, 30))
+win = vq.AskWindow(img, (200, 200, 600, 440), vq.Speaker(), "off",
+                   lambda *a, **k: ("", "test"))
+
+class E:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+        self.x_root, self.y_root = x, y
+
+def click(name):
+    box = win.surface.boxes.get(name)
+    assert box is not None, f"{name} is not painted at all"
+    x0, y0, x1, y1 = box
+    ev = E(win._cx + (x0 + x1) // 2, win._cy + (y0 + y1) // 2)
+    assert win._hit(ev.x, ev.y) == name, (name, win._hit(ev.x, ev.y))
+    win._on_press(ev)
+    win._on_release(ev)
+    win.root.update()
+
+def settle():
+    for _ in range(40):
+        win._animate()
+        win.root.update()
+        time.sleep(0.005)
+
+try:
+    win.root.update()
+    assert win._mode == "voice", win._mode
+    assert "talk" in win.surface.boxes, "no circle to talk at"
+
+    click("keyboard")
+    settle()
+    assert win._mode == "text", win._mode
+    assert win._open > 0.9, win._open
+    assert "send" in win.surface.boxes, "an open field with no way to send"
+
+    click("pencil")
+    assert win._drawing is True, "the pencil did not arm"
+
+    click("keyboard")
+    settle()
+    assert win._mode == "voice", win._mode
+    assert win._open < 0.1, win._open
+    # and the field is gone, not merely empty: the entry is parked off
+    # the card so no caret can blink in a window that has no field
+    assert win.surface.boxes["entry"][0] < -1000, win.surface.boxes["entry"]
+finally:
+    win.root.destroy()
+os._exit(0)
+''')
+
+
 def test_a_closed_card_leaves_no_interpreter_for_another_thread_to_free() -> None:
     """The crash the owner hit twice: dictate for 73 s after using the
     card and the whole app disappears, no traceback, `tcl86t.dll` and
