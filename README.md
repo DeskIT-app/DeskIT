@@ -1234,9 +1234,19 @@ local-preferred**:
 | Right Ctrl released → answer complete | 2.16–2.36 s (of which the model wrote for 1.39–1.42 s) |
 | repaints while streaming | 30–34 per answer out of ~141 tokens |
 | a follow-up on the same screenshot | ~1.45 s |
+| talking over an answer → the reply to both sentences | **2.86 s** from the interruption; the abandoned request hangs up 0.98 s in rather than finishing |
 | gemma3:12b vision, first image after idle | ~23 s **once** — the vision projector loads; `warmup = true` pays it at startup |
 | Groq `qwen/qwen3.6-27b` (upload on) | 0.5 s, but ~830 prompt tokens/image against an 8,000 tokens/min cap — 1–2 screenshots a minute before 429, so it is the fallback, never the primary |
 | Gemini flash-lite (upload on) | 2.2 s, from the shared 20 req/day/model pool F9/F7 drink from |
+
+Interrupting costs almost nothing because the abandoned answer is
+genuinely abandoned: the cancel is checked on every streamed line, and a
+watchdog closes the connection outright for the case where the model has
+gone quiet between lines. The one place it cannot reach is a request
+still waiting for its first byte — Ollama sends no headers at all until
+the model is loaded — so an interruption during the one-off ~23 s cold
+load waits out that load. It hangs up the instant the headers arrive,
+which is what stops the GPU writing a whole second answer nobody wants.
 
 The gap between those two Right-Ctrl rows is the whole argument for
 streaming: the wait was never ours to shorten, only to fill. Only the

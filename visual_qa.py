@@ -75,6 +75,14 @@ END-TO-END, the real card against the real model, 2026-08-25, warm, on a
 - Repaints per answer: 30-34, out of ~141 tokens — should_repaint()
   holding the 80 ms floor except where a completed line jumped it.
 - A follow-up turn on the same screenshot: 1.45 s.
+- BARGE-IN, warm: talking over an answer 0.7 s in and getting the answer
+  to both sentences took 2.86 s from the interruption, and the abandoned
+  request hung up 0.98 s in without finishing. Cold (projector unloaded
+  on purpose with keep_alive=0) it is ~23 s, all of it the model load
+  that warmup = true exists to have already paid; the abandoned request
+  still hangs up the moment its headers arrive, so the GPU never writes
+  a second answer nobody asked for. Before that hang-up existed the same
+  cold interruption took 24.97 s and generated both.
 - The vision projector still goes cold after ~5 minutes of Ollama idling
   ([polish] sends no keep_alive), and the first question after that pays
   ~23 s ONCE; warm_up = true pays it at startup instead (measured 1.0 s
@@ -527,27 +535,66 @@ class OllamaVision:
             return ((body.get("message") or {}).get("content") or "")
         deadline = time.monotonic() + self._timeout
         parts: list[str] = []
-        for line in response:
+        try:
+            for line in response:
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled("superseded while the model was writing")
+                if time.monotonic() > deadline:
+                    raise TimeoutError(
+                        f"the model was still writing after {self._timeout}s"
+                        f" ({len(''.join(parts))} characters so far)")
+                if not line.strip():
+                    continue
+                event = json.loads(line.decode("utf-8"))
+                piece = (event.get("message") or {}).get("content", "")
+                if not piece:
+                    continue
+                parts.append(piece)
+                try:
+                    on_chunk("".join(parts))
+                except Exception:
+                    # A box that cannot repaint must not cost the reply it
+                    # was going to paint. Log and keep reading.
+                    log.exception("visual qa on_chunk failed")
+        except Cancelled:
+            raise
+        except Exception:
+            # The socket dying UNDER a cancel is the cancel arriving — see
+            # _abandon_on_cancel. Anything else is a real broken stream and
+            # belongs to the caller's except, which moves to the next
+            # backend.
             if cancel is not None and cancel.is_set():
-                raise Cancelled("superseded while the model was writing")
-            if time.monotonic() > deadline:
-                raise TimeoutError(
-                    f"the model was still writing after {self._timeout}s "
-                    f"({len(''.join(parts))} characters so far)")
-            if not line.strip():
-                continue
-            event = json.loads(line.decode("utf-8"))
-            piece = (event.get("message") or {}).get("content", "")
-            if not piece:
-                continue
-            parts.append(piece)
-            try:
-                on_chunk("".join(parts))
-            except Exception:
-                # A box that cannot repaint must not cost the reply it was
-                # going to paint. Log and keep reading.
-                log.exception("visual qa on_chunk failed")
+                raise Cancelled("superseded before the model wrote a word")
+            raise
         return "".join(parts)
+
+    @staticmethod
+    def _abandon_on_cancel(response, cancel: threading.Event,
+                           finished: threading.Event) -> None:
+        """Hang up on a request the user has already talked over.
+
+        Checking `cancel` per streamed LINE is not enough on its own: a
+        model that is writing slowly, or writing a very long answer, keeps
+        the reader blocked between lines. Closing the response from here
+        unblocks that read within 50 ms — verified live, a close() during
+        a running stream raised out of `for line in response` in 1.52 s
+        against a 1.5 s timer, having read 67 lines.
+
+        It CANNOT reach a request that is still inside urlopen, and that
+        limit is why the check before this thread starts exists: Ollama
+        sends no headers at all until the model is loaded, so a cold
+        projector parks the caller there for ~23 s with no response object
+        to close yet.
+
+        `finished` is what stops this thread from outliving its request.
+        """
+        while not cancel.wait(0.05):
+            if finished.is_set():
+                return
+        try:
+            response.close()
+        except Exception:
+            pass
 
     def ask(self, image_b64: str, question: str, history: list[dict],
             on_chunk=None, cancel=None) -> str:
@@ -569,7 +616,27 @@ class OllamaVision:
         try:
             with urllib.request.urlopen(request,
                                         timeout=self._timeout) as response:
-                text = self._read(response, on_chunk, cancel)
+                # Hang up NOW if the question was replaced while we waited
+                # for headers. Ollama sends none until it has the model
+                # loaded, so a cold projector parks this thread inside
+                # urlopen for ~23 s where neither the watchdog below (not
+                # started yet) nor the per-line check (no lines yet) can
+                # reach it. Closing here without reading a byte is what
+                # stops the GPU generating a whole answer for a question
+                # nobody is waiting for any more, while the REPLACEMENT
+                # question waits behind it on the same model.
+                if cancel is not None and cancel.is_set():
+                    raise Cancelled("superseded before the model answered")
+                finished = threading.Event()
+                if cancel is not None:
+                    threading.Thread(
+                        target=self._abandon_on_cancel,
+                        args=(response, cancel, finished), daemon=True,
+                        name="vqa-abandon").start()
+                try:
+                    text = self._read(response, on_chunk, cancel)
+                finally:
+                    finished.set()
         except Cancelled:
             raise
         except urllib.error.HTTPError as e:
