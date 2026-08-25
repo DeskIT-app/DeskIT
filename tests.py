@@ -8982,6 +8982,127 @@ os._exit(0)
 ''')
 
 
+def test_closing_the_card_mid_answer_does_not_hand_it_to_the_ask_thread() -> None:
+    """The half of the crash the first fix missed.
+
+    Esc while the model is still writing is an ordinary thing to do, and
+    it used to leave the card owned by the ask thread: a Thread holds its
+    target for as long as it runs, and the target WAS `self._ask_worker`,
+    a bound method. So _flow's collect found the card still reachable and
+    did nothing, and when the model call finally returned - up to
+    ollama_timeout_s later - that thread dropped the last reference. Not
+    the thread that built the interpreter. Reproduced as exit code 3,
+    Tcl_AsyncDelete, before the worker was made a module-level function
+    handed a queue.
+
+    The same rule covers the TTS callback, which used to close over the
+    window and can sit inside a 60 s subprocess.
+    """
+    _run_window_script('''
+import gc, threading, time
+from pathlib import Path
+from PIL import Image
+import config
+import visual_qa as vq
+
+gc.disable()
+
+cfg = config.load(Path("config.toml"))
+ctrl = vq.Controller(lambda: cfg)
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
+
+answering = threading.Event()
+release = threading.Event()
+
+def slow_ask(image, question, history, on_chunk=None, cancel=None,
+             encoded_cache=None):
+    answering.set()
+    release.wait(30)
+    return ("a late answer nobody asked for any more", "test")
+
+ctrl._ask = slow_ask
+
+assert ctrl.begin_selection()
+deadline = time.monotonic() + 20
+while not ctrl.sink_active and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert ctrl.sink_active, "the card never came up"
+
+ctrl._window.post(("voice", "מה כתוב כאן?"))
+assert answering.wait(15), "the ask worker never started"
+
+ctrl.stop()                       # Esc, with the answer still in flight
+while ctrl.busy and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert not ctrl.busy, "the flow never finished"
+
+release.set()                     # the model call returns, far too late
+time.sleep(1.0)
+
+# If the ask thread was ever an owner, the card is cyclic garbage now and
+# THIS collect is the wrong thread freeing it.
+freed = gc.collect()
+assert freed == 0, f"the ask thread left {freed} objects behind"
+''')
+
+
+def test_a_closed_card_leaves_no_interpreter_for_another_thread_to_free() -> None:
+    """The crash the owner hit twice: dictate for 73 s after using the
+    card and the whole app disappears, no traceback, `tcl86t.dll` and
+    exception 0x80000003 in the Windows event log.
+
+    A Tk widget tree is CYCLIC, so dropping the last reference to the
+    card never frees it — only the generational collector does, on
+    whichever thread happens to trip the allocation threshold. Freeing it
+    there runs Tcl_DeleteInterp on a thread that did not build the
+    interpreter, and Tcl answers that with a panic: abort, no Python
+    exception, nothing in app.log. A long transcription allocating on the
+    worker thread is exactly such a threshold.
+
+    So the flow's own thread has to do the collecting AFTER every
+    reference is gone, which is later than run() can manage — run()
+    returns while _open_ask's local and the controller's handle both
+    still point at the card.
+
+    Note there is no os._exit(0) here, unlike every other card test. That
+    call is what hid this bug: it skips collection entirely, so the suite
+    could never have watched the wrong thread do the freeing.
+    """
+    _run_window_script('''
+import gc, sys, time
+from pathlib import Path
+from PIL import Image
+import config
+import visual_qa as vq
+
+gc.disable()                 # only explicit collects: we choose the thread
+
+cfg = config.load(Path("config.toml"))
+ctrl = vq.Controller(lambda: cfg)
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
+ctrl._ask = lambda *a, **k: ("ארבעים ושתיים", "test")
+
+assert ctrl.begin_selection()
+deadline = time.monotonic() + 20
+while not ctrl.sink_active and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert ctrl.sink_active, "the card never came up"
+
+ctrl.stop()
+while ctrl.busy and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert not ctrl.busy, "the flow never finished"
+
+# Whatever the card left behind, _flow must already have buried it on its
+# own thread. If anything Tk is still cyclic garbage here, THIS collect is
+# the wrong thread doing the freeing and Tcl aborts the process.
+freed = gc.collect()
+assert freed == 0, f"the card left {freed} objects for another thread"
+''')
+
+
 def test_an_arriving_answer_never_eats_what_you_typed_while_waiting() -> None:
     """Anything in the box when an answer lands was typed WHILE the model
     was writing, which makes it the next question. v1 cleared the box on

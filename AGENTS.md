@@ -80,7 +80,7 @@ back.
 
 ## Traps we already paid for — do not re-arm them
 
-- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 322 of
+- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 323 of
   them, safe to run while dictation is live (two bugs that used to kill
   the app mid-suite are fixed; see git log). Run them BEFORE claiming done.
 - **Subprocesses under pythonw allocate consoles.** Every `subprocess.run`
@@ -130,6 +130,23 @@ back.
   whole wrapped lines instead of binary-searching word cuts — the old way
   cost 699 ms per auto-fit descent on a 4056-char answer, against 22 ms
   now. Don't "simplify" either back.
+- **A Tk window must be COLLECTED by the thread that built it, not just
+  destroyed there.** `destroy()` does not delete the interpreter; the
+  interpreter dies when the last reference to it does. A Tk widget tree is
+  always cyclic, so that never happens by refcount — the generational
+  collector does it, on whichever thread happens to trip the allocation
+  threshold. That thread runs `Tcl_DeleteInterp`, and Tcl panics if it is
+  not the creating thread: an abort, exception `0x80000003` in
+  `tcl86t.dll`, no Python traceback and nothing in `app.log`. The app
+  vanished twice this way on 2026-08-25, both times on the first long
+  dictation after using the ask card — a 73 s and a 127 s clip allocating
+  on the transcription worker. So a `gc.collect()` next to `destroy()`
+  proves nothing: it can only work once every reference is gone, which is
+  strictly later than the window's own `run()` can arrange. See
+  `visual_qa.py::Controller._flow`. The card tests could never have caught
+  it because they all end in `os._exit(0)`, which skips collection —
+  `test_a_closed_card_leaves_no_interpreter_for_another_thread_to_free`
+  deliberately does not.
 - **Hebrew in console output** shows as garbage unless
   `$env:PYTHONIOENCODING='utf-8'` — display-only, data is fine.
 - **Branch switches restart the running instance** (~25 s of model

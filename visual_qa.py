@@ -1590,6 +1590,40 @@ def _select_region(cancel: threading.Event, background
                                   bottom - vy))
 
 
+def _ask_worker(q: "queue.Queue", ask_fn, image, question: str,
+                history: list, encoded: dict, gen: int,
+                cancel: threading.Event) -> None:
+    """Run one model call and post the result. NOT a method.
+
+    Everything it touches is passed in, so the running thread holds a
+    queue, a PIL image and two plain containers - and no reference to the
+    window. That is the whole point: this thread can outlive the card by
+    up to ollama_timeout_s, and it must not be able to keep the card's
+    Tcl interpreter alive when it does.
+    """
+    started = time.monotonic()
+    last_paint = [0.0]
+    painted = [0]
+
+    def on_chunk(so_far: str) -> None:
+        now = time.monotonic()
+        if should_repaint(now, last_paint[0], so_far, painted[0]):
+            last_paint[0] = now
+            painted[0] = len(so_far)
+            q.put(("chunk", (gen, so_far)))
+
+    try:
+        answer, backend = ask_fn(image, question, history,
+                                 on_chunk=on_chunk, cancel=cancel,
+                                 encoded_cache=encoded)
+        q.put(("answer", (gen, question, answer, backend,
+                          time.monotonic() - started)))
+    except Cancelled:
+        pass                # a newer question is already on its way
+    except Exception as e:
+        q.put(("error", (gen, f"{e}")))
+
+
 class AskWindow:
     """The floating card: a conversation about ONE screenshot.
 
@@ -1993,6 +2027,12 @@ class AskWindow:
                 self._drain()
                 time.sleep(_TICK_S)
         finally:
+            # Tell the model call to stop before anything else: it checks
+            # this per line, so the abort is bounded at one token, and a
+            # closed card should not still be paying for an answer nobody
+            # will ever read.
+            if self._cancel_current is not None:
+                self._cancel_current.set()
             self.speaker.stop()
             self._remember_position()
             self._photos = []
@@ -2002,7 +2042,11 @@ class AskWindow:
                 root.destroy()
             except Exception:
                 pass
-            gc.collect()                # Tcl_AsyncDelete rule, overlay.py
+            # Frees the images now. It canNOT free the interpreter —
+            # the caller still holds this window — so the collect that
+            # actually satisfies the Tcl_AsyncDelete rule is the one at
+            # the end of Controller._flow.
+            gc.collect()
 
     def _drain(self) -> None:
         try:
@@ -2160,34 +2204,20 @@ class AskWindow:
         self._repaint_transcript()
         self._fit_window()
         self.cue("translating")
-        threading.Thread(target=self._ask_worker,
-                         args=(gen, question, cancel), daemon=True,
-                         name="vqa-ask").start()
-
-    def _ask_worker(self, gen: int, question: str,
-                    cancel: threading.Event) -> None:
-        started = time.monotonic()
-        last_paint = [0.0]
-        painted = [0]
-
-        def on_chunk(so_far: str) -> None:
-            now = time.monotonic()
-            if should_repaint(now, last_paint[0], so_far, painted[0]):
-                last_paint[0] = now
-                painted[0] = len(so_far)
-                self.post(("chunk", (gen, so_far)))
-
-        try:
-            answer, backend = self.ask_fn(
-                self.image, question, list(self.history),
-                on_chunk=on_chunk, cancel=cancel,
-                encoded_cache=self.encoded)
-            self.post(("answer", (gen, question, answer, backend,
-                                  time.monotonic() - started)))
-        except Cancelled:
-            pass            # a newer question is already on its way
-        except Exception as e:
-            self.post(("error", (gen, f"{e}")))
+        # The target is a MODULE-LEVEL function handed a queue, never a
+        # bound method: a Thread holds its target for as long as it runs,
+        # so `self._ask_worker` would make this thread an owner of the
+        # whole widget tree. Closing the card mid-answer then left the
+        # card alive on the ask thread, past the collect in _flow that is
+        # supposed to bury it, and whoever dropped it LAST was not the
+        # thread that built the interpreter. Reproduced: exit code 3,
+        # Tcl_AsyncDelete. The queue is a plain queue; nothing Tk rides
+        # on it.
+        threading.Thread(
+            target=_ask_worker,
+            args=(self._q, self.ask_fn, self.image, question,
+                  list(self.history), self.encoded, gen, cancel),
+            daemon=True, name="vqa-ask").start()
 
     def _stale(self, gen: int) -> bool:
         return gen != self._gen
@@ -2350,8 +2380,12 @@ class AskWindow:
         if self.speak_btn is not None:
             self.speak_btn.config_text("Stop")
         self._status("speaking…")
+        # the QUEUE, not self: the TTS thread can be inside a 60 s
+        # subprocess long after the card is gone, and a lambda over self
+        # would keep the interpreter alive there. Same rule as _ask_worker.
+        q = self._q
         self.speaker.speak(self.answer_text,
-                           on_done=lambda: self.post(("tts_done", False)))
+                           on_done=lambda: q.put(("tts_done", False)))
 
     # -- closing --
 
@@ -2442,7 +2476,19 @@ class Controller:
         full = ImageGrab.grab(all_screens=True)
         log.debug("visual qa froze %dx%d in %.0f ms", full.width,
                   full.height, (time.monotonic() - started) * 1000)
-        chosen = _select_region(self._cancel, full)
+        try:
+            chosen = _select_region(self._cancel, full)
+        finally:
+            # A FINALLY, not a plain statement. _select_region's own
+            # collect ran while its frame still held the root, so it
+            # could not free it; this one can, because the frame is gone
+            # and this is the thread that built the interpreter. It has
+            # to run even when _select_region RAISES, because the caller
+            # that swallows the exception is AskWindow._on_reselect — and
+            # there the next collect on this thread is whenever the card
+            # closes, minutes away, with a dead interpreter sitting in
+            # cyclic garbage for every one of those minutes.
+            gc.collect()
         if chosen is None:
             return None
         bbox, image = chosen
@@ -2461,6 +2507,20 @@ class Controller:
         finally:
             with self._lock:
                 self._window = None
+            # ONLY HERE is the card unreachable. run()'s collect fired
+            # while _open_ask's local and self._window still held it, and
+            # a Tk widget tree is always cyclic, so dropping the last
+            # reference does not free it either: it sits in cyclic garbage
+            # until some thread trips the generational threshold. That
+            # thread runs Tcl_DeleteInterp, and Tcl PANICS when the caller
+            # is not the thread that made the interpreter — an abort, no
+            # traceback, the whole app gone. A 73 s dictation allocating
+            # on the transcription worker was enough to trip it twice.
+            gc.collect()
+            # and only NOW may the hotkey arm another flow: clearing
+            # _busy any earlier lets a second visual-qa thread exist
+            # while this one still has a corpse to bury, and that second
+            # thread allocates.
             self._busy.clear()
 
     def _open_ask(self, image, bbox) -> None:
