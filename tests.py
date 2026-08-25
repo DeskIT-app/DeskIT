@@ -8774,20 +8774,22 @@ win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
                    lambda *a, **k: ("", "test"))
 try:
     win.root.update()
-    before = win.root.winfo_height()
+    # The WINDOW is the whole frozen screen now and never changes
+    # size. What grows is the card painted on it, so measure that.
+    before = win._h
     win.history.append({"role": "user", "content": "מה כתוב במסך הזה?"})
-    win.history.append({"role": "assistant", "content": "שורה. " * 220})
+    win.history.append({"role": "assistant", "content": "שורה. " * 700})
     win._repaint_transcript()
     win._fit_window()
     win.root.update()
-    after = win.root.winfo_height()
+    after = win._h
     assert after > before, (before, after)
     assert win._content_h > 0
     cap = win._view_cap()
-    assert win.transcript.winfo_height() <= cap + 1, \\
-        (win.transcript.winfo_height(), cap)
-    region = win.transcript.cget("scrollregion").split()
-    assert int(region[3]) >= win.transcript.winfo_height(), region
+    assert win._view_h() <= cap + 1, (win._view_h(), cap)
+    # taller than it can show, so it scrolls -- and sits at the END
+    assert win._content_h > win._view_h(), (win._content_h, win._view_h())
+    assert win._scroll == win._content_h - win._view_h(), win._scroll
 finally:
     win.root.destroy()
 os._exit(0)
@@ -8860,7 +8862,7 @@ try:
     win.answer_text = "תשובה ישנה"
     win.encoded[("ollama", 1344)] = "stale-base64"
     win._repaint_transcript()
-    was = (win._thumb.width(), win._thumb.height())
+    was = win._thumb.size
 
     win._on_reselect()
     win.root.update()
@@ -8868,11 +8870,136 @@ try:
     assert win.answer_text == "", win.answer_text
     assert win.encoded == {}, win.encoded
     assert win.image is fresh
-    now = (win._thumb.width(), win._thumb.height())
+    now = win._thumb.size
     assert now != was, (was, now)
 finally:
     win.root.destroy()
 os._exit(0)
+''')
+
+
+def test_closing_the_card_mid_answer_does_not_hand_it_to_the_ask_thread() -> None:
+    """The half of the crash the first fix missed.
+
+    Esc while the model is still writing is an ordinary thing to do, and
+    it used to leave the card owned by the ask thread: a Thread holds its
+    target for as long as it runs, and the target WAS `self._ask_worker`,
+    a bound method. So _flow's collect found the card still reachable and
+    did nothing, and when the model call finally returned - up to
+    ollama_timeout_s later - that thread dropped the last reference. Not
+    the thread that built the interpreter. Reproduced as exit code 3,
+    Tcl_AsyncDelete, before the worker was made a module-level function
+    handed a queue.
+
+    The same rule covers the TTS callback, which used to close over the
+    window and can sit inside a 60 s subprocess.
+    """
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import gc, threading, time
+from pathlib import Path
+from PIL import Image
+import config
+import visual_qa as vq
+
+gc.disable()
+
+cfg = config.load(Path("config.toml"))
+ctrl = vq.Controller(lambda: cfg)
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
+
+answering = threading.Event()
+release = threading.Event()
+
+def slow_ask(image, question, history, on_chunk=None, cancel=None,
+             encoded_cache=None):
+    answering.set()
+    release.wait(30)
+    return ("a late answer nobody asked for any more", "test")
+
+ctrl._ask = slow_ask
+
+assert ctrl.begin_selection()
+deadline = time.monotonic() + 20
+while not ctrl.sink_active and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert ctrl.sink_active, "the card never came up"
+
+ctrl._window.post(("voice", "מה כתוב כאן?"))
+assert answering.wait(15), "the ask worker never started"
+
+ctrl.stop()                       # Esc, with the answer still in flight
+while ctrl.busy and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert not ctrl.busy, "the flow never finished"
+
+release.set()                     # the model call returns, far too late
+time.sleep(1.0)
+
+# If the ask thread was ever an owner, the card is cyclic garbage now and
+# THIS collect is the wrong thread freeing it.
+freed = gc.collect()
+assert freed == 0, f"the ask thread left {freed} objects behind"
+''')
+
+
+def test_a_closed_card_leaves_no_interpreter_for_another_thread_to_free() -> None:
+    """The crash the owner hit twice: dictate for 73 s after using the
+    card and the whole app disappears, no traceback, `tcl86t.dll` and
+    exception 0x80000003 in the Windows event log.
+
+    A Tk widget tree is CYCLIC, so dropping the last reference to the
+    card never frees it — only the generational collector does, on
+    whichever thread happens to trip the allocation threshold. Freeing it
+    there runs Tcl_DeleteInterp on a thread that did not build the
+    interpreter, and Tcl answers that with a panic: abort, no Python
+    exception, nothing in app.log. A long transcription allocating on the
+    worker thread is exactly such a threshold.
+
+    So the flow's own thread has to do the collecting AFTER every
+    reference is gone, which is later than run() can manage — run()
+    returns while _open_ask's local and the controller's handle both
+    still point at the card.
+
+    Note there is no os._exit(0) here, unlike every other card test. That
+    call is what hid this bug: it skips collection entirely, so the suite
+    could never have watched the wrong thread do the freeing.
+    """
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import gc, sys, time
+from pathlib import Path
+from PIL import Image
+import config
+import visual_qa as vq
+
+gc.disable()                 # only explicit collects: we choose the thread
+
+cfg = config.load(Path("config.toml"))
+ctrl = vq.Controller(lambda: cfg)
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
+ctrl._ask = lambda *a, **k: ("ארבעים ושתיים", "test")
+
+assert ctrl.begin_selection()
+deadline = time.monotonic() + 20
+while not ctrl.sink_active and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert ctrl.sink_active, "the card never came up"
+
+ctrl.stop()
+while ctrl.busy and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert not ctrl.busy, "the flow never finished"
+
+# Whatever the card left behind, _flow must already have buried it on its
+# own thread. If anything Tk is still cyclic garbage here, THIS collect is
+# the wrong thread doing the freeing and Tcl aborts the process.
+freed = gc.collect()
+assert freed == 0, f"the card left {freed} objects for another thread"
 ''')
 
 
@@ -8936,7 +9063,11 @@ win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
 try:
     win.root.update()
     assert win.root.overrideredirect(), "the card grew a title bar"
-    assert abs(float(win.root.attributes("-alpha")) - 0.9) < 0.02, \\
+    # NOT -alpha any more. Whole-window alpha made the TEXT
+    # translucent too, which was half of why the old card was hard
+    # to read; the card is opaque pixels now and the see-through
+    # is painted into them.
+    assert float(win.root.attributes("-alpha")) == 1.0, \\
         win.root.attributes("-alpha")
 
     WS_CAPTION = 0x00C00000
@@ -8945,8 +9076,11 @@ try:
     style = user32.GetWindowLongW(hwnd, -16)          # GWL_STYLE
     assert not style & WS_CAPTION, hex(style)
 
-    win.root.geometry("+300+300")
-    win.root.update()
+    # The window IS the frozen screen; the card is a position
+    # painted on it, so a drag moves the painting, not the window.
+    vx, vy, _vw, _vh = vq.virtual_screen()
+    win._cx, win._cy = 300 - vx, 300 - vy
+    win._repaint()
 
     class E:
         x_root, y_root = 340, 330
@@ -8954,8 +9088,7 @@ try:
     E.x_root, E.y_root = 420, 380
     win._drag_move(E)
     win.root.update()
-    assert (win.root.winfo_x(), win.root.winfo_y()) == (380, 350), \\
-        (win.root.winfo_x(), win.root.winfo_y())
+    assert win._screen_xy() == (380, 350), win._screen_xy()
 
     moved = []
     win.on_move = moved.append
