@@ -8293,10 +8293,14 @@ def test_a_streamed_answer_repaints_on_a_line_or_every_80ms() -> None:
 
 def test_the_card_goes_back_where_it_was_put() -> None:
     """A card the user parked somewhere is a card they chose the place
-    of, and a new selection is not a reason to move it back. The parked
-    position is dropped only when it no longer fits a real monitor —
-    clamping into the virtual screen instead teleports a window on the
-    left monitor onto the primary (popup.py measured that)."""
+    of, and a new selection is not a reason to move it back.
+
+    But it has to earn that twice: fit a REAL monitor, and CLEAR the new
+    selection. The owner reported the second one — re-selecting behind an
+    already-parked card left the card sitting on the very pixels the
+    question was about. Clamping into the virtual screen instead of a
+    monitor's work area teleports a window on the left monitor onto the
+    primary (popup.py measured that)."""
     if not _VQA:
         return   # classic: no such feature, nothing to assert
     import visual_qa as vq
@@ -8304,11 +8308,14 @@ def test_the_card_goes_back_where_it_was_put() -> None:
     work = (0, 0, 1920, 1040)
     anchor = (100, 100, 400, 300)
 
-    assert vq.plan_placement(anchor, work, (400, 200)) == (100, 318), \
-        "with no memory it sits under the selection"
-    assert vq.plan_placement(anchor, work, (400, 200), (50, 60)) == (50, 60)
+    assert vq.plan_placement(anchor, work, (400, 200)) == (418, 100), \
+        "with no memory it sits BESIDE the selection, never over it"
+    parked = vq.plan_placement(anchor, work, (400, 200), (900, 600))
+    assert parked == (900, 600), parked
     assert vq.plan_placement(anchor, work, (400, 200), (1800, 60)) \
-        == (100, 318), "a remembered spot that no longer fits is dropped"
+        == (418, 100), "a remembered spot that no longer fits is dropped"
+    assert vq.plan_placement(anchor, work, (400, 200), (50, 60)) \
+        == (418, 100), "and one that covers the new selection is dropped"
 
     # The left monitor: negative coordinates are a place, not an error.
     left = (-1920, 0, 0, 1040)
@@ -8982,6 +8989,80 @@ time.sleep(1.0)
 # THIS collect is the wrong thread freeing it.
 freed = gc.collect()
 assert freed == 0, f"the ask thread left {freed} objects behind"
+''')
+
+
+def test_every_painted_control_is_clickable_where_it_is_painted() -> None:
+    """The owner reported that the keyboard and the pencil did nothing.
+
+    Both were painted, both had hit boxes, and both were unreachable: the
+    composer registers its whole row as a box, the small controls sit
+    INSIDE that row, and the hit test returned the first match in dict
+    order -- which was the row. Every click was swallowed by the strip it
+    landed on.
+
+    Smallest-box-wins fixes it without any ordering discipline, and this
+    test is the one that would have caught it: it clicks each control at
+    the centre of the rectangle THE PAINTER recorded, so the picture and
+    the targets are checked against each other rather than against a
+    hand-written table of coordinates.
+    """
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import os, time
+from PIL import Image
+import visual_qa as vq
+
+img = Image.new("RGB", (400, 240), (30, 30, 30))
+win = vq.AskWindow(img, (200, 200, 600, 440), vq.Speaker(), "off",
+                   lambda *a, **k: ("", "test"))
+
+class E:
+    def __init__(self, x, y):
+        self.x, self.y = x, y
+        self.x_root, self.y_root = x, y
+
+def click(name):
+    box = win.surface.boxes.get(name)
+    assert box is not None, f"{name} is not painted at all"
+    x0, y0, x1, y1 = box
+    ev = E(win._cx + (x0 + x1) // 2, win._cy + (y0 + y1) // 2)
+    assert win._hit(ev.x, ev.y) == name, (name, win._hit(ev.x, ev.y))
+    win._on_press(ev)
+    win._on_release(ev)
+    win.root.update()
+
+def settle():
+    for _ in range(40):
+        win._animate()
+        win.root.update()
+        time.sleep(0.005)
+
+try:
+    win.root.update()
+    assert win._mode == "voice", win._mode
+    assert "talk" in win.surface.boxes, "no circle to talk at"
+
+    click("keyboard")
+    settle()
+    assert win._mode == "text", win._mode
+    assert win._open > 0.9, win._open
+    assert "send" in win.surface.boxes, "an open field with no way to send"
+
+    click("pencil")
+    assert win._drawing is True, "the pencil did not arm"
+
+    click("keyboard")
+    settle()
+    assert win._mode == "voice", win._mode
+    assert win._open < 0.1, win._open
+    # and the field is gone, not merely empty: the entry is parked off
+    # the card so no caret can blink in a window that has no field
+    assert win.surface.boxes["entry"][0] < -1000, win.surface.boxes["entry"]
+finally:
+    win.root.destroy()
+os._exit(0)
 ''')
 
 
