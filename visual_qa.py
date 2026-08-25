@@ -1278,8 +1278,61 @@ def rr_layer(size, radius: int, fill, outline=None, width: int = 1,
     return big.resize((w, h), Image.LANCZOS)
 
 
+def glass_furniture(size, radius: int = 30):
+    """Everything in the glass that depends only on its SIZE.
+
+    The sheen, the grain, the specular rim, the hairline edge, the outer
+    glow and the corner mask. None of it changes when the card moves, so
+    it is built once per size and pasted every frame - which is what
+    turns a drag from 16 fps into something you can watch. Returns
+    (overlay RGBA, mask L).
+    """
+    from PIL import Image, ImageDraw, ImageFilter
+    w, h = size
+    overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+
+    sheen = Image.new("L", (1, h))
+    sheen.putdata([int(46 * (1 - i / max(1, h - 1)) ** 1.6) for i in range(h)])
+    overlay = Image.alpha_composite(
+        overlay, Image.merge("RGBA", (Image.new("L", (w, h), 255),) * 3
+                             + (sheen.resize((w, h)),)))
+
+    inner = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(inner).rounded_rectangle(
+        (1, 1, w - 2, h - 2), max(1, radius - 1), outline=255, width=2)
+    g = 64
+    small = Image.new("L", (g, g))
+    small.putdata([int(255 * max(0.0, 1 - ((x / g) * .55 + (y / g) * .8)))
+                   for y in range(g) for x in range(g)])
+    from PIL import ImageChops
+    overlay = Image.alpha_composite(overlay, Image.merge("RGBA", (
+        Image.new("L", (w, h), GLASS_RIM[0]),
+        Image.new("L", (w, h), GLASS_RIM[1]),
+        Image.new("L", (w, h), GLASS_RIM[2]),
+        ImageChops.multiply(inner, small.resize((w, h), Image.BILINEAR)))))
+
+    edge = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(edge).rounded_rectangle((0, 0, w - 1, h - 1), radius,
+                                           outline=255, width=1)
+    overlay = Image.alpha_composite(overlay, Image.merge("RGBA", (
+        Image.new("L", (w, h), 200), Image.new("L", (w, h), 225),
+        Image.new("L", (w, h), 255), edge.point(lambda v: v // 3))))
+
+    glow = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(glow).rounded_rectangle((0, 0, w - 1, h - 1), radius,
+                                           outline=255, width=12)
+    overlay = Image.alpha_composite(overlay, Image.merge("RGBA", (
+        Image.new("L", (w, h), 150), Image.new("L", (w, h), 190),
+        Image.new("L", (w, h), 255),
+        glow.filter(ImageFilter.GaussianBlur(7)).point(lambda v: v // 9))))
+
+    grain = Image.effect_noise((w, h), 8).point(lambda v: 128 + (v - 128) // 3)
+    return overlay, _rounded_mask((w, h), radius), grain
+
+
 def glass_plate(backdrop, box, *, radius: int = 30, base_a: int = 158,
-                tint_a: int = 84, blur: int = 26, lens: float = 1.06):
+                tint_a: int = 84, blur: int = 26, lens: float = 1.06,
+                prepared=None, furniture=None):
     """An RGBA liquid-glass panel for `box` of `backdrop`.
 
     The order IS the recipe, and each step earns its place:
@@ -1289,22 +1342,25 @@ def glass_plate(backdrop, box, *, radius: int = 30, base_a: int = 158,
       2. saturate: glass carries colour more strongly than air does.
       3. the smoked base, then the blue. Base first, or the blue turns
          grey over a dark backdrop.
-      4. a vertical sheen, so the panel has an up and a down.
-      5. grain, because a perfectly smooth surface reads as flat colour.
-      6. the specular rim — the one thing that actually says GLASS. A
-         bright hairline strongest at the top-left and gone by the
-         bottom-right, a dim hairline all the way round so there is still
-         an edge where the specular has faded, and an outer glow.
+      4. the furniture: sheen, grain, specular rim, hairline, glow, mask.
+
+    `prepared` is the backdrop ALREADY blurred, and `furniture` is step 4
+    already built for this size. Both are caches the card fills in before
+    a drag, and together they are the difference between 63 ms a frame
+    and something the eye reads as motion. Neither changes the picture.
     """
-    from PIL import Image, ImageDraw, ImageFilter, ImageEnhance, ImageChops
+    from PIL import Image, ImageFilter, ImageEnhance, ImageChops
     x0, y0, x1, y1 = box
     w, h = x1 - x0, y1 - y0
 
-    pad = int(max(w, h) * (lens - 1) / 2) + blur
-    src = backdrop.crop((x0 - pad, y0 - pad, x1 + pad, y1 + pad))
-    src = src.filter(ImageFilter.GaussianBlur(blur))
+    pad = int(max(w, h) * (lens - 1) / 2) + (0 if prepared is not None
+                                             else blur)
+    source = prepared if prepared is not None else backdrop
+    src = source.crop((x0 - pad, y0 - pad, x1 + pad, y1 + pad))
+    if prepared is None:
+        src = src.filter(ImageFilter.GaussianBlur(blur))
     bw, bh = int(src.width * lens), int(src.height * lens)
-    src = src.resize((bw, bh), Image.LANCZOS)
+    src = src.resize((bw, bh), Image.BILINEAR)
     cx, cy = bw // 2, bh // 2
     plate = src.crop((cx - w // 2, cy - h // 2,
                       cx - w // 2 + w, cy - h // 2 + h)).convert("RGB")
@@ -1315,49 +1371,13 @@ def glass_plate(backdrop, box, *, radius: int = 30, base_a: int = 158,
     plate = Image.alpha_composite(
         plate, Image.new("RGBA", (w, h), GLASS_TINT + (tint_a,)))
 
-    sheen = Image.new("L", (1, h))
-    sheen.putdata([int(46 * (1 - i / max(1, h - 1)) ** 1.6) for i in range(h)])
-    plate = Image.alpha_composite(
-        plate, Image.merge("RGBA", (Image.new("L", (w, h), 255),) * 3
-                           + (sheen.resize((w, h)),)))
-
-    grain = Image.effect_noise((w, h), 8).point(lambda v: 128 + (v - 128) // 3)
+    overlay, mask, grain = (furniture if furniture is not None
+                            else glass_furniture((w, h), radius))
     plate = Image.composite(
         ImageChops.add(plate.convert("RGB"), grain.convert("RGB"), 2, -128)
         .convert("RGBA"), plate, Image.new("L", (w, h), 45))
-
-    inner = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(inner).rounded_rectangle(
-        (1, 1, w - 2, h - 2), max(1, radius - 1), outline=255, width=2)
-    # the falloff is SMOOTH, so it does not need a value per pixel: 64x64
-    # stretched is identical to the eye, and was half of a 297 ms panel
-    g = 64
-    small = Image.new("L", (g, g))
-    small.putdata([int(255 * max(0.0, 1 - ((x / g) * .55 + (y / g) * .8)))
-                   for y in range(g) for x in range(g)])
-    grad = small.resize((w, h), Image.BILINEAR)
-    plate = Image.alpha_composite(plate, Image.merge("RGBA", (
-        Image.new("L", (w, h), GLASS_RIM[0]),
-        Image.new("L", (w, h), GLASS_RIM[1]),
-        Image.new("L", (w, h), GLASS_RIM[2]),
-        ImageChops.multiply(inner, grad))))
-
-    edge = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(edge).rounded_rectangle((0, 0, w - 1, h - 1), radius,
-                                           outline=255, width=1)
-    plate = Image.alpha_composite(plate, Image.merge("RGBA", (
-        Image.new("L", (w, h), 200), Image.new("L", (w, h), 225),
-        Image.new("L", (w, h), 255), edge.point(lambda v: v // 3))))
-
-    glow = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(glow).rounded_rectangle((0, 0, w - 1, h - 1), radius,
-                                           outline=255, width=12)
-    plate = Image.alpha_composite(plate, Image.merge("RGBA", (
-        Image.new("L", (w, h), 150), Image.new("L", (w, h), 190),
-        Image.new("L", (w, h), 255),
-        glow.filter(ImageFilter.GaussianBlur(7)).point(lambda v: v // 9))))
-
-    plate.putalpha(_rounded_mask((w, h), radius))
+    plate = Image.alpha_composite(plate, overlay)
+    plate.putalpha(mask)
     return plate
 
 
@@ -2113,6 +2133,19 @@ class _CardSurface:
 
     def __init__(self, backdrop, opacity: float = 0.93):
         self.backdrop = backdrop        # the frozen screen, dimmed
+        # Two caches, and between them a drag went from 16 fps to
+        # something the eye reads as motion. `_blurred` is the WHOLE
+        # backdrop blurred once - the screen is frozen, so that blur can
+        # never go stale, and a moving card becomes a crop of it instead
+        # of a fresh Gaussian every frame. `_furniture` is everything in
+        # the glass that depends only on the card's SIZE.
+        self._blurred = None
+        self._furniture = None
+        self._furniture_key = None
+        self._content = None
+        self._content_key = None
+        self._content_boxes: dict = {}
+        self._content_dot = None
         # [visual_qa] window_alpha used to be Tk's whole-window -alpha,
         # which made the TEXT translucent too and was half of why the old
         # card was hard to read. It now scales how SOLID the glass is,
@@ -2127,14 +2160,54 @@ class _CardSurface:
     def rebase(self, backdrop) -> None:
         self.backdrop = backdrop
         self._plate_key = None
+        self._blurred = None            # a different screen, a new blur
+
+    def prepare(self) -> float:
+        """Blur the whole frozen screen, once. Returns seconds taken.
+
+        Deferred until it is needed rather than paid at open: someone who
+        asks one question and closes should not wait for a blur they are
+        never going to drag through.
+        """
+        if self._blurred is not None:
+            return 0.0
+        from PIL import ImageFilter
+        started = time.monotonic()
+        self._blurred = self.backdrop.filter(ImageFilter.GaussianBlur(26))
+        return time.monotonic() - started
 
     def plate(self, box):
         """The glass, cached. Re-blur only when the card moves or grows."""
         if self._plate_key != box:
+            size = (box[2] - box[0], box[3] - box[1])
+            if self._furniture_key != size:
+                self._furniture = glass_furniture(size, CARD_RADIUS)
+                self._furniture_key = size
             self._plate = glass_plate(self.backdrop, box, radius=CARD_RADIUS,
-                                      base_a=self.base_a)
+                                      base_a=self.base_a,
+                                      prepared=self._blurred,
+                                      furniture=self._furniture)
             self._plate_key = box
         return self._plate
+
+    @staticmethod
+    def _signature(size, state) -> tuple:
+        """Everything the CONTENT depends on, and nothing about WHERE.
+
+        A drag changes only the position, so with this the text, chips,
+        icons and composer are drawn once and pasted every frame. The
+        rows list is compared by identity because _repaint_transcript
+        rebuilds it whenever a turn changes, which is exactly when the
+        drawing has to change too.
+        """
+        return (size, id(state.get("rows")), state.get("content_h"),
+                state.get("scroll"), state.get("status"),
+                state.get("status_rgb"), state.get("hint"),
+                state.get("pinned"), state.get("drawing"),
+                state.get("strokes"), id(state.get("thumb")),
+                state.get("mode"), round(state.get("open", 0.0), 2),
+                state.get("listening"), state.get("speak_on"),
+                state.get("speak_ready"), state.get("copy_ready"))
 
     def compose(self, box, state):
         """The card as an RGB image, corners and all.
@@ -2144,14 +2217,40 @@ class _CardSurface:
         outside the radius the pixels are bit for bit what was already
         there. No chroma key, no WS_EX_LAYERED, no SetWindowRgn, and so
         none of the dark fringe a 1-bit colour key leaves behind.
+
+        Three layers: the crisp desktop, the glass, and the content. Only
+        the middle one depends on where the card is, which is what makes
+        dragging affordable.
         """
         from PIL import Image
         x0, y0, x1, y1 = box
         pw, ph = x1 - x0, y1 - y0
-        self.boxes = {}
+
+        sig = self._signature((pw, ph), state)
+        if sig != self._content_key:
+            self._content, self._content_boxes, self._content_dot =                 self._draw_content((pw, ph), state)
+            self._content_key = sig
+        self.boxes = dict(self._content_boxes)
+        self.dot_centre = self._content_dot
 
         out = self.backdrop.crop(box).convert("RGBA")
         out.alpha_composite(self.plate(box))
+        out.alpha_composite(self._content)
+        rgb = out.convert("RGB")
+        # the entry cannot be translucent, so it borrows the colour of
+        # the glass it sits on - sampled from the finished pixels
+        ex0, ey0, _ex1, _ey1 = self.boxes["entry"]
+        sx = max(0, min(rgb.width - 1, ex0 + 20))
+        sy = max(0, min(rgb.height - 1, ey0 + 14))
+        self.entry_bg = "#%02x%02x%02x" % rgb.getpixel((sx, sy))
+        return rgb
+
+    def _draw_content(self, size, state):
+        """Every painted thing except the glass, on its own clear layer."""
+        from PIL import Image
+        pw, ph = size
+        self.boxes = {}
+        out = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
 
         pad = CARD_PAD
         y = 20
@@ -2306,14 +2405,7 @@ class _CardSurface:
                      colour=INK_FAINT, single=True, rtl=False),
             (pad, ph - 30))
 
-        rgb = out.convert("RGB")
-        # the entry cannot be translucent, so it borrows the colour of the
-        # glass it sits on - sampled from the finished pixels, not guessed
-        ex0, ey0, _ex1, _ey1 = self.boxes["entry"]
-        sx = max(0, min(rgb.width - 1, ex0 + 20))
-        sy = max(0, min(rgb.height - 1, ey0 + 14))
-        self.entry_bg = "#%02x%02x%02x" % rgb.getpixel((sx, sy))
-        return rgb
+        return out, dict(self.boxes), self.dot_centre
 
 
 class AskWindow:
@@ -2392,6 +2484,7 @@ class AskWindow:
         self._wave: list[float] = []
         self._wave_items: list = []
         self._cursor = None
+        self._dirty = False
         self._strokes: list = []
         self.anchor_box = anchor_box
         # Painted now, not widgets. See _Text and _Btn.
@@ -2475,8 +2568,7 @@ class AskWindow:
         local.alpha_composite(edge)
         frozen.paste(local.convert("RGB"), (hx0, hy0))
 
-        self._frozen_clean = frozen          # without any pencil marks
-        self.backdrop = frozen.copy()
+        self.backdrop = frozen
         self._strokes: list = []             # [[(x, y), ...], ...] canvas px
 
         root = self.root
@@ -2809,6 +2901,10 @@ class AskWindow:
     def _drag_start(self, event) -> None:
         self._drag_off = (event.x_root - self._screen_xy()[0],
                           event.y_root - self._screen_xy()[1])
+        took = self.surface.prepare()
+        if took:
+            log.debug("visual qa blurred the frozen screen once in %.0f ms",
+                      took * 1000)
 
     def _drag_move(self, event) -> None:
         if self._drag_off is None:
@@ -2820,7 +2916,13 @@ class AskWindow:
         self._cx, self._cy = self._clamp(
             event.x_root - self._drag_off[0] - self._vx,
             event.y_root - self._drag_off[1] - self._vy)
-        self._repaint()
+        # Do NOT repaint here. Windows delivers motion faster than the
+        # card can be composed, so painting per event queues frames the
+        # pointer has already left behind and the window lags after it.
+        # Mark it dirty and let the pump paint once a tick, on the LATEST
+        # position - the same rule AGENTS.md sets for the lookup box,
+        # where the frame must never wait on its content.
+        self._dirty = True
 
     def _drag_end(self, _event=None) -> None:
         self._drag_off = None
@@ -3170,6 +3272,9 @@ class AskWindow:
             self._chip_x = -96.0
             self.canvas.itemconfig(self._rail, state="hidden")
         if self._step_open():
+            self._dirty = True
+        if self._dirty:
+            self._dirty = False
             self._repaint()
         if self._level_fn is not None:
             try:

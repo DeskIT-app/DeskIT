@@ -80,7 +80,7 @@ back.
 
 ## Traps we already paid for — do not re-arm them
 
-- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 326 of
+- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 327 of
   them, safe to run while dictation is live (two bugs that used to kill
   the app mid-suite are fixed; see git log). Run them BEFORE claiming done.
 - **Subprocesses under pythonw allocate consoles.** Every `subprocess.run`
@@ -181,6 +181,16 @@ back.
   gradient stretched with BILINEAR). 172 ms now. Pillow's Gaussian blur
   is a 3-pass box approximation, so a big radius costs the same as a
   small one — take the pretty one.
+- **The card is three layers, and only the middle one moves.** The
+  crisp desktop, the glass, the content. A drag changes the position and
+  nothing else, so the content layer is cached on a signature of the
+  STATE and the glass is built from a copy of the frozen screen that was
+  blurred once. Before that split a drag cost 63 ms a frame (16 fps) and
+  almost all of it was re-blurring pixels that had not changed. It is
+  16 ms now. Do not move work back into the per-frame path -- and do not
+  repaint from the motion handler either: Windows delivers motion faster
+  than the card composes, so painting per event queues frames the pointer
+  has already left behind. Mark it dirty; the pump paints the latest.
 - **Hebrew in console output** shows as garbage unless
   `$env:PYTHONIOENCODING='utf-8'` — display-only, data is fine.
 - **Branch switches restart the running instance** (~25 s of model

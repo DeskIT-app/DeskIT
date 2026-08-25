@@ -9096,6 +9096,61 @@ assert freed == 0, f"the ask thread left {freed} objects behind"
 ''')
 
 
+def test_dragging_the_card_redraws_only_what_moved() -> None:
+    """The owner called the drag "laggy and stuck", and it was: 63 ms a
+    frame, 16 fps, and essentially all of it a fresh Gaussian blur of
+    whatever the card had just moved over.
+
+    Three caches fixed it, and this asserts the two that a refactor could
+    silently undo. The CONTENT layer - text, chips, icons, composer -
+    depends on the state and not on the position, so moving the card must
+    reuse the very same object. The blurred backdrop is the whole frozen
+    screen blurred ONCE; the screen cannot change while it is frozen, so
+    a moving card is a crop of that rather than a new blur.
+
+    Timings are not asserted here - they belong to the machine, not to
+    the code. What is asserted is the thing that makes them possible.
+    """
+    _run_window_script('''
+import os
+from PIL import Image
+import visual_qa as vq
+
+img = Image.new("RGB", (400, 240), (30, 30, 30))
+win = vq.AskWindow(img, (200, 200, 600, 440), vq.Speaker(), "off",
+                   lambda *a, **k: ("", "test"))
+try:
+    win.root.update()
+    surface = win.surface
+
+    # nothing is blurred until something is about to be dragged
+    assert surface._blurred is None, "the blur was paid for before it was needed"
+    class E:
+        x_root = y_root = 300
+    win._drag_start(E)
+    assert surface._blurred is not None, "the drag did not prepare the blur"
+    assert surface._blurred.size == surface.backdrop.size
+
+    win._repaint()
+    content, boxes, plate = surface._content, surface._content_key, surface._plate_key
+    assert content is not None
+
+    win._cx += 40                      # exactly what a drag does
+    win._repaint()
+    assert surface._content is content, "the content was redrawn for a move"
+    assert surface._content_key == boxes, "the content signature moved with the card"
+    assert surface._plate_key != plate, "the glass was NOT redrawn for a move"
+
+    # and a change of state does redraw it
+    win._status("something happened")
+    win._repaint()
+    assert surface._content is not content, "the content never redraws at all"
+finally:
+    win.root.destroy()
+os._exit(0)
+''')
+
+
 def test_every_painted_control_is_clickable_where_it_is_painted() -> None:
     """The owner reported that the keyboard and the pencil did nothing.
 
