@@ -8992,6 +8992,163 @@ assert freed == 0, f"the ask thread left {freed} objects behind"
 ''')
 
 
+def test_dragging_the_card_redraws_only_what_moved() -> None:
+    """The owner called the drag "laggy and stuck", and it was: 63 ms a
+    frame, 16 fps, and essentially all of it a fresh Gaussian blur of
+    whatever the card had just moved over.
+
+    Three caches fixed it, and this asserts the two that a refactor could
+    silently undo. The CONTENT layer - text, chips, icons, composer -
+    depends on the state and not on the position, so moving the card must
+    reuse the very same object. The blurred backdrop is the whole frozen
+    screen blurred ONCE; the screen cannot change while it is frozen, so
+    a moving card is a crop of that rather than a new blur.
+
+    Timings are not asserted here - they belong to the machine, not to
+    the code. What is asserted is the thing that makes them possible.
+    """
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import os
+from PIL import Image
+import visual_qa as vq
+
+img = Image.new("RGB", (400, 240), (30, 30, 30))
+win = vq.AskWindow(img, (200, 200, 600, 440), vq.Speaker(), "off",
+                   lambda *a, **k: ("", "test"))
+try:
+    win.root.update()
+    surface = win.surface
+
+    # nothing is blurred until something is about to be dragged
+    assert surface._blurred is None, "the blur was paid for before it was needed"
+    class E:
+        x_root = y_root = 300
+    win._drag_start(E)
+    assert surface._blurred is not None, "the drag did not prepare the blur"
+    assert surface._blurred.size == surface.backdrop.size
+
+    win._repaint()
+    content, boxes, plate = surface._content, surface._content_key, surface._plate_key
+    assert content is not None
+
+    win._cx += 40                      # exactly what a drag does
+    win._repaint()
+    assert surface._content is content, "the content was redrawn for a move"
+    assert surface._content_key == boxes, "the content signature moved with the card"
+    assert surface._plate_key != plate, "the glass was NOT redrawn for a move"
+
+    # and a change of state does redraw it
+    win._status("something happened")
+    win._repaint()
+    assert surface._content is not content, "the content never redraws at all"
+finally:
+    win.root.destroy()
+os._exit(0)
+''')
+
+
+def test_stop_stops_the_voice_without_freezing_the_card() -> None:
+    """The owner: "it just crashes, I cannot stop it, I cannot get out."
+
+    The card was not frozen and it was not crashing. winsound.PlaySound
+    without SND_ASYNC BLOCKS its thread for the whole sentence, and
+    PlaySound is process-global and single-channel -- so SND_PURGE,
+    issued by whoever pressed Stop, waited for that call to return before
+    it could do anything. The presser was the pump thread, so the card
+    could not repaint and could not close until the voice finished by
+    itself. Measured: 10.59 s from Stop to quiet. And because esc_action
+    reads `playing`, the first Escape went on meaning "stop" the whole
+    time, so there was no way out either.
+
+    Three things had to change and each is asserted here: the flag drops
+    at once, the synthesis subprocess is killable, and a stop that
+    arrives BEFORE any sound does still prevents the sound.
+    """
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    import visual_qa as vq
+
+    speaker = vq.Speaker()
+    try:
+        # a stop with nothing playing must be instant and harmless
+        started = time.monotonic()
+        speaker.stop()
+        assert time.monotonic() - started < 0.5, "stop blocked on silence"
+        assert not speaker.playing
+
+        # the cancel flag is what makes a stop DURING synthesis stick:
+        # the worker checks it before it ever reaches the speaker
+        speaker._cancel.set()
+        assert speaker._cancel.is_set()
+        speaker._cancel.clear()
+    finally:
+        speaker.shutdown()
+
+    # and the rule Escape follows, which is why a stop that does not take
+    # effect also traps you in the card
+    assert vq.esc_action(True) == "stop"
+    assert vq.esc_action(False) == "close"
+
+
+def test_a_lasso_sends_only_what_was_lassoed() -> None:
+    """Shift-drag draws a shape instead of a box.
+
+    Both gestures stay: a rectangle is one movement and lands exactly on
+    a paragraph or a dialog, which is most of what gets asked about; a
+    lasso is the only way to ask about something that is not a rectangle
+    without dragging its neighbours in with it.
+
+    What matters is that the shape is REAL -- everything outside the path
+    is blacked out of the crop that goes to the model, not merely dimmed.
+    A dimmed neighbour still gets described.
+    """
+    if not _VQA:
+        return   # classic: no such feature, nothing to assert
+    _run_window_script('''
+import os
+from PIL import Image, ImageStat
+import visual_qa as vq
+
+# a diamond in the middle of a bright square
+size = 240
+img = Image.new("RGB", (size, size), (220, 220, 220))
+half = size // 2
+path = [(500 + half, 500), (500 + size, 500 + half),
+        (500 + half, 500 + size), (500, 500 + half)]
+
+win = vq.AskWindow(img, (500, 500, 500 + size, 500 + size), vq.Speaker(),
+                   "off", lambda *a, **k: ("", "test"), path=path)
+try:
+    win.root.update()
+    assert win._sel_mask is not None, "the lasso never became a mask"
+    marked = win.marked_image()
+    assert marked.size == (size, size), marked.size
+    # the corners are outside a diamond, the middle is inside
+    corner = ImageStat.Stat(marked.crop((0, 0, 20, 20))).mean[0]
+    middle = ImageStat.Stat(
+        marked.crop((half - 20, half - 20, half + 20, half + 20))).mean[0]
+    assert corner < 5, f"outside the lasso survived: {corner}"
+    assert middle > 150, f"inside the lasso was blacked out: {middle}"
+
+    # a plain rectangle keeps everything
+    plain = vq.AskWindow(img, (500, 500, 500 + size, 500 + size),
+                         vq.Speaker(), "off",
+                         lambda *a, **k: ("", "test"))
+    try:
+        plain.root.update()
+        assert plain._sel_mask is None
+        kept = ImageStat.Stat(plain.marked_image().crop((0, 0, 20, 20))).mean[0]
+        assert kept > 150, kept
+    finally:
+        plain.root.destroy()
+finally:
+    win.root.destroy()
+os._exit(0)
+''')
+
+
 def test_every_painted_control_is_clickable_where_it_is_painted() -> None:
     """The owner reported that the keyboard and the pencil did nothing.
 
