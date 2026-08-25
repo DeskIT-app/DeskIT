@@ -1166,20 +1166,35 @@ dictation is running.
 
 ## Asking about the screen (`ctrl+f10`)
 
-Tap `ctrl+f10` and every monitor dims. Drag a rectangle over anything — a
-paragraph in a browser, an error dialog, a chart — and a small window opens
-showing **what was captured** (a thumbnail, so you always know what you are
-asking about) above a question box. Hold **Right Ctrl and speak the
-question** — the same Whisper path as dictation, routed into the box
-instead of pasted at the cursor — or just type it and press Enter. The
-screenshot goes, as bytes in memory, with your question to a vision model,
-and the Hebrew answer lands under it with **Copy** and **Speak** buttons.
-A follow-up question in the same window reuses the same screenshot plus
-the Q&A so far — measured, Ollama caches the prompt prefix and answers a
-follow-up turn in ~0.35 s against ~4 s for the first. Esc closes, and
-closing stops any speaking.
+Tap `ctrl+f10`. The screen freezes and dims; drag a rectangle over anything
+— a paragraph in a browser, an error dialog, a chart — and **the rectangle
+lights back up to full brightness** while everything around it stays dark,
+with its size in pixels beside it. Let go and a small **floating card**
+opens next to it, holding a thumbnail of exactly what was captured.
 
-It is the lookup key, but for pixels instead of selected text.
+Now talk to it. Hold **Right Ctrl**, ask your question out loud, and let
+go: the question sends itself — no Enter — and the Hebrew answer **streams
+in**, first words on screen about a quarter of a second later. Or type it
+and press Enter, which behaves identically.
+
+**It is a conversation, and you may interrupt it.** Start talking again
+while it is still writing and it does not queue your words or ignore them:
+the answer in flight is abandoned mid-token, what you just said is folded
+into what you already asked, and the whole thing is re-asked as one
+question — so the reply covers everything you have said so far. Talking
+also stops it reading the previous answer at you. Press `ctrl+f10` again
+to point the same card at a different part of the screen (that starts a
+fresh conversation, because the old pixels are gone). Follow-ups stay in
+the card against the same screenshot and cost about a second.
+
+The card is a floating pane, not a dialog: no title bar, rounded, slightly
+see-through until you put the pointer on it, dragged by its top strip,
+resized from its bottom-right corner, and it grows as the conversation
+does. The dot at the top right pins it above other windows; the X and
+`Esc` close it — and the first `Esc` stops the speaking rather than
+closing, so you can shut the voice up without losing the thread.
+
+It is the lookup key, but for pixels, and you can talk over it.
 
 ### The screenshot is the most sensitive thing this app has ever handled
 
@@ -1197,13 +1212,14 @@ local-preferred**:
   mean "cloud second" — it means the cloud backends are **never built**,
   enforced in the chain builder and asserted by a test against the built
   list, not against the flag. With the gate shut and Ollama down, the
-  window says so; it does not helpfully fall through to the cloud on its
+  card says so; it does not helpfully fall through to the cloud on its
   own initiative. Flip it to true and the chain becomes ollama → groq →
   gemini-pool.
 - The screenshot is **never written to disk**, never logged, never cached
   — the screen changes between presses, so unlike `lookup_cache.json`
-  there is nothing worth keeping — and it dies with its window. The
-  question text is a dictation like any other and lands in
+  there is nothing worth keeping — and it dies with its card. Even the
+  base64 it is encoded into is held by the open card and nothing longer.
+  The question text is a dictation like any other and lands in
   `transcripts.log`; the answer is logged at debug level with backend and
   latency.
 
@@ -1211,43 +1227,66 @@ local-preferred**:
 
 | step | time |
 |---|---|
-| grab the rectangle (`ImageGrab`, both monitors) | 47–57 ms whole virtual screen |
-| downscale 4480×1440 → long side 1344 + JPEG | ~63 ms, ~105 KB |
-| gemma3:12b vision, warm | 2.2–2.4 s chain-only, **3.9 s** question→answer end to end |
-| gemma3:12b vision, first image after idle | ~23 s **once** — the vision projector loads; `warm_up = true` pays it at startup |
+| tap → the overlay is up | **125 ms** (freeze the screen 78 ms + dim it 16 ms + one PhotoImage of the whole 4480×1440 virtual screen 31 ms) |
+| the bright rectangle, repainted per drag event | under 1 ms at 900×450 — no throttle needed |
+| downscale 4480×1440 → long side 1344 + JPEG | ~63 ms, ~105 KB; re-encoded **once** per screenshot, not once per question |
+| Right Ctrl released → **first text on screen** | **0.24–0.27 s** |
+| Right Ctrl released → answer complete | 2.16–2.36 s (of which the model wrote for 1.39–1.42 s) |
+| repaints while streaming | 30–34 per answer out of ~141 tokens |
+| a follow-up on the same screenshot | ~1.45 s |
+| gemma3:12b vision, first image after idle | ~23 s **once** — the vision projector loads; `warmup = true` pays it at startup |
 | Groq `qwen/qwen3.6-27b` (upload on) | 0.5 s, but ~830 prompt tokens/image against an 8,000 tokens/min cap — 1–2 screenshots a minute before 429, so it is the fallback, never the primary |
 | Gemini flash-lite (upload on) | 2.2 s, from the shared 20 req/day/model pool F9/F7 drink from |
 
+The gap between those two Right-Ctrl rows is the whole argument for
+streaming: the wait was never ours to shorten, only to fill. Only the
+LOCAL backend streams — Groq answers in half a second and Gemini in two,
+so there is no wait there to fill, the same split the lookup key made.
+Streaming costs one thing and it is paid by hand: the `urllib` timeout is
+per socket operation, so a token every 24 ms means no recv ever waits and
+the timeout stops bounding anything. The reader keeps its own deadline.
+
 Small selections are faster than big ones precisely because
-`max_side_px = 1344` keeps a full-screen grab bounded; a 900×450 region
-answers in ~3.9 s warm. Questions deliberately **skip the repair pass**:
-a vision model is robust to one misheard word, and the question path
-stays free, fast and quota-neutral.
+`max_side_px = 1344` keeps a full-screen grab bounded. Questions
+deliberately **skip the repair pass**: a vision model is robust to one
+misheard word, and the question path stays free, fast and quota-neutral.
 
 ### Speaking the answer
 
 `speak = "button"` (the default) puts a Speak control on every answer —
-press again to stop. `"auto"` reads every answer aloud as it lands;
+press again, or press `Esc`, to stop. `"auto"` reads every answer aloud as
+it lands, which with auto-send is the closest this gets to a phone call;
 `"off"` hides the control. The voice is **Microsoft Asaf (he-IL)**, spoken
 through Windows' own WinRT speech synthesizer — the legacy SAPI API cannot
 see the OneCore Hebrew voices at all — synthesized by a PowerShell
 subprocess into a temp WAV that is deleted the moment playback finishes.
-Synthesis measured 30 ms for a 5.9-second clip.
+Synthesis measured 30 ms for a 5.9-second clip. Whatever it is reading
+stops the moment you start talking.
 
 ### Check it by hand
 
-1. **A browser paragraph** — drag over it, ask "מה כתוב כאן?" by voice. The
-   answer must quote the paragraph, right-to-left, full stop on the left.
-2. **The thumbnail is the contract** — it must show exactly the rectangle
-   you dragged, on whichever monitor you dragged it.
+1. **A browser paragraph** — drag over it, ask "מה כתוב כאן?" by voice, and
+   do not touch the keyboard. The answer must arrive on its own, quote the
+   paragraph, and read right-to-left with the full stop on the left.
+2. **The selection must be the bright part.** Everything else is dimmed,
+   the size in pixels rides the corner, and the thumbnail that follows
+   shows exactly the rectangle you dragged, on whichever monitor.
 3. **Esc mid-drag cancels with nothing on screen**; so does a click
    without a drag.
-4. **Dictate while it is open** — Right Ctrl records (the dot goes red),
-   and the transcript lands in the question box, **not** in the app
-   underneath. Nothing may be pasted behind that window.
-5. **Speak, then Esc** — the speaking stops with the window.
-6. **With `allow_screenshot_upload = false`, stop Ollama and ask** — the
-   window must say it failed, and no cloud request may appear anywhere.
+4. **Talk over it.** Ask something long, and while the answer is still
+   writing, hold Right Ctrl and say something else. The half-answer must
+   vanish, the two sentences must appear as ONE question, and the reply
+   must address both. The abandoned answer must never reappear.
+5. **Dictate while it is open** — the transcript lands in the card, **not**
+   in the app underneath. Nothing may be pasted behind it.
+6. **Press `ctrl+f10` again with the card open** — the selector comes back,
+   the card takes the new pixels, and the old conversation is gone.
+7. **Drag it by the strip, resize it by the corner**, and ask something
+   long enough to need the room. The card must grow, then scroll.
+8. **Speak, then Esc, then Esc** — the first stops the voice, the second
+   closes the card.
+9. **With `allow_screenshot_upload = false`, stop Ollama and ask** — the
+   card must say it failed, and no cloud request may appear anywhere.
 
 ## Dictating from the phone
 

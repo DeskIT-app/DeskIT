@@ -795,6 +795,15 @@ class App:
         self.recorder.begin()   # also restores the cap a latch may have lifted
         self._cap, self._latched = self.cfg.max_seconds, False
         self._set_state("recording")
+        # An ask-the-screen card that is reading an answer aloud stops the
+        # moment you start talking over it — that is what makes the thing
+        # feel like a conversation rather than a form. Read off the
+        # ALREADY-BUILT controller and never through the self.vqa property:
+        # this runs inside the keyboard hook, and classic has no visual_qa
+        # module to import even if something asked it to.
+        vqa = getattr(self, "_vqa", None)
+        if vqa is not None and vqa.sink_active:
+            vqa.notify_recording()
         beep("start")
         log.info("recording %s... (release to transcribe%s)",
                  language_label(language, shout=True),
@@ -937,8 +946,15 @@ class App:
         freeze every key on the machine.
         """
         if self.vqa.busy:
+            # A card is already open: the press means "ask about something
+            # ELSE", not "do nothing". It re-runs the selector and points
+            # the same card at the new pixels; only a press while the
+            # selector itself is on screen has nothing to do.
+            if self.vqa.reselect():
+                log.info("select the new part of the screen to ask about")
+                return
             self._cue_once("noop", "vqa-busy")
-            log.info("a screen question is already open — ignoring the "
+            log.info("the screen selector is already up — ignoring the "
                      "extra press")
             return
         if self.vqa.begin_selection():

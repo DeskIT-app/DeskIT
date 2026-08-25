@@ -98,6 +98,21 @@ back.
 - **Model catalogs drift.** `llama-3.3-70b-versatile` vanished from Groq;
   Cerebras' free tier vanished entirely. Before trusting a model id or a
   pricing page, list `/v1/models` and make one real call.
+- **A disabled Tk widget repaints itself in SYSTEM colours.** `bg` is
+  only the NORMAL state: disable an Entry and Tk falls back to
+  `disabledbackground`, which defaults to the platform grey, so a dark
+  field went white the instant a question was in flight. Found in a live
+  screenshot, not in a test — nothing asserts colour. Set
+  `disabledbackground` / `disabledforeground` / `readonlybackground`
+  whenever you set `bg` on something that can be disabled, and prefer not
+  disabling it at all (`visual_qa.py`'s entry stays live so that typing
+  over an answer supersedes it the way speaking over one does).
+- **DWM does not round a borderless window.**
+  `DWMWA_WINDOW_CORNER_PREFERENCE` rounds the NON-CLIENT area, and an
+  `overrideredirect` window has none. `SetWindowRgn` +
+  `CreateRoundRectRgn` is the one that works — popup.py already keeps it
+  as its pre-Windows-11 fallback — and the region has to be re-cut after
+  every resize, so it lives at the end of `_fit_window`.
 - **WinRT TTS from PowerShell has two teeth.** (1)
   `SynthesizeTextToStreamAsync` returns `IAsyncOperation<SpeechSynthesisStream>`
   — awaiting it as `<IRandomAccessStream>` (the folk recipe) dies with

@@ -272,6 +272,14 @@ class VisualQAConfig:
     num_predict: int = 400
     speak: str = "button"
     voice: str = "Microsoft Asaf"
+    # A spoken question sends itself the moment the transcript lands, and
+    # speaking again over an answer supersedes it — the conversation is
+    # meant to run by voice alone. false restores speak-then-Enter.
+    auto_send: bool = True
+    # The floating card's opacity. Below ~0.85 ClearType over a
+    # translucent surface stops being crisp (popup.py's measurement);
+    # the card goes fully opaque while the pointer is over it anyway.
+    window_alpha: float = 0.93
     warmup: bool = True
     ollama_timeout_s: int = 120
     cloud_timeout_s: int = 30
@@ -851,6 +859,10 @@ def load(path: Path) -> Config:
                                     VisualQAConfig.speak)).strip().lower(),
             voice=str(visual_qa.get("voice",
                                     VisualQAConfig.voice)).strip(),
+            auto_send=bool(visual_qa.get("auto_send",
+                                         VisualQAConfig.auto_send)),
+            window_alpha=float(visual_qa.get(
+                "window_alpha", VisualQAConfig.window_alpha)),
             warmup=bool(visual_qa.get("warmup",
                                       VisualQAConfig.warmup)),
             ollama_timeout_s=int(visual_qa.get(
@@ -984,6 +996,10 @@ def load(path: Path) -> Config:
     if cfg.visual_qa.ollama_timeout_s <= 0 \
             or cfg.visual_qa.cloud_timeout_s <= 0:
         raise ConfigError("visual_qa timeouts must be positive")
+    if not 0.30 <= cfg.visual_qa.window_alpha <= 1.0:
+        raise ConfigError("visual_qa.window_alpha must be between 0.30 and "
+                          "1.0 — under a third the answer stops being "
+                          "readable against whatever is behind it")
     if cfg.vocab.max_terms < 0:
         raise ConfigError("vocab.max_terms must be >= 0 (0 disables hotwords)")
     if cfg.vocab.keep_audio < 0:

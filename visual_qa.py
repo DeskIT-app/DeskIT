@@ -1,14 +1,24 @@
-"""Ask-the-screen: select pixels, ask about them by voice or keyboard,
-get a Hebrew answer you can read aloud.
+"""Ask-the-screen: select pixels, then TALK to them.
 
-ctrl+f10 dims every monitor, you drag a rectangle over anything on screen
-— a paragraph in a browser, an error dialog, a chart — and a small window
-opens showing WHAT was captured plus a question box. Hold Right Ctrl and
-speak the question (the normal Whisper path, routed into the box instead
-of pasted at the cursor) or just type it. The screenshot goes — as bytes
-in memory, never to disk — with your question to a vision model, and the
-Hebrew answer lands in the same window with Copy and Speak controls.
-Think "lookup key, but for pixels instead of selected text".
+ctrl+f10 freezes the screen and dims it, you drag a rectangle over
+anything — a paragraph in a browser, an error dialog, a chart — and the
+rectangle lights back up to full brightness while everything around it
+stays dark. Let go and a small floating card opens beside it, holding a
+thumbnail of what was captured. Hold Right Ctrl, ask your question out
+loud, and let go: the question sends itself. The answer streams into the
+card in Hebrew, first words on screen in about a quarter of a second, and
+a button reads it aloud.
+
+IT IS A CONVERSATION, and that word is doing work here. Speaking again
+while the model is still writing does not queue a second question and
+does not get ignored: the answer in flight is abandoned mid-token, what
+you just said is folded into what you already asked, and the whole thing
+is re-asked as one question — so the reply covers everything you have
+said so far. Talking over it also stops it reading the previous answer at
+you. Follow-ups stay in the same card, against the same screenshot, and
+Ollama's prompt-prefix cache makes them cost about a second.
+
+Think "the lookup key, but for pixels, and you can interrupt it".
 
 MEASURED ON THIS MACHINE, 2026-08-25 (all of it live, not catalog)
 ------------------------------------------------------------------
@@ -47,19 +57,29 @@ MEASURED ON THIS MACHINE, 2026-08-25 (all of it live, not catalog)
   synthesizing a 5.9 s clip took 30 ms; winsound plays it asynchronously
   in 3 ms and SND_PURGE stops it in 5 ms.
 
-END-TO-END, the real app, this machine, 2026-08-25 (SendInput-driven:
-hotkey flow -> drag -> question -> Enter -> answer rendered):
-- Typed question with the vision projector COLD (the startup warm-up was
-  still loading it behind the question): 22.3 s mouse-up -> answer, of
-  which ~22 s was the one-time projector load finishing 3 s before the
-  answer landed.
-- Warm chain alone, same region, back-to-back asks: 2.24 s and 2.39 s.
-- Voice-routed question (the exact App diversion call, entry -> Enter):
-  answered in 3.9 s warm — inside the <=4 s target.
-- The projector goes cold again after ~5 minutes of Ollama idling
+SELECTOR, measured 2026-08-25 with the real overlay on the real desktop:
+- Freeze the screen 78 ms + darken it with a per-channel LUT 16 ms +
+  build the PhotoImage for the whole 4480x1440 virtual screen 31 ms =
+  125 ms from tap to a usable overlay. That is what buys an OPAQUE
+  overlay: crisp hint text, a genuinely bright selection, and a capture
+  that is not racing our own dimming (see _select_region).
+- The bright crop repainted on every drag event: under a millisecond at
+  900x450. No throttle was needed; the first design assumed one.
+
+END-TO-END, the real card against the real model, 2026-08-25, warm, on a
+900x450 region of a browser window:
+- Right Ctrl released -> answer complete: 2.16 s, 2.25 s, 2.36 s.
+- Right Ctrl released -> FIRST TEXT ON SCREEN: 0.24-0.27 s, against
+  1.39-1.42 s for the whole answer. That ratio is the entire argument for
+  streaming: the wait was never ours to shorten, only to fill.
+- Repaints per answer: 30-34, out of ~141 tokens — should_repaint()
+  holding the 80 ms floor except where a completed line jumped it.
+- A follow-up turn on the same screenshot: 1.45 s.
+- The vision projector still goes cold after ~5 minutes of Ollama idling
   ([polish] sends no keep_alive), and the first question after that pays
-  ~23-24 s ONCE; warm_up = true pays it at startup instead. Every other
-  key in this app makes the same trade with the same model.
+  ~23 s ONCE; warm_up = true pays it at startup instead (measured 1.0 s
+  when the model was already resident). Every other key in this app makes
+  the same trade with the same model.
 
 THE TRAP THE TTS COST SIX PROBES TO FIND, recorded so it stays found:
 `SynthesizeTextToStreamAsync` returns IAsyncOperation<SpeechSynthesisStream>.
@@ -108,6 +128,20 @@ rambling model cannot hang the window, and the same DATA-rule fencing the
 other prompts carry: the screenshot may contain text addressed to an
 assistant, and the model must describe, not obey.
 
+HOW BARGE-IN IS MADE SAFE
+--------------------------
+A generation counter, not a flag. When the user speaks over an answer the
+new question goes out immediately, and the OLD answer is still on its way
+— it may be mid-stream (the reader checks a cancel Event per line and
+raises Cancelled, which bounds the abort at one token) or it may be a
+cloud backend that cannot be interrupted at all and will simply arrive.
+Either way it arrives AFTER the replacement was sent, so a flag saying
+"busy" cannot tell the two apart. Every question carries the generation
+it was sent under, and anything landing with a stale one is dropped: a
+late answer cannot overwrite a newer one, and Cancelled is re-raised past
+Chain's except clause so a superseded question is never re-asked of the
+NEXT backend with a screenshot attached.
+
 WHY TK, AND WHY ONE THREAD FOR BOTH WINDOWS
 --------------------------------------------
 The selector and the ask window are INTERACTIVE, unlike overlay.py's
@@ -127,9 +161,18 @@ LTR base direction — a mixed Hebrew answer with a Latin term in the
 middle is the COMMON case here, which is exactly the case Tk scrambles.
 The renderer is local to this module rather than ui.draw_text because a
 PhotoImage belongs to the interpreter that made it (ui.py's own warning)
-and this module builds a fresh interpreter per invocation.
+and this module builds a fresh interpreter per invocation. The same rule
+is why nothing here calls ui.rounded() or ui.Button() either — ui.py
+grew rounded_pil(), which returns PIXELS, and every bitmap in this module
+is wrapped with master= its own root. There is a test that greps for it.
 
-Chrome stays English; the ANSWER is the only Hebrew in the window.
+Chrome stays English. The ANSWER and the QUESTION are Hebrew, and both
+are drawn as bitmaps: the question is echoed into the transcript the
+instant it is sent, because Tk's Entry has no bidi and a dictated
+question mixing Hebrew with a Latin term is laid out backwards inside the
+box it passed through. That cannot be fixed in the box — AGENTS.md says
+so and popup.py proved it — so the box became a place text passes
+through, and the line the user reads is the bitmap.
 """
 from __future__ import annotations
 
@@ -157,9 +200,45 @@ GROQ_MAX_SIDE = 896
 GROQ_JPEG_QUALITY = 80
 JPEG_QUALITY = 85
 
-# The ask window's thumbnail and answer column.
-THUMB_WIDTH = 200
+# The ask window's thumbnail and transcript column.
+THUMB_MAX_W = 190
+THUMB_MAX_H = 110
 ANSWER_PT = 12
+QUESTION_PT = 10
+# The card opens at CARD_INIT_W and can be dragged between the other two.
+# 460 rather than the 380 floor because that is where the answer stops
+# wrapping every second line: measured on the live card against a real
+# gemma3 answer, 380 broke "Error: connection refused (ECONNREFUSED)"
+# across three lines and 460 holds it on one.
+CARD_MIN_W, CARD_INIT_W, CARD_MAX_W = 380, 460, 760
+FLASH_MS = 1400          # popup.py's confirmation dwell, same number
+
+# The palette is ui.py's, imported rather than re-typed: a second copy of
+# nine hex literals is a second copy that drifts. ui.py is a pure-drawing
+# module here — NONE of its PhotoImage-returning helpers may be called
+# from this thread (see the note on rounded_slab below), only its colours,
+# faces and the one PIL-level function that returns an Image.
+try:
+    import ui as _ui
+    PANE, CARD, CARD_HI = _ui.PANE, _ui.CARD, _ui.CARD_HI
+    LINE, FG, DIM, FAINT = _ui.LINE, _ui.FG, _ui.DIM, _ui.FAINT
+    ACCENT, ACCENT_HI, ACCENT_DOWN = _ui.ACCENT, _ui.ACCENT_HI, _ui.ACCENT_DOWN
+    ACCENT_TEXT, AMBER, GREEN = _ui.ACCENT_TEXT, _ui.AMBER, _ui.GREEN
+    EDGE, EDGE_HI, EDGE_DOWN, STROKE = (_ui.EDGE, _ui.EDGE_HI,
+                                        _ui.EDGE_DOWN, _ui.STROKE)
+except Exception:                       # ui.py absent: the window still works
+    PANE, CARD, CARD_HI, LINE = "#10131a", "#161b25", "#1b2130", "#232a36"
+    FG, DIM, FAINT = "#e8ecf4", "#8b97ad", "#5d6779"
+    ACCENT, ACCENT_HI, ACCENT_DOWN = "#2d6cdf", "#3d7cef", "#2559bd"
+    ACCENT_TEXT, AMBER, GREEN = "#8fb2f5", "#e0a32b", "#33b877"
+    EDGE, EDGE_HI, EDGE_DOWN, STROKE = "#1e2634", "#273040", "#1a212d", "#2a3242"
+
+# The selector's own two colours. DIM_FACTOR is a per-channel multiply on
+# a screenshot we took ourselves, not a translucent window: the overlay is
+# OPAQUE, so its hint text and readout stay ClearType-crisp, and the
+# rectangle you drag shows the UNDIMMED pixels underneath it.
+DIM_FACTOR = 0.38
+SELECT_BG = "#05070b"
 
 SYSTEM_PROMPT = (
     "You answer questions about a screenshot the user selected on their "
@@ -183,6 +262,16 @@ _TINY_PNG_B64 = (
 
 class QAError(Exception):
     """Every vision backend refused; str(e) names what to check."""
+
+
+class Cancelled(Exception):
+    """The question in flight was superseded — the user spoke again.
+
+    Deliberately NOT a QAError: a QAError means "this backend refused, try
+    the next one", and falling through to Groq with a question the user has
+    already replaced is the one thing barge-in must never do. Chain.ask
+    re-raises this past its own except clause.
+    """
 
 
 # ------------------------------------------------------------ pure helpers
@@ -263,6 +352,91 @@ def work_area_near(x: int, y: int) -> tuple[int, int, int, int]:
     return (rc.left, rc.top, rc.right, rc.bottom)
 
 
+def thumb_size(width: int, height: int, max_w: int = THUMB_MAX_W,
+               max_h: int = THUMB_MAX_H) -> tuple[int, int]:
+    """The thumbnail's size: BOTH sides capped, and never upscaled.
+
+    Three bugs in one arithmetic. Capping the width alone let a tall
+    narrow selection (300x2000 — a whole sidebar) become a 200x1333
+    thumbnail that decided the window's height before the answer existed;
+    and scaling a small grab UP to the cap handed back a blurred version
+    of pixels the user could already see sharply.
+    """
+    width, height = max(1, int(width)), max(1, int(height))
+    k = min(1.0, max_w / width, max_h / height)
+    return max(1, round(width * k)), max(1, round(height * k))
+
+
+def selection_readout(bbox: tuple[int, int, int, int]) -> str:
+    """"512 x 288" for the corner of the rectangle being dragged.
+
+    The multiplication sign is U+00D7, not the letter x: at 9 pt on a
+    dimmed screenshot the letter reads as part of a word.
+    """
+    left, top, right, bottom = bbox
+    return f"{max(0, right - left)} × {max(0, bottom - top)}"
+
+
+def esc_action(speaking: bool) -> str:
+    """What Escape means right now: "stop" the speech, or "close".
+
+    One key, two jobs, in the order a person wants them — the first Esc
+    silences an answer being read aloud, the second closes the card. A
+    single Esc that did both meant you could not shut the voice up without
+    losing the conversation.
+    """
+    return "stop" if speaking else "close"
+
+
+def plan_placement(anchor_box: tuple[int, int, int, int],
+                   work: tuple[int, int, int, int],
+                   size: tuple[int, int],
+                   last_pos: tuple[int, int] | None = None
+                   ) -> tuple[int, int]:
+    """Where the card goes: where you last dragged it, else beside the
+    selection, and always inside the work area of a REAL monitor.
+
+    The last position wins whenever it still fits, because a card the user
+    has parked somewhere is a card they chose the place of; a new
+    selection is not a reason to move it back. It is rejected when the
+    monitor it was on is gone or the card would hang off the edge —
+    clamping into 0..SM_CXVIRTUALSCREEN instead teleports a window on the
+    left monitor onto the primary (popup.py measured that; this machine's
+    second screen starts at x = -1920).
+    """
+    wd, ht = size
+    wl, wt, wr, wb = work
+    if last_pos is not None:
+        x, y = last_pos
+        if wl <= x and wt <= y and x + wd <= wr and y + ht <= wb:
+            return int(x), int(y)
+    left, top, _right, bottom = anchor_box
+    x, y = left, bottom + 18
+    if y + ht > wb:                       # no room below: flip above
+        y = max(wt, top - ht - 18)
+    x = max(wl + 8, min(x, wr - wd - 8))
+    y = max(wt + 8, min(y, wb - ht - 8))
+    return int(x), int(y)
+
+
+def should_repaint(now: float, last_paint_at: float, so_far: str,
+                   painted: int) -> bool:
+    """Whether a streamed answer has earned a repaint yet.
+
+    The rule the lookup box already runs on, and it is a MEASURED one:
+    tokens land ~24 ms apart, and a window resizing forty times a second
+    reads as jitter rather than as speed. So: a completed line jumps the
+    queue (that is a paragraph break arriving, which the reader wants
+    immediately), otherwise 80 ms is the floor, and text that has not
+    grown is never repainted at all.
+    """
+    if len(so_far) <= painted:
+        return False
+    if "\n" in so_far[painted:]:
+        return True
+    return (now - last_paint_at) >= 0.080
+
+
 # ---------------------------------------------------------------- prompts
 
 def _he_rtl(_text: str) -> bool:
@@ -324,14 +498,65 @@ class OllamaVision:
             messages.append({"role": "user", "content": question})
         return messages
 
-    def ask(self, image_b64: str, question: str,
-            history: list[dict]) -> str:
+    def _read(self, response, on_chunk, cancel) -> str:
+        """The reply, whole or a line at a time — the same string either
+        way. Modelled on translate.py::OllamaTranslator._read, including
+        the part that looks like belt and braces and is not.
+
+        Called from INSIDE the caller's `with` and `try` on purpose: a
+        stream that dies half way has to fail the way a whole request
+        does, or the window keeps half an answer as though it were the
+        answer.
+
+        THE DEADLINE IS WHAT STREAMING COSTS. urllib's timeout is per
+        socket operation; unstreamed it bounds the request only by
+        accident, because the server says nothing for the whole
+        generation and the first recv times out. Streamed, a token lands
+        every ~24 ms, no recv ever waits, and the timeout stops meaning
+        anything (translate.py measured 8.0 s of streaming under
+        timeout=3 without a single raise). num_predict is the second
+        fence and it CAN live here, unlike over there where the request
+        is shared with three other keys.
+
+        `cancel` is barge-in: the user spoke again, so the answer being
+        written is already worthless. Checked per line, which bounds the
+        abort at one token (~24 ms).
+        """
+        if on_chunk is None:
+            body = json.loads(response.read().decode("utf-8"))
+            return ((body.get("message") or {}).get("content") or "")
+        deadline = time.monotonic() + self._timeout
+        parts: list[str] = []
+        for line in response:
+            if cancel is not None and cancel.is_set():
+                raise Cancelled("superseded while the model was writing")
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"the model was still writing after {self._timeout}s "
+                    f"({len(''.join(parts))} characters so far)")
+            if not line.strip():
+                continue
+            event = json.loads(line.decode("utf-8"))
+            piece = (event.get("message") or {}).get("content", "")
+            if not piece:
+                continue
+            parts.append(piece)
+            try:
+                on_chunk("".join(parts))
+            except Exception:
+                # A box that cannot repaint must not cost the reply it was
+                # going to paint. Log and keep reading.
+                log.exception("visual qa on_chunk failed")
+        return "".join(parts)
+
+    def ask(self, image_b64: str, question: str, history: list[dict],
+            on_chunk=None, cancel=None) -> str:
         import urllib.error
         import urllib.request
 
         payload = {
             "model": self._model,
-            "stream": False,
+            "stream": on_chunk is not None,
             "options": {"temperature": 0.2,
                         "num_predict": self._num_predict},
             "messages": self._messages(image_b64, question, history),
@@ -344,7 +569,9 @@ class OllamaVision:
         try:
             with urllib.request.urlopen(request,
                                         timeout=self._timeout) as response:
-                body = json.loads(response.read().decode("utf-8"))
+                text = self._read(response, on_chunk, cancel)
+        except Cancelled:
+            raise
         except urllib.error.HTTPError as e:
             detail = ""
             try:
@@ -363,7 +590,7 @@ class OllamaVision:
             raise QAError(f"Ollama request failed: {e}") from e
         log.debug("visual qa via ollama in %.2fs",
                   time.monotonic() - started)
-        return ((body.get("message") or {}).get("content") or "").strip()
+        return text.strip()
 
     def warm(self) -> float:
         """One tiny-image, num_predict=1 call: loads the vision projector.
@@ -477,7 +704,11 @@ class GroqVision:
             "messages": self._messages(image_b64, question, history),
         }
 
-    def ask(self, image_b64: str, question: str, history: list[dict]) -> str:
+    def ask(self, image_b64: str, question: str, history: list[dict],
+            on_chunk=None, cancel=None) -> str:
+        # on_chunk is accepted and ignored: Groq answers in ~0.5 s, so
+        # there is no wait to fill, and its wire shape is not Ollama's.
+        # Only the local backend streams — the same split lookup.py made.
         import urllib.error
         import urllib.request
 
@@ -582,7 +813,8 @@ class GeminiVision:
         return gemini_pool.rotate(self._models, self._cooldown,
                                   self._strikes, attempt, what="visual qa")
 
-    def ask(self, image_b64: str, question: str, history: list[dict]) -> str:
+    def ask(self, image_b64: str, question: str, history: list[dict],
+            on_chunk=None, cancel=None) -> str:
         out = self._one(self._models[0], image_b64, question, history)
         return out
 
@@ -641,26 +873,51 @@ class Chain:
                          str(e).splitlines()[0][:160])
                 continue
 
-    def _encode_for(self, name: str, image) -> str:
-        """The image, downscaled and base64-encoded FOR THAT BACKEND."""
+    def _encode_for(self, name: str, image, cache: dict | None = None) -> str:
+        """The image, downscaled and base64-encoded FOR THAT BACKEND.
+
+        `cache` belongs to the CALLER — the open card owns one, keyed by
+        backend and cap, and drops it when it re-selects or closes. A
+        follow-up question asks about the same pixels, and re-doing the
+        downscale plus the base64 costs ~60 ms and ~143 K characters of
+        work for a byte-identical string. Keeping that cache here instead
+        would mean a Chain (which outlives every window) holding a
+        screenshot, which is the one thing this module promises not to do.
+        """
+        max_side = (GROQ_MAX_SIDE if name == "groq"
+                    else self._cfg.visual_qa.max_side_px)
+        key = (name, max_side)
+        if cache is not None and key in cache:
+            return cache[key]
         if name == "groq":
             blob = encode_jpeg(image, GROQ_MAX_SIDE, GROQ_JPEG_QUALITY)
         else:
-            blob = encode_jpeg(image, self._cfg.visual_qa.max_side_px)
-        return base64.b64encode(blob).decode("ascii")
+            blob = encode_jpeg(image, max_side)
+        encoded = base64.b64encode(blob).decode("ascii")
+        if cache is not None:
+            cache[key] = encoded
+        return encoded
 
-    def ask(self, image, question: str,
-            history: list[dict]) -> tuple[str, str]:
+    def ask(self, image, question: str, history: list[dict],
+            on_chunk=None, cancel=None,
+            encoded_cache: dict | None = None) -> tuple[str, str]:
         """(answer, backend_name). Raises QAError when every backend
         refused — including the honest case: gate shut, Ollama down."""
         errors: list[str] = []
         for backend in self._backends():
             try:
-                answer = backend.ask(self._encode_for(backend.name, image),
-                                     question, history)
+                answer = backend.ask(self._encode_for(backend.name, image,
+                                                      encoded_cache),
+                                     question, history, on_chunk=on_chunk,
+                                     cancel=cancel)
                 if answer:
                     return answer, backend.name
                 errors.append(f"{backend.name}: empty reply")
+            except Cancelled:
+                # Not a refusal. The question this was answering no longer
+                # exists, so trying the NEXT backend with it would spend a
+                # cloud request on text the user has already replaced.
+                raise
             except Exception as e:      # noqa: BLE001 — reported below
                 message = str(e).splitlines()[0][:160]
                 errors.append(f"{backend.name}: {message}")
@@ -830,8 +1087,8 @@ DT_NOPREFIX = 0x0800
 
 
 def render_answer(text: str, width: int, *, pt: int = ANSWER_PT,
-                  face: str | None = None, colour: str = "#e8ecf4",
-                  bg: str = "#10131a", master=None):
+                  face: str | None = None, colour: str = FG,
+                  bg: str = PANE, master=None):
     """Hebrew/mixed text -> (Tk_PhotoImage, height_px), drawn by Windows.
 
     DrawTextW + DT_RTLREADING is the exact path popup.py validated
@@ -845,7 +1102,13 @@ def render_answer(text: str, width: int, *, pt: int = ANSWER_PT,
     """
     import tkinter as tk
 
-    text = " ".join(text.split()) or " "
+    # Runs of spaces collapse, but LINE BREAKS survive: a model asked for
+    # "a few lines" writes a few lines, and squashing them into one
+    # paragraph (which v1 did) threw away the only structure the answer
+    # had. DT_WORDBREAK honours the \n that is left.
+    text = "\n".join(" ".join(line.split())
+                     for line in (text or "").splitlines()).strip("\n")
+    text = text or " "
     face = face or _pick_face()
     user, gdi = ctypes.windll.user32, ctypes.windll.gdi32
     hdc_screen = user.GetDC(0)
@@ -908,80 +1171,333 @@ def render_answer(text: str, width: int, *, pt: int = ANSWER_PT,
 _TICK_S = 0.015          # overlay.py's pump period
 
 
-def _select_region(cancel: threading.Event) -> tuple[int, int, int, int] | None:
-    """Fullscreen dimmed overlay; drag a rectangle; Esc or click cancels.
+def _rounded_pil(width: int, height: int, radius: int, fill: str, bg: str,
+                 border: str | None = None):
+    """A rounded rectangle as a PIL image — ui.py's drawing, no PhotoImage.
 
-    Runs ON the visual-qa thread and blocks until a choice is made. The
-    overlay covers the WHOLE virtual screen (both monitors — Tk's own
-    screen size is the primary only, see virtual_screen()). On mouse-up
-    the overlay is withdrawn and repainted away BEFORE the grab: capture
-    first would photograph our own dimming.
+    THE IMPORTANT HALF IS WHAT THIS DOES NOT CALL. ui.rounded() caches
+    PhotoImages in a module-level dict, and a PhotoImage belongs to the
+    interpreter that made it; this module stands up a fresh Tk per press
+    on its own thread, so one cached bitmap from the dashboard's root
+    would raise "main thread is not in main loop" here. ui.rounded_pil()
+    returns a PIL image and holds nothing, and every caller below wraps it
+    with master= its own root.
+    """
+    try:
+        import ui as ui_mod
+        return ui_mod.rounded_pil(width, height, radius, fill, bg, border)
+    except Exception:
+        from PIL import Image, ImageDraw
+        s = 4
+        image = Image.new("RGB", (max(1, width * s), max(1, height * s)), bg)
+        ImageDraw.Draw(image).rounded_rectangle(
+            (0, 0, width * s - 1, height * s - 1), radius=radius * s,
+            fill=fill, outline=border, width=s if border else 0)
+        return image.resize((max(1, width), max(1, height)),
+                            Image.LANCZOS)
+
+
+class _Slabs:
+    """Rounded bitmaps for ONE Tk interpreter, cached until it dies.
+
+    Every PhotoImage here is built with master= the window that asked for
+    it, and the whole cache is dropped when that window goes — which is
+    what makes it safe to have a cache at all (see _rounded_pil).
+    """
+
+    def __init__(self, master):
+        self._master = master
+        self._cache: dict[tuple, object] = {}
+
+    def get(self, width: int, height: int, radius: int, fill: str,
+            bg: str, border: str | None = None):
+        key = (width, height, radius, fill, bg, border)
+        photo = self._cache.get(key)
+        if photo is None:
+            from PIL import ImageTk
+            photo = ImageTk.PhotoImage(
+                _rounded_pil(width, height, radius, fill, bg, border),
+                master=self._master)
+            self._cache[key] = photo
+        return photo
+
+    def clear(self) -> None:
+        self._cache.clear()
+
+
+class RoundButton:
+    """A pill with idle / hover / pressed faces, ui.Button's shape.
+
+    Not ui.Button itself for the reason _rounded_pil records, and a
+    wrapper rather than a tk.Canvas subclass so this module still imports
+    without tkinter — main.py builds a Controller at startup and must not
+    pay for Tk until a key is actually pressed.
+
+    The label moves down one pixel while held. That single pixel is the
+    whole difference between "the colour changed" and "I pressed it", and
+    ui.py's own comment says so after finding it the hard way.
+    """
+
+    def __init__(self, parent, text: str, command, *, face: str,
+                 slabs: _Slabs, width: int = 86, height: int = 28,
+                 primary: bool = False, bg: str = PANE):
+        import tkinter as tk
+
+        self._command = command
+        self._slabs = slabs
+        self._w, self._h = width, height
+        self._enabled = True
+        self._faces = ((ACCENT, ACCENT_HI, ACCENT_DOWN) if primary
+                       else (EDGE, EDGE_HI, EDGE_DOWN))
+        self._bg = bg
+        self.canvas = tk.Canvas(parent, width=width, height=height, bg=bg,
+                                highlightthickness=0, bd=0, cursor="hand2")
+        self._face_item = self.canvas.create_image(0, 0, anchor="nw")
+        self._text_item = self.canvas.create_text(
+            width // 2, height // 2, text=text, fill=FG,
+            font=(face, 9, "bold" if primary else "normal"))
+        self._paint(0)
+        for event, handler in (("<Enter>", self._enter),
+                               ("<Leave>", self._leave),
+                               ("<ButtonPress-1>", self._press),
+                               ("<ButtonRelease-1>", self._release)):
+            self.canvas.bind(event, handler)
+
+    def _paint(self, level: int) -> None:
+        fill = self._faces[level if self._enabled else 0]
+        border = STROKE if (self._enabled and level == 0) else None
+        self.canvas.itemconfig(
+            self._face_item,
+            image=self._slabs.get(self._w, self._h, self._h // 2, fill,
+                                  self._bg, border))
+        self.canvas.itemconfig(self._text_item,
+                               fill=FG if self._enabled else FAINT)
+        self.canvas.coords(self._text_item, self._w // 2,
+                           self._h // 2 + (1 if level == 2 else 0))
+
+    def _enter(self, _e=None) -> None:
+        if self._enabled:
+            self._paint(1)
+
+    def _leave(self, _e=None) -> None:
+        self._paint(0)
+
+    def _press(self, _e=None) -> None:
+        if self._enabled:
+            self._paint(2)
+
+    def _release(self, _e=None) -> None:
+        if not self._enabled:
+            return
+        self._paint(1)
+        try:
+            self._command()
+        except Exception:
+            log.exception("visual qa button handler failed")
+
+    def config_text(self, text: str) -> None:
+        self.canvas.itemconfig(self._text_item, text=text)
+
+    def enable(self, on: bool) -> None:
+        self._enabled = bool(on)
+        self.canvas.config(cursor="hand2" if on else "arrow")
+        self._paint(0)
+
+    def pack(self, **kw):
+        self.canvas.pack(**kw)
+        return self
+
+
+class _Chip:
+    """A 22 px square in the title strip: the pin and the close X.
+
+    Glyphs are drawn with lines rather than set in Segoe Fluent Icons —
+    an icon font that is missing on a machine shows a tofu box, and there
+    are exactly two shapes here.
+    """
+
+    def __init__(self, parent, kind: str, command, *, slabs: _Slabs,
+                 bg: str = PANE, size: int = 22):
+        import tkinter as tk
+
+        self._kind, self._command, self._slabs = kind, command, slabs
+        self._bg, self._size = bg, size
+        self._on = True
+        self.canvas = tk.Canvas(parent, width=size, height=size, bg=bg,
+                                highlightthickness=0, bd=0, cursor="hand2")
+        self._face = self.canvas.create_image(0, 0, anchor="nw")
+        self._paint(None)
+        for event, handler in (("<Enter>", lambda e: self._paint(CARD_HI)),
+                               ("<Leave>", lambda e: self._paint(None)),
+                               ("<ButtonPress-1>",
+                                lambda e: self._paint(ACCENT_DOWN)),
+                               ("<ButtonRelease-1>", self._release)):
+            self.canvas.bind(event, handler)
+
+    def _paint(self, fill) -> None:
+        size = self._size
+        self.canvas.delete("glyph")
+        if fill is None:
+            self.canvas.itemconfig(self._face, image="")
+        else:
+            self.canvas.itemconfig(
+                self._face,
+                image=self._slabs.get(size, size, 6, fill, self._bg))
+        colour = FG if fill else DIM
+        if self._kind == "close":
+            pad = 7
+            for x1, y1, x2, y2 in ((pad, pad, size - pad, size - pad),
+                                   (size - pad, pad, pad, size - pad)):
+                self.canvas.create_line(x1, y1, x2, y2, fill=colour,
+                                        width=1, tags="glyph")
+        else:                                   # the pin: filled = on top
+            r, c = 4, size // 2
+            self.canvas.create_oval(c - r, c - r, c + r, c + r,
+                                    outline=ACCENT if self._on else colour,
+                                    fill=ACCENT if self._on else "",
+                                    width=1, tags="glyph")
+
+    def set_on(self, on: bool) -> None:
+        self._on = bool(on)
+        self._paint(None)
+
+    def _release(self, _e=None) -> None:
+        self._paint(CARD_HI)
+        try:
+            self._command()
+        except Exception:
+            log.exception("visual qa chip handler failed")
+
+    def pack(self, **kw):
+        self.canvas.pack(**kw)
+        return self
+
+
+def _select_region(cancel: threading.Event, background
+                   ) -> tuple[tuple[int, int, int, int], object] | None:
+    """Drag a rectangle over a frozen, dimmed copy of the screen.
+
+    The screenshot is taken BEFORE this window exists and handed in, and
+    that ordering buys three things at once. The overlay can be OPAQUE —
+    it is showing a picture of the desktop, so its hint text and its size
+    readout are ClearType-crisp instead of ghosts at 30% alpha. The
+    rectangle you drag shows the UNDIMMED crop of that same picture, so
+    the selection is genuinely brighter than its surroundings rather than
+    an outline drawn on a uniformly dark sheet. And the capture stops
+    being a race: v1 withdrew the window, pumped, slept 50 ms and pumped
+    again, hoping the desktop had repainted before ImageGrab ran, because
+    capturing any sooner photographed our own dimming. There is nothing
+    left to wait for — the pixels returned here are the screen exactly as
+    it looked when the key was pressed.
+
+    Measured 2026-08-25 on this machine: grab 78 ms + darken 16 ms +
+    PhotoImage of the whole 4480x1440 virtual screen 31 ms = 125 ms from
+    tap to a usable overlay, and the per-drag bright crop is under a
+    millisecond at 900x450.
+
+    Returns (bbox, cropped_image) or None. Runs ON the visual-qa thread
+    and blocks until a choice is made.
     """
     import tkinter as tk
 
+    from PIL import ImageTk
+
     vx, vy, vw, vh = virtual_screen()
+    darkened = background.point(lambda v: int(v * DIM_FACTOR))
+
     root = tk.Tk()
     root.overrideredirect(True)
     root.attributes("-topmost", True)
     root.geometry(f"{vw}x{vh}+{vx}+{vy}")
-    root.configure(bg="#10131a")
-    root.attributes("-alpha", 0.30)
-    canvas = tk.Canvas(root, bg="#10131a", highlightthickness=0,
+    root.configure(bg=SELECT_BG)
+    canvas = tk.Canvas(root, bg=SELECT_BG, highlightthickness=0,
                        cursor="crosshair")
     canvas.pack(fill="both", expand=True)
 
-    state: dict = {"start": None, "rect": None, "bbox": None, "done": False}
+    keep: dict = {}                      # GC pins for every PhotoImage
+    keep["dark"] = ImageTk.PhotoImage(darkened, master=root)
+    canvas.create_image(0, 0, anchor="nw", image=keep["dark"])
+
+    face = _pick_face()
+    state: dict = {"start": None, "bbox": None, "done": False,
+                   "last": None, "hint": True}
+
+    # The hint rides the monitor the pointer is on, not the primary: on a
+    # two-screen desk the middle of the VIRTUAL screen is a bezel.
+    px, py = root.winfo_pointerx(), root.winfo_pointery()
+    hl, ht_, hr, hb = work_area_near(px, py)
+    hint_w, hint_h = 288, 38
+    hint_x = (hl + hr) // 2 - hint_w // 2 - vx
+    hint_y = ht_ + 56 - vy
+    keep["hint"] = ImageTk.PhotoImage(
+        _rounded_pil(hint_w, hint_h, 10, CARD, SELECT_BG, STROKE),
+        master=root)
+    canvas.create_image(hint_x, hint_y, anchor="nw", image=keep["hint"],
+                        tags="hint")
+    canvas.create_text(hint_x + hint_w // 2, hint_y + hint_h // 2,
+                       text="Drag over what you want to ask about   ·   "
+                            "Esc cancels",
+                       fill=DIM, font=(face, 9), tags="hint")
 
     def finish(bbox) -> None:
         state["bbox"] = bbox
         state["done"] = True
-        if bbox is not None:
-            # Withdraw and LET THE DESKTOP REPAINT before capturing, or
-            # the screenshot is of our own dimming layer. A cancel has
-            # nothing to capture and can go straight down.
-            root.withdraw()
-            root.update()
-            time.sleep(0.05)
-            root.update()
         root.destroy()
 
     def on_press(event) -> None:
         state["start"] = (event.x_root, event.y_root)
+        if state["hint"]:
+            canvas.delete("hint")
+            state["hint"] = False
+
+    def paint(bbox) -> None:
+        left, top, right, bottom = bbox
+        if state["last"] == bbox:
+            return
+        state["last"] = bbox
+        canvas.delete("sel")
+        if right - left < 2 or bottom - top < 2:
+            return
+        # The bright hole: the SAME pixels, undimmed, from the picture we
+        # already hold. A crop plus a PhotoImage, both under a millisecond
+        # at this size — no throttle needed, measured.
+        crop = background.crop((left - vx, top - vy, right - vx,
+                                bottom - vy))
+        keep["bright"] = ImageTk.PhotoImage(crop, master=root)
+        canvas.create_image(left - vx, top - vy, anchor="nw",
+                            image=keep["bright"], tags="sel")
+        canvas.create_rectangle(left - vx, top - vy, right - vx,
+                                bottom - vy, outline=ACCENT, width=2,
+                                tags="sel")
+        label = selection_readout(bbox)
+        lx, ly = right - vx - 6, bottom - vy + 6
+        if ly > vh - 24:                      # no room below: sit inside
+            ly = bottom - vy - 22
+        canvas.create_text(lx, ly, text=label, fill=FG, anchor="ne",
+                           font=(face, 9, "bold"), tags="sel")
 
     def on_drag(event) -> None:
         if state["start"] is None:
             return
         x1, y1 = state["start"]
-        left, top, right, bottom = normalize_bbox(x1, y1,
-                                                  event.x_root, event.y_root)
-        # Canvas coords are window-relative; the window starts at (vx, vy).
-        if state["rect"] is None:
-            state["rect"] = canvas.create_rectangle(
-                left - vx, top - vy, right - vx, bottom - vy,
-                outline="#2d6cdf", width=2)
-        else:
-            canvas.coords(state["rect"], left - vx, top - vy,
-                          right - vx, bottom - vy)
+        paint(normalize_bbox(x1, y1, event.x_root, event.y_root))
 
     def on_release(event) -> None:
         if state["start"] is None:
             return finish(None)
         x1, y1 = state["start"]
-        left, top, right, bottom = normalize_bbox(x1, y1,
-                                                  event.x_root, event.y_root)
+        left, top, right, bottom = normalize_bbox(x1, y1, event.x_root,
+                                                  event.y_root)
         # Click-without-drag cancels: a tap is how you dismiss the dimming
         # when you changed your mind, not a request to ask about one pixel.
         if right - left < 6 or bottom - top < 6:
             return finish(None)
         finish((left, top, right, bottom))
 
-    def on_esc(_event) -> None:
-        finish(None)
-
     canvas.bind("<ButtonPress-1>", on_press)
     canvas.bind("<B1-Motion>", on_drag)
     canvas.bind("<ButtonRelease-1>", on_release)
-    root.bind_all("<Escape>", on_esc)
+    root.bind_all("<Escape>", lambda _e: finish(None))
 
     try:
         root.update_idletasks()
@@ -998,136 +1514,361 @@ def _select_region(cancel: threading.Event) -> tuple[int, int, int, int] | None:
     except tk.TclError:
         pass                        # destroyed underneath us: cancelled
     bbox = state["bbox"]
+    keep.clear()
     gc.collect()                    # Tcl_AsyncDelete rule, see overlay.py
-    return bbox
+    if bbox is None:
+        return None
+    left, top, right, bottom = bbox
+    return bbox, background.crop((left - vx, top - vy, right - vx,
+                                  bottom - vy))
 
 
 class AskWindow:
-    """Thumbnail + question entry + answer pane, for ONE screenshot.
+    """The floating card: a conversation about ONE screenshot.
 
+    Borderless (overrideredirect), translucent until the pointer is over
+    it, rounded, draggable by its title strip and resizable from its
+    bottom-right corner — the lookup box's family rather than a titled
+    dialog, because this thing lives beside your work while you talk to
+    it. The native frame it gives up is a real cost: dragging, closing and
+    resizing are all hand-built below, and there is no taskbar button, so
+    the hotkey and Esc own the lifecycle.
+
+    IT IS A CONVERSATION, NOT A QUESTION BOX. A spoken question sends
+    itself; speaking again over an answer supersedes it, folding what you
+    just said into what you already asked and re-asking the lot; and every
+    turn stays on screen in a transcript that grows the window with it.
     Built and pumped on the visual-qa thread. Other threads talk to it
-    only through post(); the pump drains the queue between update()
-    ticks. Enter sends; Esc closes (and stops any speaking); closing is
-    final — follow-ups happen INSIDE the open window, reusing the same
-    screenshot and the growing Q/A history.
+    only through post(); the pump drains that queue between update() ticks
+    and nothing Tk is touched anywhere else.
     """
 
     def __init__(self, image, anchor_box: tuple[int, int, int, int],
                  speaker: Speaker, speak_mode: str,
-                 ask_fn, cue=lambda kind: None):
+                 ask_fn, cue=lambda kind: None, auto_send: bool = True,
+                 alpha: float = 0.93, reselect_fn=None, last_pos=None,
+                 on_move=None):
         self.image = image             # PIL image, RAM only
         self.speaker = speaker
         self.speak_mode = speak_mode
-        self.ask_fn = ask_fn           # (image, question, history) -> str
+        self.ask_fn = ask_fn
         self.cue = cue
+        self.auto_send = bool(auto_send)
+        self.reselect_fn = reselect_fn
+        self.on_move = on_move
         self.history: list[dict] = []
         self.answer_text = ""
         self.busy = False
         self.last_voice = None
+        self.encoded: dict = {}        # one image's base64, per backend
         self._q: queue.Queue = queue.Queue()
         self._close = threading.Event()
         self._face = _pick_face()
+        self._gen = 0
+        self._cancel_current: threading.Event | None = None
+        self._pending_q: str | None = None
+        self._pending_a = ""
+        self._alpha = max(0.30, min(1.0, float(alpha)))
+        self._pinned = True
+        self._drag_off = None
+        self._resize_from = None
+        self._user_view_h: int | None = None
+        self._status_until = 0.0
+        self._chip_x = 0.0
+        self._photos: list = []
+        self._rendered: dict = {}
+        self._content_h = 0
+        self._w = CARD_MIN_W
 
         import tkinter as tk
         self.tk = tk
         self.root = tk.Tk()
         root = self.root
-        root.title("Ask the screen")
+        root.overrideredirect(True)
         root.attributes("-topmost", True)
-        root.configure(bg="#10131a")
-        root.resizable(False, True)
-        root.minsize(360, 120)
+        root.attributes("-alpha", self._alpha)
+        root.configure(bg=STROKE)      # the 1 px hairline round the card
+        self.slabs = _Slabs(root)
         self._build_widgets()
-        self._place(anchor_box)
-        root.protocol("WM_DELETE_WINDOW", self.close)
-        root.bind("<Escape>", lambda _e: self.close())
+        self._place(anchor_box, last_pos)
+        root.bind("<Escape>", self._on_escape)
         root.bind("<Return>", self._on_enter)
+        root.bind("<Enter>", self._on_pointer_in)
+        root.bind("<Leave>", self._on_pointer_out)
         self.cue("looking")
 
     # -- construction --
 
     def _build_widgets(self) -> None:
         import tkinter as tk
-        from PIL import ImageTk
 
         root = self.root
-        pad = {"bg": "#10131a"}
-        top = tk.Frame(root, **pad)
-        top.pack(fill="x", padx=12, pady=(10, 4))
+        shell = tk.Frame(root, bg=PANE)
+        shell.pack(fill="both", expand=True, padx=1, pady=1)
+        self.shell = shell
 
-        thumb_src = self.image.copy()
-        k = THUMB_WIDTH / max(1, thumb_src.width)
-        thumb_src = thumb_src.resize(
-            (THUMB_WIDTH, max(1, round(thumb_src.height * k))))
-        # master= is load-bearing: see render_answer's docstring.
-        self._thumb = ImageTk.PhotoImage(thumb_src, master=root)
-        tk.Label(top, image=self._thumb, bd=0, **pad).pack(side="left")
+        # Title strip: the drag handle, and the only chrome that says what
+        # this window is now that Windows draws no caption for it.
+        strip = tk.Frame(shell, bg=PANE, height=26)
+        strip.pack(fill="x", padx=6, pady=(5, 0))
+        strip.pack_propagate(False)
+        self._close_chip = _Chip(strip, "close", self.close,
+                                 slabs=self.slabs)
+        self._close_chip.pack(side="right")
+        self._pin_chip = _Chip(strip, "pin", self._toggle_pin,
+                               slabs=self.slabs)
+        self._pin_chip.pack(side="right", padx=(0, 2))
+        title = tk.Label(strip, text="Ask the screen", bg=PANE, fg=DIM,
+                         font=(self._face, 9), anchor="w")
+        title.pack(side="left", padx=(6, 0))
+        for widget in (strip, title):
+            widget.bind("<ButtonPress-1>", self._drag_start)
+            widget.bind("<B1-Motion>", self._drag_move)
+            widget.bind("<ButtonRelease-1>", self._drag_end)
 
-        entry_col = tk.Frame(top, **pad)
-        entry_col.pack(side="left", fill="both", expand=True, padx=(10, 0))
-        tk.Label(entry_col, text="Your question (hold Right Ctrl to speak,"
-                                 " or type)",
-                 bg="#10131a", fg="#8b97ad",
-                 font=(self._face, 9)).pack(anchor="w")
-        self.entry = tk.Entry(entry_col, font=(self._face, 11),
-                              bg="#161b25", fg="#e8ecf4",
-                              insertbackground="#e8ecf4",
-                              relief="flat", highlightthickness=1,
-                              highlightbackground="#232a36",
-                              highlightcolor="#2d6cdf")
-        self.entry.pack(fill="x", pady=(4, 0))
+        top = tk.Frame(shell, bg=PANE)
+        top.pack(fill="x", padx=12, pady=(6, 4))
+        self._thumb_label = tk.Label(top, bd=0, bg=PANE)
+        self._thumb_label.pack(side="left")
+        self._build_thumb()
+
+        column = tk.Frame(top, bg=PANE)
+        column.pack(side="left", fill="both", expand=True, padx=(10, 0))
+        tk.Label(column, text="Hold Right Ctrl and talk — or type",
+                 bg=PANE, fg=FAINT, font=(self._face, 8),
+                 anchor="w").pack(fill="x")
+        field = tk.Frame(column, bg=LINE, padx=1, pady=1)
+        field.pack(fill="x", pady=(4, 0))
+        self._field = field
+        # disabledbackground is not decoration: Tk falls back to the
+        # SYSTEM colour for a disabled Entry, so the field went white on a
+        # dark card the moment a question was in flight (seen in the live
+        # screenshot). The field is never disabled any more — typing over
+        # an answer supersedes it, exactly like speaking over one — but a
+        # dark disabled face costs nothing and closes the trap for good.
+        self.entry = tk.Entry(field, font=(self._face, 11), bg=CARD,
+                              fg=FG, insertbackground=ACCENT,
+                              disabledbackground=CARD, disabledforeground=DIM,
+                              readonlybackground=CARD,
+                              relief="flat", highlightthickness=0, bd=6)
+        self.entry.pack(fill="x")
+        self.entry.bind("<FocusIn>", lambda _e: field.config(bg=ACCENT))
+        self.entry.bind("<FocusOut>", lambda _e: field.config(bg=LINE))
         self.entry.focus_force()
 
-        self.status = tk.Label(root, text="", bg="#10131a", fg="#8b97ad",
-                               font=(self._face, 9), anchor="w")
-        self.status.pack(fill="x", padx=12)
+        self.status = tk.Label(shell, text="", bg=PANE, fg=DIM,
+                               font=(self._face, 9), anchor="w",
+                               justify="left")
+        self.status.pack(fill="x", padx=12, pady=(6, 0))
 
-        self.answer_holder = tk.Label(root, bg="#10131a", bd=0)
-        self.answer_holder.pack(fill="x", padx=12, pady=(4, 2))
-        self._answer_photo = None          # GC pin for the PhotoImage
+        # The busy bar is overlay.py's splash animation, at the pump's own
+        # period: a 96 px chip sliding through a 4 px rail. v1 cycled
+        # "thinking..." dots on every 15 ms tick, which is sixteen text
+        # changes a second — a strobe, not an animation.
+        self.busybar = tk.Canvas(shell, height=3, bg=LINE,
+                                 highlightthickness=0, bd=0)
+        self.busybar.pack(fill="x", padx=12, pady=(6, 0))
+        self._chip = self.busybar.create_rectangle(-96, 0, 0, 3,
+                                                   fill=ACCENT, width=0)
 
-        bar = tk.Frame(root, **pad)
-        bar.pack(fill="x", padx=12, pady=(2, 10))
-        self._dots = 0
+        self.transcript = tk.Canvas(shell, bg=PANE, highlightthickness=0,
+                                    bd=0, height=1)
+        self.transcript.pack(fill="x", padx=12, pady=(8, 0))
+        self.transcript.bind("<MouseWheel>", self._wheel)
+
+        # The right padding is 22, not 12, so the resize grip in the
+        # corner has a corner to live in instead of two pixels of the
+        # Speak button.
+        bar = tk.Frame(shell, bg=PANE)
+        bar.pack(fill="x", padx=(12, 22), pady=(8, 9))
+        self.speak_btn = None
         if speak_button_visible(self.speak_mode):
-            self.speak_btn = tk.Button(
-                bar, text="Speak", command=self._toggle_speak,
-                font=(self._face, 9), bg="#1b2130", fg="#e8ecf4",
-                relief="flat", padx=12, cursor="hand2", state="disabled")
-            self.speak_btn.pack(side="right")
-        self.copy_btn = tk.Button(bar, text="Copy", command=self._copy,
-                                  font=(self._face, 9), bg="#1b2130",
-                                  fg="#e8ecf4", relief="flat", padx=12,
-                                  cursor="hand2", state="disabled")
-        self.copy_btn.pack(side="right", padx=(0, 6))
-        tk.Label(bar, text="Enter asks · Esc closes", bg="#10131a",
-                 fg="#5d6779", font=(self._face, 8)).pack(side="left")
+            self.speak_btn = RoundButton(bar, "Speak", self._toggle_speak,
+                                         face=self._face, slabs=self.slabs,
+                                         primary=True).pack(side="right")
+            self.speak_btn.enable(False)
+        self.copy_btn = RoundButton(bar, "Copy", self._copy,
+                                    face=self._face, slabs=self.slabs,
+                                    width=74).pack(side="right",
+                                                   padx=(0, 6))
+        self.copy_btn.enable(False)
+        self._hint = tk.Label(bar, text=self._resting_hint(), bg=PANE,
+                              fg=FAINT, font=(self._face, 8), anchor="w")
+        self._hint.pack(side="left")
 
-    def _place(self, anchor_box: tuple[int, int, int, int]) -> None:
-        """Beside the selection, never covering it, on ITS monitor."""
-        left, top, right, bottom = anchor_box
-        self.root.update_idletasks()
-        wd = max(380, min(520, self.root.winfo_reqwidth()))
-        ht = self.root.winfo_reqheight()
-        wl, wt, wr, wb = work_area_near(left, top)
-        x = left
-        y = bottom + 18
-        if y + ht > wb:
-            y = max(wt, top - ht - 18)
-        x = max(wl + 8, min(x, wr - wd - 8))
-        y = max(wt + 8, min(y, wb - ht - 8))
-        self.root.geometry(f"{wd}x{ht}+{x}+{y}")
+        # The resize grip sits ON the shell's bottom-right corner rather
+        # than in the button row: a corner is where a hand looks for one.
+        self._grip = tk.Canvas(shell, width=14, height=14, bg=PANE,
+                               highlightthickness=0, bd=0,
+                               cursor="size_nw_se")
+        for offset in (3, 7, 11):
+            self._grip.create_line(13, offset, offset, 13, fill=FAINT,
+                                   width=1)
+        self._grip.place(relx=1.0, rely=1.0, anchor="se")
+        self._grip.bind("<ButtonPress-1>", self._resize_start)
+        self._grip.bind("<B1-Motion>", self._resize_move)
+        self._grip.bind("<ButtonRelease-1>", self._resize_end)
+
+    def _resting_hint(self) -> str:
+        return ("speak or type · Enter asks · Esc closes"
+                if self.auto_send else "Enter asks · Esc closes")
+
+    def _build_thumb(self) -> None:
+        from PIL import Image, ImageTk
+
+        size = thumb_size(self.image.width, self.image.height)
+        small = self.image.copy().resize(size, Image.LANCZOS)
+        # master= is load-bearing: see render_answer's docstring.
+        self._thumb = ImageTk.PhotoImage(small, master=self.root)
+        self._thumb_label.config(image=self._thumb)
+
+    # -- geometry --
+
+    def _place(self, anchor_box, last_pos) -> None:
+        root = self.root
+        root.update_idletasks()
+        self._w = max(CARD_INIT_W, min(CARD_MAX_W, root.winfo_reqwidth()))
+        height = root.winfo_reqheight()
+        left, top = anchor_box[0], anchor_box[1]
+        work = work_area_near(*(last_pos if last_pos else (left, top)))
+        x, y = plan_placement(anchor_box, work, (self._w, height), last_pos)
+        root.geometry(f"{self._w}x{height}+{x}+{y}")
         # Force the WM to honour the geometry NOW and verify it landed:
         # measured live, a geometry string issued before first map could
         # leave the window at the WM's cascade position.
-        self.root.update()
-        if (self.root.winfo_x(), self.root.winfo_y()) != (x, y):
-            self.root.geometry(f"+{x}+{y}")
-            self.root.update()
-        log.info("ask window placed %dx%d at +%d+%d",
-                 self.root.winfo_width(), self.root.winfo_height(),
-                 self.root.winfo_x(), self.root.winfo_y())
+        root.update()
+        if (root.winfo_x(), root.winfo_y()) != (x, y):
+            root.geometry(f"+{x}+{y}")
+            root.update()
+        self._round_corners()
+        log.info("ask card placed %dx%d at +%d+%d", root.winfo_width(),
+                 root.winfo_height(), root.winfo_x(), root.winfo_y())
         self._take_foreground()
+
+    def _round_corners(self) -> None:
+        """Round the card's corners with a window region.
+
+        SetWindowRgn and not DWMWA_WINDOW_CORNER_PREFERENCE: DWM rounds
+        the NON-CLIENT area, and an overrideredirect window has none —
+        popup.py keeps the same call as its pre-Windows-11 fallback for
+        exactly this reason. The region has to be re-cut after every
+        resize, and Windows takes ownership of it, so it is never deleted
+        here.
+        """
+        try:
+            root = self.root
+            hwnd = ctypes.windll.user32.GetParent(int(root.winfo_id())) \
+                or int(root.winfo_id())
+            width, height = root.winfo_width(), root.winfo_height()
+            region = ctypes.windll.gdi32.CreateRoundRectRgn(
+                0, 0, width + 1, height + 1, 13, 13)
+            ctypes.windll.user32.SetWindowRgn(hwnd, region, True)
+        except Exception:
+            log.debug("visual qa could not round the card", exc_info=True)
+
+    def _view_cap(self) -> int:
+        """How tall the transcript may grow before it starts scrolling."""
+        _wl, wt, _wr, wb = work_area_near(self.root.winfo_x(),
+                                          self.root.winfo_y())
+        return max(120, int((wb - wt) * 0.55))
+
+    def _fit_window(self) -> None:
+        """Re-issue the geometry so the card is exactly as tall as it needs.
+
+        Tk does NOT grow a toplevel once an explicit geometry has been
+        set — measured: a child's requested height went 21 -> 477 and the
+        window stayed 21 px tall. That is why v1 clipped every long
+        answer: it pinned the geometry once, before any answer existed.
+        Every content change ends here.
+        """
+        root = self.root
+        want = (self._user_view_h if self._user_view_h is not None
+                else min(self._content_h, self._view_cap()))
+        want = max(1, want)
+        self.transcript.config(height=want)
+        root.update_idletasks()
+        height = root.winfo_reqheight()
+        x, y = root.winfo_x(), root.winfo_y()
+        wl, wt, wr, wb = work_area_near(x, y)
+        if y + height > wb:
+            y = max(wt, wb - height)
+        x = max(wl - 8, min(x, wr - 40))
+        root.geometry(f"{self._w}x{height}+{x}+{y}")
+        root.update_idletasks()
+        self._round_corners()
+
+    # -- drag, resize, pin --
+
+    def _drag_start(self, event) -> None:
+        self._drag_off = (event.x_root - self.root.winfo_x(),
+                          event.y_root - self.root.winfo_y())
+
+    def _drag_move(self, event) -> None:
+        if self._drag_off is None:
+            return
+        self.root.geometry(f"+{event.x_root - self._drag_off[0]}"
+                           f"+{event.y_root - self._drag_off[1]}")
+
+    def _drag_end(self, _event=None) -> None:
+        self._drag_off = None
+        self._remember_position()
+
+    def _resize_start(self, event) -> None:
+        self._resize_from = (event.x_root, event.y_root, self._w,
+                             self.transcript.winfo_height())
+
+    def _resize_move(self, event) -> None:
+        if self._resize_from is None:
+            return
+        x0, y0, w0, view0 = self._resize_from
+        width = max(CARD_MIN_W, min(CARD_MAX_W,
+                                    w0 + (event.x_root - x0)))
+        self._user_view_h = max(1, view0 + (event.y_root - y0))
+        if width != self._w:
+            self._w = width
+            # Width decides the wrap, so the whole column has to be drawn
+            # again — but on a throttle. AGENTS.md's rule for the lookup
+            # box applies unchanged: the FRAME must never wait on its text.
+            self._rendered.clear()
+            self._repaint_transcript()
+        self._fit_window()
+
+    def _resize_end(self, _event=None) -> None:
+        self._resize_from = None
+
+    def _toggle_pin(self) -> None:
+        self._pinned = not self._pinned
+        self.root.attributes("-topmost", self._pinned)
+        self._pin_chip.set_on(self._pinned)
+        self._status("pinned on top" if self._pinned
+                     else "no longer on top", ttl_ms=FLASH_MS)
+
+    def _on_pointer_in(self, _event=None) -> None:
+        self.root.attributes("-alpha", 1.0)
+
+    def _on_pointer_out(self, _event=None) -> None:
+        # Tk fires <Leave> when the pointer crosses into a CHILD widget
+        # too, so the event alone would flicker the card every time the
+        # mouse moved from the strip to the entry. Ask where the pointer
+        # actually is instead.
+        root = self.root
+        try:
+            x, y = root.winfo_pointerx(), root.winfo_pointery()
+            inside = (root.winfo_x() <= x < root.winfo_x() + root.winfo_width()
+                      and root.winfo_y() <= y
+                      < root.winfo_y() + root.winfo_height())
+        except Exception:
+            inside = False
+        if not inside:
+            root.attributes("-alpha", self._alpha)
+
+    def _remember_position(self) -> None:
+        if self.on_move is None:
+            return
+        try:
+            self.on_move((self.root.winfo_x(), self.root.winfo_y()))
+        except Exception:
+            pass
 
     def _take_foreground(self) -> None:
         """Actually TAKE focus — this window is meant to be typed into.
@@ -1169,6 +1910,8 @@ class AskWindow:
         try:
             root.update_idletasks()
             root.update()
+            self._repaint_transcript()
+            self._fit_window()
             while not self._close.is_set():
                 # Drained on BOTH sides of update(): the first paint can
                 # hold update() for the better part of a second (measured
@@ -1179,11 +1922,15 @@ class AskWindow:
                 try:
                     root.update()
                 except self.tk.TclError:
-                    break               # destroyed by its own titlebar X
+                    break               # destroyed underneath us
                 self._drain()
                 time.sleep(_TICK_S)
         finally:
             self.speaker.stop()
+            self._remember_position()
+            self._photos = []
+            self._rendered.clear()
+            self.slabs.clear()
             try:
                 root.destroy()
             except Exception:
@@ -1196,100 +1943,332 @@ class AskWindow:
                 kind, payload = self._q.get_nowait()
                 if kind == "voice":
                     self._on_voice(payload)
+                elif kind == "chunk":
+                    self._on_chunk(payload)
                 elif kind == "answer":
                     self._on_answer(payload)
                 elif kind == "error":
                     self._on_error(payload)
+                elif kind == "listening":
+                    self._on_listening()
+                elif kind == "reselect":
+                    self._on_reselect()
                 elif kind == "tts_done":
-                    if hasattr(self, "speak_btn"):
-                        self.speak_btn.config(text="Speak")
+                    if self.speak_btn is not None:
+                        self.speak_btn.config_text("Speak")
                     if payload:
-                        self.status.config(text="stopped")
+                        self._status("stopped", ttl_ms=FLASH_MS)
         except queue.Empty:
             pass
 
-    # -- handlers (window thread) --
+    # -- status, animation --
+
+    def _status(self, text: str, colour: str = DIM,
+                ttl_ms: int | None = None) -> None:
+        """The one way the status line is ever written.
+
+        Both text AND colour, always: v1 set the colour per message and
+        never reset it, so every line after a green "copied" stayed green
+        and every line after an amber failure stayed amber. `ttl_ms` is
+        for the transient confirmations — the pump puts the resting hint
+        back when it expires, which is what popup.py's copy flash does.
+        """
+        self.status.config(text=text, fg=colour)
+        self._status_until = (time.monotonic() + ttl_ms / 1000.0
+                              if ttl_ms else 0.0)
+
+    def _animate(self) -> None:
+        if self.busy:
+            width = max(1, self.busybar.winfo_width())
+            self._chip_x += 5.0
+            if self._chip_x > width:
+                self._chip_x = -96.0
+            self.busybar.coords(self._chip, self._chip_x, 0,
+                                self._chip_x + 96, 3)
+        elif self._chip_x != -96.0:
+            self._chip_x = -96.0
+            self.busybar.coords(self._chip, -96, 0, 0, 3)
+        if self._status_until and time.monotonic() > self._status_until:
+            self._status_until = 0.0
+            self.status.config(text="", fg=DIM)
+
+    # -- the transcript --
+
+    def _rows(self) -> list[tuple[str, str]]:
+        rows = [(turn["role"], turn["content"]) for turn in self.history]
+        if self._pending_q is not None:
+            rows.append(("user", self._pending_q))
+            rows.append(("assistant", self._pending_a or "…"))
+        return rows
+
+    def _render_row(self, role: str, text: str, width: int):
+        key = (role, text, width)
+        got = self._rendered.get(key)
+        if got is None:
+            question = role == "user"
+            got = render_answer(
+                text, width - (8 if question else 0), face=self._face,
+                pt=QUESTION_PT if question else ANSWER_PT,
+                colour=ACCENT_TEXT if question else FG, bg=PANE,
+                master=self.root)
+            self._rendered[key] = got
+        return got
+
+    def _repaint_transcript(self) -> None:
+        """Every turn, drawn by Windows' own bidi, newest at the bottom.
+
+        The question is echoed here as a BITMAP the moment it is sent, and
+        that is the honest half of the Hebrew story: Tk's Entry has no
+        bidi at all, so a dictated question mixing Hebrew with a Latin
+        term is laid out backwards inside the box it was typed into. It
+        cannot be fixed there — AGENTS.md says so and popup.py proved it —
+        but with auto_send the box is a place text passes through, and the
+        line the user actually reads is this one, which is correct to the
+        glyph.
+        """
+        canvas = self.transcript
+        canvas.delete("all")
+        self._photos = []
+        width = max(240, self._w - 26)
+        y = 0
+        for role, text in self._rows():
+            photo, height = self._render_row(role, text, width)
+            canvas.create_image(0, y, anchor="nw", image=photo)
+            self._photos.append(photo)
+            if role == "user":
+                # The marker goes on the RIGHT: these lines are laid out
+                # right-to-left, so that is where they begin.
+                canvas.create_rectangle(width - 2, y + 1, width,
+                                        y + height - 1, fill=ACCENT,
+                                        width=0)
+            y += height + (6 if role == "user" else 14)
+        self._content_h = max(0, y - 14)
+        canvas.config(scrollregion=(0, 0, width, self._content_h))
+        canvas.yview_moveto(1.0)
+
+    def _wheel(self, event) -> None:
+        self.transcript.yview_scroll(int(-event.delta / 60), "units")
+
+    # -- asking --
 
     def _on_enter(self, _event=None) -> None:
-        question = self.entry.get().strip()
-        if not question or self.busy:
-            return
-        self.busy = True
-        self.entry.config(state="disabled")
-        self.status.config(text="thinking…", fg="#8b97ad")
-        self.cue("translating")
-        threading.Thread(target=self._ask_worker, args=(question,),
-                         daemon=True, name="vqa-ask").start()
+        self._ask_or_extend(self.entry.get())
 
-    def _ask_worker(self, question: str) -> None:
+    def _ask_or_extend(self, text: str) -> None:
+        """Ask this — or, if something is already being answered, fold it
+        into that question and ask the LOT again.
+
+        The one door both the microphone and the keyboard come through, so
+        typing over an answer behaves exactly like talking over one. What
+        is being written answers a question the user has already moved
+        past, so it is abandoned mid-token; the generation counter is what
+        makes the abandoned answer harmless, since it lands after the new
+        question went out and is dropped as stale.
+        """
+        text = " ".join((text or "").split())
+        if not text:
+            return
+        if self.busy and self._pending_q:
+            combined = f"{self._pending_q} {text}".strip()
+            if self._cancel_current is not None:
+                self._cancel_current.set()
+            self.speaker.stop()
+            self._send(combined)
+            return
+        self._send(text)
+
+    def _send(self, question: str) -> None:
+        question = " ".join((question or "").split())
+        if not question:
+            return
+        self._gen += 1
+        gen = self._gen
+        cancel = threading.Event()
+        self._cancel_current = cancel
+        self.busy = True
+        self._pending_q = question
+        self._pending_a = ""
+        self.entry.delete(0, "end")
+        self._status("thinking…")
+        self._repaint_transcript()
+        self._fit_window()
+        self.cue("translating")
+        threading.Thread(target=self._ask_worker,
+                         args=(gen, question, cancel), daemon=True,
+                         name="vqa-ask").start()
+
+    def _ask_worker(self, gen: int, question: str,
+                    cancel: threading.Event) -> None:
         started = time.monotonic()
+        last_paint = [0.0]
+        painted = [0]
+
+        def on_chunk(so_far: str) -> None:
+            now = time.monotonic()
+            if should_repaint(now, last_paint[0], so_far, painted[0]):
+                last_paint[0] = now
+                painted[0] = len(so_far)
+                self.post(("chunk", (gen, so_far)))
+
         try:
-            answer = self.ask_fn(self.image, question, list(self.history))
-            self.post(("answer", (question, answer,
+            answer, backend = self.ask_fn(
+                self.image, question, list(self.history),
+                on_chunk=on_chunk, cancel=cancel,
+                encoded_cache=self.encoded)
+            self.post(("answer", (gen, question, answer, backend,
                                   time.monotonic() - started)))
+        except Cancelled:
+            pass            # a newer question is already on its way
         except Exception as e:
-            self.post(("error", f"{e}"))
+            self.post(("error", (gen, f"{e}")))
+
+    def _stale(self, gen: int) -> bool:
+        return gen != self._gen
+
+    def _on_chunk(self, payload) -> None:
+        gen, so_far = payload
+        if self._stale(gen):
+            return
+        self._pending_a = so_far
+        self._repaint_transcript()
+        self._fit_window()
 
     def _on_answer(self, payload) -> None:
-        question, answer, seconds = payload
+        gen, question, answer, backend, seconds = payload
+        if self._stale(gen):
+            return              # superseded: the user spoke again
         self.busy = False
+        self._cancel_current = None
+        self._pending_q = None
+        self._pending_a = ""
         self.history.append({"role": "user", "content": question})
         self.history.append({"role": "assistant", "content": answer})
         self.answer_text = answer
-        self.entry.config(state="normal")
-        self.entry.delete(0, "end")
+        # The entry is NOT cleared here. Whatever is in it was typed while
+        # the model was writing, which makes it the next question — v1
+        # wiped exactly that, and a dictated follow-up died with it.
         self.entry.focus_force()
-        self.status.config(
-            text=f"answered in {seconds:.1f} s — ask a follow-up or close")
-        self._show_answer(answer)
-        self.copy_btn.config(state="normal")
-        if hasattr(self, "speak_btn"):
-            self.speak_btn.config(state="normal")
+        self._status(f"answered in {seconds:.1f} s via {backend}")
+        self._repaint_transcript()
+        self._fit_window()
+        self.copy_btn.enable(True)
+        if self.speak_btn is not None:
+            self.speak_btn.enable(True)
         self.cue("looked")
         transcript_log.info("VISUAL-QA-Q | %.1fs | %s", seconds, question)
         log.debug("visual qa answer: %s", answer)
         if self.speak_mode == "auto":
             self._start_speaking()
 
-    def _on_error(self, message: str) -> None:
+    def _on_error(self, payload) -> None:
+        gen, message = payload
+        if self._stale(gen):
+            return
         self.busy = False
-        self.entry.config(state="normal")
-        self.status.config(text=f"failed: {message}", fg="#e0a32b")
+        self._cancel_current = None
+        # Half an answer must never sit there looking whole — the partial
+        # paint goes with the failure, and the question comes back so the
+        # next press of Enter retries it.
+        failed_question = self._pending_q or ""
+        self._pending_q = None
+        self._pending_a = ""
+        self._repaint_transcript()
+        self._fit_window()
+        if failed_question and not self.entry.get().strip():
+            self.entry.insert(0, failed_question)
+        self._status(f"failed: {message}", AMBER)
         self.cue("error")
 
+    def _on_listening(self) -> None:
+        """The user started talking: stop reading the last answer at them."""
+        self.speaker.stop()
+        if self.speak_btn is not None:
+            self.speak_btn.config_text("Speak")
+        self._status("listening…" if not self.busy
+                     else "listening — this will be added to the question")
+
     def _on_voice(self, text: str) -> None:
+        self.last_voice = text
+        if self.busy and self._pending_q:
+            self._ask_or_extend(text)       # barge-in, see _ask_or_extend
+            return
         # The dictated question replaces whatever is in the box: the user
         # spoke a whole question, and half-typed fragments are drafts.
-        self.last_voice = text       # pump-side record, for tests
-        self.entry.config(state="normal")
         self.entry.delete(0, "end")
         self.entry.insert(0, text)
         self.entry.focus_force()
         self.entry.icursor("end")
+        if self.auto_send:
+            self._send(text)
 
-    def _show_answer(self, text: str) -> None:
-        width = max(320, self.root.winfo_width() - 24)
-        photo, _h = render_answer(text, width, face=self._face,
-                                  master=self.root)
-        self._answer_photo = photo
-        self.answer_holder.config(image=photo)
+    def _on_reselect(self) -> None:
+        """Another press of the hotkey: pick new pixels, same card.
 
-    def _animate(self) -> None:
+        A new screenshot starts a NEW conversation. The image rides the
+        first user turn in every backend's message list, so keeping the
+        history would leave the model answering about the pixels it can
+        still see in the transcript rather than the ones now on screen.
+        """
         if self.busy:
-            self._dots = (self._dots + 1) % 4
-            self.status.config(text="thinking" + "." * self._dots)
+            self._status("still answering — ask again when it lands",
+                         ttl_ms=FLASH_MS)
+            return
+        if self.reselect_fn is None:
+            return
+        root = self.root
+        root.withdraw()
+        root.update()
+        try:
+            got = self.reselect_fn()
+        except Exception:
+            log.exception("visual qa re-selection failed")
+            got = None
+        root.deiconify()
+        root.update()
+        self._take_foreground()
+        if got is None:
+            return
+        image, _bbox = got
+        self.image = image
+        self.encoded.clear()
+        self.history.clear()
+        self._pending_q = None
+        self._pending_a = ""
+        self.answer_text = ""
+        self._rendered.clear()
+        self.copy_btn.enable(False)
+        if self.speak_btn is not None:
+            self.speak_btn.enable(False)
+        self._build_thumb()
+        self._repaint_transcript()
+        self._fit_window()
+        self._status("new selection — ask away")
+        self.cue("looking")
+
+    # -- the two buttons --
 
     def _copy(self) -> None:
         if not self.answer_text:
             return
         import injector
-        injector.set_text(self.answer_text)
-        self.status.config(text="copied", fg="#33b877")
+        try:
+            injector.set_text(self.answer_text)
+        except injector.ClipboardBusyError:
+            self._status("clipboard busy — try again", AMBER,
+                         ttl_ms=FLASH_MS)
+            return
+        except Exception as e:
+            log.info("visual qa could not copy the answer (%s)", e)
+            self._status("could not copy", AMBER, ttl_ms=FLASH_MS)
+            return
+        self._status("copied", GREEN, ttl_ms=FLASH_MS)
 
     def _toggle_speak(self) -> None:
         if self.speaker.playing:
             self.speaker.stop()
-            self.status.config(text="stopped")
+            self._status("stopped", ttl_ms=FLASH_MS)
+            if self.speak_btn is not None:
+                self.speak_btn.config_text("Speak")
             return
         self._start_speaking()
 
@@ -1301,22 +2280,35 @@ class AskWindow:
         """
         if not self.answer_text or self.speaker.playing:
             return
-        if hasattr(self, "speak_btn"):
-            self.speak_btn.config(text="Stop")
-        self.status.config(text="speaking…")
+        if self.speak_btn is not None:
+            self.speak_btn.config_text("Stop")
+        self._status("speaking…")
         self.speaker.speak(self.answer_text,
                            on_done=lambda: self.post(("tts_done", False)))
+
+    # -- closing --
+
+    def _on_escape(self, _event=None) -> None:
+        if esc_action(self.speaker.playing) == "stop":
+            self.speaker.stop()
+            if self.speak_btn is not None:
+                self.speak_btn.config_text("Speak")
+            self._status("stopped", ttl_ms=FLASH_MS)
+            return
+        self.close()
 
     def close(self) -> None:
         self._close.set()
 
 
 def speak_button_visible(speak_mode: str) -> bool:
-    """Whether the answer window shows its Speak control.
+    """Whether the answer card shows its Speak control.
 
-    off = no control at all; button = a control to press; auto = no
-    control needed because every answer reads itself. Pure, so the config
-    switch is testable without building a window.
+    off = no control at all; button = a control to press. auto reads every
+    answer by itself and STILL shows the control, because the thing you
+    need while a machine is talking at you is a way to stop it — that is
+    the same button with the word Stop on it. Pure, so the config switch
+    is testable without building a window.
     """
     return speak_mode in ("button", "auto")
 
@@ -1341,6 +2333,10 @@ class Controller:
         self._chain: Chain | None = None
         self._warmed = threading.Event()
         self._lock = threading.Lock()
+        # Where the card was last dragged to, for this run of the app. Not
+        # persisted: a position is a fact about the screen you had open,
+        # not a setting, and config.toml is not the place for it.
+        self._last_pos: tuple[int, int] | None = None
 
     # ---- properties main.py reads (hook thread safe) ----
 
@@ -1366,17 +2362,32 @@ class Controller:
                          name="visual-qa").start()
         return True
 
+    def _grab_selection(self):
+        """Freeze the screen, let the user draw on it, hand back the crop.
+
+        The grab happens BEFORE the overlay exists — that is what lets the
+        overlay be opaque, show the selection at full brightness, and
+        return pixels that are the screen as it was at the keypress rather
+        than a race against our own dimming. See _select_region.
+        """
+        from PIL import ImageGrab
+        started = time.monotonic()
+        full = ImageGrab.grab(all_screens=True)
+        log.debug("visual qa froze %dx%d in %.0f ms", full.width,
+                  full.height, (time.monotonic() - started) * 1000)
+        chosen = _select_region(self._cancel, full)
+        if chosen is None:
+            return None
+        bbox, image = chosen
+        log.debug("visual qa selection %dx%d", image.width, image.height)
+        return image, bbox
+
     def _flow(self) -> None:
         try:
-            bbox = _select_region(self._cancel)
-            if bbox is None:
+            got = self._grab_selection()
+            if got is None:
                 return
-            from PIL import ImageGrab
-            started = time.monotonic()
-            image = ImageGrab.grab(bbox=bbox, all_screens=True)
-            log.debug("visual qa grabbed %dx%d in %.0f ms",
-                      image.width, image.height,
-                      (time.monotonic() - started) * 1000)
+            image, bbox = got
             self._open_ask(image, bbox)
         except Exception:
             log.exception("visual qa flow failed")
@@ -1391,19 +2402,57 @@ class Controller:
             self._speaker = Speaker(vq.voice)
         window = AskWindow(
             image, bbox, self._speaker, vq.speak, self._ask,
-            cue=self._cue)
+            cue=self._cue, auto_send=getattr(vq, "auto_send", True),
+            alpha=getattr(vq, "window_alpha", 0.93),
+            reselect_fn=self._grab_selection, last_pos=self._last_pos,
+            on_move=self._remember_position)
         with self._lock:
             self._window = window
         window.run()
         # Window closed: the screenshot's life ends here. Nothing is
         # cached, nothing persists — the next press captures afresh.
 
-    def _ask(self, image, question: str, history: list[dict]) -> str:
+    def _remember_position(self, pos: tuple[int, int]) -> None:
+        self._last_pos = pos
+
+    def _ask(self, image, question: str, history: list[dict],
+             on_chunk=None, cancel=None,
+             encoded_cache=None) -> tuple[str, str]:
         if self._chain is None:
             self._chain = Chain(self._cfg_of())
-        answer, backend = self._chain.ask(image, question, history)
+        answer, backend = self._chain.ask(image, question, history,
+                                          on_chunk=on_chunk, cancel=cancel,
+                                          encoded_cache=encoded_cache)
         log.info("visual qa answered via %s", backend)
-        return answer
+        return answer, backend
+
+    # ---- the hotkey, pressed while the card is already open ----
+
+    def reselect(self) -> bool:
+        """Point the open card at new pixels. False if there is no card.
+
+        Answers the second press of the hotkey. False means the flow is
+        somewhere it cannot be interrupted — the selector is on screen
+        already — and the caller should make its "nothing to do" noise.
+        """
+        window = self._window
+        if window is None:
+            return False
+        window.post(("reselect", None))
+        return True
+
+    def notify_recording(self) -> bool:
+        """The user started talking. Stop reading the last answer at them.
+
+        Called from the recording-start callback, which runs inside the
+        keyboard hook, so this only enqueues — the card's own pump does
+        the stopping. False when no card is up and there is nothing to do.
+        """
+        window = self._window
+        if window is None:
+            return False
+        window.post(("listening", None))
+        return True
 
     @staticmethod
     def _cue(kind: str) -> None:

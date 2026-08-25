@@ -141,23 +141,36 @@ def forget_images() -> None:
     _CLAMPS.clear()
 
 
-def rounded(w: int, h: int, radius: int, fill: str, bg: str,
-            border: str | None = None) -> ImageTk.PhotoImage:
-    """One rounded rectangle, anti-aliased by drawing it big and shrinking.
+def rounded_pil(w: int, h: int, radius: int, fill: str, bg: str,
+                border: str | None = None) -> Image.Image:
+    """One rounded rectangle as a PIL image: the drawing, and nothing else.
 
     Drawn at 4x and resized with LANCZOS. Pillow's `rounded_rectangle` has
     no anti-aliasing of its own, and a hard-edged 14 px corner on a dark
     background is more obviously wrong than a square one.
+
+    Split out of rounded() for callers that are not this interpreter.
+    visual_qa.py stands up a fresh Tk on its own thread for every press,
+    and a PhotoImage — cached or not — belongs to the interpreter that
+    made it, so the shape it needs is this one: pixels it can wrap with a
+    master of its own. Anything drawing inside the dashboard wants
+    rounded() instead, cache and all.
     """
+    s = 4
+    image = Image.new("RGB", (max(1, w * s), max(1, h * s)), bg)
+    ImageDraw.Draw(image).rounded_rectangle(
+        (0, 0, w * s - 1, h * s - 1), radius=radius * s, fill=fill,
+        outline=border, width=s if border else 0)
+    return image.resize((max(1, w), max(1, h)), Image.LANCZOS)
+
+
+def rounded(w: int, h: int, radius: int, fill: str, bg: str,
+            border: str | None = None) -> ImageTk.PhotoImage:
+    """rounded_pil(), cached and wrapped for THIS interpreter's Tk."""
     key = ("rect", w, h, radius, fill, bg, border)
     if key not in _cache:
-        s = 4
-        image = Image.new("RGB", (max(1, w * s), max(1, h * s)), bg)
-        ImageDraw.Draw(image).rounded_rectangle(
-            (0, 0, w * s - 1, h * s - 1), radius=radius * s, fill=fill,
-            outline=border, width=s if border else 0)
         _cache[key] = ImageTk.PhotoImage(
-            image.resize((max(1, w), max(1, h)), Image.LANCZOS))
+            rounded_pil(w, h, radius, fill, bg, border))
     return _cache[key]
 
 
