@@ -80,7 +80,7 @@ back.
 
 ## Traps we already paid for — do not re-arm them
 
-- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 323 of
+- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 324 of
   them, safe to run while dictation is live (two bugs that used to kill
   the app mid-suite are fixed; see git log). Run them BEFORE claiming done.
 - **Subprocesses under pythonw allocate consoles.** Every `subprocess.run`
@@ -147,6 +147,40 @@ back.
   it because they all end in `os._exit(0)`, which skips collection —
   `test_a_closed_card_leaves_no_interpreter_for_another_thread_to_free`
   deliberately does not.
+- **A tk.Frame is an opaque rectangle, forever.** No arrangement of them
+  will ever look like glass, and `-alpha` is not the answer either: it is
+  WHOLE-window, so it makes the text translucent too, which is where
+  Hebrew stops being crisp (popup.py measured that trade years ago). The
+  ask card gets its glass by PAINTING one PIL image — blur, tint,
+  specular rim — and showing it as a single PhotoImage. That only works
+  because the screen is frozen and we own the pixels behind the window;
+  the dashboard and the lookup popup cannot use this technique.
+- **Three ways to round a borderless window, and only one is right here.**
+  Measured on this machine, 2026-08-25: `-transparentcolor` is a 1-BIT
+  key, so every antialiased corner pixel that is merely NEAR the chroma
+  stays opaque and rings the card in a dark fringe (and keyed pixels are
+  click-through). `UpdateLayeredWindow` gives true per-pixel alpha and
+  ERASES TK — the Entry's pixels were overwritten and never came back, so
+  no caret, no live widgets. What ships is the third: paste the glass onto
+  a copy of the CRISP backdrop through an antialiased rounded mask, so
+  outside the radius the pixels are the desktop's own, bit for bit. No
+  transparency of any kind is involved.
+- **ImageDraw's `fill` REPLACES pixels, it does not blend them.** Drawing
+  a half-transparent rounded rectangle straight onto the glass punches a
+  hole in it. Every soft shape in `visual_qa.py` is built as its own RGBA
+  layer and composited (`rr_layer`). The bug looks like a solid white
+  pill where a translucent one was wanted.
+- **Never ImageGrab the screen back to capture your own ink.** It races
+  the topmost window and returns black. The pencil keeps its stroke
+  POINTS in Python and replays them into the pristine crop with Pillow;
+  the canvas line is only there for the live feel.
+- **Full-screen effects on the 4480x1440 virtual screen cost real time.**
+  Painting the whole scene was 734 ms before every local effect moved
+  onto a CROP around the rectangle it touches, and the specular gradient
+  and grain moved out of Python loops (`Image.effect_noise`, and a 64x64
+  gradient stretched with BILINEAR). 172 ms now. Pillow's Gaussian blur
+  is a 3-pass box approximation, so a big radius costs the same as a
+  small one — take the pretty one.
 - **Hebrew in console output** shows as garbage unless
   `$env:PYTHONIOENCODING='utf-8'` — display-only, data is fine.
 - **Branch switches restart the running instance** (~25 s of model

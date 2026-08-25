@@ -1169,13 +1169,33 @@ dictation is running.
 Tap `ctrl+f10`. The screen freezes and dims; drag a rectangle over anything
 — a paragraph in a browser, an error dialog, a chart — and **the rectangle
 lights back up to full brightness** while everything around it stays dark,
-with its size in pixels beside it. Let go and a small **floating card**
-opens next to it, holding a thumbnail of exactly what was captured.
+with its size in pixels beside it. Let go and **the screen stays frozen**:
+what you marked keeps its place and its brightness, ringed in blue, and a
+panel of blue glass opens beside it to hold the conversation.
+
+The screen being frozen is the point, twice over. You are talking about a
+photograph, so nothing underneath can be disturbed by a stray click — and
+because the app owns every pixel of that photograph, the glass is a real
+blur of what is actually behind the panel rather than an imitation of one.
+Tk has no compositor; a frozen screen is what buys the effect. `Esc` gives
+you your screen back.
 
 Now talk to it. Hold **Right Ctrl**, ask your question out loud, and let
 go: the question sends itself — no Enter — and the Hebrew answer **streams
 in**, first words on screen about a quarter of a second later. Or type it
-and press Enter, which behaves identically.
+into the pill at the bottom and press Enter, which behaves identically.
+
+If you do not know what to ask, **three questions are already written** on
+chips above the text bar. They are the only Hebrew left in the interface,
+and on purpose: a chip is not a label, it is the prompt itself, and a model
+answers in the language it was asked in.
+
+**There is a pencil.** It sits in the text bar and it works on the bright
+area, so you can circle the thing you mean before you say a word — and the
+marks are burned into the pixels that get sent, not drawn on top of a
+window. It is the one gesture that survives a bad transcription: when the
+words come out wrong, the ring around the thing you meant does not. An
+undo appears next to it once there is something to undo.
 
 **It is a conversation, and you may interrupt it.** Start talking again
 while it is still writing and it does not queue your words or ignore them:
@@ -1187,12 +1207,15 @@ to point the same card at a different part of the screen (that starts a
 fresh conversation, because the old pixels are gone). Follow-ups stay in
 the card against the same screenshot and cost about a second.
 
-The card is a floating pane, not a dialog: no title bar, rounded, slightly
-see-through until you put the pointer on it, dragged by its top strip,
-resized from its bottom-right corner, and it grows as the conversation
-does. The dot at the top right pins it above other windows; the X and
-`Esc` close it — and the first `Esc` stops the speaking rather than
-closing, so you can shut the voice up without losing the thread.
+The panel is a pane, not a dialog: no title bar, rounded, and see-through
+in the way glass is — the blur, the blue and the bright edge along its top
+left are painted into the picture, so the text on top of them stays crisp
+however transparent the panel looks. Drag it by its top strip, resize it
+from its bottom-right corner, and it grows as the conversation does before
+it starts to scroll. The icons at the top right copy the answer, read it
+aloud, pin the panel and close it; `Esc` closes it too — and the first
+`Esc` stops the speaking rather than closing, so you can shut the voice up
+without losing the thread.
 
 It is the lookup key, but for pixels, and you can talk over it.
 
