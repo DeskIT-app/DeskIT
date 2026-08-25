@@ -8425,20 +8425,27 @@ def test_a_streamed_answer_repaints_on_a_line_or_every_80ms() -> None:
 
 def test_the_card_goes_back_where_it_was_put() -> None:
     """A card the user parked somewhere is a card they chose the place
-    of, and a new selection is not a reason to move it back. The parked
-    position is dropped only when it no longer fits a real monitor —
-    clamping into the virtual screen instead teleports a window on the
-    left monitor onto the primary (popup.py measured that)."""
+    of, and a new selection is not a reason to move it back.
+
+    But it has to earn that twice: fit a REAL monitor, and CLEAR the new
+    selection. The owner reported the second one — re-selecting behind an
+    already-parked card left the card sitting on the very pixels the
+    question was about. Clamping into the virtual screen instead of a
+    monitor's work area teleports a window on the left monitor onto the
+    primary (popup.py measured that)."""
     import visual_qa as vq
 
     work = (0, 0, 1920, 1040)
     anchor = (100, 100, 400, 300)
 
-    assert vq.plan_placement(anchor, work, (400, 200)) == (100, 318), \
-        "with no memory it sits under the selection"
-    assert vq.plan_placement(anchor, work, (400, 200), (50, 60)) == (50, 60)
+    assert vq.plan_placement(anchor, work, (400, 200)) == (418, 100), \
+        "with no memory it sits BESIDE the selection, never over it"
+    parked = vq.plan_placement(anchor, work, (400, 200), (900, 600))
+    assert parked == (900, 600), parked
     assert vq.plan_placement(anchor, work, (400, 200), (1800, 60)) \
-        == (100, 318), "a remembered spot that no longer fits is dropped"
+        == (418, 100), "a remembered spot that no longer fits is dropped"
+    assert vq.plan_placement(anchor, work, (400, 200), (50, 60)) \
+        == (418, 100), "and one that covers the new selection is dropped"
 
     # The left monitor: negative coordinates are a place, not an error.
     left = (-1920, 0, 0, 1040)

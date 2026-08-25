@@ -40,6 +40,11 @@ class Recorder:
         self._state = IDLE
         self._chunks: list[np.ndarray] = []
         self._samples = 0
+        # The loudest sample in the last callback, 0..1. One np.abs().max()
+        # on a buffer that is already in cache - microseconds - and it is
+        # what lets the ask card draw a wave that is actually YOUR voice
+        # rather than a decorative animation pretending to be.
+        self._level = 0.0
         try:
             self._stream = sd.InputStream(
                 samplerate=sample_rate, channels=1, dtype="int16",
@@ -64,6 +69,15 @@ class Recorder:
             self._stream.close()
         except Exception:
             pass
+
+    def meter(self) -> tuple[float, bool]:
+        """(loudest sample of the last buffer 0..1, still recording?).
+
+        Safe from any thread and never blocks: both reads are of a single
+        attribute, and a torn read of a float that is redrawn sixteen
+        times a second is not worth a lock.
+        """
+        return self._level, self._state == ACTIVE
 
     def device_label(self) -> str:
         try:
@@ -122,6 +136,7 @@ class Recorder:
             if self._state == ACTIVE:
                 self._chunks.append(indata.copy())
                 self._samples += len(indata)
+                self._level = float(np.abs(indata).max()) / 32768.0
                 if self._samples >= self._max_samples:
                     # Runaway recording (e.g. key-up swallowed by an elevated
                     # window): drop the buffer, remember the duration.

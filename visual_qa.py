@@ -404,30 +404,65 @@ def plan_placement(anchor_box: tuple[int, int, int, int],
                    size: tuple[int, int],
                    last_pos: tuple[int, int] | None = None
                    ) -> tuple[int, int]:
-    """Where the card goes: where you last dragged it, else beside the
-    selection, and always inside the work area of a REAL monitor.
+    """Where the card goes: BESIDE what you selected, never on top of it.
 
-    The last position wins whenever it still fits, because a card the user
-    has parked somewhere is a card they chose the place of; a new
-    selection is not a reason to move it back. It is rejected when the
-    monitor it was on is gone or the card would hang off the edge —
-    clamping into 0..SM_CXVIRTUALSCREEN instead teleports a window on the
-    left monitor onto the primary (popup.py measured that; this machine's
-    second screen starts at x = -1920).
+    The owner's words, after the first version put it over the picture:
+    "next to the image, not on it". So the card is offered the four sides
+    in turn - right, left, below, above - and the first one that both
+    fits the work area and CLEARS the selection wins. Sides come before
+    below and above because the thing you are asking about is usually
+    wider than it is tall, and a card beside it keeps both in one glance.
+
+    A remembered position still wins, but it has to earn it twice now: it
+    must fit, and it must not cover the new selection. It used to win on
+    fit alone, which is how re-selecting behind an already-parked card
+    left the card sitting on the very pixels the question was about.
+
+    Only when no side clears it does the card overlap, and then it takes
+    the side with the most room. Clamping into 0..SM_CXVIRTUALSCREEN
+    instead of a real monitor's work area teleports a window on the left
+    monitor onto the primary - popup.py measured that, and this machine's
+    second screen starts at x = -1920.
     """
     wd, ht = size
     wl, wt, wr, wb = work
+    ax0, ay0, ax1, ay1 = anchor_box
+    gap = 18
+
+    def fits(x: int, y: int) -> bool:
+        return wl <= x and wt <= y and x + wd <= wr and y + ht <= wb
+
+    def clears(x: int, y: int) -> bool:
+        return not (x < ax1 and x + wd > ax0 and y < ay1 and y + ht > ay0)
+
     if last_pos is not None:
-        x, y = last_pos
-        if wl <= x and wt <= y and x + wd <= wr and y + ht <= wb:
-            return int(x), int(y)
-    left, top, _right, bottom = anchor_box
-    x, y = left, bottom + 18
-    if y + ht > wb:                       # no room below: flip above
-        y = max(wt, top - ht - 18)
-    x = max(wl + 8, min(x, wr - wd - 8))
-    y = max(wt + 8, min(y, wb - ht - 8))
-    return int(x), int(y)
+        x, y = int(last_pos[0]), int(last_pos[1])
+        if fits(x, y) and clears(x, y):
+            return x, y
+
+    beside_y = max(wt + 8, min(ay0 + (ay1 - ay0 - ht) // 2, wb - ht - 8))
+    over_x = max(wl + 8, min(ax0 + (ax1 - ax0 - wd) // 2, wr - wd - 8))
+    for x, y in ((ax1 + gap, beside_y),          # right
+                 (ax0 - gap - wd, beside_y),     # left
+                 (over_x, ay1 + gap),            # below
+                 (over_x, ay0 - gap - ht)):      # above
+        x, y = int(x), int(y)
+        if fits(x, y) and clears(x, y):
+            return x, y
+
+    room = {"right": wr - ax1, "left": ax0 - wl,
+            "below": wb - ay1, "above": ay0 - wt}
+    side = max(room, key=lambda k: room[k])
+    if side == "right":
+        x, y = wr - wd - 8, beside_y
+    elif side == "left":
+        x, y = wl + 8, beside_y
+    elif side == "below":
+        x, y = over_x, wb - ht - 8
+    else:
+        x, y = over_x, wt + 8
+    return (int(max(wl + 8, min(x, wr - wd - 8))),
+            int(max(wt + 8, min(y, wb - ht - 8))))
 
 
 def should_repaint(now: float, last_paint_at: float, so_far: str,
@@ -1296,7 +1331,7 @@ def glass_plate(backdrop, box, *, radius: int = 30, base_a: int = 158,
     plate = Image.alpha_composite(plate, Image.merge("RGBA", (
         Image.new("L", (w, h), 150), Image.new("L", (w, h), 190),
         Image.new("L", (w, h), 255),
-        glow.filter(ImageFilter.GaussianBlur(8)).point(lambda v: v // 6))))
+        glow.filter(ImageFilter.GaussianBlur(7)).point(lambda v: v // 9))))
 
     plate.putalpha(_rounded_mask((w, h), radius))
     return plate
@@ -1426,6 +1461,15 @@ def _icon(kind: str, size: int = 21, colour=INK, width: int = 2):
                    (n * .52, n * .82), (n * .34, n * .62), (n * .18, n * .62)],
                   outline=c, width=lw)
         d.arc((n * .48, n * .28, n * .82, n * .72), 300, 60, fill=c, width=lw)
+    elif kind == "keyboard":
+        d.rounded_rectangle((n * .10, n * .26, n * .90, n * .74), n * .10,
+                            outline=c, width=lw)
+        for row, ys in ((3, .40), (3, .53)):
+            for i in range(row):
+                cx = n * (.26 + i * .24)
+                d.ellipse((cx - lw * .6, n * ys - lw * .6,
+                           cx + lw * .6, n * ys + lw * .6), fill=c)
+        d.line([(n * .34, n * .64), (n * .66, n * .64)], fill=c, width=lw)
     elif kind == "copy":
         d.rounded_rectangle((n * .18, n * .18, n * .62, n * .62), n * .08,
                             outline=c, width=lw)
@@ -1434,6 +1478,39 @@ def _icon(kind: str, size: int = 21, colour=INK, width: int = 2):
     else:
         raise ValueError(f"no such icon: {kind}")
     return img.resize((size, size), Image.LANCZOS)
+
+
+def take_foreground(root, alt_tap: bool = True) -> None:
+    """Actually TAKE focus for a borderless, topmost window.
+
+    Tk's focus_force alone loses to Windows' foreground rules when the
+    process does not own the foreground at the moment the window appears.
+    The sanctioned unlock is a tap of Alt: a process that has just
+    delivered input may take the foreground, and tapping Alt counts as
+    delivering some. SetForegroundWindow then succeeds where focus_force
+    bounced off.
+
+    THE SELECTOR PASSES alt_tap=False, and that is not a preference. The
+    overlay comes up while the user is reaching for the mouse, and a
+    synthetic Alt landing at that moment is an Alt the app underneath
+    also sees - it arms a menu bar, and the click that should have begun
+    the drag goes to dismissing it. Measured: the same scripted drag
+    produced a 98x650 sliver instead of the 660x460 it asked for. The
+    selector does not need the trick anyway: the hotkey that opened it
+    was OUR keystroke, so this process already holds the right to set the
+    foreground.
+    """
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = int(root.winfo_id())
+        target = user32.GetParent(hwnd) or hwnd
+        if alt_tap:
+            user32.keybd_event(0xA4, 0, 0, 0)       # Alt down
+            user32.keybd_event(0xA4, 0, 2, 0)       # Alt up
+        user32.SetForegroundWindow(target)
+        root.focus_force()
+    except Exception:
+        log.debug("visual qa could not take the foreground", exc_info=True)
 
 
 def _pick_face() -> str:
@@ -1863,10 +1940,34 @@ def _select_region(cancel: threading.Event, background
     canvas.bind("<ButtonRelease-1>", on_release)
     root.bind_all("<Escape>", lambda _e: finish(None))
 
+    ctypes.windll.user32.GetAsyncKeyState(0x1B)   # prime, discard
     try:
         root.update_idletasks()
         root.update()
         while not state["done"]:
+            # ESCAPE IS READ, NOT RECEIVED. The Tk binding above only
+            # fires if this window has the keyboard focus, and a
+            # borderless topmost overlay does not get it for free - the
+            # owner pressed Esc, nothing happened, and the only way out
+            # was a click short enough not to count as a drag.
+            #
+            # Taking the focus instead was tried and made things worse:
+            # the Alt tap that unlocks SetForegroundWindow also reaches
+            # the app underneath, which arms its menu bar and swallows
+            # the click that should have started the drag. Measured - the
+            # same scripted 660x460 drag came back as a 98x650 sliver.
+            #
+            # GetAsyncKeyState needs no focus at all, costs microseconds,
+            # and this loop already runs every tick.
+            # 0x8000 is "down right now", 0x0001 is "went down since the
+            # last call". BOTH, or a quick tap between two ticks is lost
+            # entirely - which is exactly what a scripted press is, and
+            # what a fast human press can be. The state is primed once
+            # before this loop so a stale bit cannot cancel on entry.
+            pressed = ctypes.windll.user32.GetAsyncKeyState(0x1B)
+            if pressed & 0x8000 or pressed & 0x0001:
+                finish(None)
+                break
             if cancel.is_set():
                 try:
                     root.destroy()
@@ -1995,6 +2096,7 @@ class _CardSurface:
         self.base_a = max(90, min(220, int(158 * (opacity / 0.93))))
         self.boxes: dict = {}
         self.entry_bg = CARD
+        self.wave_span = None
         self._plate = None
         self._plate_key = None
 
@@ -2097,51 +2199,75 @@ class _CardSurface:
             bb = t.getbbox()
             t = t.crop(bb) if bb else t
             cw = t.width + 26
-            out.alpha_composite(rr_layer((cw, 32), 16, (255, 255, 255, 22),
-                                         outline=(255, 255, 255, 50)),
+            out.alpha_composite(rr_layer((cw, 30), 10, (255, 255, 255, 20),
+                                         outline=(255, 255, 255, 40)),
                                 (cx - cw, cy))
             out.alpha_composite(t, (cx - cw + 13, cy + 7))
-            self.boxes[f"ask{i}"] = (cx - cw, cy, cx, cy + 32)
+            self.boxes[f"ask{i}"] = (cx - cw, cy, cx, cy + 30)
             cx -= cw + 8
 
-        # ---- the text bar. At the BOTTOM, which is where a chat keeps it
-        pill_y = ph - PILL_H - 48
+        # ---- the composer. VOICE by default: no text field at all, a
+        #      wave that is the microphone, and one key-shaped button for
+        #      the times you would rather type. The owner's brief - "in
+        #      the default state there is no text field, only if someone
+        #      wants to open it".
+        bar_h = 62
+        bar_y = ph - bar_h - 46
         out.alpha_composite(
-            rr_layer((pw - pad * 2, PILL_H), PILL_H // 2,
-                     (255, 255, 255, 30), outline=(255, 255, 255, 76)),
-            (pad, pill_y))
-        self.boxes["pill"] = (pad, pill_y, pw - pad, pill_y + PILL_H)
+            rr_layer((pw - pad * 2, bar_h), 16, (255, 255, 255, 24),
+                     outline=(255, 255, 255, 58)), (pad, bar_y))
+        self.boxes["pill"] = (pad, bar_y, pw - pad, bar_y + bar_h)
+        mid = bar_y + bar_h // 2
 
-        # The pencil is in BOTH places at once, always: here, and over the
-        # bright area itself. Two ways in to the same tool, and neither of
-        # them is a mode you can be in without seeing it.
+        # the pencil, on the left, in both modes
         armed = state.get("drawing")
+        px = pad + 12
         if armed:
-            out.alpha_composite(rr_layer((38, 38), 19, (86, 156, 245, 165)),
-                                (pad + 7, pill_y + 10))
-        out.alpha_composite(_icon("pencil", 21, INK if armed else INK_DIM),
-                            (pad + 16, pill_y + 18))
-        self.boxes["pencil"] = (pad + 5, pill_y + 8, pad + 49, pill_y + 50)
+            out.alpha_composite(rr_layer((34, 34), 11, (86, 156, 245, 165)),
+                                (px, mid - 17))
+        out.alpha_composite(_icon("pencil", 19, INK if armed else INK_DIM),
+                            (px + 8, mid - 10))
+        self.boxes["pencil"] = (px, mid - 17, px + 34, mid + 17)
+        px += 34
         if state.get("strokes"):
-            out.alpha_composite(_icon("undo", 19, INK_DIM),
-                                (pad + 56, pill_y + 19))
-            self.boxes["undo"] = (pad + 48, pill_y + 10, pad + 84,
-                                  pill_y + 48)
+            out.alpha_composite(_icon("undo", 18, INK_DIM), (px + 8, mid - 9))
+            self.boxes["undo"] = (px, mid - 17, px + 34, mid + 17)
+            px += 34
 
-        out.alpha_composite(_icon("mic", 21, INK),
-                            (pw - pad - 104, pill_y + 18))
-        self.boxes["mic"] = (pw - pad - 114, pill_y + 8,
-                             pw - pad - 72, pill_y + 50)
-        out.alpha_composite(rr_layer((42, 42), 21, (86, 156, 245, 232)),
-                            (pw - pad - 54, pill_y + 8))
-        out.alpha_composite(_icon("send", 20, (255, 255, 255)),
-                            (pw - pad - 43, pill_y + 19))
-        self.boxes["send"] = (pw - pad - 54, pill_y + 8,
-                              pw - pad - 12, pill_y + 50)
+        # the one round button on the right: a keyboard while you are
+        # talking, an arrow once there is something typed to send
+        typing = state.get("mode") == "text"
+        bx = pw - pad - 12 - 40
+        out.alpha_composite(rr_layer((40, 40), 14, (86, 156, 245, 232)
+                                     if typing else (255, 255, 255, 26),
+                                     outline=None if typing
+                                     else (255, 255, 255, 60)),
+                            (bx, mid - 20))
+        out.alpha_composite(
+            _icon("send" if typing else "keyboard", 19,
+                  (255, 255, 255) if typing else INK),
+            (bx + 10, mid - 10))
+        self.boxes["keyboard" if not typing else "send"] = (
+            bx, mid - 20, bx + 40, mid + 20)
 
-        ex0 = pad + (92 if state.get("strokes") else 56)
-        ex1 = pw - pad - 118
-        self.boxes["entry"] = (ex0, pill_y + 16, ex1, pill_y + PILL_H - 16)
+        self.wave_span = (px + 14, mid, bx - 14)  # where the wave goes
+        if typing:
+            self.boxes["entry"] = (px + 14, mid - 15, bx - 14, mid + 15)
+        else:
+            # no field at all, and the entry parked off the card
+            self.boxes["entry"] = (-4000, -4000, -3990, -3990)
+            if not state.get("listening"):
+                # while the wave is up it IS the invitation, and text
+                # behind moving bars is just noise
+                said = state.get("hint_voice") or "Hold Right Ctrl to talk"
+                t = text_pil(said, max(60, bx - px - 28), pt=12.5,
+                             colour=INK_DIM, single=True, rtl=False)
+                bb = t.getbbox()
+                if bb:
+                    t = t.crop(bb)
+                    out.alpha_composite(
+                        t, ((px + 14 + bx - 14) // 2 - t.width // 2,
+                            mid - 8))
 
         out.alpha_composite(
             text_pil(state.get("hint", ""), pw - pad * 2, pt=10.5,
@@ -2151,8 +2277,10 @@ class _CardSurface:
         rgb = out.convert("RGB")
         # the entry cannot be translucent, so it borrows the colour of the
         # glass it sits on - sampled from the finished pixels, not guessed
+        x0, y0, _x1, _y1 = self.boxes["pill"]
         self.entry_bg = "#%02x%02x%02x" % rgb.getpixel(
-            (max(0, min(rgb.width - 1, ex0 + 30)), pill_y + PILL_H // 2))
+            (max(0, min(rgb.width - 1, x0 + 90)),
+             max(0, min(rgb.height - 1, y0 + 30))))
         return rgb
 
 
@@ -2218,6 +2346,13 @@ class AskWindow:
         self._cx = self._cy = 0
         self._drawing = False
         self._press_target = None
+        # VOICE until you ask for a keyboard. The owner's brief: the
+        # default state has no text field at all, because the whole point
+        # of this thing is that you talk to it.
+        self._mode = "voice"
+        self._level_fn = None
+        self._wave: list[float] = []
+        self._wave_items: list = []
         self._cursor = None
         self._strokes: list = []
         self.anchor_box = anchor_box
@@ -2239,6 +2374,7 @@ class AskWindow:
         root = self.root
         root.bind("<Escape>", self._on_escape)
         root.bind("<Return>", self._on_enter)
+        root.bind("<Key>", self._on_typed)
         self.cue("looking")
 
     # -- construction --
@@ -2290,7 +2426,7 @@ class AskWindow:
         hm = Image.new("L", (lw, lh), 0)
         ImageDraw.Draw(hm).rounded_rectangle((ox - 3, oy - 3, ex + 3, ey + 3),
                                              14, outline=255, width=16)
-        hm = hm.filter(ImageFilter.GaussianBlur(11)).point(lambda v: int(v * .6))
+        hm = hm.filter(ImageFilter.GaussianBlur(9)).point(lambda v: int(v * .45))
         local.alpha_composite(Image.merge("RGBA", (
             Image.new("L", (lw, lh), 86), Image.new("L", (lw, lh), 156),
             Image.new("L", (lw, lh), 245), hm)))
@@ -2357,8 +2493,15 @@ class AskWindow:
         self.canvas.bind("<Motion>", self._on_hover)
 
     def _resting_hint(self) -> str:
-        return ("Hold Right Ctrl to talk  ·  Enter asks  ·  Esc closes"
-                if self.auto_send else "Enter asks  ·  Esc closes")
+        """The line under the composer, which must not repeat it.
+
+        In voice mode the composer already says how to talk, and there is
+        no field for Enter to send from - so the footer carries only what
+        the composer does not.
+        """
+        if self._mode == "text":
+            return "Enter asks  ·  Esc closes  ·  ctrl+F10 re-selects"
+        return "Esc closes  ·  ctrl+F10 picks a new area"
 
     def _build_thumb(self) -> None:
         """The selection, small, in the card's own header.
@@ -2391,8 +2534,12 @@ class AskWindow:
 
     def _place(self, anchor_box, last_pos) -> None:
         self._h = self._wanted_height()
-        work = work_area_near(*(last_pos if last_pos
-                                else (anchor_box[0], anchor_box[1])))
+        # The monitor the SELECTION is on, always. Asking about last_pos
+        # instead handed back the other screen's work area whenever the
+        # card had been parked there, and the card opened on a monitor
+        # the user was not looking at.
+        work = work_area_near((anchor_box[0] + anchor_box[2]) // 2,
+                              (anchor_box[1] + anchor_box[3]) // 2)
         x, y = plan_placement(anchor_box, work, (self._w, self._h), last_pos)
         self._cx, self._cy = self._clamp(x - self._vx, y - self._vy)
         self.root.update_idletasks()
@@ -2509,9 +2656,8 @@ class AskWindow:
             self._copy()
         elif target == "speak":
             self._toggle_speak()
-        elif target == "mic":
-            self._status("hold Right Ctrl and talk", ttl_ms=FLASH_MS)
-            self._repaint()
+        elif target == "keyboard":
+            self._type_instead()
         elif target == "send":
             self._ask_or_extend(self.entry.get())
         elif target.startswith("ask"):
@@ -2521,7 +2667,7 @@ class AskWindow:
         hit = self._hit(event.x, event.y)
         if self._drawing and hit == "selection":
             want = "pencil"
-        elif hit in ("close", "pin", "pencil", "mic", "send", "undo",
+        elif hit in ("close", "pin", "pencil", "keyboard", "send", "undo",
                      "copy", "speak") or (hit or "").startswith("ask"):
             want = "hand2"
         else:
@@ -2666,6 +2812,75 @@ class AskWindow:
                      if self._drawing else "pencil down", ttl_ms=FLASH_MS)
         self._repaint()
 
+    def _type_instead(self) -> None:
+        """Open a text field, because sometimes you do not want to talk.
+
+        It is not there until it is asked for. A field sitting empty at
+        the bottom of a window whose whole point is that you speak to it
+        is a field that says "type here" all day and makes the thing look
+        like every other chat box.
+        """
+        self._mode = "text"
+        self._repaint()
+        try:
+            self.entry.focus_force()
+        except Exception:
+            pass
+
+    def _talk_instead(self) -> None:
+        self._mode = "voice"
+        self.entry.delete(0, "end")
+        self._repaint()
+
+    def _on_typed(self, event) -> None:
+        """A printable key in voice mode opens the field and keeps the key.
+
+        Nobody should have to find a button before their first letter can
+        land. Modifiers, function keys and the navigation cluster are not
+        printable and must fall through - Escape especially, which closes
+        the card.
+        """
+        if self._mode == "text" or not event.char or len(event.char) != 1:
+            return
+        if not event.char.isprintable():
+            return
+        self._type_instead()
+        self.entry.insert("end", event.char)
+
+    def _pump_wave(self) -> None:
+        """Draw the microphone, as canvas items over the painted card.
+
+        Items and not pixels: a repaint of the card is tens of
+        milliseconds and this runs on every 15 ms tick, so painting the
+        wave into the bitmap would be the frame waiting on its content -
+        the same rule the busy rail follows and AGENTS.md sets for the
+        lookup box.
+        """
+        for item in self._wave_items:
+            self.canvas.delete(item)
+        self._wave_items = []
+        if self._mode == "text" or not self._wave:
+            return
+        span = self.surface.wave_span
+        if span is None:
+            return
+        x0, mid, x1 = span
+        x0 += self._cx
+        x1 += self._cx
+        mid += self._cy
+        bars = self._wave[-min(len(self._wave), max(8, (x1 - x0) // 7)):]
+        if not bars:
+            return
+        step = (x1 - x0) / len(bars)
+        for i, value in enumerate(bars):
+            half = max(1.0, value * 22)
+            x = x0 + i * step + step / 2
+            self._wave_items.append(self.canvas.create_line(
+                x, mid - half, x, mid + half, fill="#7fb4f7",
+                width=max(2, int(step) - 2), capstyle="round"))
+        for item in self._wave_items:
+            self.canvas.tag_raise(item)
+
     def _on_pointer_in(self, _event=None) -> None:
         return          # the glass IS the translucency now; no -alpha
 
@@ -2692,18 +2907,11 @@ class AskWindow:
         tapping Alt counts as delivering some. SetForegroundWindow then
         succeeds where focus_force bounced off.
         """
+        take_foreground(self.root)
         try:
-            user32 = ctypes.windll.user32
-            hwnd = int(self.root.winfo_id())
-            parent = user32.GetParent(hwnd)
-            target = parent or hwnd
-            user32.keybd_event(0xA4, 0, 0, 0)       # Alt down
-            user32.keybd_event(0xA4, 0, 2, 0)       # Alt up
-            user32.SetForegroundWindow(target)
             self.entry.focus_force()
         except Exception:
-            log.debug("visual qa could not take the foreground",
-                      exc_info=True)
+            pass
 
     # -- cross-thread API (any thread) --
 
@@ -2770,7 +2978,7 @@ class AskWindow:
                 elif kind == "error":
                     self._on_error(payload)
                 elif kind == "listening":
-                    self._on_listening()
+                    self._on_listening(payload)
                 elif kind == "reselect":
                     self._on_reselect()
                 elif kind == "tts_done":
@@ -2804,6 +3012,9 @@ class AskWindow:
             "drawing": self._drawing,
             "strokes": bool(self._strokes),
             "thumb": self._thumb,
+            "mode": self._mode,
+            "listening": self._level_fn is not None,
+            "hint_voice": "Hold Right Ctrl to talk",
             "speak_on": None if self.speak_btn is None else self.speak_btn.text,
             "speak_ready": self.speak_btn is not None
             and self.speak_btn.enabled,
@@ -2874,6 +3085,24 @@ class AskWindow:
         elif self._chip_x != -96.0:
             self._chip_x = -96.0
             self.canvas.itemconfig(self._rail, state="hidden")
+        if self._level_fn is not None:
+            try:
+                value, still = self._level_fn()
+            except Exception:
+                value, still = 0.0, False
+            if still:
+                self._wave.append(min(1.0, float(value) * 2.6))
+                del self._wave[:-120]
+            else:
+                # The hold ended. Let the wave fall away rather than
+                # vanish - a line that snaps to nothing reads as a bug.
+                self._wave = [v * 0.72 for v in self._wave if v > 0.02]
+                if not self._wave:
+                    self._level_fn = None
+                    if self.status.cget("text").startswith("listening"):
+                        self.status.config(text="", fg=DIM)
+                    self._repaint()
+            self._pump_wave()
         if self._status_until and time.monotonic() > self._status_until:
             self._status_until = 0.0
             self.status.config(text="", fg=DIM)
@@ -2906,11 +3135,11 @@ class AskWindow:
                             colour=INK if question else (231, 240, 255))
             height = body.height + 26
             if question:
-                skin = rr_layer((width, height), 18, (86, 156, 245, 88),
-                                outline=(255, 255, 255, 60))
+                skin = rr_layer((width, height), 13, (86, 156, 245, 92),
+                                outline=(255, 255, 255, 52))
             else:
-                skin = rr_layer((width, height), 18, (255, 255, 255, 26),
-                                outline=(255, 255, 255, 42))
+                skin = rr_layer((width, height), 13, (255, 255, 255, 24),
+                                outline=(255, 255, 255, 34))
             got = (skin, body, 16)
             self._rendered[key] = got
         return got
@@ -3062,8 +3291,13 @@ class AskWindow:
         self._status(f"failed: {message}", AMBER)
         self.cue("error")
 
-    def _on_listening(self) -> None:
+    def _on_listening(self, level=None) -> None:
         """The user started talking: stop reading the last answer at them."""
+        if level is not None:
+            self._level_fn = level
+            self._wave = []
+            self._mode = "voice"
+            self._repaint()         # the composer says "listening…" now
         self.speaker.stop()
         if self.speak_btn is not None:
             self.speak_btn.config_text("Speak")
@@ -3379,7 +3613,7 @@ class Controller:
         window.post(("reselect", None))
         return True
 
-    def notify_recording(self) -> bool:
+    def notify_recording(self, level=None) -> bool:
         """The user started talking. Stop reading the last answer at them.
 
         Called from the recording-start callback, which runs inside the
@@ -3389,7 +3623,7 @@ class Controller:
         window = self._window
         if window is None:
             return False
-        window.post(("listening", None))
+        window.post(("listening", level))
         return True
 
     @staticmethod
