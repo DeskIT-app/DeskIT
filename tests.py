@@ -1953,6 +1953,46 @@ def test_splash_shuts_down_without_aborting_the_process() -> None:
     assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
 
 
+def test_a_closed_dashboard_buries_its_own_interpreter() -> None:
+    """The dashboard had the same wrong-thread abort the ask card had,
+    hidden behind an accident.
+
+    ui._cache and ui._FONTS are module globals holding PhotoImages and
+    Fonts, and each of those holds the tkapp -- so a closed window's
+    interpreter was PINNED rather than garbage, and pinned is safe. But
+    the NEXT Dashboard's __init__ calls ui.forget_images(), which drops
+    that pin while the old window's cycle is still uncollected. From that
+    instant the old interpreter is reachable only through a cycle, and
+    whichever thread runs the next full collection calls
+    Tcl_DeleteInterp. Tcl aborts when that is not the creating thread:
+    exit code 3, no traceback, nothing in any log.
+
+    Two windows and a collection on a third thread, which is the shape
+    the suite itself has. Has to be a subprocess: the abort takes the
+    whole process with it.
+    """
+    import subprocess
+    here = Path(__file__).resolve().parent
+    script = (
+        "import gc, threading, ui, dashboard as dash;"
+        "gc.disable();"
+        "a = dash.Dashboard(); a.root.update(); a._close(); del a;"
+        "b = dash.Dashboard(); b.root.update(); b._close(); del b;"
+        "t = threading.Thread(target=gc.collect, name='not-the-builder');"
+        "t.start(); t.join();"
+        "print('ok')"
+    )
+    out = subprocess.run([sys.executable, "-c", script], cwd=str(here),
+                         capture_output=True, encoding="utf-8",
+                         errors="replace", timeout=120)
+    assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
+    assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
+    # and the burial has to be quiet: the poller and the reopen watcher
+    # read self.closing to notice they should stop, so _bury leaves that
+    # behind rather than killing them with an AttributeError
+    assert "AttributeError" not in (out.stderr or ""), out.stderr
+
+
 def test_closing_the_splash_cannot_close_the_status_dot() -> None:
     """The splash and the dot are two Tk interpreters alive at once, and
     `quitMainLoop` in _tkinter is a MODULE-LEVEL GLOBAL: quit() sets it and

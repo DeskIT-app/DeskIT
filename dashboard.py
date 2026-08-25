@@ -58,6 +58,7 @@ palette is unchanged from the first version of this window.
 from __future__ import annotations
 
 import ctypes
+import gc
 import math
 import os
 import queue
@@ -357,13 +358,20 @@ class Dashboard:
         # asking git synchronously here delayed the whole window opening,
         # and every click on Version paid the same tax again.
         self.branch = "?"
-        threading.Thread(target=self._warm_versions, daemon=True,
-                         name="versions-warmup").start()
         # Latched, not re-derived, because the pause taken by the key
         # dialog has to be undone from wherever that dialog's life ends —
         # including a route that never runs its own close handler.
         self._paused_for_capture = False
         self._events: queue.Queue = queue.Queue()
+        # The queue FIRST, and only then the thread that posts into it.
+        # git can answer in well under a millisecond on a warm repo, and
+        # when it did, _warm_versions reached _events before this line
+        # had run: "AttributeError: 'Dashboard' object has no attribute
+        # '_events'" on the warm-up thread, swallowed with the thread,
+        # and the branch label silently stayed "?" for the life of the
+        # window. Seen eight times in one run of the suite.
+        threading.Thread(target=self._warm_versions, daemon=True,
+                         name="versions-warmup").start()
         self._busy_until = 0.0     # ignore polls right after a command, so a
                                    # stale status cannot flicker the buttons
                                    # back for one frame
@@ -1824,9 +1832,60 @@ class Dashboard:
             self.root.destroy()
         except Exception:
             pass
+        # A window that was never given a mainloop - every one the test
+        # suite builds - has no run() to bury it, so it does it here.
+        if not getattr(self, "_looping", False):
+            self._bury()
+
+    def _bury(self) -> None:
+        """Delete the Tcl interpreter HERE, on the thread that built it.
+
+        destroy() does not delete it; the interpreter goes when the tkapp
+        is deallocated. A Tk widget tree is cyclic, so refcounting never
+        does that - the generational collector does, on whichever thread
+        trips the allocation threshold, and Tcl aborts the process when
+        that is not the creating thread. visual_qa.py lost the whole app
+        to this three times in one evening.
+
+        This window was SAVED by an accident until now: ui._cache and
+        ui._FONTS are module globals holding PhotoImages and Fonts, each
+        of which holds the tkapp, so the interpreter was PINNED rather
+        than garbage - and pinned is safe. But the next Dashboard's
+        __init__ calls ui.forget_images(), which drops that pin while
+        this window's cycle is still uncollected. From that instant the
+        old interpreter is reachable only through a cycle, and whichever
+        thread next runs a full collection executes Tcl_DeleteInterp.
+        Reproduced: exit code 3, Tcl_AsyncDelete, no traceback.
+
+        Clearing __dict__ rather than naming attributes is deliberate.
+        This window has dozens of widget attributes and any list of them
+        would rot the first time someone added a screen; what matters is
+        only that NOTHING here still points at the tree when the collect
+        runs.
+        """
+        try:
+            ui.forget_images()
+        except Exception:
+            pass
+        # Two survivors, and only two. The poller and the reopen watcher
+        # are daemon threads that notice they should stop by reading
+        # self.closing, and they post into self._events on their way out;
+        # take those away and they die on an AttributeError instead of
+        # ending. Neither a bool nor an empty queue holds a widget, so
+        # the tree is still unreachable and the collect below still frees
+        # the interpreter.
+        keep = {"closing": True, "_events": queue.Queue(), "_looping": False}
+        self.__dict__.clear()
+        self.__dict__.update(keep)
+        gc.collect()
 
     def run(self) -> None:
-        self.root.mainloop()
+        self._looping = True
+        try:
+            self.root.mainloop()
+        finally:
+            self._looping = False
+            self._bury()
 
 
 def main() -> int:

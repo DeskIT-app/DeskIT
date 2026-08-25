@@ -87,7 +87,7 @@ back.
   screenshot, not in a test — nothing here asserts colour. Set
   `disabledbackground` / `disabledforeground` / `readonlybackground`
   whenever you set `bg` on something that can be disabled.
-- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 316 of
+- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 319 of
   them, safe to run while dictation is live (two bugs that used to kill
   the app mid-suite are fixed; see git log). Run them BEFORE claiming done.
 - **Subprocesses under pythonw allocate consoles.** Every `subprocess.run`
