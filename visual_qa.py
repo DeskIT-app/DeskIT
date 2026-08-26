@@ -3971,6 +3971,45 @@ class Controller:
             # thread allocates.
             self._busy.clear()
 
+    def open_with(self, image, bbox) -> bool:
+        """Ask about a picture SOMEBODY ELSE took. False if we are busy.
+
+        capture.py's editor has an Ask button, and this is the door it
+        knocks on. It exists as a door rather than as capture.py reaching
+        into AskWindow because everything that makes this feature safe —
+        the upload gate, the local-first chain, the barge-in generation
+        counter — is the Controller's business, and a second way in would
+        be a second place to get them wrong.
+
+        The screen is NOT frozen here: the selector never ran, so
+        `_last_full` stays None and the card grabs its own backdrop the
+        way it does after a reselect. `bbox` is still where the picture
+        came from, so the card opens beside the pixels it is about.
+        """
+        if self._busy.is_set():
+            return False
+        self._busy.set()
+        self._cancel.clear()
+        threading.Thread(target=self._flow_given, args=(image, bbox),
+                         daemon=True, name="visual-qa").start()
+        return True
+
+    def _flow_given(self, image, bbox) -> None:
+        """_flow without the selector. The finally is word for word the
+        same one, and for the same reason — see _flow."""
+        try:
+            self._last_full = None
+            self._last_path = None
+            self._open_ask(image, bbox)
+        except Exception:
+            log.exception("visual qa flow failed")
+        finally:
+            with self._lock:
+                self._window = None
+            self._last_full = None
+            gc.collect()
+            self._busy.clear()
+
     def _open_ask(self, image, bbox) -> None:
         vq = self._cfg_of().visual_qa
         if self._speaker is None:

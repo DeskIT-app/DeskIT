@@ -56,6 +56,24 @@ transcript_log = logging.getLogger("transcripts")
 # pythonw.exe (the windowless launcher) gives the process no stdout at all.
 HAS_CONSOLE = sys.stdout is not None
 
+# Keys that live INSIDE a config section, and where set_values must write
+# them. config.toml keeps one spelling of each key, so the dotted path is
+# section plus the key's own name — which is not always the dataclass field
+# name ([visual_qa] holds `visual_qa_hotkey`, loaded into `hotkey`).
+#
+# Spelled out here rather than imported from config.py, and dashboard.py
+# keeps its own copy of the same four lines, because BOTH of those files
+# are byte-identical on the classic branch while config.py is allowed to
+# differ: a constant read out of config.py would be a shared file
+# depending on something only one branch defines. Four lines of duplication
+# is the cheaper of the two mistakes, and the entries for keys a branch
+# does not have are simply never looked up.
+NESTED_HOTKEYS = {
+    "visual_qa_hotkey": "visual_qa.visual_qa_hotkey",
+    "capture_hotkey": "capture.capture_hotkey",
+    "record_hotkey": "capture.record_hotkey",
+}
+
 
 def report_fatal(message: str) -> None:
     """Startup failures must be visible even with no console — otherwise
@@ -133,11 +151,14 @@ def cursor_point() -> tuple[int, int] | None:
 
 
 class App:
-    # Class-level defaults for the two visual-QA slots on purpose: the
-    # test suite builds half-initialised Apps by hand (no __init__), and
-    # _popup_key/_handle must degrade to "feature absent", not crash.
+    # Class-level defaults for the visual-QA and capture slots on purpose:
+    # the test suite builds half-initialised Apps by hand (no __init__),
+    # and _popup_key/_handle must degrade to "feature absent", not crash.
     _vqa = None
     _vqa_vk = None
+    _capture = None
+    _capture_vk = None
+    _record_vk = None
 
     def __init__(self, cfg: config_mod.Config,
                  config_path: Path | None = None):
@@ -202,9 +223,16 @@ class App:
         # Constructing the controller imports stdlib only; Pillow and Tk
         # wait for the first press or the background warm-up.
         self._vqa = None
+        # Screenshots and screen recordings, the same bargain: two keys
+        # that move through rebind() like every other one, and a
+        # controller that imports Pillow, Tk and the video encoder only
+        # once one of them is actually pressed.
+        self._capture = None
         hotkeys, taps, latch_vk, pause_vk = self.bindings(cfg)
         self._lookup_vk = self._vk_of(taps, "lookup")
         self._vqa_vk = self._vk_of(taps, "visual_qa")
+        self._capture_vk = self._vk_of(taps, "capture")
+        self._record_vk = self._vk_of(taps, "record")
         self.machine = PTTStateMachine(
             hotkeys,
             on_start=self._on_start, on_stop=self._on_stop,
@@ -309,6 +337,31 @@ class App:
             self._vqa = vqa
         return vqa
 
+    @property
+    def capture(self):
+        """The screenshot / screen-recording controller, built on first
+        touch.
+
+        The ask card is handed in as a CALLABLE rather than as an object.
+        The editor's Ask button needs it, [visual_qa] may be switched off
+        entirely, and building one here would drag Tk and a vision chain
+        into a press that only wanted a png.
+        """
+        controller = getattr(self, "_capture", None)
+        if controller is None:
+            import capture as capture_mod
+            controller = capture_mod.Controller(lambda: self.cfg,
+                                                ask_provider=self._ask_card)
+            self._capture = controller
+        return controller
+
+    def _ask_card(self):
+        """The ask-the-screen controller, or None when it is switched off."""
+        vqa_cfg = getattr(self.cfg, "visual_qa", None)
+        if vqa_cfg is None or not vqa_cfg.enabled:
+            return None
+        return self.vqa
+
     @staticmethod
     def bindings(cfg: config_mod.Config):
         """config -> (hold hotkeys, tap keys, latch vk, pause vk).
@@ -349,6 +402,15 @@ class App:
         vqa = getattr(cfg, "visual_qa", None)
         if vqa is not None and vqa.enabled and vqa.hotkey:
             taps[parse_binding(vqa.hotkey)] = "visual_qa"
+        # Same getattr, same reason: [capture] does not exist on classic's
+        # Config and this file is byte-identical on both branches. There
+        # these two lines register nothing at all.
+        cap = getattr(cfg, "capture", None)
+        if cap is not None and cap.enabled:
+            if cap.hotkey:
+                taps[parse_binding(cap.hotkey)] = "capture"
+            if cap.record_hotkey:
+                taps[parse_binding(cap.record_hotkey)] = "record"
         return (hotkeys, taps,
                 vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
                 vk_for(cfg.pause_hotkey) if cfg.pause_hotkey else None)
@@ -404,6 +466,10 @@ class App:
         if self._lookup_vk is not None and vk == self._lookup_vk:
             return False
         if self._vqa_vk is not None and vk == self._vqa_vk:
+            return False
+        if self._capture_vk is not None and vk == self._capture_vk:
+            return False
+        if self._record_vk is not None and vk == self._record_vk:
             return False
         return self.popup.on_key(vk)
 
@@ -619,13 +685,14 @@ class App:
                             pause_vk=pause_vk)
         self._lookup_vk = self._vk_of(taps, "lookup")   # _popup_key reads it
         self._vqa_vk = self._vk_of(taps, "visual_qa")
+        self._capture_vk = self._vk_of(taps, "capture")
+        self._record_vk = self._vk_of(taps, "record")
         self.cfg = new
         # Nested settings are written under their section name; the file
         # keeps one spelling of each key and so does this call. The TOML
         # key is visual_qa_hotkey (config.toml's own naming), the dataclass
         # field it loads into is hotkey.
-        write_key = ("visual_qa.visual_qa_hotkey"
-                     if field == "visual_qa_hotkey" else field)
+        write_key = NESTED_HOTKEYS.get(field, field)
         config_mod.set_values(self.config_path, {write_key: key})
         message = (f"{field} is now '{key}'" if key
                    else f"{field} is off")
@@ -699,6 +766,10 @@ class App:
         self.popup.stop()
         if self._vqa is not None:
             self._vqa.stop()
+        # The SLOT, not the property: stop() must never be the call that
+        # first imports Pillow, Tk and a video encoder.
+        if self._capture is not None:
+            self._capture.stop()
         if self.phone is not None:
             self.phone.stop()
         self.hook.stop()
@@ -868,6 +939,12 @@ class App:
         if action == "visual_qa":
             self._tap_visual_qa()
             return
+        if action == "capture":
+            self._tap_capture()
+            return
+        if action == "record":
+            self._tap_record()
+            return
         if action not in ("translate", "punctuate"):
             return
         # Remember WHERE the text is before anything slow happens, for the
@@ -964,6 +1041,45 @@ class App:
         if self.vqa.begin_selection():
             log.info("select the part of the screen to ask about — esc or "
                      "a click cancels")
+
+    def _tap_capture(self) -> None:
+        """Take a screenshot: freeze, select, save, copy, offer the editor.
+
+        Runs inside the keyboard hook like every other tap, so it checks
+        one flag, spawns a thread and returns. Everything slow -- the
+        grab, the overlay, the PNG, the clipboard -- happens on the
+        capture controller's own thread; blocking here would make Windows
+        drop the hook and freeze every key on the machine.
+        """
+        if self.capture.busy:
+            self._cue_once("noop", "capture-busy")
+            log.info("the capture overlay is already up - ignoring the "
+                     "extra press")
+            return
+        if self.capture.begin_shot():
+            log.info("drag the part of the screen to capture - shift-drag "
+                     "to lasso a shape, enter for this screen, esc cancels")
+
+    def _tap_record(self) -> None:
+        """Start a screen recording, or stop the one that is running.
+
+        A TOGGLE, which is why this reads `recording` before `busy`: the
+        second press of the key is how a recording ENDS, and refusing it
+        as "busy" would leave the only way out on a bar that is sitting on
+        top of the thing being recorded.
+        """
+        if self.capture.recording:
+            self.capture.toggle_clip()
+            log.info("stopping the recording")
+            return
+        if self.capture.busy:
+            self._cue_once("noop", "capture-busy")
+            log.info("the capture overlay is already up - ignoring the "
+                     "extra press")
+            return
+        if self.capture.toggle_clip():
+            log.info("drag the area to record - enter for this screen, "
+                     "esc cancels")
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
@@ -2581,6 +2697,19 @@ def main() -> int:
                  else f", then {vqa_cfg.groq_model} (upload is ON)",
                  "" if vqa_cfg.speak == "off"
                  else f"; speak = '{vqa_cfg.speak}'")
+    cap_cfg = getattr(cfg, "capture", None)
+    if cap_cfg is not None and cap_cfg.enabled and cap_cfg.hotkey:
+        log.info("tap %r to CAPTURE part of the screen - drag a box or "
+                 "shift-drag a shape, and it is on the clipboard and in "
+                 "%s before you let go. A toolbar then opens on it for "
+                 "cropping, drawing, blurring out anything private, or "
+                 "handing it to the ask key%s", cap_cfg.hotkey,
+                 cap_cfg.folder,
+                 "" if not cap_cfg.record_hotkey else
+                 (". Tap %r to RECORD a region to mp4 instead, and again "
+                  "to stop%s") % (cap_cfg.record_hotkey,
+                                  " (with the microphone)"
+                                  if cap_cfg.audio == "mic" else ""))
     if cfg.pause_hotkey:
         log.info("tap '%s' to pause every key above without unloading "
                  "anything (for games), and again to resume%s",

@@ -286,6 +286,75 @@ class VisualQAConfig:
 
 
 @dataclass(frozen=True)
+class CaptureConfig:
+    """Screenshots and screen recordings — see capture.py.
+
+    THE ONE THING TO GET RIGHT ABOUT THIS SECTION: unlike [visual_qa],
+    whose screenshot lives in memory and is never written down, this
+    feature's whole job is to write pictures of your screen to disk. So
+    `folder` is treated the way transcripts.log is — it sits beside the
+    app, it is gitignored, and nothing in capture.py uploads anything
+    anywhere. The only route from a capture to a model is the editor's Ask
+    button, which hands the pixels to visual_qa and obeys
+    `visual_qa.allow_screenshot_upload` like every other question.
+
+    The microphone is off by default. A screen recorder that quietly opens
+    the mic is a surprise, and this app's rule is that audio does not
+    travel; `audio = "mic"` is the owner choosing otherwise, on purpose.
+    """
+    # false unregisters BOTH keys entirely — the kill switch.
+    enabled: bool = True
+    # Tap: freeze the screen, drag or lasso, and the picture is on the
+    # clipboard and on disk before the mouse comes back up.
+    hotkey: str = "ctrl+f11"
+    # Tap: pick a region and record it. Tap again to stop.
+    record_hotkey: str = "ctrl+f12"
+    # Relative names are relative to the APP folder, not to whatever
+    # directory the process was started from — this app is launched from a
+    # .vbs, a shortcut and a scheduled task, and all three disagree.
+    folder: str = "captures"
+    # Win+Shift+S's promise: the capture is pasteable immediately. false
+    # still writes the file.
+    copy_to_clipboard: bool = True
+    # The editor opens on the selection where it was taken. false makes the
+    # key a pure "grab it and get out of my way".
+    edit_after_shot: bool = True
+    # A finished clip goes on the clipboard as a FILE (CF_HDROP), so it can
+    # be pasted into a chat or a folder the way Explorer's Copy does.
+    copy_clip_path: bool = True
+    # 30 was measured achievable at 720p and 1080p with zero dropped
+    # frames; a 1440p region falls to ~28 because the GRAB costs 32 ms,
+    # and the clip is still real-time because every frame is stamped with
+    # a wall clock rather than a frame number.
+    fps: int = 30
+    # small | balanced | sharp — crf 30 / 26 / 20. Screen content is flat
+    # colour and sharp edges, which h264 likes: these are several steps
+    # softer than the same names would mean for camera video.
+    quality: str = "balanced"
+    # BitBlt does not include the pointer (the compositor draws it over
+    # everything, not into the screen bitmap), so it is painted in. A
+    # recording without one is a recording where nobody can tell what is
+    # being pointed at.
+    cursor: bool = True
+    # off | mic. Default off, see the class docstring. The clip bar has a
+    # mute switch for a recording that HAS a track: an mp4 declares its
+    # streams when the container opens, so a track cannot be added later.
+    audio: str = "off"
+    # A backstop, not a budget: a key tapped by accident should not fill
+    # the disk overnight. 0 = no cap.
+    max_minutes: int = 30
+    # Which corner the recording indicator sits in, or "off" for none. A
+    # corner rather than "beside the region": an indicator that moves when
+    # the region does is an obstruction, and a corner is somewhere you can
+    # learn to glance at.
+    timer_corner: str = "bottom-right"
+    # Say "Recording started" for a couple of seconds before shrinking to
+    # the pill. The failure mode of a screen recorder is not knowing
+    # whether it is running, and this is the cheapest possible answer.
+    announce: bool = True
+
+
+@dataclass(frozen=True)
 class VocabConfig:
     """The learned vocabulary — see vocab.py.
 
@@ -496,6 +565,22 @@ class Config:
     vocab: VocabConfig = field(default_factory=VocabConfig)
     polish: PolishConfig = field(default_factory=PolishConfig)
     visual_qa: VisualQAConfig = field(default_factory=VisualQAConfig)
+    capture: CaptureConfig = field(default_factory=CaptureConfig)
+
+    @property
+    def capture_hotkey(self) -> str:
+        """The screenshot key, read out of [capture].
+
+        Same shape and same reasons as visual_qa_hotkey below: the section
+        owns its keys and its kill switch together, so there is one place
+        the value lives.
+        """
+        return self.capture.hotkey
+
+    @property
+    def record_hotkey(self) -> str:
+        """The screen-recording key, read out of [capture]."""
+        return self.capture.record_hotkey
 
     @property
     def visual_qa_hotkey(self) -> str:
@@ -535,6 +620,8 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
     ("correct_hotkey", "Teach it a word (tap)"),
     ("lookup_hotkey", "Look up (tap)"),
     ("visual_qa_hotkey", "Ask the screen (tap)"),
+    ("capture_hotkey", "Screenshot (tap)"),
+    ("record_hotkey", "Record the screen (tap)"),
     ("pause_hotkey", "Pause / resume"),
 )
 
@@ -548,7 +635,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
 # key is the one that has to work when everything else is confusing.
 CHORD_FIELDS: frozenset[str] = frozenset((
     "translate_hotkey", "punctuate_hotkey", "correct_hotkey",
-    "lookup_hotkey", "visual_qa_hotkey",
+    "lookup_hotkey", "visual_qa_hotkey", "capture_hotkey", "record_hotkey",
 ))
 
 
@@ -560,6 +647,14 @@ def with_field(cfg: "Config", name: str, value) -> "Config":
     assign to the visual_qa_hotkey property. One helper, both callers,
     and a new nested field later means editing this and nothing else.
     """
+    if name == "capture_hotkey":
+        return dataclasses.replace(
+            cfg, capture=dataclasses.replace(cfg.capture,
+                                             hotkey=str(value)))
+    if name == "record_hotkey":
+        return dataclasses.replace(
+            cfg, capture=dataclasses.replace(cfg.capture,
+                                             record_hotkey=str(value)))
     if name == "visual_qa_hotkey":
         return dataclasses.replace(
             cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
@@ -671,6 +766,7 @@ def load(path: Path) -> Config:
     vocab = data.get("vocab", {})
     polish = data.get("polish", {})
     visual_qa = data.get("visual_qa", {})
+    capture = data.get("capture", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -870,6 +966,33 @@ def load(path: Path) -> Config:
             cloud_timeout_s=int(visual_qa.get(
                 "cloud_timeout_s", VisualQAConfig.cloud_timeout_s)),
         ),
+        capture=CaptureConfig(
+            enabled=bool(capture.get("enabled", CaptureConfig.enabled)),
+            hotkey=str(capture.get(
+                "capture_hotkey", CaptureConfig.hotkey)).strip().lower(),
+            record_hotkey=str(capture.get(
+                "record_hotkey",
+                CaptureConfig.record_hotkey)).strip().lower(),
+            folder=str(capture.get("folder", CaptureConfig.folder)).strip(),
+            copy_to_clipboard=bool(capture.get(
+                "copy_to_clipboard", CaptureConfig.copy_to_clipboard)),
+            edit_after_shot=bool(capture.get(
+                "edit_after_shot", CaptureConfig.edit_after_shot)),
+            copy_clip_path=bool(capture.get(
+                "copy_clip_path", CaptureConfig.copy_clip_path)),
+            fps=int(capture.get("fps", CaptureConfig.fps)),
+            quality=str(capture.get(
+                "quality", CaptureConfig.quality)).strip().lower(),
+            cursor=bool(capture.get("cursor", CaptureConfig.cursor)),
+            audio=str(capture.get(
+                "audio", CaptureConfig.audio)).strip().lower(),
+            max_minutes=int(capture.get("max_minutes",
+                                        CaptureConfig.max_minutes)),
+            timer_corner=str(capture.get(
+                "timer_corner",
+                CaptureConfig.timer_corner)).strip().lower(),
+            announce=bool(capture.get("announce", CaptureConfig.announce)),
+        ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
         splash=bool(data.get("splash", Config.splash)),
@@ -1000,6 +1123,30 @@ def load(path: Path) -> Config:
         raise ConfigError("visual_qa.window_alpha must be between 0.30 and "
                           "1.0 — under a third the answer stops being "
                           "readable against whatever is behind it")
+    if cfg.capture.quality not in ("small", "balanced", "sharp"):
+        raise ConfigError('capture.quality must be "small", "balanced" or '
+                          f'"sharp", got {cfg.capture.quality!r}')
+    if cfg.capture.audio not in ("off", "mic"):
+        raise ConfigError('capture.audio must be "off" or "mic", got '
+                          f"{cfg.capture.audio!r} — a screen recording only "
+                          "opens the microphone when you say so")
+    if not 5 <= cfg.capture.fps <= 60:
+        raise ConfigError("capture.fps must be between 5 and 60 — under 5 a "
+                          "recording is a slideshow, and over 60 the GRAB "
+                          "cannot keep up on this machine anyway (measured "
+                          "32 ms a frame at 1440p, which is 31 fps of "
+                          "ceiling)")
+    if cfg.capture.max_minutes < 0:
+        raise ConfigError("capture.max_minutes must be >= 0 (0 = no cap)")
+    if cfg.capture.timer_corner not in ("top-left", "top-right",
+                                        "bottom-left", "bottom-right",
+                                        "off"):
+        raise ConfigError('capture.timer_corner must be "top-left", '
+                          '"top-right", "bottom-left", "bottom-right" or '
+                          f'"off", got {cfg.capture.timer_corner!r}')
+    if not cfg.capture.folder:
+        raise ConfigError("capture.folder cannot be empty — that is where "
+                          "your screenshots go")
     if cfg.vocab.max_terms < 0:
         raise ConfigError("vocab.max_terms must be >= 0 (0 disables hotwords)")
     if cfg.vocab.keep_audio < 0:

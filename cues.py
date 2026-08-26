@@ -70,6 +70,18 @@ CUES: dict[str, list[tuple[int, int]]] = {
     # like every other "it landed" cue here — recognisably related to the
     # note you know, and unmistakably not it.
     "repaired": [(494, 80), (740, 110)],
+    # THE SCREEN KEYS. A capture is a different KIND of act from every cue
+    # above it: nothing was heard, nothing was rewritten, a thing now
+    # exists. So it gets a shape of its own rather than a fourth pitch in
+    # the grab-ask-return family -- a short rise like a shutter, high
+    # enough to be unmistakable over whatever was playing.
+    "shot": [(1047, 55), (1397, 85)],
+    # A recording is the one thing in this app with a DURATION you can
+    # forget about, so its two cues are deliberately opposite and
+    # deliberately not subtle: rising to start, falling to stop, a fifth
+    # apart, the shape every recording light in the world already has.
+    "recording": [(784, 90), (1175, 130)],
+    "recorded": [(1175, 90), (784, 140)],
 }
 
 

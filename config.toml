@@ -591,6 +591,122 @@ cloud_timeout_s = 30           # Groq answers in half a second and Gemini in
                                # are not, and the next backend should have
                                # the work
 
+[capture]
+# SCREENSHOTS AND SCREEN RECORDINGS — Win+Shift+S, plus the editor, plus a
+# recorder, and none of it leaves this machine.
+#
+# Tap `capture_hotkey` and the screen freezes and dims: drag a box, or hold
+# Shift and lasso a shape (the same gesture the ask key uses, because it is
+# the same hand). Let go and the picture is ALREADY on your clipboard and
+# ALREADY in `folder` — that promise is not negotiable, so nothing you do
+# afterwards can lose it. A glass toolbar then opens under the selection,
+# on the pixels where you took them, and you can crop, draw, arrow,
+# highlight, blur out an address, undo, copy again, save again, or hand the
+# whole thing to the ask key.
+#
+# Tap `record_hotkey`, pick a region the same way, and it records to mp4
+# until you tap the key again. The bar that shows the clock does NOT appear
+# in the recording (SetWindowDisplayAffinity — see below), so it can sit on
+# top of what is being recorded instead of beside it.
+#
+# PRIVACY. Unlike [visual_qa], whose screenshot lives in memory and is
+# never written down, this feature exists to write pictures of your screen
+# to disk. So `folder` is treated the way transcripts.log is: beside the
+# app, gitignored, and never uploaded by anything in capture.py. The only
+# route from a capture to a model is the editor's Ask button, which hands
+# the pixels to the ask card and obeys allow_screenshot_upload above.
+#
+# MEASURED ON THIS MACHINE, 2026-08-25, live:
+#   grab, reused DIB + BitBlt      10.1 ms at 720p · 21.7 ms at 1440p
+#   the same rectangles via PIL    53.7 ms · 56.7 ms  (5x slower, which is
+#                                  the whole reason a recorder is possible)
+#   encode, libx264 veryfast        5.1 ms at 720p · 20.9 ms at 1440p
+#   achieved                       30.0 fps at 720p and 1080p, 0 dropped
+#                                  28.0 fps at 1440p, 0 dropped
+#   clipboard (CF_DIB + PNG)       43 ms to encode, 0.4 ms to write
+#   controls hidden from capture   0 of 60000 pixels of a window that was
+#                                  demonstrably there
+# The encoder is PyAV, which faster-whisper already installs — no new
+# package, no ffmpeg.exe, nothing to keep up to date.
+enabled = true                 # false unregisters BOTH keys entirely
+                               # — the kill switch
+capture_hotkey = "ctrl+f11"    # measured-free like the other ctrl+F keys:
+                               # the 2026-08 probe found f1-f6 and f10-f16
+                               # under ctrl reaching the page untouched in
+                               # Chrome and Edge. Rebind from the dashboard
+record_hotkey = "ctrl+f12"     # tap to start, tap again to stop. One key
+                               # for both because the second press is the
+                               # same thought as the first, and a recorder
+                               # you have to hunt for with the mouse records
+                               # you hunting for it
+folder = "captures"            # relative to the APP folder, not to whatever
+                               # directory the process started in — this app
+                               # is launched from a .vbs, a shortcut and a
+                               # scheduled task, and all three disagree.
+                               # An absolute path is used as given
+copy_to_clipboard = true       # Win+Shift+S's promise. CF_DIB and the
+                               # registered PNG format, so Paint, Word,
+                               # Chrome and Slack all find one they like and
+                               # a lasso keeps its transparency
+edit_after_shot = true         # false makes the key a pure "grab it and get
+                               # out of my way" — the file and the clipboard
+                               # are identical either way
+copy_clip_path = true          # a finished recording goes on the clipboard
+                               # as a FILE (CF_HDROP), so it pastes into a
+                               # chat or a folder the way Explorer's Copy
+                               # does. A video has no useful bitmap form
+fps = 30                       # measured achievable with zero dropped
+                               # frames at 720p and 1080p. A 1440p region
+                               # falls to ~28 because the GRAB costs 32 ms,
+                               # and the clip is still real-time: every
+                               # frame carries a wall-clock stamp rather
+                               # than a frame number, so a slow grab makes a
+                               # slightly choppier video and never a faster
+                               # one
+quality = "balanced"           # small | balanced | sharp — crf 30/26/20.
+                               # Screen content is flat colour and sharp
+                               # edges, which h264 likes, so these are
+                               # several steps softer than the same names
+                               # would mean for camera video
+cursor = true                  # BitBlt does not include the pointer (the
+                               # compositor draws it over everything, not
+                               # into the screen bitmap), so it is painted
+                               # in. Without it nobody can tell what is
+                               # being pointed at
+audio = "off"                  # off | mic. OFF BY DEFAULT ON PURPOSE: a
+                               # screen recorder that quietly opens the
+                               # microphone is a surprise, and this app's
+                               # rule is that audio does not travel. With
+                               # "mic" the clip gets a track from the same
+                               # microphone dictation uses (two shared-mode
+                               # streams on one device were verified working
+                               # here), and the bar grows a mute switch —
+                               # mute rather than remove, because an mp4
+                               # declares its streams when the container
+                               # opens and a track cannot be added later
+max_minutes = 30               # a backstop, not a budget: a key tapped by
+                               # accident should not fill the disk
+                               # overnight. 0 = no cap
+timer_corner = "bottom-right"  # top-left | top-right | bottom-left |
+                               # bottom-right | off. Where the little
+                               # red-dot-and-clock pill sits while a
+                               # recording runs. A CORNER and not "beside
+                               # the region", because an indicator that
+                               # moves when the region does is an
+                               # obstruction — and the corner is of the
+                               # WORK area of the monitor the region is on,
+                               # so it is never under a taskbar and never
+                               # on the wrong screen. It is hidden from the
+                               # capture, so a corner inside the recorded
+                               # area is fine. "off" = no pill; the
+                               # recording is still announced and the key
+                               # still stops it
+announce = true                # say "Recording started" for 2.6 s before
+                               # shrinking to the pill. The failure mode of
+                               # a screen recorder is not knowing whether
+                               # it is running, and this is the cheapest
+                               # possible answer to that
+
 [server]
 # Dictate from the PHONE, transcribe on this GPU: the phone records and
 # posts the audio here, so you keep the Hebrew fine-tune instead of falling

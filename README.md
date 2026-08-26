@@ -19,6 +19,14 @@ still holding Right Ctrl and the recording **locks on** — let go and talk
 for as long as you want. Tap **←** again to transcribe, or **Esc** to throw
 it away. See [Long dictation](#long-dictation-lock-the-key-with-).
 
+**Something on screen worth keeping? Tap `ctrl+f11`.** Drag a box or
+Shift-drag a lasso and the picture is on your clipboard and in `captures\`
+before you let go — then a glass toolbar opens on the pixels where you
+found them, to crop, arrow, highlight, blur out anything private, or hand
+the whole thing to the ask key. `ctrl+f12` records a region to mp4 instead,
+and the controls do not appear in the video. See
+[Capturing the screen](#capturing-the-screen-ctrlf11-and-recording-it-ctrlf12).
+
 **Reading rather than writing? Tap F8.** Select a word or a sentence
 anywhere — a web page, a PDF, a chat, a field you have no permission to
 edit — and a small box appears with the Hebrew, or with the English if
@@ -1321,6 +1329,178 @@ stops the moment you start talking.
 9. **With `allow_screenshot_upload = false`, stop Ollama and ask** — the
    card must say it failed, and no cloud request may appear anywhere.
 
+## Capturing the screen (`ctrl+f11`) and recording it (`ctrl+f12`)
+
+Win+Shift+S, plus the editor Windows makes you go and find, plus a
+recorder — and none of it leaves this machine.
+
+Tap `ctrl+f11`. The screen freezes and dims exactly the way the ask key
+freezes it, because it is the same gesture and the same hand: **drag a
+box**, or **hold Shift and lasso a shape** around something that is not a
+rectangle. Or don't drag at all — under the hint there is **a chip per
+monitor**, named and sized (`Screen 1  2560 × 1440`, `Screen 2  1920 ×
+1080`, `All screens  4480 × 1440`), and clicking one takes that whole
+screen. (`Enter` still means "the screen the pointer is on", for when your
+hand is already there.) Let go and two things have already happened — the picture is **on your
+clipboard** and it is **saved in `captures\`** — before you have finished
+letting go of the mouse. That promise is not negotiable and nothing you do
+next can undo it. `Esc` at any point gives you your screen back.
+
+Then the editor opens, and this is the part Windows does not do: **the
+picture does not move.** What you selected stays exactly where you
+selected it, at 1:1, lit and ringed in blue, and a toolbar of blue glass
+arrives underneath it. You are drawing on the thing itself, in the place
+you found it — not hunting for a thumbnail that opened somewhere else at
+some other size.
+
+On the toolbar, left to right:
+
+| | what it does |
+|---|---|
+| **pencil** | freehand, in the current ink |
+| **arrow** | drag from anywhere to the thing you mean |
+| **box** | a rounded rectangle around it |
+| **highlighter** | a fat translucent stripe — you can still read what is under it |
+| **blur** | a **mosaic**, not a Gaussian, over anything nobody else should read |
+| **crop** | drag the part to keep; the selection shrinks to it on screen |
+| **swatch** | cycles red → yellow → blue → white |
+| **undo** | one step back, and a crop counts as a step |
+| **Copy** | the edited picture, back onto the clipboard |
+| **Save** | over the same file — one drag makes one file |
+| **Ask** | hands the pixels to the ask card (`ctrl+f10`) with everything you drew on them |
+| **×** | closes; the file and the clipboard keep what you already had |
+
+The blur is a mosaic on purpose. A Gaussian at any radius a person will
+accept can be sharpened back, and this is the tool people reach for when
+the thing underneath is an address or a token. The block size was picked by
+reading the result: at 8 px a 12 pt password was still guessable, so it is
+12.
+
+A **lasso keeps its transparency**. The png on disk has a real alpha
+channel outside the shape, so a cut-out lands on whatever colour the
+document you paste it into already is. (The clipboard also carries a plain
+bitmap, flattened onto white, for the applications that cannot read alpha —
+Windows' own freeform snip makes the same trade.)
+
+### Recording (`ctrl+f12`)
+
+Tap it, pick a region the same way — including **the whole-screen chips**,
+which is what that key is usually for — and it starts. **Tap it again to
+stop**: the same key, because the second press is the same thought as the
+first, and a recorder you have to hunt for with the mouse records you
+hunting for it.
+
+**It tells you it started.** A card appears in the corner —
+`● Recording started · 960 × 540 · ctrl+f12 to stop` — and after a couple
+of seconds it shrinks, in place, to a small rounded pill that is a blinking
+red dot and a clock and nothing else. The failure mode of a screen recorder
+is not knowing whether it is running; this is the cheapest possible answer,
+and it is the shape NVIDIA's overlay uses because it is the right one.
+
+**Put the pointer on the pill and the controls come back** — discard,
+mute, pause, stop — growing out of the anchored corner so nothing moves out
+from under your hand. The dot goes amber and steady while paused, so
+"is this still capturing?" is answerable from the corner of an eye without
+a word to read. Drag it if the corner is wrong for one recording;
+`[capture] timer_corner` moves it for good, or `"off"` keeps only the
+announcement.
+
+A thin blue frame marks what is being recorded. **None of it appears in the
+video** — that is `SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE)`,
+measured at 0 of 60000 pixels of a window that was demonstrably there, and
+it is what lets the pill sit in a corner that may be *inside* the region
+being recorded. The frame is also click-through, so it never eats a click
+on the thing you are recording.
+
+When you stop, a card says what was written, how long it ran and how big it
+is, with buttons to open the folder or copy the file. The clip goes on the
+clipboard **as a file**, so you can paste it into a chat or a folder the
+way Explorer's Copy does — a video has no useful bitmap form, and a path as
+text is not something you can paste into WhatsApp and have arrive as a
+video.
+
+The microphone is **off** by default. A screen recorder that quietly opens
+your mic is a surprise, and this app's rule is that audio does not travel.
+Set `[capture] audio = "mic"` and clips get a track from the same
+microphone dictation uses — two simultaneous streams on one device were
+verified working here, so recording does not cost you the hotkey — and the
+bar grows a mute switch. It mutes rather than removes: an mp4 declares its
+streams when the container opens, so a track cannot be added later, and a
+switch that pretended otherwise would be a lie in the shape of a button.
+
+### What it costs, measured
+
+The encoder is **PyAV**, which faster-whisper already installs — no new
+package, no `ffmpeg.exe`, nothing to keep up to date. The grab is a reused
+DIB section and `BitBlt` rather than PIL's `ImageGrab`, and that one choice
+is the difference between 30 fps and 18:
+
+| region | our grab | PIL `ImageGrab` | encode (libx264 veryfast) |
+|---|---|---|---|
+| 1280×720 | 10.1 ms | 53.7 ms | 5.1 ms |
+| 1920×1080 | 11.6 ms | 56.7 ms | 11.6 ms |
+| 2560×1440 | 21.7 ms | 56.7 ms | 20.9 ms |
+
+Capture and encode run on separate threads over an eight-frame queue.
+Achieved on this machine: **30.0 fps at 720p and 1080p with zero dropped
+frames**, and 28.0 fps at 1440p — where the shortfall is the grab, not the
+encoder. It does not speed the video up: every frame carries a **wall-clock
+stamp** in a 1/1000 timebase rather than a frame number, so a clip that
+averaged 28 fps is 28 fps of real seconds. A 4.0 s probe came back as
+4.03 s, 119 frames.
+
+Size depends entirely on how much of the screen is moving. A 4 s 960×540
+recording of a mostly-static screen was **31 KB** (about 0.5 MB/min); a
+synthetic worst case with a large block moving every single frame was
+28–60 MB/min. Real screens are much closer to the first.
+
+`h264_nvenc` was tried and rejected: the same speed warm (15.1 ms at
+1440p) but a 234 ms spike on its first frame while the encoder session came
+up — a dropped frame at the exact moment the user is watching — and the GPU
+is already carrying two Whisper models and gemma3.
+
+### Where it all goes, and what never leaves
+
+Everything lands in `captures\` beside the app (`[capture] folder`), named
+`shot 2026-08-25 22-41-03.png` and `clip 2026-08-25 22-41-03.mp4` — hyphens
+where a clock would put colons, so sorting the folder by name is sorting it
+by time. Two captures inside one second get ` (2)`; nothing is ever
+silently overwritten.
+
+**The folder is gitignored, and it is the most sensitive thing in this
+repo.** A screenshot can hold mail, banking, anything ever shown here — so
+it gets the same treatment `transcripts.log` gets: it stays on this
+machine. There is **no upload path in `capture.py` at all**. The only route
+from a capture to a model is the editor's **Ask** button, which hands the
+pixels to the ask card and obeys `visual_qa.allow_screenshot_upload` like
+every other question — which is `false` by default, and means the cloud
+backends are not merely unused but unconstructable.
+
+### Try it in this order
+
+1. **Tap `ctrl+f11` and drag a box over a paragraph.** Before you touch
+   anything else, paste into Paint — it must already be there. Then look in
+   `captures\` — the file must already be there too.
+2. **Shift-drag a lasso around something round.** The png must be
+   transparent outside the shape, not black and not white.
+3. **Press Enter instead of dragging.** The whole monitor the pointer is
+   on, taskbar included.
+4. **Draw an arrow, then Undo, then crop, then Undo.** The crop must come
+   back with the arrow still on it, in the place it was drawn.
+5. **Blur something, save, and reopen the file.** The blocks must be in the
+   file, not just on screen.
+6. **Press Ask.** The ask card must open on what you drew, not on the
+   original.
+7. **Tap `ctrl+f12` and click the `Screen 2` chip.** The whole second
+   monitor, with no drag involved.
+8. **Record ten seconds, tap the key again.** The announcement must appear
+   and then shrink to the corner pill; neither it nor the blue frame may be
+   in the video. Paste into a chat window — the file itself should arrive.
+9. **Hover the pill.** Discard, mute, pause and stop must appear without
+   the pill moving away from its corner.
+10. **Record, then press pause for five seconds, then resume and stop.**
+    The pause must be a cut, not five seconds of still image.
+
 ## Dictating from the phone
 
 The phone records; **this machine transcribes**. That is the whole point —
@@ -1984,6 +2164,20 @@ for `מבשרים`, all of which the local model got right.
 | `[lookup] max_height` | `520` | pixels; a 22-sentence paragraph made an 896 px window, taller than some work areas. Past the cap the face shrinks (19 px down to an ~11 px floor) before overflow is trimmed with an ellipsis; a hand-dragged grip overrides both for that one answer |
 | `[lookup] cache_entries` | `500` | answers kept in `lookup_cache.json` (~134 bytes each). A repeat is 0.00 s and one saved request; only selections under 200 chars are stored. `0` = no cache |
 | `[lookup] skip_consoles` | `true` | refuse in console windows, where the copy chord becomes a real Ctrl+C for whatever is running there (reproduced 5/5) |
+| `[capture] enabled` | `true` | both screen keys; `false` unregisters them entirely |
+| `[capture] capture_hotkey` | `ctrl+f11` | **tap** to capture a region: drag a box, Shift-drag a lasso, Enter for this monitor. On the clipboard and in `folder` before you let go |
+| `[capture] record_hotkey` | `ctrl+f12` | **tap** to record a region to mp4, tap again to stop |
+| `[capture] folder` | `captures` | relative to the **app**, not the working directory (this app launches from a .vbs, a shortcut and a scheduled task, and all three disagree). Gitignored — it is the most sensitive folder in the repo |
+| `[capture] copy_to_clipboard` | `true` | CF_DIB + the registered PNG format, so Paint, Word, Chrome and Slack all find one they like and a lasso keeps its alpha |
+| `[capture] edit_after_shot` | `true` | `false` makes the key a pure grab-and-go; the file and the clipboard are identical either way |
+| `[capture] copy_clip_path` | `true` | a finished recording goes on the clipboard as a **file** (CF_HDROP), so it pastes into a chat or a folder |
+| `[capture] fps` | `30` | measured achievable with zero dropped frames at 720p and 1080p; 1440p settles at ~28 and stays real-time because frames carry wall-clock stamps, not frame numbers |
+| `[capture] quality` | `balanced` | `small` \| `balanced` \| `sharp` — crf 30/26/20. Screen content is flat colour and sharp edges, so these are softer than the same names mean for camera video |
+| `[capture] cursor` | `true` | BitBlt does not include the pointer, so it is painted in. Without it nobody can tell what is being pointed at |
+| `[capture] audio` | `off` | `off` \| `mic`. **Off on purpose** — a recorder that quietly opens your mic is a surprise. With `mic` the clip gets a track from the same microphone dictation uses (two streams on one device verified working here) and the bar grows a mute switch |
+| `[capture] timer_corner` | `bottom-right` | `top-left` \| `top-right` \| `bottom-left` \| `bottom-right` \| `off`. Where the red-dot-and-clock pill sits. A corner of the **work area** of the monitor the region is on — never under a taskbar, never on the wrong screen. It is hidden from the capture, so a corner inside the recorded area is fine |
+| `[capture] announce` | `true` | say "Recording started" for 2.6 s before shrinking to the pill |
+| `[capture] max_minutes` | `30` | a backstop, not a budget: a key tapped by accident must not fill the disk overnight. `0` = no cap |
 | `[server] enabled` | `false` | the phone endpoint (see [Dictating from the phone](#dictating-from-the-phone)) |
 | `[server] host` | `""` | `""` = the Tailscale address when up, else `127.0.0.1`. Deliberately never `0.0.0.0` |
 | `[server] port` | `8756` | the port `tailscale serve` should front |

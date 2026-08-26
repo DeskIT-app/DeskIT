@@ -9468,6 +9468,995 @@ os._exit(0)
 ''')
 
 
+# ------------------------------------------------------- capture the screen
+#
+# This feature WRITES pictures of the screen to disk, which nothing else in
+# this app does, so the tests below lean on the two things that follow from
+# that. The picture on the clipboard and the picture in the file must be the
+# same picture (they come from one function, and a test says so). And the
+# module must not be able to grow a network call by accident: there is no
+# upload path in capture.py and the only route to a model is the ask card's
+# own Controller, which owns the upload gate.
+#
+# The rest is arithmetic — rectangles, filenames, clocks — and it is
+# arithmetic on purpose: everything that can be a pure function is one, so
+# most of what the feature does is testable with no screen, no encoder and
+# no microphone.
+
+def test_a_recording_rectangle_is_always_even_sided() -> None:
+    """yuv420p subsamples chroma 2x2, so libx264 refuses an odd side — and
+    it refuses at add_stream() time, which is AFTER the user has picked a
+    region and thinks they are recording. One pixel off the right and the
+    bottom is invisible and cannot fail."""
+    import capture as cap
+
+    assert cap.even_box((0, 0, 101, 51)) == (0, 0, 100, 50)
+    assert cap.even_box((0, 0, 100, 50)) == (0, 0, 100, 50)
+    assert cap.even_box((10, 20, 111, 61)) == (10, 20, 110, 60)
+    # A backwards drag is a legal drag, and it means the same rectangle.
+    assert cap.even_box((111, 61, 10, 20)) == (10, 20, 110, 60)
+    for box in ((0, 0, 999, 777), (-1920, 0, 5, 3), (7, 7, 8, 8)):
+        left, top, right, bottom = cap.even_box(box)
+        assert (right - left) % 2 == 0 and (bottom - top) % 2 == 0, box
+
+
+def test_a_rectangle_is_clamped_into_the_screen_it_was_dragged_on() -> None:
+    """A drag that ran off the edge of the desktop is legal; a BitBlt that
+    starts outside the screen is undefined and PIL's crop pads it black."""
+    import capture as cap
+
+    bounds = (-1920, 0, 2560, 1440)
+    assert cap.clamp_box((-3000, -50, 100, 200), bounds) == (-1920, 0, 100, 200)
+    assert cap.clamp_box((2400, 1300, 3000, 1600), bounds) == \
+        (2400, 1300, 2560, 1440)
+    inside = (0, 0, 500, 400)
+    assert cap.clamp_box(inside, bounds) == inside
+    # Entirely outside collapses rather than inverting: right >= left always.
+    left, top, right, bottom = cap.clamp_box((5000, 5000, 6000, 6000), bounds)
+    assert right >= left and bottom >= top, (left, top, right, bottom)
+
+
+def test_two_captures_in_one_second_do_not_overwrite_each_other() -> None:
+    """The name is the clock to the second and the key repeats faster than
+    that. Silently replacing the first shot is the worst available answer."""
+    import capture as cap
+
+    first = cap.capture_name("shot", 0, taken=set())
+    assert first.startswith("shot ") and first.endswith(".png"), first
+    second = cap.capture_name("shot", 0, taken={first})
+    assert second.endswith(" (2).png"), second
+    third = cap.capture_name("shot", 0, taken={first, second})
+    assert third.endswith(" (3).png"), third
+    assert cap.capture_name("clip", 0).endswith(".mp4")
+    # Sorting the folder by name has to be sorting it by time, so no
+    # component may be written in a way that sorts wrong.
+    assert cap.stamp(0)[:4].isdigit(), cap.stamp(0)
+    assert ":" not in cap.capture_name("shot", 0), "illegal in a filename"
+
+
+def test_the_clock_on_the_recording_bar_reads_like_a_clock() -> None:
+    """Hours only appear once there are any: a recorder that says 0:00:07
+    is a recorder that expects to run for hours, and this one mostly does
+    not."""
+    import capture as cap
+
+    assert cap.elapsed_readout(0) == "0:00"
+    assert cap.elapsed_readout(7) == "0:07"
+    assert cap.elapsed_readout(71) == "1:11"
+    assert cap.elapsed_readout(271) == "4:31"
+    assert cap.elapsed_readout(3729) == "1:02:09"
+    assert cap.elapsed_readout(-5) == "0:00", "never a negative clock"
+    assert cap.size_readout(900) == "900 B"
+    assert cap.size_readout(83000) == "81 KB"
+    assert cap.size_readout(3_300_000) == "3.1 MB"
+
+
+def test_a_recording_stops_itself_at_the_cap_and_never_without_one() -> None:
+    """A backstop, not a budget: a key tapped by accident must not fill the
+    disk overnight, and 0 has to mean 'no cap' rather than 'stop now'."""
+    import capture as cap
+
+    assert cap.should_stop(100.0, 100.0 + 1800, 1800) is True
+    assert cap.should_stop(100.0, 100.0 + 1799, 1800) is False
+    assert cap.should_stop(100.0, 1e9, 0) is False, "0 means no cap"
+
+
+def test_the_toolbar_is_drawn_where_it_can_be_clicked() -> None:
+    """One dict of rectangles feeds both the painter and the hit test. The
+    bug this shape exists to prevent is a button drawn a few pixels from
+    where it can be pressed: invisible in a screenshot, maddening under
+    the hand."""
+    import capture as cap
+
+    layout = cap.bar_layout()
+    spots = layout["spots"]
+    width, height = layout["size"]
+    for name, _glyph, _label in cap.TOOLS:
+        assert name in spots, name
+    for name, _glyph, _label in cap.ACTIONS:
+        assert name in spots, name
+    for name in ("ink", "undo", "close"):
+        assert name in spots, name
+    for name, (x0, y0, x1, y1) in spots.items():
+        assert 0 <= x0 < x1 <= width, (name, x0, x1, width)
+        assert 0 <= y0 < y1 <= height, (name, y0, y1, height)
+        if name.startswith("_"):
+            continue
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        assert cap.hit(spots, cx, cy) == name, (name, cx, cy)
+    assert cap.hit(spots, width - 1, height - 4) is None, "the gap is not a button"
+    # Nothing overlaps: two controls sharing a pixel is a press that lands
+    # on whichever happened to be enumerated first.
+    real = [(n, r) for n, r in spots.items() if not n.startswith("_")]
+    for i, (an, a) in enumerate(real):
+        for bn, b in real[i + 1:]:
+            apart = a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1]
+            assert apart, f"{an} overlaps {bn}: {a} {b}"
+
+
+def test_the_toolbar_goes_under_the_selection_or_over_it_never_off_screen(
+) -> None:
+    """Under it if it fits, over it if not, inside it as the last resort —
+    a 1440-tall selection has no outside. And always inside the MONITOR:
+    a bar that hangs off the edge loses buttons."""
+    import capture as cap
+
+    screen = (0, 0, 2560, 1440)
+    bar = (600, 82)
+    below = cap.plan_bar((800, 300, 1400, 700), bar, screen)
+    assert below[1] > 700, below
+    above = cap.plan_bar((800, 900, 1400, 1400), bar, screen)
+    assert above[1] + 82 < 900, above
+    squeezed = cap.plan_bar((0, 0, 2560, 1440), bar, screen)
+    assert 0 <= squeezed[0] and squeezed[1] + 82 <= 1440, squeezed
+    for anchor in ((0, 0, 60, 60), (2500, 1380, 2560, 1440),
+                   (1200, 700, 1260, 760)):
+        x, y = cap.plan_bar(anchor, bar, screen)
+        assert screen[0] <= x and x + bar[0] <= screen[2], (anchor, x)
+        assert screen[1] <= y and y + bar[1] <= screen[3], (anchor, y)
+
+
+def test_undo_puts_back_the_crop_as_well_as_the_ink() -> None:
+    """History holds whole STATES rather than inverse operations, because a
+    crop is not a mark: an un-crop that did not also restore the marks the
+    crop cut off would be a different picture from the one that was
+    there."""
+    import capture as cap
+
+    empty, history = cap.undo_step([])
+    assert empty is None and history == [], "nothing to undo is not a crash"
+    first = ((0, 0, 100, 100), None, [])
+    second = ((0, 0, 100, 100), None, [{"kind": "pen"}])
+    state, rest = cap.undo_step([first, second])
+    assert state == second and rest == [first], (state, rest)
+    state, rest = cap.undo_step(rest)
+    assert state == first and rest == [], (state, rest)
+
+
+def test_the_quality_names_map_to_the_numbers_they_promise() -> None:
+    """Screen content is flat colour and sharp edges, which h264 likes, so
+    these are several steps softer than the same names mean for camera
+    video. Measured: a 4 s 960x540 clip of a mostly-static screen came out
+    31 KB at balanced."""
+    import capture as cap
+
+    assert cap.crf_for("small") > cap.crf_for("balanced") > cap.crf_for("sharp")
+    for name in ("small", "balanced", "sharp"):
+        assert 0 < cap.crf_for(name) < 52, name
+
+
+# ---- the picture itself: pixels in, pixels out ----
+
+def test_the_capture_pipeline_never_takes_a_file_path() -> None:
+    """The same rule visual_qa's screenshot pipeline keeps, for a module
+    that DOES write files: everything that touches pixels is bytes in,
+    bytes out, and exactly two functions know what a folder is. A helper
+    that grew a path argument would be a helper that could log one."""
+    import inspect
+
+    import capture as cap
+
+    pure = (cap.draw_marks, cap.cut_to_shape, cap.render_shot, cap.pixelate,
+            cap.even_box, cap.clamp_box, cap.plan_bar, cap.bar_layout,
+            cap.copy_image, cap._image_formats)
+    for fn in pure:
+        names = list(inspect.signature(fn).parameters)
+        for name in names:
+            assert not any(word in name for word in ("path", "file", "dir",
+                                                     "folder")), \
+                f"{fn.__name__} takes {name!r} — the pixel half writes nothing"
+
+
+def test_capture_never_touches_the_shared_ctypes_library_objects() -> None:
+    """ctypes.windll.user32 is PROCESS-GLOBAL and every module here reaches
+    for the same one. Declaring .restype on a function taken from it
+    changes that function for everybody: the first version of capture.py
+    declared GetDC.restype = c_void_p (correct, and needed there) and the
+    next call into visual_qa.text_pil died with "int too long to convert"
+    on a line that had worked for months. capture.py owns private
+    ctypes.WinDLL handles instead, and this greps to keep it that way."""
+    import ctypes
+
+    source = (Path(__file__).resolve().parent / "capture.py").read_text("utf-8")
+    offenders = [line.strip() for line in source.splitlines()
+                 if "ctypes.windll" in line and not line.strip().startswith("#")]
+    assert not offenders, offenders
+    import capture  # noqa: F401  — importing it must not change the globals
+    assert ctypes.windll.user32.GetDC.restype is ctypes.c_int, \
+        "importing capture.py redeclared a shared ctypes function"
+
+
+def test_the_marks_are_replayed_into_the_picture_not_read_off_the_screen(
+) -> None:
+    """Every mark lives as POINTS and is drawn into the pristine crop. The
+    alternative — grabbing the screen back to read our own ink — races the
+    topmost window and returns black, which visual_qa.py records paying
+    for."""
+    from PIL import Image, ImageStat
+
+    import capture as cap
+
+    base = Image.new("RGB", (400, 300), (30, 34, 44))
+    box = (0, 0, 400, 300)
+    plain = cap.render_shot(base, box, [], None)
+    assert plain.size == (400, 300), plain.size
+
+    red = cap.INKS[0][1]
+    for kind, points, solid in (
+            ("pen", [(20, 20), (80, 90), (150, 40)], True),
+            ("arrow", [(30, 250), (300, 120)], True),
+            ("box", [(60, 60), (260, 200)], True),
+            ("highlight", [(40, 150), (350, 150)], False)):
+        inked = cap.render_shot(base, box, [{"kind": kind, "points": points,
+                                             "colour": red}], None)
+        assert inked.size == plain.size, kind
+        assert inked.convert("RGB").tobytes() != plain.convert("RGB").tobytes(), \
+            f"{kind} drew nothing"
+        pixels = list(inked.convert("RGB").getdata())
+        if solid:
+            # ...and it drew in the colour it was asked for, not chrome blue.
+            assert [p for p in pixels
+                    if p[0] > 150 and p[1] < 110 and p[2] < 110], \
+                f"{kind} did not draw in the ink colour"
+        else:
+            # A highlighter is TRANSLUCENT on purpose — you have to be able
+            # to read what is under it — so what is asserted is that the ink
+            # moved the pixels towards itself, not that it replaced them.
+            # Measured: red (224,53,43) at alpha 92 over this base lifts the
+            # red channel from 30 to 100.
+            assert [p for p in pixels if p[0] > 55], \
+                "the highlighter tinted nothing"
+            assert max(p[0] for p in pixels) < 200, \
+                "a highlighter that opaque would hide the text under it"
+
+    # A mark outside the crop is clipped, not an error and not a shift.
+    off = cap.render_shot(base, (0, 0, 100, 100),
+                          [{"kind": "box", "points": [(300, 300), (380, 380)],
+                            "colour": red}], None)
+    assert off.size == (100, 100)
+
+
+def test_blurring_something_out_really_destroys_it() -> None:
+    """This is the tool people reach for when the thing under it is an
+    address or a token, so a Gaussian at any radius a person will accept is
+    the wrong answer — it can be sharpened back. A mosaic cannot. 12 px
+    blocks were picked by reading the result: at 8 px a 12 pt password was
+    still guessable."""
+    from PIL import Image, ImageDraw, ImageStat
+
+    import capture as cap
+
+    base = Image.new("RGB", (300, 120), (240, 240, 245))
+    d = ImageDraw.Draw(base)
+    for x in range(10, 280, 14):
+        d.rectangle((x, 40, x + 7, 80), fill=(20, 20, 25))
+    before = ImageStat.Stat(base.convert("L")).stddev[0]
+    after = ImageStat.Stat(cap.pixelate(base, (0, 0, 300, 120))
+                           .convert("L")).stddev[0]
+    assert after < before * 0.75, (before, after)
+    assert cap.PIXEL_BLOCK >= 10, "measured: below ~8 px the text comes back"
+    # Untouched outside the rectangle.
+    part = cap.pixelate(base, (0, 0, 100, 120))
+    assert part.crop((150, 0, 300, 120)).tobytes() == \
+        base.crop((150, 0, 300, 120)).tobytes()
+    # A degenerate rectangle is a no-op, not a crash.
+    assert cap.pixelate(base, (50, 50, 50, 50)).size == base.size
+
+
+def test_a_lassoed_shot_is_transparent_outside_the_shape() -> None:
+    """Deliberately different from visual_qa, which fills the outside
+    BLACK: there the crop goes to a model that would happily describe a
+    dimmed neighbour. Here it goes into a document, and transparency is
+    what lets it land on whatever colour that document already is."""
+    from PIL import Image
+
+    import capture as cap
+
+    base = Image.new("RGB", (200, 200), (200, 60, 60))
+    path = [(50, 50), (150, 50), (150, 150), (50, 150)]
+    out = cap.render_shot(base, (0, 0, 200, 200), [], path)
+    assert out.mode == "RGBA", out.mode
+    alpha = out.getchannel("A")
+    assert alpha.getpixel((5, 5)) == 0, "outside the lasso must be see-through"
+    assert alpha.getpixel((100, 100)) == 255, "inside must be untouched"
+    # And the clipboard's bitmap copy flattens it onto WHITE, because
+    # CF_DIB has no alpha and a document is where a cut-out gets pasted.
+    dib, png = cap._image_formats(out)
+    assert dib[:4] and len(png) > 8 and png[1:4] == b"PNG", png[:8]
+    assert len(dib) > 0
+
+
+def test_the_clipboard_and_the_file_get_the_same_picture() -> None:
+    """One render function feeds the screen, the clipboard and the file, so
+    what you saw is what was written. A second code path for 'the saved
+    version' is how the ink ends up in one of them and not the others."""
+    import inspect
+
+    from PIL import Image
+
+    import capture as cap
+
+    source = inspect.getsource(cap.ShotWindow)
+    assert source.count("def picture(") == 1
+    for caller in ("_first_save", "_save_again", "_ask"):
+        body = source.split(f"def {caller}(")[1].split("\n    def ")[0]
+        assert "self.picture()" in body, \
+            f"{caller} builds its own picture instead of calling picture()"
+
+    base = Image.new("RGB", (120, 90), (10, 120, 200))
+    once = cap.render_shot(base, (0, 0, 120, 90), [], None)
+    twice = cap.render_shot(base, (0, 0, 120, 90), [], None)
+    assert once.tobytes() == twice.tobytes(), "the render is not deterministic"
+
+
+def test_a_shot_is_saved_where_the_config_says_and_reloads(tmp=None) -> None:
+    """The folder is made if it is missing, a relative name is relative to
+    the APP (this app is launched from a .vbs, a shortcut and a scheduled
+    task, and all three disagree about the working directory), and the file
+    that comes back is the file that went in."""
+    import shutil
+    import tempfile
+
+    from PIL import Image
+
+    import capture as cap
+
+    tmp = Path(tempfile.mkdtemp(prefix="capture-folder-"))
+    try:
+        target = tmp / "nested" / "captures"
+        image = Image.new("RGBA", (64, 48), (200, 30, 90, 255))
+        path = cap.save_image(image, str(target))
+        assert path.exists() and path.parent == target, path
+        assert Image.open(path).size == (64, 48)
+        again = cap.save_image(image, str(target))
+        assert again != path, "two shots must not share a name"
+        # A relative folder resolves next to the app, never to os.getcwd().
+        app = Path(cap.__file__).resolve().parent
+        assert cap.capture_dir("captures") == app / "captures"
+        assert cap.capture_dir(str(tmp)) == tmp, "an absolute path is obeyed"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_two_settings_that_change_the_gesture_are_actually_read(
+) -> None:
+    """A setting that is declared and never read is a setting that lies.
+    `copy_to_clipboard = false` must stop the clipboard write and nothing
+    else; `edit_after_shot = false` must make the key a pure grab-and-go —
+    with the file and the clipboard identical either way, because the
+    editor is an offer and never a step."""
+    import inspect
+
+    import capture as cap
+
+    signature = inspect.signature(cap.ShotWindow.__init__).parameters
+    assert "copy" in signature and "edit" in signature, list(signature)
+
+    window = inspect.getsource(cap.ShotWindow)
+    saved = window.split("def _first_save(")[1].split("\n    def ")[0]
+    assert "if self.copy else False" in saved, \
+        "the first save copies whatever the setting says"
+    chose = window.split("def _chose(")[1].split("\n    def ")[0]
+    assert "self._first_save()" in chose and "if not self.edit" in chose, \
+        "the editor is an offer, and edit_after_shot = false declines it"
+    assert chose.index("self._first_save()") < chose.index("if not self.edit"), \
+        "edit_after_shot = false must still save and still copy"
+
+    flow = inspect.getsource(cap.Controller._shot_flow)
+    assert "copy=cfg.copy_to_clipboard" in flow, flow
+    assert "edit=cfg.edit_after_shot" in flow, flow
+
+
+def test_every_tool_and_action_has_an_icon_that_draws() -> None:
+    """The chips are painted from one icon function, and a missing shape is
+    an exception in the middle of a paint rather than a blank square."""
+    import capture as cap
+
+    names = ([glyph for _n, glyph, _l in cap.TOOLS]
+             + [glyph for _n, glyph, _l in cap.ACTIONS]
+             + ["undo", "close", "stop", "pause", "play", "record", "folder",
+                "copy", "mic", "trash"])
+    for name in names:
+        img = cap.icon(name, 20)
+        assert img.size == (20, 20), name
+        assert img.getchannel("A").getextrema()[1] > 0, f"{name} drew nothing"
+    try:
+        cap.icon("no-such-icon")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("an unknown icon must say so, not draw nothing")
+
+
+# ---- the [capture] section ----
+
+def test_capture_section_parses_with_defaults_and_overrides() -> None:
+    import shutil
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="capture-config-"))
+    path = tmp / "config.toml"
+    try:
+        path.write_text(
+            'hotkey = "right ctrl"\n'
+            "[capture]\n"
+            "enabled = false\n"
+            'capture_hotkey = "f15"\n'
+            'record_hotkey = "f16"\n'
+            'folder = "shots"\n'
+            "fps = 24\n"
+            'quality = "sharp"\n'
+            'audio = "mic"\n'
+            "max_minutes = 0\n",
+            "utf-8")
+        cfg = config_mod.load(path)
+        cap = cfg.capture
+        assert cap.enabled is False
+        assert cap.hotkey == "f15"              # the TOML key's real name
+        assert cfg.capture_hotkey == "f15"      # ...and its public face
+        assert cap.record_hotkey == "f16"
+        assert cfg.record_hotkey == "f16"
+        assert cap.folder == "shots"
+        assert cap.fps == 24
+        assert cap.quality == "sharp"
+        assert cap.audio == "mic"
+        assert cap.max_minutes == 0
+        assert cap.cursor is True               # untouched default
+        assert cap.copy_to_clipboard is True
+
+        defaults = config_mod.CaptureConfig()
+        assert defaults.audio == "off", \
+            "a recorder that quietly opens the microphone is a surprise"
+        assert defaults.hotkey == "ctrl+f11"
+        assert defaults.record_hotkey == "ctrl+f12"
+        assert defaults.folder == "captures"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_bad_capture_setting_is_refused_and_the_file_is_untouched() -> None:
+    """The staged file is load()ed before os.replace, so a section with no
+    validation block is a section the dashboard can write nonsense into
+    that only bites at the next launch."""
+    import shutil
+    tmp, path = _temp_config()
+    try:
+        before = path.read_bytes()
+        for key, value in (("capture.quality", "lossless"),
+                           ("capture.audio", "system"),
+                           ("capture.fps", 200),
+                           ("capture.max_minutes", -1)):
+            try:
+                config_mod.set_values(path, {key: value})
+            except config_mod.ConfigError as e:
+                assert key.split(".")[1] in str(e) or "capture" in str(e), e
+            else:
+                raise AssertionError(f"{key}={value!r} was accepted")
+            assert path.read_bytes() == before, \
+                f"the real file changed while refusing {key}"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_capture_keys_write_back_nested_and_keep_every_comment() -> None:
+    """Both keys live INSIDE [capture], so the write-back must be dotted —
+    and set_values' line editor keeps every comment byte while doing it,
+    because those comments are the measurements."""
+    import shutil
+    tmp, path = _temp_config()
+    try:
+        before = path.read_text("utf-8")
+        marker = "# a backstop, not a budget: a key tapped by"
+        assert marker in before, "the comment this test protects vanished"
+        config_mod.set_values(path, {"capture.capture_hotkey": "f13",
+                                     "capture.record_hotkey": "f14"})
+        after = path.read_text("utf-8")
+        cfg = config_mod.load(path)
+        assert cfg.capture.hotkey == "f13"
+        assert cfg.capture.record_hotkey == "f14"
+        assert marker in after, "a measurement was deleted by a key change"
+        assert before.count("\n") == after.count("\n"), "line count changed"
+        assert 'hotkey = "right ctrl"' in after, "the top-level key moved"
+        # There is no insert path for a nested key: everything the dashboard
+        # may write has to ship as a literal line in config.toml.
+        try:
+            config_mod.set_values(path, {"capture.no_such_knob": 1})
+        except config_mod.ConfigError:
+            pass
+        else:
+            raise AssertionError("set_values invented a key inside a section")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_capture_keys_bind_and_the_kill_switch_unbinds_both() -> None:
+    """`enabled = false` is the kill switch and it has to reach the state
+    machine, not merely the controller: a key that still fires and then
+    does nothing is a key you cannot use for anything else."""
+    import dataclasses
+
+    import main as main_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    _hot, taps, _latch, _pause = main_mod.App.bindings(cfg)
+    assert "capture" in taps.values(), taps
+    assert "record" in taps.values(), taps
+    assert main_mod.App._vk_of(taps, "capture") is not None
+    assert main_mod.App._vk_of(taps, "record") is not None
+
+    off = dataclasses.replace(
+        cfg, capture=dataclasses.replace(cfg.capture, enabled=False))
+    _hot, taps, _latch, _pause = main_mod.App.bindings(off)
+    assert "capture" not in taps.values(), taps
+    assert "record" not in taps.values(), taps
+
+    one = dataclasses.replace(
+        cfg, capture=dataclasses.replace(cfg.capture, record_hotkey=""))
+    _hot, taps, _latch, _pause = main_mod.App.bindings(one)
+    assert "capture" in taps.values(), "the other key must survive alone"
+    assert "record" not in taps.values(), taps
+
+
+def test_a_capture_key_collision_is_refused_like_every_other() -> None:
+    """with_field has to assign through the property (dataclasses.replace
+    cannot), and check_hotkeys has to see the result — otherwise a rebind
+    onto an occupied key is written to the file and only fails at the next
+    launch."""
+    import main as main_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    moved = config_mod.with_field(cfg, "capture_hotkey", "ctrl+f6")
+    assert moved.capture.hotkey == "ctrl+f6"
+    assert moved.capture_hotkey == "ctrl+f6"
+    assert moved.capture.record_hotkey == cfg.capture.record_hotkey, \
+        "moving one key must not move the other"
+    config_mod.check_hotkeys(moved)                     # a free key: fine
+
+    clash = config_mod.with_field(cfg, "record_hotkey", cfg.lookup_hotkey)
+    try:
+        config_mod.check_hotkeys(clash)
+    except config_mod.ConfigError as e:
+        assert "record_hotkey" in str(e) or "lookup_hotkey" in str(e), e
+    else:
+        raise AssertionError("two keys on one binding were accepted")
+
+    assert main_mod.NESTED_HOTKEYS["capture_hotkey"] == "capture.capture_hotkey"
+    assert main_mod.NESTED_HOTKEYS["record_hotkey"] == "capture.record_hotkey"
+
+
+def test_both_capture_keys_are_registered_everywhere_a_key_must_be() -> None:
+    """HOTKEY_FIELDS is the single registration point and CHORD_FIELDS is
+    what lets a tap carry ctrl. Missing the second makes "ctrl+f11" fail
+    check_hotkeys with 'cannot take modifiers' — at load, on a config the
+    app shipped."""
+    import dashboard as dash_mod
+
+    registered = dict(config_mod.HOTKEY_FIELDS)
+    for field in ("capture_hotkey", "record_hotkey"):
+        assert field in registered, field
+        assert registered[field].endswith("(tap)"), registered[field]
+        assert field in config_mod.CHORD_FIELDS, field
+        named = {f for _title, fields in dash_mod.KEY_GROUPS for f in fields}
+        assert field in named, f"{field} has no group on the Keys screen"
+    assert dash_mod.NESTED_HOTKEYS == {
+        "visual_qa_hotkey": "visual_qa.visual_qa_hotkey",
+        "capture_hotkey": "capture.capture_hotkey",
+        "record_hotkey": "capture.record_hotkey",
+    }, dash_mod.NESTED_HOTKEYS
+
+
+def test_the_shipped_config_carries_the_capture_section() -> None:
+    """It is committed to both branches (see the cross-branch test), and
+    the values shipped have to be ones both branches can live with — on
+    classic the section is simply never read."""
+    here = Path(__file__).resolve().parent
+    text = (here / "config.toml").read_text("utf-8")
+    assert "[capture]" in text
+    for key in ("capture_hotkey", "record_hotkey", "folder", "fps",
+                "quality", "cursor", "audio", "max_minutes",
+                "copy_to_clipboard", "edit_after_shot", "copy_clip_path"):
+        assert f"\n{key} = " in text, f"{key} is not a writable line"
+    cfg = config_mod.load(here / "config.toml")
+    assert cfg.capture.audio == "off", "the shipped default must be off"
+    ignored = (here / ".gitignore").read_text("utf-8")
+    assert f"{cfg.capture.folder}/" in ignored, \
+        "pictures of this screen must not be committable"
+
+
+def test_the_capture_controller_costs_nothing_until_a_key_is_pressed(
+) -> None:
+    """main.py builds one behind a lazy property, and the whole point of
+    that is that an owner who never presses either key never loads Pillow,
+    Tk or a video encoder. Constructing it must be stdlib only."""
+    import capture as cap
+
+    calls = []
+    controller = cap.Controller(lambda: calls.append(1) or object(),
+                                ask_provider=lambda: None)
+    assert controller.busy is False
+    assert controller.recording is False
+    assert calls == [], "the config was read before anything was pressed"
+    controller.stop()                       # safe with nothing running
+    assert controller.recording is False
+
+
+def test_a_recording_toggles_off_with_the_key_that_started_it() -> None:
+    """The second press of the key is how a recording ENDS. Refusing it as
+    'busy' would leave the only way out on a bar that is sitting on top of
+    the thing being recorded."""
+    import capture as cap
+
+    controller = cap.Controller(lambda: None)
+
+    class FakeRecorder:
+        def __init__(self):
+            self.stopped = False
+
+        def stop(self):
+            self.stopped = True
+
+    fake = FakeRecorder()
+    controller._recorder = fake
+    controller._busy.set()
+    assert controller.recording is True
+    assert controller.toggle_clip() is True, "a running clip must accept stop"
+    assert controller._stop_clip.is_set(), "the pump was never told"
+    controller.stop()
+    assert fake.stopped is True
+
+    idle = cap.Controller(lambda: None)
+    idle._busy.set()                        # the selector is on screen
+    assert idle.toggle_clip() is False, "a second selector must be refused"
+    assert idle.begin_shot() is False
+
+
+def test_the_recorder_declares_its_streams_before_the_first_frame() -> None:
+    """An mp4 declares its streams when the container opens, which is at
+    the first frame — a track cannot be added later. That is why the bar's
+    microphone control MUTES (feeds silence, so the sample clock keeps
+    advancing and the picture stays in sync) instead of pretending it can
+    add one."""
+    import shutil
+    import tempfile
+
+    import capture as cap
+
+    tmp = Path(tempfile.mkdtemp(prefix="capture-clip-"))
+    try:
+        silent = cap.ScreenRecorder((0, 0, 64, 48), tmp / "a.mp4",
+                                    audio=False)
+        assert silent.has_audio is False
+        loud = cap.ScreenRecorder((0, 0, 64, 48), tmp / "b.mp4", audio=True,
+                                  audio_device=None)
+        assert loud.has_audio is True
+        assert loud.muted is False
+        assert loud.toggle_mute() is True and loud.muted is True
+        assert loud.toggle_mute() is False and loud.muted is False
+        # device=None is a LEGAL device (the system default), so the flag
+        # and the device must not be the same question.
+        assert loud.audio_device is None and loud.audio_rate > 0
+        assert silent.audio_rate == 0
+        # Nothing was recorded, so nothing is left behind.
+        assert silent.finish(timeout=1) is None
+        assert not (tmp / "a.mp4").exists(), "an empty clip left a stub file"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_paused_recording_holds_its_clock_still() -> None:
+    """A pause has to be a CUT, not a freeze-frame: the wall clock that
+    stamps every frame must not run while nothing is being captured, or
+    the gap plays back as a still image for as long as you were away."""
+    import time
+
+    import capture as cap
+
+    recorder = cap.ScreenRecorder((0, 0, 64, 48), Path("unused.mp4"))
+    recorder.started_at = time.monotonic() - 2.0
+    running = recorder.elapsed
+    assert 1.8 < running < 2.3, running
+    assert recorder.toggle_pause() is True
+    time.sleep(0.25)
+    held = recorder.elapsed
+    assert abs(held - running) < 0.06, (running, held)
+    assert recorder.toggle_pause() is False
+    assert recorder.elapsed >= held
+
+
+def test_a_capture_press_is_refused_while_one_is_already_up() -> None:
+    """Refuse-when-busy, never queue-when-busy: a second overlay while the
+    first still owns a Tcl interpreter is the thread-ownership abort
+    AGENTS.md spends a paragraph on."""
+    import main as main_mod
+
+    class FakeCapture:
+        def __init__(self):
+            self.busy = True
+            self.recording = False
+            self.started = 0
+
+        def begin_shot(self):
+            self.started += 1
+            return True
+
+        def toggle_clip(self):
+            self.started += 1
+            return True
+
+    app = main_mod.App.__new__(main_mod.App)
+    app._capture = FakeCapture()
+    app._cue_lock = threading.Lock()
+    app._cue_last = {}
+    type(app).capture = property(lambda self: self._capture)
+    try:
+        app._tap_capture()
+        app._tap_record()
+        assert app._capture.started == 0, "a busy overlay was pressed again"
+        app._capture.busy = False
+        app._tap_capture()
+        app._tap_record()
+        assert app._capture.started == 2, app._capture.started
+        # ...but a RUNNING recording must always accept the stop press.
+        app._capture.busy = True
+        app._capture.recording = True
+        app._tap_record()
+        assert app._capture.started == 3, "the stop press was refused"
+    finally:
+        del type(app).capture
+
+
+def test_the_capture_keys_are_kept_away_from_the_lookup_box() -> None:
+    """popup.py decides which keystrokes it swallows, and main.py owns the
+    one invariant it cannot: the key that opens a window has to reach the
+    code that opens it."""
+    import main as main_mod
+
+    app = main_mod.App.__new__(main_mod.App)
+    app._lookup_vk = 0x77
+    app._vqa_vk = 0x79
+    app._capture_vk = 0x7A
+    app._record_vk = 0x7B
+    swallowed = []
+
+    class FakePopup:
+        def on_key(self, vk):
+            swallowed.append(vk)
+            return True
+
+    app.popup = FakePopup()
+    for vk in (0x77, 0x79, 0x7A, 0x7B):
+        assert app._popup_key(vk) is False, hex(vk)
+    assert swallowed == [], "a key that opens a window was offered to the box"
+    assert app._popup_key(0x41) is True
+    assert swallowed == [0x41]
+
+
+def test_a_half_built_app_still_answers_the_popup_without_capture() -> None:
+    """The suite builds Apps by hand with no __init__, and classic has no
+    [capture] at all. Both have to degrade to 'feature absent' rather than
+    AttributeError inside the keyboard hook."""
+    import main as main_mod
+
+    app = main_mod.App.__new__(main_mod.App)
+    app._lookup_vk = None
+    app._vqa_vk = None
+
+    class FakePopup:
+        def on_key(self, vk):
+            return False
+
+    app.popup = FakePopup()
+    assert main_mod.App._capture is None
+    assert main_mod.App._capture_vk is None
+    assert main_mod.App._record_vk is None
+    assert app._popup_key(0x41) is False
+
+
+def test_every_monitor_is_offered_by_name_not_only_the_virtual_screen(
+) -> None:
+    """"Record the screen" is not "drag from corner to corner" — that is
+    impossible to land exactly and it is the commonest thing anyone wants.
+    virtual_screen() answers how big the desktop is, which is a different
+    question from which screens there are: this machine's desktop is one
+    4480x1440 rectangle made of two monitors at 2560x1440 and 1920x1080,
+    and the second one starts at x = -1920."""
+    import capture as cap
+
+    screens = cap.monitors()
+    assert screens, "no monitors at all"
+    assert screens[0]["primary"] is True, "the primary must come first"
+    assert [m["label"] for m in screens] == \
+        [f"Screen {i}" for i in range(1, len(screens) + 1)], screens
+    vx, vy, vw, vh = cap.virtual_screen()
+    for entry in screens:
+        left, top, right, bottom = entry["rect"]
+        assert right > left and bottom > top, entry
+        assert left >= vx and top >= vy, entry
+        assert right <= vx + vw and bottom <= vy + vh, entry
+    # Together they cover the virtual screen's extremes, or one of them is
+    # missing and "All screens" would be a lie.
+    assert min(m["rect"][0] for m in screens) == vx
+    assert max(m["rect"][2] for m in screens) == vx + vw
+
+
+def test_the_indicator_sits_in_a_corner_of_the_work_area() -> None:
+    """A corner and not "beside the region": an indicator that moves when
+    the region does is an obstruction, and a corner is somewhere you can
+    learn to glance at. The work area, so it is never under a taskbar."""
+    import capture as cap
+
+    work = (0, 0, 2560, 1400)
+    size = (120, 34)
+    corners = {
+        "top-left": (18, 18),
+        "top-right": (2560 - 120 - 18, 18),
+        "bottom-left": (18, 1400 - 34 - 18),
+        "bottom-right": (2560 - 120 - 18, 1400 - 34 - 18),
+    }
+    for corner, expected in corners.items():
+        assert cap.corner_at(work, size, corner) == expected, corner
+        x, y = cap.corner_at(work, size, corner)
+        assert work[0] <= x and x + size[0] <= work[2], corner
+        assert work[1] <= y and y + size[1] <= work[3], corner
+    # A monitor at negative coordinates is a monitor like any other.
+    left = cap.corner_at((-1920, 209, 0, 1250), size, "bottom-right")
+    assert left == (0 - 120 - 18, 1250 - 34 - 18), left
+    assert "off" in cap.CORNERS, "there has to be a way to have no pill"
+
+
+def test_the_clip_bar_announces_itself_and_then_gets_out_of_the_way(
+) -> None:
+    """The failure mode of a screen recorder is not knowing whether it is
+    running, so it says "Recording started" — and then it must stop saying
+    it, because an announcement that stays is a banner. Hover wins over
+    both, or the controls would be unreachable once it shrank."""
+    import capture as cap
+
+    assert cap.bar_phase(0.0, False) == "announce"
+    assert cap.bar_phase(cap.ANNOUNCE_S - 0.1, False) == "announce"
+    assert cap.bar_phase(cap.ANNOUNCE_S, False) == "timer"
+    assert cap.bar_phase(600.0, False) == "timer"
+    for elapsed in (0.0, 1.0, 600.0):
+        assert cap.bar_phase(elapsed, True) == "hover", elapsed
+
+    # timer_corner = "off" means no pill at all — but the announcement
+    # still happens, because the question has to be answerable once.
+    bar = cap.ClipBar.__new__(cap.ClipBar)
+    bar.corner, bar.announce, bar._hovering = "off", True, False
+    bar.started = __import__("time").monotonic()
+    assert bar.phase() == "announce"
+    bar.started -= cap.ANNOUNCE_S + 1
+    assert bar.phase() == "hidden"
+    bar.announce = False
+    bar.started = __import__("time").monotonic()
+    assert bar.phase() == "hidden", "announce = false and off means nothing"
+    bar.corner = "bottom-right"
+    assert bar.phase() == "timer", "no announcement is straight to the pill"
+
+
+def test_the_pill_grows_for_a_longer_clock_instead_of_clipping_it() -> None:
+    """A clock that reads "1:02:0" is worse than a wider pill, and "paused"
+    has to fit next to it."""
+    import capture as cap
+
+    short = cap.timer_width("0:07")
+    hours = cap.timer_width("1:02:09")
+    paused = cap.timer_width("0:07  paused")
+    assert short >= 88
+    assert hours > short, (short, hours)
+    assert paused > hours, (hours, paused)
+    with_buttons = cap.timer_width("0:07", buttons=4)
+    assert with_buttons >= short + 4 * cap.BAR_BTN, with_buttons
+
+
+def test_the_screen_chips_do_not_overlap_and_click_where_they_are_drawn(
+) -> None:
+    """One table feeds the painter and the hit test. And the chip's TARGET
+    must be read before the hint row is dropped — resolving the label
+    afterwards is a KeyError on every click, which is exactly what the
+    first version did."""
+    import capture as cap
+
+    window = cap.ShotWindow.__new__(cap.ShotWindow)
+    window._keep = {}
+    window._hint_id = None
+    window._chips = {}
+    window._chip_hover = None
+    window._plan_chips(1280, 300)
+    chips = window._chips
+    assert len(chips) >= 1, chips
+    screens = cap.monitors()
+    if len(screens) > 1:
+        assert "All screens" in chips, list(chips)
+        vx, vy, vw, vh = cap.virtual_screen()
+        assert chips["All screens"]["target"] == (vx, vy, vx + vw, vy + vh)
+    else:
+        assert "All screens" not in chips, \
+            "one monitor makes 'all screens' the same button twice"
+    boxes = [(name, chip["box"]) for name, chip in chips.items()]
+    for i, (an, a) in enumerate(boxes):
+        assert a[2] > a[0] and a[3] > a[1], an
+        centre = ((a[0] + a[2]) // 2, (a[1] + a[3]) // 2)
+        assert window._chip_under(*centre) == an, an
+        for bn, b in boxes[i + 1:]:
+            apart = a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1]
+            assert apart, f"{an} overlaps {bn}"
+    assert window._chip_under(-99, -99) is None
+
+    # The ordering bug, as a test rather than as a comment.
+    label = list(chips)[0]
+    target = chips[label]["target"]
+    chosen = []
+    window._chose = lambda box, path: chosen.append((box, path))
+    window.phase = "select"
+    window.canvas = type("C", (), {"delete": lambda *a: None,
+                                   "config": lambda *a, **k: None})()
+
+    class Press:
+        x, y = (chips[label]["box"][0] + chips[label]["box"][2]) // 2, \
+               (chips[label]["box"][1] + chips[label]["box"][3]) // 2
+        x_root = y_root = 0
+        state = 0
+
+    window._on_press(Press())
+    assert chosen == [(target, None)], chosen
+    assert window._chips == {}, "the hint row must be gone after the click"
+
+
+def test_the_recording_indicator_settings_parse_and_are_bounded() -> None:
+    """A corner name that is not a corner has to be refused at load, not
+    silently turned into one — the pill would appear somewhere the owner
+    did not choose and there would be nothing to read that said why."""
+    import shutil
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="capture-corner-"))
+    path = tmp / "config.toml"
+    try:
+        path.write_text('hotkey = "right ctrl"\n[capture]\n'
+                        'timer_corner = "top-left"\nannounce = false\n',
+                        "utf-8")
+        cfg = config_mod.load(path)
+        assert cfg.capture.timer_corner == "top-left"
+        assert cfg.capture.announce is False
+
+        defaults = config_mod.CaptureConfig()
+        assert defaults.timer_corner == "bottom-right"
+        assert defaults.announce is True
+
+        path.write_text('hotkey = "right ctrl"\n[capture]\n'
+                        'timer_corner = "middle"\n', "utf-8")
+        try:
+            config_mod.load(path)
+        except config_mod.ConfigError as e:
+            assert "timer_corner" in str(e), e
+        else:
+            raise AssertionError("a corner that is not a corner was accepted")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    here = Path(__file__).resolve().parent
+    text = (here / "config.toml").read_text("utf-8")
+    for key in ("timer_corner", "announce"):
+        assert f"\n{key} = " in text, f"{key} is not a writable line"
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

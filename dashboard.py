@@ -123,8 +123,20 @@ KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("What to do with the text", ("translate_hotkey", "punctuate_hotkey",
                                   "correct_hotkey", "lookup_hotkey",
                                   "visual_qa_hotkey")),
+    ("What to do with the screen", ("capture_hotkey", "record_hotkey")),
     ("The app itself", ("pause_hotkey",)),
 )
+
+# Keys that live INSIDE a config section, and the dotted path set_values
+# must write them to. The same four lines are in main.py, and the comment
+# there says why they are not shared: both files are byte-identical on the
+# classic branch, and config.py -- where this would naturally live -- is
+# allowed to differ between the two.
+NESTED_HOTKEYS = {
+    "visual_qa_hotkey": "visual_qa.visual_qa_hotkey",
+    "capture_hotkey": "capture.capture_hotkey",
+    "record_hotkey": "capture.record_hotkey",
+}
 
 # "Dictate (hold)" is one string in config.py because that is all the old
 # window needed. Here the how is its own column.
@@ -1680,13 +1692,12 @@ class Dashboard:
         try:
             current = config_mod.load(CONFIG_PATH)
             # with_field, not a bare replace: most keys live at the top
-            # level, but one (visual_qa_hotkey) is nested in its section,
-            # and replace() cannot assign through that. One helper, both
-            # this window and main.rebind.
+            # level, but some (visual_qa_hotkey, and both capture keys)
+            # are nested in their section, and replace() cannot assign
+            # through that. One helper, both this window and main.rebind.
             config_mod.check_hotkeys(config_mod.with_field(current, field,
                                                            key))
-            write_key = ("visual_qa.visual_qa_hotkey"
-                         if field == "visual_qa_hotkey" else field)
+            write_key = NESTED_HOTKEYS.get(field, field)
             config_mod.set_values(CONFIG_PATH, {write_key: key})
             self._note(f"{field} is now '{key}'" if key
                        else f"{field} is off")

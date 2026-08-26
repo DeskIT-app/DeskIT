@@ -11,7 +11,8 @@ Hebrew push-to-talk dictation for Windows: hold **Right Ctrl**, speak,
 release, and a cleaned transcript lands at your cursor via clipboard +
 Ctrl+V. Around that core: a repair pass that fixes misheard words, a
 translate key, a punctuate key, a lookup key, a correction box that teaches
-a vocabulary, a phone endpoint, and a dashboard. Everything is documented,
+a vocabulary, a screenshot/screen-recording pair of keys, a phone
+endpoint, and a dashboard. Everything is documented,
 with measurements, in `README.md` and `config.toml`.
 
 **Two whole versions of the app live here as git branches**, switched with
@@ -80,7 +81,7 @@ back.
 
 ## Traps we already paid for — do not re-arm them
 
-- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 329 of
+- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 367 of
   them, safe to run while dictation is live (two bugs that used to kill
   the app mid-suite are fixed; see git log). Run them BEFORE claiming done.
 - **Subprocesses under pythonw allocate consoles.** Every `subprocess.run`
@@ -198,6 +199,37 @@ back.
   not repaint or close either -- reported as "it crashes and I cannot get
   out". Play ASYNC and wait out the wav's own duration in short
   cancellable hops instead. 10.59 s from Stop to quiet became 0.00.
+- **Declaring argtypes on `ctypes.windll.*` changes them FOR EVERY
+  MODULE.** `ctypes.windll.user32` is a process-global cached object and
+  five files here reach for the same one. capture.py needs
+  `GetDC.restype = c_void_p` (a 64-bit HDC does not fit in the c_int
+  ctypes assumes), and setting it there broke `visual_qa.text_pil` on a
+  line that had worked for months — "OverflowError: int too long to
+  convert", because that module still expected the truncated int. The fix
+  is a PRIVATE handle: `ctypes.WinDLL("user32")` builds a new wrapper with
+  its own function cache. capture.py uses `_user32`/`_gdi32` and a test
+  greps it to keep it that way. Anything new that declares argtypes must
+  do the same.
+- **`SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)` really does
+  hide a window from BitBlt** — with and without CAPTUREBLT, and from
+  PIL's ImageGrab too. Measured 2026-08-25: a magenta window that filled
+  60000/60000 pixels of a grab filled 0 with the flag set. That is what
+  lets the recording controls sit on top of the region being recorded
+  instead of beside it, which is the only option when the region is the
+  whole screen.
+- **PIL's `ImageGrab` builds its DCs per call; a reused DIB section does
+  not.** 10.1 ms vs 53.7 ms for 1280x720, 21.7 vs 56.7 at 1440p, measured
+  2026-08-25. Screen RECORDING is only possible on the second number. Do
+  not "simplify" capture.Grabber back to ImageGrab.
+- **h264 refuses an odd-sided frame, and it refuses it late.** yuv420p
+  subsamples chroma 2x2, so libx264 raises at `add_stream` — which is
+  after the user has picked a region and thinks they are recording.
+  `capture.even_box` shrinks by a pixel before anything is opened.
+- **A video encoder is already installed.** PyAV comes with faster-whisper
+  and carries its own FFmpeg (libx264 and h264_nvenc both present). No new
+  package and no ffmpeg.exe. NVENC was measured and rejected: same speed
+  warm, 234 ms spike on its first frame, and the GPU budget is already
+  spent (see The machine).
 - **Hebrew in console output** shows as garbage unless
   `$env:PYTHONIOENCODING='utf-8'` — display-only, data is fine.
 - **Branch switches restart the running instance** (~25 s of model
@@ -217,6 +249,7 @@ back.
 | `injector.py` | clipboard paste, placeholder, focus checks |
 | `punctuate.py` / `lookup.py` | F2 rewrite-in-place / reading box |
 | `visual_qa.py` | ask-the-screen: region select, vision chain, answer window, TTS |
+| `capture.py` | screenshots (select, edit, clipboard, save) and screen recording (BitBlt + PyAV) |
 | `dashboard.py` + `ui.py` | control window incl. the Version screen |
 | `versions.py` | whole-app version switching |
 | `tests.py` | the suite; run it |
