@@ -232,6 +232,17 @@ back.
   spent (see The machine).
 - **Hebrew in console output** shows as garbage unless
   `$env:PYTHONIOENCODING='utf-8'` — display-only, data is fine.
+- **Mirror to `classic` with a git WORKTREE, never by checking it out.** The shared files
+  (config.toml, main.py, dashboard.py, cues.py, .gitignore) have to land on both branches in the
+  same change or `test_both_versions_commit_the_same_settings_file` and
+  `test_the_shared_half_of_the_app_is_one_file_on_both_versions` go red — and both compare
+  COMMITTED blobs, so leaving the work uncommitted is also green. Checking `classic` out swaps the
+  working tree under the app the owner is using. A worktree does not:
+  `git worktree add <tmp> classic`, copy the shared files in, commit there, run that branch's own
+  `tests.py` from the worktree, `git worktree remove <tmp>`. Done on 2026-08-26 with the app live
+  and never touched. Note `.gitignore` is in that set even though no test checks it: `versions.py`
+  refuses a switch when `git status --porcelain` is dirty, and untracked files count — a
+  `captures\` folder ignored on one branch only would block the switch.
 - **Branch switches restart the running instance** (~25 s of model
   loading). That is expected, not a crash.
 
