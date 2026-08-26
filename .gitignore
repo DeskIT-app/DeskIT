@@ -21,6 +21,13 @@ lookup_cache.json
 # part of the app.
 /*.html
 
+# Pictures and videos OF THIS SCREEN. The most sensitive thing this repo
+# can hold -- a screenshot can carry mail, banking, anything that was ever
+# shown here -- and the same rule transcripts.log gets: it stays on this
+# machine. The folder name is [capture] folder in config.toml; change that
+# and change this.
+captures/
+
 # Generated at first run by cues.py
 cues/
 
