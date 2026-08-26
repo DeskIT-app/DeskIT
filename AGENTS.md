@@ -11,8 +11,9 @@ Hebrew push-to-talk dictation for Windows: hold **Right Ctrl**, speak,
 release, and a cleaned transcript lands at your cursor via clipboard +
 Ctrl+V. Around that core: a repair pass that fixes misheard words, a
 translate key, a punctuate key, a lookup key, a correction box that teaches
-a vocabulary, a screenshot/screen-recording pair of keys, a phone
-endpoint, and a dashboard. Everything is documented,
+a vocabulary, a screenshot/screen-recording pair of keys, a webcam key
+that takes a photo into the same editor, a phone endpoint, and a
+dashboard. Everything is documented,
 with measurements, in `README.md` and `config.toml`.
 
 **Two whole versions of the app live here as git branches**, switched with
@@ -230,6 +231,115 @@ back.
   package and no ffmpeg.exe. NVENC was measured and rejected: same speed
   warm, 234 ms spike on its first frame, and the GPU budget is already
   spent (see The machine).
+- **A webcam has no "default device" URL.** FFmpeg's dshow demuxer is
+  opened as `video=<friendly name>`, so anything that opens a camera has
+  to enumerate first — `capture.cameras()`, 147 ms, once per window. And
+  the enumeration is not a query: you open the demuxer with
+  `list_devices=true`, it prints the list and REFUSES to open, and the
+  refusal is the success case.
+- **Read PyAV's log through Python logging, and expect fragments.** Three
+  things, all measured 2026-08-26 while building `_dshow_report`.
+  (1) `av.logging.restore_default_callback()` sends ffmpeg's lines to the
+  C runtime's stderr, and a windowless app has nowhere for stderr to go —
+  redirecting fd 2 around the call captured zero lines, twice. The default
+  callback, which posts to `logging.getLogger("libav.*")`, is the only
+  route that works under pythonw. (2) That logger inherits root's WARNING
+  unless you `setLevel(DEBUG)` on it, and ffmpeg's lines are INFO — forget
+  it and the device list comes back empty with no error anywhere. (3) What
+  arrives are FRAGMENTS: one device is four records (the quoted name,
+  `(video`, `)`, the newline), and off the main thread the newline is
+  dropped as well. Join them and read with a regex; do not split on lines
+  that are not dependably there.
+- **Ask a webcam for MJPEG or you get a slideshow.** Measured off this
+  camera's own `list_options`: 1920x1080 at 30 fps as mjpeg and *the same
+  size at 5 fps* as raw yuyv422 — and DirectShow hands over the raw pin
+  unless `vcodec=mjpeg` is in the options. The fallback drops the request
+  rather than fail (a 5 fps camera is still a camera) and logs that it did.
+- **`text_pil` returns a picture of the BOX it was given, not of the
+  glyphs.** Centring that box puts a short string against one edge —
+  a "3" clipped by the left curve of a 34 px chip, and a countdown numeral
+  visibly off-centre in its disc. Crop to `getbbox()` first. Both bugs
+  shipped into the first live screenshot, which is the only place they
+  could have been seen.
+- **`PhotoImage.paste()` exists, and the camera preview needs it.**
+  Building a new `ImageTk.PhotoImage` per frame allocates a 1280x720
+  bitmap twenty-five times a second and hands the old one to the garbage
+  collector — on a thread that owns a Tcl interpreter, which is the
+  Tcl_AsyncDelete story above wearing a different hat. One PhotoImage for
+  the window's life, pasted into.
+- **Do not hide the camera window from capture.** The clip bar uses
+  `WDA_EXCLUDEFROMCAPTURE` because its controls float over the region
+  being recorded. The camera card floats over nothing it is recording, and
+  the flag has a cost that only shows up later: an excluded window cannot
+  be screenshotted, shared or recorded BY THE OWNER either — not by this
+  app's own `ctrl+f11`, not by Teams, not for a bug report. It withdraws
+  and pumps three ticks before grabbing the desktop instead, which costs
+  one repaint at the moment the screen is about to be dimmed anyway.
+- **Tk takes the foreground the moment it REALISES a window, and
+  `WS_EX_NOACTIVATE` does not stop it.** Measured step by step,
+  2026-08-26: with the window `withdraw()`n, `overrideredirect`, topmost
+  and already carrying the no-activate flag, the foreground was Chrome
+  before `update_idletasks()` and `TkTopLevel` immediately after it.
+  Showing it with `SetWindowPos(SWP_NOACTIVATE|SWP_SHOWWINDOW)` instead of
+  `deiconify()` did not help either — the grab has already happened by
+  then. The flag still earns its place (a later CLICK on the window no
+  longer activates it); the first grab has to be UNDONE, with
+  `SetForegroundWindow` back to whatever had it, which is allowed because
+  at that instant this process owns the foreground. Repainting afterwards
+  does not take it again (measured over eight repaints). Anything here
+  that is a NOTIFICATION rather than a window the user just asked for owes
+  this: see `capture.give_focus_back`.
+- **A Windows-key chord IS takeable, and the code used to say it was not.**
+  `parse_binding` refused Win as a modifier on the reasoning that "a tap of
+  it that nothing consumed opens Start". That reasoning is about Win
+  ALONE; it does not survive contact with a chord. Measured 2026-08-26,
+  three runs of a bare low-level hook: `Win+Shift+S` with the hook merely
+  watching brings up `XamlWindow / "Snipping Tool Overlay"`; with the hook
+  returning 1 for the `s` key-down while Win is held, NOTHING opens; and a
+  bare tap of Win with that same hook installed still opens Start
+  (`Windows.UI.Core.CoreWindow / "Search"`). So no registry key, no
+  `DisabledHotkeys`, nothing turned off in Windows — swallow the trigger
+  and leave Win itself alone. A Win chord is now the ONE exception to "tap
+  keys are not swallowed" (`hotkey._takes_the_key`), and the exception is
+  narrow on purpose: a Ctrl/Shift/Alt chord is not usually the shell's.
+- **Three-and four-key chords always worked; nothing needed adding.**
+  `Binding.mods` is a frozenset and the dashboard builds a chord from
+  `held_modifier_groups()`, which asks Windows what is down at the moment
+  the trigger lands. `ctrl+shift+alt+f6` has parsed since chords existed.
+  What was missing was only the Win group in `_SIDES`/`_MOD_ORDER` — and a
+  test saying the capability is there, because a capability with no test
+  is one that gets optimised away.
+- **Pillow antialiases NOTHING, and the editor's ink is on a picture
+  people look at closely.** `ImageDraw.line`/`.polygon` write hard pixels:
+  every diagonal was a staircase and it was plainly visible at 1x. Marks
+  are drawn at 4x on their OWN rectangle and resized down with LANCZOS
+  (`_ink_stamp`, the same trick `icon()` and `rr_layer` use), backing off
+  to 2x or 1x when the rectangle approaches a screenful — 4x a 2560x1440
+  bbox is 59 MB. And it is cached per mark, keyed on the points: a
+  committed mark never changes, a crop only moves where it is pasted, and
+  without the cache every hover repaint would re-oversample every stroke.
+  0.8 ms to repaint five marks against 41 ms to render them.
+- **An arrow's shaft must stop at the notch, not at the point.** Drawn to
+  the tip, a 3 px stroke pokes out the far side of the head — the little
+  nub in the first screenshot of this editor. And the head wants four
+  points (tip, two barbs, a notch pulled back along the shaft), not three:
+  a plain triangle on a thin shaft reads as a wedge. `arrow_shape` is the
+  geometry and `tk_arrowshape` translates it for the live canvas preview,
+  so the arrow you drag is the arrow you get.
+- **A key that means two things needs a latch, because a poll is not an
+  event.** The camera card reads Esc with `GetAsyncKeyState` at 66 Hz (a
+  borderless topmost window does not get the keyboard for free — the same
+  reason the selector does), and Esc there cancels a countdown first and
+  closes the window second. A human tap holds the key for eighty
+  milliseconds, so without remembering that it was already down, one press
+  did both: measured 2026-08-26 on a scripted 60 ms tap, which cancelled
+  the timer and closed the window every time. Latch on the down edge and
+  release on the up.
+- **The lens is released by the shutter, not by the editor.** `_fire`
+  calls `Camera.close()` before the flash and before the file is written,
+  and `Controller.stop()` closes it too. A test asserts the ordering,
+  because nothing else can see it and the light beside the camera is the
+  only thing the owner has to go on.
 - **Hebrew in console output** shows as garbage unless
   `$env:PYTHONIOENCODING='utf-8'` — display-only, data is fine.
 - **Mirror to `classic` with a git WORKTREE, never by checking it out.** The shared files
@@ -260,7 +370,7 @@ back.
 | `injector.py` | clipboard paste, placeholder, focus checks |
 | `punctuate.py` / `lookup.py` | F2 rewrite-in-place / reading box |
 | `visual_qa.py` | ask-the-screen: region select, vision chain, answer window, TTS |
-| `capture.py` | screenshots (select, edit, clipboard, save) and screen recording (BitBlt + PyAV) |
+| `capture.py` | screenshots (select, edit, clipboard, save), screen recording (BitBlt + PyAV), and the webcam photo key (dshow through the same PyAV, into the same editor) |
 | `dashboard.py` + `ui.py` | control window incl. the Version screen |
 | `versions.py` | whole-app version switching |
 | `tests.py` | the suite; run it |

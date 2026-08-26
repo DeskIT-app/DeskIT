@@ -1,17 +1,20 @@
-"""Screen capture: a shot you can draw on, and a clip you can send.
+"""Pictures: one you drag, one you take, and a clip you can send.
 
-Two keys, one folder. **ctrl+f11** freezes the screen and dims it, you drag
-a rectangle (or hold Shift and lasso a shape) and let go: the picture is on
-your clipboard and in `captures\\` before you have moved your hand, and a
-glass toolbar opens under the selection so you can crop it, draw on it,
-arrow at it or blur the part nobody else should read. **ctrl+f12** picks a
-region the same way — or a whole monitor, by name, off a chip — and records
-it to an mp4 until you tap the key again, announcing itself in a corner and
-then shrinking to a red dot and a clock.
+Three keys, one folder. **ctrl+f11** freezes the screen and dims it, you
+drag a rectangle (or hold Shift and lasso a shape) and let go: the picture
+is on your clipboard and in `captures\\` before you have moved your hand,
+and a glass toolbar opens under the selection so you can crop it, draw on
+it, arrow at it or blur the part nobody else should read. **ctrl+f12**
+picks a region the same way — or a whole monitor, by name, off a chip — and
+records it to an mp4 until you tap the key again, announcing itself in a
+corner and then shrinking to a red dot and a clock. **ctrl+f6** opens the
+WEBCAM in a card in the middle of the screen with a shutter under it, and
+the photo it takes lands in the same folder, on the same clipboard, in the
+same editor, laid on the screen exactly where the preview was.
 
-It is Win+Shift+S, plus the editor, plus a recorder, written to the same
-rules as the rest of this app: nothing leaves the machine, everything is
-measured, and the pixels are yours.
+It is Win+Shift+S, plus the editor, plus a recorder, plus a camera, written
+to the same rules as the rest of this app: nothing leaves the machine,
+everything is measured, and the pixels are yours.
 
 WHY THIS IS ITS OWN MODULE AND NOT PART OF visual_qa.py
 --------------------------------------------------------
@@ -109,6 +112,44 @@ TRAPS PAID FOR HERE
   after the user has started recording. `even_box` shrinks the rectangle
   by a pixel before anything is opened.
 
+THE CAMERA, AND WHY IT LIVES HERE
+----------------------------------
+Because everything after the shutter is already written. A photo wants the
+same folder, the same clipboard formats, the same crop-draw-blur-ask
+toolbar and the same "it is saved before you can lose it" promise — and a
+second module would be a second copy of all of it, drifting. What is new
+is the front of it: enumerate DirectShow's video devices, open one, show
+the frames, and turn one of them into the picture the rest of this file
+already knows how to handle. `Camera` is the device, `CameraWindow` is the
+card, `Controller.begin_photo` is the key, and `ShotWindow(start_box=...)`
+is the join — the editor cannot tell which lens a picture came through,
+and that is the point.
+
+Two rules the camera half is built on, and both of them are "no
+divergence":
+
+- **What you see is what you get.** ONE image per frame, made at the size
+  the window shows, and that image is the preview AND the file AND what
+  the editor opens on. So `preview_fit` may make the picture smaller than
+  the camera could have managed (1:1 whenever it fits, which it does at
+  1280x720 on this desk), and `mirror` flips both or neither. A preview
+  that disagreed with the file it produced would be the same bug
+  `render_shot` exists to prevent, wearing a lens.
+- **The lens closes at the shutter, not at the end.** `Camera.close()` is
+  called by `_fire`, before the flash, before the save, long before the
+  editor. The light beside the camera means what it looks like it means.
+
+MEASURED, 2026-08-26, live, on an eMeet C960 over USB:
+    open -> first frame        654-829 ms over six opens
+    delivered                   25 fps at 1280x720 mjpeg (40.1 ms apart,
+                                steady to a tenth of a millisecond)
+    one frame to the window      5.4 ms at 800x450 · 4.3 ms at 1280x720
+    listing the devices        147 ms
+ASK FOR MJPEG. This camera offers 1920x1080 at 30 fps as mjpeg and the
+SAME size at 5 fps as raw yuyv422, and DirectShow hands over the raw one
+unless it is told otherwise. Measured off the device's own list_options,
+both pins.
+
 PRIVACY, stated plainly because it decides the defaults
 --------------------------------------------------------
 Unlike the ask card — which holds its screenshot in memory and never
@@ -118,6 +159,12 @@ is gitignored, and nothing in it is ever uploaded anywhere by this module.
 There is no cloud path in this file at all; the only way a capture reaches
 a model is the Ask button, which hands the pixels to visual_qa and obeys
 `visual_qa.allow_screenshot_upload` like every other question.
+
+The camera is the sharper end of that. Nothing in this app opens it but
+`ctrl+f6`, it is open only while the card is up, and it is released the
+instant the shutter fires rather than when the editor closes. `[camera]
+enabled = false` unregisters the key, and then nothing here can open it
+at all.
 
 The microphone is OFF by default in a recording (`[capture] audio =
 "off"`) and there is a switch on the clip bar to turn it on for the clip
@@ -132,6 +179,7 @@ import ctypes.wintypes as w
 import gc
 import io
 import logging
+import math
 import os
 import queue
 import threading
@@ -170,6 +218,25 @@ PEN_W = 3                    # px, the freehand and the arrow
 BOX_W = 3                    # px, the rectangle outline
 HIGHLIGHT_W = 18             # px, and translucent — a marker, not a pen
 HIGHLIGHT_A = 92
+
+# THE INK IS OVERSAMPLED. Pillow antialiases nothing, so a diagonal drawn
+# straight onto the picture is a staircase — see ink_scale for the whole
+# argument and the measurements. 4x where it fits, less on a mark whose
+# rectangle is most of a 1440p screen.
+INK_SS = 4
+INK_SS_BUDGET = 4_000_000    # px in one oversampled layer, ~16 MB RGBA
+ARROW_HEAD = 6.5             # head length, as a multiple of the stroke.
+                             # An arrow on a screenshot is not a diagram's
+                             # arrow: it is the one thing on the picture
+                             # that must be seen before anything else, so
+                             # the head is deliberately heavier than the
+                             # geometry would suggest
+ARROW_HEAD_MIN = 16          # px, so a hairline arrow still has a point
+ARROW_SPREAD = 27            # degrees off the shaft to each barb
+ARROW_NOTCH = 0.62           # how far back the notch sits, of the head
+# How far each kind of mark can paint outside the points it is made of.
+_MARK_PAD = {"pen": PEN_W + 2, "arrow": 44, "box": BOX_W + 3,
+             "highlight": HIGHLIGHT_W + 2}
 PIXEL_BLOCK = 12             # the redaction mosaic; below ~8 px, 12 pt
                              # text is still readable in the blocks
 
@@ -180,6 +247,21 @@ BAR_PAD_X, BAR_PAD_Y = 14, 12
 BAR_H = 82
 BAR_RADIUS = 22
 BAR_GAP = 18                 # between the selection and the toolbar
+
+# The hint card the selector opens with: one sheet of glass holding the
+# instructions and a tile per monitor. Glass rather than card stock,
+# because at this moment the screen is frozen and we own the pixels
+# behind it — the same reason the editor's toolbar can be glass and the
+# clip bar cannot.
+HINT_PAD = 18
+HINT_RADIUS = 20
+CHIP_W, CHIP_H = 134, 72
+CHIP_GAP = 10
+CROP_BACK = 0.42             # how far the area you already cut away is
+                             # brought back toward its real pixels while
+                             # the crop tool is up. Not all the way: it
+                             # has to be obviously reachable and just as
+                             # obviously not part of the picture yet
 
 # The clip bar, which is NOT glass (see the module docstring).
 # The clip bar has three shapes and one window. It ANNOUNCES itself the
@@ -200,9 +282,40 @@ CLIP_FRAME_W = 3             # the marching border around what is recorded
 FLASH_MS = 1400              # popup.py's confirmation dwell, same number
 TOAST_MS = 7000              # how long "saved" stays up on its own
 
+# The card a CAPTURE leaves in the corner instead of opening an editor over
+# the whole screen. See ShotToast for why that trade is the right way round.
+TOAST_W, TOAST_H = 384, 96
+TOAST_THUMB = (112, 72)
+TOAST_TEXT_X = 136
+
 # 1/1000 s. Wall-clock presentation stamps rather than frame numbers, so a
 # clip that could only manage 24 fps plays at real speed instead of fast.
 CLOCK_HZ = 1000
+
+
+# THE LENS. The camera window is not glass either, and for the same reason
+# the clip bar is not: there is nothing frozen behind it to photograph. It
+# is card stock with SetWindowRgn corners and the live picture sits in it
+# as a plain inset rectangle — a rounded mask over a preview is a mask
+# recomputed thirty times a second for a corner nobody looks at.
+CAM_PAD = 14                 # card edge to picture
+CAM_STRIP_H = 76             # the control row under it
+CAM_RADIUS = 18
+CAM_CHIP = 34
+CAM_MIN_W = 300              # the card never narrower than its own controls.
+                             # preview_fit never upscales, so a 160x120
+                             # webcam would otherwise make a card too narrow
+                             # for the shutter to sit between the chips
+SHUTTER = 54                 # the round button, the biggest thing on the row
+CAM_TIMERS = (0, 3, 10)      # what the timer chip cycles through, seconds
+CAM_FLASH_MS = 150           # the white blink that says the shutter fired
+CAM_WAKE_S = 6.0             # stop waiting for a first frame after this.
+                             # Measured 654-829 ms on this machine over six
+                             # opens, so six seconds is not a budget, it is
+                             # the line past which the device is not coming
+CAM_HOLD_MS = 900            # how long the window stays up after a shot
+                             # when the editor is switched off, so the
+                             # filename can be read
 
 
 class CaptureError(Exception):
@@ -376,8 +489,12 @@ def capture_name(kind: str, when: float | None = None,
     Two captures inside one second are rare and not impossible — the key
     repeats — and silently overwriting the first one would be the worst
     possible answer. The second gets ' (2)'.
+
+    The KIND is the first word of the filename, so one folder sorted by
+    name groups the screen shots, the camera photos and the clips without
+    needing three folders to look in.
     """
-    suffix = {"shot": ".png", "clip": ".mp4"}[kind]
+    suffix = {"shot": ".png", "photo": ".png", "clip": ".mp4"}[kind]
     base = f"{kind} {stamp(when)}"
     name = base + suffix
     if taken is None:
@@ -466,6 +583,158 @@ def undo_step(history: list) -> tuple[object | None, list]:
 def should_stop(started: float, now: float, max_seconds: float) -> bool:
     """True when a recording has run past its cap. 0 = no cap."""
     return bool(max_seconds) and (now - started) >= max_seconds
+
+
+# ------------------------------------------------- pure helpers, the lens
+# Same rule as the ones above: numbers in, numbers out, a test for each.
+# There is no webcam on a test runner and the shape of this feature has to
+# be checkable anyway, so everything that can be decided without a device
+# is decided here and the class below only drives the device.
+
+def parse_size(text: str,
+               fallback: tuple[int, int] = (1280, 720)) -> tuple[int, int]:
+    """'1280x720' -> (1280, 720). Anything else -> `fallback`.
+
+    A size that does not parse must not be the reason a key does nothing.
+    config.check() has already refused the value out loud at load time;
+    by the time we are here the only useful answer is a camera that opens.
+    """
+    try:
+        left, _, right = str(text).lower().partition("x")
+        width, height = int(left.strip()), int(right.strip())
+    except (AttributeError, ValueError):
+        return fallback
+    if not (32 <= width <= 7680 and 32 <= height <= 4320):
+        return fallback
+    return width, height
+
+
+# Every one of these installs a DirectShow video device that is not a
+# camera. They are skipped when nothing was asked for by name — see below.
+VIRTUAL_CAMERAS = ("virtual", "obs", "droidcam", "manycam", "splitcam",
+                   "xsplit", "nvidia broadcast", "snap camera", "camo")
+
+
+def pick_camera(names, wanted: str = "") -> str | None:
+    """Which video device to open, out of what DirectShow listed.
+
+    `wanted` matches as a case-insensitive SUBSTRING and not exactly.
+    Webcam friendly names carry the vendor's own capitalisation and a lump
+    of model number — "HD Webcam eMeet C960" — and asking the owner to
+    retype one of those into config.toml without a typo is asking for the
+    typo. "eMeet" is enough, and so is "c960".
+
+    With nothing asked for, a VIRTUAL camera loses to a real one. OBS,
+    Teams, Zoom and NVIDIA Broadcast each install one; they sort ahead of
+    the real device as often as not (on this machine OBS is second of
+    two), and a photo key that opens a black frame from a virtual camera
+    nobody is streaming into is a photo key that looks broken.
+
+    A name that was asked for and is not there returns None rather than
+    quietly opening a different camera — the caller then falls back on
+    purpose and SAYS which one it took. A photograph of the wrong room is
+    not a smaller failure than no photograph.
+    """
+    names = [n for n in names if n]
+    if not names:
+        return None
+    if wanted:
+        needle = wanted.strip().lower()
+        for name in names:
+            if needle in name.lower():
+                return name
+        return None
+    for name in names:
+        if not any(mark in name.lower() for mark in VIRTUAL_CAMERAS):
+            return name
+    return names[0]
+
+
+def preview_fit(size: tuple[int, int], work_area: tuple[int, int, int, int],
+                strip: int = CAM_STRIP_H, pad: int = CAM_PAD,
+                margin: int = 120) -> tuple[int, int]:
+    """How big the live picture is shown — 1:1 whenever it fits.
+
+    WHAT YOU SEE IS WHAT YOU GET is the rule this function exists to keep.
+    The photo this window writes is the picture that was on the screen
+    when the shutter fired, pixel for pixel: ONE image is the preview, the
+    clipboard, the file and what the editor opens on, so none of them can
+    disagree about what was taken. It is the argument render_shot makes
+    for the screenshot key, applied to a lens.
+
+    The price is that a camera larger than the monitor is photographed at
+    what the monitor could show. Measured here: a 1280x720 camera is 1:1
+    on this 2560x1440 monitor with room to spare. A 1080p camera on a
+    1366x768 laptop is not, and comes out at the largest whole picture
+    that fits. Lower `[camera] size` if you would rather have the pixels
+    than the preview — the two cannot both be had without letting the file
+    and the screen drift apart, which is the bug this avoids.
+    """
+    width, height = size
+    left, top, right, bottom = work_area
+    room_w = max(160, (right - left) - margin - pad * 2)
+    room_h = max(120, (bottom - top) - margin - strip - pad)
+    scale = min(1.0, room_w / max(1, width), room_h / max(1, height))
+    return (max(2, int(width * scale) // 2 * 2),
+            max(2, int(height * scale) // 2 * 2))
+
+
+def next_in(values, current):
+    """The value after `current`, wrapping. Anything unknown starts over."""
+    values = tuple(values)
+    if not values:
+        return current
+    try:
+        return values[(values.index(current) + 1) % len(values)]
+    except ValueError:
+        return values[0]
+
+
+def countdown_left(started: float, now: float, seconds: int) -> int:
+    """What the self-timer should read: 3, 2, 1, then 0 meaning fire.
+
+    Ceiling and not floor, so the number on screen is the number of
+    seconds LEFT. A timer that floors shows "0" for a whole second before
+    anything happens, and a timer that shows 0 for a whole second is a
+    timer everybody presses again.
+    """
+    if seconds <= 0:
+        return 0
+    return max(0, int(math.ceil(seconds - (now - started))))
+
+
+def camera_bar(width: int, switchable: bool = False) -> dict:
+    """name -> (x0, y0, x1, y1) inside the control strip, in strip pixels.
+
+    The same shape and the same reason as bar_layout: the painter and the
+    hit test read ONE set of numbers, so a button cannot end up drawn a
+    few pixels from where it can be clicked — invisible in a screenshot
+    and maddening under the hand.
+
+    The shutter is centred on the CARD rather than in the space left
+    between the chips. A shutter is the one control on a camera that the
+    hand finds without looking, and it finds it in the middle.
+    """
+    spots: dict[str, tuple[int, int, int, int]] = {}
+    y = (CAM_STRIP_H - CAM_CHIP) // 2
+    x = CAM_PAD
+    for name in ("mirror", "timer"):
+        spots[name] = (x, y, x + CAM_CHIP, y + CAM_CHIP)
+        x += CAM_CHIP + GAP
+    right = width - CAM_PAD
+    for name in ("close", "switch") if switchable else ("close",):
+        spots[name] = (right - CAM_CHIP, y, right, y + CAM_CHIP)
+        right -= CAM_CHIP + GAP
+    # Centred, then pushed off the chips if a narrow card leaves it
+    # nowhere to be centred. Overlapping controls are not a cosmetic
+    # problem: one press would mean two things, and the hit test would
+    # decide which by dictionary order.
+    sx = width // 2 - SHUTTER // 2
+    sx = max(x + GAP, min(sx, right + CAM_CHIP - SHUTTER - GAP))
+    sy = (CAM_STRIP_H - SHUTTER) // 2
+    spots["shutter"] = (sx, sy, sx + SHUTTER, sy + SHUTTER)
+    return spots
+
 
 
 # ----------------------------------------------------------- win32 plumbing
@@ -599,6 +868,86 @@ def hide_from_capture(root) -> bool:
     except Exception:
         log.debug("could not exclude a window from capture", exc_info=True)
         return False
+
+
+def no_activate(root) -> bool:
+    """Let a window appear without taking the keyboard away from anything.
+
+    A notification that steals focus is not a notification, it is an
+    interruption with a countdown on it — and the whole point of the
+    corner card is that the common case stops being interrupted. Measured
+    before this existed: the card came up as `TkTopLevel` in the
+    foreground, so a capture taken mid-sentence ate the next keystroke.
+
+    `WS_EX_NOACTIVATE` is the flag for it. The window still receives the
+    mouse — clicking the card works, it just does not focus it — which is
+    exactly the bargain a toast wants. It has to be set BEFORE the window
+    is first shown, so the caller builds it withdrawn and deiconifies
+    after.
+    """
+    GWL_EXSTYLE, WS_EX_NOACTIVATE = -20, 0x08000000
+    try:
+        hwnd = int(root.winfo_id())
+        target = _user32.GetParent(hwnd) or hwnd
+        _user32.GetWindowLongW.restype = ctypes.c_long
+        _user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        _user32.SetWindowLongW.restype = ctypes.c_long
+        _user32.SetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int,
+                                           ctypes.c_long]
+        style = _user32.GetWindowLongW(ctypes.c_void_p(target), GWL_EXSTYLE)
+        _user32.SetWindowLongW(ctypes.c_void_p(target), GWL_EXSTYLE,
+                               style | WS_EX_NOACTIVATE)
+        return True
+    except Exception:
+        log.debug("could not make the window non-activating", exc_info=True)
+        return False
+
+
+def esc_held() -> bool:
+    """Is Escape being HELD DOWN right now, as opposed to just pressed?
+
+    Every overlay in this app reads Escape with GetAsyncKeyState rather
+    than receiving it, because a borderless topmost window does not get
+    the keyboard for free. That works, and it has one failure mode that
+    is invisible from the outside: if Escape is stuck down — an
+    automation tool that injected a key-down without its key-up, a remote
+    desktop session that dropped one, a wedged keyboard — then every
+    overlay opens and closes again within one tick. The crosshair appears
+    for an instant and vanishes, nothing is logged, and the app looks
+    broken while dictation carries on working, because dictation is the
+    one feature that never asks about Escape.
+
+    That happened here on 2026-08-26 and cost real time to find. So the
+    overlays now seed their Escape latch from this: a key that was
+    ALREADY down when the window opened cannot close it. Release it and
+    press it again and it cancels, exactly as before.
+    """
+    return bool(_user32.GetAsyncKeyState(0x1B) & 0x8000)
+
+
+def give_focus_back(previous) -> None:
+    """Hand the keyboard back to whatever had it before this window.
+
+    TK TAKES THE FOREGROUND THE MOMENT IT REALISES A WINDOW, and
+    WS_EX_NOACTIVATE does not stop it. Measured step by step on this
+    machine, 2026-08-26: with the window `withdraw()`n, overrideredirect,
+    topmost AND already carrying the no-activate flag, the foreground was
+    still Chrome before `update_idletasks()` and TkTopLevel immediately
+    after it. The flag does its job later — a click on the card no longer
+    activates it — but the first grab has to be undone rather than
+    prevented.
+
+    Giving it back works because a process that currently OWNS the
+    foreground is allowed to set it, and at that instant this one does.
+    Painting afterwards does not take it again (measured over eight
+    repaints).
+    """
+    if not previous:
+        return
+    try:
+        _user32.SetForegroundWindow(ctypes.c_void_p(previous))
+    except Exception:
+        log.debug("could not hand the foreground back", exc_info=True)
 
 
 def click_through(root) -> None:
@@ -867,27 +1216,86 @@ def _shift(points, dx: int, dy: int) -> list:
     return [(x - dx, y - dy) for x, y in points]
 
 
-def _arrow_head(start, end, size: int = 17):
-    """The two barbs of an arrow, as a filled triangle.
+def arrow_shape(start, end, width: int = PEN_W):
+    """(where the shaft stops, the head polygon) for one arrow.
 
-    Drawn from the geometry rather than as a rotated bitmap so it stays
-    sharp at any angle and any length, and so a very short arrow still
-    gets a head proportional to the line instead of a blob bigger than it.
+    FOUR POINTS, NOT THREE: the tip, the two barbs, and a NOTCH pulled
+    back along the shaft between them. A plain triangle on a thin shaft
+    reads as a wedge stuck on a line; the notch is what makes it read as
+    an arrow at a glance, and it is the shape every drawing tool has
+    settled on for that reason.
+
+    THE SHAFT STOPS AT THE NOTCH, not at the tip. Drawn to the tip, a
+    3 px stroke pokes out the far side of the point — which is what the
+    little nub above the arrowhead was in the first screenshot of this
+    editor, and it is visible at 1x once you know to look.
+
+    The head is proportional to the STROKE (so it never looks like a
+    scratch) and capped against the arrow's LENGTH (so a short arrow does
+    not become a blob with a tail).
     """
     import math
     x0, y0 = start
     x1, y1 = end
     length = math.hypot(x1 - x0, y1 - y0)
     if length < 1:
-        return []
-    size = min(size, max(6, length * 0.42))
+        return end, []
+    head = min(max(ARROW_HEAD_MIN, width * ARROW_HEAD), length * 0.38)
     angle = math.atan2(y1 - y0, x1 - x0)
-    spread = math.radians(26)
-    return [(x1, y1),
-            (x1 - size * math.cos(angle - spread),
-             y1 - size * math.sin(angle - spread)),
-            (x1 - size * math.cos(angle + spread),
-             y1 - size * math.sin(angle + spread))]
+    spread = math.radians(ARROW_SPREAD)
+    back = head * ARROW_NOTCH
+    notch = (x1 - back * math.cos(angle), y1 - back * math.sin(angle))
+    return notch, [
+        (x1, y1),
+        (x1 - head * math.cos(angle - spread),
+         y1 - head * math.sin(angle - spread)),
+        notch,
+        (x1 - head * math.cos(angle + spread),
+         y1 - head * math.sin(angle + spread)),
+    ]
+
+
+def tk_arrowshape(width: int = PEN_W) -> tuple[int, int, int]:
+    """The same head, in the three numbers Tk's canvas wants.
+
+    Tk draws the live preview and Pillow draws the picture, and they are
+    two different arrowheads unless somebody makes them agree. This is
+    that somebody: (neck-to-tip, barb-to-tip, half-width), read off the
+    geometry above so a change there moves both.
+    """
+    import math
+    head = max(ARROW_HEAD_MIN, width * ARROW_HEAD)
+    return (max(2, round(head * ARROW_NOTCH)), max(3, round(head)),
+            max(2, round(head * math.sin(math.radians(ARROW_SPREAD)))))
+
+
+def ink_scale(width: int, height: int) -> int:
+    """How far to oversample one mark's own rectangle before shrinking it.
+
+    PILLOW ANTIALIASES NOTHING. `ImageDraw.line` and `.polygon` write hard
+    pixels, so every diagonal an arrow or a pen stroke makes comes out as
+    a staircase — plainly visible at 1x and the reason the first version
+    of this editor's ink looked hand-cut. The fix is the one `icon()` and
+    `rr_layer` already use: draw it big and shrink it with LANCZOS.
+
+    Big is not free, and a mark's rectangle can be the whole picture (one
+    arrow corner to corner). So the factor is whatever fits the budget:
+    4x for the marks people actually draw, dropping to 2x for the ones
+    that span a 1440p screenshot. Measured on this machine, per mark:
+
+        220x160 box       4x     1.9 ms
+        1280x720 arrow    2x    24.0 ms
+        2560x1440 arrow   1x     3.1 ms   (too big to oversample at all)
+
+    and none of it is per-frame — `ShotWindow.picture()` caches on a
+    revision counter, so this runs when the ink changes and not when the
+    pointer moves.
+    """
+    area = max(1, width * height)
+    for scale in (INK_SS, 3, 2):
+        if area * scale * scale <= INK_SS_BUDGET:
+            return scale
+    return 1
 
 
 def pixelate(image, box, block: int = PIXEL_BLOCK):
@@ -911,6 +1319,103 @@ def pixelate(image, box, block: int = PIXEL_BLOCK):
     return out
 
 
+# One rendered stamp per mark, because a mark never changes after it is
+# committed — a crop only moves where it is PASTED. Without this, every
+# repaint of a picture carrying eight marks would oversample all eight
+# again, and the whole point of oversampling is that it is not cheap.
+_INK_CACHE: dict = {}
+_INK_CACHE_MAX = 64
+
+
+def _ink_stamp(kind: str, points: tuple, colour: tuple):
+    """(the mark as a small RGBA image, where its top-left belongs).
+
+    Both in the marks' own coordinate space — virtual-screen pixels — so
+    the caller subtracts the crop's origin and nothing here has to know
+    what is being cropped to.
+    """
+    key = (kind, points, colour)
+    stamp = _INK_CACHE.get(key)
+    if stamp is not None:
+        return stamp
+
+    from PIL import Image, ImageDraw
+    pad = _MARK_PAD.get(kind, PEN_W + 2)
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    left, top = int(min(xs)) - pad, int(min(ys)) - pad
+    width = int(max(xs)) + pad + 1 - left
+    height = int(max(ys)) + pad + 1 - top
+    scale = ink_scale(width, height)
+    layer = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    at = [((x - left) * scale, (y - top) * scale) for x, y in points]
+    solid = tuple(colour) + (255,)
+    radius = PEN_W * scale / 2
+
+    def cap(x, y) -> None:
+        """Round ends, which ImageDraw has no keyword for. A flat cap on a
+        3 px stroke is a visible chisel at either end of every squiggle."""
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius),
+                     fill=solid)
+
+    if kind == "pen":
+        draw.line(at, fill=solid, width=PEN_W * scale, joint="curve")
+        cap(*at[0])
+        cap(*at[-1])
+    elif kind == "arrow":
+        notch, head = arrow_shape(points[0], points[-1], PEN_W)
+        draw.line([at[0], ((notch[0] - left) * scale,
+                           (notch[1] - top) * scale)],
+                  fill=solid, width=PEN_W * scale)
+        cap(*at[0])
+        if head:
+            draw.polygon([((x - left) * scale, (y - top) * scale)
+                          for x, y in head], fill=solid)
+    elif kind == "box":
+        x0, y0, x1, y1 = normalize_bbox(at[0][0], at[0][1],
+                                        at[-1][0], at[-1][1])
+        draw.rounded_rectangle((x0, y0, x1, y1), 4 * scale, outline=solid,
+                               width=BOX_W * scale)
+    elif kind == "highlight":
+        draw.line(at, fill=tuple(colour) + (HIGHLIGHT_A,),
+                  width=HIGHLIGHT_W * scale, joint="curve")
+    else:
+        return None
+
+    if scale > 1:
+        layer = layer.resize((width, height), Image.LANCZOS)
+    if len(_INK_CACHE) >= _INK_CACHE_MAX:
+        _INK_CACHE.clear()          # a whole generation at a time: the
+    _INK_CACHE[key] = (layer, (left, top))    # entries are all the same
+    return _INK_CACHE[key]                    # age and none is special
+
+
+def _ink(out, kind: str, points, colour: tuple, origin: tuple[int, int]):
+    """Composite one mark onto the picture, clipped to it.
+
+    `alpha_composite` refuses a paste that hangs off the edge, and a mark
+    hanging off the edge is the NORMAL case after a crop — so the stamp is
+    trimmed to the overlap first rather than the picture being padded.
+    """
+    if len(points) < 2:
+        return out
+    stamp = _ink_stamp(kind, tuple(map(tuple, points)), tuple(colour))
+    if stamp is None:
+        return out
+    layer, (mleft, mtop) = stamp
+    x, y = mleft - origin[0], mtop - origin[1]
+    cx0, cy0 = max(0, -x), max(0, -y)
+    cx1 = min(layer.width, out.width - x)
+    cy1 = min(layer.height, out.height - y)
+    if cx1 <= cx0 or cy1 <= cy0:
+        return out                   # cropped clean out of the picture
+    if (cx0, cy0, cx1, cy1) != (0, 0, layer.width, layer.height):
+        layer = layer.crop((cx0, cy0, cx1, cy1))
+    out.alpha_composite(layer, (x + cx0, y + cy0))
+    return out
+
+
 def draw_marks(image, marks: list, origin: tuple[int, int]):
     """Replay every mark into a pristine picture. Returns a NEW image.
 
@@ -923,45 +1428,24 @@ def draw_marks(image, marks: list, origin: tuple[int, int]):
     are stored in virtual-screen coordinates: a crop then changes the
     origin and nothing else, and undoing the crop puts every mark back
     exactly where it was drawn.
+
+    Everything with an edge goes through `_ink`, which oversamples and
+    caches. The blur does not: a mosaic has no edges to soften, and
+    softening the ones between its blocks would be undoing the point of
+    it.
     """
-    from PIL import Image, ImageDraw
-    dx, dy = origin
     out = image.convert("RGBA")
     for mark in marks:
         kind = mark["kind"]
         colour = tuple(mark.get("colour", INKS[0][1]))
-        points = _shift(mark.get("points", ()), dx, dy)
+        points = mark.get("points", ())
         if kind == "blur":
-            if len(points) >= 2:
-                out = pixelate(out, (points[0][0], points[0][1],
-                                     points[-1][0], points[-1][1]))
+            shifted = _shift(points, *origin)
+            if len(shifted) >= 2:
+                out = pixelate(out, (shifted[0][0], shifted[0][1],
+                                     shifted[-1][0], shifted[-1][1]))
             continue
-        if kind == "highlight":
-            # ITS OWN LAYER, because ImageDraw's fill REPLACES pixels: a
-            # translucent line drawn straight on would cut a hole through
-            # the screenshot rather than tint it.
-            if len(points) < 2:
-                continue
-            layer = Image.new("RGBA", out.size, (0, 0, 0, 0))
-            ImageDraw.Draw(layer).line(points, fill=colour + (HIGHLIGHT_A,),
-                                       width=HIGHLIGHT_W, joint="curve")
-            out = Image.alpha_composite(out, layer)
-            continue
-        draw = ImageDraw.Draw(out)
-        if kind == "pen" and len(points) >= 2:
-            draw.line(points, fill=colour + (255,), width=PEN_W,
-                      joint="curve")
-        elif kind == "arrow" and len(points) >= 2:
-            draw.line([points[0], points[-1]], fill=colour + (255,),
-                      width=PEN_W)
-            head = _arrow_head(points[0], points[-1])
-            if head:
-                draw.polygon(head, fill=colour + (255,))
-        elif kind == "box" and len(points) >= 2:
-            left, top, right, bottom = normalize_bbox(
-                points[0][0], points[0][1], points[-1][0], points[-1][1])
-            draw.rounded_rectangle((left, top, right, bottom), 4,
-                                   outline=colour + (255,), width=BOX_W)
+        out = _ink(out, kind, points, colour, origin)
     return out
 
 
@@ -1023,11 +1507,16 @@ def capture_dir(folder: str) -> Path:
     return path
 
 
-def save_image(image, folder: str, when: float | None = None) -> Path:
-    """Write a shot and return where it went."""
+def save_image(image, folder: str, when: float | None = None,
+               kind: str = "shot") -> Path:
+    """Write a picture and return where it went.
+
+    `kind` is "shot" off the screenshot key and "photo" off the camera
+    key. Same folder, same PNG, different first word — see capture_name.
+    """
     directory = capture_dir(folder)
-    taken = {p.name for p in directory.glob("shot *.png")}
-    path = directory / capture_name("shot", when, taken)
+    taken = {p.name for p in directory.glob(f"{kind} *.png")}
+    path = directory / capture_name(kind, when, taken)
     image.save(path, "PNG")
     return path
 
@@ -1397,6 +1886,266 @@ class ScreenRecorder:
                      "unaffected", e)
 
 
+# ----------------------------------------------------------- the webcam
+# The other camera on this machine: the one with a lens. It arrives
+# through the SAME PyAV that encodes the recordings — faster-whisper's own
+# dependency, carrying its own FFmpeg with the dshow demuxer built in — so
+# the photo key adds no package, no ffmpeg.exe and no OpenCV.
+
+
+def _dshow_report(options: dict) -> str:
+    """Run one dshow probe for its LOG and give back everything it said.
+
+    Listing devices in FFmpeg is not a query, it is an error: you open the
+    demuxer with `list_devices=true`, it prints the list and refuses to
+    open, and the refusal is the normal outcome. So the exception here is
+    swallowed on purpose — an immediate-exit from this call means it
+    worked.
+
+    TWO THINGS ABOUT THAT LOG, both paid for on 2026-08-26:
+
+    - Read it through PYTHON LOGGING, not stderr. PyAV's default callback
+      hands ffmpeg's lines to `logging.getLogger("libav.*")`, which is the
+      only route that survives pythonw:
+      `av.logging.restore_default_callback()` sends them to the C
+      runtime's stderr instead, and redirecting fd 2 around the call
+      captured NOTHING — measured, zero lines, twice. A windowless app has
+      nowhere for stderr to go.
+    - What arrives are FRAGMENTS, not lines. One device shows up as four
+      records — the quoted name, "(video", ")", and the newline — and off
+      the main thread the newline is dropped as well, so the whole listing
+      comes back as one run-on string. Both are joined and read with a
+      regex rather than split on lines, because the line breaks are not
+      dependably there.
+
+    The `libav` logger is muted for the length of the call. Without that
+    every probe would put twenty fragments of DirectShow trivia into
+    app.log, which is a log nobody would keep reading.
+    """
+    import av
+
+    rows: list[str] = []
+
+    class _Sink(logging.Handler):
+        def emit(self, record) -> None:
+            rows.append(record.getMessage())
+
+    logger = logging.getLogger("libav")
+    sink = _Sink()
+    before_level = av.logging.get_level()
+    before_prop, before_own = logger.propagate, logger.level
+    logger.addHandler(sink)
+    logger.propagate = False
+    # BOTH levels, and forgetting the second one is how this returned an
+    # empty list the first time it ran: ffmpeg's lines arrive at INFO, and
+    # an unset logger inherits root's WARNING, which drops every one of
+    # them before any handler is consulted.
+    logger.setLevel(logging.DEBUG)
+    try:
+        av.logging.set_level(av.logging.INFO)
+        try:
+            av.open("dummy", format="dshow", options=options)
+        except Exception:
+            pass                      # the listing ALWAYS ends in an error
+    finally:
+        av.logging.set_level(before_level)
+        logger.setLevel(before_own)
+        logger.propagate = before_prop
+        logger.removeHandler(sink)
+    return "".join(rows)
+
+
+def read_video_devices(report: str) -> list[str]:
+    """The camera names out of one dshow report. Pure, so it has a test.
+
+    A video device is a quoted name followed by "(video)"; the same report
+    carries the microphones ("(audio)") and an "Alternative name" line per
+    device, which is also quoted and must not be mistaken for one.
+    """
+    import re
+    return re.findall(r'"([^"]+)"\s*\(\s*video\s*\)', report)
+
+
+def cameras() -> list[str]:
+    """Every video device DirectShow will answer to, in its own order.
+
+    FFmpeg has no "default camera" URL — dshow is opened as
+    `video=<friendly name>` — so a key that opens the camera has to find
+    out what the cameras are called first. Measured 147 ms on this
+    machine, paid once when the window opens and again only if you ask to
+    switch.
+    """
+    try:
+        names = read_video_devices(_dshow_report({"list_devices": "true"}))
+    except Exception:
+        log.exception("could not ask DirectShow what cameras there are")
+        return []
+    log.debug("cameras: %s", ", ".join(names) or "none")
+    return names
+
+
+class Camera:
+    """One webcam, open, holding the newest picture it has made.
+
+    IT GETS ITS OWN THREAD, and not because decoding is expensive — 5.4 ms
+    for a 720p MJPEG frame here — but because `demux()` BLOCKS until the
+    device has something. Pumped from the Tk loop it would tie the
+    window's repaint rate to the camera's exposure, and a webcam that
+    drops to 12 fps in a dim room would take the whole window down with
+    it. This way the window paints at its own tick and shows whatever the
+    last frame was.
+
+    ONE IMAGE PER FRAME, already at the size the window will show, and
+    that image is both the preview and the photo. preview_fit explains why
+    that identity is worth more than the pixels it costs.
+
+    MEASURED HERE, 2026-08-26, on an eMeet C960 over USB:
+
+        open -> first frame            654-829 ms over six opens
+        decode + reformat to 800x450     5.4 ms
+        decode + to_image at 1280x720    4.3 ms
+        delivered                         25 fps (40.1 ms between frames,
+                                          steady to a tenth of a ms)
+
+    ASK FOR MJPEG. It is not a preference, it is the difference between a
+    preview and a slideshow: this camera offers 1920x1080 at 30 fps as
+    mjpeg and the SAME size at 5 fps as yuyv422, and dshow takes the raw
+    one unless it is told otherwise. The fallback below drops the request
+    rather than fail, because a 5 fps camera is still a camera and a black
+    window is not.
+    """
+
+    def __init__(self, name: str, size: tuple[int, int] = (1280, 720),
+                 fps: int = 30, preview: tuple[int, int] | None = None,
+                 mirror: bool = False):
+        self.name = name
+        self.size = size
+        self.fps = max(1, int(fps))
+        self.preview_size = preview or size
+        self.mirror = mirror           # read by the thread, set by the window
+        self.error: str | None = None
+        self.frames = 0
+        self.raw_codec = ""
+        self.opened_at = 0.0
+        self.first_frame_ms = 0.0
+        self._latest = None
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        self.opened_at = time.monotonic()
+        self._thread = threading.Thread(target=self._pump, daemon=True,
+                                        name="camera")
+        self._thread.start()
+
+    @property
+    def live(self) -> bool:
+        return self._latest is not None
+
+    @property
+    def latest(self):
+        """The newest picture, or None while the camera is still waking."""
+        with self._lock:
+            return self._latest
+
+    def still(self):
+        """The photo: a private copy of exactly what the preview shows.
+
+        A copy because the thread replaces `_latest` twenty-five times a
+        second and the picture is about to be written to a file, put on
+        the clipboard and drawn on.
+        """
+        with self._lock:
+            return None if self._latest is None else self._latest.copy()
+
+    def close(self, timeout: float = 2.0) -> None:
+        """Stop the thread and let go of the device — the light goes out.
+
+        Called the instant the shutter fires, not when the window closes.
+        A camera left open through an editing session is a lens pointed at
+        the room for no reason, and the little light beside it is the only
+        thing the owner has to go on.
+        """
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout)
+
+    # -- the thread --
+
+    def _open(self):
+        import av
+        width, height = self.size
+        options = {"video_size": f"{width}x{height}",
+                   "framerate": str(self.fps),
+                   "rtbufsize": "64M",
+                   "vcodec": "mjpeg"}
+        try:
+            container = av.open(f"video={self.name}", format="dshow",
+                                options=options)
+            self.raw_codec = "mjpeg"
+            return container
+        except Exception as refused:
+            # Not every camera has an MJPEG pin. Ask again for whatever it
+            # does have rather than fail: raw YUV at 5 fps is a working
+            # camera, and this is logged so a slow preview has a reason.
+            log.info("%r would not give mjpeg at %dx%d (%s) - taking "
+                     "whatever it offers", self.name, width, height, refused)
+            options.pop("vcodec")
+            container = av.open(f"video={self.name}", format="dshow",
+                                options=options)
+            self.raw_codec = "raw"
+            return container
+
+    def _pump(self) -> None:
+        container = None
+        try:
+            container = self._open()
+            stream = container.streams.video[0]
+            for packet in container.demux(stream):
+                if self._stop.is_set():
+                    break
+                for frame in packet.decode():
+                    self._take(frame)
+                    if self._stop.is_set():
+                        break
+        except Exception as e:
+            self.error = str(e).strip() or e.__class__.__name__
+            log.warning("the camera %r stopped: %s", self.name, self.error)
+            log.debug("camera traceback", exc_info=True)
+        finally:
+            if container is not None:
+                try:
+                    container.close()
+                except Exception:
+                    log.debug("closing the camera raised", exc_info=True)
+
+    def _take(self, frame) -> None:
+        """One decoded frame -> the picture the window will show.
+
+        The mirror is applied HERE and nowhere else. It is the whole
+        reason `_latest` can be handed to the painter and to the file
+        without a second thought: whatever the window is showing is
+        whatever gets written, mirrored or not, and there is no second
+        code path to keep in step.
+        """
+        from PIL import Image
+        width, height = self.preview_size
+        image = frame.reformat(width=width, height=height,
+                               format="rgb24").to_image()
+        if self.mirror:
+            image = image.transpose(Image.FLIP_LEFT_RIGHT)
+        with self._lock:
+            self._latest = image
+        if not self.frames:
+            self.first_frame_ms = (time.monotonic() - self.opened_at) * 1000
+            log.info("camera %r awake in %.0f ms - %dx%d %s, shown at %dx%d",
+                     self.name, self.first_frame_ms, self.size[0],
+                     self.size[1], self.raw_codec, width, height)
+        self.frames += 1
+
+
 # ------------------------------------------------------------------ icons
 
 _SHARED_ICONS = ("pencil", "undo", "trash", "close", "copy", "send",
@@ -1470,9 +2219,85 @@ def icon(kind: str, size: int = 20, colour=INK, width: int = 2):
         d.line([(n * .12, n * .30), (n * .44, n * .30)], fill=c, width=lw)
         d.rounded_rectangle((n * .12, n * .24, n * .88, n * .78), n * .08,
                             outline=c, width=lw)
+    elif kind == "camera":
+        d.rounded_rectangle((n * .08, n * .28, n * .92, n * .84), n * .11,
+                            outline=c, width=lw)
+        d.line([(n * .34, n * .28), (n * .41, n * .16)], fill=c, width=lw)
+        d.line([(n * .66, n * .28), (n * .59, n * .16)], fill=c, width=lw)
+        d.line([(n * .41, n * .16), (n * .59, n * .16)], fill=c, width=lw)
+        d.ellipse((n * .35, n * .40, n * .65, n * .70), outline=c, width=lw)
+    elif kind == "timer":
+        # A stopwatch, not an hourglass: the shape of a self-timer on every
+        # camera anyone has held, and legible at 20 px, which an hourglass
+        # is not.
+        d.ellipse((n * .14, n * .26, n * .86, n * .94), outline=c, width=lw)
+        d.line([(n * .50, n * .60), (n * .50, n * .40)], fill=c, width=lw)
+        d.line([(n * .38, n * .12), (n * .62, n * .12)], fill=c, width=lw)
+        d.line([(n * .50, n * .12), (n * .50, n * .26)], fill=c, width=lw)
+    elif kind == "mirror":
+        # Solid on one side of the axis, hollow on the other: the flip is
+        # readable without a label because the two halves are the same
+        # shape and not the same thing.
+        d.line([(n * .50, n * .08), (n * .50, n * .92)], fill=c, width=lw)
+        d.polygon([(n * .40, n * .24), (n * .40, n * .76), (n * .10, n * .50)],
+                  fill=c)
+        d.polygon([(n * .60, n * .24), (n * .60, n * .76), (n * .90, n * .50)],
+                  outline=c, width=lw)
+    elif kind == "switch":
+        d.arc((n * .14, n * .14, n * .86, n * .86), 35, 305, fill=c, width=lw)
+        d.polygon([(n * .84, n * .10), (n * .90, n * .40), (n * .60, n * .28)],
+                  fill=c)
     else:
         raise ValueError(f"no such icon: {kind}")
     return img.resize((size, size), Image.LANCZOS)
+
+
+def screen_glyph(size, aspect: float, panes: int = 1, colour=INK,
+                 width: int = 2):
+    """A little display, drawn in the shape of the display it stands for.
+
+    A row of identical pills with text in them says nothing about which
+    monitor is the wide one — the shape does, before the label is read.
+    "All screens" is the one with two panes, which is the whole of what it
+    means.
+
+    Drawn 4x and shrunk, like every other icon here: Tk antialiases
+    nothing and neither does ImageDraw.
+    """
+    from PIL import Image, ImageDraw
+    scale = 4
+    box_w, box_h = size[0] * scale, size[1] * scale
+    img = Image.new("RGBA", (box_w, box_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    ink = tuple(colour)[:3] + (255,)
+    ghost = tuple(colour)[:3] + (110,)
+    line = width * scale
+
+    stand = box_h * 0.18
+    room_h = box_h - stand
+    body_w = min(box_w * 0.94, room_h * max(0.2, aspect))
+    body_h = body_w / max(0.2, aspect)
+    if body_h > room_h:
+        body_h, body_w = room_h, room_h * max(0.2, aspect)
+    left = (box_w - body_w) / 2
+    top = (room_h - body_h) / 2
+
+    if panes > 1:
+        # The second pane sits behind and to one side, dimmer — a stack,
+        # not two monitors drawn side by side at half the size, which at
+        # 44 px would be two smudges.
+        offset = box_w * 0.10
+        draw.rounded_rectangle((left + offset, top - body_h * 0.16,
+                                left + body_w + offset,
+                                top + body_h - body_h * 0.16),
+                               body_h * 0.14, outline=ghost, width=line)
+    draw.rounded_rectangle((left, top, left + body_w, top + body_h),
+                           body_h * 0.14, outline=ink, width=line)
+    draw.line([(box_w / 2, top + body_h), (box_w / 2, box_h - stand * 0.45)],
+              fill=ink, width=line)
+    draw.line([(box_w * 0.34, box_h - stand * 0.4),
+               (box_w * 0.66, box_h - stand * 0.4)], fill=ink, width=line)
+    return img.resize(size, Image.LANCZOS)
 
 
 # ------------------------------------------------------------- the editor
@@ -1554,7 +2379,9 @@ class ShotWindow:
 
     def __init__(self, full, *, mode: str = "shot", cfg=None,
                  folder: str = "captures", copy: bool = True,
-                 edit: bool = True, on_saved=None, on_ask=None):
+                 edit: bool = True, on_saved=None, on_ask=None,
+                 kind: str = "shot", start_box=None, start_shape=None,
+                 saved=None, save: bool = True):
         import tkinter as tk
         self.tk = tk
         self.full = full
@@ -1565,10 +2392,33 @@ class ShotWindow:
         self.edit = edit
         self.on_saved = on_saved
         self.on_ask = on_ask
+        # THE CAMERA KEY COMES IN HERE. A photo has already been framed —
+        # by the lens, in the camera window — so there is nothing left to
+        # drag: `start_box` says where on the (already doctored) backdrop
+        # the picture is, and the window opens straight into the editor on
+        # it. `kind` is the first word of the filename and `saved` is the
+        # file the camera window already wrote, so the promise is kept
+        # once and not twice.
+        self.kind = kind                 # "shot" | "photo"
+        self.start_box = start_box
+        # A lasso that was cut before the editor was ever opened. Dropping
+        # it would quietly turn the shape you drew back into a rectangle
+        # the first time you clicked Edit on the corner card.
+        self.start_shape = start_shape
+        self._pre_saved = saved
+        # WHETHER THE FILE IS WRITTEN AT ALL. The clipboard is not
+        # negotiable and never was; the folder is, and most captures go
+        # straight into a chat window and are never opened again. False
+        # leaves the picture on the clipboard and puts Save one click away
+        # on the corner card — see [capture] always_save.
+        self.save = save
 
         self.root = tk.Tk()
         self.phase = "select"
         self.box: tuple[int, int, int, int] | None = None
+        # What the picture WAS, before any cropping. The crop tool can
+        # grow back to it and no further — see _crop_stage.
+        self.origin_box: tuple[int, int, int, int] | None = None
         self.path: list | None = None
         self.marks: list = []
         self.history: list = []
@@ -1587,11 +2437,16 @@ class ShotWindow:
         self._status_until = 0.0
         self._closing = False
         self._bar_at: tuple[int, int] | None = None
+        self._hint_box: tuple[int, int, int, int] | None = None
+        self._hint_at: tuple[int, int] = (0, 0)
+        self._hint_line = ""
         self._layout = bar_layout()
         self._hover: str | None = None
         self._dirty = True
 
         self._build()
+        if self.start_box is not None:
+            self._begin_at(self.start_box)
 
     # -- construction --
 
@@ -1618,7 +2473,8 @@ class ShotWindow:
         self._hint_id = None
         self._chips: dict = {}
         self._chip_hover: str | None = None
-        self._draw_hint(px, py)
+        if self.start_box is None:
+            self._draw_hint(px, py)
 
         canvas.bind("<ButtonPress-1>", self._on_press)
         canvas.bind("<B1-Motion>", self._on_drag)
@@ -1627,93 +2483,137 @@ class ShotWindow:
         root.bind_all("<Return>", self._on_enter)
         root.bind_all("<KP_Enter>", self._on_enter)
 
-    def _draw_hint(self, px: int, py: int) -> None:
-        """The one line of instructions, on the monitor the pointer is on.
+    def _text_ink(self, text: str, pt: float, colour, weight: int = 400,
+                  width: int = 900):
+        """One line of text, trimmed to its own ink.
 
-        Not in the middle of the VIRTUAL screen: on a two-monitor desk
-        that is a bezel. Same reason visual_qa's selector asks
-        work_area_near first.
+        text_pil hands back a picture of the BOX it was given with the
+        glyphs at one end — centring that box is how the camera card's
+        timer numeral ended up against a chip's left curve. Trim first,
+        place second, everywhere.
         """
-        from PIL import ImageTk
+        glyph = _vq.text_pil(text, width, pt=pt, colour=colour, rtl=False,
+                             single=True, weight=weight)
+        ink = glyph.getbbox()
+        return glyph.crop(ink) if ink else glyph
+
+    def _draw_hint(self, px: int, py: int) -> None:
+        """The instructions and the screen chips, as ONE card of glass.
+
+        Two floating grey slabs is what this was, and it looked like two
+        floating grey slabs. It can be glass for the same reason the
+        editor's toolbar can: the screen is FROZEN, so what is behind the
+        card is a photograph we already hold and blurring it is an image
+        operation rather than a compositor feature Tk does not have.
+
+        On the monitor the pointer is on, not in the middle of the VIRTUAL
+        screen — on a two-monitor desk that is a bezel. Same reason
+        visual_qa's selector asks work_area_near first.
+        """
         verb = "capture" if self.mode == "shot" else "record"
-        text = (f"Drag a box   ·   Shift-drag to lasso   ·   "
-                f"or pick a whole screen below   ·   Esc cancels")
         if self.mode == "region":
-            text = (f"Drag the area to {verb}   ·   or pick a whole screen "
-                    f"below   ·   Esc cancels")
-        width, height = 30 + 7 * len(text), 38
+            line = f"Drag the area to {verb}"
+        else:
+            line = "Drag a box   ·   Shift-drag to lasso"
+        self._hint_line = f"{line}   ·   Enter for this screen   ·   Esc cancels"
         hl, ht, hr, hb = work_area_near(px, py)
-        x = (hl + hr) // 2 - width // 2 - self._vx
-        y = ht + 56 - self._vy
-        self._keep["hint"] = ImageTk.PhotoImage(
-            _vq._rounded_pil(width, height, 10, CARD, SELECT_BG, STROKE),
-            master=self.root)
-        self.canvas.create_image(x, y, anchor="nw", image=self._keep["hint"],
-                                 tags="hint")
-        self.canvas.create_text(x + width // 2, y + height // 2, text=text,
-                                fill=DIM, font=(_vq._pick_face(), 9),
-                                tags="hint")
-        self._plan_chips((hl + hr) // 2 - self._vx, y + height + 12)
-        self._draw_chips()
+        self._plan_hint((hl + hr) // 2 - self._vx, ht + 52 - self._vy)
+        self._paint_hint()
 
-    def _plan_chips(self, centre_x: int, top_y: int) -> None:
-        """A chip per monitor, and one for the whole desktop.
+    def _plan_hint(self, centre_x: int, top_y: int) -> None:
+        """Where the card and every chip in it sit, in canvas pixels.
 
-        "Record the screen" was the ask, and a drag from corner to corner
-        is not a way to say it — it is impossible to land exactly and it is
-        the commonest thing anyone wants. Enter still means "the screen the
-        pointer is on"; these say WHICH, out loud, which is the part that
-        cannot be guessed from an empty dimmed desktop.
-
-        Laid out here and drawn separately so the hover highlight can
-        repaint without recomputing the row.
+        Arithmetic only, and separate from the painting, so a hover can
+        repaint the card without moving anything in it — the same split
+        bar_layout makes for the toolbar, and for the same reason.
         """
         screens = monitors()
         entries = []
         for entry in screens:
             left, top, right, bottom = entry["rect"]
-            entries.append((entry["label"],
-                            f"{right - left} × {bottom - top}",
-                            entry["rect"], entry["primary"]))
+            entries.append((entry["label"], (right - left, bottom - top),
+                            entry["rect"], entry["primary"], 1))
         if len(screens) > 1:
             vx, vy, vw, vh = virtual_screen()
-            entries.append(("All screens", f"{vw} × {vh}",
-                            (vx, vy, vx + vw, vy + vh), False))
-        face = _vq._pick_face()
-        height = 34
-        widths = [max(118, 34 + 7 * len(f"{label}   {size}"))
-                  for label, size, _rect, _primary in entries]
-        total = sum(widths) + 8 * (len(widths) - 1)
-        x = centre_x - total // 2
-        self._chips = {}
-        for (label, size, rect, primary), width in zip(entries, widths):
-            self._chips[label] = {
-                "box": (x, top_y, x + width, top_y + height),
-                "target": rect, "size": size, "primary": primary,
-                "face": face}
-            x += width + 8
+            entries.append(("All screens", (vw, vh),
+                            (vx, vy, vx + vw, vy + vh), False, len(screens)))
 
-    def _draw_chips(self) -> None:
-        from PIL import ImageTk
-        canvas = self.canvas
-        canvas.delete("chips")
-        if self._hint_id is False:
+        hint = self._text_ink(self._hint_line, 9.5, INK_DIM)
+        row = len(entries) * CHIP_W + (len(entries) - 1) * CHIP_GAP
+        width = max(row, hint.width) + HINT_PAD * 2
+        height = HINT_PAD + hint.height + 14 + CHIP_H + HINT_PAD
+        left = max(8, centre_x - width // 2)
+        self._hint_box = (left, top_y, left + width, top_y + height)
+        self._hint_at = (left + (width - hint.width) // 2, top_y + HINT_PAD)
+
+        x = left + (width - row) // 2
+        y = top_y + HINT_PAD + hint.height + 14
+        self._chips = {}
+        for label, pixels, rect, primary, panes in entries:
+            self._chips[label] = {
+                "box": (x, y, x + CHIP_W, y + CHIP_H), "target": rect,
+                "size": f"{pixels[0]} × {pixels[1]}", "primary": primary,
+                "aspect": pixels[0] / max(1, pixels[1]), "panes": panes}
+            x += CHIP_W + CHIP_GAP
+
+    def _paint_hint(self) -> None:
+        from PIL import Image, ImageTk
+        if self._hint_id is False or not self._hint_box:
             return
+        canvas = self.canvas
+        canvas.delete("hint")
+        canvas.delete("chips")
+        x0, y0, x1, y1 = self._hint_box
+        x0 = max(0, min(x0, self.dark.width - (x1 - x0)))
+        y0 = max(0, min(y0, self.dark.height - (y1 - y0)))
+        box = (x0, y0, x0 + (x1 - self._hint_box[0]),
+               y0 + (y1 - self._hint_box[1]))
+        plate = _vq.glass_plate(self.dark, box, radius=HINT_RADIUS)
+        plate.alpha_composite(
+            self._text_ink(self._hint_line, 9.5, INK_DIM),
+            (self._hint_at[0] - self._hint_box[0],
+             self._hint_at[1] - self._hint_box[1]))
         for label, chip in self._chips.items():
-            x0, y0, x1, y1 = chip["box"]
-            hot = (label == self._chip_hover)
-            key = f"chip{label}{hot}"
-            self._keep[key] = ImageTk.PhotoImage(
-                _vq._rounded_pil(x1 - x0, y1 - y0, 9,
-                                 CARD_HI if hot else CARD, SELECT_BG,
-                                 ACCENT if hot else STROKE),
-                master=self.root)
-            canvas.create_image(x0, y0, anchor="nw", image=self._keep[key],
-                                tags="chips")
-            canvas.create_text(x0 + (x1 - x0) // 2, (y0 + y1) // 2,
-                               text=f"{label}   {chip['size']}",
-                               fill=FG if hot else DIM,
-                               font=(chip["face"], 9), tags="chips")
+            self._draw_chip(plate, label, chip,
+                            (self._hint_box[0], self._hint_box[1]))
+        under = self.dark.crop(box).convert("RGBA")
+        under.alpha_composite(plate)
+        self._keep["hint"] = ImageTk.PhotoImage(under.convert("RGB"),
+                                                master=self.root)
+        canvas.create_image(box[0], box[1], anchor="nw",
+                            image=self._keep["hint"], tags="hint")
+
+    def _draw_chip(self, plate, label: str, chip: dict, origin) -> None:
+        """One screen, drawn as a screen.
+
+        A row of identical pills with text in them says nothing about
+        which one is the wide monitor and which is the laptop. A tile with
+        a little display on it, IN THAT DISPLAY'S OWN ASPECT RATIO, says
+        it before the label is read — and "All screens" is the only one
+        with two of them, which is the whole thing it means.
+        """
+        cx0, cy0, cx1, cy1 = chip["box"]
+        x, y = cx0 - origin[0], cy0 - origin[1]
+        width, height = cx1 - cx0, cy1 - cy0
+        hot = (label == self._chip_hover)
+        fill = (110, 160, 235, 92) if hot else (255, 255, 255, 20)
+        edge = (150, 195, 255, 210) if hot else (255, 255, 255, 46)
+        tile = _vq.rr_layer((width, height), 12, fill, edge)
+        glyph = screen_glyph((46, 31), chip["aspect"], chip["panes"],
+                             colour=INK if hot else INK_DIM)
+        tile.alpha_composite(glyph, ((width - glyph.width) // 2, 9))
+        name = self._text_ink(label, 9.0, INK if hot else INK_DIM,
+                              weight=600)
+        tile.alpha_composite(name, ((width - name.width) // 2, height - 28))
+        size = self._text_ink(chip["size"], 7.8,
+                              INK_DIM if hot else INK_FAINT)
+        tile.alpha_composite(size, ((width - size.width) // 2, height - 15))
+        if chip["primary"]:
+            # A dot, not the word "primary": the row is read at a glance
+            # and one of these is always the one everything opens on.
+            dot = _vq.rr_layer((5, 5), 2, (150, 195, 255, 220))
+            tile.alpha_composite(dot, (width - 12, 8))
+        plate.alpha_composite(tile, (x, y))
 
     def _drop_hint(self) -> None:
         if self._hint_id is not False:
@@ -1721,6 +2621,7 @@ class ShotWindow:
             self.canvas.delete("chips")
             self._hint_id = False
             self._chips = {}
+            self._hint_box = None
 
     # -- the selection phase --
 
@@ -1800,7 +2701,7 @@ class ShotWindow:
             if hot != self._chip_hover:
                 self._chip_hover = hot
                 self.canvas.config(cursor="hand2" if hot else "crosshair")
-                self._draw_chips()
+                self._paint_hint()
             return
         if self.phase != "edit" or self._bar_at is None:
             return
@@ -1887,15 +2788,64 @@ class ShotWindow:
         """The drag is over. Either hand the region back, or start editing."""
         bounds = (self._vx, self._vy, self._vx + self._vw, self._vy + self._vh)
         self.box = clamp_box(box, bounds)
+        self.origin_box = self.box
         self.path = path
+        # THE DRAG IS OVER, so nothing may still be pending from it. It
+        # was not, and that was a real bug: the selection drag ends here
+        # without clearing `_start`, so the very next press — the first
+        # toolbar button you reach for — released into _edit_release with
+        # the selection's own start point still sitting there and drew a
+        # stroke from it, or, with crop picked, silently re-cropped the
+        # picture to somewhere under the toolbar. Once per capture,
+        # always on the first click, which is why it looked like the tool
+        # itself misbehaving.
+        self._start = None
+        self._free = None
         if self.mode == "region":
             self.result = {"box": self.box}
             return self.close()
         self._first_save()
         if not self.edit:
-            # edit_after_shot = false makes this key a pure "grab it and
-            # get out of my way". The file and the clipboard are identical
-            # either way — the editor is an offer, never a step.
+            # The editor is an OFFER, never a step. When it is not being
+            # taken here, everything needed to offer it LATER — from a
+            # corner card, five seconds from now — goes back with the
+            # result: the rectangle, the lasso, the file if one was
+            # written, and the picture itself.
+            self.result = {"box": self.box, "shape": self.path,
+                           "path": self.saved_path,
+                           "image": self.picture()}
+            return self.close()
+        self.phase = "edit"
+        self.canvas.config(cursor="crosshair")
+        self._dirty = True
+
+    def _begin_at(self, box) -> None:
+        """Open straight into the editor on a picture we were handed.
+
+        The camera key's way in. Everything after this point is identical
+        to a screenshot — the same toolbar, the same undo, the same Ask —
+        because by the time a picture is on the backdrop the editor cannot
+        tell, and should not be able to tell, which lens it came through.
+
+        The one difference is who kept the promise. A screenshot is saved
+        and copied by _first_save the instant the drag ends; a photo was
+        already saved and copied by the camera window at the instant the
+        shutter fired, which is earlier and is where it belongs. So the
+        path is adopted rather than written again — otherwise one press of
+        one key would leave two identical files in the folder.
+        """
+        bounds = (self._vx, self._vy, self._vx + self._vw,
+                  self._vy + self._vh)
+        self.box = clamp_box(box, bounds)
+        self.origin_box = self.box
+        self.path = self.start_shape
+        if self._pre_saved is not None:
+            self.saved_path = self._pre_saved
+            self.say(f"{'copied · ' if self.copy else ''}"
+                     f"{self.saved_path.name}")
+        else:
+            self._first_save()
+        if not self.edit:
             return self.close()
         self.phase = "edit"
         self.canvas.config(cursor="crosshair")
@@ -1912,16 +2862,20 @@ class ShotWindow:
         complete. Closing it with Esc loses nothing.
         """
         image = self.picture()
-        try:
-            self.saved_path = save_image(image, self.folder)
-        except Exception as e:
-            log.exception("could not save the screenshot")
-            self.say(f"could not save: {e}", ttl_ms=6000)
-            return
+        if self.save:
+            try:
+                self.saved_path = save_image(image, self.folder,
+                                             kind=self.kind)
+            except Exception as e:
+                log.exception("could not save the screenshot")
+                self.say(f"could not save: {e}", ttl_ms=6000)
+                return
         copied = copy_image(image) if self.copy else False
-        self.say(f"{'copied · ' if copied else ''}{self.saved_path.name}")
-        log.info("screenshot %d×%d saved to %s%s",
-                 image.width, image.height, self.saved_path,
+        where = self.saved_path.name if self.saved_path else "not saved"
+        self.say(f"{'copied · ' if copied else ''}{where}")
+        log.info("screenshot %d×%d %s%s", image.width, image.height,
+                 f"saved to {self.saved_path}" if self.saved_path
+                 else "kept on the clipboard only",
                  " and copied" if copied else "")
         if self.on_saved is not None:
             self.on_saved(self.saved_path)
@@ -1956,8 +2910,18 @@ class ShotWindow:
             bx, by = self._bar_at
             name = hit(self._layout["spots"], x - bx, y - by)
             if name is not None:
+                # A press on the toolbar is not the beginning of a
+                # stroke, and must not be able to end one either — see
+                # _chose for the bug this second line closes.
+                self._start = None
+                self._free = None
                 return self._activate(name)
-        left, top, right, bottom = self.box
+        # The CROP may be started anywhere it may end, which after a crop
+        # is a bigger rectangle than the picture — that is the whole point
+        # of being able to grow one back. Every other tool draws ON the
+        # picture, so for those a click on the dim is still ignored.
+        left, top, right, bottom = (self._crop_stage()
+                                    if self.tool == "crop" else self.box)
         if not (left <= x <= right and top <= y <= bottom):
             return                       # a click on the dim: ignored
         self._start = (x, y)
@@ -2006,7 +2970,7 @@ class ShotWindow:
         elif self.tool == "arrow":
             self._live = [self.canvas.create_line(
                 cx0, cy0, cx1, cy1, fill=colour, width=PEN_W, arrow="last",
-                arrowshape=(16, 18, 6), tags="ink")]
+                arrowshape=tk_arrowshape(), tags="ink")]
         elif self.tool in ("box", "blur", "crop"):
             dash = (5, 4) if self.tool == "crop" else None
             outline = FG if self.tool == "crop" else colour
@@ -2031,7 +2995,8 @@ class ShotWindow:
                 and len(points) < 4):
             return                       # a click, not a stroke
         if self.tool == "crop":
-            box = clamp_box((start[0], start[1], end[0], end[1]), self.box)
+            box = clamp_box((start[0], start[1], end[0], end[1]),
+                            self._crop_stage())
             if box[2] - box[0] < 16 or box[3] - box[1] < 16:
                 return
             self._push_history()
@@ -2042,17 +3007,47 @@ class ShotWindow:
                            "colour": INKS[self.ink][1]})
         self._dirty = True
 
+    def _crop_stage(self) -> tuple[int, int, int, int]:
+        """The rectangle the crop tool is allowed to work in.
+
+        FOR A SCREEN CAPTURE, THE WHOLE FROZEN SCREEN. Cropping is the one
+        edit that throws pixels away and the one edit everybody
+        overshoots, and on a frozen screen there is nothing to be sorry
+        about: every pixel is still there. So the crop tool is not "make
+        this smaller", it is TAKE THE SHOT AGAIN without pressing the key
+        again — move the rectangle sideways, make it bigger, put it
+        somewhere else on the desktop entirely.
+
+        A CAMERA PHOTO stops at the photo. Behind that one is not more of
+        the shot: it is the desktop the camera card happened to be sitting
+        on, and re-framing onto it would hand you a picture of your own
+        wallpaper. There the tool means what it used to — inward, and back
+        out to what you cut.
+        """
+        if self.kind == "photo":
+            return self.origin_box or self.box
+        return (self._vx, self._vy, self._vx + self._vw, self._vy + self._vh)
+
+    def _whole_screen(self) -> tuple[int, int, int, int]:
+        return (self._vx, self._vy, self._vx + self._vw, self._vy + self._vh)
+
     def _crop_to(self, box) -> None:
-        """Narrow the shot.
+        """Re-frame the shot — inward, or back outward.
 
         The marks keep their VIRTUAL-SCREEN coordinates through this, so a
         crop is one number changing and an undo puts the rectangle back
         with every mark still where it was drawn — including the ones the
-        crop had cut off the edge.
+        crop had cut off the edge. That is also why growing one back is
+        almost free: the ink that was outside the rectangle was never
+        deleted, only left out of the render, so it comes back with the
+        pixels it was drawn on.
         """
+        before = self.box
         self.box = box
         self.path = None                 # a crop of a lasso is a rectangle
-        self.say(f"cropped to {selection_readout(box)}")
+        grew = (box[2] - box[0]) * (box[3] - box[1]) >                (before[2] - before[0]) * (before[3] - before[1])
+        self.say(f"{'back out to' if grew else 'cropped to'} "
+                 f"{selection_readout(box)}")
         self._dirty = True
 
     def _activate(self, name: str) -> None:
@@ -2061,7 +3056,7 @@ class ShotWindow:
             self.say({"pen": "draw", "arrow": "drag an arrow",
                       "box": "drag a box", "highlight": "drag to highlight",
                       "blur": "drag over what should not be readable",
-                      "crop": "drag the part to keep"}[name])
+                      "crop": self._crop_hint()}[name])
             self._dirty = True
             return
         if name == "ink":
@@ -2100,7 +3095,8 @@ class ShotWindow:
         image = self.picture()
         try:
             if self.saved_path is None:
-                self.saved_path = save_image(image, self.folder)
+                self.saved_path = save_image(image, self.folder,
+                                             kind=self.kind)
             else:
                 image.save(self.saved_path, "PNG")
         except Exception as e:
@@ -2136,27 +3132,44 @@ class ShotWindow:
         canvas.delete("sel")
         left, top, right, bottom = self.box
         shot = self.picture()
+        # While the crop tool is up you may drag outside the picture, so
+        # something outside it has to be visible. On a frozen screen that
+        # is the whole dimmed desktop, which is already painted and costs
+        # nothing — the halo stays around the SELECTION and the rest of
+        # the screen is the same canvas the first drag was made on. Only a
+        # camera photo needs the faint layer, because there the reachable
+        # part is a rectangle rather than everything.
+        back = None
+        if self.tool == "crop":
+            stage = self._crop_stage()
+            if stage != self._whole_screen() and stage != self.box:
+                back = stage
+        stage = back or self.box
 
         # The lit selection, its halo and its edge, computed on a CROP
         # around the rectangle rather than over the whole screen: a
         # full-screen blur here was 500 ms of the ask card's first draft.
         pad = 46
-        hx0 = max(0, left - self._vx - pad)
-        hy0 = max(0, top - self._vy - pad)
-        hx1 = min(self.dark.width, right - self._vx + pad)
-        hy1 = min(self.dark.height, bottom - self._vy + pad)
+        hx0 = max(0, stage[0] - self._vx - pad)
+        hy0 = max(0, stage[1] - self._vy - pad)
+        hx1 = min(self.dark.width, stage[2] - self._vx + pad)
+        hy1 = min(self.dark.height, stage[3] - self._vy + pad)
         local = self.dark.crop((hx0, hy0, hx1, hy1)).convert("RGBA")
         lw, lh = local.size
         ox, oy = left - self._vx - hx0, top - self._vy - hy0
         ex, ey = ox + (right - left), oy + (bottom - top)
         halo = Image.new("L", (lw, lh), 0)
-        ImageDraw.Draw(halo).rounded_rectangle((ox - 3, oy - 3, ex + 3, ey + 3),
-                                               14, outline=255, width=16)
+        ImageDraw.Draw(halo).rounded_rectangle(
+            (stage[0] - self._vx - hx0 - 3, stage[1] - self._vy - hy0 - 3,
+             stage[2] - self._vx - hx0 + 3, stage[3] - self._vy - hy0 + 3),
+            14, outline=255, width=16)
         halo = halo.filter(ImageFilter.GaussianBlur(9)).point(
             lambda v: int(v * .45))
         local.alpha_composite(Image.merge("RGBA", (
             Image.new("L", (lw, lh), 86), Image.new("L", (lw, lh), 156),
             Image.new("L", (lw, lh), 245), halo)))
+        if back is not None:
+            self._paint_recoverable(local, back, (hx0, hy0))
         local.alpha_composite(shot.convert("RGBA"), (ox, oy))
         edge = Image.new("RGBA", (lw, lh), (0, 0, 0, 0))
         ImageDraw.Draw(edge).rounded_rectangle((ox - 2, oy - 2, ex + 1, ey + 1),
@@ -2171,6 +3184,37 @@ class ShotWindow:
                             tags="sel")
         self._paint_bar()
         canvas.tag_raise("ink")
+
+    def _crop_hint(self) -> str:
+        if self._crop_stage() == self._whole_screen():
+            return "drag anywhere to re-frame the shot"
+        if self._crop_stage() != self.box:
+            return "drag the part to keep — or back out to what you cut"
+        return "drag the part to keep"
+
+    def _paint_recoverable(self, local, stage, offset) -> None:
+        """The part you already cut, shown faintly enough to aim at.
+
+        Without it the crop tool would be asking you to drag into the
+        dark and hope. The pixels are real — the frozen screen still has
+        them and the marks were never deleted, only left out of the
+        render — so this is the same picture at CROP_BACK of its
+        brightness, and the live rectangle then lands on something you
+        can see.
+
+        Painted UNDER the lit selection rather than around it, because a
+        ring is four rectangles and one paste is one paste.
+        """
+        from PIL import Image
+        hx0, hy0 = offset
+        back = render_shot(self.full, stage, self.marks, None,
+                           screen_origin=(self._vx, self._vy)).convert("RGB")
+        dim = self.dark.crop((stage[0] - self._vx, stage[1] - self._vy,
+                              stage[2] - self._vx, stage[3] - self._vy))
+        faded = Image.blend(dim.convert("RGB"), back, CROP_BACK)
+        local.alpha_composite(faded.convert("RGBA"),
+                              (stage[0] - self._vx - hx0,
+                               stage[1] - self._vy - hy0))
 
     def _paint_bar(self) -> None:
         """The toolbar: one glass plate with everything painted into it.
@@ -2274,6 +3318,12 @@ class ShotWindow:
             root.update()
             _vq.take_foreground(root, alt_tap=False)
             _user32.GetAsyncKeyState(0x1B)     # prime, discard
+            # A key ALREADY down when the window opens is not a cancel —
+            # see esc_held for the afternoon that bought this line.
+            held = esc_held()
+            if held:
+                log.info("esc is held down as this overlay opens — it will "
+                         "stay up until esc is released and pressed again")
             while not self._closing:
                 # ESCAPE IS READ, NOT RECEIVED — a borderless topmost
                 # overlay does not get the keyboard focus for free, and
@@ -2282,8 +3332,10 @@ class ShotWindow:
                 # Both halves of GetAsyncKeyState, or a tap between two
                 # ticks is lost. Same call, same reasons, as the selector.
                 pressed = _user32.GetAsyncKeyState(0x1B)
-                if pressed & 0x8000 or pressed & 0x0001:
+                down, fresh = bool(pressed & 0x8000), bool(pressed & 0x0001)
+                if (down or fresh) and not held:
                     break
+                held = down
                 if self._dirty:
                     self._dirty = False
                     self._paint()
@@ -2841,16 +3893,940 @@ class Toast:
 
 # ------------------------------------------------------------- controller
 
+class ShotToast:
+    """The corner card a capture leaves behind instead of an editor.
+
+    THE EDITOR USED TO OPEN EVERY TIME, over the whole screen, for a
+    picture that nine times out of ten was going straight into a chat
+    window. That is a modal dialog wearing a nicer coat: it interrupts,
+    it has to be dismissed, and it makes the common case pay for the rare
+    one. So the common case is now silent — the picture is on the
+    clipboard before the mouse comes up — and the rare one is a small card
+    in a corner for five seconds with the editor one click away.
+
+    It is the shape macOS uses for the same reason, and CleanShot X after
+    it: a thumbnail where you can see WHAT was taken, so you know whether
+    you need to do anything about it without opening anything.
+
+    THE COUNTDOWN PAUSES UNDER THE POINTER. A card that vanishes while
+    the hand is reaching for it is worse than no card, and five seconds is
+    not long when the thing you are deciding is "did that capture the bit
+    I meant".
+
+    Card stock, not glass, and this one has no choice about it: the screen
+    behind it is live again by the time it appears, so there is nothing
+    frozen to photograph and blur. Same reasoning as the clip bar.
+    """
+
+    def __init__(self, image, box: tuple[int, int, int, int], *,
+                 saved: Path | None = None, corner: str = "bottom-right",
+                 seconds: int = 5, copied: bool = True):
+        import tkinter as tk
+        self.tk = tk
+        self.image = image
+        self.box = box
+        self.saved = saved
+        self.corner = corner if corner in CORNERS else "bottom-right"
+        self.seconds = max(1, int(seconds))
+        self.copied = copied
+        self.action: str | None = None
+        self.root = tk.Tk()
+        self.done = threading.Event()
+        self._keep: dict = {}
+        self._hover: str | None = None
+        self._inside = False
+        self._left_at = 0.0
+        self._build()
+
+    # -- construction --
+
+    def _build(self) -> None:
+        from PIL import ImageTk
+        # Read BEFORE anything Tk touches: by the time the window exists,
+        # the answer is this window. See give_focus_back.
+        self._had_focus = _user32.GetForegroundWindow()
+        width, height = TOAST_W, TOAST_H
+        left, top, right, bottom = self.box
+        anchor = work_area_near((left + right) // 2, (top + bottom) // 2)
+        x, y = corner_at(anchor, (width, height), self.corner)
+        root = self.root
+        # Built HIDDEN and shown at the end: WS_EX_NOACTIVATE has to be on
+        # the window before it is first mapped, or it takes the keyboard
+        # once on the way up and the flag only stops it happening again.
+        root.withdraw()
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.geometry(f"{width}x{height}+{x}+{y}")
+        root.configure(bg=CARD)
+        canvas = self.tk.Canvas(root, width=width, height=height, bg=CARD,
+                               highlightthickness=0, cursor="hand2")
+        canvas.pack()
+        self.canvas = canvas
+        self.size = (width, height)
+        self._keep["face"] = ImageTk.PhotoImage(
+            _vq._rounded_pil(width, height, CLIP_BAR_RADIUS, CARD, PANE,
+                             STROKE), master=root)
+        canvas.create_image(0, 0, anchor="nw", image=self._keep["face"])
+        root.update_idletasks()
+        no_activate(root)
+        round_window(root, CLIP_BAR_RADIUS)
+        root.deiconify()
+        root.update_idletasks()
+        give_focus_back(self._had_focus)
+        canvas.bind("<ButtonPress-1>", self._press)
+        canvas.bind("<Motion>", self._move)
+        canvas.bind("<Enter>", self._enter)
+        canvas.bind("<Leave>", self._leave)
+        self._left = float(self.seconds)
+        self._paint()
+
+    # -- layout --
+
+    def _spots(self) -> dict:
+        """name -> box. One table for the painter and the hit test, the
+        same as every other row of controls in this file."""
+        spots: dict[str, tuple[int, int, int, int]] = {}
+        x, y, size = TOAST_TEXT_X, TOAST_H - 34, 28
+        for name in self._buttons():
+            spots[name] = (x, y, x + size, y + size)
+            x += size + 6
+        # The thumbnail is a button too, and the biggest one: clicking the
+        # picture to work on the picture needs no label.
+        spots["edit_thumb"] = (12, 12, 12 + TOAST_THUMB[0],
+                               12 + TOAST_THUMB[1])
+        return spots
+
+    def _buttons(self) -> tuple[str, ...]:
+        if self.saved is None:
+            return ("edit", "save", "copy", "close")
+        return ("edit", "folder", "copy", "close")
+
+    # -- input --
+
+    def _press(self, event) -> None:
+        name = hit(self._spots(), event.x, event.y)
+        if name == "edit_thumb":
+            name = "edit"
+        if name is None:
+            name = "edit"          # anywhere else on the card means "open it"
+        if name == "close":
+            self.action = None
+        elif name == "folder":
+            open_folder(self.saved)
+            self.action = None
+        elif name == "copy":
+            copy_image(self.image)
+            self.action = None
+        else:
+            self.action = name     # "edit" or "save", answered by the caller
+        self.done.set()
+
+    def _move(self, event) -> None:
+        name = hit(self._spots(), event.x, event.y)
+        if name == "edit_thumb":
+            name = None
+        if name != self._hover:
+            self._hover = name
+
+    def _enter(self, _event=None) -> None:
+        self._inside = True
+
+    def _leave(self, _event=None) -> None:
+        # Not on the spot: a repaint under the pointer generates its own
+        # Leave, and collapsing on that would restart the clock in the
+        # middle of a reach. Same guard the clip bar keeps.
+        self._left_at = time.monotonic()
+
+    def _pointer_inside(self) -> bool:
+        try:
+            x, y = self.root.winfo_pointerx(), self.root.winfo_pointery()
+            wx, wy = self.root.winfo_x(), self.root.winfo_y()
+            return (wx <= x <= wx + self.size[0]
+                    and wy <= y <= wy + self.size[1])
+        except Exception:
+            return False
+
+    # -- painting --
+
+    def _thumb(self):
+        """The capture, letterboxed into the tile. Built once."""
+        from PIL import Image
+        if "thumb" not in self._keep:
+            width, height = TOAST_THUMB
+            shrunk = self.image.convert("RGB").copy()
+            shrunk.thumbnail((width - 2, height - 2), Image.LANCZOS)
+            tile = Image.new("RGB", (width, height), _hex(PANE))
+            tile.paste(shrunk, ((width - shrunk.width) // 2,
+                                (height - shrunk.height) // 2))
+            self._keep["thumb_img"] = tile
+        return self._keep["thumb_img"]
+
+    def _paint(self) -> None:
+        from PIL import Image, ImageTk
+        canvas = self.canvas
+        canvas.delete("live")
+
+        self._keep["thumb"] = ImageTk.PhotoImage(self._thumb(),
+                                                 master=self.root)
+        canvas.create_image(12, 12, anchor="nw", image=self._keep["thumb"],
+                            tags="live")
+
+        left, top, right, bottom = self.box
+        head = "Copied" if self.copied else "Captured"
+        detail = f"{right - left} × {bottom - top}"
+        detail += (f"   ·   {self.saved.name}" if self.saved is not None
+                   else "   ·   not saved")
+        self._text("title", head, TOAST_TEXT_X, 14, pt=11.5, colour=INK,
+                   weight=600)
+        self._text("detail", detail, TOAST_TEXT_X, 34, pt=9.0,
+                   colour=INK_FAINT)
+
+        glyphs = {"edit": "pencil", "save": "save", "copy": "copy",
+                  "folder": "folder", "close": "close"}
+        spots = self._spots()
+        for name in self._buttons():
+            x0, y0, x1, y1 = spots[name]
+            hot = (name == self._hover)
+            plate = _vq.rr_layer(
+                (x1 - x0, y1 - y0), (x1 - x0) // 2,
+                (110, 160, 235, 120) if hot else (255, 255, 255, 22),
+                (150, 195, 255, 200) if hot else (255, 255, 255, 46))
+            plate.alpha_composite(
+                icon(glyphs[name], 14, colour=INK if hot else INK_DIM,
+                     width=2), ((x1 - x0 - 14) // 2, (y1 - y0 - 14) // 2))
+            flat = Image.new("RGBA", plate.size, _hex(CARD) + (255,))
+            flat.alpha_composite(plate)
+            self._keep[f"b{name}"] = ImageTk.PhotoImage(
+                flat.convert("RGB"), master=self.root)
+            canvas.create_image(x0, y0, anchor="nw",
+                                image=self._keep[f"b{name}"], tags="live")
+
+        self._paint_clock()
+
+    def _paint_clock(self) -> None:
+        """A line that drains, so "about to go" is visible rather than a
+        surprise — and it stops draining while the pointer is on the card,
+        which is the only way a five-second offer is honest."""
+        left = self.left()
+        span = int(self.size[0] * max(0.0, min(1.0, left / self.seconds)))
+        if span <= 0:
+            return
+        colour = ACCENT if not self._inside else FAINT
+        self.canvas.create_rectangle(0, self.size[1] - 3, span,
+                                     self.size[1], fill=colour, outline="",
+                                     tags="live")
+
+    def left(self) -> float:
+        """Seconds still on the clock. Frozen while the pointer is on it."""
+        return self._left
+
+    def _text(self, key: str, text: str, x: int, y: int, *, pt: float,
+              colour, weight: int = 400) -> None:
+        from PIL import ImageTk
+        glyph = _vq.text_pil(text, self.size[0] - x - 10, pt=pt,
+                             colour=colour, rtl=False, single=True,
+                             weight=weight)
+        self._keep[key] = ImageTk.PhotoImage(glyph, master=self.root)
+        self.canvas.create_image(x, y, anchor="nw", image=self._keep[key],
+                                 tags="live")
+
+    # -- the pump --
+
+    def run(self) -> str | None:
+        """Show it until it is clicked or its five seconds are up.
+
+        Returns "edit", "save", or None. The buttons that finish on their
+        own — copy again, open the folder, close — answer None too: they
+        did the whole of what they promised here.
+        """
+        root = self.root
+        try:
+            root.update_idletasks()
+            root.update()
+            last = time.monotonic()
+            while not self.done.is_set():
+                now = time.monotonic()
+                elapsed, last = now - last, now
+                if self._inside and now - self._left_at > 0.2 \
+                        and not self._pointer_inside():
+                    self._inside = False
+                if not self._inside:
+                    # HELD, not restarted, while the pointer is on it:
+                    # the clock resumes where it stopped, so a card
+                    # brushed by a passing pointer does not outstay its
+                    # welcome and a card being read does not vanish
+                    # halfway through the reach for it.
+                    self._left -= elapsed
+                    if self._left <= 0:
+                        break
+                self._paint()
+                try:
+                    root.update()
+                except self.tk.TclError:
+                    break
+                time.sleep(0.05)
+        finally:
+            self._keep.clear()
+            try:
+                root.destroy()
+            except Exception:
+                pass
+            gc.collect()
+        return self.action
+
+
+# ------------------------------------------------------------ the camera
+
+class CameraWindow:
+    """The live picture, and one button that turns it into a file.
+
+    A card in the middle of the monitor you are on: the camera above, a
+    row of controls below, and a shutter in the middle of the row because
+    that is where a hand looks for one. Space or Enter is the same button;
+    **T** cycles the self-timer, **M** flips the picture, **C** moves to
+    the next camera, **Esc** closes without taking anything.
+
+    IT KEEPS THE SAME PROMISE THE SCREENSHOT KEY KEEPS. The moment the
+    shutter fires the picture is on the clipboard and in `captures\\`, and
+    everything after that — the flash, the editor, the drawing — is an
+    offer. Closing the editor with Esc loses nothing, because nothing was
+    waiting to be saved.
+
+    NOT GLASS, for the clip bar's reason: the glass in this app is painted
+    from a photograph of what is behind the window, and behind this one is
+    a live desktop. Card stock with SetWindowRgn corners, and the picture
+    inside it is a plain inset rectangle — a rounded mask over the preview
+    would be a mask recomputed twenty-five times a second for four corner
+    pixels.
+
+    ONE PhotoImage FOR THE WHOLE SESSION. `PhotoImage.paste()` overwrites
+    the pixels of an existing Tk image; building a new one per frame
+    allocates a 1280x720 bitmap twenty-five times a second and hands the
+    old one to the garbage collector, on a thread that owns a Tcl
+    interpreter (AGENTS.md explains why that is worse than it sounds).
+    """
+
+    def __init__(self, camera: Camera, *, names=(), open_camera=None,
+                 folder: str = "captures", copy: bool = True,
+                 edit: bool = True, timer: int = 0, hotkey: str = "",
+                 on_saved=None):
+        import tkinter as tk
+        self.tk = tk
+        self.camera = camera
+        self.names = list(names)
+        self.open_camera = open_camera      # name -> Camera, already started
+        self.folder = folder
+        self.copy = copy
+        self.edit = edit
+        self.timer = timer if timer in CAM_TIMERS else 0
+        self.hotkey = hotkey
+        self.on_saved = on_saved
+
+        self.result: dict | None = None
+        self.frozen = None                  # the still, once it is taken
+        self.saved_path: Path | None = None
+        self.backdrop = None                # the desktop, for the editor
+
+        self.preview_size = camera.preview_size
+        self.card_w = max(self.preview_size[0] + CAM_PAD * 2, CAM_MIN_W)
+        self.card_h = self.preview_size[1] + CAM_PAD + CAM_STRIP_H
+        # Centred rather than left at CAM_PAD, so a picture narrower than
+        # the control row sits in the middle of it instead of against one
+        # edge with a hole beside it.
+        self.pad_x = (self.card_w - self.preview_size[0]) // 2
+        self.spots = camera_bar(self.card_w, switchable=len(self.names) > 1)
+
+        self._closing = False
+        self._armed_at: float | None = None
+        self._flash_until = 0.0
+        self._done_at = 0.0
+        self._status = ""
+        self._status_until = 0.0
+        self._hover: str | None = None
+        self._drag: tuple[int, int] | None = None
+        self._keep: dict = {}
+        self._photo = None
+        self._strip_key: tuple | None = None
+        self._count_key: int | None = None
+        self._said_wake = False
+
+        self.root = tk.Tk()
+        self._build()
+
+    # -- construction --
+
+    def _build(self) -> None:
+        root = self.root
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.configure(bg=CARD)
+        canvas = self.tk.Canvas(root, bg=CARD, highlightthickness=0,
+                                width=self.card_w, height=self.card_h,
+                                cursor="arrow")
+        canvas.pack(fill="both", expand=True)
+        self.canvas = canvas
+
+        px, py = root.winfo_pointerx(), root.winfo_pointery()
+        left, top, right, bottom = work_area_near(px, py)
+        x = left + ((right - left) - self.card_w) // 2
+        y = top + int(((bottom - top) - self.card_h) * 0.42)
+        root.geometry(f"{self.card_w}x{self.card_h}+{x}+{y}")
+        root.update_idletasks()
+        round_window(root, CAM_RADIUS)
+        self._face()
+
+        # DELIBERATELY NOT hide_from_capture, unlike the clip bar. That
+        # flag is there so a recorder's own controls stay out of the
+        # recording, which is a real problem for a window that floats over
+        # the region being recorded. This window floats over nothing it is
+        # recording, and the flag has a cost: an excluded window cannot be
+        # screenshotted, shared or recorded BY THE OWNER either — not by
+        # this app's own screenshot key, not by Teams, not for a bug
+        # report. The desktop behind it is grabbed by withdrawing first
+        # (see _freeze_desktop), which costs one repaint at the exact
+        # moment the screen is about to be covered by the editor anyway.
+
+        canvas.bind("<ButtonPress-1>", self._press)
+        canvas.bind("<B1-Motion>", self._move)
+        canvas.bind("<ButtonRelease-1>", self._release)
+        canvas.bind("<Motion>", self._hover_at)
+        root.bind_all("<KeyPress>", self._on_key)
+
+    def _face(self) -> None:
+        from PIL import ImageTk
+        self._keep["face"] = ImageTk.PhotoImage(
+            _vq._rounded_pil(self.card_w, self.card_h, CAM_RADIUS, CARD,
+                             PANE, STROKE), master=self.root)
+        self.canvas.delete("face")
+        self.canvas.create_image(0, 0, anchor="nw", image=self._keep["face"],
+                                 tags="face")
+        self.canvas.tag_lower("face")
+
+    # -- what the user does --
+
+    def say(self, text: str, ttl_ms: int = 3200) -> None:
+        self._status = text
+        self._status_until = time.monotonic() + ttl_ms / 1000.0
+
+    def close(self) -> None:
+        self._closing = True
+
+    # The letters, matched by KEYCODE and never by keysym. With a
+    # non-Latin layout active Tk reports the physical T as a Hebrew letter
+    # — the repo already has a test for that, written when the dashboard's
+    # key capture walked into it — and on THIS machine the non-Latin layout
+    # is the common case, not the exotic one. Binding the LETTER sequences
+    # here was measured doing nothing at all, which is the worst way for a
+    # shortcut to fail: silently, and only for the person who needs it.
+    _KEYS = {0x20: "shoot", 0x0D: "shoot", 0x54: "timer", 0x4D: "mirror",
+             0x43: "switch"}
+
+    def _on_key(self, event) -> None:
+        action = self._KEYS.get(getattr(event, "keycode", None))
+        if action is None:
+            # Whatever Windows numbers differently from Tk — the numpad
+            # Enter is the one that matters.
+            action = {"space": "shoot", "Return": "shoot",
+                      "KP_Enter": "shoot"}.get(getattr(event, "keysym", ""))
+        if action == "shoot":
+            self.shoot()
+        elif action == "timer":
+            self._cycle_timer()
+        elif action == "mirror":
+            self._flip()
+        elif action == "switch":
+            self._switch()
+
+    def _press(self, event) -> None:
+        if self.frozen is not None:
+            return
+        name = self._spot_at(event.x, event.y)
+        if name == "shutter":
+            return self.shoot()
+        if name == "timer":
+            return self._cycle_timer()
+        if name == "mirror":
+            return self._flip()
+        if name == "switch":
+            return self._switch()
+        if name == "close":
+            return self.close()
+        # Anywhere else on the card is a handle. A window with no title
+        # bar has to be draggable by its face or it cannot be got out of
+        # the way of the thing you were about to photograph.
+        self._drag = (event.x_root - self.root.winfo_x(),
+                      event.y_root - self.root.winfo_y())
+
+    def _move(self, event) -> None:
+        if self._drag is None:
+            return
+        dx, dy = self._drag
+        self.root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+
+    def _release(self, _event=None) -> None:
+        self._drag = None
+
+    def _hover_at(self, event) -> None:
+        name = self._spot_at(event.x, event.y)
+        if name != self._hover:
+            self._hover = name
+            self.canvas.config(cursor="hand2" if name else "arrow")
+
+    def _spot_at(self, x: int, y: int) -> str | None:
+        return hit(self.spots, x, y - (self.card_h - CAM_STRIP_H))
+
+    # -- the three switches --
+
+    def _cycle_timer(self) -> None:
+        if self._armed_at is not None:
+            self._armed_at = None
+            return self.say("timer cancelled")
+        self.timer = next_in(CAM_TIMERS, self.timer)
+        self._strip_key = None
+        self.say("no timer" if not self.timer else f"{self.timer} s timer")
+
+    def _flip(self) -> None:
+        """Mirror BOTH the preview and the photo, or neither.
+
+        A preview that is mirrored while the file is not is the one bug
+        this whole module argues against — see render_shot, and preview_fit
+        for the same argument about size. It is off by default because the
+        commonest thing anyone holds up to a webcam is something with
+        writing on it, and mirrored writing is unreadable.
+        """
+        self.camera.mirror = not self.camera.mirror
+        self._strip_key = None
+        self.say("mirrored" if self.camera.mirror else "not mirrored")
+
+    def _switch(self) -> None:
+        if len(self.names) < 2 or self.open_camera is None:
+            return self.say("there is only one camera")
+        name = next_in(self.names, self.camera.name)
+        self.say(f"switching to {name}...", ttl_ms=8000)
+        self._paint()
+        try:
+            self.root.update()
+        except self.tk.TclError:
+            return
+        mirror = self.camera.mirror
+        self.camera.close()
+        try:
+            self.camera = self.open_camera(name, mirror)
+        except Exception as e:
+            log.exception("could not open %r", name)
+            return self.say(f"{name} would not open: {e}", ttl_ms=6000)
+        self._said_wake = False
+        self.say(name)
+
+    # -- the shutter --
+
+    def shoot(self) -> None:
+        """Take it now, or arm the timer if one is set."""
+        if self.frozen is not None:
+            return
+        if self._armed_at is not None:
+            self._armed_at = None
+            self._strip_key = None
+            return self.say("timer cancelled")
+        if not self.camera.live:
+            return self.say("the camera has not woken up yet")
+        if self.timer:
+            self._armed_at = time.monotonic()
+            self._strip_key = None
+            return self.say(f"{self.timer} s — esc or the shutter cancels")
+        self._fire()
+
+    def _fire(self) -> None:
+        """The picture, the file, the clipboard — in that order, at once.
+
+        THE CAMERA IS CLOSED FIRST. Everything after this line is pixels
+        we already hold, so there is no reason for the lens to stay open
+        through the flash, the save and the editor, and the little light
+        beside it is the only thing the owner has to go on.
+        """
+        image = self.camera.still()
+        self._armed_at = None
+        self._strip_key = None
+        if image is None:
+            return self.say("the camera has not woken up yet")
+        self.camera.close()
+        self.frozen = image
+        now = time.monotonic()
+        self._flash_until = now + CAM_FLASH_MS / 1000.0
+        try:
+            self.saved_path = save_image(image, self.folder, kind="photo")
+        except Exception as e:
+            log.exception("could not save the photo")
+            self.say(f"could not save: {e}", ttl_ms=6000)
+            self._done_at = now + 2.5
+            return
+        copied = copy_image(image) if self.copy else False
+        self.say(f"{'copied · ' if copied else ''}{self.saved_path.name}",
+                 ttl_ms=9000)
+        log.info("photo %d×%d saved to %s%s", image.width, image.height,
+                 self.saved_path, " and copied" if copied else "")
+        if self.on_saved is not None:
+            self.on_saved(self.saved_path)
+        # Long enough to see the picture stop moving, and no longer: with
+        # the editor coming it is the flash plus a beat; without it the
+        # window has to stay up long enough for the filename to be read.
+        dwell = (CAM_FLASH_MS + 220) if self.edit else CAM_HOLD_MS
+        self._done_at = now + dwell / 1000.0
+
+    def _freeze_desktop(self):
+        """The screen behind this window, for the editor to lay the photo on.
+
+        WITHDRAW, PUMP, THEN GRAB, and the pump is not optional: hiding a
+        window only asks Windows to repaint what was underneath, and a
+        grab issued in the same breath comes back with the card still in
+        it. Three ticks is enough here and it is invisible in practice —
+        the screen this blinks is the screen the editor is about to dim
+        one frame later.
+        """
+        from PIL import ImageGrab
+        self.root.withdraw()
+        for _ in range(3):
+            try:
+                self.root.update()
+            except self.tk.TclError:
+                break
+            time.sleep(0.02)
+        return ImageGrab.grab(all_screens=True).convert("RGB")
+
+    # -- the pump --
+
+    def _tick(self) -> None:
+        now = time.monotonic()
+        if self.frozen is not None:
+            if now >= self._done_at:
+                self._finish()
+            return
+        if self._armed_at is not None:
+            if countdown_left(self._armed_at, now, self.timer) <= 0:
+                self._fire()
+            return
+        if self.camera.error:
+            self.say(f"{self.camera.name}: {self.camera.error}", ttl_ms=9000)
+            return
+        if not self.camera.live and not self._said_wake:
+            if now - self.camera.opened_at > CAM_WAKE_S:
+                self._said_wake = True
+                self.say(f"{self.camera.name} did not send a picture in "
+                         f"{CAM_WAKE_S:.0f} s — is something else using it?",
+                         ttl_ms=9000)
+
+    def _finish(self) -> None:
+        if self.edit and self.saved_path is not None:
+            self.backdrop = self._freeze_desktop()
+        self.result = {"photo": self.frozen, "box": self.preview_rect(),
+                       "path": self.saved_path, "backdrop": self.backdrop}
+        self.close()
+
+    def preview_rect(self) -> tuple[int, int, int, int]:
+        """Where the picture is, in SCREEN pixels — the editor's anchor.
+
+        Public because the log line that says the camera is open says
+        WHERE, and "the window opened somewhere I could not see" is the
+        report this answers without another run.
+        """
+        x = self.root.winfo_rootx() + self.pad_x
+        y = self.root.winfo_rooty() + CAM_PAD
+        return (x, y, x + self.preview_size[0], y + self.preview_size[1])
+
+    def run(self) -> dict | None:
+        root = self.root
+        try:
+            root.update_idletasks()
+            root.update()
+            # The same foreground grab the selector uses, and without the
+            # Alt tap for the same reason: the tap arms the menu bar of
+            # whatever is underneath and eats the first click.
+            _vq.take_foreground(root, alt_tap=False)
+            _user32.GetAsyncKeyState(0x1B)      # prime, discard
+            # Seeded from the keyboard, not from False: a stuck Escape
+            # would otherwise close this card the instant it opened, with
+            # nothing on screen long enough to read. See esc_held.
+            held = esc_held()
+            if held:
+                log.info("esc is held down as the camera opens — it will "
+                         "stay up until esc is released and pressed again")
+            while not self._closing:
+                state = _user32.GetAsyncKeyState(0x1B)
+                down, fresh = bool(state & 0x8000), bool(state & 0x0001)
+                # ONE PRESS IS ONE PRESS, and this window is the first
+                # here that needs to know it. Esc means two things —
+                # cancel the countdown, then close — and the pump polls at
+                # 66 Hz while a human tap holds the key for eighty
+                # milliseconds. Without the latch the first tick cancelled
+                # the timer and the third closed the window, so "esc
+                # cancels the countdown" was true for about 15 ms.
+                # Measured 2026-08-26, on a scripted 60 ms tap.
+                if (down or fresh) and not held:
+                    if self._armed_at is not None and self.frozen is None:
+                        self._armed_at = None
+                        self._strip_key = None
+                        self.say("timer cancelled")
+                    else:
+                        break
+                held = down
+                self._tick()
+                self._paint()
+                try:
+                    root.update()
+                except self.tk.TclError:
+                    break
+                time.sleep(_TICK_S)
+        finally:
+            self.camera.close()
+            self._keep.clear()
+            self._photo = None
+            try:
+                root.destroy()
+            except Exception:
+                pass
+            gc.collect()
+        return self.result
+
+    # -- painting --
+
+    def _paint(self) -> None:
+        from PIL import ImageTk
+        canvas = self.canvas
+        image = self.frozen if self.frozen is not None else self.camera.latest
+        if image is not None:
+            if self._photo is None:
+                self._photo = ImageTk.PhotoImage(image, master=self.root)
+                canvas.create_image(self.pad_x, CAM_PAD, anchor="nw",
+                                    image=self._photo, tags="view")
+            else:
+                self._photo.paste(image)
+        self._paint_strip()
+        canvas.delete("over")
+        if image is None:
+            self._paint_waiting()
+        if self._armed_at is not None:
+            self._paint_countdown()
+        if time.monotonic() < self._flash_until:
+            canvas.create_rectangle(
+                self.pad_x, CAM_PAD, self.pad_x + self.preview_size[0],
+                CAM_PAD + self.preview_size[1], fill="#ffffff", outline="",
+                tags="over")
+        self._paint_status()
+
+    def _paint_waiting(self) -> None:
+        """Before the first frame. Measured 654-829 ms, and a card that is
+        a black hole for three quarters of a second is a card that looks
+        broken."""
+        self.canvas.create_rectangle(
+            self.pad_x, CAM_PAD, self.pad_x + self.preview_size[0],
+            CAM_PAD + self.preview_size[1], fill=PANE, outline="",
+            tags="over")
+        self._text("wake", f"waking {self.camera.name}...",
+                   self.pad_x + 18,
+                   CAM_PAD + self.preview_size[1] // 2 - 12,
+                   pt=12.5, colour=INK_DIM,
+                   width=self.preview_size[0] - 36)
+
+    def _paint_countdown(self) -> None:
+        from PIL import ImageTk
+        left = countdown_left(self._armed_at, time.monotonic(), self.timer)
+        if left != self._count_key or "count" not in self._keep:
+            self._count_key = left
+            self._keep["count"] = ImageTk.PhotoImage(
+                self._count_plate(left), master=self.root)
+        image = self._keep["count"]
+        self.canvas.create_image(
+            self.pad_x + self.preview_size[0] // 2,
+            CAM_PAD + self.preview_size[1] // 2, anchor="center",
+            image=image, tags="over")
+
+    def _count_plate(self, left: int):
+        """The number, on a disc dark enough to read it over anything."""
+        from PIL import Image
+        size = 132
+        plate = _vq.rr_layer((size, size), size // 2, (8, 16, 32, 168),
+                             (255, 255, 255, 40))
+        # Trimmed to the ink before it is centred, for the reason the timer
+        # chip is: text_pil hands back a picture of the BOX it was given
+        # with the glyphs at one end, and centring that box puts a numeral
+        # visibly off to the left of the disc it is supposed to be in.
+        glyph = _vq.text_pil(str(left), size * 2, pt=54, colour=INK,
+                             rtl=False, single=True, weight=700)
+        ink = glyph.getbbox()
+        if ink is not None:
+            glyph = glyph.crop(ink)
+        plate.alpha_composite(glyph, ((size - glyph.width) // 2,
+                                      (size - glyph.height) // 2))
+        flat = Image.new("RGBA", plate.size, (0, 0, 0, 0))
+        flat.alpha_composite(plate)
+        return flat
+
+    def _paint_status(self) -> None:
+        if self._status and time.monotonic() > self._status_until:
+            self._status = ""
+        text = self._status or self._hint()
+        if not text:
+            return
+        self._text("status", text, self.pad_x + 10,
+                   CAM_PAD + self.preview_size[1] - 26, pt=10.0,
+                   colour=INK_DIM, width=self.preview_size[0] - 20,
+                   shade=True)
+
+    def _hint(self) -> str:
+        if self.frozen is not None:
+            return ""
+        parts = ["space to take it"]
+        if self.timer:
+            parts.append(f"t: {self.timer} s")
+        else:
+            parts.append("t: timer")
+        parts.append("m: mirror")
+        if len(self.names) > 1:
+            parts.append("c: next camera")
+        parts.append("esc closes")
+        return "   ·   ".join(parts)
+
+    def _text(self, key: str, text: str, x: int, y: int, *, pt: float,
+              colour, width: int = 300, weight: int = 400,
+              shade: bool = False) -> None:
+        """One line of text over the picture.
+
+        `shade` puts it on a dark plate. Over a live camera there is no
+        telling what is behind a caption — a white wall makes pale text
+        vanish — and the alternative (a black outline per glyph) is four
+        more GDI passes per tick.
+        """
+        from PIL import Image, ImageTk
+        cached = self._keep.get(f"{key}:key")
+        if cached != (text, colour, shade):
+            glyph = _vq.text_pil(text, width, pt=pt, colour=colour, rtl=False,
+                                 single=True, weight=weight)
+            if shade:
+                pad = 7
+                plate = _vq.rr_layer(
+                    (glyph.width + pad * 2, glyph.height + pad), 9,
+                    (8, 16, 32, 150))
+                plate.alpha_composite(glyph, (pad, pad // 2))
+                glyph = plate
+            flat = Image.new("RGBA", glyph.size, (0, 0, 0, 0))
+            flat.alpha_composite(glyph)
+            self._keep[key] = ImageTk.PhotoImage(flat, master=self.root)
+            self._keep[f"{key}:key"] = (text, colour, shade)
+        self.canvas.create_image(x, y, anchor="nw", image=self._keep[key],
+                                 tags="over")
+
+    def _paint_strip(self) -> None:
+        """The control row, composed once per STATE and not per frame.
+
+        Nothing on it changes at twenty-five frames a second — the chips
+        answer to the timer, the mirror and the pointer — so it is
+        rebuilt on a signature of those three and pasted otherwise. The
+        preview above it is the only thing that has to be new every tick.
+        """
+        from PIL import ImageTk
+        armed = self._armed_at is not None
+        key = (self.timer, self.camera.mirror, self._hover, armed,
+               self.frozen is not None)
+        if key != self._strip_key or "strip" not in self._keep:
+            self._strip_key = key
+            self._keep["strip"] = ImageTk.PhotoImage(
+                self._strip_image(armed), master=self.root)
+            self.canvas.delete("strip")
+            self.canvas.create_image(0, self.card_h - CAM_STRIP_H,
+                                     anchor="nw", image=self._keep["strip"],
+                                     tags="strip")
+
+    def _strip_image(self, armed: bool):
+        from PIL import Image
+        plate = Image.new("RGBA", (self.card_w, CAM_STRIP_H),
+                          _hex(CARD) + (255,))
+        for name, (x0, y0, x1, y1) in self.spots.items():
+            if name == "shutter":
+                continue
+            lit = ((name == "mirror" and self.camera.mirror)
+                   or (name == "timer" and bool(self.timer)))
+            fill = ((86, 156, 245, 170) if lit
+                    else (255, 255, 255, 40) if self._hover == name
+                    else (255, 255, 255, 20))
+            chip = _vq.rr_layer((x1 - x0, y1 - y0), (x1 - x0) // 2, fill,
+                                (255, 255, 255, 46))
+            colour = INK if (lit or self._hover == name) else INK_FAINT
+            if name == "timer" and self.timer:
+                # The NUMBER instead of the stopwatch once one is set: a
+                # chip that is merely lit says a timer is on and not which,
+                # and 3 s and 10 s are different plans.
+                #
+                # Laid out in a WIDE box and then trimmed to its ink.
+                # text_pil returns a picture of the box it was given, with
+                # the glyphs at one end of it, so centring on the returned
+                # size put the numeral against the chip's left curve and
+                # clipped it — seen in the first live screenshot, which is
+                # the only place it could have been seen.
+                mark = _vq.text_pil(str(self.timer), 96, pt=12.0,
+                                    colour=colour, rtl=False, single=True,
+                                    weight=700)
+                ink = mark.getbbox()
+                if ink is not None:
+                    mark = mark.crop(ink)
+            else:
+                mark = icon({"mirror": "mirror", "timer": "timer",
+                             "switch": "switch", "close": "close"}[name],
+                            16, colour=colour, width=2)
+            chip.alpha_composite(mark, ((x1 - x0 - mark.width) // 2,
+                                        (y1 - y0 - mark.height) // 2))
+            plate.alpha_composite(chip, (x0, y0))
+        plate.alpha_composite(self._shutter_image(armed),
+                              self.spots["shutter"][:2])
+        return plate.convert("RGB")
+
+    def _shutter_image(self, armed: bool):
+        """A ring with a disc in it — the shape every camera has had since
+        cameras had buttons, and the one control here that needs no label.
+
+        Red while a timer is counting, because then the button means
+        CANCEL and a button that means two things has to look like two
+        things.
+        """
+        ring = _vq.rr_layer((SHUTTER, SHUTTER), SHUTTER // 2, (0, 0, 0, 0),
+                            (238, 245, 255, 225), 2)
+        inner = SHUTTER - 14
+        if armed:
+            fill = (224, 53, 43, 245)
+        elif self.frozen is not None:
+            fill = (238, 245, 255, 90)
+        elif self._hover == "shutter":
+            fill = (255, 255, 255, 255)
+        else:
+            fill = (238, 245, 255, 226)
+        disc = _vq.rr_layer((inner, inner), inner // 2, fill)
+        ring.alpha_composite(disc, ((SHUTTER - inner) // 2,
+                                    (SHUTTER - inner) // 2))
+        return ring
+
+
+def _pointer() -> tuple[int, int]:
+    """Where the mouse is, without a Tk window to ask.
+
+    The camera window has to know which monitor it is opening on BEFORE it
+    exists, because the size of the picture depends on the work area it
+    has to fit into (preview_fit).
+    """
+    point = w.POINT()
+    _user32.GetCursorPos(ctypes.byref(point))
+    return int(point.x), int(point.y)
+
+
 class Controller:
-    """What main.py holds: two hotkeys land here.
+    """What main.py holds: three hotkeys land here.
 
     Constructing one is cheap and imports nothing heavy — Pillow, Tk, PyAV
     and sounddevice all load on the first press, so an owner who never
     presses either key pays nothing for the idea of them.
 
-    Both flows are strictly sequential and own their thread: the selector
-    closes before the editor opens, the editor closes before a recording
-    starts. One Tk interpreter at a time, built and destroyed and
+    All three flows are strictly sequential and own their thread: the
+    selector closes before the editor opens, the editor closes before a
+    recording starts, the camera window closes before the editor opens on
+    its photo. One Tk interpreter at a time, built and destroyed and
     collected on the same thread, which is the rule overlay.py wrote down
     and AGENTS.md re-states in full.
     """
@@ -2866,6 +4842,7 @@ class Controller:
         self._cancel = threading.Event()
         self._lock = threading.Lock()
         self._recorder: ScreenRecorder | None = None
+        self._camera: Camera | None = None
 
     # ---- what main.py reads (hook-thread safe) ----
 
@@ -2916,12 +4893,17 @@ class Controller:
             window = ShotWindow(full, mode="shot", cfg=cfg,
                                 folder=cfg.folder,
                                 copy=cfg.copy_to_clipboard,
-                                edit=cfg.edit_after_shot,
+                                edit=(cfg.after_shot == "editor"),
+                                save=cfg.always_save,
                                 on_saved=lambda _p: self._cue("shot"),
                                 on_ask=self._ask_of)
             result = window.run()
+            window = None
+            gc.collect()
             if result and "ask" in result:
                 self._hand_to_ask(*result["ask"])
+            elif result and cfg.after_shot == "toast":
+                self._offer(full, result, cfg)
         except Exception:
             log.exception("the screenshot flow failed")
             self._cue("error")
@@ -2936,6 +4918,53 @@ class Controller:
             # story; this is the line that obeys it.
             gc.collect()
             self._busy.clear()
+
+    def _offer(self, full, result: dict, cfg) -> None:
+        """The corner card, and the editor if it is asked for.
+
+        THE INTERRUPTION IS THE THING BEING FIXED HERE. An editor that
+        opens over the whole screen after every capture makes the common
+        case — drag, paste, carry on — pay for the rare one, and the
+        common case is nine captures in ten. So the drag ends silently
+        with the picture already on the clipboard, and this offers the
+        rest for five seconds in a corner.
+
+        The frozen screen is still held while the card is up, which is
+        what lets the editor open on the pixels as they WERE rather than
+        as they are now — five seconds is long enough for the window
+        underneath to have scrolled.
+        """
+        toast = editor = None
+        try:
+            toast = ShotToast(result["image"], result["box"],
+                              saved=result.get("path"),
+                              corner=cfg.toast_corner,
+                              seconds=cfg.toast_seconds,
+                              copied=cfg.copy_to_clipboard)
+            action = toast.run()
+            toast = None
+            gc.collect()
+            if action == "save":
+                path = save_image(result["image"], cfg.folder, kind="shot")
+                log.info("screenshot saved on request: %s", path)
+                self._cue("shot")
+                return
+            if action != "edit":
+                return
+            editor = ShotWindow(full, mode="shot", cfg=cfg,
+                                folder=cfg.folder,
+                                copy=cfg.copy_to_clipboard, edit=True,
+                                save=cfg.always_save,
+                                start_box=result["box"],
+                                start_shape=result.get("shape"),
+                                saved=result.get("path"),
+                                on_ask=self._ask_of)
+            out = editor.run()
+            if out and "ask" in out:
+                self._hand_to_ask(*out["ask"])
+        finally:
+            toast = editor = None
+            gc.collect()
 
     def _hand_to_ask(self, image, box) -> None:
         """Send a finished shot to the ask card.
@@ -2957,6 +4986,145 @@ class Controller:
                 log.info("the ask card is busy with something else")
         except Exception:
             log.exception("could not hand the capture to the ask card")
+
+    # ---- the camera key ----
+
+    def _camera_cfg(self):
+        cfg = getattr(self._cfg_of(), "camera", None)
+        if cfg is None:
+            raise CaptureError("this version of the app has no [camera] "
+                               "section")
+        return cfg
+
+    def begin_photo(self) -> bool:
+        """Open the camera and offer the shutter. False if busy."""
+        if self._busy.is_set():
+            return False
+        self._busy.set()
+        self._cancel.clear()
+        threading.Thread(target=self._photo_flow, daemon=True,
+                         name="capture-photo").start()
+        return True
+
+    def _photo_flow(self) -> None:
+        window = None
+        # Every camera this flow opens, including any a switch left behind.
+        # The window closes its own on the way out and closing a closed
+        # camera is free — but an exception between opening one and handing
+        # it to the window would otherwise leave a lens streaming with
+        # nothing on screen to say so.
+        opened: list[Camera] = []
+        try:
+            cfg = self._camera_cfg()
+            names = cameras()
+            if not names:
+                self._cue("error")
+                log.info("no camera found — DirectShow lists no video "
+                         "device. Plug one in, or close whatever has it "
+                         "open, and press '%s' again", cfg.hotkey)
+                return
+            name, note = self._choose(names, cfg.device)
+            size = parse_size(cfg.size)
+            preview = preview_fit(size, work_area_near(*_pointer()))
+            camera = self._open_camera(name, size, preview, cfg,
+                                       cfg.mirror, opened)
+            window = CameraWindow(
+                camera, names=names,
+                open_camera=lambda other, mirror: self._open_camera(
+                    other, size, preview, cfg, mirror, opened),
+                folder=cfg.folder, copy=cfg.copy_to_clipboard,
+                edit=cfg.edit_after_shot, timer=cfg.timer,
+                hotkey=cfg.hotkey, on_saved=lambda _p: self._cue("shot"))
+            if note:
+                window.say(note, ttl_ms=8000)
+            left, top, right, bottom = window.preview_rect()
+            log.info("camera open on %r at %d×%d (shown at %d×%d, at "
+                     "%d,%d) — space takes the picture, esc closes", name,
+                     size[0], size[1], right - left, bottom - top, left, top)
+            result = window.run()
+            window = None
+            gc.collect()          # the camera window's own interpreter,
+                                  # freed here, by the thread that made it
+            if result and result.get("backdrop") is not None:
+                self._edit_photo(result, cfg)
+        except Exception:
+            log.exception("the camera flow failed")
+            self._cue("error")
+        finally:
+            window = None
+            for camera in opened:
+                try:
+                    camera.close()
+                except Exception:
+                    log.debug("closing the camera raised", exc_info=True)
+            with self._lock:
+                self._camera = None
+            gc.collect()
+            self._busy.clear()
+
+    @staticmethod
+    def _choose(names: list[str], wanted: str) -> tuple[str, str]:
+        """(the camera to open, what to say about it).
+
+        A `device` that is set and not present falls back to the automatic
+        pick and SAYS so on the window, rather than either refusing to
+        open or opening a different camera in silence. The owner unplugs
+        one webcam and plugs in another; the key should still take a
+        picture, and he should still be told whose picture it is.
+        """
+        name = pick_camera(names, wanted)
+        if name is not None:
+            return name, ""
+        name = pick_camera(names, "")
+        note = f"no camera matching '{wanted}' — using {name}"
+        log.info("%s (DirectShow lists: %s)", note, ", ".join(names))
+        return name, note
+
+    def _open_camera(self, name: str, size, preview, cfg, mirror: bool,
+                     seen: list | None = None) -> Camera:
+        camera = Camera(name, size=size, fps=cfg.fps, preview=preview,
+                        mirror=mirror)
+        if seen is not None:
+            seen.append(camera)
+        with self._lock:
+            self._camera = camera
+        camera.start()
+        return camera
+
+    def _edit_photo(self, result: dict, cfg) -> None:
+        """Open the editor on the photo, where the photo already was.
+
+        The trick, and it is the whole reason the camera key ends in the
+        SAME editor as the screenshot key rather than one of its own: the
+        photo is pasted into the frozen desktop at the rectangle the
+        preview occupied, and the editor is told that rectangle. So the
+        picture does not move. The preview freezes, the screen dims around
+        it, and the toolbar arrives underneath the thing you were just
+        looking at — which is exactly what a drag with the screenshot key
+        does, and it is one behaviour to learn instead of two.
+
+        No scaling happens here. preview_fit already made the preview and
+        the file the same size for this reason.
+        """
+        window = None
+        try:
+            backdrop = result["backdrop"]
+            image = result["photo"]
+            box = result["box"]
+            vx, vy, _vw, _vh = virtual_screen()
+            backdrop.paste(image, (box[0] - vx, box[1] - vy))
+            window = ShotWindow(backdrop, mode="shot", cfg=cfg,
+                                folder=cfg.folder,
+                                copy=cfg.copy_to_clipboard, edit=True,
+                                kind="photo", start_box=box,
+                                saved=result.get("path"),
+                                on_ask=self._ask_of)
+            out = window.run()
+            if out and "ask" in out:
+                self._hand_to_ask(*out["ask"])
+        finally:
+            window = None
+            gc.collect()
 
     # ---- the recording key ----
 
@@ -3081,3 +5249,10 @@ class Controller:
         recorder = self._recorder
         if recorder is not None:
             recorder.stop()
+        # The lens goes dark when the app does, whatever the window was in
+        # the middle of. A webcam still streaming after its process has
+        # been asked to quit is the one failure of this feature nobody
+        # would forgive.
+        camera = self._camera
+        if camera is not None:
+            camera.close()

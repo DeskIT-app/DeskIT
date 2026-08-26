@@ -316,9 +316,31 @@ class CaptureConfig:
     # Win+Shift+S's promise: the capture is pasteable immediately. false
     # still writes the file.
     copy_to_clipboard: bool = True
-    # The editor opens on the selection where it was taken. false makes the
-    # key a pure "grab it and get out of my way".
-    edit_after_shot: bool = True
+    # toast | editor | nothing. What happens AFTER the drag.
+    #
+    # "toast" is the default and the reason this field replaced a bool: an
+    # editor that opens over the whole screen after every capture makes
+    # the common case — drag, paste, carry on — pay for the rare one, and
+    # the common case is nine captures in ten. A small card in a corner
+    # for a few seconds offers the editor instead of imposing it.
+    after_shot: str = "toast"
+    # Which corner that card appears in. Same four as timer_corner, and
+    # deliberately its own setting: the recording pill and the capture
+    # card can want different corners on the same desk.
+    toast_corner: str = "bottom-right"
+    # How long it waits before giving up on you. The clock pauses while
+    # the pointer is on the card.
+    toast_seconds: int = 5
+    # Write EVERY capture to `folder`, or only the ones you ask to keep.
+    #
+    # false is the default, and it is the one setting here that gives up
+    # something real: the picture is on the clipboard and nowhere else
+    # until Save is pressed, so copying something else inside those few
+    # seconds loses it. The trade is a folder that holds the captures you
+    # meant to keep instead of every rectangle you ever dragged — and the
+    # folder is the most sensitive thing in this repo, so a smaller one is
+    # worth something on its own. true restores the old promise exactly.
+    always_save: bool = False
     # A finished clip goes on the clipboard as a FILE (CF_HDROP), so it can
     # be pasted into a chat or a folder the way Explorer's Copy does.
     copy_clip_path: bool = True
@@ -352,6 +374,62 @@ class CaptureConfig:
     # the pill. The failure mode of a screen recorder is not knowing
     # whether it is running, and this is the cheapest possible answer.
     announce: bool = True
+
+
+@dataclass(frozen=True)
+class CameraConfig:
+    """The webcam key — the other half of capture.py.
+
+    A KEY THAT OPENS THE LENS IS A DIFFERENT PROMISE FROM ONE THAT READS
+    THE SCREEN, which is why this is its own section and not three more
+    lines in [capture]. A screenshot is of pixels the owner is already
+    looking at. A photograph is of the room. So: nothing opens the camera
+    but this key, the light comes on only while the window is up, the
+    device is released the instant the shutter fires rather than when the
+    editor closes, and `enabled = false` unregisters the key entirely.
+
+    Where the picture GOES is the same story [capture] tells: `folder`,
+    beside the app and gitignored, and no upload path anywhere in the
+    module. The only route from a photo to a model is the editor's Ask
+    button, which is visual_qa's own gate.
+
+    MEASURED ON THIS MACHINE, 2026-08-26, on an eMeet C960:
+        open -> first frame       654-829 ms
+        delivered                 25 fps at 1280x720 mjpeg
+        one frame to the window    5.4 ms
+        listing the devices      147 ms
+    """
+    # false unregisters the key entirely — the kill switch.
+    enabled: bool = True
+    hotkey: str = "ctrl+f6"
+    # Which camera, matched as a case-insensitive SUBSTRING of the name
+    # Windows knows it by ("eMeet" is enough). Empty = the first device
+    # DirectShow lists that is not a virtual camera — OBS, Teams and
+    # NVIDIA Broadcast all install one and they sort ahead of the real
+    # webcam as often as not.
+    device: str = ""
+    # What to ask the camera for. MJPEG is requested at this size; a
+    # camera that has no MJPEG pin gets asked again for whatever it has
+    # (measured: this one offers 1080p30 as mjpeg and 1080p5 as raw, and
+    # dshow takes the raw one unless it is told otherwise).
+    size: str = "1280x720"
+    fps: int = 30
+    # Mirror the picture — BOTH the preview and the file, or neither. Off
+    # by default because the commonest thing anyone holds up to a webcam
+    # has writing on it. "m" flips it while the window is open.
+    mirror: bool = False
+    # 0, 3 or 10 seconds of self-timer. "t" cycles it while the window is
+    # open; this is only what it starts at.
+    timer: int = 0
+    # Same folder as the screen captures by default: one place to look for
+    # pictures. The files are named "photo ..." rather than "shot ...".
+    folder: str = "captures"
+    copy_to_clipboard: bool = True
+    # After the shutter, the photo opens in the SAME editor a screenshot
+    # does — crop, draw, arrow, blur, Ask — laid on the screen exactly
+    # where the preview was. false makes the key a pure "take it and get
+    # out of my way"; the file and the clipboard are identical either way.
+    edit_after_shot: bool = True
 
 
 @dataclass(frozen=True)
@@ -566,6 +644,7 @@ class Config:
     polish: PolishConfig = field(default_factory=PolishConfig)
     visual_qa: VisualQAConfig = field(default_factory=VisualQAConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    camera: CameraConfig = field(default_factory=CameraConfig)
 
     @property
     def capture_hotkey(self) -> str:
@@ -581,6 +660,11 @@ class Config:
     def record_hotkey(self) -> str:
         """The screen-recording key, read out of [capture]."""
         return self.capture.record_hotkey
+
+    @property
+    def camera_hotkey(self) -> str:
+        """The webcam key, read out of [camera]."""
+        return self.camera.hotkey
 
     @property
     def visual_qa_hotkey(self) -> str:
@@ -622,6 +706,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
     ("visual_qa_hotkey", "Ask the screen (tap)"),
     ("capture_hotkey", "Screenshot (tap)"),
     ("record_hotkey", "Record the screen (tap)"),
+    ("camera_hotkey", "Photo from the camera (tap)"),
     ("pause_hotkey", "Pause / resume"),
 )
 
@@ -636,6 +721,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
 CHORD_FIELDS: frozenset[str] = frozenset((
     "translate_hotkey", "punctuate_hotkey", "correct_hotkey",
     "lookup_hotkey", "visual_qa_hotkey", "capture_hotkey", "record_hotkey",
+    "camera_hotkey",
 ))
 
 
@@ -655,6 +741,9 @@ def with_field(cfg: "Config", name: str, value) -> "Config":
         return dataclasses.replace(
             cfg, capture=dataclasses.replace(cfg.capture,
                                              record_hotkey=str(value)))
+    if name == "camera_hotkey":
+        return dataclasses.replace(
+            cfg, camera=dataclasses.replace(cfg.camera, hotkey=str(value)))
     if name == "visual_qa_hotkey":
         return dataclasses.replace(
             cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
@@ -767,6 +856,7 @@ def load(path: Path) -> Config:
     polish = data.get("polish", {})
     visual_qa = data.get("visual_qa", {})
     capture = data.get("capture", {})
+    camera = data.get("camera", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -976,8 +1066,15 @@ def load(path: Path) -> Config:
             folder=str(capture.get("folder", CaptureConfig.folder)).strip(),
             copy_to_clipboard=bool(capture.get(
                 "copy_to_clipboard", CaptureConfig.copy_to_clipboard)),
-            edit_after_shot=bool(capture.get(
-                "edit_after_shot", CaptureConfig.edit_after_shot)),
+            after_shot=str(capture.get(
+                "after_shot", CaptureConfig.after_shot)).strip().lower(),
+            toast_corner=str(capture.get(
+                "toast_corner",
+                CaptureConfig.toast_corner)).strip().lower(),
+            toast_seconds=int(capture.get(
+                "toast_seconds", CaptureConfig.toast_seconds)),
+            always_save=bool(capture.get(
+                "always_save", CaptureConfig.always_save)),
             copy_clip_path=bool(capture.get(
                 "copy_clip_path", CaptureConfig.copy_clip_path)),
             fps=int(capture.get("fps", CaptureConfig.fps)),
@@ -992,6 +1089,21 @@ def load(path: Path) -> Config:
                 "timer_corner",
                 CaptureConfig.timer_corner)).strip().lower(),
             announce=bool(capture.get("announce", CaptureConfig.announce)),
+        ),
+        camera=CameraConfig(
+            enabled=bool(camera.get("enabled", CameraConfig.enabled)),
+            hotkey=str(camera.get(
+                "camera_hotkey", CameraConfig.hotkey)).strip().lower(),
+            device=str(camera.get("device", CameraConfig.device)).strip(),
+            size=str(camera.get("size", CameraConfig.size)).strip().lower(),
+            fps=int(camera.get("fps", CameraConfig.fps)),
+            mirror=bool(camera.get("mirror", CameraConfig.mirror)),
+            timer=int(camera.get("timer", CameraConfig.timer)),
+            folder=str(camera.get("folder", CameraConfig.folder)).strip(),
+            copy_to_clipboard=bool(camera.get(
+                "copy_to_clipboard", CameraConfig.copy_to_clipboard)),
+            edit_after_shot=bool(camera.get(
+                "edit_after_shot", CameraConfig.edit_after_shot)),
         ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
@@ -1147,6 +1259,34 @@ def load(path: Path) -> Config:
     if not cfg.capture.folder:
         raise ConfigError("capture.folder cannot be empty — that is where "
                           "your screenshots go")
+    if cfg.capture.after_shot not in ("toast", "editor", "nothing"):
+        raise ConfigError('capture.after_shot must be "toast", "editor" or '
+                          f'"nothing", got {cfg.capture.after_shot!r}')
+    if cfg.capture.toast_corner not in ("top-left", "top-right",
+                                        "bottom-left", "bottom-right"):
+        raise ConfigError('capture.toast_corner must be a corner — '
+                          '"top-left", "top-right", "bottom-left" or '
+                          f'"bottom-right", got {cfg.capture.toast_corner!r}'
+                          '. Use after_shot = "nothing" for no card at all')
+    if not 1 <= cfg.capture.toast_seconds <= 60:
+        raise ConfigError("capture.toast_seconds must be between 1 and 60 — "
+                          "under a second nobody can reach it, and past a "
+                          "minute it is not a notification any more")
+    if cfg.camera.timer not in (0, 3, 10):
+        raise ConfigError("camera.timer must be 0, 3 or 10 seconds, got "
+                          f"{cfg.camera.timer} — the key cycles through "
+                          "those three and starts on this one")
+    if not 1 <= cfg.camera.fps <= 60:
+        raise ConfigError("camera.fps must be between 1 and 60 — it is what "
+                          "the camera is ASKED for, and a webcam that "
+                          "cannot manage it simply sends fewer")
+    if not cfg.camera.folder:
+        raise ConfigError("camera.folder cannot be empty — that is where "
+                          "your photos go")
+    if "x" not in cfg.camera.size or not all(
+            part.strip().isdigit() for part in cfg.camera.size.split("x", 1)):
+        raise ConfigError('camera.size must look like "1280x720", got '
+                          f"{cfg.camera.size!r}")
     if cfg.vocab.max_terms < 0:
         raise ConfigError("vocab.max_terms must be >= 0 (0 disables hotwords)")
     if cfg.vocab.keep_audio < 0:

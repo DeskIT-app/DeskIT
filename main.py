@@ -72,6 +72,7 @@ NESTED_HOTKEYS = {
     "visual_qa_hotkey": "visual_qa.visual_qa_hotkey",
     "capture_hotkey": "capture.capture_hotkey",
     "record_hotkey": "capture.record_hotkey",
+    "camera_hotkey": "camera.camera_hotkey",
 }
 
 
@@ -159,6 +160,7 @@ class App:
     _capture = None
     _capture_vk = None
     _record_vk = None
+    _camera_vk = None
 
     def __init__(self, cfg: config_mod.Config,
                  config_path: Path | None = None):
@@ -233,6 +235,7 @@ class App:
         self._vqa_vk = self._vk_of(taps, "visual_qa")
         self._capture_vk = self._vk_of(taps, "capture")
         self._record_vk = self._vk_of(taps, "record")
+        self._camera_vk = self._vk_of(taps, "photo")
         self.machine = PTTStateMachine(
             hotkeys,
             on_start=self._on_start, on_stop=self._on_stop,
@@ -411,6 +414,12 @@ class App:
                 taps[parse_binding(cap.hotkey)] = "capture"
             if cap.record_hotkey:
                 taps[parse_binding(cap.record_hotkey)] = "record"
+        # And the lens, on the same terms and for the same reason: getattr
+        # because classic's Config has no [camera] section, and this file
+        # is byte-identical on both branches.
+        cam = getattr(cfg, "camera", None)
+        if cam is not None and cam.enabled and cam.hotkey:
+            taps[parse_binding(cam.hotkey)] = "photo"
         return (hotkeys, taps,
                 vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
                 vk_for(cfg.pause_hotkey) if cfg.pause_hotkey else None)
@@ -470,6 +479,8 @@ class App:
         if self._capture_vk is not None and vk == self._capture_vk:
             return False
         if self._record_vk is not None and vk == self._record_vk:
+            return False
+        if self._camera_vk is not None and vk == self._camera_vk:
             return False
         return self.popup.on_key(vk)
 
@@ -687,6 +698,7 @@ class App:
         self._vqa_vk = self._vk_of(taps, "visual_qa")
         self._capture_vk = self._vk_of(taps, "capture")
         self._record_vk = self._vk_of(taps, "record")
+        self._camera_vk = self._vk_of(taps, "photo")
         self.cfg = new
         # Nested settings are written under their section name; the file
         # keeps one spelling of each key and so does this call. The TOML
@@ -945,6 +957,9 @@ class App:
         if action == "record":
             self._tap_record()
             return
+        if action == "photo":
+            self._tap_photo()
+            return
         if action not in ("translate", "punctuate"):
             return
         # Remember WHERE the text is before anything slow happens, for the
@@ -1080,6 +1095,24 @@ class App:
         if self.capture.toggle_clip():
             log.info("drag the area to record - enter for this screen, "
                      "esc cancels")
+
+    def _tap_photo(self) -> None:
+        """Open the camera and offer the shutter.
+
+        Runs inside the keyboard hook like every other tap, so it checks
+        one flag, spawns a thread and returns. Opening a webcam takes the
+        better part of a second (measured 654-829 ms to the first frame)
+        and blocking here for that long would make Windows drop the hook
+        and freeze every key on the machine.
+        """
+        if self.capture.busy:
+            self._cue_once("noop", "capture-busy")
+            log.info("the capture overlay is already up - ignoring the "
+                     "extra press")
+            return
+        if self.capture.begin_photo():
+            log.info("opening the camera - space or the shutter takes the "
+                     "picture, t sets a timer, m mirrors it, esc closes")
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
@@ -2699,17 +2732,42 @@ def main() -> int:
                  else f"; speak = '{vqa_cfg.speak}'")
     cap_cfg = getattr(cfg, "capture", None)
     if cap_cfg is not None and cap_cfg.enabled and cap_cfg.hotkey:
+        # getattr throughout: this file is byte-identical on both branches
+        # and classic's Config has no [capture] section at all, so nothing
+        # here may assume a field exists.
+        after = {
+            "toast": "A small card then appears in the %s for a few "
+                     "seconds - click it to crop, draw, blur out anything "
+                     "private or hand it to the ask key, ignore it and it "
+                     "goes away" % getattr(cap_cfg, "toast_corner",
+                                           "corner"),
+            "editor": "A toolbar then opens on it for cropping, drawing, "
+                      "blurring out anything private, or handing it to "
+                      "the ask key",
+        }.get(getattr(cap_cfg, "after_shot", "editor"),
+              "Nothing else happens - it is a pure grab-and-go")
         log.info("tap %r to CAPTURE part of the screen - drag a box or "
-                 "shift-drag a shape, and it is on the clipboard and in "
-                 "%s before you let go. A toolbar then opens on it for "
-                 "cropping, drawing, blurring out anything private, or "
-                 "handing it to the ask key%s", cap_cfg.hotkey,
-                 cap_cfg.folder,
+                 "shift-drag a shape, and it is on the clipboard before "
+                 "you let go. %s%s%s", cap_cfg.hotkey, after,
+                 "" if getattr(cap_cfg, "always_save", True) else
+                 (". It is NOT written to %s unless you ask for it - press "
+                  "Save on the card or in the editor" % cap_cfg.folder),
                  "" if not cap_cfg.record_hotkey else
                  (". Tap %r to RECORD a region to mp4 instead, and again "
                   "to stop%s") % (cap_cfg.record_hotkey,
                                   " (with the microphone)"
                                   if cap_cfg.audio == "mic" else ""))
+    cam_cfg = getattr(cfg, "camera", None)
+    if cam_cfg is not None and cam_cfg.enabled and cam_cfg.hotkey:
+        log.info("tap %r for a PHOTO from the camera - a live preview with "
+                 "a shutter, and the picture lands on the clipboard and in "
+                 "%s the moment you take it%s. The camera is closed again "
+                 "the instant the shutter fires%s", cam_cfg.hotkey,
+                 cam_cfg.folder,
+                 "" if not cam_cfg.edit_after_shot else
+                 ", then opens in the same editor a screenshot does",
+                 "" if not cam_cfg.device else
+                 f" (asking for a camera matching {cam_cfg.device!r})")
     if cfg.pause_hotkey:
         log.info("tap '%s' to pause every key above without unloading "
                  "anything (for games), and again to resume%s",

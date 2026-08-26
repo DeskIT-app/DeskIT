@@ -19,13 +19,21 @@ still holding Right Ctrl and the recording **locks on** — let go and talk
 for as long as you want. Tap **←** again to transcribe, or **Esc** to throw
 it away. See [Long dictation](#long-dictation-lock-the-key-with-).
 
-**Something on screen worth keeping? Tap `ctrl+f11`.** Drag a box or
-Shift-drag a lasso and the picture is on your clipboard and in `captures\`
-before you let go — then a glass toolbar opens on the pixels where you
-found them, to crop, arrow, highlight, blur out anything private, or hand
-the whole thing to the ask key. `ctrl+f12` records a region to mp4 instead,
+**Something on screen worth keeping? Press `Win+Shift+S`.** Yes, Windows'
+own key — this app takes it. Drag a box or
+Shift-drag a lasso and the picture is on your clipboard before you let go.
+Then it gets out of your way: a small card appears in a corner for five
+seconds with a thumbnail of what you took, and clicking it opens the editor
+— crop, arrow, highlight, blur out anything private, or hand the whole
+thing to the ask key. Ignore the card and it goes away. `ctrl+f12` records a region to mp4 instead,
 and the controls do not appear in the video. See
-[Capturing the screen](#capturing-the-screen-ctrlf11-and-recording-it-ctrlf12).
+[Capturing the screen](#capturing-the-screen-winshifts-and-recording-it-ctrlf12).
+
+**Want a picture of something in the room? Tap `ctrl+f6`.** The webcam
+opens in a card with a shutter under it; press space and the photo is on
+your clipboard and in `captures\` before the flash is over, then opens in
+the same editor. The camera is closed again the instant the shutter
+fires. See [A photo from the camera](#a-photo-from-the-camera-ctrlf6).
 
 **Reading rather than writing? Tap F8.** Select a word or a sentence
 anywhere — a web page, a PDF, a chat, a field you have no permission to
@@ -390,13 +398,15 @@ of it. Edge takes the same eight. Excel for the web is said to take F2,
 F4, F6, F9 and F11 and Gmail to bind most of the alphabet; neither was
 measured here, and the paragraph after the table says which rows were.
 
-Seven that survive, best first:
+Nine that survive, best first:
 
 | key | free in | taken by | one-handed? |
 |---|---|---|---|
 | **`f8`** | Chrome, Edge, all seven Google apps, Word / Excel / PowerPoint / Outlook / Teams on the web, WhatsApp Web, Spotify, the NVIDIA overlay | a console (history search), VS Code (next problem) | **yes** — the right edge of the F5–F8 block is a tactile landmark, so it is findable blind |
 | **`ctrl+f8`** | all of the above, *plus* the console and VS Code | nothing found | yes, with the **left** ctrl |
 | **`ctrl+f9`** | the same list | nothing found | yes, with the **left** ctrl |
+| **`ctrl+f6`** | Chrome and Edge, measured in the same probe — bare F6 walks the caret into the address bar, and the chord does not | nothing found | yes, with the **left** ctrl |
+| **`win+shift+s`** and any Win chord | nothing, because it never gets there — a Win chord is the one kind this app **swallows** (measured: the Snipping Tool does not open, and a bare Win tap still opens Start) | Windows itself, until you take it | **yes** — it is the shortcut your hands already know |
 | **`f2`** | Chrome and Edge — verified twice, once with the page blocking the key and once letting it through | Drive, Explorer and VS Code (rename), Excel and PowerPoint on the web (edit this cell) | **yes** — the easiest reach on the board |
 | **`f13`–`f24`** | Chrome and Edge, measured directly — every one of the twelve reached the page and did nothing | nothing found | only once you make one — no keyboard sends them. Remap a key in SteelSeries GG, a mouse thumb button in G HUB, or use PowerToys Keyboard Manager |
 | **`ctrl+f12`** | Chrome and Edge, measured directly. F12's own claimants (DevTools, Steam's screenshot) are bare-only | nothing found | **no** — F12 is at the far right of the row, and that hand is on the mouse |
@@ -1329,12 +1339,61 @@ stops the moment you start talking.
 9. **With `allow_screenshot_upload = false`, stop Ollama and ask** — the
    card must say it failed, and no cloud request may appear anywhere.
 
-## Capturing the screen (`ctrl+f11`) and recording it (`ctrl+f12`)
+## Capturing the screen (`Win+Shift+S`) and recording it (`ctrl+f12`)
 
-Win+Shift+S, plus the editor Windows makes you go and find, plus a
-recorder — and none of it leaves this machine.
+Win+Shift+S — the actual key, taken from Windows — plus the editor Windows
+makes you go and find, plus a recorder, and none of it leaves this machine.
 
-Tap `ctrl+f11`. The screen freezes and dims exactly the way the ask key
+**How it takes the key, and what that costs.** A Windows-key chord is the
+one kind of binding this app *swallows*. Every one of them is a shortcut
+the shell already answers, so letting it through would open this editor
+**and** the Snipping Tool. Measured here on 2026-08-26, three runs of a
+bare hook:
+
+| | what came up |
+|---|---|
+| `Win+Shift+S`, hook watching only | `Snipping Tool Overlay` |
+| `Win+Shift+S`, the `s` swallowed | **nothing — the chord is ours** |
+| `Win` tapped alone, same hook up | Start, exactly as before |
+
+So **nothing has to be turned off in Windows**, and no registry key is
+involved: the `s` never reaches the shell, and the Win key itself is never
+touched, so every other Win shortcut still works. If you would rather keep
+the system snip, `[capture] capture_hotkey = "ctrl+f11"` puts it back —
+that key is still measured-free. Ctrl/Shift/Alt chords are *not* swallowed;
+they fire the action and still reach whatever has focus, which is the rule
+the rest of this app is built on.
+
+**What does not happen next is the point.** The editor used to open over
+the whole screen after every capture, for a picture that nine times out of
+ten was going straight into a chat window — a modal dialog in nicer
+clothes, making the common case pay for the rare one. Now the drag ends
+silently with the picture on the clipboard, and a card appears in the
+corner for five seconds:
+
+- a **thumbnail**, so you can see whether it caught the bit you meant
+  without opening anything
+- **pencil** opens the editor on the frozen pixels, exactly where you took
+  them — the screen is still held in memory while the card is up, so the
+  window underneath can scroll and the editor still gets what you captured
+- **save**, **copy again**, **✕**
+- a line that **drains** along the bottom, and **stops draining while the
+  pointer is on the card** — five seconds is not long when what you are
+  deciding is "did that catch it", and a card that vanishes mid-reach is
+  worse than no card
+- it **never takes the keyboard**: a capture taken mid-sentence does not
+  eat the next keystroke
+
+**And the file is now opt-in.** `[capture] always_save = false` is the
+default: the picture goes to the clipboard and nowhere else until you press
+Save. This is the one setting that gives something up — copying something
+else inside those five seconds loses it — and the trade is a folder holding
+the captures you meant to keep instead of every rectangle you ever dragged,
+which for the most sensitive folder in this repo is worth something on its
+own. `always_save = true` restores the old promise exactly, and
+`after_shot = "editor"` restores the old behaviour.
+
+Press `Win+Shift+S`. The screen freezes and dims exactly the way the ask key
 freezes it, because it is the same gesture and the same hand: **drag a
 box**, or **hold Shift and lasso a shape** around something that is not a
 rectangle. Or don't drag at all — under the hint there is **a chip per
@@ -1362,13 +1421,34 @@ On the toolbar, left to right:
 | **box** | a rounded rectangle around it |
 | **highlighter** | a fat translucent stripe — you can still read what is under it |
 | **blur** | a **mosaic**, not a Gaussian, over anything nobody else should read |
-| **crop** | drag the part to keep; the selection shrinks to it on screen |
+| **crop** | drag the part to keep — **or drag back out** into what you already cut; the selection follows on screen |
 | **swatch** | cycles red → yellow → blue → white |
 | **undo** | one step back, and a crop counts as a step |
 | **Copy** | the edited picture, back onto the clipboard |
 | **Save** | over the same file — one drag makes one file |
 | **Ask** | hands the pixels to the ask card (`ctrl+f10`) with everything you drew on them |
 | **×** | closes; the file and the clipboard keep what you already had |
+
+**The crop goes both ways.** It is the one edit that throws pixels away
+and the one edit everybody overshoots, so cropping is not a one-way door:
+pick the crop tool again and the whole picture you took comes back at about
+40% brightness behind the bright rectangle, and you drag a new one anywhere
+in it. Cut 1280×720 down to 800×450, decide you wanted the caption after
+all, and drag back out to 1280×880 — the pixels were never deleted, only
+left out of the render. Neither were the marks: ink is stored in
+screen coordinates, so an arrow that was cropped off the edge comes back
+with the pixels it was drawn on. The limit is the picture you took and not
+the whole desktop — past that edge is not "more of the shot", and for a
+camera photo it is the desktop the card happened to be sitting on.
+
+**The ink is drawn big and shrunk.** Pillow antialiases nothing, so the
+first version of this editor put a visible staircase down every diagonal
+and stuck an arrowhead on a shaft that poked out the far side of the point.
+Every mark is now rendered at 4× on its own rectangle and resized down —
+the same trick the icons use — with the shaft stopping at the arrowhead's
+notch and round caps on every stroke. It is cached per mark, so the cost is
+paid once when you draw it and never again while you look at it (0.8 ms to
+repaint five marks, against 41 ms to render them).
 
 The blur is a mosaic on purpose. A Gaussian at any radius a person will
 accept can be sharpened back, and this is the tool people reach for when
@@ -1478,9 +1558,10 @@ backends are not merely unused but unconstructable.
 
 ### Try it in this order
 
-1. **Tap `ctrl+f11` and drag a box over a paragraph.** Before you touch
-   anything else, paste into Paint — it must already be there. Then look in
-   `captures\` — the file must already be there too.
+1. **Press `Win+Shift+S` and drag a box over a paragraph.** Before you touch
+   anything else, paste into Paint — it must already be there. `captures\`
+   must be **empty**, and the corner card must say "not saved".
+   Then press Save on the card and look again.
 2. **Shift-drag a lasso around something round.** The png must be
    transparent outside the shape, not black and not white.
 3. **Press Enter instead of dragging.** The whole monitor the pointer is
@@ -1500,6 +1581,115 @@ backends are not merely unused but unconstructable.
    the pill moving away from its corner.
 10. **Record, then press pause for five seconds, then resume and stop.**
     The pause must be a cut, not five seconds of still image.
+11. **Press `Win+Shift+S` while the app is running.** This editor must
+    open and the Snipping Tool must not. Then press `Win` on its own —
+    Start must still open, and so must `Win+E`.
+12. **Crop something small, then pick crop again.** The whole picture must
+    reappear faintly behind the bright rectangle; drag a bigger one and the
+    picture must grow back, marks and all.
+
+## A photo from the camera (`ctrl+f6`)
+
+The same folder, the same clipboard, the same editor — a different lens.
+
+Tap `ctrl+f6`. A card opens in the middle of the monitor your pointer is
+on, with the **live picture** in it and a shutter under it. Press **space**,
+**Enter**, or the button, and the photo is **on your clipboard** and
+**saved in `captures\`** before the flash has finished — the same promise
+`Win+Shift+S` makes and just as non-negotiable. Then it opens in the
+screenshot editor, laid on the screen **exactly where the preview was**, so
+you can crop it, arrow at it, blur something out or hand it to the ask key.
+`Esc` closes without taking anything.
+
+The card is three keys wide:
+
+| | what it does |
+|---|---|
+| **shutter** | space, Enter, or click. With a timer set, it arms one — and a second press cancels |
+| **mirror** (`m`) | flips the picture. **Both** the preview and the file, or neither |
+| **timer** (`t`) | cycles off → 3 s → 10 s. The count fills the middle of the picture; `Esc` cancels the countdown before it closes the window |
+| **next camera** (`c`) | only there when there is more than one |
+| **×** | closes it |
+
+Drag the card by its face if it is over the thing you wanted to
+photograph.
+
+### The three decisions worth knowing about
+
+**The lens closes at the shutter, not at the end.** The camera is released
+the instant the picture is taken — before the flash, before the file,
+long before you have finished drawing on it. The little light beside the
+camera means what it looks like it means, and nothing in this app opens it
+but this key. `[camera] enabled = false` unregisters the key entirely.
+
+**What you see is what you get.** One image per frame, made at the size the
+window is showing, and that image is the preview *and* the clipboard *and*
+the file *and* what the editor opens on. So the preview is 1:1 with the
+camera whenever the monitor can show it (1280×720 fits here with room to
+spare) and scaled down when it cannot — and the photo is whatever was on
+the screen. It is why `mirror` flips both or neither: a preview that
+disagreed with the file it produced would be the same bug the screenshot
+editor is built to avoid, wearing a lens.
+
+**Mirror is off by default.** The commonest thing anyone holds up to a
+webcam has writing on it, and mirrored writing is unreadable. Tap `m` when
+you are framing your own face and want a mirror to do it in.
+
+### What it is built on, and what it measured
+
+The camera arrives through **PyAV** — the same library that encodes the
+screen recordings, and already installed as faster-whisper's own
+dependency. No OpenCV, no `ffmpeg.exe`, nothing new to keep up to date.
+
+Measured on this machine, 2026-08-26, on an eMeet C960 over USB:
+
+| | |
+|---|---|
+| open → first frame | **654–829 ms** over six opens — which is why the card says *waking …* instead of sitting black |
+| delivered | **25 fps** at 1280×720 MJPEG, 40.1 ms apart and steady to a tenth of a millisecond |
+| one frame to the window | **5.4 ms** at 800×450, 4.3 ms at 1280×720 |
+| listing the devices | **147 ms**, paid once when the window opens |
+
+**Ask for MJPEG or you get a slideshow.** This camera offers 1920×1080 at
+30 fps as MJPEG and *the same size at 5 fps* as raw `yuyv422`, and
+DirectShow hands over the raw one unless it is told otherwise — read off
+the device's own pin list, both pins. A camera with no MJPEG pin is asked
+again for whatever it has, and that is written to `app.log` so a slow
+preview has a reason.
+
+**A virtual camera loses to a real one.** OBS, Teams, Zoom and NVIDIA
+Broadcast each install a video device that is not a camera, and they sort
+ahead of the real webcam as often as not — here OBS is second of two. With
+`[camera] device` empty, the first *real* device wins. Set it to any part
+of the name to pin one (`device = "eMeet"` is enough; nobody retypes
+`HD Webcam eMeet C960` without a typo), and if that one is unplugged the
+key still takes a picture and tells you whose.
+
+### Where it goes
+
+`captures\`, beside the app, named `photo 2026-08-26 18-49-29.png` — the
+same folder and the same clock-shaped name the screenshots use, so sorting
+by name still groups the shots, the photos and the clips. The folder is
+gitignored and **there is no upload path in `capture.py` at all**; the one
+route from a photo to a model is the editor's **Ask** button, which obeys
+`visual_qa.allow_screenshot_upload` like every other question.
+
+### Try it in this order
+
+1. **Tap `ctrl+f6`.** The card must appear immediately and say *waking …*
+   for under a second, not sit black.
+2. **Press space.** Paste into Paint before you touch anything else — it
+   must already be there. Then look in `captures\` — one file, named
+   `photo ...`, and exactly one.
+3. **Draw on it and press Save.** It writes over the same file. Still one.
+4. **Tap `m`, then space.** The file must be mirrored the way the preview
+   was — hold up something with writing on it and check both.
+5. **Tap `t` twice for 10 s, press space, then `Esc`.** The countdown must
+   stop and the window must stay open; a second `Esc` closes it.
+6. **Watch the camera light.** It must go out the moment the shutter fires,
+   while the editor is still open.
+7. **Press Ask.** The ask card must open on the photo, with whatever you
+   drew on it.
 
 ## Dictating from the phone
 
@@ -2165,11 +2355,14 @@ for `מבשרים`, all of which the local model got right.
 | `[lookup] cache_entries` | `500` | answers kept in `lookup_cache.json` (~134 bytes each). A repeat is 0.00 s and one saved request; only selections under 200 chars are stored. `0` = no cache |
 | `[lookup] skip_consoles` | `true` | refuse in console windows, where the copy chord becomes a real Ctrl+C for whatever is running there (reproduced 5/5) |
 | `[capture] enabled` | `true` | both screen keys; `false` unregisters them entirely |
-| `[capture] capture_hotkey` | `ctrl+f11` | **tap** to capture a region: drag a box, Shift-drag a lasso, Enter for this monitor. On the clipboard and in `folder` before you let go |
+| `[capture] capture_hotkey` | `win+shift+s` | **tap** to capture a region: drag a box, Shift-drag a lasso, Enter for this monitor. On the clipboard and in `folder` before you let go. **The Windows key is the one modifier whose chords this app swallows** — measured: with the `s` eaten the Snipping Tool never opens, and a bare Win tap still opens Start, so nothing has to be disabled in Windows. `ctrl+f11` is still free if you want the system snip back |
 | `[capture] record_hotkey` | `ctrl+f12` | **tap** to record a region to mp4, tap again to stop |
 | `[capture] folder` | `captures` | relative to the **app**, not the working directory (this app launches from a .vbs, a shortcut and a scheduled task, and all three disagree). Gitignored — it is the most sensitive folder in the repo |
 | `[capture] copy_to_clipboard` | `true` | CF_DIB + the registered PNG format, so Paint, Word, Chrome and Slack all find one they like and a lasso keeps its alpha |
-| `[capture] edit_after_shot` | `true` | `false` makes the key a pure grab-and-go; the file and the clipboard are identical either way |
+| `[capture] after_shot` | `toast` | `toast` \| `editor` \| `nothing`. What happens when you let go. `toast` puts a small card in a corner with a thumbnail and the editor one click away; `editor` opens the editor immediately, the way this key used to; `nothing` is a pure grab-and-go |
+| `[capture] toast_corner` | `bottom-right` | which corner that card appears in. Its own setting and not `timer_corner`'s, because the recording pill and the capture card can want different corners on the same desk |
+| `[capture] toast_seconds` | `5` | how long it waits. The clock **pauses** while the pointer is on the card |
+| `[capture] always_save` | `false` | write **every** capture to `folder`, or only the ones you ask to keep. `false` means the picture is on the clipboard and nowhere else until Save is pressed — the one setting here that gives something up, in exchange for a folder that holds what you meant to keep |
 | `[capture] copy_clip_path` | `true` | a finished recording goes on the clipboard as a **file** (CF_HDROP), so it pastes into a chat or a folder |
 | `[capture] fps` | `30` | measured achievable with zero dropped frames at 720p and 1080p; 1440p settles at ~28 and stays real-time because frames carry wall-clock stamps, not frame numbers |
 | `[capture] quality` | `balanced` | `small` \| `balanced` \| `sharp` — crf 30/26/20. Screen content is flat colour and sharp edges, so these are softer than the same names mean for camera video |
@@ -2178,6 +2371,16 @@ for `מבשרים`, all of which the local model got right.
 | `[capture] timer_corner` | `bottom-right` | `top-left` \| `top-right` \| `bottom-left` \| `bottom-right` \| `off`. Where the red-dot-and-clock pill sits. A corner of the **work area** of the monitor the region is on — never under a taskbar, never on the wrong screen. It is hidden from the capture, so a corner inside the recorded area is fine |
 | `[capture] announce` | `true` | say "Recording started" for 2.6 s before shrinking to the pill |
 | `[capture] max_minutes` | `30` | a backstop, not a budget: a key tapped by accident must not fill the disk overnight. `0` = no cap |
+| `[camera] enabled` | `true` | the webcam key; `false` unregisters it entirely and nothing here can open the lens |
+| `[camera] camera_hotkey` | `ctrl+f6` | **tap** for a live preview with a shutter. Space, Enter or the button takes the picture |
+| `[camera] device` | `""` | which camera, matched as a case-insensitive **substring** (`"eMeet"` is enough). Empty = the first device that is not a *virtual* camera — OBS, Teams and NVIDIA Broadcast all install one and they sort ahead of the real webcam as often as not |
+| `[camera] size` | `1280x720` | what the camera is asked for, as MJPEG. **Ask for MJPEG or you get a slideshow**: this camera offers 1080p at 30 fps as MJPEG and the same size at 5 fps as raw yuyv422, and DirectShow takes the raw one unless told otherwise. A camera with no MJPEG pin is asked again for whatever it has |
+| `[camera] fps` | `30` | what it is *asked* for; a webcam that cannot manage it simply sends fewer (this one settles at 25 in this room, because the exposure it wants is longer than a thirtieth of a second) |
+| `[camera] mirror` | `false` | flips **both** the preview and the file, or neither. Off because the commonest thing held up to a webcam has writing on it. `m` flips it while the window is open |
+| `[camera] timer` | `0` | `0` \| `3` \| `10` seconds of self-timer to start on; `t` cycles it, `Esc` cancels a countdown before it closes the window |
+| `[camera] folder` | `captures` | the same folder the screen captures use, so there is one place to look. Files are named `photo ...` rather than `shot ...` |
+| `[camera] copy_to_clipboard` | `true` | on the clipboard the moment it is taken, exactly like a screenshot |
+| `[camera] edit_after_shot` | `true` | open the photo in the screenshot editor, on the pixels where the preview was. `false` makes the key a pure take-and-go |
 | `[server] enabled` | `false` | the phone endpoint (see [Dictating from the phone](#dictating-from-the-phone)) |
 | `[server] host` | `""` | `""` = the Tailscale address when up, else `127.0.0.1`. Deliberately never `0.0.0.0` |
 | `[server] port` | `8756` | the port `tailscale serve` should front |

@@ -123,12 +123,13 @@ KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("What to do with the text", ("translate_hotkey", "punctuate_hotkey",
                                   "correct_hotkey", "lookup_hotkey",
                                   "visual_qa_hotkey")),
-    ("What to do with the screen", ("capture_hotkey", "record_hotkey")),
+    ("What to do with the screen", ("capture_hotkey", "record_hotkey",
+                                    "camera_hotkey")),
     ("The app itself", ("pause_hotkey",)),
 )
 
 # Keys that live INSIDE a config section, and the dotted path set_values
-# must write them to. The same four lines are in main.py, and the comment
+# must write them to. The same lines are in main.py, and the comment
 # there says why they are not shared: both files are byte-identical on the
 # classic branch, and config.py -- where this would naturally live -- is
 # allowed to differ between the two.
@@ -136,6 +137,7 @@ NESTED_HOTKEYS = {
     "visual_qa_hotkey": "visual_qa.visual_qa_hotkey",
     "capture_hotkey": "capture.capture_hotkey",
     "record_hotkey": "capture.record_hotkey",
+    "camera_hotkey": "camera.camera_hotkey",
 }
 
 # "Dictate (hold)" is one string in config.py because that is all the old

@@ -9842,29 +9842,41 @@ def test_the_two_settings_that_change_the_gesture_are_actually_read(
 ) -> None:
     """A setting that is declared and never read is a setting that lies.
     `copy_to_clipboard = false` must stop the clipboard write and nothing
-    else; `edit_after_shot = false` must make the key a pure grab-and-go —
-    with the file and the clipboard identical either way, because the
-    editor is an offer and never a step."""
+    else; `after_shot` must decide whether the editor opens at all; and
+    `always_save` must decide whether the file is written — because the
+    editor is an offer and never a step, and after this change so is the
+    folder."""
     import inspect
 
     import capture as cap
 
     signature = inspect.signature(cap.ShotWindow.__init__).parameters
-    assert "copy" in signature and "edit" in signature, list(signature)
+    for name in ("copy", "edit", "save"):
+        assert name in signature, (name, list(signature))
 
     window = inspect.getsource(cap.ShotWindow)
     saved = window.split("def _first_save(")[1].split("\n    def ")[0]
     assert "if self.copy else False" in saved, \
         "the first save copies whatever the setting says"
+    assert "if self.save:" in saved, \
+        "always_save = false must be able to skip the file"
+    assert saved.index("if self.save:") < saved.index("if self.copy"), \
+        "the clipboard is the half that is not negotiable, so it comes " \
+        "after the file and a failed save cannot skip it"
     chose = window.split("def _chose(")[1].split("\n    def ")[0]
     assert "self._first_save()" in chose and "if not self.edit" in chose, \
-        "the editor is an offer, and edit_after_shot = false declines it"
+        'the editor is an offer, and after_shot != "editor" declines it'
     assert chose.index("self._first_save()") < chose.index("if not self.edit"), \
-        "edit_after_shot = false must still save and still copy"
+        "declining the editor must still copy, and still save when asked"
+    assert "self.result" in chose, \
+        "a capture the editor did not take has to be handed back, or the " \
+        "corner card has nothing to offer"
 
     flow = inspect.getsource(cap.Controller._shot_flow)
     assert "copy=cfg.copy_to_clipboard" in flow, flow
-    assert "edit=cfg.edit_after_shot" in flow, flow
+    assert 'edit=(cfg.after_shot == "editor")' in flow, flow
+    assert "save=cfg.always_save" in flow, flow
+    assert 'cfg.after_shot == "toast"' in flow, flow
 
 
 def test_every_tool_and_action_has_an_icon_that_draws() -> None:
@@ -10024,9 +10036,12 @@ def test_a_capture_key_collision_is_refused_like_every_other() -> None:
     import main as main_mod
 
     cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
-    moved = config_mod.with_field(cfg, "capture_hotkey", "ctrl+f6")
-    assert moved.capture.hotkey == "ctrl+f6"
-    assert moved.capture_hotkey == "ctrl+f6"
+    # ctrl+f5, because ctrl+f6 stopped being free the day the camera key
+    # took it. Any measured-free key that nothing else in the shipped
+    # config claims will do.
+    moved = config_mod.with_field(cfg, "capture_hotkey", "ctrl+f5")
+    assert moved.capture.hotkey == "ctrl+f5"
+    assert moved.capture_hotkey == "ctrl+f5"
     assert moved.capture.record_hotkey == cfg.capture.record_hotkey, \
         "moving one key must not move the other"
     config_mod.check_hotkeys(moved)                     # a free key: fine
@@ -10061,6 +10076,7 @@ def test_both_capture_keys_are_registered_everywhere_a_key_must_be() -> None:
         "visual_qa_hotkey": "visual_qa.visual_qa_hotkey",
         "capture_hotkey": "capture.capture_hotkey",
         "record_hotkey": "capture.record_hotkey",
+        "camera_hotkey": "camera.camera_hotkey",
     }, dash_mod.NESTED_HOTKEYS
 
 
@@ -10381,8 +10397,16 @@ def test_the_screen_chips_do_not_overlap_and_click_where_they_are_drawn(
     window._hint_id = None
     window._chips = {}
     window._chip_hover = None
-    window._plan_chips(1280, 300)
+    window._hint_line = "Drag a box   ·   Esc cancels"
+    window._plan_hint(1280, 300)
     chips = window._chips
+    # The card holds every chip it planned, or one of them is drawn off
+    # the sheet of glass it is supposed to be on.
+    card = window._hint_box
+    for name, chip in chips.items():
+        box = chip["box"]
+        assert card[0] <= box[0] and box[2] <= card[2], (name, box, card)
+        assert card[1] <= box[1] and box[3] <= card[3], (name, box, card)
     assert len(chips) >= 1, chips
     screens = cap.monitors()
     if len(screens) > 1:
@@ -10456,6 +10480,1156 @@ def test_the_recording_indicator_settings_parse_and_are_bounded() -> None:
     text = (here / "config.toml").read_text("utf-8")
     for key in ("timer_corner", "announce"):
         assert f"\n{key} = " in text, f"{key} is not a writable line"
+
+
+# ------------------------------------------------------ a photo, from a lens
+#
+# A webcam is the one thing a test runner cannot be given, so everything in
+# this feature that can be decided without a device is a pure function and
+# is checked here as arithmetic. What is left — opening DirectShow,
+# decoding frames — is covered by the source-level tests at the end, which
+# guard the two rules that make the feature SAFE rather than merely
+# working: the lens is released by the shutter, and one press of the key
+# leaves exactly one file.
+
+
+def test_a_camera_size_that_does_not_parse_falls_back_rather_than_fails(
+) -> None:
+    """config.check() has already refused a bad size out loud at load time.
+    By the time the key is pressed, the only useful answer is a camera that
+    opens."""
+    import capture as cap
+
+    assert cap.parse_size("1280x720") == (1280, 720)
+    assert cap.parse_size("1920X1080") == (1920, 1080)
+    assert cap.parse_size(" 640 x 480 ") == (640, 480)
+    for bad in ("", "720p", "1280*720", None, "0x0", "99999x99999", "x"):
+        assert cap.parse_size(bad) == (1280, 720), bad
+    assert cap.parse_size("nope", fallback=(640, 480)) == (640, 480)
+
+
+def test_a_virtual_camera_loses_to_a_real_one() -> None:
+    """OBS, Teams, Zoom and NVIDIA Broadcast each install a video device
+    that is not a camera, and they sort ahead of the real one as often as
+    not — on this machine OBS is second of two, and on another it is
+    first. A photo key that opens a black frame from a virtual camera
+    nobody is streaming into is a photo key that looks broken."""
+    import capture as cap
+
+    both = ["OBS Virtual Camera", "HD Webcam eMeet C960"]
+    assert cap.pick_camera(both) == "HD Webcam eMeet C960"
+    # ...but a virtual camera is still a camera when it is the only one.
+    assert cap.pick_camera(["OBS Virtual Camera"]) == "OBS Virtual Camera"
+    assert cap.pick_camera([]) is None
+    assert cap.pick_camera(["", None]) is None
+
+    # Asked for by name: a case-insensitive SUBSTRING, because nobody
+    # retypes "HD Webcam eMeet C960" into config.toml without a typo.
+    assert cap.pick_camera(both, "eMEET") == "HD Webcam eMeet C960"
+    assert cap.pick_camera(both, "c960") == "HD Webcam eMeet C960"
+    assert cap.pick_camera(both, " obs ") == "OBS Virtual Camera"
+    # Asked for and absent is None, not "some other camera": the caller
+    # falls back on purpose and says which one it took.
+    assert cap.pick_camera(both, "logitech") is None
+
+
+def test_the_preview_is_one_to_one_when_it_fits_and_shrinks_when_it_does_not(
+) -> None:
+    """WHAT YOU SEE IS WHAT YOU GET: one image is the preview, the file,
+    the clipboard and what the editor opens on, so the preview size IS the
+    photo size. 1:1 whenever the monitor can show it — measured true for
+    1280x720 on this 2560x1440 desk — and the largest whole picture that
+    fits when it cannot."""
+    import capture as cap
+
+    roomy = (0, 0, 2560, 1400)
+    assert cap.preview_fit((1280, 720), roomy) == (1280, 720)
+    assert cap.preview_fit((640, 480), roomy) == (640, 480)
+
+    laptop = (0, 0, 1366, 768)
+    width, height = cap.preview_fit((1920, 1080), laptop)
+    assert (width, height) != (1920, 1080), "it cannot possibly fit"
+    assert abs(width / height - 1920 / 1080) < 0.02, (width, height)
+    assert width <= 1366 - 2 * cap.CAM_PAD
+    assert height <= 768 - cap.CAM_STRIP_H - cap.CAM_PAD
+    assert width % 2 == 0 and height % 2 == 0
+    # Never upscaled: a 320x240 camera on a 4K monitor is a small picture,
+    # not a blurred big one.
+    assert cap.preview_fit((320, 240), (0, 0, 3840, 2160)) == (320, 240)
+
+
+def test_the_self_timer_counts_whole_seconds_left() -> None:
+    """Ceiling, not floor. A timer that floors shows 0 for a whole second
+    before anything happens, and a timer that shows 0 for a whole second is
+    a timer everybody presses again."""
+    import capture as cap
+
+    assert cap.countdown_left(0.0, 0.0, 3) == 3
+    assert cap.countdown_left(0.0, 0.4, 3) == 3
+    assert cap.countdown_left(0.0, 1.0, 3) == 2
+    assert cap.countdown_left(0.0, 2.9, 3) == 1
+    assert cap.countdown_left(0.0, 3.0, 3) == 0      # 0 means fire
+    assert cap.countdown_left(0.0, 9.0, 3) == 0
+    assert cap.countdown_left(0.0, 0.0, 0) == 0      # no timer, no wait
+
+
+def test_the_timer_chip_cycles_and_comes_back_round() -> None:
+    import capture as cap
+
+    assert cap.CAM_TIMERS == (0, 3, 10)
+    assert cap.next_in(cap.CAM_TIMERS, 0) == 3
+    assert cap.next_in(cap.CAM_TIMERS, 3) == 10
+    assert cap.next_in(cap.CAM_TIMERS, 10) == 0
+    assert cap.next_in(cap.CAM_TIMERS, 7) == 0       # unknown starts over
+    assert cap.next_in((), 5) == 5                   # nothing to cycle
+    assert cap.next_in(["a", "b"], "b") == "a"       # and it does cameras
+
+
+def test_every_camera_control_is_hit_where_it_is_drawn() -> None:
+    """The one bug this layout exists to prevent: a button drawn a few
+    pixels from where it can be clicked — invisible in a screenshot and
+    maddening under the hand. The painter and the hit test read the same
+    dict, and this says so."""
+    import capture as cap
+
+    # The widest card this desk produces, and the narrowest the window is
+    # allowed to build. preview_fit never upscales, so a 160x120 webcam
+    # would otherwise ask for a card too narrow for the shutter to sit
+    # between the chips — CAM_MIN_W is what stops it, and this is the
+    # measurement that says the number is big enough.
+    for width in (cap.CAM_MIN_W, 348, 1308):
+        spots = cap.camera_bar(width, switchable=True)
+        assert set(spots) == {"mirror", "timer", "switch", "close",
+                              "shutter"}
+        for name, (x0, y0, x1, y1) in spots.items():
+            assert cap.hit(spots, (x0 + x1) // 2,
+                           (y0 + y1) // 2) == name, (width, name)
+            assert 0 <= x0 < x1 <= width, (width, name)
+            assert 0 <= y0 < y1 <= cap.CAM_STRIP_H, (width, name)
+
+        # Nothing overlaps anything, or one press would mean two things
+        # and the hit test would settle it by dictionary order.
+        boxes = list(spots.values())
+        for index, a in enumerate(boxes):
+            for b in boxes[index + 1:]:
+                assert (a[2] <= b[0] or b[2] <= a[0]
+                        or a[3] <= b[1] or b[3] <= a[1]), (width, a, b)
+
+    # The shutter is centred on the CARD, not in the gap between the
+    # chips: a hand finds a shutter in the middle without looking.
+    width = 1308
+    spots = cap.camera_bar(width, switchable=True)
+    sx0, _sy0, sx1, _sy1 = spots["shutter"]
+    assert abs((sx0 + sx1) // 2 - width // 2) <= 1
+
+    # One camera, no switch chip — a control that cannot do anything is
+    # a control that has to be explained.
+    assert "switch" not in cap.camera_bar(width)
+
+
+def test_dshow_video_devices_are_read_without_the_microphones() -> None:
+    """PyAV hands ffmpeg's listing over as FRAGMENTS, not lines: one device
+    arrives as the quoted name, "(video", ")" and a newline, and off the
+    main thread the newline is dropped too, so the whole report comes back
+    as one run-on string. Both shapes are read here, because both were
+    observed on this machine on 2026-08-26."""
+    import capture as cap
+
+    run_on = ('"HD Webcam eMeet C960"(video)Alternative name "@device_pnp_x"'
+              '"OBS Virtual Camera"(video)Alternative name "@device_sw_y"'
+              '"Headset Microphone (Arctis 7 Chat)"(audio)'
+              'Alternative name "@device_cm_z"')
+    assert cap.read_video_devices(run_on) == ["HD Webcam eMeet C960",
+                                              "OBS Virtual Camera"]
+
+    with_lines = ('[dshow @ 0] "HD Webcam eMeet C960" (video)\n'
+                  '[dshow @ 0]   Alternative name "@device_pnp_x"\n'
+                  '[dshow @ 0] "Microphone (HD Webcam eMeet C960)" (audio)\n')
+    assert cap.read_video_devices(with_lines) == ["HD Webcam eMeet C960"]
+    assert cap.read_video_devices("") == []
+
+
+def test_a_photo_and_a_screenshot_share_a_folder_without_colliding() -> None:
+    """One folder, three first words. Sorting it by name still groups the
+    shots, the photos and the clips, and the uniquifier for one kind never
+    counts another kind's files."""
+    import shutil
+    import tempfile
+
+    import capture as cap
+    from PIL import Image
+
+    assert cap.capture_name("photo", 0).startswith("photo ")
+    assert cap.capture_name("photo", 0).endswith(".png")
+    assert cap.capture_name("photo", 0) != cap.capture_name("shot", 0)
+    second = cap.capture_name("photo", 0, taken={cap.capture_name("photo", 0)})
+    assert second.endswith(" (2).png"), second
+
+    tmp = Path(tempfile.mkdtemp(prefix="camera-folder-"))
+    try:
+        picture = Image.new("RGB", (8, 6), (10, 20, 30))
+        shot = cap.save_image(picture, str(tmp), when=0, kind="shot")
+        photo = cap.save_image(picture, str(tmp), when=0, kind="photo")
+        assert shot.exists() and photo.exists()
+        assert shot != photo, "one second, two kinds, two files"
+        assert photo.name.startswith("photo ")
+        # A second photo in the same second does not overwrite the first,
+        # and does not count the screenshot beside it either.
+        again = cap.save_image(picture, str(tmp), when=0, kind="photo")
+        assert again.name.endswith(" (2).png"), again.name
+        assert len(list(tmp.glob("*.png"))) == 3
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_lens_is_released_by_the_shutter_and_not_by_the_editor() -> None:
+    """THE PRIVACY RULE OF THIS FEATURE, and it is worth a source-level
+    test because nothing else can see it: the camera is closed by _fire,
+    before the flash and before the file is written, so the light beside
+    the lens goes out when the picture is taken rather than when the
+    editing session ends. And the app's own stop() takes it down too,
+    whatever the window was in the middle of."""
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+
+    body = source[source.index("    def _fire(self)"):
+                  source.index("    def _freeze_desktop")]
+    assert "self.camera.close()" in body, \
+        "_fire must let go of the device"
+    assert body.index("self.camera.close()") < body.index("save_image("), \
+        ("the camera is closed BEFORE the picture is written — everything "
+         "after the still is pixels we already hold")
+
+    shutdown = source[source.index("    def stop(self) -> None:"):]
+    assert "camera.close()" in shutdown, \
+        "quitting the app must close the camera too"
+
+    # And the window's own exit is belt and braces: an exception anywhere
+    # in the pump must not leave a webcam streaming.
+    # From the class, not from the file: ShotWindow has a "-- painting --"
+    # marker of its own and it comes first.
+    at = source.index("class CameraWindow:")
+    window = source[at:source.index("    # -- painting --", at)]
+    pump = window[window.index("    def run(self)"):]
+    assert "finally:" in pump and "self.camera.close()" in pump, \
+        "the pump must close the camera however it exits"
+
+
+def test_one_press_of_the_camera_key_leaves_exactly_one_file() -> None:
+    """The camera window keeps the promise — saved and copied at the
+    instant of the shutter, which is where it belongs — and the editor
+    ADOPTS that file rather than writing a second one. Without this, one
+    press of one key would drop two identical pngs in the folder."""
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+
+    edit = source[source.index("    def _edit_photo"):]
+    edit = edit[:edit.index("    # ---- the recording key ----")]
+    assert 'saved=result.get("path")' in edit, edit[-400:]
+    assert 'kind="photo"' in edit
+    assert "start_box=box" in edit
+
+    begin = source[source.index("    def _begin_at(self, box)"):]
+    begin = begin[:begin.index("    # -- the editing phase --")]
+    assert "self._pre_saved" in begin
+    assert "self._first_save()" in begin, \
+        "a picture handed in WITHOUT a file still has to be written once"
+
+
+def test_the_camera_is_opened_in_exactly_one_place() -> None:
+    """Nothing in this app opens the lens but the camera key. A second
+    construction site is a second thing to audit every time this file is
+    edited, and this feature is the one where that audit matters."""
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+    opens = [line.strip() for line in source.splitlines()
+             if "Camera(" in line]
+    assert len(opens) == 1, opens
+    assert opens[0].startswith("camera = Camera("), opens
+    assert "def _open_camera" in source
+    assert "import cv2" not in source and "cv2" not in source, \
+        "the camera arrives through PyAV, which is already installed"
+
+
+def test_the_camera_key_is_registered_everywhere_a_key_must_be() -> None:
+    """HOTKEY_FIELDS is the single registration point, CHORD_FIELDS is what
+    lets a tap carry ctrl, KEY_GROUPS is where the dashboard shows it and
+    NESTED_HOTKEYS is where a rebind gets written. Missing any one of them
+    is a key that half exists."""
+    import dashboard as dash_mod
+    import main as main_mod
+
+    registered = dict(config_mod.HOTKEY_FIELDS)
+    assert "camera_hotkey" in registered
+    assert registered["camera_hotkey"].endswith("(tap)"), \
+        registered["camera_hotkey"]
+    assert "camera_hotkey" in config_mod.CHORD_FIELDS
+    named = {f for _title, fields in dash_mod.KEY_GROUPS for f in fields}
+    assert "camera_hotkey" in named, "no group on the Keys screen"
+    assert main_mod.NESTED_HOTKEYS["camera_hotkey"] == "camera.camera_hotkey"
+    assert dash_mod.NESTED_HOTKEYS["camera_hotkey"] == "camera.camera_hotkey"
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    moved = config_mod.with_field(cfg, "camera_hotkey", "ctrl+f5")
+    assert moved.camera.hotkey == "ctrl+f5"
+    assert moved.camera_hotkey == "ctrl+f5"
+    assert moved.capture.hotkey == cfg.capture.hotkey, \
+        "moving one key must not move another"
+    config_mod.check_hotkeys(moved)
+
+    clash = config_mod.with_field(cfg, "camera_hotkey", cfg.capture_hotkey)
+    try:
+        config_mod.check_hotkeys(clash)
+    except config_mod.ConfigError as e:
+        assert "camera_hotkey" in str(e) or "capture_hotkey" in str(e), e
+    else:
+        raise AssertionError("two keys on one binding were accepted")
+
+
+def test_the_camera_key_binds_and_the_kill_switch_unbinds_it() -> None:
+    """enabled = false unregisters the key ENTIRELY — nothing in the state
+    machine, whatever the key string still says. For a key that opens a
+    lens that is the difference between a setting and a promise."""
+    import dataclasses
+
+    import main as main_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    _hotkeys, taps, _latch, _pause = main_mod.App.bindings(cfg)
+    assert taps[parse_binding(cfg.camera_hotkey)] == "photo", taps
+
+    off = dataclasses.replace(cfg, camera=dataclasses.replace(
+        cfg.camera, enabled=False))
+    _h, taps_off, _l, _p = main_mod.App.bindings(off)
+    assert all(name != "photo" for name in taps_off.values()), taps_off
+
+    unbound = dataclasses.replace(cfg, camera=dataclasses.replace(
+        cfg.camera, enabled=True, hotkey=""))
+    _h, taps_empty, _l, _p = main_mod.App.bindings(unbound)
+    assert all(name != "photo" for name in taps_empty.values())
+
+    # And classic has no [camera] section at all: main.py is byte-identical
+    # on both branches, so bindings() must survive a Config without one.
+    stripped = dataclasses.replace(cfg)
+    object.__setattr__(stripped, "camera", None)
+    _h, taps_none, _l, _p = main_mod.App.bindings(stripped)
+    assert all(name != "photo" for name in taps_none.values())
+
+
+def test_camera_section_parses_with_defaults_and_overrides() -> None:
+    import shutil
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="camera-config-"))
+    path = tmp / "config.toml"
+    try:
+        path.write_text(
+            'hotkey = "right ctrl"\n'
+            "[camera]\n"
+            "enabled = false\n"
+            'camera_hotkey = "f14"\n'
+            'device = "eMeet"\n'
+            'size = "1920x1080"\n'
+            "fps = 24\n"
+            "mirror = true\n"
+            "timer = 10\n"
+            'folder = "photos"\n',
+            "utf-8")
+        cfg = config_mod.load(path)
+        cam = cfg.camera
+        assert cam.enabled is False
+        assert cam.hotkey == "f14"            # the TOML key's real name
+        assert cfg.camera_hotkey == "f14"     # ...and its public face
+        assert cam.device == "eMeet"
+        assert cam.size == "1920x1080"
+        assert cam.fps == 24
+        assert cam.mirror is True
+        assert cam.timer == 10
+        assert cam.folder == "photos"
+        assert cam.copy_to_clipboard is True  # untouched defaults
+        assert cam.edit_after_shot is True
+
+        defaults = config_mod.CameraConfig()
+        assert defaults.mirror is False, \
+            "the commonest thing held up to a webcam has writing on it"
+        assert defaults.timer == 0
+        assert defaults.hotkey == "ctrl+f6"
+        assert defaults.folder == "captures", "one place to look for pictures"
+
+        for bad, word in ((("timer", "5"), "timer"),
+                          (("size", '"720p"'), "size"),
+                          (("fps", "0"), "fps"),
+                          (("folder", '""'), "folder")):
+            key, value = bad
+            path.write_text(f'hotkey = "right ctrl"\n[camera]\n'
+                            f"{key} = {value}\n", "utf-8")
+            try:
+                config_mod.load(path)
+            except config_mod.ConfigError as e:
+                assert word in str(e), (word, e)
+            else:
+                raise AssertionError(f"camera.{key} = {value} was accepted")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_shipped_config_carries_the_camera_section() -> None:
+    """Committed to both branches like every other section (see the
+    cross-branch test); on classic it is simply never read."""
+    here = Path(__file__).resolve().parent
+    text = (here / "config.toml").read_text("utf-8")
+    assert "[camera]" in text
+    section = text[text.index("[camera]"):]
+    section = section[:section.index("\n[", 1)]
+    for key in ("enabled", "camera_hotkey", "device", "size", "fps",
+                "mirror", "timer", "folder", "copy_to_clipboard",
+                "edit_after_shot"):
+        assert f"\n{key} = " in section, f"{key} is not a writable line"
+
+    cfg = config_mod.load(here / "config.toml")
+    assert cfg.camera.mirror is False
+    assert cfg.camera.timer == 0
+    ignored = (here / ".gitignore").read_text("utf-8")
+    assert f"{cfg.camera.folder}/" in ignored, \
+        "photographs of this room must not be committable"
+
+
+def test_the_camera_controller_costs_nothing_until_the_key_is_pressed(
+) -> None:
+    """Constructing the controller must not import PyAV, Pillow or Tk. An
+    owner who never presses the key pays nothing for the idea of it — and
+    more to the point, importing a camera stack at startup is how a webcam
+    light comes on for reasons nobody can explain."""
+    import capture as cap
+
+    controller = cap.Controller(lambda: None)
+    assert controller.busy is False
+    assert controller.recording is False
+    # There is no camera until there is a window.
+    assert controller._camera is None
+    # A config with no [camera] section is a clear message, not a crash.
+    try:
+        controller._camera_cfg()
+    except cap.CaptureError as e:
+        assert "camera" in str(e), e
+    else:
+        raise AssertionError("a missing [camera] section was accepted")
+
+
+
+def test_the_camera_shortcuts_survive_a_hebrew_layout() -> None:
+    """`bind_all("<t>")` was measured doing NOTHING on this machine: with a
+    non-Latin layout active Tk reports the physical T as a Hebrew letter,
+    so three of the four shortcuts on the camera card were dead for the
+    only person who has the app. The repo already had this rule written
+    down for the dashboard's key capture — the KEYCODE survives a layout
+    and the keysym does not — and the camera card obeys it too."""
+    import capture as cap
+
+    keys = cap.CameraWindow._KEYS
+    assert keys[0x20] == "shoot" and keys[0x0D] == "shoot"
+    assert keys[0x54] == "timer"        # T
+    assert keys[0x4D] == "mirror"       # M
+    assert keys[0x43] == "switch"       # C
+
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+    assert 'bind_all("<KeyPress>"' in source
+    for dead in ('bind_all("<t>"', 'bind_all("<m>"', 'bind_all("<c>"'):
+        assert dead not in source, f"{dead} is dead on a Hebrew layout"
+
+    class _Fake:
+        _KEYS = cap.CameraWindow._KEYS
+
+        def __init__(self):
+            self.did = []
+
+        def shoot(self):
+            self.did.append("shoot")
+
+        def _cycle_timer(self):
+            self.did.append("timer")
+
+        def _flip(self):
+            self.did.append("mirror")
+
+        def _switch(self):
+            self.did.append("switch")
+
+    class _Event:
+        def __init__(self, keycode, keysym):
+            self.keycode, self.keysym = keycode, keysym
+
+    fake = _Fake()
+    # The keysyms a Hebrew layout really reports, on the keycodes Windows
+    # really sends.
+    for keycode, keysym in ((0x54, "hebrew_aleph"), (0x4D, "hebrew_zain"),
+                            (0x43, "hebrew_bet"), (0x20, "space")):
+        cap.CameraWindow._on_key(fake, _Event(keycode, keysym))
+    assert fake.did == ["timer", "mirror", "switch", "shoot"], fake.did
+
+    # The numpad Enter, which Tk names and Windows numbers differently.
+    cap.CameraWindow._on_key(fake, _Event(0, "KP_Enter"))
+    assert fake.did[-1] == "shoot"
+
+    # And a key nothing is bound to does nothing at all.
+    before = list(fake.did)
+    cap.CameraWindow._on_key(fake, _Event(0x51, "q"))
+    assert fake.did == before
+
+
+def test_one_press_of_escape_on_the_camera_card_is_one_press() -> None:
+    """Esc means two things there — cancel the countdown, then close — and
+    the pump polls GetAsyncKeyState at 66 Hz while a human tap holds the
+    key for eighty milliseconds. Without a latch the first tick cancelled
+    the timer and the third closed the window, so "Esc cancels the
+    countdown" was true for about fifteen milliseconds. Measured
+    2026-08-26 on a scripted 60 ms tap, which closed the window every
+    time; this is the guard."""
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+    at = source.index("class CameraWindow:")
+    pump = source[source.index("    def run(self)", at):
+                  source.index("    # -- painting --", at)]
+    assert "held = esc_held()" in pump, "nothing remembers the key was down"
+    assert "and not held" in pump, "the poll acts on every tick it is down"
+    assert "held = down" in pump, "the latch is never released"
+
+
+def test_the_mirror_flips_the_file_as_well_as_the_preview() -> None:
+    """ONE image is the preview and the photo, so a mirror can only be
+    applied in one place — the frame, as it arrives. A "mirror the preview
+    only" setting is deliberately not offered: a preview that disagrees
+    with the file it produces is the bug render_shot exists to prevent,
+    wearing a lens."""
+    import capture as cap
+    from PIL import Image
+
+    picture = Image.new("RGB", (4, 2), (0, 0, 0))
+    picture.putpixel((0, 0), (255, 0, 0))       # a corner to follow
+
+    class _Frame:
+        """What PyAV hands back, as far as _take is concerned."""
+
+        def reformat(self, width, height, format):   # noqa: A002
+            assert (width, height) == (4, 2)
+            assert format == "rgb24"
+
+            class _Out:
+                @staticmethod
+                def to_image():
+                    return picture.copy()
+
+            return _Out()
+
+    camera = cap.Camera("fake", size=(4, 2), preview=(4, 2))
+    camera._take(_Frame())
+    assert camera.live is True
+    assert camera.latest.getpixel((0, 0)) == (255, 0, 0)
+    assert camera.still().getpixel((0, 0)) == (255, 0, 0)
+    assert camera.still() is not camera.latest, \
+        "the photo has to be a private copy — the thread replaces the frame"
+
+    camera.mirror = True
+    camera._take(_Frame())
+    assert camera.latest.getpixel((3, 0)) == (255, 0, 0), \
+        "the preview is mirrored"
+    assert camera.still().getpixel((3, 0)) == (255, 0, 0), \
+        "...and so is the picture that gets written"
+    assert camera.frames == 2
+
+
+
+# ------------------------------------------------------- ink that has edges
+#
+# Pillow antialiases nothing, so the first version of this editor drew every
+# diagonal as a staircase and every arrowhead with the shaft poking out the
+# far side of the point. Both were visible at 1x and neither was caught by a
+# test, because nothing here asserts what a picture LOOKS like. These do.
+
+
+def test_the_ink_is_oversampled_so_a_diagonal_is_not_a_staircase() -> None:
+    """The whole reason `_ink_stamp` draws big and shrinks: ImageDraw writes
+    hard pixels. A hard-edged diagonal has two alpha values in it, 0 and
+    255, and nothing in between — an antialiased one has a spread."""
+    import capture as cap
+    from PIL import Image
+
+    base = Image.new("RGB", (240, 200), (255, 255, 255))
+    diagonal = [{"kind": "pen", "colour": (224, 53, 43),
+                 "points": [(20, 180), (220, 20)]}]
+    out = cap.draw_marks(base, diagonal, (0, 0)).convert("RGB")
+    reds = {px[0] for px in out.getdata()}
+    partial = [v for v in reds if 60 < v < 250]
+    assert len(partial) > 12, (
+        f"only {len(partial)} intermediate values — the ink is not being "
+        "antialiased, which is what a staircase looks like in a histogram")
+
+
+def test_an_arrow_shaft_stops_at_the_notch_and_not_at_the_point() -> None:
+    """The nub in the first screenshot of this editor: the line was drawn
+    all the way to the tip and a 3 px stroke poked out past it. The shaft
+    now ends at the notch, which is behind the tip along the shaft."""
+    import math
+
+    import capture as cap
+
+    start, end = (100.0, 100.0), (300.0, 100.0)
+    notch, head = cap.arrow_shape(start, end)
+    assert len(head) == 4, "tip, two barbs and a notch — not a triangle"
+    assert head[0] == end, "the first point of the head is the point"
+    assert notch in head, "the notch is part of the outline, not just a stop"
+    assert start[0] < notch[0] < end[0], (notch, "the shaft must stop short")
+    # The barbs sit either side of the shaft, behind the tip.
+    (_tx, _ty), (bx, by), _n, (cx, cy) = head
+    assert bx < end[0] and cx < end[0]
+    assert (by - 100.0) * (cy - 100.0) < 0, "both barbs on the same side"
+
+    # Proportional to the STROKE...
+    thin, _ = cap.arrow_shape(start, end, width=2)
+    thick, _ = cap.arrow_shape(start, end, width=8)
+    assert (end[0] - thick[0]) > (end[0] - thin[0])
+    # ...and capped by the arrow's own LENGTH, so a short one is not a blob.
+    short_notch, short_head = cap.arrow_shape((0.0, 0.0), (18.0, 0.0))
+    reach = math.hypot(short_head[0][0] - short_head[1][0],
+                       short_head[0][1] - short_head[1][1])
+    assert reach <= 18.0 * 0.42, (reach, "the head outgrew its arrow")
+    assert short_notch[0] > 0.0
+
+    # A zero-length arrow is a click, and has no direction to point in.
+    where, nothing = cap.arrow_shape((5.0, 5.0), (5.0, 5.0))
+    assert nothing == [] and where == (5.0, 5.0)
+
+
+def test_the_arrow_you_drag_is_the_arrow_you_get() -> None:
+    """Tk draws the live preview and Pillow draws the file. Two arrowheads
+    unless one set of numbers feeds both — and the drag is where you decide
+    whether the arrow is right, so a preview that lies is worse than no
+    preview."""
+    import capture as cap
+
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+    assert "arrowshape=tk_arrowshape()" in source, \
+        "the canvas preview is back on a hard-coded arrowhead"
+    neck, barb, half = cap.tk_arrowshape()
+    assert barb == round(max(cap.ARROW_HEAD_MIN, cap.PEN_W * cap.ARROW_HEAD))
+    assert 0 < neck < barb, (neck, barb)
+    assert 0 < half < barb
+    # It moves when the geometry moves, rather than being a second opinion.
+    assert cap.tk_arrowshape(12)[1] > cap.tk_arrowshape(2)[1]
+
+
+def test_one_mark_is_oversampled_once_and_then_reused() -> None:
+    """A committed mark never changes — a crop only moves where it is
+    pasted — so the expensive half happens once. Without this, every
+    repaint of a picture carrying eight marks would redraw all eight at 4x,
+    and the editor repaints on every hover."""
+    import capture as cap
+    from PIL import Image
+
+    cap._INK_CACHE.clear()
+    base = Image.new("RGB", (300, 240), (250, 250, 250))
+    marks = [{"kind": "arrow", "colour": (224, 53, 43),
+              "points": [(20, 220), (280, 30)]},
+             {"kind": "box", "colour": (255, 214, 64),
+              "points": [(40, 40), (200, 160)]}]
+    cap.draw_marks(base, marks, (0, 0))
+    assert len(cap._INK_CACHE) == 2, cap._INK_CACHE.keys()
+    cap.draw_marks(base, marks, (0, 0))
+    assert len(cap._INK_CACHE) == 2, "a second render made new entries"
+    # A DIFFERENT origin is the same stamp in a different place.
+    cap.draw_marks(base, marks, (25, 25))
+    assert len(cap._INK_CACHE) == 2, "a crop re-rendered the ink"
+    # And it is bounded, or a long session would keep every stroke for ever.
+    assert cap._INK_CACHE_MAX >= 8
+
+
+def test_the_oversample_backs_off_before_it_allocates_a_screenful() -> None:
+    """4x a 2560x1440 rectangle is 59 MB and a third of a second, for one
+    arrow. The factor drops as the rectangle grows, and never below 1."""
+    import capture as cap
+
+    assert cap.ink_scale(120, 90) == cap.INK_SS
+    scales = [cap.ink_scale(w, h) for w, h in
+              ((120, 90), (600, 400), (1280, 720), (2560, 1440))]
+    assert scales == sorted(scales, reverse=True), scales
+    assert min(scales) >= 1
+    for width, height in ((120, 90), (600, 400), (1280, 720), (2560, 1440)):
+        scale = cap.ink_scale(width, height)
+        assert scale == 1 or width * height * scale * scale \
+            <= cap.INK_SS_BUDGET, (width, height, scale)
+
+
+# ------------------------------------------------------- a crop that goes back
+#
+# Cropping is the one edit that throws pixels away, and the one edit anybody
+# ever overshoots. It goes both ways now: the tool works in the whole
+# picture that was TAKEN, so what was cut is still there to drag back to.
+
+
+def test_a_crop_works_in_the_picture_that_was_taken_not_what_is_left() -> None:
+    import capture as cap
+
+    class _Stub:
+        kind = "photo"
+        origin_box = (100, 100, 900, 700)
+        box = (300, 250, 600, 500)
+        _vx, _vy, _vw, _vh = -1920, 0, 4480, 1440
+
+    stub = _Stub()
+    # A PHOTO is bounded by the photo: behind it is the desktop the camera
+    # card was sitting on, and re-framing onto that hands you a picture of
+    # your own wallpaper.
+    assert cap.ShotWindow._crop_stage(stub) == stub.origin_box
+    stub.box = stub.origin_box
+    assert cap.ShotWindow._crop_stage(stub) == stub.origin_box
+    stub.origin_box = None
+    assert cap.ShotWindow._crop_stage(stub) == stub.box
+
+    # A SCREEN CAPTURE is bounded by the frozen screen, which is to say
+    # not bounded at all: every pixel is still there, so the crop tool is
+    # "take the shot again" rather than "make this smaller".
+    stub.kind = "shot"
+    stub.box = (300, 250, 600, 500)
+    stub.origin_box = (100, 100, 900, 700)
+    assert cap.ShotWindow._crop_stage(stub) == (-1920, 0, 2560, 1440)
+    assert cap.ShotWindow._whole_screen(stub) == (-1920, 0, 2560, 1440)
+
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+    press = source[source.index("    def _edit_press"):
+                   source.index("    def _edit_drag")]
+    assert "self._crop_stage()" in press, \
+        "the crop cannot be STARTED outside the picture it may end outside"
+    release = source[source.index("    def _edit_release"):
+                     source.index("    def _crop_stage")]
+    assert "clamp_box((start[0], start[1], end[0], end[1]),\n" \
+           "                            self._crop_stage())" in release, \
+        "the crop is still clamped to what is left rather than to the whole"
+
+
+def test_the_selection_drag_does_not_survive_into_the_first_click() -> None:
+    """A real bug, found by driving the editor rather than by reading it.
+    `_on_release` ends the selection drag and hands over to the editor
+    WITHOUT clearing `_start`, so the very first press afterwards — the
+    toolbar button you reach for — released into `_edit_release` with the
+    selection's own start point still pending, and drew a stroke from it.
+    With the crop tool picked it silently re-cropped the picture to
+    somewhere under the toolbar, which is what "the crop does not work"
+    looks like from the outside. Once per capture, always on the first
+    click."""
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+    chose = source[source.index("    def _chose(self, box, path)"):
+                   source.index("    def _first_save")]
+    assert "self._start = None" in chose,         "the selection drag is left pending after it ends"
+    press = source[source.index("    def _edit_press"):
+                   source.index("    def _edit_drag")]
+    toolbar = press[:press.index("return self._activate(name)")]
+    assert "self._start = None" in toolbar,         "a press on the toolbar can still finish a stroke nobody started"
+
+
+def test_growing_a_crop_brings_back_the_marks_that_were_outside_it() -> None:
+    """The reason growing one back is nearly free: marks are stored in
+    VIRTUAL-SCREEN coordinates and a crop is one rectangle changing. The
+    ink outside it was never deleted, only left out of the render — so it
+    comes back with the pixels it was drawn on."""
+    import capture as cap
+    from PIL import Image
+
+    screen = Image.new("RGB", (400, 300), (255, 255, 255))
+    mark = [{"kind": "box", "colour": (224, 53, 43),
+             "points": [(30, 30), (110, 110)]}]
+
+    def has_ink(image) -> bool:
+        return any(px[0] > px[2] + 40 for px in image.convert("RGB").getdata())
+
+    whole = cap.render_shot(screen, (0, 0, 400, 300), mark, None, (0, 0))
+    assert has_ink(whole), "the mark is not on the picture at all"
+
+    # Cropped away from it: the ink is gone from what you can see...
+    tight = cap.render_shot(screen, (200, 150, 380, 280), mark, None, (0, 0))
+    assert not has_ink(tight), "a crop that excluded the mark still shows it"
+
+    # ...and the moment the rectangle grows back over it, it is there again,
+    # in the same place on the pixels it was drawn on.
+    grown = cap.render_shot(screen, (20, 20, 380, 280), mark, None, (0, 0))
+    assert has_ink(grown), "growing the crop back did not bring the ink back"
+    assert grown.size == (360, 260)
+
+
+# ------------------------------------------------- chords, and the Windows key
+
+
+def test_three_and_four_key_chords_round_trip() -> None:
+    """Nothing had to be added for these — Binding.mods was always a set —
+    but nothing said so either, and a capability with no test is a
+    capability that gets optimised away."""
+    import hotkey as hotkey_mod
+
+    for text, mods in (("ctrl+shift+s", {0x11, 0x10}),
+                       ("ctrl+shift+alt+f6", {0x11, 0x10, 0x12}),
+                       ("win+shift+s", {0x5B, 0x10})):
+        binding = hotkey_mod.parse_binding(text)
+        assert set(binding.mods) == mods, (text, binding)
+        # One spelling per chord, or config.toml could hold two names for
+        # one key and the duplicate check would miss it.
+        assert hotkey_mod.binding_name(binding) == text, text
+        shuffled = "+".join(reversed(text.split("+")))
+        try:
+            other = hotkey_mod.parse_binding(shuffled)
+        except ValueError:
+            continue                    # the trigger moved; fine
+        assert hotkey_mod.binding_name(other) != text or other == binding
+
+    # The dialog builds them from what Windows says is held, so it can
+    # capture as many modifiers as the keyboard has.
+    assert hotkey_mod.binding_name_from_event(
+        "s", 0x53, probe=lambda vk: None,
+        mods={0x11, 0x10, 0x12}) == "ctrl+shift+alt+s"
+
+
+def test_the_windows_key_can_be_held_but_never_fired_on() -> None:
+    """Held, it is an ordinary modifier. As a TRIGGER it is a key nothing
+    can take: a tap of Win that nothing consumed opens Start, and the only
+    way to stop that would be to swallow the key that opens Start."""
+    import hotkey as hotkey_mod
+
+    assert hotkey_mod.parse_binding("win+shift+s").mods == frozenset(
+        {0x5B, 0x10})
+    assert hotkey_mod.binding_name(
+        hotkey_mod.parse_binding("shift+win+s")) == "win+shift+s", \
+        "Win is written first, the way Windows writes it"
+    for bad in ("win", "shift+win", "ctrl+alt+win"):
+        try:
+            hotkey_mod.parse_binding(bad)
+        except ValueError as e:
+            assert "Windows key" in str(e), e
+        else:
+            raise AssertionError(f"{bad!r} was accepted as a binding")
+    # And the capture dialog will not offer a bare Win either, or it would
+    # write a key into config.toml that the next launch refuses.
+    assert hotkey_mod.binding_name_from_event(
+        "Super_L", 0x5B, probe=lambda vk: 0x5B) is None
+
+
+def test_a_windows_chord_is_the_one_tap_the_app_takes_away() -> None:
+    """THE EXCEPTION TO "tap keys are not swallowed", and the whole reason
+    Win+Shift+S can be this app's. Every Windows-key chord is a shortcut
+    the shell already answers, so letting one through would fire the app
+    AND Windows — the capture overlay and the Snipping Tool, together.
+
+    Measured on this machine 2026-08-26, three runs of a bare hook:
+      Win+Shift+S with the hook watching -> "Snipping Tool Overlay" opens
+      Win+Shift+S with the S swallowed   -> nothing opens; the chord is ours
+      Win tapped alone, same hook up     -> Start opens, exactly as before
+    Nothing has to be disabled in Windows for this and no registry key is
+    involved. What this test guards is the half that lives here."""
+    import hotkey as hotkey_mod
+
+    fired = []
+    machine = hotkey_mod.PTTStateMachine(
+        {hotkey_mod.vk_for("right ctrl"): "he"},
+        on_start=lambda *a: None, on_stop=lambda *a: None,
+        on_abort=lambda *a: None,
+        taps={hotkey_mod.parse_binding("win+shift+s"): "capture",
+              hotkey_mod.parse_binding("ctrl+shift+s"): "record"},
+        on_tap=lambda action: fired.append(action))
+
+    # Sided codes, because that is all the hook ever reports.
+    assert machine.handle("down", 0x5B, False) is False, "Win itself passes"
+    assert machine.handle("down", 0xA0, False) is False, "and so does shift"
+    assert machine.handle("down", 0x53, False) is True, "the S is taken"
+    assert fired == ["capture"], fired
+    assert machine.handle("down", 0x53, False) is True, "auto-repeat leaks"
+    assert machine.handle("up", 0x53, False) is True, \
+        "a key that never went down must not come up"
+    assert machine.handle("up", 0xA0, False) is False
+    assert machine.handle("up", 0x5B, False) is False, \
+        "swallowing Win itself would cost the Start menu"
+
+    # The same trigger under ordinary modifiers is NOT taken: the house
+    # rule is that a tap fires the action and still reaches the app.
+    fired.clear()
+    machine.handle("down", 0xA2, False)
+    machine.handle("down", 0xA0, False)
+    assert machine.handle("down", 0x53, False) is False, \
+        "a ctrl chord was swallowed — that is not this app's bargain"
+    assert fired == ["record"], fired
+    assert machine.handle("up", 0x53, False) is False
+    machine.handle("up", 0xA2, False)
+    machine.handle("up", 0xA0, False)
+
+    # And a bare S, which is nobody's chord, passes through untouched.
+    fired.clear()
+    assert machine.handle("down", 0x53, False) is False
+    assert fired == [], fired
+
+
+def test_the_shipped_screenshot_key_is_the_one_windows_uses() -> None:
+    """It is the point of the exercise: Win+Shift+S opens THIS editor."""
+    import main as main_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    assert cfg.capture_hotkey == "win+shift+s", cfg.capture_hotkey
+    assert "capture_hotkey" in config_mod.CHORD_FIELDS
+    _hotkeys, taps, _latch, _pause = main_mod.App.bindings(cfg)
+    assert taps[parse_binding("win+shift+s")] == "capture", taps
+    # The trigger is a LETTER now, which the lookup box must still be told
+    # about — main._popup_key answers for it before popup.py sees it.
+    assert main_mod.App._vk_of(taps, "capture") == vk_for("s")
+
+
+
+# --------------------------------------------------- the card in the corner
+#
+# The editor used to open over the whole screen after every capture. That is
+# a modal dialog in nicer clothes: it makes the common case — drag, paste,
+# carry on — pay for the rare one. It is a corner card now, and the two
+# things that make a notification a notification rather than an interruption
+# are tested here: it does not take the keyboard, and it does not vanish
+# while the hand is reaching for it.
+
+
+def test_the_corner_card_never_takes_the_keyboard() -> None:
+    """A capture taken mid-sentence must not eat the next keystroke.
+
+    Measured while building this: with the window withdrawn, overrideredirect,
+    topmost AND carrying WS_EX_NOACTIVATE, the foreground still moved to
+    TkTopLevel at `update_idletasks()`. The flag stops a later CLICK from
+    activating the card and does not stop that first grab, so the grab is
+    undone instead — which is allowed, because at that instant this process
+    owns the foreground.
+    """
+    import ctypes as ct
+
+    import capture as cap
+    from PIL import Image
+
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+    build = source[source.index("class ShotToast:"):]
+    build = build[build.index("    def _build"):build.index("    # -- layout")]
+    assert "GetForegroundWindow()" in build, \
+        "nothing remembers what had the keyboard before the card"
+    assert build.index("GetForegroundWindow()") < build.index("tk.Canvas"), \
+        "read it BEFORE Tk touches anything, or the answer is the card"
+    assert "no_activate(root)" in build
+    assert build.index("no_activate(root)") < build.index("root.deiconify"), \
+        "the flag has to be on the window before it is first shown"
+    assert "give_focus_back" in build
+
+    user32 = ct.WinDLL("user32")
+    before = user32.GetForegroundWindow()
+    toast = cap.ShotToast(Image.new("RGB", (300, 200), (30, 50, 90)),
+                          (100, 100, 400, 300), saved=None, seconds=1)
+    try:
+        after = user32.GetForegroundWindow()
+        assert after == before, (
+            "the card took the foreground: a notification that steals focus "
+            "is an interruption with a countdown on it")
+    finally:
+        toast.done.set()
+        toast.run()
+
+
+def test_the_cards_clock_pauses_under_the_pointer() -> None:
+    """Five seconds is not long when what you are deciding is "did that
+    capture the bit I meant". A card that vanishes mid-reach is worse than
+    no card, so the clock holds while the pointer is on it — and RESUMES
+    rather than restarting, so a card brushed by a passing pointer does not
+    outstay its welcome."""
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+    at = source.index("class ShotToast:")
+    pump = source[source.index("    def run(self)", at):]
+    assert "self._left -= elapsed" in pump, "the clock does not drain"
+    assert "if not self._inside:" in pump, "it drains under the pointer too"
+    assert "self._left = float(self.seconds)" not in pump, \
+        "the clock restarts instead of resuming"
+
+
+def test_the_card_offers_save_only_when_there_is_nothing_saved() -> None:
+    """A Save button beside a file that already exists is a button that
+    lies; with the file already written the useful offer is the folder."""
+    import capture as cap
+
+    class _Stub:
+        saved = None
+
+    stub = _Stub()
+    assert cap.ShotToast._buttons(stub) == ("edit", "save", "copy", "close")
+    stub.saved = Path("captures") / "shot 2026-08-26 20-00-00.png"
+    assert cap.ShotToast._buttons(stub) == ("edit", "folder", "copy", "close")
+
+
+def test_every_control_on_the_card_is_hit_where_it_is_drawn() -> None:
+    import capture as cap
+
+    class _Stub:
+        saved = None
+        _buttons = cap.ShotToast._buttons
+
+    spots = cap.ShotToast._spots(_Stub())
+    assert set(spots) == {"edit", "save", "copy", "close", "edit_thumb"}
+    for name, (x0, y0, x1, y1) in spots.items():
+        assert cap.hit(spots, (x0 + x1) // 2, (y0 + y1) // 2) == name, name
+        assert 0 <= x0 < x1 <= cap.TOAST_W, name
+        assert 0 <= y0 < y1 <= cap.TOAST_H, name
+    boxes = list(spots.values())
+    for index, a in enumerate(boxes):
+        for b in boxes[index + 1:]:
+            assert (a[2] <= b[0] or b[2] <= a[0]
+                    or a[3] <= b[1] or b[3] <= a[1]), (a, b)
+    # The thumbnail is the biggest button on the card, because clicking the
+    # picture to work on the picture needs no label.
+    thumb = spots["edit_thumb"]
+    area = (thumb[2] - thumb[0]) * (thumb[3] - thumb[1])
+    for name in ("edit", "save", "copy", "close"):
+        x0, y0, x1, y1 = spots[name]
+        assert (x1 - x0) * (y1 - y0) < area, name
+
+
+def test_a_capture_reaches_the_clipboard_even_when_it_reaches_no_disk(
+) -> None:
+    """`always_save = false` gives up the file and keeps the clipboard, and
+    the order matters: the clipboard write comes after the save so a folder
+    that cannot be written to cannot also cost you the paste."""
+    import shutil
+    import tempfile
+
+    import capture as cap
+    from PIL import Image
+
+    tmp = Path(tempfile.mkdtemp(prefix="capture-nosave-"))
+    try:
+        class _Stub:
+            folder = str(tmp)
+            kind = "shot"
+            copy = False          # the clipboard is somebody else's, in a test
+            save = False
+            saved_path = None
+            on_saved = None
+            said = []
+
+            def picture(self):
+                return Image.new("RGB", (40, 30), (10, 20, 30))
+
+            def say(self, text, ttl_ms=0):
+                self.said.append(text)
+
+        stub = _Stub()
+        cap.ShotWindow._first_save(stub)
+        assert stub.saved_path is None, "a file was written anyway"
+        assert list(tmp.glob("*")) == [], list(tmp.glob("*"))
+        assert any("not saved" in s for s in stub.said), stub.said
+
+        stub.save = True
+        cap.ShotWindow._first_save(stub)
+        assert stub.saved_path is not None
+        assert stub.saved_path.exists()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_after_shot_settings_parse_and_are_bounded() -> None:
+    import shutil
+    import tempfile
+    tmp = Path(tempfile.mkdtemp(prefix="capture-toast-"))
+    path = tmp / "config.toml"
+    try:
+        path.write_text(
+            'hotkey = "right ctrl"\n'
+            "[capture]\n"
+            'after_shot = "editor"\n'
+            'toast_corner = "top-left"\n'
+            "toast_seconds = 12\n"
+            "always_save = true\n", "utf-8")
+        cap = config_mod.load(path).capture
+        assert cap.after_shot == "editor"
+        assert cap.toast_corner == "top-left"
+        assert cap.toast_seconds == 12
+        assert cap.always_save is True
+
+        defaults = config_mod.CaptureConfig()
+        assert defaults.after_shot == "toast", \
+            "the editor is an offer, not a step"
+        assert defaults.always_save is False
+        assert defaults.toast_seconds == 5
+
+        for key, value, word in (("after_shot", '"maybe"', "after_shot"),
+                                 ("toast_corner", '"off"', "toast_corner"),
+                                 ("toast_seconds", "0", "toast_seconds"),
+                                 ("toast_seconds", "600", "toast_seconds")):
+            path.write_text(f'hotkey = "right ctrl"\n[capture]\n'
+                            f"{key} = {value}\n", "utf-8")
+            try:
+                config_mod.load(path)
+            except config_mod.ConfigError as e:
+                assert word in str(e), (word, e)
+            else:
+                raise AssertionError(f"capture.{key} = {value} was accepted")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    here = Path(__file__).resolve().parent
+    text = (here / "config.toml").read_text("utf-8")
+    section = text[text.index("[capture]"):]
+    section = section[:section.index("\n[", 1)]
+    for key in ("after_shot", "toast_corner", "toast_seconds",
+                "always_save"):
+        assert f"\n{key} = " in section, f"{key} is not a writable line"
+    assert "edit_after_shot" not in section, \
+        "the setting after_shot replaced is still in the shipped file"
+
+
+
+def test_a_stuck_escape_cannot_close_an_overlay_that_just_opened() -> None:
+    """THE WORST BUG THIS FEATURE HAS HAD, and it was invisible.
+
+    Every overlay here READS Escape with GetAsyncKeyState rather than
+    receiving it, because a borderless topmost window does not get the
+    keyboard for free. That has one failure mode you cannot see from the
+    outside: if Escape is stuck DOWN — an automation tool that injected a
+    key-down without its key-up, a remote desktop session that dropped
+    one, a wedged keyboard — every overlay opens and closes inside one
+    tick. The crosshair flashes and vanishes, nothing is logged, and the
+    app looks broken while dictation keeps working, because dictation is
+    the one feature that never asks about Escape.
+
+    It happened on 2026-08-26 and it read as "every feature except the
+    transcriber is broken". Reproduced afterwards by wedging the key
+    deliberately: with the latch seeded from the keyboard the selector
+    stayed up 2.6 s and said why in the log; without it, 0.4 s and
+    silence.
+
+    So: a key that was ALREADY down when the window opened is not a
+    cancel. Release it and press it again and it cancels exactly as
+    before.
+    """
+    import capture as cap
+
+    assert callable(cap.esc_held)
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+    assert "GetAsyncKeyState(0x1B)" in \
+        source[source.index("def esc_held("):source.index("def give_focus_back(")]
+
+    for name, marker in (("ShotWindow", "class ShotWindow:"),
+                         ("CameraWindow", "class CameraWindow:")):
+        at = source.index(marker)
+        pump = source[source.index("    def run(self)", at):]
+        pump = pump[:pump.index("        finally:")]
+        assert "held = esc_held()" in pump, (
+            f"{name} still seeds its escape latch from False, so a key "
+            "that was already down closes the window on the first tick")
+        assert "and not held" in pump, f"{name} acts on a held key"
+        assert "held = down" in pump, f"{name} never releases the latch"
+        assert "esc is held down" in pump, (
+            f"{name} closes silently — the whole cost of this bug was that "
+            "it never said anything")
+
+
 
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())

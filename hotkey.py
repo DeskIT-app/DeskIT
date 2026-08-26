@@ -69,6 +69,12 @@ _SIDES: dict[int, tuple[int, int]] = {
     0x11: (0xA2, 0xA3),      # ctrl  -> left, right
     0x10: (0xA0, 0xA1),      # shift
     0x12: (0xA4, 0xA5),      # alt
+    # Windows has no unsided VK_WIN — both Win keys are already sided — so
+    # the LEFT one stands for the group, the way 0x11 stands for ctrl. It
+    # is the only entry here whose group id is also one of its sides, and
+    # nothing downstream cares: side_down probes the pair, _MOD_GROUP maps
+    # both to the group, and binding_name writes the group's own name.
+    0x5B: (0x5B, 0x5C),      # win
 }
 
 # Every modifier VK -> the unsided VK standing for its group, so that a
@@ -85,8 +91,17 @@ for _unsided, (_left, _right) in _SIDES.items():
 
 # The order modifiers are written in, so one chord has exactly one
 # spelling: "ctrl+shift+f6", never "shift+ctrl+f6". Without this the
-# config could hold both and the duplicate check would miss it.
-_MOD_ORDER: dict[int, int] = {0x11: 0, 0x10: 1, 0x12: 2}
+# config could hold both and the duplicate check would miss it. Win comes
+# first because that is how Windows itself writes them — "Win+Shift+S" is
+# on the label of the feature this exists to take over.
+_MOD_ORDER: dict[int, int] = {0x5B: -1, 0x11: 0, 0x10: 1, 0x12: 2}
+
+# What a GROUP is called in a chord. Needed because _VK_NAMES maps 0x5B to
+# "left win" (last write wins, and "left win" is written after "win"),
+# while the group that 0x5B stands for is "win". Sided modifiers are not
+# in here on purpose: written sided, they stay sided.
+_MOD_NAME: dict[int, str] = {0x11: "ctrl", 0x10: "shift", 0x12: "alt",
+                             0x5B: "win"}
 
 # Named so a chord can refuse them by name rather than by discovery.
 _WIN_VKS = (0x5B, 0x5C)
@@ -234,15 +249,25 @@ def parse_binding(text: str) -> Binding:
     if not parts or any(not p for p in parts):
         raise ValueError(f"malformed binding {text!r}")
     trigger = vk_for(parts[-1])
+    # THE WINDOWS KEY IS A MODIFIER AND NEVER A TRIGGER. As a trigger it
+    # is a key nothing can take: a tap of Win that nothing consumed opens
+    # Start, and swallowing it to stop that would cost the Start menu.
+    # As a MODIFIER it is fine, and that was measured rather than reasoned
+    # — see the note above parse_binding's caller in AGENTS.md, and the
+    # three runs behind it:
+    #   Win+Shift+S, hook watching only  -> "Snipping Tool Overlay" opens
+    #   Win+Shift+S, hook eats the S     -> nothing opens; the chord is ours
+    #   Win tapped alone, same hook up   -> Start opens, exactly as before
+    # So a Win chord is takeable, and taking one costs nothing else.
+    if trigger in _WIN_VKS:
+        raise ValueError(
+            "the Windows key cannot be the key a chord fires on — it can "
+            "only be held. A tap of Win that nothing consumed opens Start, "
+            "and the only way to stop that is to swallow the key that "
+            "opens the Start menu")
     mods: list[int] = []
     for part in parts[:-1]:
         vk = vk_for(part)
-        if vk in _WIN_VKS:
-            raise ValueError(
-                "the Windows key cannot be a chord modifier: a tap of it "
-                "that nothing consumed opens Start, so either Start opens "
-                "every time the chord fires or every other Win shortcut "
-                "on the machine breaks")
         if vk not in _MOD_GROUP:
             raise ValueError(
                 f"{part!r} is not a modifier, so it cannot come before the "
@@ -267,8 +292,21 @@ def binding_name(binding: Binding) -> str:
     into the file and pass the duplicate check as two different keys."""
     ordered = sorted(binding.mods,
                      key=lambda vk: (_MOD_ORDER[_MOD_GROUP[vk]], vk))
-    return "+".join([vk_name(vk) for vk in ordered]
+    return "+".join([_MOD_NAME.get(vk, vk_name(vk)) for vk in ordered]
                     + [vk_name(binding.trigger)])
+
+
+def _takes_the_key(binding: Binding) -> bool:
+    """Must this chord be taken AWAY from whatever has focus?
+
+    Only a Windows-key chord. Every one of them is a shortcut the shell
+    already answers, so binding one and letting it through would fire this
+    app AND Windows — bind Win+Shift+S and you would get the capture
+    overlay and the Snipping Tool. Ctrl/Shift/Alt chords stay unswallowed,
+    which is the rule the rest of this app is built on: a tap key fires
+    the action and still reaches the app underneath.
+    """
+    return any(_MOD_GROUP.get(m) == 0x5B for m in binding.mods)
 
 
 def is_modifier_key(keycode: int) -> bool:
@@ -319,6 +357,12 @@ def binding_name_from_event(keysym: str, keycode: int, probe=side_down,
     """
     name = key_name_from_event(keysym, keycode, probe)
     if name is None:
+        return None
+    if keycode in _WIN_VKS:
+        # Win alone is not offered as a hotkey, even though the dialog
+        # will happily bind any other bare modifier: parse_binding refuses
+        # it as a trigger, so binding it here would write a key into
+        # config.toml that the next launch throws a message box about.
         return None
     if is_modifier_key(keycode):
         return name
@@ -492,6 +536,7 @@ class PTTStateMachine:
         # completed by the app's own paste.
         self._mods_down: set[int] = set()
         self._swallow_latch_up = False
+        self._swallow_tap_up: set[int] = set()
         self._lock = threading.Lock()
         (self._hotkeys, self._taps,
          self._latch_vk, self._pause_vk) = self._checked(
@@ -578,9 +623,14 @@ class PTTStateMachine:
                              "handler")
         return keys, tap_keys, latch_vk, pause_vk
 
-    def _match_tap(self, vk: int) -> str | None:
-        """Which tap action this key-down means, or None for "nothing on
-        that key with those modifiers held". Called with the lock held,
+    def _match_tap(self, vk: int) -> tuple[Binding, str] | None:
+        """(the binding that matched, the action) — or None for "nothing on
+        that key with those modifiers held".
+
+        The BINDING and not just the action, because the caller has one
+        more question to ask of it: whether this chord is one the app has
+        to take away from Windows (see `_takes_the_key`). Called with the
+        lock held,
         from inside the hook callback: set arithmetic on at most three
         elements, no syscall, nothing that can block.
 
@@ -601,13 +651,13 @@ class PTTStateMachine:
         for bound, action in self._taps.get(vk, ()):
             if not bound.mods:
                 if not held_groups:
-                    return action
-                fallback = action       # the catch-all; see the docstring
+                    return bound, action
+                fallback = (bound, action)   # the catch-all; see above
                 continue
             if held_groups != {_MOD_GROUP[m] for m in bound.mods}:
                 continue
             if all(m in _SIDES or m in held for m in bound.mods):
-                return action
+                return bound, action
         return fallback
 
     @property
@@ -729,6 +779,12 @@ class PTTStateMachine:
             if event_type == "up":
                 self._tap_held.discard(vk)
                 self._down.discard(vk)
+                if vk in self._swallow_tap_up:
+                    # Its key-DOWN was taken; the release must not arrive
+                    # on its own either, or an app watching key state sees
+                    # a key come up that never went down.
+                    self._swallow_tap_up.discard(vk)
+                    swallow = True
                 if vk == self._latch_vk and self._swallow_latch_up:
                     # Its key-DOWN was swallowed; releasing it must not
                     # reach the app on its own either.
@@ -736,6 +792,11 @@ class PTTStateMachine:
                     swallow = True
             else:
                 self._down.add(vk)
+                if vk in self._swallow_tap_up and was_down:
+                    # Auto-repeat of a chord we took: holding Win+Shift+S
+                    # down must not start leaking S into whatever has
+                    # focus once the first press has fired.
+                    swallow = True
                 if vk == self._latch_vk and was_down and self._swallow_latch_up:
                     # Auto-repeat of a press whose key-down we swallowed —
                     # holding it down must not leak arrows into the app.
@@ -779,9 +840,21 @@ class PTTStateMachine:
                     # press that missed cannot be rescued by a modifier
                     # arriving later and an auto-repeat firing on it.
                     self._tap_held.add(vk)   # ignore Windows auto-repeat
-                    action = self._match_tap(vk)
-                    if action is not None:
+                    matched = self._match_tap(vk)
+                    if matched is not None:
+                        bound, action = matched
                         fire = lambda: self._on_tap(action)
+                        if _takes_the_key(bound):
+                            # The ONE exception to "tap keys are not
+                            # swallowed", and it is what makes a Win chord
+                            # possible at all: bind Win+Shift+S and both
+                            # this app and the Snipping Tool would answer
+                            # it. Measured 2026-08-26 — with the S eaten
+                            # here, the overlay never opens and the Start
+                            # menu still works, because Win itself is
+                            # untouched.
+                            swallow = True
+                            self._swallow_tap_up.add(vk)
                 # The latch key is inert while idle — it keeps its normal
                 # job in whatever app has focus.
             elif self._state == RECORDING:
