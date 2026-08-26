@@ -597,12 +597,18 @@ cloud_timeout_s = 30           # Groq answers in half a second and Gemini in
 #
 # Tap `capture_hotkey` and the screen freezes and dims: drag a box, or hold
 # Shift and lasso a shape (the same gesture the ask key uses, because it is
-# the same hand). Let go and the picture is ALREADY on your clipboard and
-# ALREADY in `folder` — that promise is not negotiable, so nothing you do
-# afterwards can lose it. A glass toolbar then opens under the selection,
-# on the pixels where you took them, and you can crop, draw, arrow,
-# highlight, blur out an address, undo, copy again, save again, or hand the
-# whole thing to the ask key.
+# the same hand). Let go and the picture is ALREADY on your clipboard —
+# that half is not negotiable and never was.
+#
+# WHAT DOES NOT HAPPEN NEXT is the point. The editor used to open over the
+# whole screen every single time, for a picture that nine times out of ten
+# was going straight into a chat window: a modal dialog in nicer clothes,
+# making the common case pay for the rare one. Now a small card appears in
+# a corner for `toast_seconds` with a thumbnail of what you took, and the
+# editor is one click away on it — crop, draw, arrow, highlight, blur out
+# an address, undo, copy again, save, or hand the whole thing to the ask
+# key. Ignore the card and it goes away and the clipboard keeps the
+# picture. `after_shot = "editor"` restores the old behaviour.
 #
 # Tap `record_hotkey`, pick a region the same way, and it records to mp4
 # until you tap the key again. The bar that shows the clock does NOT appear
@@ -630,10 +636,22 @@ cloud_timeout_s = 30           # Groq answers in half a second and Gemini in
 # package, no ffmpeg.exe, nothing to keep up to date.
 enabled = true                 # false unregisters BOTH keys entirely
                                # — the kill switch
-capture_hotkey = "ctrl+f11"    # measured-free like the other ctrl+F keys:
-                               # the 2026-08 probe found f1-f6 and f10-f16
+capture_hotkey = "win+shift+s" # THE SAME KEY WINDOWS USES, taken from it.
+                               # A Windows-key chord is the one kind of
+                               # binding this app SWALLOWS — every one of
+                               # them is a shortcut the shell already
+                               # answers, so letting it through would open
+                               # the capture overlay AND the Snipping Tool.
+                               # Measured 2026-08-26, three runs: with the
+                               # 's' eaten by the hook the Snipping Tool
+                               # never appears, and a bare tap of Win still
+                               # opens Start, because Win itself is never
+                               # touched. Nothing has to be turned off in
+                               # Windows and no registry key is involved.
+                               # ctrl+f11 is still free if you want it back
+                               # (the 2026-08 probe found f1-f6 and f10-f16
                                # under ctrl reaching the page untouched in
-                               # Chrome and Edge. Rebind from the dashboard
+                               # Chrome and Edge). Rebind from the dashboard
 record_hotkey = "ctrl+f12"     # tap to start, tap again to stop. One key
                                # for both because the second press is the
                                # same thought as the first, and a recorder
@@ -648,9 +666,41 @@ copy_to_clipboard = true       # Win+Shift+S's promise. CF_DIB and the
                                # registered PNG format, so Paint, Word,
                                # Chrome and Slack all find one they like and
                                # a lasso keeps its transparency
-edit_after_shot = true         # false makes the key a pure "grab it and get
-                               # out of my way" — the file and the clipboard
-                               # are identical either way
+after_shot = "toast"           # toast | editor | nothing. What happens when
+                               # you let go of the mouse. "toast" puts a
+                               # small card in a corner with a thumbnail
+                               # and the editor one click away; "editor"
+                               # opens the editor immediately the way this
+                               # key used to; "nothing" makes it a pure
+                               # grab-and-get-out-of-my-way
+toast_corner = "bottom-right"  # top-left | top-right | bottom-left |
+                               # bottom-right. Its own setting and not
+                               # timer_corner's, because the recording pill
+                               # and the capture card can want different
+                               # corners on the same desk. The corner of
+                               # the WORK area of the monitor the capture
+                               # was taken on, so it is never under a
+                               # taskbar and never on the wrong screen
+toast_seconds = 5              # how long the card waits before giving up
+                               # on you. The clock PAUSES while the pointer
+                               # is on it — a card that vanishes while the
+                               # hand is reaching for it is worse than no
+                               # card at all
+always_save = false            # write EVERY capture to `folder`, or only
+                               # the ones you ask to keep.
+                               #
+                               # This is the one setting here that gives
+                               # something up: with false the picture is on
+                               # the clipboard and NOWHERE ELSE until Save
+                               # is pressed, so copying something else
+                               # inside those five seconds loses it. The
+                               # trade is a folder that holds the captures
+                               # you meant to keep instead of every
+                               # rectangle you ever dragged — and this
+                               # folder is the most sensitive thing in the
+                               # repo, so a smaller one is worth something
+                               # on its own. true restores the old promise
+                               # exactly: on disk before you let go
 copy_clip_path = true          # a finished recording goes on the clipboard
                                # as a FILE (CF_HDROP), so it pastes into a
                                # chat or a folder the way Explorer's Copy
@@ -706,6 +756,96 @@ announce = true                # say "Recording started" for 2.6 s before
                                # a screen recorder is not knowing whether
                                # it is running, and this is the cheapest
                                # possible answer to that
+
+[camera]
+# A PHOTO FROM THE WEBCAM — the same folder, the same editor, a different
+# lens. Tap `camera_hotkey` and a card opens in the middle of the screen
+# with the live picture in it and a shutter under it. Space, Enter or the
+# button takes it; `t` cycles a self-timer; `m` mirrors; `c` moves to the
+# next camera when there is one; Esc closes without taking anything.
+#
+# The picture is on your clipboard and in `folder` the instant the shutter
+# fires — the same promise `capture_hotkey` makes, and just as
+# non-negotiable — and THEN it opens in the screenshot editor, laid on the
+# screen exactly where the preview was, so you can crop it, draw on it,
+# blur something out or hand it to the ask key.
+#
+# PRIVACY. This is the only thing in the app that opens the camera, and it
+# opens it for as long as the window is up and not a moment longer: the
+# device is released the instant the shutter fires, not when the editor
+# closes, so the light beside the lens means what it looks like it means.
+# The photo is written to `folder` beside the app, gitignored, and nothing
+# here uploads anything anywhere. The one route from a photo to a model is
+# the editor's Ask button, which obeys visual_qa.allow_screenshot_upload
+# like every other question. `enabled = false` unregisters the key.
+#
+# MEASURED ON THIS MACHINE, 2026-08-26, live, on an eMeet C960:
+#   open -> first frame         654-829 ms over six opens (so the card
+#                               says "waking ..." rather than sitting
+#                               black for three quarters of a second)
+#   delivered                    25 fps at 1280x720 mjpeg, 40.1 ms
+#                                between frames and steady to a tenth
+#   one frame to the window       5.4 ms at 800x450, 4.3 ms at 1280x720
+#   listing the devices         147 ms, paid once when the window opens
+# The decoder is PyAV, which faster-whisper already installs — the same
+# one that encodes the screen recordings. No OpenCV, no new package.
+enabled = true                 # false unregisters the key entirely
+                               # — the kill switch
+camera_hotkey = "ctrl+f6"      # measured-free like the other ctrl+F keys:
+                               # the 2026-08 probe found f1-f6 and f10-f16
+                               # under ctrl reaching the page untouched in
+                               # Chrome and Edge. Rebind from the dashboard
+device = ""                    # which camera, matched as a case-insensitive
+                               # SUBSTRING of the name Windows knows it by
+                               # — "eMeet" is enough, and nobody retypes
+                               # "HD Webcam eMeet C960" without a typo.
+                               # Empty = the first device DirectShow lists
+                               # that is not a VIRTUAL camera: OBS, Teams
+                               # and NVIDIA Broadcast all install one and
+                               # they sort ahead of the real webcam as
+                               # often as not (here OBS is second of two)
+size = "1280x720"              # what the camera is asked for, as MJPEG.
+                               # ASK FOR MJPEG is not a preference: this
+                               # camera offers 1920x1080 at 30 fps as
+                               # mjpeg and the SAME size at 5 fps as raw
+                               # yuyv422, and DirectShow hands over the
+                               # raw one unless it is told otherwise. A
+                               # camera with no mjpeg pin is asked again
+                               # for whatever it has, and that is logged
+fps = 30                       # what it is asked for. A webcam that
+                               # cannot manage it simply sends fewer —
+                               # this one settles at 25 in this room,
+                               # because the exposure it wants is longer
+                               # than a thirtieth of a second
+mirror = false                 # mirror BOTH the preview and the file, or
+                               # neither. Off by default because the
+                               # commonest thing anyone holds up to a
+                               # webcam has writing on it, and mirrored
+                               # writing is unreadable. `m` flips it while
+                               # the window is open. There is deliberately
+                               # no "mirror the preview only": a preview
+                               # that disagrees with the file it produces
+                               # is the one bug this whole feature is
+                               # written to avoid
+timer = 0                      # 0, 3 or 10 seconds of self-timer to start
+                               # on. `t` cycles it while the window is
+                               # open, and Esc cancels a countdown before
+                               # it closes the window
+folder = "captures"            # the same folder the screen captures go
+                               # to, so there is one place to look for
+                               # pictures. The files are named
+                               # "photo 2026-08-26 18-45-22.png" rather
+                               # than "shot ...", so sorting by name still
+                               # groups them
+copy_to_clipboard = true       # on the clipboard the moment it is taken,
+                               # as CF_DIB and PNG, exactly like a
+                               # screenshot
+edit_after_shot = true         # open the photo in the screenshot editor,
+                               # on the pixels where the preview was, so
+                               # the picture never moves. false makes the
+                               # key a pure "take it and get out of my
+                               # way" — the file and the clipboard are
+                               # identical either way
 
 [server]
 # Dictate from the PHONE, transcribe on this GPU: the phone records and
