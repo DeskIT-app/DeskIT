@@ -2473,8 +2473,11 @@ class ShotWindow:
         self._hint_id = None
         self._chips: dict = {}
         self._chip_hover: str | None = None
-        if self.start_box is None:
-            self._draw_hint(px, py)
+        # PAINTED ON THE FIRST TICK, not here. The card is 31 ms of glass
+        # and text, and nothing about starting a drag needs it — putting it
+        # on the path between the key and a usable overlay only made the
+        # key feel slower. One tick later is 15 ms and invisible.
+        self._hint_pending = None if self.start_box is not None else (px, py)
 
         canvas.bind("<ButtonPress-1>", self._on_press)
         canvas.bind("<B1-Motion>", self._on_drag)
@@ -3317,6 +3320,9 @@ class ShotWindow:
             root.update_idletasks()
             root.update()
             _vq.take_foreground(root, alt_tap=False)
+            if self._hint_pending is not None and self._hint_id is not False:
+                where, self._hint_pending = self._hint_pending, None
+                self._draw_hint(*where)
             _user32.GetAsyncKeyState(0x1B)     # prime, discard
             # A key ALREADY down when the window opens is not a cancel —
             # see esc_held for the afternoon that bought this line.
@@ -3963,9 +3969,10 @@ class ShotToast:
         canvas.pack()
         self.canvas = canvas
         self.size = (width, height)
-        self._keep["face"] = ImageTk.PhotoImage(
-            _vq._rounded_pil(width, height, CLIP_BAR_RADIUS, CARD, PANE,
-                             STROKE), master=root)
+        self._face_img = _vq._rounded_pil(width, height, CLIP_BAR_RADIUS,
+                                          CARD, PANE, STROKE)
+        self._face_key: tuple | None = None
+        self._keep["face"] = ImageTk.PhotoImage(self._face_img, master=root)
         canvas.create_image(0, 0, anchor="nw", image=self._keep["face"])
         root.update_idletasks()
         no_activate(root)
@@ -4062,24 +4069,43 @@ class ShotToast:
         return self._keep["thumb_img"]
 
     def _paint(self) -> None:
-        from PIL import Image, ImageTk
-        canvas = self.canvas
-        canvas.delete("live")
+        """Only the clock moves, so only the clock is repainted.
 
-        self._keep["thumb"] = ImageTk.PhotoImage(self._thumb(),
-                                                 master=self.root)
-        canvas.create_image(12, 12, anchor="nw", image=self._keep["thumb"],
-                            tags="live")
+        Everything else — the thumbnail, both lines, all four buttons — is
+        composed into ONE picture and swapped when the state it depends on
+        changes, which is the pointer moving onto a button and nothing
+        else. Before this split the card redrew all of it twenty times a
+        second for five seconds after every capture: 4.1 ms a frame, 9% of
+        a core, to produce the same pixels. It is the same signature trick
+        the camera card's control strip uses, for the same reason.
+        """
+        from PIL import ImageTk
+        key = (self._hover, self.saved is not None)
+        if key != self._face_key:
+            self._face_key = key
+            self._keep["body"] = ImageTk.PhotoImage(self._body(),
+                                                    master=self.root)
+            self.canvas.delete("body")
+            self.canvas.create_image(0, 0, anchor="nw",
+                                     image=self._keep["body"], tags="body")
+        self.canvas.delete("live")
+        self._paint_clock()
+
+    def _body(self):
+        """The whole card except the clock, as one picture."""
+        from PIL import Image
+        card = self._face_img.convert("RGBA")
+        card.alpha_composite(self._thumb().convert("RGBA"), (12, 12))
 
         left, top, right, bottom = self.box
         head = "Copied" if self.copied else "Captured"
         detail = f"{right - left} × {bottom - top}"
         detail += (f"   ·   {self.saved.name}" if self.saved is not None
                    else "   ·   not saved")
-        self._text("title", head, TOAST_TEXT_X, 14, pt=11.5, colour=INK,
-                   weight=600)
-        self._text("detail", detail, TOAST_TEXT_X, 34, pt=9.0,
-                   colour=INK_FAINT)
+        card.alpha_composite(self._line(head, 11.5, INK, weight=600),
+                             (TOAST_TEXT_X, 14))
+        card.alpha_composite(self._line(detail, 9.0, INK_FAINT),
+                             (TOAST_TEXT_X, 34))
 
         glyphs = {"edit": "pencil", "save": "save", "copy": "copy",
                   "folder": "folder", "close": "close"}
@@ -4094,14 +4120,8 @@ class ShotToast:
             plate.alpha_composite(
                 icon(glyphs[name], 14, colour=INK if hot else INK_DIM,
                      width=2), ((x1 - x0 - 14) // 2, (y1 - y0 - 14) // 2))
-            flat = Image.new("RGBA", plate.size, _hex(CARD) + (255,))
-            flat.alpha_composite(plate)
-            self._keep[f"b{name}"] = ImageTk.PhotoImage(
-                flat.convert("RGB"), master=self.root)
-            canvas.create_image(x0, y0, anchor="nw",
-                                image=self._keep[f"b{name}"], tags="live")
-
-        self._paint_clock()
+            card.alpha_composite(plate, (x0, y0))
+        return card.convert("RGB")
 
     def _paint_clock(self) -> None:
         """A line that drains, so "about to go" is visible rather than a
@@ -4120,15 +4140,11 @@ class ShotToast:
         """Seconds still on the clock. Frozen while the pointer is on it."""
         return self._left
 
-    def _text(self, key: str, text: str, x: int, y: int, *, pt: float,
-              colour, weight: int = 400) -> None:
-        from PIL import ImageTk
-        glyph = _vq.text_pil(text, self.size[0] - x - 10, pt=pt,
-                             colour=colour, rtl=False, single=True,
-                             weight=weight)
-        self._keep[key] = ImageTk.PhotoImage(glyph, master=self.root)
-        self.canvas.create_image(x, y, anchor="nw", image=self._keep[key],
-                                 tags="live")
+    def _line(self, text: str, pt: float, colour, weight: int = 400):
+        """One line of text as an RGBA layer, ready to composite."""
+        return _vq.text_pil(text, self.size[0] - TOAST_TEXT_X - 10, pt=pt,
+                            colour=colour, rtl=False, single=True,
+                            weight=weight)
 
     # -- the pump --
 
