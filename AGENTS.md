@@ -11,7 +11,7 @@ Hebrew push-to-talk dictation for Windows: hold **Right Ctrl**, speak,
 release, and a cleaned transcript lands at your cursor via clipboard +
 Ctrl+V. Around that core: a repair pass that fixes misheard words, a
 translate key, a punctuate key, a lookup key, a correction box that teaches
-a vocabulary, a screenshot/screen-recording pair of keys, a webcam key
+a vocabulary, a background study pass that re-examines sent dictations and learns without being asked (fast only, study.py), a screenshot/screen-recording pair of keys, a webcam key
 that takes a photo into the same editor, a phone endpoint, and a
 dashboard. Everything is documented,
 with measurements, in `README.md` and `config.toml`.
@@ -422,6 +422,7 @@ back.
 | `transcribers/` | whisper/gemini/fake backends |
 | `polish.py` + `translate.py` | repair pass + all chat backends (Gemini/Ollama/Cerebras/Groq) |
 | `cleanup.py` / `vocab.py` | filler removal, learned words |
+| `study.py` | the second learning channel: when idle, re-decodes sent recordings, votes + adjudicates, learns from divergence (fast only) |
 | `injector.py` | clipboard paste, placeholder, focus checks |
 | `punctuate.py` / `lookup.py` | F2 rewrite-in-place / reading box |
 | `visual_qa.py` | ask-the-screen: region select, vision chain, answer window, TTS |

@@ -346,6 +346,57 @@ class LocalWhisperTranscriber:
             return None
         return text.strip() or None
 
+    def study_decode(self, wav_bytes: bytes, *, beam_size: int | None = None,
+                     hotwords: str | None = None, temperature=None,
+                     general: bool = False) -> str:
+        """One EXTRA opinion about a recording, for the study pass
+        (study.py). Same Hebrew pinning, same guards, same tail-boilerplate
+        and filler cleanup as the live path — the candidates must live in
+        the same text space as the transcript they are compared against.
+
+        Differences from transcribe(), each deliberate:
+        - no hotwords unless asked: the study wants opinions UNBIASED by
+          the learned vocabulary, so a hotword the live pass emitted
+          unbidden cannot confirm itself;
+        - `general=True` decodes on the second resident model ([local]
+          english_model, a general multilingual fine-tune) with no Hebrew
+          initial_prompt — different training data, independent errors;
+        - touches NO instance state (last_removed, last_warning): those
+          slots belong to the live path, which may be serving a dictation
+          on another thread while this runs.
+        """
+        model = self._model
+        if general:
+            if self._english is None:
+                raise TranscriptionError(
+                    "no general model loaded for a second opinion")
+            model = self._english
+        kwargs = dict(
+            language=self._language,
+            vad_filter=True,
+            beam_size=(self._beam_size if beam_size is None
+                       else max(1, int(beam_size))),
+            condition_on_previous_text=False,
+            initial_prompt=None if general else self._initial_prompt,
+            hotwords=(hotwords or None),
+            **self._guards,
+        )
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        try:
+            segments, _info = model.transcribe(BytesIO(wav_bytes), **kwargs)
+            text = " ".join(s.text.strip() for s in segments).strip()
+        except Exception as e:
+            raise TranscriptionError(f"study decode failed: {e}") from e
+        if text.strip(" .,!?").lower() in _HALLUCINATED_SILENCE:
+            return ""
+        if self._boilerplate:
+            text, _removed = cleanup_mod.strip_trailing_boilerplate(
+                text, self._boilerplate)
+        if self._cleanup:
+            text = cleanup_mod.clean(text, self._fillers)
+        return text
+
     def transcribe(self, wav_bytes: bytes,
                    language: str | None = None) -> str:
         """`language` is the caller's explicit choice (a dedicated hotkey).

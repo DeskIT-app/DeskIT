@@ -551,6 +551,31 @@ class PolishConfig:
 
 
 @dataclass(frozen=True)
+class StudyConfig:
+    """The second learning channel — see study.py. FAST VERSION ONLY:
+    classic's config.py does not read this section, and main.py (shared)
+    only builds the engine when cfg carries it."""
+    enabled: bool = True
+    # How long the app must be visibly idle (no dictation, no key work)
+    # before a recording is studied. The pass steps aside again the moment
+    # anything happens, so this is about not warming the GPU while the
+    # user is mid-thought, not about safety.
+    idle_minutes: float = 3.0
+    # Clips longer than this are skipped: three extra decodes of a very
+    # long recording hold the model lock in chunks for little extra
+    # evidence — the garbles repeat in the first two minutes anyway.
+    max_clip_seconds: float = 120.0
+    # LLM adjudications per day. Spends the polish pass's Groq bucket
+    # (~1,000/day), so this is generous headroom, not a tight budget;
+    # past it the acoustic consensus vote still runs.
+    llm_per_day: int = 60
+    # Verified (audio, text) pairs kept in corpus\ as future fine-tuning
+    # data. ~1 MB per 30 s clip; 400 is roughly 3-4 hours of speech.
+    # 0 keeps none.
+    corpus_keep: int = 400
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     """The phone endpoint: dictate from the phone, transcribe on this GPU.
 
@@ -640,6 +665,7 @@ class Config:
     punctuate: PunctuateConfig = field(default_factory=PunctuateConfig)
     lookup: LookupConfig = field(default_factory=LookupConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    study: StudyConfig = field(default_factory=StudyConfig)
     vocab: VocabConfig = field(default_factory=VocabConfig)
     polish: PolishConfig = field(default_factory=PolishConfig)
     visual_qa: VisualQAConfig = field(default_factory=VisualQAConfig)
@@ -855,6 +881,7 @@ def load(path: Path) -> Config:
     vocab = data.get("vocab", {})
     polish = data.get("polish", {})
     visual_qa = data.get("visual_qa", {})
+    study = data.get("study", {})
     capture = data.get("capture", {})
     camera = data.get("camera", {})
 
@@ -986,6 +1013,17 @@ def load(path: Path) -> Config:
                                          LookupConfig.cache_entries)),
             skip_consoles=bool(lookup.get("skip_consoles",
                                           LookupConfig.skip_consoles)),
+        ),
+        study=StudyConfig(
+            enabled=bool(study.get("enabled", StudyConfig.enabled)),
+            idle_minutes=float(study.get("idle_minutes",
+                                         StudyConfig.idle_minutes)),
+            max_clip_seconds=float(study.get("max_clip_seconds",
+                                             StudyConfig.max_clip_seconds)),
+            llm_per_day=int(study.get("llm_per_day",
+                                      StudyConfig.llm_per_day)),
+            corpus_keep=int(study.get("corpus_keep",
+                                      StudyConfig.corpus_keep)),
         ),
         server=ServerConfig(
             enabled=bool(server.get("enabled", ServerConfig.enabled)),

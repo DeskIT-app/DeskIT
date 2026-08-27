@@ -2130,6 +2130,79 @@ and `recent\` is capped at `keep_audio` (50), oldest dropped first. Set
 the ability to measure rather than assume. The seed terms in `config.toml`
 *are* committed: those are hand-written, not learned.
 
+## Learning while you idle — the study pass (fast)
+
+`Ctrl+F8` learns only when you stop to teach, and most dictations are sent
+and forgotten. The study pass learns from the forgotten ones. A few
+minutes after you go idle, the app takes a recording it already
+transcribed (from `recent\`), decodes it three MORE ways — the Hebrew
+model at a wider beam, the *general* model that is already resident for
+language detection, and a looser-temperature pass — lets the decodes
+vote, and has a language model adjudicate the words they disagree on.
+Where that verified reading differs from what was pasted, the live pass
+was probably wrong, and the difference becomes machine evidence for the
+vocabulary. You never see any of it; nothing on screen ever changes.
+
+The verified text is picked by two considerations, both enforced in code:
+
+- **Acoustic fit** — every candidate word was produced by a decoder that
+  listened to the audio. The adjudicator's reply is *rejected in code* if
+  it contains a word no decode ever heard (`study.py::_safe_choice`), so
+  it can choose between readings but cannot write its own.
+- **Hebrew plausibility** — the adjudicator (the polish backends: Groq
+  first, local fallback; text only, audio never leaves this machine)
+  reads the whole sentence and picks the reading that is real Hebrew.
+
+Machine evidence is deliberately weaker than anything you teach by hand:
+
+| evidence | may become a hotword | may feed the polish glossary | may rewrite text |
+|---|---|---|---|
+| your `Ctrl+F8` correction | immediately | immediately | after `replace_after_hits` (2) |
+| the study pass | after 2 *different* recordings, family A only | after 2 recordings | **never** |
+
+Family A (unknown names — Latin or digits in the pair) can become
+hotwords; family B (a real Hebrew word swapped for another) only ever
+feeds the polish glossary, where the sentence around it gates the repair
+— feeding it to the decoder would make Whisper emit common words
+unbidden.
+
+Two rules exist because the first measured run (2026-08-27, 48 clips)
+demanded them:
+
+- **The vote proposes, the adjudicator disposes.** Two of the three
+  decodes share a model and share its habits, so "2 of 3 agree" alone
+  mostly surfaced orthographic wobble (`ותעשה -> תעשה`,
+  `שנייה -> שניה`) — and scored *worse* than the live text on the
+  human-corrected clips (10.94% vs 8.59% WER). Nothing is learned unless
+  the language model, reading the sentence, chose that reading.
+- **A divergence must be the decoder's own testimony.** Where the repair
+  pass already fixed a word, every fresh decode of the same audio still
+  hears the original garble — so an unguarded diff would learn the pair
+  *backwards* and teach the app to un-fix itself. Pairs whose heard side
+  never appeared in the raw decode are dropped (`study.py`, the
+  backward-learning guard).
+
+Measured on this machine's own 48 recordings, second run (2026-08-27,
+after both rules): 48 clips studied in 308 s of idle GPU time; 38 came back clean, 12 divergence pairs survived every guard (2 term, 10 context), and none acts yet — each still needs a second recording to agree. On the 6 human-corrected clips the verified text cost 12 word-edits against the live text's 11 (of 128 truth words, 9.38% vs 8.59% WER) — and that one extra edit turned out to be a mishearing the human correction itself had missed: `הבטח לי חשבון חדש` for a spoken `תפתח לי חשבון חדש`, caught by the pass.
+
+Alongside the learning, verified `(audio, text)` pairs accumulate in
+`corpus\` — **gold** when you corrected the clip yourself, **silver**
+when every decode agreed with what was pasted — capped at
+`[study] corpus_keep` (400). That is training data for a future LoRA
+fine-tune of the local model on your own voice, which is where these
+errors actually get removed at the source.
+
+Costs and controls, `config.toml [study]`: runs only after
+`idle_minutes` (3) of quiet, steps aside before every decode the moment
+anything happens (a dictation that collides waits out at most ONE decode
+of the shared model lock, not three), skips clips over
+`max_clip_seconds` (120), and spends at most `llm_per_day` (60)
+adjudications from the same free Groq bucket the polish pass uses.
+`enabled = false` turns the whole channel off. `main.py --study` runs it
+in the foreground over everything unstudied and prints what it found —
+including, for clips you corrected, the verified text scored against
+your own correction.
+
 ## Nothing is ever lost
 
 The failure this design exists to prevent: you speak for 20 seconds, the

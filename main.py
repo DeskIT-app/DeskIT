@@ -504,6 +504,27 @@ class App:
             for name, amount in deltas.items():
                 self._stats[name] = self._stats.get(name, 0) + amount
 
+    def _learning_quiet(self) -> bool:
+        """Is RIGHT NOW a moment the study engine may borrow the GPU?
+
+        Ready and idle only: not recording, not transcribing, not paused
+        (paused usually means a game owns this GPU), nothing queued and no
+        text key mid-flight. The engine re-asks before every decode.
+        """
+        return (self._activity == "ready"
+                and self.queue.empty()
+                and not self._text_busy.is_set()
+                and not self._correcting.is_set()
+                and not self._looking_up.is_set())
+
+    def _learning_fingerprint(self) -> tuple:
+        """Changes whenever the user does anything the stats can see.
+        The study engine waits for this to sit still for [study]
+        idle_minutes — a cheap read, polled every few seconds."""
+        with self._stats_lock:
+            counts = tuple(sorted(self._stats.items()))
+        return (self._activity, counts)
+
     def _set_state(self, state: str) -> None:
         self._activity = state
         self.dot.set_state(state)
@@ -766,9 +787,32 @@ class App:
                 log.warning("phone endpoint could not start (%s) — the "
                             "hotkey is unaffected", e)
                 self.phone = None
+        # The second learning channel (study.py): revisit recordings the
+        # user already sent, when the machine is idle, and learn from what
+        # the live pass got wrong. Built like skin/: a getattr and a
+        # guarded import, so on a version whose config.py has no [study]
+        # section — classic — this whole block is four cheap no-ops and
+        # main.py stays byte-identical on both branches.
+        self._study = None
+        scfg = getattr(self.cfg, "study", None)
+        if scfg is not None and scfg.enabled and self.recent is not None \
+                and hasattr(self.transcriber, "study_decode"):
+            try:
+                import study as study_mod
+                self._study = study_mod.Engine(
+                    self.cfg, self.transcriber, self.vocab, self.recent,
+                    model_lock=self._model_lock,
+                    quiet=self._learning_quiet,
+                    fingerprint=self._learning_fingerprint,
+                    app_dir=APP_DIR)
+                self._study.start()
+            except Exception as e:      # noqa: BLE001 — optional feature
+                log.info("study engine unavailable (%s)", e)
 
     def stop(self) -> None:
         self._stopping.set()      # ends the fullscreen watcher's wait()
+        if getattr(self, "_study", None) is not None:
+            self._study.stop()
         self.dot.stop()
         # Its own thread and its own window, and the window is destroyed
         # rather than hidden. That matters more than it did: the box waits
@@ -2426,6 +2470,11 @@ def main() -> int:
                         help="replay every recording you have corrected, "
                              "with the learned vocabulary on and off, and "
                              "report the word error rate of each")
+    parser.add_argument("--study", action="store_true",
+                        help="study every recording in recent\\ that was "
+                             "never corrected: re-decode it several ways, "
+                             "adjudicate, and report what the live pass "
+                             "got wrong (see study.py)")
     parser.add_argument("--vocab", action="store_true",
                         help="print what the app has learned (vocab.json) "
                              "and the hotword list it builds, then exit")
@@ -2566,6 +2615,18 @@ def main() -> int:
 
     if args.benchmark:
         return benchmark(cfg)
+
+    if args.study:
+        try:
+            import study as study_mod
+        except ImportError:
+            print("The study engine is not part of this version — switch "
+                  "to fast (Versions.vbs) to use it.")
+            return 2
+        if getattr(cfg, "study", None) is None:
+            print("This version's config has no [study] section.")
+            return 2
+        return study_mod.study_all(cfg, APP_DIR)
 
     if args.drain:
         return drain(cfg)

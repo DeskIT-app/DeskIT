@@ -12258,6 +12258,466 @@ def test_turning_the_skin_off_really_turns_it_off() -> None:
         skin.reset()
 
 
+
+# --------------------------------------------------------------------------
+# The second learning channel (study.py) and machine evidence (vocab.py)
+# --------------------------------------------------------------------------
+
+
+def test_machine_evidence_never_wins_replace_rights() -> None:
+    """The rule the whole channel hangs on: no amount of MACHINE agreement
+    may ever rewrite the user's text automatically. apply() gates on the
+    human hits counter alone, and learn_auto cannot touch it."""
+    v = _tmp_vocab(replace_after_hits=2)
+    for n in range(5):
+        v.learn_auto("סירקה", "סריקה", source=f"rec-{n}")
+    out, applied = v.apply("עשיתי סירקה מלאה")
+    assert out == "עשיתי סירקה מלאה", out
+    assert applied == [], applied
+    # Two HUMAN corrections of the same pair — now, and only now, it acts.
+    v.learn("סירקה", "סריקה")
+    v.learn("סירקה", "סריקה")
+    out, applied = v.apply("עשיתי סירקה מלאה")
+    assert out == "עשיתי סריקה מלאה", out
+
+
+def test_the_same_recording_never_testifies_twice() -> None:
+    """Re-studying a clip (after an ENGINE bump) must not be counted as new
+    independent evidence — auto_hits counts DIFFERENT recordings."""
+    v = _tmp_vocab()
+    v.learn_auto("xpogo", "Expo Go", source="rec-1")
+    v.learn_auto("xpogo", "Expo Go", source="rec-1")
+    entry = v.corrections[0]
+    assert int(entry["auto_hits"]) == 1, entry
+    v.learn_auto("xpogo", "Expo Go", source="rec-2")
+    assert int(entry["auto_hits"]) == 2, entry
+
+
+def test_machine_terms_need_two_recordings_before_hotwords() -> None:
+    v = _tmp_vocab()
+    v.learn_auto("xpogo", "Expo Go", source="rec-1")
+    assert "Expo Go" not in v.terms(), v.terms()
+    v.learn_auto("xpogo", "Expo Go", source="rec-2")
+    assert "Expo Go" in v.terms(), v.terms()
+
+
+def test_glossary_only_pairs_stay_out_of_the_hotwords() -> None:
+    """Family B: a real Hebrew word swapped for a real Hebrew word. As a
+    hotword it would prompt Whisper to emit a common word unbidden; as a
+    glossary line the polish model reads the sentence first. So it reaches
+    the glossary and never the decoder."""
+    v = _tmp_vocab()
+    for n in range(3):
+        v.learn_auto("קירוב", "קירור", source=f"rec-{n}",
+                     glossary_only=True)
+    assert "קירור" not in v.terms(), v.terms()
+    assert "קירור" not in v.hotwords()
+    assert ("קירוב", "קירור") in v.glossary(), v.glossary()
+
+
+def test_human_terms_outrank_machine_terms() -> None:
+    """Budget order: seeds (the user's own hand), then human corrections,
+    then machine evidence. max_terms cuts from the back, so the machine
+    entries are the first to fall off."""
+    v = _tmp_vocab(seed_terms=("Massif",), max_terms=3)
+    v.learn("brinth", "branch")
+    for n in range(2):
+        v.learn_auto("xpogo", "Expo Go", source=f"rec-{n}")
+    assert v.terms() == ["Massif", "branch", "Expo Go"], v.terms()
+    v2 = _tmp_vocab(seed_terms=("Massif",), max_terms=2)
+    v2.learn("brinth", "branch")
+    for n in range(2):
+        v2.learn_auto("xpogo", "Expo Go", source=f"rec-{n}")
+    assert v2.terms() == ["Massif", "branch"], v2.terms()
+
+
+def test_a_human_correction_upgrades_a_machine_entry() -> None:
+    """When the user corrects a pair the machine had already noticed, the
+    entry becomes a human one: hits start counting, and the human's meant
+    wins any conflict from then on."""
+    v = _tmp_vocab(replace_after_hits=2)
+    v.learn_auto("brinth", "brunch", source="rec-1")   # machine got it wrong
+    v.learn("brinth", "branch")
+    entry = v.corrections[0]
+    assert int(entry["hits"]) == 1 and entry["meant"] == "branch", entry
+    # and machine evidence can no longer move the meant
+    v.learn_auto("brinth", "brunch", source="rec-2")
+    assert entry["meant"] == "branch", entry
+
+
+def test_auto_evidence_survives_a_save_and_load() -> None:
+    v = _tmp_vocab()
+    v.learn_auto("xpogo", "Expo Go", source="rec-1")
+    v.learn_auto("xpogo", "Expo Go", source="rec-2")
+    v.save()
+    v2 = vocab_mod.Vocab(v.path)
+    entry = v2.corrections[0]
+    assert int(entry["auto_hits"]) == 2, entry
+    assert int(entry["hits"]) == 0, entry
+    assert "Expo Go" in v2.terms()
+    out, applied = v2.apply("תריץ xpogo")
+    assert applied == [], "a reload must not invent replace rights"
+
+
+def test_the_family_split_matches_the_vocab_reasoning() -> None:
+    import study as study_mod
+    assert study_mod.family("xpogo", "Expo Go") == "term"
+    assert study_mod.family("בקו-ורק", "Cowork") == "term"
+    assert study_mod.family("קירוב", "קירור") == "context"
+
+
+def test_consensus_needs_two_independent_agreements() -> None:
+    """One decode disagreeing is an anecdote; two agreeing on the SAME
+    reading for the SAME span is evidence; two disagreeing with the
+    primary AND each other is proof the region is hard, not a vote."""
+    import study as study_mod
+    primary = "נוזל קירוב למנוע"
+    out, pairs = study_mod.consensus(primary, ["נוזל קירור למנוע"])
+    assert out == primary and pairs == [], (out, pairs)
+    out, pairs = study_mod.consensus(
+        primary, ["נוזל קירור למנוע", "נוזל קירור למנוע",
+                  "נוזל קירוב למנוע"])
+    assert out == "נוזל קירור למנוע", out
+    assert pairs == [("קירוב", "קירור")], pairs
+    out, pairs = study_mod.consensus(
+        primary, ["נוזל קירור למנוע", "נוזל קידוח למנוע"])
+    assert out == primary and pairs == [], (out, pairs)
+
+
+def test_consensus_keeps_the_primary_punctuation() -> None:
+    import study as study_mod
+    primary = "בסדר, תעשה סירקה עכשיו!"
+    out, pairs = study_mod.consensus(
+        primary, ["בסדר תעשה סריקה עכשיו", "בסדר, תעשה סריקה עכשיו"])
+    assert out == "בסדר, תעשה סריקה עכשיו!", out
+    assert pairs == [("סירקה", "סריקה")], pairs
+
+
+def test_the_adjudicator_cannot_introduce_words_from_nowhere() -> None:
+    """The guarantee that turns 'ask an LLM' into 'let an LLM choose': a
+    reply word that no decode of the audio ever produced is proof of
+    rewriting, and the reply dies in code, not in the prompt."""
+    import study as study_mod
+    primary = "נוזל קירוב למנוע"
+    candidates = ["נוזל קירור למנוע"]
+    ok, _ = study_mod._safe_choice(primary, candidates,
+                                   "נוזל קירור למנוע")
+    assert ok
+    ok, why = study_mod._safe_choice(primary, candidates,
+                                     "נוזל צינון למנוע")
+    assert not ok and "צינון" in why, (ok, why)
+    # the Hebrew prefixes are one word, not a new one
+    ok, _ = study_mod._safe_choice("הלכתי סירקה", ["הלכתי לסריקה"],
+                                   "הלכתי סריקה")
+    assert ok, "a decode that heard לסריקה has heard סריקה"
+
+
+def test_a_reply_that_rewrites_is_rejected_before_word_checks() -> None:
+    import study as study_mod
+    primary = "אחת שתיים שלוש"
+    reply = "אחת שתיים שלוש " + "שלוש " * 10
+    ok, _ = study_mod._safe_choice(primary, [reply], reply)
+    assert not ok, "growth beyond polish._is_safe must reject"
+
+
+class _StudyItem:
+    """A SpooledItem stand-in: same three members study.py touches."""
+
+    def __init__(self, wav_path, meta, seconds=5.0):
+        self.wav_path = wav_path
+        self.meta = meta
+        self.seconds = seconds
+
+    def read(self):
+        return b"RIFF-not-really-audio"
+
+
+class _StudyAdjudicator:
+    """An adjudicator that assents to a fixed reading — no network."""
+
+    def __init__(self, reply):
+        self._reply = reply
+
+    def adjudicate(self, primary, candidates):
+        return self._reply
+
+
+class _StudyTranscriber:
+    """study_decode by plan: the kwargs are the plan's identity."""
+
+    def __init__(self, wide="", general="", loose=""):
+        self._wide, self._general, self._loose = wide, general, loose
+        self.calls = 0
+
+    def study_decode(self, audio, **kw):
+        self.calls += 1
+        if kw.get("general"):
+            return self._general
+        if kw.get("temperature") is not None:
+            return self._loose
+        return self._wide
+
+
+def test_study_skips_what_it_already_studied() -> None:
+    import study as study_mod
+    assert not study_mod.needs_study(
+        _StudyItem(Path("x.wav"), {"text": ""}))
+    assert study_mod.needs_study(
+        _StudyItem(Path("x.wav"), {"text": "שלום"}))
+    assert not study_mod.needs_study(
+        _StudyItem(Path("x.wav"),
+                   {"text": "שלום", "study": {"engine": study_mod.ENGINE}}))
+    assert study_mod.needs_study(
+        _StudyItem(Path("x.wav"),
+                   {"text": "שלום", "study": {"engine": 0}}))
+
+
+def test_study_stands_aside_the_moment_the_user_is_back() -> None:
+    import study as study_mod
+    t = _StudyTranscriber(wide="שלום")
+    result = study_mod.study_one(
+        _StudyItem(Path("x.wav"), {"text": "שלום"}), t,
+        pause=lambda: True)
+    assert result is None, "pause=True must abandon the clip whole"
+    assert t.calls == 0, "and before any decode, not after"
+
+
+def test_the_vote_proposes_and_the_adjudicator_disposes() -> None:
+    """Measured 2026-08-27 over 48 real clips: consensus-only verdicts
+    were mostly orthographic wobble (two of the three decodes share a
+    model and its habits) and scored worse than the live text on the
+    labelled clips. So an acoustic vote with no adjudicator assent
+    teaches NOTHING — and with assent, it teaches the divergence."""
+    import study as study_mod
+    item = _StudyItem(Path("rec-9.wav"), {"text": "תריץ את xpogo עכשיו"})
+    t = _StudyTranscriber(wide="תריץ את Expo Go עכשיו",
+                          general="תריץ את Expo Go עכשיו",
+                          loose="תריץ את xpogo עכשיו")
+    result = study_mod.study_one(item, t)
+    assert result["verified"] == "תריץ את xpogo עכשיו", \
+        "without assent, verified IS the live text"
+    assert result["voted"] == "תריץ את Expo Go עכשיו", result
+    assert result["pairs"] == [], "no assent, no learning"
+    assert result["llm"] is False
+    assented = study_mod.study_one(
+        item, t,
+        adjudicator=_StudyAdjudicator("תריץ את Expo Go עכשיו"))
+    assert assented["llm"] is True
+    assert assented["pairs"] == [["xpogo", "Expo Go", "term"]], assented
+    # and a clip every decode agrees on teaches nothing either way
+    t2 = _StudyTranscriber(wide="שלום עולם", general="שלום עולם",
+                           loose="שלום עולם")
+    result2 = study_mod.study_one(
+        _StudyItem(Path("rec-10.wav"), {"text": "שלום עולם"}), t2,
+        adjudicator=_StudyAdjudicator("שלום עולם"))
+    assert result2["pairs"] == [], result2
+    assert result2["agree"] == 1.0, result2
+
+
+def test_one_lonely_decode_is_an_anecdote_not_a_study() -> None:
+    """Two decodes failing (a broken general model, say) must not leave a
+    single opinion rewriting history — and must not leave the clip
+    unstudied forever either."""
+    import study as study_mod
+
+    class _Flaky(_StudyTranscriber):
+        def study_decode(self, audio, **kw):
+            if kw.get("general") or kw.get("temperature") is not None:
+                raise RuntimeError("boom")
+            return "טקסט אחר לגמרי מהמקור שהיה"
+
+    result = study_mod.study_one(
+        _StudyItem(Path("x.wav"), {"text": "שלום עולם"}), _Flaky())
+    assert result is not None and result["pairs"] == [], result
+    assert result["verified"] == "שלום עולם", result
+    assert result["engine"] == study_mod.ENGINE
+
+
+def test_the_corpus_is_capped_and_gold_is_never_downgraded() -> None:
+    import json as json_mod
+    import tempfile
+    import study as study_mod
+    root = Path(tempfile.mkdtemp(prefix="corpus-"))
+    src = Path(tempfile.mkdtemp(prefix="rec-"))
+    corpus = study_mod.Corpus(root / "corpus", keep=2)
+
+    def make(name):
+        wav = src / name
+        wav.write_bytes(b"RIFFx")
+        return _StudyItem(wav, {})
+
+    assert corpus.admit(make("a.wav"), "אחת", "gold")
+    assert corpus.admit(make("b.wav"), "שתיים", "silver")
+    assert corpus.admit(make("c.wav"), "שלוש", "silver")
+    assert len(corpus) == 2, "keep=2 must trim the oldest"
+    # a gold label is a human's word; silver evidence must not overwrite it
+    item = make("d.wav")
+    corpus_keep_all = study_mod.Corpus(root / "corpus2", keep=10)
+    assert corpus_keep_all.admit(item, "מילה של בנאדם", "gold")
+    assert not corpus_keep_all.admit(item, "ניחוש של מכונה", "silver")
+    side = json_mod.loads(
+        (root / "corpus2" / "d.json").read_text("utf-8"))
+    assert side["tier"] == "gold" and side["text"] == "מילה של בנאדם", side
+
+
+def test_the_engine_studies_one_clip_and_feeds_the_vocab() -> None:
+    """End to end with the LLM leg budgeted to zero: spool in, consensus
+    vote, sidecar stamped, vocabulary fed — and a second call finds
+    nothing left to do."""
+    import dataclasses as dc
+    import tempfile
+    import threading
+    import study as study_mod
+    from spool import Spool
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    tmp = Path(tempfile.mkdtemp(prefix="study-"))
+    recent = Spool(tmp / "recent", keep=10)
+    recent.save(b"RIFFx", 5.0, "",
+                extra={"text": "נוזל קירוב למנוע",
+                       "raw": "נוזל קירוב למנוע"})
+    v = _tmp_vocab()
+    t = _StudyTranscriber(wide="נוזל קירור למנוע",
+                          general="נוזל קירור למנוע",
+                          loose="נוזל קירוב למנוע")
+    engine = study_mod.Engine(
+        cfg, t, v, recent,
+        model_lock=threading.Lock(),
+        quiet=lambda: True,
+        fingerprint=lambda: 0,
+        app_dir=tmp,
+        adjudicator=_StudyAdjudicator("נוזל קירור למנוע"))
+    assert engine.run_once() is True
+    item = recent.pending()[0]
+    assert item.meta["study"]["engine"] == study_mod.ENGINE
+    assert item.meta["study"]["pairs"] == [["קירוב", "קירור", "context"]]
+    entry = v.corrections[0]
+    assert entry["heard"] == "קירוב" and int(entry["auto_hits"]) == 1
+    assert entry["glossary_only"] is True, entry
+    out, applied = v.apply("נוזל קירוב")
+    assert applied == [], "the engine must never grant replace rights"
+    assert engine.run_once() is False, "nothing left to study"
+
+
+def test_a_spent_llm_budget_waits_instead_of_wasting_clips() -> None:
+    """Learning requires the adjudicator's assent, so a clip studied with
+    no budget would be stamped while teaching nothing — the engine must
+    leave it whole for tomorrow instead."""
+    import dataclasses as dc
+    import tempfile
+    import threading
+    import study as study_mod
+    from spool import Spool
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dc.replace(cfg, study=dc.replace(cfg.study, llm_per_day=0))
+    tmp = Path(tempfile.mkdtemp(prefix="study-"))
+    recent = Spool(tmp / "recent", keep=10)
+    recent.save(b"RIFFx", 5.0, "", extra={"text": "שלום עולם"})
+    t = _StudyTranscriber(wide="שלום עולם", general="שלום עולם",
+                          loose="שלום עולם")
+    engine = study_mod.Engine(cfg, t, _tmp_vocab(), recent,
+                              model_lock=threading.Lock(),
+                              quiet=lambda: True,
+                              fingerprint=lambda: 0,
+                              app_dir=tmp)
+    assert engine.run_once() is False
+    assert t.calls == 0, "no decode may be spent without an adjudicator"
+    assert "study" not in recent.pending()[0].meta, "and no stamp either"
+
+
+def test_a_clip_too_long_to_study_is_marked_not_rechewed() -> None:
+    import dataclasses as dc
+    import tempfile
+    import threading
+    import study as study_mod
+    from spool import Spool
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dc.replace(cfg, study=dc.replace(cfg.study,
+                                           max_clip_seconds=10.0))
+    tmp = Path(tempfile.mkdtemp(prefix="study-"))
+    recent = Spool(tmp / "recent", keep=10)
+    recent.save(b"RIFFx", 99.0, "", extra={"text": "ארוך מאוד"})
+    t = _StudyTranscriber()
+    engine = study_mod.Engine(cfg, t, _tmp_vocab(), recent,
+                              model_lock=threading.Lock(),
+                              quiet=lambda: True,
+                              fingerprint=lambda: 0,
+                              app_dir=tmp)
+    assert engine.run_once() is False
+    assert t.calls == 0, "no decode may be spent on a skipped clip"
+    assert "skipped" in recent.pending()[0].meta["study"]
+    assert engine.run_once() is False, "and it is not picked again"
+
+
+def test_the_shipped_config_carries_the_study_section() -> None:
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    scfg = getattr(cfg, "study", None)
+    assert scfg is not None and scfg.enabled, scfg
+    assert scfg.idle_minutes > 0 and scfg.max_clip_seconds > 0
+    assert 0 < scfg.llm_per_day < 500, "must stay well under Groq's ~1,000/day"
+
+
+def test_the_learning_probes_read_the_app_cheaply() -> None:
+    """The study engine polls these every few seconds; they must work on a
+    half-built App (the suite's convention) and see both state and
+    counters move."""
+    import queue as queue_mod
+    import threading
+
+    import main as main_mod
+    app = main_mod.App.__new__(main_mod.App)
+    app._activity = "ready"
+    app.queue = queue_mod.Queue()
+    app._text_busy = threading.Event()
+    app._correcting = threading.Event()
+    app._looking_up = threading.Event()
+    app._stats_lock = threading.Lock()
+    app._stats = {"dictations": 0}
+    assert app._learning_quiet()
+    before = app._learning_fingerprint()
+    app._stats["dictations"] = 1
+    assert app._learning_fingerprint() != before, "a dictation must show"
+    app._activity = "recording"
+    assert not app._learning_quiet(), "recording is never a quiet moment"
+
+
+
+def test_the_study_never_relearns_what_the_live_pass_already_fixed() -> None:
+    """The backward-learning trap: polish fixed a word, every fresh decode
+    of the same audio still hears the original garble, the vote "agrees"
+    the fix back out — and the diff would teach the app to un-fix itself,
+    (right word -> garble). The heard side of a learnable pair must be
+    something the live decoder actually produced."""
+    import study as study_mod
+    item = _StudyItem(Path("rec-11.wav"),
+                      {"raw": "נוזל קירוב למנוע",
+                       "text": "נוזל קירור למנוע"})   # polish fixed it
+    t = _StudyTranscriber(wide="נוזל קירוב למנוע",
+                          general="נוזל קירוב למנוע",
+                          loose="נוזל קירוב למנוע")
+    result = study_mod.study_one(
+        item, t, adjudicator=_StudyAdjudicator("נוזל קירוב למנוע"))
+    assert result["llm"] is True, result
+    assert result["pairs"] == [], result
+    # and that disagreement is NOT silver corpus material either
+    assert not study_mod.Engine._silver(item.meta, result), result
+    # while a clip where everything agrees still is
+    t2 = _StudyTranscriber(wide="נוזל קירור למנוע",
+                           general="נוזל קירור למנוע",
+                           loose="נוזל קירור למנוע")
+    result2 = study_mod.study_one(
+        _StudyItem(Path("rec-12.wav"),
+                   {"raw": "נוזל קירור למנוע",
+                    "text": "נוזל קירור למנוע"}), t2)
+    assert study_mod.Engine._silver(
+        {"text": "נוזל קירור למנוע"}, result2), result2
+    # ...but a clip the vote DISPUTED is not "everything agreed", even
+    # though the unendorsed verified text equals the live text
+    assert result["disputed"] and not study_mod.Engine._silver(
+        item.meta, result), result
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
