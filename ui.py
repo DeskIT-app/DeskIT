@@ -54,6 +54,37 @@ EDGE_HI     = "#273040"
 EDGE_DOWN   = "#1a212d"
 STROKE      = "#2a3242"
 
+# The eight colours dashboard.py used to spell out inline. Their values
+# here are exactly the literals it had, so nothing about the window
+# changes by naming them — but a palette can now reach them, and a shade
+# that lives in one place can no longer drift from the ramp it belongs to.
+RULE        = "#1a202b"   # the hairline between the sidebar and the pane
+ACCENT_EDGE = "#2b3f66"   # the border of a selected sidebar row
+SIDE_IDLE   = "#141922"   # a sidebar row that is not selected
+SIDE_CARD   = "#131822"   # the state card at the foot of the sidebar
+QUOTE_BG    = "#1b2231"   # the quoted-transcript panel
+QUOTE_EDGE  = "#2c3648"
+TILE_EDGE   = "#2f3a4d"   # a tile or row under the pointer
+CHIP_BG     = "#1c2432"   # the small square behind a row's icon
+
+# --- SKIN -----------------------------------------------------------------
+# One hook, and it has to be HERE rather than anywhere later: `from ui
+# import CARD` binds the VALUE at import time, so a repaint that ran after
+# this module finished executing would leave every already-imported name on
+# the old colour. visual_qa.py reads these attributes at its own import and
+# gets whatever this leaves behind, which is how the ask card is recoloured
+# without a line of its own.
+#
+# Delete skin\ and the import fails, the except swallows it, and the
+# palette above is what the app uses — which is exactly what it used before
+# any of this existed.
+try:
+    import skin as _skin
+    _skin.repaint(globals())
+except Exception:
+    pass
+# --------------------------------------------------------------------------
+
 def _gdi_face(name: str) -> tuple[bool, bool]:
     """(exists, holds Hebrew) for a font family, asked of GDI itself.
 

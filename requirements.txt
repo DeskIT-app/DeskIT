@@ -12,3 +12,18 @@ faster-whisper
 # 8.2 s vs 0.20 s for a 3 s clip). Harmless to install without an NVIDIA GPU.
 nvidia-cublas-cu12
 nvidia-cudnn-cu12
+
+# The look (skin\). Chrome's 2D engine, for the one thing Tk and Pillow
+# together cannot do: antialiased vector light composited PER-PIXEL over
+# the live desktop. Measured on this machine — Tk canvas antialiases
+# nothing at all (a 400x400 grab of its primitives held exactly two
+# distinct colours), and Pillow antialiases everything but has no route
+# onto the screen except a 1-bit chroma key, which fringes every soft edge
+# it draws. Skia renders straight into a layered window's own DIB, so the
+# release runs at 138 fps median at 2560x1440 with true alpha.
+#
+# OPTIONAL, and deliberately so: skin\__init__.py reports the skin off if
+# this import fails, and the app falls back to the Tk overlays it has
+# always had. A missing wheel is a downgrade, never a crash. Delete the
+# skin\ folder and this line stops being needed at all.
+skia-python

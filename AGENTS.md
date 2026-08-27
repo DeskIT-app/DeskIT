@@ -353,6 +353,61 @@ back.
   and never touched. Note `.gitignore` is in that set even though no test checks it: `versions.py`
   refuses a switch when `git status --porcelain` is dirty, and untracked files count — a
   `captures\` folder ignored on one branch only would block the switch.
+- **The look lives in `skin/` and is meant to be deletable.** Every hook
+  into it is `try: import skin / except: skin = None` in FRONT of code
+  that was not otherwise touched, and `ui.py` still carries the ORIGINAL
+  hex literals under the repaint hook — so `rmdir /s skin` really is the
+  revert, and two tests assert it. Do not "tidy" those literals to match
+  the new palette; that would quietly make the revert stop reverting.
+  `SKIN.md` has the rest.
+- **Tk antialiases NOTHING, and that is measurable.** A 400x400 grab of
+  canvas primitives came back with exactly two distinct colours. So a
+  chroma key is bit-exact clean for canvas items (there are no partial
+  pixels to fringe) and completely unusable for anything Pillow drew. The
+  first release animation was Tk canvas items and was rejected on sight as
+  pixelated. What draws antialiased light over the live desktop is
+  `UpdateLayeredWindow` + Skia — AGENTS rules ULW out for the ask card
+  because it "erases Tk", which is not a cost for a window that is only a
+  picture. See `skin/glass.py`.
+- **skia-python's CPU rasteriser blends at 64 ns a pixel, and the GPU is
+  3400x faster.** The CPU number is perfectly linear and unchanged by
+  colour type, alpha type or colour space: a full-screen alpha rect at
+  2560x1440 is 238 ms, `kSrc` is 1.34, a big radial gradient 160-240. On
+  the GPU the same fill is 0.07 ms and a 60 px Gaussian blur is 0.09.
+  `skin/gl.py` builds the OpenGL context by hand (skia-python ships
+  `GrDirectContext.MakeGL` but no windowing: a hidden 8x8 window, a pixel
+  format, `wglCreateContext`, ~270 ms once) and `skin/glass.py` reads the
+  finished frame back into the layered window's DIB — 4.33 ms at 1440p,
+  which is the whole price. A GL context is THREAD-AFFINE, so the contexts
+  live in a threading.local and the status dot never gets one.
+  Without a GPU everything still works and looks quieter: `skin/burst.py`
+  is written to the CPU budget and `boot.py` picks between them on
+  `glass.on_gpu`. Do not draw a large soft fill on the CPU path.
+- **The same reveal renders DIFFERENTLY on the two paths.** `skin/reveal.py`
+  measured 2.4% of one frame pure white on the GPU and 38% on the CPU
+  rasteriser. It is never drawn there, and its tests skip when there is no
+  context rather than testing a path the app never takes.
+- **A runtime shader needs its WHOLE uniform block, in declared order.**
+  Supplying 8 bytes for a `float2 + float` gives every uniform zero,
+  silently — no error, no warning, just a black frame.
+- **A reveal is rejected for its SHAPE, not its length.** Two attempts
+  failed here. The first was 880 ms — "it appears for half a second, you
+  can barely see it". The second kept the same shape and stretched it:
+  420 ms of wind-up and 2400 ms of aftermath, and the verdict was the
+  same. A card 24 degrees off screen centre costs a gaze about 300 ms just
+  to ARRIVE at, so a wind-up shorter than that is one nobody sees begin,
+  and 880 ms sits entirely inside one attentional-blink window. What works
+  is build 45-55%, payoff 5-12%, decay 35-45%, total inside the 2-3 s
+  "subjective present" so it is remembered as one gesture. The current
+  moment is 2580 ms at 52/5/43, and `test_the_moment_is_mostly_wind_up`
+  holds it there. Two details carry more than their weight: the impact
+  CUTS to a composition that is already formed rather than growing one
+  from a point, and the 110 ms hitstop after it is what lets the eye catch
+  up.
+- **The four Rubik files in `fonts\` are ONE variable font.** All four
+  report weight 300 and identical advance widths — asking for
+  `RubikMedium.ttf` and expecting Medium silently gets Light. Pin the
+  `wght` axis with `makeClone` (`skin/boot.py::_rubik`).
 - **Branch switches restart the running instance** (~25 s of model
   loading). That is expected, not a crash.
 
@@ -372,5 +427,6 @@ back.
 | `visual_qa.py` | ask-the-screen: region select, vision chain, answer window, TTS |
 | `capture.py` | screenshots (select, edit, clipboard, save), screen recording (BitBlt + PyAV), and the webcam photo key (dshow through the same PyAV, into the same editor) |
 | `dashboard.py` + `ui.py` | control window incl. the Version screen |
+| `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |
 | `versions.py` | whole-app version switching |
 | `tests.py` | the suite; run it |

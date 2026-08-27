@@ -248,6 +248,15 @@ except Exception:                       # ui.py absent: the window still works
 # a screenshot we took ourselves, not a translucent window: the overlay is
 # OPAQUE, so its hint text and readout stay ClearType-crisp, and the
 # rectangle you drag shows the UNDIMMED pixels underneath it.
+# --- SKIN: one hook, for the microphone wave. The palette above already
+# arrives reskinned, because it is read out of ui.py and ui.py repaints
+# itself. Delete skin\ and this import fails, `skin` stays None, and the
+# card draws the ovals it always drew.
+try:
+    import skin
+except Exception:
+    skin = None
+
 DIM_FACTOR = 0.38
 SELECT_BG = "#05070b"
 
@@ -3234,6 +3243,10 @@ class AskWindow:
         Each ring is one moment of loudness travelling outward: the
         newest is tight round the dot, the oldest is faint and wide.
         """
+        # --- SKIN: same rings, drawn as antialiased images instead of
+        # aliased ovals. False means it declined and the ovals below run.
+        if skin is not None and skin.wave(self):
+            return
         for item in self._wave_items:
             self.canvas.delete(item)
         self._wave_items = []

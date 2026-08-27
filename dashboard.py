@@ -470,7 +470,7 @@ class Dashboard:
         bottom — where it stays visible whichever screen is open."""
         bar = tk.Frame(self.root, bg=ui.BG, width=SIDE, height=H)
         bar.place(x=0, y=0)
-        tk.Frame(self.root, bg="#1a202b", width=1, height=H).place(x=SIDE - 1,
+        tk.Frame(self.root, bg=ui.RULE, width=1, height=H).place(x=SIDE - 1,
                                                                    y=0)
         badge = ui.icon_bitmap(ICON_PNG, 32, ui.BG)
         if badge is not None:
@@ -488,9 +488,9 @@ class Dashboard:
             item = tk.Canvas(bar, width=188, height=42, bg=ui.BG,
                              highlightthickness=0, bd=0, cursor="hand2")
             item.place(x=12, y=y)
-            faces = (ui.rounded(188, 42, 11, ui.ACCENT_SOFT, ui.BG, "#2b3f66"),
+            faces = (ui.rounded(188, 42, 11, ui.ACCENT_SOFT, ui.BG, ui.ACCENT_EDGE),
                      ui.rounded(188, 42, 11, ui.BG, ui.BG),
-                     ui.rounded(188, 42, 11, "#141922", ui.BG))
+                     ui.rounded(188, 42, 11, ui.SIDE_IDLE, ui.BG))
             face = item.create_image(0, 0, anchor="nw", image=faces[1])
             glyph = item.create_text(28, 21, text=ui.ICON[key],
                                      font=(ui.ICONS, 13), fill=ui.DIM)
@@ -502,15 +502,15 @@ class Dashboard:
             item.bind("<Leave>", lambda _e, n=name: self._nav_hover(n, False))
             y += 48
 
-        card = ui.Card(bar, 188, 78, bg=ui.BG, fill="#131822", radius=12,
+        card = ui.Card(bar, 188, 78, bg=ui.BG, fill=ui.SIDE_CARD, radius=12,
                        pad=14)
         card.place(x=12, y=H - 102)
-        self.parts["lamp"] = tk.Label(card.body, bg="#131822")
+        self.parts["lamp"] = tk.Label(card.body, bg=ui.SIDE_CARD)
         self.parts["lamp"].place(x=-4, y=6)
-        self.parts["state"] = tk.Label(card.body, text="", bg="#131822",
+        self.parts["state"] = tk.Label(card.body, text="", bg=ui.SIDE_CARD,
                                        fg=ui.FG, font=(ui.UI, 10, "bold"))
         self.parts["state"].place(x=26, y=4)
-        self.parts["uptime"] = tk.Label(card.body, text="", bg="#131822",
+        self.parts["uptime"] = tk.Label(card.body, text="", bg=ui.SIDE_CARD,
                                         fg=ui.FAINT, font=(ui.UI, 8))
         self.parts["uptime"].place(x=26, y=24)
 
@@ -599,8 +599,8 @@ class Dashboard:
             self._toast.destroy()
         wrapped, lines = ui.clamp(text, ui.UI, 9, CW - 60, 2)
         card = ui.Card(self.pane, CW, 30 + lines * 18, radius=12,
-                       fill="#1b2231", border="#2c3648", pad=12)
-        tk.Label(card.body, text=wrapped, bg="#1b2231", fg=ui.FG,
+                       fill=ui.QUOTE_BG, border=ui.QUOTE_EDGE, pad=12)
+        tk.Label(card.body, text=wrapped, bg=ui.QUOTE_BG, fg=ui.FG,
                  font=(ui.UI, 9), justify="left", anchor="w").place(x=0, y=0)
         self._toast = card
         self._toast_slide(card, 0)
@@ -675,7 +675,7 @@ class Dashboard:
         titles = (("DICTATIONS", "count"), ("SPOKEN", "spoken"),
                   ("CHARACTERS", "chars"), ("AVERAGE WAIT", "wait"))
         x = PAD
-        tile_hot = ui.rounded(161, 86, 14, ui.CARD_HI, ui.PANE, "#2f3a4d")
+        tile_hot = ui.rounded(161, 86, 14, ui.CARD_HI, ui.PANE, ui.TILE_EDGE)
         tile_idle = ui.rounded(161, 86, 14, ui.CARD, ui.PANE, ui.LINE)
         for title, key in titles:
             tile = ui.Card(self.sheet, 161, 86, pad=14)
@@ -1033,7 +1033,7 @@ class Dashboard:
                         highlightthickness=0, bd=0, cursor="hand2")
         row.pack(pady=(0, 8))
         idle = ui.rounded(CW, height, 12, ui.CARD, ui.PANE, ui.LINE)
-        hot = ui.rounded(CW, height, 12, ui.CARD_HI, ui.PANE, "#2f3a4d")
+        hot = ui.rounded(CW, height, 12, ui.CARD_HI, ui.PANE, ui.TILE_EDGE)
         face = row.create_image(0, 0, anchor="nw", image=idle)
         colour = COLOURS[event.colour]
 
@@ -1042,7 +1042,7 @@ class Dashboard:
         row.create_text(14, 34, text=event.when.strftime("%d %b"),
                         anchor="nw", font=(ui.UI, 8), fill=ui.FAINT)
         row.create_image(66, 14, anchor="nw",
-                         image=ui.rounded(28, 28, 9, "#1c2432", ui.CARD))
+                         image=ui.rounded(28, 28, 9, ui.CHIP_BG, ui.CARD))
         row.create_text(80, 28, text=ui.ICON[event.icon],
                         font=(ui.ICONS, 11), fill=colour)
 
@@ -1761,7 +1761,7 @@ class Dashboard:
             glow = low + (high - low) * wave
         try:
             self.parts["lamp"].config(
-                image=ui.lamp(26, colour, "#131822", glow))
+                image=ui.lamp(26, colour, ui.SIDE_CARD, glow))
             hero = self.parts.get("hero_lamp")
             if hero is not None and hero.winfo_exists():
                 hero.config(image=ui.lamp(46, colour, ui.CARD, glow))

@@ -54,6 +54,18 @@ import queue
 import threading
 import time
 
+# --- SKIN -----------------------------------------------------------------
+# The reskin lives entirely in skin\, and every hook that reaches it looks
+# like this one: guarded, optional, and sitting in FRONT of code that is
+# otherwise untouched. Delete the folder and this import fails, `skin`
+# stays None, every hook falls through, and both overlays are drawn by the
+# Tk code below exactly as they always were. See skin\__init__.py.
+try:
+    import skin
+except Exception:               # missing, broken, or no skia wheel
+    skin = None
+# --------------------------------------------------------------------------
+
 # Style bits, set after Tk creates the window (Tk exposes neither).
 GWL_EXSTYLE = -20
 WS_EX_NOACTIVATE = 0x08000000
@@ -145,6 +157,12 @@ class Splash:
 
     def _run(self) -> None:
         try:
+            # --- SKIN: takes over the picture, not the protocol. It reads
+            # the same queue, sets the same _alive, watches the same
+            # _closing and honours the same (_DONE, linger_ms). False means
+            # it declined, and the Tk splash below runs untouched.
+            if skin is not None and skin.splash_run(self):
+                return
             self._build_and_loop()
         except Exception as e:          # never take the app down...
             _log.info("splash unavailable: %r", e)   # ...but say so
@@ -395,6 +413,8 @@ class StatusDot:
 
     def _run(self) -> None:
         try:
+            if skin is not None and skin.dot_run(self):   # --- SKIN
+                return
             self._build_and_loop()
         except Exception as e:
             _log.info("status dot unavailable: %r", e)

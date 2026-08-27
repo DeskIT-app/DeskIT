@@ -2008,15 +2008,29 @@ def test_closing_the_splash_cannot_close_the_status_dot() -> None:
     here = Path(__file__).resolve().parent
     script = (
         "import os, time, overlay as ov, win32gui, win32process;"
+        # The wait is derived, not typed. With the skin installed the
+        # splash's close is followed by a ~2.7 s release, and the 1.6 s
+        # that used to be here reported "the splash never closed" when it
+        # was simply still playing.
+        "import skin.boot as _b; whole = _b.moment_ms() / 1000.0;"
         "s = ov.Splash(); s.start(); s.status('loading...'); time.sleep(.4);"
         "d = ov.StatusDot(); d.start(); time.sleep(.3);"
-        "s.finish('ready', linger_ms=60); time.sleep(1.6);"
+        "s.finish('ready', linger_ms=60); time.sleep(whole + 1.6);"
         "me = os.getpid(); found = [];"
+        # Two classes, because there are two ways this app draws an
+        # overlay. 'TkTopLevel' is the original pair; the skin (skin\) puts
+        # the same two windows on a plain CreateWindowExW popup so it can
+        # use UpdateLayeredWindow, and that popup registers a class of its
+        # own. What is being asserted has not changed — the splash must be
+        # gone and the dot must not have gone with it — only the way the
+        # two windows are found. Naming both keeps this test honest with
+        # the skin installed AND with it deleted.
+        "classes = ('TkTopLevel', 'HebrewDictationSkinGlass');"
         "cb = lambda h, _: ("
         "    found.append(win32gui.GetWindowRect(h))"
         "    if win32process.GetWindowThreadProcessId(h)[1] == me"
         "    and win32gui.IsWindowVisible(h)"
-        "    and win32gui.GetClassName(h) == 'TkTopLevel' else None);"
+        "    and win32gui.GetClassName(h) in classes else None);"
         "win32gui.EnumWindows(cb, None);"
         "sizes = [(r[2]-r[0], r[3]-r[1]) for r in found];"
         "print('SPLASH' if any(w > 200 for w, _ in sizes) else '', "
@@ -11629,6 +11643,619 @@ def test_a_stuck_escape_cannot_close_an_overlay_that_just_opened() -> None:
             f"{name} closes silently — the whole cost of this bug was that "
             "it never said anything")
 
+
+
+# --------------------------------------------------------------- the skin
+#
+# The reskin lives in skin\ and is meant to be DELETABLE: remove the folder
+# and the app must paint itself exactly as it did before it existed. These
+# tests guard that promise from both sides — that the hooks are all
+# optional, and that what they hook up to behaves.
+#
+# Every one of them skips cleanly when skin\ is not there, because "deleted
+# and the suite still passes" is the property being protected.
+
+def _skin_or_skip():
+    try:
+        import skin
+    except Exception:
+        return None
+    return skin
+
+
+def test_every_skin_hook_is_optional() -> None:
+    """The deletion promise, asserted at the source level.
+
+    A hook that imported `skin` bare would turn deleting the folder into an
+    ImportError at startup — which is the difference between a reskin you
+    can throw away and one you are married to. Every file that reaches into
+    skin\\ must do it inside a try/except that leaves the name None, and
+    must test that name before calling through.
+    """
+    here = Path(__file__).resolve().parent
+    for name in ("overlay.py", "ui.py", "visual_qa.py"):
+        source = (here / name).read_text("utf-8")
+        if "skin" not in source:
+            continue
+        assert "try:\n    import skin" in source or \
+               "try:\n    import skin as _skin" in source, (
+            f"{name} imports skin outside a try/except — deleting skin\\ "
+            f"would stop the app from starting")
+        for line in source.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("if skin") and "skin." in stripped:
+                assert "skin is not None" in stripped, (
+                    f"{name} calls into skin without checking it exists: "
+                    f"{stripped!r}")
+
+
+def test_the_skin_never_invents_a_colour_it_was_not_asked_for() -> None:
+    """repaint() writes only over names the target module already has.
+
+    A palette that could CREATE a constant would let a typo here paint
+    something nobody has ever looked at, and — worse — would hide the fact
+    that the name it meant to replace no longer exists.
+    """
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    from skin.palette import UI_NAMES
+    import ui as ui_mod
+    missing = [n for n in UI_NAMES if not hasattr(ui_mod, n)]
+    assert not missing, (
+        f"the skin repaints {missing}, which ui.py does not define — "
+        f"either the name was renamed or this is a typo, and in both cases "
+        f"the colour it meant to change is still the old one")
+    space = {"BG": "#000000", "NOT_A_COLOUR": "#ffffff"}
+    skin.repaint(space)
+    assert space["NOT_A_COLOUR"] == "#ffffff", "repaint invented a name"
+
+
+def test_deleting_the_skin_leaves_the_original_palette() -> None:
+    """ui.py's own literals must still be the OLD ones.
+
+    The hook overwrites them at import time, so the values in the file are
+    what the app falls back to. If someone ever "tidies" them to match the
+    skin, deleting skin\\ would silently keep the new colours and the
+    revert would no longer be a revert.
+    """
+    here = Path(__file__).resolve().parent
+    source = (here / "ui.py").read_text("utf-8")
+    head = source[:source.index("# --- SKIN")]
+    for name, was in (("BG", "#0d1017"), ("PANE", "#10131a"),
+                      ("CARD", "#161b25"), ("ACCENT", "#2d6cdf"),
+                      ("RED", "#e0352b"), ("SIDE_CARD", "#131822")):
+        assert f'{name} ' in head and was in head, (
+            f"ui.py no longer carries the original {name} = {was}; "
+            f"deleting skin\\ would not restore the old look")
+
+
+def test_the_release_is_one_flash_and_is_over_inside_a_second() -> None:
+    """The two hard limits, and neither is a taste question.
+
+    WCAG 2.3.1 exempts content with at most three general flashes per
+    second REGARDLESS of area, and a full-screen effect is far past the
+    0.006 sr area threshold — so one flash is the only safe design. And
+    anything auto-moving past five seconds owes the user a pause control;
+    staying under one keeps the whole question out of the app.
+    """
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    from skin import burst as burst_mod
+    assert burst_mod.T_END <= 1000, burst_mod.T_END
+    flash_from, flash_to = burst_mod.T_FLASH
+    assert flash_to - flash_from <= 200, "the flash is a decay, not a state"
+    source = (Path(__file__).resolve().parent / "skin" / "burst.py").read_text(
+        "utf-8")
+    assert source.count("T_FLASH") <= 4, (
+        "more than one place drives the flash — there must be exactly one")
+    assert "FLASH_PEAK_ALPHA = 0.42" in source or \
+        float(source.split("FLASH_PEAK_ALPHA = ")[1].split()[0]) <= 0.55, \
+        "a flash brighter than 0.55 alpha is glare, not light"
+
+
+def test_the_burst_holds_its_frame_budget_at_screen_size() -> None:
+    """Blending costs ~65 ns a pixel in this Skia build, so the effect is
+    priced in BLENDED AREA and the caps are what keep it real-time. This is
+    the measurement, run for real, because the numbers in the comments are
+    the whole argument for the shape of the code."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    import statistics
+
+    import skia
+
+    from skin.burst import Burst
+    surface = skia.Surface.MakeRasterN32Premul(2560, 1440)
+    canvas = surface.getCanvas()
+    shot = Burst(2560, 1440, seed=3)
+    for step in range(0, 40):           # warm Skia's lazy pipelines first
+        shot.draw(canvas, -100 + step * 25)
+    surface.flushAndSubmit()
+    times = []
+    for step in range(160):
+        started = time.perf_counter()
+        shot.draw(canvas, -100 + step * 6.5)
+        surface.flushAndSubmit()
+        times.append((time.perf_counter() - started) * 1000)
+    times.sort()
+    median = statistics.median(times)
+    assert median < 20, f"median frame {median:.1f} ms — under 50 fps"
+    assert times[-1] < 90, f"worst frame {times[-1]:.1f} ms — a visible hitch"
+
+
+def test_the_boot_card_never_echoes_a_line_it_does_not_understand() -> None:
+    """The log is not a user interface.
+
+    It carries model ids, cuda dtypes and the phone URL WITH ITS AUTH TOKEN
+    in it. The card shows a curated phrase per milestone and shows nothing
+    at all for a line it does not recognise, so none of that can reach the
+    screen — which matters because this window is on top of everything and
+    is exactly what someone screen-shares.
+    """
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    from skin.boot import Card
+    card = Card()
+    before = card.line
+    card.status("open this on the phone: https://yoav.example.ts.net/"
+                "#t=SECRETTOKENSECRETTOKEN")
+    assert "SECRETTOKEN" not in card.line, card.line
+    card.status("HTTP Request: GET https://huggingface.co/api/models/x")
+    assert "huggingface" not in card.line
+    card.status("Processing audio with duration 00:24.336")
+    assert card.line in ("Phone link ready", before), card.line
+    card.status("local model ivrit-ai/whisper-large-v3-turbo-ct2 ready "
+                "on cuda (float16)")
+    assert "ivrit" not in card.line and "cuda" not in card.line, card.line
+
+
+def test_boot_progress_only_ever_goes_forward() -> None:
+    """It is read out of log lines, which arrive in whatever order the app
+    writes them, and a bar that runs backwards is worse than no bar."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    from skin.boot import MILESTONES, Card
+    values = [v for _m, v, _p in MILESTONES]
+    assert values == sorted(values), "the milestone table is out of order"
+    assert max(values) == 1.0 and min(values) > 0, values
+    card = Card()
+    seen = [card.target()]
+    for line in ("phone endpoint on 127.0.0.1:8756",
+                 "loading the transcription model…",     # late and stale
+                 "starting up",
+                 "groq repair backend is warm"):
+        card.status(line)
+        seen.append(card.target())
+    assert seen == sorted(seen), f"progress went backwards: {seen}"
+    assert seen[-1] < 1.0, "only the ready line may reach the end"
+    card.status("ready — hold 'right ctrl' and speak")
+    assert card.target() == 1.0
+
+
+def test_the_creep_never_reaches_the_next_milestone() -> None:
+    """A progress indicator that sits perfectly still reads as a hang, and
+    one that arrives before the work does reads as a lie. The drift is
+    asymptotic on purpose: it always moves and never gets there."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    from skin.boot import CREEP_TO, Card
+    card = Card()
+    card.status("loading the transcription model…")
+    floor, ceiling = card._floor, card._next
+    card._since -= 3600.0            # an hour of idling
+    drifted = card.target()
+    assert drifted > floor, "the card would sit still and read as hung"
+    assert drifted <= floor + (ceiling - floor) * CREEP_TO + 1e-9, drifted
+    assert drifted < ceiling, "the creep arrived at the next milestone"
+
+
+def test_every_skin_window_is_click_through_and_never_focusable() -> None:
+    """These windows sit on top of everything the owner is doing. One that
+    could take a click or the keyboard would be furniture in the way, not
+    decoration — and the status dot in particular sits exactly where the
+    close button of a maximised window is."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    from skin import glass as glass_mod
+    from skin.dot import BOX
+    assert BOX <= 40, (
+        f"the dot's window is {BOX} px; two tests identify it as the "
+        f"overlay at most 40 px wide")
+    source = (Path(__file__).resolve().parent / "skin" / "glass.py").read_text(
+        "utf-8")
+    creation = source[source.index("self.hwnd = _user32.CreateWindowExW("):]
+    creation = creation[:creation.index("if not self.hwnd")]
+    for flag in ("WS_EX_LAYERED", "WS_EX_TRANSPARENT", "WS_EX_NOACTIVATE",
+                 "WS_EX_TOOLWINDOW", "WS_EX_TOPMOST"):
+        assert flag in creation, f"a skin window is created without {flag}"
+    assert glass_mod.WS_EX_TRANSPARENT == 0x20
+    assert glass_mod.WS_EX_NOACTIVATE == 0x08000000
+    # SW_SHOWNOACTIVATE, not deiconify: AGENTS.md measured Tk taking the
+    # foreground the instant it realises a window, and the fix there is to
+    # take it BACK. A plain popup shown this way never takes it at all.
+    assert "SW_SHOWNOACTIVATE" in source and glass_mod.SW_SHOWNOACTIVATE == 4
+
+
+def test_the_skin_honours_the_windows_reduced_motion_setting() -> None:
+    """A full-screen radial expansion is exactly the class of motion that
+    triggers vestibular symptoms, and a user-triggered animation with no
+    way off is a WCAG 2.3.3 failure. Windows has the setting; the cost of
+    honouring it is one call."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    from skin.glass import SPI_GETCLIENTAREAANIMATION, wants_motion
+    assert SPI_GETCLIENTAREAANIMATION == 0x1042
+    assert isinstance(wants_motion(), bool)
+    source = (Path(__file__).resolve().parent / "skin" / "boot.py").read_text(
+        "utf-8")
+    assert "wants_motion()" in source, (
+        "boot.py never asks whether motion is wanted")
+    assert "if motion" in source, (
+        "boot.py asks and then fires the release anyway")
+
+
+def test_the_skin_leaves_no_window_behind_when_it_is_done() -> None:
+    """A leftover topmost click-through layer is invisible and permanent —
+    the worst possible failure for a window like this, because nothing on
+    screen would ever tell you it was there."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    import subprocess
+    here = Path(__file__).resolve().parent
+    # Waited from the CODE, not from a number typed in here. The moment got
+    # longer once (880 ms -> 2580 ms) and this test failed with "the skin
+    # left a window on screen", which is exactly the alarm you do not want
+    # crying wolf: it was still playing.
+    script = r"""
+import ctypes, os, time, overlay, skin.boot as boot
+whole = boot.moment_ms() / 1000.0
+s = overlay.Splash(); s.start()
+s.status('loading the transcription model...'); time.sleep(0.5)
+s.finish('ready - go', linger_ms=40); time.sleep(whole + 1.2)
+u = ctypes.WinDLL('user32')
+me = os.getpid()
+pid = ctypes.c_ulong()
+left = []
+def cb(h, _):
+    b = ctypes.create_unicode_buffer(64); u.GetClassNameW(h, b, 64)
+    u.GetWindowThreadProcessId(h, ctypes.byref(pid))
+    if (b.value == 'HebrewDictationSkinGlass' and u.IsWindowVisible(h)
+            and pid.value == me):
+        left.append(b.value)
+    return True
+u.EnumWindows(ctypes.WINFUNCTYPE(
+    ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(cb), None)
+print('LEFT', len(left))
+"""
+    out = subprocess.run([sys.executable, "-c", script], cwd=str(here),
+                         capture_output=True, encoding="utf-8",
+                         errors="replace", timeout=120)
+    assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
+    assert "LEFT 0" in out.stdout, (
+        f"the skin left a window on screen: {out.stdout!r} {out.stderr!r}")
+
+
+def test_the_moment_is_mostly_wind_up() -> None:
+    """The shape of the reveal, which is the thing that failed twice.
+
+    The first attempt was 880 ms and was described as "it appears for half
+    a second, you can barely see it". The second was 420 ms of wind-up
+    followed by 2400 ms of aftermath - the right total, the wrong shape.
+
+    A card 24 degrees off screen centre costs a gaze roughly 300 ms to
+    even reach, so a wind-up shorter than that is one nobody sees begin.
+    And classical timing puts anticipation to action at about 2:1, with
+    every real reference pushing further - a slot machine spends four
+    seconds of spin on a third of a second of result.
+
+    So: between 40% and 60% of the whole moment must be wind-up, the
+    payoff itself must be a small fraction, and the total must stay inside
+    the 2-3 s "subjective present" so it is remembered as ONE gesture.
+    """
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    from skin import boot
+    try:
+        from skin.reveal import T_END
+    except Exception:
+        from skin.burst import T_END
+    build = boot.GATHER_MS
+    whole = build + T_END
+    assert 1900 <= whole <= 3100, f"the whole moment is {whole:.0f} ms"
+    share = build / whole
+    assert 0.40 <= share <= 0.60, (
+        f"wind-up is {share:.0%} of the moment; the researched band is "
+        f"45-55% and anything under 40% is the shape that already failed")
+    assert boot.SUMMONS_MS >= 200, (
+        "the summons is shorter than a saccade to the corner of the screen")
+    assert boot.GATHER_MS - boot.CHARGE_MS >= 120, (
+        "there is no BREATH before the hit - the hold is what makes the "
+        "impact land, and holds are the last thing to cut, never the first")
+
+
+def test_the_release_cuts_to_an_aftermath_that_is_already_formed() -> None:
+    """At the impact the front is CUT to a readable size and held still.
+
+    Starting the expansion from radius zero spends the first tenth of the
+    payoff drawing shapes too small to see, and the hitstop right after
+    the impact is what lets the eye catch up. Both are asserted on the
+    geometry rather than on the source text, so a refactor cannot quietly
+    lose them.
+    """
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    try:
+        from skin.reveal import FRONT_R0, T_HOLD, Reveal
+    except Exception:
+        return                      # no GPU path on this machine
+    assert 0.08 <= FRONT_R0 <= 0.35, FRONT_R0
+    assert 60 <= T_HOLD <= 250, f"hitstop {T_HOLD} ms is outside 80-200"
+
+    import numpy as np
+    import skia
+
+    from skin import gl
+    ctx = gl.acquire()
+    if ctx is None:
+        return
+    W, H = 1280, 720
+    surface = ctx.surface(W, H)
+    if surface is None:
+        return
+    info = skia.ImageInfo.MakeN32Premul(W, H)
+    canvas = surface.getCanvas()
+    shot = Reveal(W, H, origin=(W * 0.86, H * 0.86), seed=3)
+    buf = np.empty((H, W, 4), dtype=np.uint8)
+    lit = []
+    for t in (5, T_HOLD - 20):
+        canvas.clear(0x00000000)
+        shot.draw(canvas, t)
+        surface.flushAndSubmit()
+        surface.readPixels(info, buf, W * 4, 0, 0)
+        lit.append(int((buf[:, :, 3] > 10).sum()))
+    assert lit[0] > 40000, (
+        f"the first frame after the impact lights {lit[0]} px - the "
+        f"aftermath is not formed, it is still growing from a point")
+
+
+def test_the_reveal_never_pins_the_screen_to_white() -> None:
+    """One flash, and it may not be glare.
+
+    Everything in the reveal is additively blended, and four bright layers
+    stacked will silently pin to white and take all the colour with them -
+    which is exactly what happened the first time the aurora went in. The
+    check is on the rendered pixels, because that is the only place the
+    stack is visible.
+    """
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    try:
+        from skin.reveal import Reveal, T_END
+    except Exception:
+        return
+    import numpy as np
+    import skia
+
+    from skin import gl
+    # ON THE GPU, because that is the only surface this file ever draws on:
+    # boot.py picks reveal.py when the glass is on the GPU and burst.py when
+    # it is not. Measured on the CPU rasteriser the same frames blow out to
+    # 38% pure white against 2.4% here, which is a real divergence and a
+    # good reason not to test a path the app never takes.
+    ctx = gl.acquire()
+    if ctx is None:
+        return
+    W, H = 1280, 720
+    surface = ctx.surface(W, H)
+    if surface is None:
+        return
+    info = skia.ImageInfo.MakeN32Premul(W, H)
+    canvas = surface.getCanvas()
+    shot = Reveal(W, H, origin=(W * 0.86, H * 0.86), seed=3)
+    buf = np.empty((H, W, 4), dtype=np.uint8)
+    ground = np.full((H, W, 3), 30.0, dtype=np.float32)
+    worst, hot_frames = 0.0, 0
+    for t in range(-300, int(T_END) + 1, 50):
+        canvas.clear(0x00000000)
+        shot.draw(canvas, t)
+        surface.flushAndSubmit()
+        surface.readPixels(info, buf, W * 4, 0, 0)
+        alpha = buf[:, :, 3:4].astype(np.float32) / 255.0
+        out = buf[:, :, [2, 1, 0]].astype(np.float32) + ground * (1.0 - alpha)
+        clipped = float((out >= 254.5).all(axis=2).mean())
+        worst = max(worst, clipped)
+        if clipped > 0.02:
+            hot_frames += 1
+    assert worst < 0.12, f"{worst:.0%} of a frame went pure white"
+    assert hot_frames <= 3, (
+        f"{hot_frames} frames are blowing out; there is meant to be ONE "
+        f"flash, and everything after it is supposed to have colour")
+
+
+def test_a_stalled_frame_cannot_skip_the_moment() -> None:
+    """The reveal must DEGRADE under a stall, not be abandoned.
+
+    Everything in the reveal is a pure function of one clock, which is what
+    makes it look the same at 30 fps and at 240 — but taken straight from
+    the wall clock, one long frame moves that clock by the whole length of
+    the stall. If the stall is longer than what is left, the next frame
+    computes a t past the end, the driver sees "finished", and the moment
+    is thrown away.
+
+    That is not hypothetical. It was reported as "it doesn't look like the
+    video", and a frame-by-frame read of the screen recording showed
+    exactly ONE frame of the reveal — the flash — and then the desktop back
+    to normal. Reproduced deliberately with a 2.0 s stall at t=3 ms: the
+    whole wind-up drew and then it stopped dead at the flash. The trigger
+    was a screen recorder starting to encode, which lands on both the
+    busiest moment for the GPU and the heaviest frame of the effect.
+    """
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    from skin.clock import MAX_STEP_MS, Clock, absorb
+
+    # the clamp itself
+    clock = Clock(0.0)
+    clock._last -= 5.0                      # pretend five seconds went by
+    stepped = clock.tick()
+    assert stepped <= MAX_STEP_MS + 1e-6, (
+        f"a 5 s stall advanced the animation {stepped:.0f} ms; the clamp "
+        f"is meant to hold it to {MAX_STEP_MS:.0f}")
+    assert clock.stalls == 1
+    # and a normal frame is NOT clamped, or the animation would run slow
+    clock = Clock(0.0)
+    clock._last -= 0.016
+    assert 10 < clock.tick() < 30, "a 16 ms frame was treated as a stall"
+    assert clock.stalls == 0
+
+    now, shift = absorb(time.perf_counter() - 3.0)
+    assert shift > 2.0, shift
+    _now, shift = absorb(time.perf_counter() - 0.016)
+    assert shift == 0.0, shift
+
+    # and the driver that matters actually uses it
+    here = Path(__file__).resolve().parent
+    boot = (here / "skin" / "boot.py").read_text("utf-8")
+    assert "absorb(" in boot, (
+        "skin/boot.py drives the moment straight off the wall clock again; "
+        "one slow frame will skip the whole release")
+    assert "card.released_at += shift" in boot, (
+        "the card's release instant is not shifted with the clock, so a "
+        "stall will still jump the reveal past its own start")
+
+
+def test_the_reveal_still_finishes_after_a_two_second_stall() -> None:
+    """The same thing, end to end, against the real renderer."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    try:
+        from skin.reveal import Reveal, T_DIP, T_END
+    except Exception:
+        return
+    import skia
+
+    from skin import gl
+    ctx = gl.acquire()
+    if ctx is None:
+        return
+    W, H = 960, 540
+    surface = ctx.surface(W, H)
+    if surface is None:
+        return
+    from skin.clock import Clock
+    canvas = surface.getCanvas()
+    shot = Reveal(W, H, origin=(W * 0.86, H * 0.86), seed=3)
+    clock = Clock(T_DIP[0])
+    after, stalled = 0, False
+    while True:
+        t = clock.tick()
+        canvas.clear(0x00000000)
+        if not shot.draw(canvas, t):
+            break
+        surface.flushAndSubmit()
+        if t > 0:
+            after += 1
+        if t >= 0 and not stalled:
+            stalled = True
+            clock._last -= 2.0          # a two-second frame, at the flash
+    assert after > 40, (
+        f"only {after} frames were drawn after the flash — the stall "
+        f"abandoned the reveal instead of slowing it")
+
+
+def test_a_whole_boot_runs_the_release_without_raising() -> None:
+    """The end-to-end check that was missing, and what it cost.
+
+    Everything about the release was tested in pieces - the geometry, the
+    exposure, the frame budget, the timings - and every piece passed while
+    the thing was completely broken in the actual app. The driver loop in
+    skin/boot.py closes the card's window when its wind-up ends and then
+    went straight back round and drew the card on it again, so the splash
+    thread died with an AttributeError one frame after the flash. It was
+    caught, logged to app.log, and silent everywhere else.
+
+    Reported as "when I run the model it doesn't do it, but the preview
+    does" - and the preview genuinely did, because it drives the card and
+    the release in two separate loops and never touches this path.
+
+    So this runs a REAL Splash through a REAL release and fails if anything
+    was raised. It is a subprocess because it stands up windows and a GL
+    context on a thread of its own.
+    """
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    import subprocess
+    here = Path(__file__).resolve().parent
+    script = r"""
+import logging, sys, time, io
+buf = io.StringIO()
+h = logging.StreamHandler(buf); h.setLevel(logging.DEBUG)
+log = logging.getLogger('app'); log.setLevel(logging.DEBUG); log.addHandler(h)
+import overlay, skin.boot as boot
+s = overlay.Splash(); s.start()
+s.status('loading the transcription model...')
+# long enough that the release layer exists the way it does on a
+# real 14-25 s boot; a shorter wait exercised a different path and
+# was why this test first passed against the broken code
+time.sleep(1.6)
+s.status('ready - hold right ctrl and speak')
+s.finish('ready - hold right ctrl and speak', linger_ms=60)
+time.sleep(boot.moment_ms() / 1000.0 + 1.4)
+out = buf.getvalue()
+print('LOGGED-BEGIN'); print(out[:2000]); print('LOGGED-END')
+"""
+    out = subprocess.run([sys.executable, "-c", script], cwd=str(here),
+                         capture_output=True, encoding="utf-8",
+                         errors="replace", timeout=180)
+    assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
+    logged = out.stdout
+    for bad in ("Traceback", "AttributeError", "stopped early",
+                "falling back", "failed"):
+        assert bad not in logged, (
+            f"the boot logged {bad!r} - the release did not survive:\n"
+            f"{logged}")
+    assert "Traceback" not in (out.stderr or ""), out.stderr
+
+
+def test_turning_the_skin_off_really_turns_it_off() -> None:
+    """HD_SKIN=0 is the one-run escape hatch, and it has to be complete —
+    a half-disabled skin would be harder to diagnose than a broken one."""
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    import os
+    was = os.environ.get("HD_SKIN")
+    try:
+        os.environ["HD_SKIN"] = "0"
+        skin.reset()
+        assert skin.on() is False
+        space = {"BG": "#0d1017"}
+        skin.repaint(space)
+        assert space["BG"] == "#0d1017", "repaint ran with the skin off"
+        assert skin.splash_run(None) is False
+        assert skin.dot_run(None) is False
+        assert skin.wave(None) is False
+    finally:
+        if was is None:
+            os.environ.pop("HD_SKIN", None)
+        else:
+            os.environ["HD_SKIN"] = was
+        skin.reset()
 
 
 if __name__ == "__main__":
