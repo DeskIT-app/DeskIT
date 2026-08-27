@@ -907,6 +907,48 @@ terms = [
   "repo", "terminal", "bug", "feature", "prompt", "config",
 ]
 
+[study]
+# FAST VERSION ONLY -- classic ignores this whole section, like [local]
+# beam_size. The second learning channel (study.py): the correction key
+# teaches only when you stop to teach, and most dictations are sent and
+# forgotten. When the app has been idle a while, this pass takes a
+# recording from recent\, decodes it three MORE ways on the local models
+# (wider beam, the general model, a looser temperature -- audio never
+# leaves the machine), lets the decodes vote, and has a language model
+# adjudicate the words they disagree on. Where the verified reading
+# differs from what was pasted, the live pass was probably wrong -- and
+# that pair is machine evidence for the vocabulary.
+#
+# Machine evidence is weaker than a correction you typed, ON PURPOSE:
+# it becomes a hotword only after the same pair shows up in 2 DIFFERENT
+# recordings, pure-Hebrew pairs feed the polish glossary only (never
+# hotwords -- prompting Whisper with common real words makes it emit
+# them unbidden), and nothing machine-learned ever rewrites text
+# automatically (vocab.py gates auto-replacement on HUMAN hits alone).
+#
+# The adjudicator sends candidate TEXT to the polish backends (Groq
+# first, local fallback) -- the same accepted trade as [polish], and it
+# spends the same ~1,000/day Groq bucket, capped well below it here.
+enabled = true
+idle_minutes = 3          # study only after this long with nothing happening;
+                          # the pass also steps aside mid-clip the moment a
+                          # key goes down, so a dictation waits at most one
+                          # decode of the model lock (~0.5-2 s), not three
+max_clip_seconds = 120    # skip longer clips: three extra decodes of a very
+                          # long recording buy little extra evidence
+llm_per_day = 60          # LLM adjudications a day (one per studied clip).
+                          # Learning requires the adjudicator's assent —
+                          # measured 2026-08-27, the acoustic vote alone
+                          # learns orthographic wobble — so past this cap
+                          # clips simply wait for tomorrow's budget
+corpus_keep = 400         # verified (audio, text) pairs kept in corpus\ as
+                          # future fine-tuning data (~1 MB per 30 s clip;
+                          # 400 is roughly 3-4 hours of this voice). The
+                          # long game: enough of these becomes a LoRA
+                          # fine-tune of the local model on YOUR speech.
+                          # PRIVACY: raw audio on this disk, gitignored,
+                          # capped, oldest dropped first. 0 keeps none.
+
 [polish]
 # The context pass: the half that vocab CANNOT do. Some mishearings swap a real
 # Hebrew word for another real Hebrew word — מקלדת -> מקללת, סריקה -> סירקה,

@@ -67,6 +67,7 @@ import difflib
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
 
@@ -198,16 +199,30 @@ def diff_corrections(raw: str, fixed: str) -> list[tuple[str, str]]:
 
 
 class Vocab:
-    """The learned store. Safe to read from any thread; writes are rare
-    (one per correction) and go through save()."""
+    """The learned store. Safe to read from any thread; writes go through
+    save(). Since the study engine (study.py) arrived there are TWO
+    writer threads — the correction worker and the study thread — so the
+    mutators and save() take a lock. Reads stay lock-free on purpose:
+    they run on the hot path (hotwords() inside every transcription) and
+    they only ever sort copies of the list.
+    """
 
     def __init__(self, path: Path, seed_terms: tuple[str, ...] = (),
-                 max_terms: int = 40, replace_after_hits: int = 2):
+                 max_terms: int = 40, replace_after_hits: int = 2,
+                 auto_after: int = 2, max_auto_terms: int = 12):
         self.path = path
         self.seed_terms = tuple(t.strip() for t in seed_terms if t.strip())
         self.max_terms = max_terms
         self.replace_after_hits = replace_after_hits
+        # Machine evidence (study.py). Stricter than the human threshold on
+        # purpose: a human correction is a person saying "this was wrong",
+        # a study pair is a model's inference. auto_after counts DIFFERENT
+        # recordings, and max_auto_terms keeps machine terms from crowding
+        # the human ones out of the hotword budget.
+        self.auto_after = auto_after
+        self.max_auto_terms = max_auto_terms
         self.corrections: list[dict] = []
+        self._write_lock = threading.RLock()
         self.load()
 
     # ---- persistence ----
@@ -229,17 +244,22 @@ class Vocab:
                                 if isinstance(c, dict) and c.get("meant")]
 
     def save(self) -> None:
-        try:
-            self.path.write_text(json.dumps(
-                {"version": 1, "corrections": self.corrections},
-                ensure_ascii=False, indent=2), "utf-8")
-        except OSError as e:
-            log.warning("could not write %s: %s", self.path.name, e)
+        with self._write_lock:
+            try:
+                self.path.write_text(json.dumps(
+                    {"version": 1, "corrections": self.corrections},
+                    ensure_ascii=False, indent=2), "utf-8")
+            except OSError as e:
+                log.warning("could not write %s: %s", self.path.name, e)
 
     # ---- learning ----
 
     def learn(self, heard: str, meant: str) -> dict:
         """Record one correction, or bump the one already there."""
+        with self._write_lock:
+            return self._learn(heard, meant)
+
+    def _learn(self, heard: str, meant: str) -> dict:
         key = heard.strip().lower()
         for entry in self.corrections:
             if entry.get("heard", "").strip().lower() == key:
@@ -262,6 +282,57 @@ class Vocab:
             self.save()
         return pairs
 
+    def learn_auto(self, heard: str, meant: str, source: str,
+                   glossary_only: bool = False) -> dict | None:
+        """Record machine evidence for one (heard, meant) pair — study.py.
+
+        Three rules keep this weaker than a human correction, by design:
+
+        - It can NEVER grant replace rights. apply() gates on the human
+          `hits` counter, and nothing here touches it — an auto entry
+          carries hits=0 until a human correction upgrades it.
+        - The same recording never counts twice. Evidence is one
+          `auto_hits` bump per distinct `source` (the recording's stem),
+          so re-studying a clip after an engine change is not "the model
+          said so again".
+        - `glossary_only` entries (family B: Hebrew swapped for Hebrew)
+          never become hotwords — prompting Whisper with common real
+          words makes it emit them unbidden. They feed polish.py's
+          glossary, where the sentence around them gates the repair.
+
+        Returns the entry, or None when the pair teaches nothing.
+        """
+        heard, meant = heard.strip(), meant.strip()
+        if not heard or not meant or heard.lower() == meant.lower():
+            return None
+        with self._write_lock:
+            return self._learn_auto(heard, meant, source, glossary_only)
+
+    def _learn_auto(self, heard: str, meant: str, source: str,
+                    glossary_only: bool) -> dict:
+        key = heard.lower()
+        entry = next((c for c in self.corrections
+                      if c.get("heard", "").strip().lower() == key), None)
+        if entry is None:
+            entry = {"heard": heard, "meant": meant, "hits": 0,
+                     "last": time.strftime("%Y-%m-%d %H:%M:%S"),
+                     "auto_hits": 0, "auto_srcs": [],
+                     "glossary_only": bool(glossary_only)}
+            self.corrections.append(entry)
+        srcs = entry.setdefault("auto_srcs", [])
+        if source in srcs:
+            return entry                  # this recording already testified
+        srcs.append(source)
+        del srcs[:-8]                     # the count matters, not the list
+        entry["auto_hits"] = int(entry.get("auto_hits", 0)) + 1
+        entry["last"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        if int(entry.get("hits", 1)) == 0:
+            # Auto-only entry: the newest inference wins, like learn().
+            # A HUMAN entry's meant is never touched from here.
+            entry["meant"] = meant
+            entry["glossary_only"] = bool(glossary_only)
+        return entry
+
     # ---- using what was learned ----
 
     def _ranked(self) -> list[str]:
@@ -270,16 +341,29 @@ class Vocab:
         Ranked by hits then recency: a name you have corrected four times is
         one you say often, and it earns its slot ahead of a one-off.
         """
-        ordered = sorted(self.corrections,
-                         key=lambda c: (int(c.get("hits", 1)),
-                                        str(c.get("last", ""))),
-                         reverse=True)
+        human = sorted((c for c in self.corrections
+                        if int(c.get("hits", 1)) > 0),
+                       key=lambda c: (int(c.get("hits", 1)),
+                                      str(c.get("last", ""))),
+                       reverse=True)
+        # Machine entries rank AFTER every human one, only once auto_after
+        # different recordings agree, never when glossary_only, and capped
+        # at max_auto_terms so they cannot crowd the humans out.
+        auto = sorted((c for c in self.corrections
+                       if int(c.get("hits", 1)) == 0
+                       and int(c.get("auto_hits", 0)) >= self.auto_after
+                       and not c.get("glossary_only")),
+                      key=lambda c: (int(c.get("auto_hits", 0)),
+                                     str(c.get("last", ""))),
+                      reverse=True)[:max(0, self.max_auto_terms)]
         out: list[str] = []
         seen: set[str] = set()
         # Seeds first and unconditionally: they are the user's own stack,
         # written by hand in config.toml, and should never be crowded out by
         # whatever was corrected most recently.
-        for term in self.seed_terms + tuple(c["meant"] for c in ordered):
+        for term in (self.seed_terms
+                     + tuple(c["meant"] for c in human)
+                     + tuple(c["meant"] for c in auto)):
             key = term.strip().lower()
             if key and key not in seen:
                 seen.add(key)
@@ -306,12 +390,22 @@ class Vocab:
     def glossary(self, limit: int = 60) -> list[tuple[str, str]]:
         """(heard, meant) pairs for polish.py's prompt — the confusions
         worth telling a language model about."""
-        ordered = sorted(self.corrections,
-                         key=lambda c: (int(c.get("hits", 1)),
-                                        str(c.get("last", ""))),
-                         reverse=True)
-        return [(c.get("heard", ""), c["meant"]) for c in ordered[:limit]
-                if c.get("heard")]
+        human = sorted((c for c in self.corrections
+                        if int(c.get("hits", 1)) > 0),
+                       key=lambda c: (int(c.get("hits", 1)),
+                                      str(c.get("last", ""))),
+                       reverse=True)
+        # Machine pairs follow the human ones — BOTH families: the
+        # glossary is read by a model that sees the sentence, which is
+        # exactly the gate a context-family pair needs.
+        auto = sorted((c for c in self.corrections
+                       if int(c.get("hits", 1)) == 0
+                       and int(c.get("auto_hits", 0)) >= self.auto_after),
+                      key=lambda c: (int(c.get("auto_hits", 0)),
+                                     str(c.get("last", ""))),
+                      reverse=True)
+        return [(c.get("heard", ""), c["meant"])
+                for c in (human + auto)[:limit] if c.get("heard")]
 
     def known_garbles(self) -> set[str]:
         """Lowercased heard-forms, for deciding whether a transcript is

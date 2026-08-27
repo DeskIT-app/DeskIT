@@ -12,6 +12,7 @@ transcripts.log*
 app.log*
 pending/
 recent/
+corpus/
 vocab.json
 lookup_cache.json
 
