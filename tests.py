@@ -12249,13 +12249,77 @@ def test_turning_the_skin_off_really_turns_it_off() -> None:
         assert space["BG"] == "#0d1017", "repaint ran with the skin off"
         assert skin.splash_run(None) is False
         assert skin.dot_run(None) is False
-        assert skin.wave(None) is False
+        assert skin.paint_wave(None) is False
     finally:
         if was is None:
             os.environ.pop("HD_SKIN", None)
         else:
             os.environ["HD_SKIN"] = was
         skin.reset()
+
+
+def test_no_skin_hook_shares_a_name_with_a_file_in_the_folder() -> None:
+    """A hook may not be named after the module it imports.
+
+    Python binds a submodule onto its parent package the first time it is
+    imported. So a hook `def wave(card)` whose body says `from .wave import
+    paint` REPLACES ITSELF the moment it first runs: skin.wave stops being
+    the function and becomes skin\\wave.py, and the next call raises
+    "'module' object is not callable" — from the call site, outside the
+    hook's own try/except, where the skin's "a decoration cannot take the
+    app down" promise cannot reach it.
+
+    This is not a style rule. It was a live bug: the ask-the-screen card
+    paints its microphone rings on a 15 ms tick, and only while a dictation
+    is running, so the card died on the SECOND tick of every question the
+    owner tried to speak into it. From his seat the window simply closed
+    the instant he started talking, which reads as a hotkey conflict and is
+    not one. Four identical tracebacks in app.log, 2026-08-27.
+
+    Read out of the SOURCE rather than off the imported module, on purpose:
+    once a colliding hook has been called even once the attribute is a
+    module and no longer callable, so an attribute-based check would go
+    quiet at exactly the moment the bug became real.
+    """
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    import ast
+    folder = Path(skin.__file__).resolve().parent
+    tree = ast.parse((folder / "__init__.py").read_text("utf-8"))
+    hooks = {node.name for node in tree.body
+             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    modules = {p.stem for p in folder.glob("*.py")} - {"__init__"}
+    clash = sorted(hooks & modules)
+    assert not clash, (
+        f"skin hook(s) {clash} share a name with skin\\<name>.py. Importing "
+        f"the submodule rebinds the attribute, so the hook works exactly "
+        f"once and then raises \"'module' object is not callable\". Rename "
+        f"the function — splash_run/.boot, dot_run/.dot and "
+        f"paint_wave/.wave all keep the two apart on purpose.")
+
+
+def test_a_skin_hook_survives_being_called_twice() -> None:
+    """The behaviour the rule above protects, exercised end to end.
+
+    The shadowing bug passed every test there was, because every one of
+    them called the hook ONCE. The first call is the one that works.
+
+    THIS ONE IS NOT THE GUARD — the name test above is. With no skia on
+    the machine on() returns False, the hook returns before it reaches the
+    import that does the shadowing, and both calls below pass against code
+    that is still broken. It earns its place by testing the real thing on
+    the machine that runs the skin; it must never be the only test of it.
+    """
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    # None is not a card, so the hook declines both times — what is being
+    # tested is that the second call is still a CALL and not a TypeError.
+    assert skin.paint_wave(None) is False
+    assert skin.paint_wave(None) is False, (
+        "the second call of a skin hook failed — a submodule import has "
+        "shadowed the function (see the name-collision test above)")
 
 
 

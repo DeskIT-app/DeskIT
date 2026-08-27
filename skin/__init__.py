@@ -129,8 +129,25 @@ def dot_run(dot) -> bool:
         return False
 
 
-def wave(card) -> bool:
-    """The microphone wave in the ask-the-screen card."""
+def paint_wave(card) -> bool:
+    """The microphone wave in the ask-the-screen card.
+
+    NOT NAMED `wave`, and that is the whole point of the name. Python binds
+    a submodule onto its parent package the first time it is imported, so a
+    hook called wave() whose body says `from .wave import paint` OVERWRITES
+    ITSELF on its first call: skin.wave stops being this function and
+    becomes skin\\wave.py. The second call then raises "'module' object is
+    not callable" — from the CALL, outside the try/except below, where the
+    "a decoration cannot take the app down" promise above cannot reach it.
+
+    It cost the ask-the-screen card. This runs on a 15 ms tick and only
+    while a dictation is in flight, so the card died on the second tick of
+    every question the owner tried to SPEAK into it — the window closing
+    the instant he started talking (four tracebacks in app.log,
+    2026-08-27). splash_run and dot_run avoid the trap by the same means:
+    a name no file in this folder can take. tests.py asserts it for every
+    hook so the next one cannot re-learn this.
+    """
     if not on():
         return False
     try:

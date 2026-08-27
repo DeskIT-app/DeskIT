@@ -3245,8 +3245,22 @@ class AskWindow:
         """
         # --- SKIN: same rings, drawn as antialiased images instead of
         # aliased ovals. False means it declined and the ovals below run.
-        if skin is not None and skin.wave(self):
-            return
+        #
+        # WRAPPED, the way overlay.py wraps both of its hooks, and for a
+        # reason this call site learned the hard way. The hook guards its
+        # own body, but a failure raised AT THE CALL lands outside that
+        # guard — and this call sits on a 15 ms tick inside run()'s pump,
+        # so anything escaping here does not lose a frame, it ends the
+        # loop and destroys the card mid-sentence. That is exactly what a
+        # shadowed hook name did (see skin.paint_wave): the window closed
+        # every time the owner started speaking into it. The rings are
+        # decoration; losing them must never cost the question.
+        try:
+            if skin is not None and skin.paint_wave(self):
+                return
+        except Exception:
+            log.debug("the skin's wave hook failed — drawing the ovals",
+                      exc_info=True)
         for item in self._wave_items:
             self.canvas.delete(item)
         self._wave_items = []
