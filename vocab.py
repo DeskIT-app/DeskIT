@@ -198,6 +198,32 @@ def diff_corrections(raw: str, fixed: str) -> list[tuple[str, str]]:
     return out
 
 
+def heard_by_decoder(pairs: list[tuple[str, str]],
+                     raw: str) -> list[tuple[str, str]]:
+    """Keep only the pairs whose heard side the DECODER actually produced.
+
+    A correction is diffed against the text on screen, and that text has
+    already been through apply() and polish. Where they rewrote something,
+    the diff of screen-vs-fix describes THEIR edit, not a mishearing — and
+    learning it files the app's own output as something Whisper got wrong.
+
+    Observed live on 2026-08-28. "commit" was decoded correctly; a bad
+    learned rule rewrote it to "make it"; the user fixed the screen back to
+    "commit"; the diff produced (make -> commit) and the app learned it. One
+    more press and every "make" would have become "commit". The heard side,
+    "make", is nowhere in the decoder's transcript — which is exactly the
+    tell, and exactly what this drops.
+
+    An empty `raw` keeps everything: no transcript is no evidence either way,
+    and this must never be the reason a real correction is silently lost.
+    """
+    raw_words = {w.lower() for w in words(raw)}
+    if not raw_words:
+        return list(pairs)
+    return [(h, m) for h, m in pairs
+            if all(w.lower() in raw_words for w in words(h))]
+
+
 class Vocab:
     """The learned store. Safe to read from any thread; writes go through
     save(). Since the study engine (study.py) arrived there are TWO
@@ -272,10 +298,21 @@ class Vocab:
         self.corrections.append(entry)
         return entry
 
-    def learn_from_edit(self, raw: str, fixed: str) -> list[tuple[str, str]]:
+    def learn_from_edit(self, raw: str, fixed: str,
+                        heard_in: str | None = None
+                        ) -> list[tuple[str, str]]:
         """Diff an edit and learn every substitution in it. Returns the
-        pairs actually learned, for the log line."""
+        pairs actually learned, for the log line.
+
+        `raw` here is the text the edit was made against — on the human
+        path that is what was on SCREEN, which apply() and polish may have
+        already rewritten. Pass the decoder's own transcript as `heard_in`
+        and anything those two invented is dropped before it is learned;
+        see heard_by_decoder for what that costs when it is left off.
+        """
         pairs = diff_corrections(raw, fixed)
+        if heard_in is not None:
+            pairs = heard_by_decoder(pairs, heard_in)
         for heard, meant in pairs:
             self.learn(heard, meant)
         if pairs:

@@ -1347,7 +1347,23 @@ class App:
             log.info("the text on screen is unchanged — nothing to learn")
             return
 
-        pairs = self.vocab.learn_from_edit(shown, fixed)
+        # Diffed against the SCREEN, but filtered against the DECODER.
+        # `shown` is post-apply, post-polish; where either of them rewrote a
+        # word, the diff describes their edit and not a mishearing, and
+        # learning it teaches the app that its own output is a Whisper
+        # error. study.py has had this guard since it was written; the
+        # human path did not, and on 2026-08-28 it learned "make -> commit"
+        # off a bad rule's own rewrite. See vocab.heard_by_decoder.
+        proposed = vocab_mod.diff_corrections(shown, fixed)
+        pairs = self.vocab.learn_from_edit(shown, fixed,
+                                           heard_in=last.get("raw", ""))
+        refiled = len(proposed) - len(pairs)
+        if refiled:
+            log.info("ignored %d proposed pair(s) the decoder never said — "
+                     "they are this app's own rewrite being handed back to "
+                     "it: %s", refiled,
+                     " | ".join(f"{h} -> {m}" for h, m in proposed
+                                if (h, m) not in pairs))
         transcript_log.info("CORRECTED | %s || %s", shown, fixed)
         # What is on screen is now what the app believes it produced.
         # Without this, a second press of the key diffs the SAME edit
@@ -1379,7 +1395,15 @@ class App:
                                    corrected=fixed.strip())
             except Exception as e:
                 log.info("could not attach the correction to its audio: %s", e)
-        if not pairs:
+        if not pairs and refiled:
+            # Everything the diff proposed was this app's own rewrite. The
+            # edit is real and is in the log; what it does NOT contain is a
+            # mishearing, so there is nothing for the vocabulary to key on.
+            self._say("saved your edit — it undid a repair rather than "
+                      "correcting what was heard, so no word swaps")
+            log.info("correction saved to the log, but every pair in it was "
+                     "the app's own repair being undone — nothing learned")
+        elif not pairs:
             # The edit was an insertion or a rewrite, not a substitution:
             # real, but it teaches no "when you hear X, write Y" rule.
             # Saying so is better than a silent success the user then

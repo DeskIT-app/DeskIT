@@ -452,11 +452,10 @@ def study_one(item, transcriber, *, adjudicator=None, model_lock=None,
     # the heard side is something the live decoder actually produced —
     # anything else is this pass second-guessing a deliberate repair,
     # which is not its job.
-    raw = (meta.get("raw") or "").strip()
-    if raw and pairs:
-        raw_words = {w.lower() for w in words(raw)}
-        pairs = [(h, m) for h, m in pairs
-                 if all(w.lower() in raw_words for w in words(h))]
+    # One implementation, shared with the human correction path in main.py,
+    # which learned "make -> commit" off its own rewrite on 2026-08-28 for
+    # want of exactly this filter.
+    pairs = vocab_mod.heard_by_decoder(pairs, (meta.get("raw") or "").strip())
     # THE ASSENT GATE, added after the first measured run (2026-08-27,
     # 48 clips): consensus-only divergences were dominated by Hebrew
     # orthographic wobble — ותעשה -> תעשה, שנייה -> שניה — because two of

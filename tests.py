@@ -2589,6 +2589,40 @@ def test_a_rewritten_sentence_is_not_learned_as_a_word() -> None:
         assert len(meant.split()) <= vocab_mod.MAX_SPAN_WORDS, (heard, meant)
 
 
+def test_undoing_the_apps_own_repair_teaches_it_nothing() -> None:
+    """The 2026-08-28 loop, in one test.
+
+    A bad rule rewrote a correctly-decoded "commit" into "make it". The user
+    fixed the screen back. Diffing SCREEN against FIX proposes (make ->
+    commit) — the app's own edit, read back to it as a mishearing — and one
+    more press would have armed it and turned every "make" into "commit".
+    The decoder never said "make", which is the tell.
+    """
+    heard = "Can you please commit it?"          # what the decoder produced
+    shown = "Can you please make it it?"         # after the bad rule fired
+    fixed = "Can you please commit it?"          # what the user typed back
+
+    assert ("make", "commit") in vocab_mod.diff_corrections(shown, fixed),         "the diff must still propose it — the guard is what declines it"
+
+    v = _tmp_vocab()
+    assert v.learn_from_edit(shown, fixed, heard_in=heard) == []
+    assert v.corrections == [], v.corrections
+
+
+def test_the_guard_still_learns_what_the_decoder_really_said() -> None:
+    """The filter must cost nothing on the path it protects: a real
+    mishearing IS in the decoder's transcript, so it survives."""
+    heard = "תריץ את השרת של xpogo"
+    fixed = "תריץ את השרת של Expo Go"
+    v = _tmp_vocab()
+    assert v.learn_from_edit(heard, fixed, heard_in=heard) ==         [("xpogo", "Expo Go")]
+
+
+def test_no_transcript_is_not_evidence_against_a_correction() -> None:
+    """An empty `raw` must never be the reason a real fix is dropped."""
+    assert vocab_mod.heard_by_decoder([("xpogo", "Expo Go")], "") ==         [("xpogo", "Expo Go")]
+
+
 def test_repair_waits_for_the_second_correction() -> None:
     """replace_after_hits exists because one correction could be a slip of
     the finger in the box, and this pass rewrites the user's own words."""
