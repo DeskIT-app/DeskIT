@@ -14,6 +14,7 @@ pending/
 recent/
 corpus/
 vocab.json
+vocab.json.bak-*
 lookup_cache.json
 
 # Saved web pages parked in the folder while testing the lookup and
