@@ -503,6 +503,21 @@ class CerebrasTranslator:
         choices = data.get("choices") or []
         content = (choices[0].get("message") or {}).get("content", "") \
             if choices else ""
+        # A reply that hit max_tokens is a SENTENCE CUT IN HALF, and the
+        # repair pass's own guard cannot see it: losing the last 5 words of
+        # a 94-word transcript is 5% drift, well inside _is_safe's ±15%, so
+        # it was accepted and pasted. Twice on 2026-08-27 alone — one cut
+        # landed mid-word ("ומסטורוס נוסע" -> "שיע"). The cause is that
+        # gpt-oss spends hidden reasoning tokens out of this same budget
+        # (measured 70-402 on one fixed prompt, non-deterministic), so a
+        # cap sized for the answer alone runs out during the answer.
+        # Fail closed: polish.polish catches TranslationError and falls to
+        # the next backend, and failing that keeps the raw transcript.
+        finish = (choices[0].get("finish_reason") or "") if choices else ""
+        if finish == "length":
+            raise TranslationError(
+                f"{type(self).provider_label} hit its reply cap and "
+                f"returned a truncated answer")
         out = _clean(content)
         if not out:
             raise TranslationError(

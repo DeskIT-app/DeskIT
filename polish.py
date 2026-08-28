@@ -202,6 +202,35 @@ def _prompt(glossary: list[tuple[str, str]]) -> str:
 # no knob.
 
 
+def _tail_loss(a: list[str], b: list[str]) -> int:
+    """Words the candidate dropped from the END, or 0 if it is not a cut.
+
+    A repair swaps words in the MIDDLE — it never reproduces the transcript
+    and then simply stops. So a candidate that is a strict word-prefix of
+    the original is a truncated reply, not a correction, whatever its
+    percentage says.
+
+    The percentage is exactly why this test has to exist separately: losing
+    the last 5 words of a 94-word transcript is 5% drift and sails through
+    the ±15% band below. Measured over his real dictations, that band
+    silently accepts a 13-word cut on a 90-word transcript, 35 on 234 and
+    52 on 352. Two such replies were pasted on 2026-08-27.
+
+    The second branch catches the cap landing mid-word, which leaves a
+    fragment as the last token ("ומסטורוס נוסע" came back as "שיע").
+    """
+    if len(b) >= len(a):
+        return 0
+    lo = [w.lower() for w in a]
+    head = [w.lower() for w in b]
+    if head == lo[:len(b)]:
+        return len(a) - len(b)
+    if head[:-1] == lo[:len(b) - 1] and head[-1] != lo[len(b) - 1] \
+            and lo[len(b) - 1].startswith(head[-1]):
+        return len(a) - len(b) + 1
+    return 0
+
+
 def _is_safe(original: str, candidate: str) -> tuple[bool, str]:
     """The guarantee. Returns (ok, reason_if_not).
 
@@ -216,6 +245,10 @@ def _is_safe(original: str, candidate: str) -> tuple[bool, str]:
         return False, "nothing to compare"
     if not b:
         return False, "reply had no words"
+    cut = _tail_loss(a, b)
+    if cut:
+        return False, (f"reply stops {cut} word(s) early — the tail was cut "
+                       f"off, not corrected")
     growth = (len(b) - len(a)) / len(a)
     if growth > MAX_GROWTH:
         return False, (f"reply grew {growth:.0%} ({len(a)} -> {len(b)} "

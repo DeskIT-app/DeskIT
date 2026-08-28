@@ -120,9 +120,16 @@ def hallucination_guards(enabled: bool) -> dict:
 
     The defaults are permissive (no_speech 0.6 / logprob -1.0 / compression
     2.4) and let a low-confidence trailing segment through; these tighten
-    all three and turn on the purpose-built one. Measured 2026-08-12 against
-    the previous settings: byte-identical output on good audio, ~8% slower
-    (≈0.1 s on a 40 s dictation).
+    all three and turn on the purpose-built one.
+
+    The 2026-08-12 note here read "byte-identical output on good audio, ~8%
+    slower (≈0.1 s on a 40 s dictation)". BOTH HALVES WERE WRONG, and they
+    were wrong because the corpus they were measured on had no long clips
+    in it. Tightening the thresholds pushes windows onto faster-whisper's
+    temperature fallback ladder, which SAMPLES — so the output was not
+    byte-identical, it was not even reproducible run to run, and a forced
+    window costs up to 6 decodes instead of 1. See temperature below, which
+    is the fix and which restores both properties.
 
     A module-level function rather than a literal inside __init__ so a test
     can assert on it without putting a model on the GPU. Nothing pinned it
@@ -136,6 +143,25 @@ def hallucination_guards(enabled: bool) -> dict:
         no_speech_threshold=0.4,
         log_prob_threshold=-0.7,
         compression_ratio_threshold=2.0,
+        # No temperature ladder. The three tightened thresholds above reject
+        # far more windows than stock does, and every rejection sends that
+        # window down faster-whisper's fallback ladder (0.2 ... 1.0), which
+        # SAMPLES. So the same audio at the same settings did not produce
+        # the same text: one 25.2 s clip gave 5 DISTINCT transcripts in 5
+        # runs, scoring 4, 9, 16, 33 and 3 word edits against 64 true words.
+        # That is the mechanism behind "words I said are missing" — a
+        # sampled window wins the fallback and its words are gone. Pinning
+        # temperature makes the decode deterministic and, because a forced
+        # window costs up to 6 decodes instead of 1, much faster.
+        # Measured 2026-08-28, interleaved A/B over all 50 clips in recent\
+        # (2478 s of audio): 144.7 s -> 59.8 s of decode, -58.7%, RTF
+        # 0.058 -> 0.024; identical text on 42/50 clips, and against the
+        # study-verified reading the pinned arm was CLOSER (197 edits vs
+        # 224 over 2254 words). 0 decoder loops in either arm.
+        # The ladder is Whisper's standard escape from a repetition loop,
+        # which this repo has been bitten by twice — repetition_penalty
+        # below, collapse_char_runs and the loop warning all remain.
+        temperature=[0.0],
         word_timestamps=True,
         hallucination_silence_threshold=2.0,
         # Against token loops: a vocalised hesitation became 222 ה's, and

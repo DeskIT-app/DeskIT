@@ -1763,8 +1763,7 @@ data. This fine-tune was trained on **Knesset protocols**, so what it
 invents is parliamentary. Observed live on 2026-08-12: a dictation about
 adding cities to an app ended with `אדוני היושב-ראש, חברי הכנסת`.
 
-Two defences, both on by default, neither of which changes a good
-transcription (measured: byte-identical output, ~8% slower):
+Two defences, both on by default:
 
 - **Tightened decoder guards** (`[local] guard_hallucinations`) — Whisper's
   own confidence thresholds, plus `hallucination_silence_threshold`. The
@@ -1788,6 +1787,38 @@ make the output *better*, and they stay.
 Note that silence alone does not cause this — that was tested and ruled
 out. VAD strips silence and key clicks and the result is empty. It takes
 real speech in front of it for the decoder to run on.
+
+### The guards used to cost you words, and that is fixed
+
+This section used to claim the guards were "byte-identical output, ~8%
+slower". That was measured on 2026-08-12 against a corpus with no long
+clips in it, and both halves were wrong.
+
+Tightening a threshold makes Whisper *reject* more windows, and every
+rejected window goes down faster-whisper's temperature fallback ladder —
+which **samples**. So the output was not byte-identical between runs, let
+alone against the defaults. Measured 2026-08-28: one 25.2 s recording
+produced **five different transcripts in five runs** at fixed settings,
+ranging from 4 to 33 word errors. When a sampled attempt won, whole
+sentences you had spoken were simply absent — 19 consecutive words in one
+observed case, with the audio itself intact and loud.
+
+The fix is one decoder argument, `temperature=[0.0]`: no ladder, one
+attempt per window. The decode is now reproducible, and because a forced
+window was costing up to six decodes instead of one it is also **58.7%
+faster** (144.7 s → 59.8 s across the 50 recordings in `recent\`), with
+identical text on 42 of those 50 and no decoder loops in either arm.
+
+If you ever unpin it, understand what you are giving back: the ladder is
+Whisper's standard escape from a repetition loop. `repetition_penalty`,
+`cleanup.collapse_char_runs` and the loop warning in `local_whisper.py`
+are the defences that remain.
+
+**A warning for anyone benchmarking this app.** Every accuracy number
+written down here before 2026-08-28 was taken from a single run of a
+decoder that was not deterministic. The same beam-5 sweep over the same
+six clips scored 10.16%, 42.97% and 14.84% WER on three consecutive
+passes. Repeat your measurement before believing it.
 
 ## Teaching it the words it gets wrong
 
@@ -1929,11 +1960,34 @@ otherwise. So a language model reads the sentence and fixes the word.
 It is allowed to read context. It is **not** allowed to write. The
 instruction not to invent is in the prompt *and enforced in code*: every
 reply is diffed against the transcript and thrown away if the model did
-more than swap words — more than 15% change in word count, or fewer than
-75% of the words surviving. A rejected reply is not retried and not
-reported as an error; the raw transcript goes through untouched, exactly as
-if the pass were off. Failing closed is the only acceptable failure mode
-for something sitting between your speech and your cursor.
+more than swap words — more than 15% change in word count (in **either**
+direction), or fewer than 75% of the words surviving. A rejected reply is
+not retried and not reported as an error; the raw transcript goes through
+untouched, exactly as if the pass were off. Failing closed is the only
+acceptable failure mode for something sitting between your speech and your
+cursor.
+
+**A percentage alone was not enough, and that cost you words.** 15% of a
+long dictation is a lot of words: the band silently accepted a 13-word cut
+on a 90-word transcript, 35 words on 234, and 52 on 352. Meanwhile Groq's
+reply can hit its token cap and stop mid-sentence — `gpt-oss` spends up to
+402 hidden reasoning tokens out of the same budget, unpredictably — and
+nothing was reading `finish_reason`. On 2026-08-27 two truncated replies
+were pasted, one cut in the middle of a word.
+
+Both halves are now closed:
+
+- `translate.py` treats `finish_reason == "length"` as a failed reply, so a
+  truncated answer falls through to the next backend instead of being
+  accepted.
+- `polish._tail_loss` rejects any reply that reproduces the transcript and
+  then simply **stops** — a strict word-prefix — regardless of what
+  percentage that is, and catches the mid-word case too. A genuine repair
+  swaps words in the middle; only a cut answer ends early.
+
+Checked against the 50 stored `raw`/`text` pairs in `recent\`: 49
+legitimate repairs still pass, one is rejected, and it is the known
+truncation.
 
 **There is no Gemini fallback here**, unlike
 [translating](#translating-to-english) and

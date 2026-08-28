@@ -1129,8 +1129,20 @@ english_threshold = 0.8       # high on purpose: mis-detected Hebrew is far wors
 # fluent text from its training data. This fine-tune was trained on Knesset
 # protocols, so what it fills in is parliamentary: a dictation about adding
 # cities to an app ended with "אדוני היושב-ראש, חברי הכנסת" (observed
-# 2026-08-12). Neither setting touches transcription quality — measured
-# byte-identical output on good audio.
+# 2026-08-12).
+#
+# This comment used to end "Neither setting touches transcription quality —
+# measured byte-identical output on good audio." That was measured 2026-08-12
+# on a corpus with no long clips and it was WRONG. Tightening a threshold
+# makes Whisper reject more windows, and a rejected window goes down the
+# temperature fallback ladder, which SAMPLES: one 25.2 s clip gave 5 DIFFERENT
+# transcripts in 5 runs at fixed settings (4 to 33 word errors), and when a
+# sampled attempt won, whole spoken sentences vanished — 19 consecutive words
+# in one observed case, with the audio intact. hallucination_guards() now pins
+# temperature=[0.0], which makes the decode reproducible AND 58.7% faster
+# (144.7 s -> 59.8 s over the 50 clips in recent\, measured 2026-08-28 on a
+# CONTENDED GPU — re-time on a quiet machine before quoting it). The claim of
+# byte-identical output is true again now, and was not true before.
 guard_hallucinations = true      # tighten Whisper's own confidence thresholds
                                  # and enable hallucination_silence_threshold
 

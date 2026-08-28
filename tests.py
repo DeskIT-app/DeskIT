@@ -2722,7 +2722,40 @@ def test_polish_rejects_dropped_content() -> None:
               "למטה ותסדר את כל העמוד מחדש בבקשה")
     ok, why = polish_mod._is_safe(before, "אני רוצה שתוסיף את הכפתור")
     assert not ok, "a truncated reply must be rejected"
-    assert "lost" in why or "dropped" in why, why
+    # "cut off" is the tail guard answering first: this reply is a strict
+    # word-prefix of the transcript, which _tail_loss rejects before the
+    # ±15% band is even consulted. The band still catches drops that are
+    # not prefixes, which is what "lost" covers.
+    assert "lost" in why or "dropped" in why or "cut off" in why, why
+
+
+def test_polish_rejects_a_tail_cut_that_is_small_enough_to_pass_the_band()\
+        -> None:
+    """The band is a PERCENTAGE, and a truncated reply hides inside it.
+
+    Groq returned a reply that hit max_tokens on 2026-08-27 and the last
+    five words of a 94-word transcript never reached the screen: 5% drift,
+    comfortably inside ±15%, so nothing objected. A repair swaps words in
+    the middle; only a cut answer reproduces the transcript and then stops.
+    """
+    import polish as polish_mod
+    before = " ".join(f"מילה{i}" for i in range(94))
+    after = " ".join(f"מילה{i}" for i in range(89))
+    growth = (89 - 94) / 94
+    assert abs(growth) < polish_mod.MAX_GROWTH, (
+        "this test is pointless unless the cut fits inside the band")
+    ok, why = polish_mod._is_safe(before, after)
+    assert not ok, "a tail cut must be rejected however small it is"
+    assert "5 word" in why, why
+    # A cap can also land mid-word, leaving a fragment as the last token.
+    ok, why = polish_mod._is_safe("שיש לו שיעורי בית לעשות ומסטורוס נוסע",
+                                  "שיש לו שיע")
+    assert not ok, "a reply cut mid-word must be rejected"
+    # And none of this may reject an ordinary repair of the LAST word,
+    # which is a swap, not a stop.
+    ok, why = polish_mod._is_safe("תסדר את כל העמוד מחדש בבקשה",
+                                  "תסדר את כל העמוד מחדש בבקשא")
+    assert ok, why
 
 
 def test_polish_rejects_an_empty_reply() -> None:

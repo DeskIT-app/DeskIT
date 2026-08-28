@@ -82,9 +82,63 @@ back.
 
 ## Traps we already paid for — do not re-arm them
 
-- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, 367 of
-  them, safe to run while dictation is live (two bugs that used to kill
-  the app mid-suite are fixed; see git log). Run them BEFORE claiming done.
+- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, **449 test
+  functions** carrying 1,691 of them as of 2026-08-28, safe to run while
+  dictation is live (two bugs that used to kill the app mid-suite are
+  fixed; see git log). Run them BEFORE claiming done. (This line read "367"
+  for a long time and had drifted badly; if you change the suite, either
+  re-count with `Select-String -Path tests.py -Pattern "^def test_"` or say
+  "hundreds" and stop maintaining a number nobody re-derives.)
+- **The decoder WAS not deterministic, and every single-run measurement in
+  this repo predates knowing that.** `hallucination_guards()` tightens
+  three thresholds well past stock, and every window they reject goes down
+  faster-whisper's temperature fallback ladder (0.2 … 1.0), which SAMPLES.
+  Measured 2026-08-28: one 25.2 s clip produced **5 distinct transcripts in
+  5 runs** at fixed settings, scoring 4, 9, 16, 33 and 3 word edits against
+  64 true words — 6.3% to 51.6% WER from one file. That is the mechanism
+  behind "words I said are missing": a sampled window wins the fallback and
+  its words are gone, silently, with nothing logged. Fixed by pinning
+  `temperature=[0.0]` in `hallucination_guards()`, which also removed 58.7%
+  of decode time (144.7 s → 59.8 s over the 50 clips in `recent\`, RTF
+  0.058 → 0.024) because a forced window costs up to 6 decodes instead of
+  1. Two consequences for anyone measuring here: **an A/B taken once is a
+  draw from a distribution, not a result** — the same beam-5 sweep over the
+  same 6 clips scored 10.16%, 42.97% and 14.84% WER on three passes — and
+  the ladder is Whisper's standard escape from a repetition loop, so if you
+  ever unpin it, `repetition_penalty`, `collapse_char_runs` and the loop
+  warning are what is left. The GPU number above was taken while six agents
+  shared the card; re-time it on a quiet machine before quoting it.
+- **A percentage guard cannot see a truncation.** `polish._is_safe` bounds
+  drift at ±15% *symmetrically* — that part is fine and was verified — but
+  15% of a long dictation is enormous: it silently accepted a 13-word cut
+  on a 90-word transcript, 35 on 234 and 52 on 352. Groq's replies hit
+  `max_tokens` on ~12% of calls (gpt-oss spends 70–402 hidden reasoning
+  tokens out of the same budget, non-deterministically), nobody read
+  `finish_reason`, and two truncated replies were pasted on 2026-08-27 —
+  one cut mid-word. Fixed in two places: `translate.py` raises on
+  `finish_reason == "length"`, and `polish._tail_loss` rejects any reply
+  that is a strict word-prefix of the transcript, whatever its percentage.
+  A repair swaps words in the MIDDLE; only a cut answer reproduces the
+  transcript and then stops. Verified over the 50 stored `raw`/`text` pairs
+  in `recent\`: 49 legitimate repairs still pass, 1 rejected, and it is the
+  known truncation.
+- **`raw` and `text` in `recent\*.json` are a free before/after of the
+  whole text pipeline, and they settle stage arguments outright.** `raw` is
+  the decoder's output, `text` is what was pasted. Example: the polite
+  words that appear at the end of sentences unbidden ("בבקשה", "טוב") are
+  present in `raw` in 2 of 79 pairs and were ADDED by the repair pass in
+  **0 of 79** — so that bug is the fine-tune's, not Groq's, and no amount
+  of prompt work on `polish.py` will touch it. Check this pair before
+  blaming a stage. (`corpus\*.json` does NOT carry `raw` — only
+  `{kept, seconds, text, tier}` — so it contributes 0 pairs to such a
+  census, and `tier = "gold"` there means the owner corrected it by hand.)
+- **Do not fix the invented polite tail with a word list.** It is tempting
+  and it is wrong: of 18 dictations ending in a polite word, roughly 10 are
+  real speech — he really does end sentences with "בבקשה". The existing
+  `PARLIAMENTARY_BOILERPLATE` comment already refuses single common words
+  for this reason and should stay refusing them. Any fix has to gate on
+  evidence the decoder already produces (`word_timestamps` is on: a silence
+  gap before the token, or an outlying `avg_logprob`), not on the word.
 - **Subprocesses under pythonw allocate consoles.** Every `subprocess.run`
   needs `creationflags=CREATE_NO_WINDOW` (0x08000000) or each git/python
   spawn freezes the UI thread for hundreds of ms. This froze the dashboard
