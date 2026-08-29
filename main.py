@@ -283,7 +283,8 @@ class App:
             self.phone = server_mod.PhoneServer(
                 cfg, self._transcribe_for_phone,
                 lambda: self.transcriber.name,
-                self._translate_for_phone)
+                self._translate_for_phone,
+                self._punctuate_for_phone)
 
     @staticmethod
     def bindings(cfg: config_mod.Config):
@@ -694,7 +695,7 @@ class App:
             log.exception("control command %r failed", command)
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
-    def _transcribe_for_phone(self, wav: bytes) -> tuple[str, str]:
+    def _transcribe_for_phone(self, wav: bytes) -> tuple[str, str, str | None]:
         """No language is passed: the phone has no per-language key, so it
         goes through the same Hebrew/English detection the desktop uses
         when nothing was specified.
@@ -732,11 +733,53 @@ class App:
     def _translate_for_phone(self, text: str) -> tuple[str, str]:
         """The same Gemini-then-Ollama translator the F9 key uses. Shares
         the instance, so the phone does not pay Ollama's 76 s cold start
-        again on its own copy."""
+        again on its own copy.
+
+        Logged like the desktop key, and the reason matters MORE here: this
+        replaces the WHOLE field, there is no Ctrl+Z on a phone, and the
+        keyboard deliberately never touches the clipboard. Without the IN
+        line, a translation that comes back wrong has taken the original out
+        of every store in the system.
+
+        "phone" goes in the slot the desktop fills with "the selection" or
+        "the field": history.py reads that position as the source and the
+        text as everything after it, so these rows fold in the dashboard
+        exactly like desktop ones, with no change to the parser.
+        """
         import translate as translate_mod
         if self._translator is None:
             self._translator = translate_mod.Translator(self.cfg)
-        return self._translator.translate(text)
+        transcript_log.info("TRANSLATE-IN  | phone | %s", text)
+        started = time.monotonic()
+        out, backend = self._translator.translate(text)
+        transcript_log.info("TRANSLATE-OUT | %.1fs | %s | %s",
+                            time.monotonic() - started, backend, out)
+        return out, backend
+
+    def _punctuate_for_phone(self, text: str) -> tuple[str, str]:
+        """The phone twin of the F2 key, on the very same Punctuator.
+
+        This is the one the phone needs most after dictation itself: the
+        local Hebrew model returns a run of words with barely a comma in it,
+        [polish] is forbidden from adding any, and on a phone there is no
+        practical way to put them in by hand.
+
+        punctuate.UnsafeReply is allowed to propagate rather than being
+        turned into a generic failure here: server.py answers it with a 409
+        and the phone leaves the field alone. A caller that could not tell
+        "the guard fired and your text is fine" from "the backend is down"
+        would put the wrong sentence in front of the one person able to act
+        on either.
+        """
+        import punctuate as punctuate_mod
+        if self._punctuator is None:
+            self._punctuator = punctuate_mod.Punctuator(self.cfg)
+        transcript_log.info("PUNCTUATE-IN  | phone | %s", text)
+        started = time.monotonic()
+        out, backend = self._punctuator.punctuate(text)
+        transcript_log.info("PUNCTUATE-OUT | %.1fs | %s | %s",
+                            time.monotonic() - started, backend, out)
+        return out, backend
 
     # ---- hook-thread callbacks: keep them fast ----
 

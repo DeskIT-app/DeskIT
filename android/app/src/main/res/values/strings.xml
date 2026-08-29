@@ -6,18 +6,74 @@
     <!-- Keyboard face. English on purpose: it sits under a Hebrew text
          field, and mixing scripts in the same glance is noise. -->
     <string name="hold_and_talk">Hold &amp; talk</string>
-    <string name="slide_to_lock">Slide up to lock ↑</string>
-    <string name="recording">Recording…</string>
-    <string name="locked">Locked · tap to finish</string>
+    <string name="slide_to_lock">Slide up to lock ↑ · down to discard</string>
+    <!-- %1$s is m:ss. The clock is the point: a locked recording you walked
+         away from has to read as still running. -->
+    <string name="recording_time">Recording  %1$s</string>
+    <string name="locked_time">Locked  %1$s · tap to finish</string>
     <string name="transcribing">Transcribing…</string>
     <string name="translating">Translating…</string>
+    <string name="punctuating">Punctuating…</string>
     <string name="too_short">Too short</string>
     <string name="no_speech">No speech</string>
+    <string name="discarded">Discarded</string>
+    <string name="recording_cancelled">Keyboard closed — recording discarded</string>
     <string name="nothing_to_translate">Nothing in the field</string>
+    <!-- A whole recording of silence is a held microphone, not a quiet room.
+         Say so instead of uploading it and returning "No speech". -->
+    <string name="no_sound">No sound — is another app using the mic?</string>
+    <string name="capped">Hit the %1$s limit — sending what there is</string>
+
+    <!-- The reply came back after the field it was meant for went away. The
+         text is kept rather than written into a stranger's field. -->
+    <string name="field_gone">Text ready — tap to insert it here</string>
+    <string name="field_changed">The text moved on — left it alone</string>
+    <string name="cannot_undo">Nothing of mine to undo</string>
+    <string name="undone">Removed</string>
+    <!-- %1$s is the failure. The recording is still in memory. -->
+    <string name="tap_to_retry">%1$s — tap to retry</string>
+
+    <!-- A password field is not a place to dictate: the audio and the text
+         would both leave the phone, and the text would land in
+         transcripts.log on the PC for good. -->
+    <string name="private_field">Not here — this field is private</string>
+
+    <!-- Key faces. -->
     <string name="translate_btn">→ EN</string>
-    <string name="back_to_keyboard">Keyboard</string>
-    <string name="needs_permission">No mic permission — open the app</string>
-    <string name="needs_setup">No token — open the app</string>
+    <string name="punctuate_btn">, . ?</string>
+    <string name="back_to_keyboard">⌨</string>
+    <string name="backspace_btn">⌫</string>
+    <string name="discard_btn">✕</string>
+    <string name="space_btn">␣</string>
+    <string name="period_btn">.</string>
+    <string name="undo_btn">↶</string>
+
+    <!-- The action key's face, taken from what the field declared about
+         itself. Never guessed, and never hard-coded to Search. -->
+    <string name="act_search">Search</string>
+    <string name="act_go">Go</string>
+    <string name="act_send">Send</string>
+    <string name="act_done">Done</string>
+    <string name="act_next">Next</string>
+    <string name="act_prev">Back</string>
+    <string name="act_enter">↵</string>
+
+    <!-- Spoken by TalkBack; never shown. -->
+    <string name="cd_mic">Hold and talk</string>
+    <string name="cd_backspace">Backspace</string>
+    <string name="cd_discard">Discard the recording</string>
+    <string name="cd_space">Space</string>
+    <string name="cd_period">Full stop, hold for a comma</string>
+    <string name="cd_undo">Undo the last insert</string>
+    <string name="cd_translate">Translate to English</string>
+    <string name="cd_punctuate">Add punctuation</string>
+    <string name="cd_switch">Switch keyboard</string>
+
+    <string name="needs_permission">No mic permission — tap here</string>
+    <string name="needs_setup">No token — tap here to set up</string>
+    <string name="unreachable">Can\'t reach the PC — is Tailscale on?</string>
+    <!-- %1$s is the backend the PC answered with: "local" or "gemini". -->
+    <string name="ready_on">Slide up to lock ↑ · %1$s</string>
 
     <string name="setup_intro">הטלפון מקליט, המחשב בבית מתמלל. צריך ש-Tailscale יהיה פעיל בשני הצדדים.</string>
     <string name="paste_url_label">כתובת השרת (אפשר להדביק את הכתובת המלאה עם ‎#t=‎)</string>

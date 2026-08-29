@@ -232,13 +232,25 @@ class _Handler(BaseHTTPRequestHandler):
             log.exception("phone request handler crashed")
             raise
 
+    # route -> handler name. A table rather than a chain of `if route ==`,
+    # because the chain was already carrying its own bugs by the third
+    # entry: the allow-list and the dispatch were two separate lists that
+    # had to agree, and the 401 below named /transcribe whatever had
+    # actually been called.
+    POST_ROUTES = {
+        "/transcribe": "_do_transcribe",
+        "/translate": "_do_translate",
+        "/punctuate": "_do_punctuate",
+    }
+
     def do_POST(self) -> None:
         route = self.path.split("?", 1)[0].rstrip("/")
-        if route not in ("/transcribe", "/translate"):
+        handler = self.POST_ROUTES.get(route)
+        if handler is None:
             self._json(404, {"error": "not found"})
             return
         if not self._authorised():
-            log.warning("rejected an unauthorised /transcribe from %s",
+            log.warning("rejected an unauthorised %s from %s", route,
                         self.client_address[0])
             self._json(401, {"error": "bad token"})
             return
@@ -249,10 +261,21 @@ class _Handler(BaseHTTPRequestHandler):
         if not 0 < length <= MAX_BODY:
             self._json(400, {"error": f"body must be 1..{MAX_BODY} bytes"})
             return
-        raw = self.rfile.read(length)
-        if route == "/translate":
-            self._do_translate(raw)
-            return
+        getattr(self, handler)(self.rfile.read(length))
+
+    def _text_body(self, raw: bytes) -> dict | None:
+        """The JSON body of a text route, or None once an error is sent."""
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            self._json(400, {"error": "expected JSON with a text field"})
+            return None
+        if not isinstance(payload, dict):
+            self._json(400, {"error": "expected JSON with a text field"})
+            return None
+        return payload
+
+    def _do_transcribe(self, raw: bytes) -> None:
         try:
             wav, seconds = to_wav(raw)
         except Exception as e:
@@ -283,12 +306,11 @@ class _Handler(BaseHTTPRequestHandler):
         if self.server.translate is None:
             self._json(503, {"error": "translation is not available"})
             return
-        try:
-            text = json.loads(raw.decode("utf-8")).get("text", "")
-        except (ValueError, UnicodeDecodeError):
-            self._json(400, {"error": "expected JSON with a text field"})
+        payload = self._text_body(raw)
+        if payload is None:
             return
-        if not text.strip():
+        text = payload.get("text", "")
+        if not isinstance(text, str) or not text.strip():
             self._json(400, {"error": "nothing to translate"})
             return
         # The desktop guard applies here too: a phone field can hold a
@@ -296,6 +318,16 @@ class _Handler(BaseHTTPRequestHandler):
         if len(text) > self.server.max_chars:
             self._json(400, {"error": f"too long "
                                       f"({len(text)} chars) to translate"})
+            return
+        # REFUSE RATHER THAN SPEND, which the desktop already does and the
+        # phone did not: "text with no Hebrew in it is skipped rather than
+        # spending a request". Without this, tapping the key on a field
+        # that is already English burns one of the ~80 free Gemini requests
+        # a day AND overwrites the whole field with the model's rewording
+        # of English that needed nothing done to it.
+        import translate as translate_mod
+        if not translate_mod.needs_translation(text):
+            self._json(400, {"error": "no Hebrew in it — nothing to translate"})
             return
         try:
             out, backend = self.server.translate(text)
@@ -306,18 +338,78 @@ class _Handler(BaseHTTPRequestHandler):
         log.info("phone: translated %d chars via %s", len(text), backend)
         self._json(200, {"text": out, "backend": backend})
 
+    def _do_punctuate(self, raw: bytes) -> None:
+        """The phone twin of the desktop's F2 key.
+
+        This is the one the phone needs most after dictation itself: the
+        local Hebrew model returns a run of words with barely a comma in
+        it, [polish] is forbidden from adding any, and on a phone there is
+        no practical way to put them in by hand.
+
+        The words are guaranteed untouched — punctuate.py strips every
+        non-letter from the reply AND from the input and demands they be
+        identical — so the only interesting failure is the one where the
+        model rewrote something. That comes back as 409 rather than 503,
+        deliberately: the phone shows either verbatim, but the status code
+        is what tells "your text is fine, the reply was thrown away" apart
+        from "the backend is down", in app.log and to anything else reading
+        this endpoint later.
+        """
+        if self.server.punctuate is None:
+            self._json(503, {"error": "punctuation is not available"})
+            return
+        payload = self._text_body(raw)
+        if payload is None:
+            return
+        text = payload.get("text", "")
+        if not isinstance(text, str) or not text.strip():
+            self._json(400, {"error": "nothing to punctuate"})
+            return
+        if len(text) > self.server.max_chars:
+            self._json(400, {"error": f"too long "
+                                      f"({len(text)} chars) to punctuate"})
+            return
+        import punctuate as punctuate_mod
+        if not punctuate_mod.needs_punctuation(text):
+            self._json(400, {"error": "no words to punctuate"})
+            return
+        # Nikud is deliberately NOT a per-request field. The prompt is built
+        # from cfg.punctuate.nikud through a callable the backends read at
+        # request time, so a per-call override would race the desktop key
+        # rather than override it. It stays one setting for both.
+        try:
+            out, backend = self.server.punctuate(text)
+        except punctuate_mod.UnsafeReply as e:
+            # Told apart from every other failure on purpose, exactly as
+            # the desktop key does it. "It could not be reached" sends
+            # someone to check Ollama; this means the model answered and
+            # rewrote their words, and the app threw that away — which is
+            # the guard working, not breaking.
+            log.error("phone punctuation discarded: %s. Text untouched.", e)
+            self._json(409, {"error": f"left it alone — the model rewrote "
+                                      f"your words ({e})", "unsafe": True})
+            return
+        except Exception as e:
+            log.warning("phone punctuation failed: %s", e)
+            self._json(503, {"error": str(e)})
+            return
+        log.info("phone: punctuated %d chars via %s", len(text), backend)
+        self._json(200, {"text": out, "backend": backend,
+                         "changed": out != text})
+
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
     def __init__(self, addr, token, transcribe, backend_name, translate=None,
-                 max_chars=5000):
+                 max_chars=5000, punctuate=None):
         super().__init__(addr, _Handler)
         self.token = token
         self.transcribe = transcribe
         self.backend_name = backend_name
         self.translate = translate
+        self.punctuate = punctuate
         self.max_chars = max_chars
 
 
@@ -325,11 +417,13 @@ class PhoneServer:
     """Owns the socket and the thread. Never fatal: if it cannot start,
     the desktop hotkey must keep working regardless."""
 
-    def __init__(self, cfg, transcribe, backend_name, translate=None):
+    def __init__(self, cfg, transcribe, backend_name, translate=None,
+                 punctuate=None):
         self.cfg = cfg
         self._transcribe = transcribe
         self._backend_name = backend_name
         self._translate = translate
+        self._punctuate = punctuate
         self._srv: _Server | None = None
         self._thread: threading.Thread | None = None
         self.url: str | None = None
@@ -340,7 +434,7 @@ class PhoneServer:
         token = load_token()
         self._srv = _Server((host, port), token, self._transcribe,
                             self._backend_name, self._translate,
-                            self.cfg.translate.max_chars)
+                            self.cfg.translate.max_chars, self._punctuate)
         self._thread = threading.Thread(target=self._srv.serve_forever,
                                         daemon=True, name="phone-server")
         self._thread.start()
