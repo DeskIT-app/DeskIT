@@ -1931,6 +1931,118 @@ def test_phone_endpoint_round_trip_and_auth() -> None:
         srv.stop()
 
 
+def test_phone_punctuate_route_and_the_guards_around_it() -> None:
+    """The phone's F2 key, and the two refusals that cost nothing.
+
+    The 409 is the load-bearing one. A reply the Punctuator threw away
+    because the model rewrote the words is NOT the same event as a backend
+    that could not be reached, and the phone has exactly one status line to
+    explain itself in — so the two have to be tellable apart by status code
+    rather than by reading the sentence. The other assertions are the
+    desktop's "refuse rather than spend" rule finally reaching the phone:
+    text with no Hebrew in it must not cost a Gemini request, and text with
+    no words in it must not cost anything at all.
+    """
+    import dataclasses
+
+    import punctuate as punctuate_mod
+    import requests
+
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dataclasses.replace(
+        cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
+                                            port=8798))
+    spent: list[str] = []
+    unsafe = [False]
+
+    def fake_punctuate(text):
+        spent.append(text)
+        if unsafe[0]:
+            raise punctuate_mod.UnsafeReply("word count moved 40%")
+        return text + ".", "fake"
+
+    def fake_translate(text):
+        spent.append(text)
+        return "translated", "fake"
+
+    srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"),
+                                 lambda: "fake", fake_translate,
+                                 fake_punctuate)
+    srv.start()
+    base = "http://127.0.0.1:8798"
+    auth = {"Authorization": f"Bearer {server_mod.load_token()}"}
+    try:
+        ok = requests.post(f"{base}/punctuate", timeout=10, headers=auth,
+                           json={"text": "שלום עולם מה נשמע"})
+        assert ok.status_code == 200, ok.status_code
+        assert ok.json()["text"] == "שלום עולם מה נשמע.", ok.json()
+        assert ok.json()["changed"] is True, ok.json()
+
+        unsafe[0] = True
+        rewrote = requests.post(f"{base}/punctuate", timeout=10, headers=auth,
+                                json={"text": "שלום עולם"})
+        assert rewrote.status_code == 409, rewrote.status_code
+        assert rewrote.json().get("unsafe") is True, rewrote.json()
+        unsafe[0] = False
+
+        spent.clear()
+        wordless = requests.post(f"{base}/punctuate", timeout=10, headers=auth,
+                                 json={"text": "12 34 !!!"})
+        assert wordless.status_code == 400, wordless.status_code
+        assert not spent, "no words in it, and it still called the model"
+
+        english = requests.post(f"{base}/translate", timeout=10, headers=auth,
+                                json={"text": "this is already english"})
+        assert english.status_code == 400, english.status_code
+        assert not spent, "no Hebrew in it, and it still spent a request"
+
+        hebrew = requests.post(f"{base}/translate", timeout=10, headers=auth,
+                               json={"text": "שלום עולם"})
+        assert hebrew.status_code == 200, hebrew.status_code
+        assert spent, "the translator was never called"
+
+        # The 401 used to name /transcribe whatever had actually been
+        # called, which made app.log the wrong place to look for the one
+        # thing it is there for.
+        denied = requests.post(f"{base}/punctuate", timeout=10,
+                               headers={"Authorization": "Bearer nope"},
+                               json={"text": "שלום"})
+        assert denied.status_code == 401, denied.status_code
+    finally:
+        srv.stop()
+
+
+def test_phone_punctuate_is_absent_rather_than_broken_without_it() -> None:
+    """A PhoneServer built without the callable answers 503, not a crash.
+
+    The three-argument construction is what the round-trip test above uses
+    and what any caller written before this route existed does, so it has
+    to keep working — the route just reports itself unavailable.
+    """
+    import dataclasses
+
+    import requests
+
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dataclasses.replace(
+        cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
+                                            port=8797))
+    srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"),
+                                 lambda: "fake")
+    srv.start()
+    auth = {"Authorization": f"Bearer {server_mod.load_token()}"}
+    try:
+        r = requests.post("http://127.0.0.1:8797/punctuate", timeout=10,
+                          headers=auth, json={"text": "שלום עולם"})
+        assert r.status_code == 503, r.status_code
+    finally:
+        srv.stop()
+
+
 def test_splash_shuts_down_without_aborting_the_process() -> None:
     """Tk interpreters must be torn down on the thread that created them.
     Left to the GC, the after() callbacks keep root alive in a cycle that

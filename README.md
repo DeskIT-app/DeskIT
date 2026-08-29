@@ -1699,9 +1699,55 @@ GPU here is already holding the model. The endpoint runs inside the running
 app and borrows that loaded model, so it costs no extra VRAM.
 
 Reachability is **Tailscale's** job. No port forwarding, no public IP, no
-dynamic DNS. The socket binds to the Tailscale address when it is up, so
-the endpoint exists only on your private mesh and never answers the home
-LAN. A bearer token is required on top of that.
+dynamic DNS. The socket binds to **loopback**, and `tailscale serve` fronts
+it — which is load-bearing rather than incidental: Serve proxies to
+localhost, so a server bound to the 100.x address instead would be
+invisible to it. Nothing listens on any interface a stranger could reach,
+not even the home LAN. A bearer token is required on top of that.
+
+### There is an Android keyboard, and it is the way to use this
+
+The web page below came first and still works. The **keyboard** is what you
+actually want: a page can only leave the transcript on the clipboard, while
+a keyboard commits it straight into whatever field has the cursor, in any
+app, with nothing pasted.
+
+It installs from this machine over the same private link — open
+`https://<machine>.<tailnet>.ts.net/app.apk` on the phone — and it is built
+by Gradle from `android/`. The app's one screen takes the URL and the token
+(paste the whole `.../#t=...` line and both fields fill), grants the
+microphone, opens the keyboard settings, and checks `/health` for a newer
+APK than the installed one.
+
+What the keyboard does, and what each part of it is for:
+
+- **Hold the big button and talk.** Slide **up** to lock it on and keep
+  talking hands-free — the phone's version of the left-arrow latch — and
+  slide **down** to throw the recording away, which is Esc. A clock and a
+  level bar run while it records, so a locked recording you walked away
+  from reads as still running, and a microphone another app is holding
+  stops looking like a quiet room.
+- **The action key** does what the field's own blue key does: **Send** in a
+  chat, **Search** in a search box, **Go** in an address bar, a newline in
+  a note. It reads that off the field rather than guessing. Without it,
+  finishing anything you dictated cost a switch back to the other keyboard.
+- **`→ EN`** is Ctrl+F9 and **`, . ?`** is F2, with the same selection
+  rules — a selection, or the whole field — and the same guarantees: the
+  punctuator's reply is compared to your text letter by letter and thrown
+  away if a word changed, and the field is left exactly as it was.
+- **`⌫`, `␣`, `.` (hold for a comma) and `↶`.** Undo removes exactly what
+  the keyboard last inserted, after checking it is still there, and refuses
+  otherwise.
+- **Password fields are refused outright.** Dictating into one would send
+  the audio here and write the plaintext into `transcripts.log`, where it
+  would stay. Same for any field flagged `NO_PERSONALIZED_LEARNING`.
+
+**Everything you teach it with F8 on the desktop applies here too**, with
+nothing implemented on the Android side at all: the phone only records,
+this machine transcribes, with the same model and the same [learned
+vocabulary](#teaching-it-the-words-it-gets-wrong). The repair pass runs on
+this path as well, so the two cannot give different answers for the same
+audio.
 
 ### Setting it up
 
@@ -1721,11 +1767,18 @@ LAN. A bearer token is required on top of that.
 4. The log prints the URL **including the token** (`.../#t=...`). Open that
    once on the phone; the token moves into localStorage and the address bar
    is cleaned, so the page can be bookmarked or added to the home screen.
+5. **For the keyboard**, open `/app.apk` from that same page, install it,
+   then paste the whole `.../#t=...` line into the app's first field — it
+   splits the URL and the token for you — grant the microphone, and turn
+   the keyboard on in Android's settings. "Save and test" sends one second
+   of silence, which proves DNS, Tailscale, TLS, the token and the model in
+   a single round trip without you having to say anything.
 
-Hold the button, talk, release. The text appears and is copied to the
-clipboard automatically.
+On the page: hold the button, talk, release. The text appears and is copied
+to the clipboard automatically. In the keyboard it goes straight into the
+field instead, which is the entire reason the keyboard exists.
 
-**Everything you teach it with `Ctrl+F8` on the desktop applies here too**, and
+**Everything you teach it with `F8` on the desktop applies here too**, and
 there is nothing on the phone that implements it: the phone only records,
 this machine transcribes, and it does so with the same model and the same
 [learned vocabulary](#teaching-it-the-words-it-gets-wrong). Correct
