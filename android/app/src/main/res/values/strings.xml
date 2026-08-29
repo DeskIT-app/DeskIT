@@ -69,6 +69,14 @@
     <string name="cd_punctuate">Add punctuation</string>
     <string name="cd_switch">Switch keyboard</string>
 
+    <!-- Arrange mode: hold any key that has no long-press job of its own
+         (space, undo, translate, punctuate, keyboard) to enter; drag a key
+         onto another to swap them; the mic key becomes Done. -->
+    <string name="arrange_hint">Drag a key onto another · mic = done</string>
+    <string name="arrange_done">Done</string>
+    <string name="arrange_saved">Keys rearranged</string>
+    <string name="cd_arrange">Arranging keys — drag one onto another</string>
+
     <string name="needs_permission">No mic permission — tap here</string>
     <string name="needs_setup">No token — tap here to set up</string>
     <string name="unreachable">Can\'t reach the PC — is Tailscale on?</string>

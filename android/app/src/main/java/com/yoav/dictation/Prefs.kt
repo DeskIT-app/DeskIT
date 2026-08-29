@@ -15,8 +15,35 @@ object Prefs {
     private const val KEY_URL = "url"
     private const val KEY_TOKEN = "token"
     private const val KEY_SWITCH_BACK = "switch_back"
+    private const val KEY_ORDER = "key_order"
 
     const val DEFAULT_URL = "https://yoav.example.ts.net"
+
+    /**
+     * The eight small keys, in the order they were designed: positions
+     * 0–3 are the top row, 4–7 the bottom. Ids, not labels — the action
+     * key's face changes per field and the order must not care.
+     */
+    val DEFAULT_ORDER = listOf(
+        "backspace", "space", "period", "undo",
+        "translate", "punctuate", "action", "switch")
+
+    /**
+     * The user's arrangement, or the default. Anything that is not a
+     * permutation of exactly today's eight ids — a stale save from a
+     * version with different keys — falls back whole rather than being
+     * repaired, because a half-guessed layout moves keys the user placed.
+     */
+    fun keyOrder(c: Context): List<String> {
+        val got = sp(c).getString(KEY_ORDER, null)?.split(',')
+            ?: return DEFAULT_ORDER
+        return if (got.sorted() == DEFAULT_ORDER.sorted()) got
+        else DEFAULT_ORDER
+    }
+
+    fun saveKeyOrder(c: Context, order: List<String>) {
+        sp(c).edit().putString(KEY_ORDER, order.joinToString(",")).apply()
+    }
 
     private fun sp(c: Context) = c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 

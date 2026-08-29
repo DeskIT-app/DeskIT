@@ -1,5 +1,6 @@
 package com.yoav.dictation
 
+import android.content.ClipData
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -14,6 +15,7 @@ import android.text.InputType
 import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.DragEvent
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -63,6 +65,22 @@ class DictationIme : InputMethodService() {
     private lateinit var status: TextView
     private lateinit var backspace: TextView
     private lateinit var actionKey: TextView
+    private lateinit var row1: LinearLayout
+    private lateinit var row2: LinearLayout
+
+    /** Every small key by its stable id, in [Prefs.DEFAULT_ORDER]'s ids. */
+    private val keyViews = LinkedHashMap<String, TextView>()
+
+    /**
+     * Arrange mode: the keys stop doing their jobs and become movable.
+     *
+     * Entered by holding any key that has no long-press job of its own —
+     * backspace holds to repeat, the period holds for a comma and the
+     * action key holds for a real Enter, so those three cannot also hold
+     * to arrange. They still MOVE like every other key: dragging any key
+     * onto them swaps the pair, which reaches every possible layout.
+     */
+    private var arranging = false
 
     private var busy = false
     private var holding = false
@@ -158,6 +176,9 @@ class DictationIme : InputMethodService() {
         // accumulates one stale copy per rotation.
         for (r in repeats) ui.removeCallbacks(r)
         repeats.clear()
+        // A rotation mid-arrange lands here too: the fresh build below is
+        // a normal keyboard, so the flag must not claim otherwise.
+        arranging = false
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -240,27 +261,26 @@ class DictationIme : InputMethodService() {
 
         backspace = repeatKey()
 
-        val row1 = row()
-        row1.addView(backspace)
-        row1.addView(key(R.string.space_btn, R.string.cd_space, 19f) {
+        // Built by id, laid out by the saved order: the user can hold a
+        // key and drag the eight of them into any arrangement they like,
+        // and it has to survive rotation and reinstalls of the view.
+        keyViews.clear()
+        keyViews["backspace"] = backspace
+        keyViews["space"] = key(R.string.space_btn, R.string.cd_space, 19f) {
             // A key event rather than commitText(" "), for the same reason
             // backspace is one: the host editor gets to treat it as a word
             // boundary, and its own autocorrect behaves.
             sendDownUpKeyEvents(KeyEvent.KEYCODE_SPACE)
-        })
-        row1.addView(key(R.string.period_btn, R.string.cd_period, 17f,
-            onLong = { commit(",") }) { commit(".") })
-        row1.addView(key(R.string.undo_btn, R.string.cd_undo, 19f) { undo() })
-        root.addView(row1)
-
-        val row2 = row()
-        (row2.layoutParams as LinearLayout.LayoutParams).topMargin = dp(6)
-        row2.addView(key(R.string.translate_btn, R.string.cd_translate, 14f) {
+        }
+        keyViews["period"] = key(R.string.period_btn, R.string.cd_period, 17f,
+            onLong = { commit(",") }) { commit(".") }
+        keyViews["undo"] = key(R.string.undo_btn, R.string.cd_undo, 19f) { undo() }
+        keyViews["translate"] = key(R.string.translate_btn, R.string.cd_translate, 14f) {
             translateField()
-        })
-        row2.addView(key(R.string.punctuate_btn, R.string.cd_punctuate, 14f) {
+        }
+        keyViews["punctuate"] = key(R.string.punctuate_btn, R.string.cd_punctuate, 14f) {
             punctuateField()
-        })
+        }
         actionKey = key(R.string.act_enter, R.string.act_enter, 15f,
             fill = idleColor, textColor = Color.WHITE,
             // Some apps never listen for performEditorAction and take only
@@ -270,10 +290,16 @@ class DictationIme : InputMethodService() {
             onLong = { sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER) }) {
             fireAction()
         }
-        row2.addView(actionKey)
-        row2.addView(key(R.string.back_to_keyboard, R.string.cd_switch, 19f) {
+        keyViews["action"] = actionKey
+        keyViews["switch"] = key(R.string.back_to_keyboard, R.string.cd_switch, 19f) {
             goBack()
-        })
+        }
+
+        row1 = row()
+        row2 = row()
+        (row2.layoutParams as LinearLayout.LayoutParams).topMargin = dp(6)
+        layoutKeys()
+        root.addView(row1)
         root.addView(row2)
 
         button.setOnTouchListener { v, e ->
@@ -364,7 +390,103 @@ class DictationIme : InputMethodService() {
             it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             onLong()
             true
+        } else setOnLongClickListener {
+            // Every key without a long-press job of its own is a handle
+            // into arrange mode. See [arranging] for why not all eight.
+            it.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            enterArrange()
+            true
         }
+    }
+
+    // ---- moving the keys around ----
+
+    /** Empties both rows and refills them from the saved order. */
+    private fun layoutKeys() {
+        row1.removeAllViews()
+        row2.removeAllViews()
+        for ((i, id) in Prefs.keyOrder(this).withIndex()) {
+            val v = keyViews.getValue(id)
+            (v.parent as? ViewGroup)?.removeView(v)
+            (if (i < 4) row1 else row2).addView(v)
+        }
+    }
+
+    /**
+     * The keys keep their faces and places but trade their jobs for one:
+     * being dragged. Press one and it lifts immediately — the long press
+     * was spent getting here, demanding another inside the mode would
+     * teach that the mode is broken. Dropping it on a sibling swaps the
+     * pair, which is the reorder that never surprises: exactly two keys
+     * move, both of them chosen.
+     *
+     * The way out is the microphone, relabeled Done — and leaving simply
+     * throws this view away and builds a fresh one, the same path a
+     * rotation takes, so every listener this mode replaced comes back
+     * without a list of what they were.
+     */
+    private fun enterArrange() {
+        if (arranging || holding || locked || busy) return
+        arranging = true
+        for ((id, v) in keyViews) {
+            v.setOnLongClickListener(null)
+            v.setOnClickListener { }
+            v.setOnTouchListener { view, e ->
+                if (e.action == MotionEvent.ACTION_DOWN) {
+                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    view.startDragAndDrop(
+                        ClipData.newPlainText("key", id),
+                        View.DragShadowBuilder(view), id, 0)
+                    view.alpha = 0.35f
+                }
+                true
+            }
+            v.setOnDragListener { view, e ->
+                when (e.action) {
+                    DragEvent.ACTION_DRAG_STARTED -> true
+                    DragEvent.ACTION_DRAG_ENTERED -> {
+                        if (e.localState != id) view.alpha = 0.6f; true
+                    }
+                    DragEvent.ACTION_DRAG_EXITED -> {
+                        if (e.localState != id) view.alpha = 1f; true
+                    }
+                    DragEvent.ACTION_DROP -> {
+                        val from = e.localState as? String
+                        if (from != null && from != id) {
+                            val order = Prefs.keyOrder(this).toMutableList()
+                            val a = order.indexOf(from)
+                            val b = order.indexOf(id)
+                            order[a] = id
+                            order[b] = from
+                            Prefs.saveKeyOrder(this, order)
+                            say(getString(R.string.arrange_saved))
+                        }
+                        true
+                    }
+                    DragEvent.ACTION_DRAG_ENDED -> {
+                        // Also the landing spot for a drag let go over the
+                        // mic or nowhere: everything opaque, nothing moved.
+                        for (k in keyViews.values) k.alpha = 1f
+                        // Off the drag dispatch: relaying out re-parents
+                        // the very views the ended event is walking.
+                        ui.post { if (arranging) layoutKeys() }
+                        true
+                    }
+                    else -> false
+                }
+            }
+        }
+        button.text = getString(R.string.arrange_done)
+        button.contentDescription = getString(R.string.arrange_done)
+        button.setOnTouchListener(null)
+        button.setOnClickListener { exitArrange() }
+        status.text = getString(R.string.arrange_hint)
+        status.contentDescription = getString(R.string.cd_arrange)
+    }
+
+    private fun exitArrange() {
+        arranging = false
+        setInputView(onCreateInputView())
     }
 
     /**
@@ -426,6 +548,10 @@ class DictationIme : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo?, restarting: Boolean) {
         super.onStartInputView(info, restarting)
+        // Landing in a new field mid-arrange: the mode's disabled keys
+        // must not be what greets the field. The layout is already saved
+        // after every swap, so leaving loses nothing.
+        if (arranging) exitArrange()
         val moved = info?.fieldId != editor?.fieldId ||
                 info?.packageName != editor?.packageName
         editor = info
