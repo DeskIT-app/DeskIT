@@ -337,6 +337,43 @@ def _no_activate(root, click_through: bool = False) -> bool:
         return False
 
 
+def _hide_from_capture(root) -> bool:
+    """Make an overlay invisible to every screen capture on this machine.
+
+    The dot sits in the top-right corner of the screen and pulses red for
+    as long as a recording is locked on — and the screenshot key can now
+    be pressed while one is. Without this, every screenshot taken while
+    dictating comes back with our own indicator burned into the corner of
+    it, which is a strange thing to hand somebody and an actively bad one
+    to paste into a bug report.
+
+    WDA_EXCLUDEFROMCAPTURE, the same flag capture.py's clip bar uses.
+    Re-measured here on this window rather than trusted: a 60x60
+    borderless magenta Tk window at +50+50, grabbed through PIL's
+    ImageGrab, gave 3600/3600 magenta pixels before the call and
+    0/3600 after it (2026-08-30). The desktop behind it lands in the
+    frame, not a hole.
+
+    Not imported from capture.py: this module is on the startup path and
+    capture.py drags in Pillow, Tk canvases and a video encoder. Eleven
+    lines is cheaper than that import, and the flag is one constant.
+    """
+    WDA_EXCLUDEFROMCAPTURE = 0x00000011
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        hwnd = int(root.winfo_id())
+        target = user32.GetParent(hwnd) or hwnd
+        user32.SetWindowDisplayAffinity.argtypes = [ctypes.c_void_p,
+                                                    ctypes.c_uint]
+        return bool(user32.SetWindowDisplayAffinity(
+            ctypes.c_void_p(target), WDA_EXCLUDEFROMCAPTURE))
+    except Exception as e:
+        # Not fatal and not worth a warning: a dot in the corner of a
+        # screenshot is a blemish, and the alternative to it is no dot.
+        _log.debug("could not exclude an overlay from capture: %r", e)
+        return False
+
+
 # The transparent-colour key. Any pixel painted exactly this shade is
 # punched out of the window, which is what turns a square Tk window into a
 # round dot. Deliberately a colour nothing else would pick.
@@ -446,6 +483,10 @@ class StatusDot:
         # window silently does nothing and still reports success.
         root.update_idletasks()
         _no_activate(root, click_through=True)
+        # After the realise, for the same reason _no_activate needs it: the
+        # write lands on nothing and reports success on an unrealised Tk
+        # window.
+        _hide_from_capture(root)
         self._alive.set()
 
         state = {"name": "ready", "phase": 0.0}

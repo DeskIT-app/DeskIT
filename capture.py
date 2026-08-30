@@ -174,6 +174,7 @@ you make on purpose is you choosing otherwise, once, visibly.
 """
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import ctypes.wintypes as w
 import gc
@@ -1140,6 +1141,18 @@ def copy_image(image) -> bool:
 
     Never raises: a clipboard locked by another application is a normal
     Windows afternoon, and the capture is already safe on disk.
+
+    QUEUED BEHIND THE REST OF THE PROCESS, through injector.board_held().
+    A retry loop is not enough and never was: OpenClipboard does not
+    serialise two threads of the same process — it hands the second one a
+    success it cannot honour (popup.py has the measurement). This runs on
+    `capture-shot`, which knows nothing about what main.py is doing, and
+    the screenshot key can now be pressed in the middle of a dictation. So
+    without the queue these two SetClipboardData calls can land inside the
+    ~350 ms in which the target app is asynchronously reading a staged
+    transcript, and the user gets the picture pasted into their document
+    instead of their sentence — with the "..." marker already backspaced
+    away and the transcript surviving only in transcripts.log.
     """
     try:
         import win32clipboard
@@ -1147,17 +1160,18 @@ def copy_image(image) -> bool:
         dib, png = _image_formats(image)
         cf_png = win32clipboard.RegisterClipboardFormat("PNG")
         injector = _injector()
-        opener = getattr(injector, "_open_clipboard", None)
-        if opener is not None:
-            opener()                    # the retry loop injector.py already
-        else:                           # paid for: another app may hold it
-            win32clipboard.OpenClipboard()
-        try:
-            win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardData(win32con.CF_DIB, dib)
-            win32clipboard.SetClipboardData(cf_png, png)
-        finally:
-            win32clipboard.CloseClipboard()
+        with _board(injector):
+            opener = getattr(injector, "_open_clipboard", None)
+            if opener is not None:
+                opener()                # the retry loop injector.py already
+            else:                       # paid for: another app may hold it
+                win32clipboard.OpenClipboard()
+            try:
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardData(win32con.CF_DIB, dib)
+                win32clipboard.SetClipboardData(cf_png, png)
+            finally:
+                win32clipboard.CloseClipboard()
         return True
     except Exception as e:
         log.info("could not put the capture on the clipboard (%s) — it is "
@@ -1185,16 +1199,41 @@ def copy_file(path: Path) -> bool:
         # DROPFILES: pFiles offset, POINT pt, fNC, fWide
         header = struct.pack("Illii", 20, 0, 0, 0, 1)
         payload = header + text.encode("utf-16-le")
-        win32clipboard.OpenClipboard()
-        try:
-            win32clipboard.EmptyClipboard()
-            win32clipboard.SetClipboardData(win32con.CF_HDROP, payload)
-        finally:
-            win32clipboard.CloseClipboard()
+        injector = _injector()
+        with _board(injector):
+            # The queue AND the retry loop, neither of which this one had.
+            # See copy_image for what each buys.
+            opener = getattr(injector, "_open_clipboard", None)
+            if opener is not None:
+                opener()
+            else:
+                win32clipboard.OpenClipboard()
+            try:
+                win32clipboard.EmptyClipboard()
+                win32clipboard.SetClipboardData(win32con.CF_HDROP, payload)
+            finally:
+                win32clipboard.CloseClipboard()
         return True
     except Exception as e:
         log.info("could not put %s on the clipboard (%s)", Path(path).name, e)
         return False
+
+
+@contextlib.contextmanager
+def _board(injector):
+    """Take the process-wide clipboard queue, if there is one to take.
+
+    A context manager rather than a plain call so that the "injector is
+    not importable" case — which this module has always had to survive,
+    being usable on its own — costs one bare yield and no branching at
+    either call site.
+    """
+    held = getattr(injector, "board_held", None)
+    if held is None:
+        yield
+        return
+    with held():
+        yield
 
 
 def _injector():
@@ -3076,10 +3115,17 @@ class ShotWindow:
             self._dirty = True
             return
         if name == "copy":
-            if copy_image(self.picture()):
-                self.say("copied", ttl_ms=FLASH_MS)
-            else:
-                self.say("the clipboard would not take it")
+            # ON A THREAD, because this is a Tk button handler and the
+            # clipboard is a queue shared with the whole process now
+            # (injector._board_lock). The longest thing on that queue — a
+            # lookup that found nothing selected — holds it for up to
+            # 2.1 s, and an editor that stopped repainting for two seconds
+            # because somebody pressed the lookup key would read as a
+            # hang. The same shape popup.py's copy button has always had.
+            picture = self.picture()
+            self.say("copied", ttl_ms=FLASH_MS)
+            threading.Thread(target=copy_image, args=(picture,),
+                             daemon=True, name="capture-copy").start()
             return
         if name == "save":
             return self._save_again()
@@ -4022,7 +4068,11 @@ class ShotToast:
             open_folder(self.saved)
             self.action = None
         elif name == "copy":
-            copy_image(self.image)
+            # A thread, for the reason the editor's copy button uses one:
+            # this runs on the toast's own Tk pump. And the toast is about
+            # to close, so it cannot wait for the answer anyway.
+            threading.Thread(target=copy_image, args=(self.image,),
+                             daemon=True, name="capture-copy").start()
             self.action = None
         else:
             self.action = name     # "edit" or "save", answered by the caller

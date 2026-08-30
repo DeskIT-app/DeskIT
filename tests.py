@@ -129,9 +129,29 @@ def test_left_ctrl_is_not_the_hotkey() -> None:
     m.handle("up", VK_LCTRL, injected=False)
     assert spy.events == [], spy.events
     m.handle("down", VK_RCTRL, injected=False)
-    m.handle("down", VK_LCTRL, injected=False)  # recording: physical -> abort
-    assert spy.events == ["start", "abort:'left ctrl' pressed mid-hold"], \
-        spy.events
+    m.handle("down", VK_LCTRL, injected=False)  # recording: a modifier defers
+    assert spy.events == ["start"], spy.events
+    m.handle("up", VK_LCTRL, injected=False)
+    m.handle("up", VK_RCTRL, injected=False)
+    assert spy.events == ["start", "stop"], spy.events
+
+
+def test_a_modifier_alone_defers_and_the_letter_aborts() -> None:
+    """The abort rule reads the COMBO, not the reach for one.
+
+    It used to fire on the modifier's key-down, which is the one moment a
+    chord can never be judged from: every chord this app binds starts with
+    a modifier, so aborting there made ctrl+F10 and win+shift+s
+    unpressable mid-dictation by construction. Deferring costs nothing —
+    Ctrl+C still throws the recording away, one key later, on the C.
+    """
+    spy = Spy()
+    m = spy.machine()
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LCTRL, injected=False)   # reaching for a combo
+    assert spy.events == ["start"], spy.events
+    m.handle("down", VK_C, injected=False)       # ...and there it is
+    assert spy.events == ["start", "abort:'c' pressed mid-hold"], spy.events
 
 
 def test_other_key_up_does_not_abort() -> None:
@@ -884,6 +904,386 @@ def _worker_app(backend, spool_dir, retry_seconds=5.0):
     return app
 
 
+# --------------------- the app's half of "features in parallel"
+#
+# hotkey.py decides WHEN a key may fire; these are the answers main.py
+# gives it, and the two facts a dictation now has to carry with it.
+
+class _FakeSink:
+    """A stand-in ask card. `busy` is what claims Escape, `sink_active` is
+    what used to decide where a transcript went."""
+
+    def __init__(self, sink_active=False, busy=False, recording=False):
+        self.sink_active = sink_active
+        self.busy = busy
+        self.recording = recording
+        self.delivered = []
+
+    def deliver_transcript(self, text):
+        self.delivered.append(text)
+        return True
+
+
+def _policy_app():
+    import main as main_mod
+    app = main_mod.App.__new__(main_mod.App)
+    app._cue_lock, app._cue_last = threading.Lock(), {}
+    return app
+
+
+def test_screen_keys_work_mid_hold_and_text_keys_wait() -> None:
+    """The split the whole feature turns on, stated once.
+
+    Pixels need no hands and no caret, so they are as true mid-sentence as
+    at rest. The keys that read or rewrite the text AT THE CURSOR are a
+    different matter, because the cursor is where the transcript being
+    recorded is about to land — and while the hotkey is HELD one hand is
+    pinned to it, so there is no selection for them to act on anyway.
+    """
+    app = _policy_app()
+    for action in ("visual_qa", "capture", "record", "photo"):
+        assert app._tap_allowed(action, hotkey_mod.RECORDING), action
+        assert app._tap_allowed(action, hotkey_mod.LATCHED), action
+        assert app._tap_allowed(action, hotkey_mod.IDLE), action
+    for action in ("translate", "punctuate", "correct", "lookup"):
+        assert not app._tap_allowed(action, hotkey_mod.RECORDING), action
+        # Latched the hands are FREE — that is what latching is for — and
+        # the cursor lock already serialises these against the paste.
+        assert app._tap_allowed(action, hotkey_mod.LATCHED), action
+        assert app._tap_allowed(action, hotkey_mod.IDLE), action
+
+
+def test_escape_goes_to_whichever_window_has_the_foreground() -> None:
+    """Esc discards a locked recording, and also closes the selector, the
+    capture overlay, the clip bar, the camera and the ask card. Exactly
+    one per press, and FOCUS is what decides which.
+
+    Asking the controllers whether they were "busy" was the first answer
+    and it was wrong in both directions: capture.busy stays set through
+    the post-shot toast and the clip toast, neither of which reads Escape
+    or takes focus, so for about twelve seconds after a screenshot Esc
+    stopped being the way out of a locked recording and nothing consumed
+    it instead.
+    """
+    import main as main_mod
+
+    app = _policy_app()
+    app.popup = _SpyPopup()
+    real, ours = main_mod.injector, {"mine": False}
+
+    class _Windows:
+        ClipboardBusyError = real.ClipboardBusyError
+        FocusChangedError = real.FocusChangedError
+
+        @staticmethod
+        def foreground_window():
+            return 0x1234
+
+        @staticmethod
+        def is_our_window(hwnd):
+            return ours["mine"]
+
+    try:
+        main_mod.injector = _Windows
+        assert app._esc_is_claimed() is False, \
+            "the user's own window is in front: the recording has the key"
+        ours["mine"] = True
+        assert app._esc_is_claimed() is True, \
+            "one of ours is in front: it gets its own Esc"
+        # A busy controller with no window in front — the toasts — must not
+        # claim it. That is the whole bug this test exists for.
+        ours["mine"] = False
+        app._capture = _FakeSink(busy=True)
+        app._vqa = _FakeSink(busy=True)
+        assert app._esc_is_claimed() is False, \
+            "busy is not the same question as on screen"
+    finally:
+        main_mod.injector = real
+
+
+def test_esc_guard_never_builds_a_controller() -> None:
+    """It runs inside the keyboard hook. Touching the `vqa` or `capture`
+    property there would import Tk, Pillow and a vision chain from a
+    callback Windows unhooks at 300 ms."""
+    app = _policy_app()
+    app.popup = _SpyPopup()
+
+    def boom(self):
+        raise AssertionError("the esc guard built a controller")
+
+    import main as main_mod
+    for name in ("vqa", "capture"):
+        assert isinstance(getattr(main_mod.App, name), property), name
+    saved = main_mod.App.vqa, main_mod.App.capture
+    try:
+        main_mod.App.vqa = property(boom)
+        main_mod.App.capture = property(boom)
+        app._esc_is_claimed()
+    finally:
+        main_mod.App.vqa, main_mod.App.capture = saved
+
+
+def test_a_card_opened_mid_dictation_does_not_steal_the_transcript() -> None:
+    """WHERE a dictation goes is decided when it STARTS.
+
+    Read at transcription time instead, a card opened while the user was
+    still speaking swallowed the paragraph they were dictating into their
+    editor — and the '...' marker already in that editor could not even be
+    taken back down, because the card had the foreground by then.
+    """
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-sink-"))
+    fake = _FakeInjector()
+    real = main_mod.injector
+    try:
+        main_mod.injector = fake
+        app = _worker_app(_Flaky(fail_times=0), tmp)
+        card = _FakeSink(sink_active=True)   # it opened while they spoke
+        app._vqa = card
+
+        app._handle(b"RIFF-audio", 4.0, fake.focus, None, False)
+        assert card.delivered == [], card.delivered
+        assert [c[0] for c in fake.calls] == ["show", "replace"], fake.calls
+
+        # ...and the other way round: a dictation that was AIMED at the
+        # card still reaches it, and nothing is pasted at the cursor.
+        fake.calls.clear()
+        app._handle(b"RIFF-audio", 4.0, fake.focus, None, True)
+        assert card.delivered == ["שלום"], card.delivered
+        assert fake.calls == [], fake.calls
+
+        # And the case the start-window fallback can produce: NO window at
+        # all. Pasting on "no window" means pasting into whatever has focus
+        # now, which is most likely the overlay that caused the question.
+        # It goes to the clipboard with an explanation instead.
+        fake.calls.clear()
+        card.sink_active = False
+        app._handle(b"RIFF-audio", 4.0, 0, None, False)
+        assert [c[0] for c in fake.calls] == ["clipboard"], fake.calls
+    finally:
+        main_mod.injector = real
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_transcript_is_never_aimed_at_one_of_our_own_windows() -> None:
+    """The clip bar of a screen recording takes the foreground when Tk
+    realises it and never gives it back, so a dictation can both START and
+    END with one of ours in front. Aimed there, the marker and the whole
+    transcript are fired into our own window and every focus test in
+    _handle passes, so it is reported as a success and the user's real
+    target never hears about it. 0 — "nowhere known" — is the only honest
+    answer, and _handle turns that into the clipboard.
+    """
+    import main as main_mod
+
+    app = main_mod.App.__new__(main_mod.App)
+    real = main_mod.injector
+    ours = {"mine": True}
+
+    class _Windows:
+        @staticmethod
+        def foreground_window():
+            return 0x1111
+
+        @staticmethod
+        def is_our_window(hwnd):
+            return bool(hwnd) and ours["mine"]
+
+    class _Recorder:
+        def begin(self): pass
+        def meter(self): return 0.0, True
+
+    class _Cfg:
+        max_seconds = 400.0
+        hotkey = "right ctrl"
+        latch_hotkey = "left"
+        visual_qa = None
+
+    try:
+        main_mod.injector = _Windows
+        app.cfg, app.recorder = _Cfg(), _Recorder()
+        app.dot = type("D", (), {"set_state": lambda s, v: None})()
+        app.machine = type("M", (), {"state": hotkey_mod.RECORDING})()
+        app._activity = "ready"
+        app._vqa = None
+        app._on_start(None)
+        assert app._start_hwnd == 0, hex(app._start_hwnd)
+        # ...and with the user's own window in front, it is remembered.
+        ours["mine"] = False
+        app._on_start(None)
+        assert app._start_hwnd == 0x1111, hex(app._start_hwnd)
+    finally:
+        main_mod.injector = real
+
+
+def test_the_app_actually_hands_its_policy_to_the_state_machine() -> None:
+    """Without the wiring, every rule above is inert and the keys go back
+    to being dead mid-dictation — which is a silent failure, because
+    PTTStateMachine's default for `tap_allowed is None` is exactly the old
+    idle-only behaviour. One deleted keyword argument in a merge and the
+    whole feature is gone with the suite still green."""
+    import inspect
+
+    import main as main_mod
+
+    source = inspect.getsource(main_mod.App.__init__)
+    for wiring in ("tap_allowed=self._tap_allowed",
+                   "cancel_guard=self._esc_is_claimed"):
+        assert wiring in source, wiring
+    # ...and that the machine really does consult them, rather than the
+    # names merely being accepted and ignored.
+    asked = []
+    m = PTTStateMachine(
+        {VK_RCTRL: "he"},
+        on_start=lambda l: None, on_stop=lambda l: None,
+        on_abort=lambda w: None,
+        taps={parse_binding("ctrl+f10"): "visual_qa"},
+        on_tap=lambda a: asked.append(("tap", a)),
+        latch_vk=VK_LEFT, on_latch=lambda: None,
+        tap_allowed=lambda action, state: asked.append(
+            ("allowed?", action, state)) or True,
+        cancel_guard=lambda: asked.append(("esc?",)) or False)
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LEFT, injected=False)
+    m.handle("up", VK_LEFT, injected=False)
+    m.handle("up", VK_RCTRL, injected=False)
+    _strike(m, VK_LCTRL_, 0x79)
+    m.handle("down", VK_ESC, injected=False)
+    assert ("allowed?", "visual_qa", "latched") in asked, asked
+    assert ("esc?",) in asked, asked
+
+
+def test_the_clipboard_is_one_queue_for_the_whole_process() -> None:
+    """THE headline fix, and it had no test.
+
+    A screenshot lands its CF_DIB in the ~350 ms between this app staging
+    a transcript and the target app asynchronously reading it, and without
+    the queue the user gets the picture pasted into their document instead
+    of their sentence — measured 39 times out of 40. Every operation that
+    reads the clipboard as an inference, or holds it across a paste, has
+    to be inside the same lock, and dropping any one `with _board_lock:`
+    puts that back silently.
+    """
+    import inspect
+
+    for name in ("_put_text", "clear", "paste_text", "inject", "grab",
+                 "read_selection", "set_text", "snapshot"):
+        source = inspect.getsource(getattr(injector, name))
+        assert "_board_lock" in source, \
+            f"injector.{name} writes or reads the clipboard off the queue"
+
+    import capture as cap
+    for name in ("copy_image", "copy_file"):
+        source = inspect.getsource(getattr(cap, name))
+        assert "_board(" in source, \
+            f"capture.{name} writes the clipboard without taking the queue"
+    assert "board_held" in inspect.getsource(cap._board)
+
+    # And it really excludes: a second thread cannot get in mid-operation.
+    got = []
+    with injector.board_held():
+        t = threading.Thread(
+            target=lambda: got.append(
+                injector._board_lock.acquire(timeout=0.05)))
+        t.start()
+        t.join()
+    assert got == [False], got
+    # ...and it is reentrant, because inject() holds it across snapshot,
+    # paste_text and restore, each of which takes it again.
+    with injector.board_held():
+        with injector.board_held():
+            pass
+
+
+def test_a_screenshot_survives_the_transcript_that_pastes_after_it() -> None:
+    """The headline gesture, end to end: take a screenshot while you talk,
+    and the screenshot is still on the clipboard afterwards.
+
+    inject() used to save and restore TEXT only, so a paste over an image
+    reported "cannot restore it" and left the transcript where the picture
+    had been. That was a fair trade while the screenshot key was dead
+    during a dictation; it stopped being one the moment this change made
+    "shoot while you speak" the point.
+    """
+    from PIL import Image
+
+    import capture as cap
+
+    before = injector.snapshot()
+    if before[0] == "other":
+        print("        (clipboard holds non-text content — skipping so "
+              "it isn't lost)")
+        return
+    real_chord = injector.send_chord
+    try:
+        if not cap.copy_image(Image.new("RGB", (24, 16), (255, 0, 255))):
+            print("        (the clipboard would not take an image — "
+                  "skipping)")
+            return
+        assert injector.snapshot()[0] == "other", "the image never landed"
+        injector.send_chord = lambda *_a, **_k: None   # type nothing here
+        status = injector.inject("שלום", "ctrl+v", 20)
+        assert injector.snapshot()[0] == "other", \
+            f"the screenshot was pasted over: {status}"
+    finally:
+        injector.send_chord = real_chord
+        if before[0] == "text":
+            injector.set_text(before[1] or "")
+        elif before[0] == "empty":
+            injector.clear()
+
+
+def test_a_live_recording_outranks_ready_on_the_indicator() -> None:
+    """One string, several threads. The transcription worker's closing
+    "ready" — for the PREVIOUS dictation, or for a screen question asked
+    over this one — must not report a running microphone as finished."""
+    import main as main_mod
+
+    app = main_mod.App.__new__(main_mod.App)
+    seen = []
+
+    class _Dot:
+        def set_state(self, state):
+            seen.append(state)
+
+    class _Machine:
+        state = hotkey_mod.LATCHED
+
+    app.dot, app.machine, app._activity = _Dot(), _Machine(), "locked"
+    app._set_state("ready")
+    app._set_state("busy")
+    assert app._activity == "locked" and seen == [], (app._activity, seen)
+    # "paused" is a statement about the recording itself and still lands.
+    app._set_state("paused")
+    assert app._activity == "paused", app._activity
+    app.machine.state = hotkey_mod.IDLE
+    app._set_state("ready")
+    assert app._activity == "ready" and seen == ["paused", "ready"], seen
+
+
+def test_the_study_engine_stands_down_for_the_screen_features() -> None:
+    """A screen recording encodes video on the same card the study pass
+    wants, and its dropped frames are in a file nobody can re-take."""
+    import main as main_mod
+
+    app = main_mod.App.__new__(main_mod.App)
+    app._activity = "ready"
+    app.queue = queue.Queue()
+    app._text_busy = threading.Event()
+    app._correcting = threading.Event()
+    app._looking_up = threading.Event()
+    assert app._learning_quiet() is True
+    app._capture = _FakeSink(recording=True)
+    assert app._learning_quiet() is False
+    app._capture = _FakeSink()
+    app._vqa = _FakeSink(busy=True)
+    assert app._learning_quiet() is False
+
+
 class _Flaky:
     name = "flaky"
 
@@ -1387,17 +1787,25 @@ def test_tap_key_ignores_autorepeat() -> None:
     assert spy.events == ["tap:translate", "tap:translate"], spy.events
 
 
-def test_tap_key_mid_recording_aborts_and_does_not_translate() -> None:
-    """Pressing it while dictating means the user is doing something else —
-    it must not fire a translation at a half-finished recording."""
+def test_tap_key_mid_recording_does_not_translate_and_does_not_abort() -> None:
+    """Pressing it while dictating must not fire a translation at a
+    half-finished recording — and must not destroy the recording either.
+
+    The refusal is the DEFAULT policy (no `tap_allowed` given: taps are an
+    idle-only thing, which is what every caller that predates parallel
+    features still gets). What changed is the price of the press. It used
+    to abort, so a mistimed feature key cost the whole dictation; now the
+    key does nothing and the recording finishes normally.
+    """
     spy = Spy()
     m = _tap_machine(spy)
     m.handle("down", VK_RCTRL, injected=False)
     m.handle("down", VK_F9, injected=False)
-    assert spy.events == ["start", "abort:'f9' pressed mid-hold"], spy.events
-    # ...and the key is still armed for a real press afterwards
+    assert spy.events == ["start"], spy.events
     m.handle("up", VK_F9, injected=False)
     m.handle("up", VK_RCTRL, injected=False)
+    assert spy.events == ["start", "stop"], spy.events
+    # ...and the key is still armed for a real press afterwards
     m.handle("down", VK_F9, injected=False)
     assert spy.events[-1] == "tap:translate", spy.events
 
@@ -1472,9 +1880,15 @@ def test_a_chord_fires_only_on_the_modifiers_it_names() -> None:
     _strike(m2, 0xA1, VK_F6)                # right shift
     assert spy2.events == ["punctuate"] * 2, spy2.events
 
+    # The trap that is still real: right ctrl is the DICTATION key on this
+    # machine, so it starts a recording rather than acting as the chord's
+    # ctrl, and ctrl+F6 cannot be reached with that hand. What changed is
+    # what it costs — the recording used to be thrown away for it, and now
+    # survives, because a key this app has bound is never a stray
+    # keystroke (see PTTStateMachine's abort rule).
     spy.events.clear()
     _strike(m, VK_RCTRL_, VK_F6)
-    assert spy.events == ["start", "abort"], spy.events
+    assert spy.events == ["start", "stop"], spy.events
 
 
 def test_a_bare_tap_key_still_fires_when_a_modifier_is_held() -> None:
@@ -1701,6 +2115,199 @@ def test_latch_key_cannot_double_as_a_hotkey() -> None:
         assert "two things" in str(e), e
     else:
         raise AssertionError("expected ValueError when one key means both")
+
+
+# ------------------------------------ feature keys DURING a dictation
+#
+# The owner's report, 2026-08-30: "I am dictating this message and I want
+# to use ctrl+F10 at the same time — the button has simply vanished, there
+# is no such button, because the app is locked onto the audio." It had:
+# taps only ever fired in IDLE, so every feature key was dead for as long
+# as anyone was speaking. These are the rules that replaced that.
+
+def _parallel_machine(spy, taps, allowed=None, claimed=None):
+    """A machine wired the way main.py wires the real one: chords, a latch,
+    a policy saying which actions may fire mid-dictation, and a guard that
+    can claim Escape for something already on screen."""
+    return PTTStateMachine(
+        {VK_RCTRL: "he"},
+        on_start=lambda lang: spy.events.append("start"),
+        on_stop=lambda lang: spy.events.append("stop"),
+        on_abort=lambda why: spy.events.append(f"abort:{why}"),
+        taps=taps, on_tap=lambda action: spy.events.append(action),
+        latch_vk=VK_LEFT, on_latch=lambda: spy.events.append("latch"),
+        tap_allowed=allowed, cancel_guard=claimed)
+
+
+def _screens_only(action, state):
+    """main.py's real policy in miniature — see App._tap_allowed."""
+    return state != "recording" or action in ("visual_qa", "capture")
+
+
+def test_a_feature_key_fires_while_latched_and_the_recording_runs_on() -> None:
+    """The report this whole section exists for. Latched, the hands are
+    free BY DESIGN, so this is the state where every key must work."""
+    spy = Spy()
+    m = _parallel_machine(
+        spy, {parse_binding("ctrl+f10"): "visual_qa"}, allowed=_screens_only)
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LEFT, injected=False)     # latch it on
+    m.handle("up", VK_LEFT, injected=False)
+    m.handle("up", VK_RCTRL, injected=False)
+    _strike(m, VK_LCTRL_, 0x79)                   # ctrl+F10
+    assert spy.events == ["start", "latch", "visual_qa"], spy.events
+    m.handle("down", VK_LEFT, injected=False)     # ...and it still stops
+    assert spy.events[-1] == "stop", spy.events
+
+
+def test_a_feature_key_fires_mid_hold_and_does_not_abort() -> None:
+    """Holding the key is the harder half: every chord starts with a
+    modifier, and a modifier used to abort on its own key-down."""
+    spy = Spy()
+    m = _parallel_machine(
+        spy, {parse_binding("ctrl+f10"): "visual_qa"}, allowed=_screens_only)
+    m.handle("down", VK_RCTRL, injected=False)
+    _strike(m, VK_LCTRL_, 0x79)
+    assert spy.events == ["start", "visual_qa"], spy.events
+    m.handle("up", VK_RCTRL, injected=False)
+    assert spy.events == ["start", "visual_qa", "stop"], spy.events
+
+
+def test_the_key_holding_a_recording_open_is_not_a_chord_modifier() -> None:
+    """Right Ctrl is the dictation key, and while it is holding a recording
+    open it is doing that job and not standing in as a ctrl.
+
+    Both halves matter. Counted as held it would make win+shift+s look
+    like ctrl+win+shift+s, which the exact-match rule rightly refuses — so
+    the capture key would be unreachable for as long as anyone was
+    talking, which is the bug. And NOT counting it is what keeps a bare F8
+    (correct) from quietly becoming ctrl+F8 (lookup) just because the hand
+    on the hotkey happens to be a ctrl.
+    """
+    spy = Spy()
+    m = _parallel_machine(
+        spy, {parse_binding("win+shift+s"): "capture"}, allowed=_screens_only)
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", 0x5B, injected=False)         # win
+    m.handle("down", VK_LSHIFT_, injected=False)   # shift
+    assert m.handle("down", 0x53, injected=False) is True, \
+        "the S is still taken from Windows mid-dictation"
+    assert spy.events == ["start", "capture"], spy.events
+    m.handle("up", 0x53, injected=False)
+    m.handle("up", VK_LSHIFT_, injected=False)
+    m.handle("up", 0x5B, injected=False)
+    m.handle("up", VK_RCTRL, injected=False)
+    assert spy.events[-1] == "stop", spy.events
+
+    # The other half, on a machine that allows everything so the MATCHER
+    # is what is under test rather than the policy: F8 with nothing held
+    # but the hotkey is the BARE binding. If the hotkey's ctrl counted,
+    # "correct" would silently have become "lookup" — a key that copies
+    # the selection out of whatever has focus, fired mid-dictation, by a
+    # press that asked for something else entirely.
+    spy2 = Spy()
+    m2 = _parallel_machine(
+        spy2, {parse_binding("f8"): "correct",
+               parse_binding("ctrl+f8"): "lookup"},
+        allowed=lambda action, state: True)
+    m2.handle("down", VK_RCTRL, injected=False)
+    _strike(m2, VK_F8)
+    assert spy2.events == ["start", "correct"], spy2.events
+    # ...and the LEFT ctrl, which is not holding anything open, still
+    # completes the chord it names.
+    _strike(m2, VK_LCTRL_, VK_F8)
+    assert spy2.events == ["start", "correct", "lookup"], spy2.events
+
+
+def test_holding_and_latched_agree_about_the_same_hand() -> None:
+    """The exclusion is not dead in the latched state.
+
+    LATCHED is only ever entered from RECORDING on the latch key, which
+    means the hold hotkey is still physically down at that instant — so
+    there is a window, until the hand comes off, where Right Ctrl is both
+    holding a recording open and sitting in the held-modifier set. Without
+    the same exclusion the two states disagree about one hand position:
+    measured, F8 gave `correct` while holding and `lookup` one keystroke
+    later while latched, and win+shift+s went from firing (and being taken
+    from Windows) to matching nothing at all.
+    """
+    def machine(spy):
+        return _parallel_machine(
+            spy, {parse_binding("f8"): "correct",
+                  parse_binding("ctrl+f8"): "lookup",
+                  parse_binding("win+shift+s"): "capture"},
+            allowed=lambda action, state: True)
+
+    held, latched = Spy(), Spy()
+    for spy, m, latch in ((held, machine(held), False),
+                          (latched, machine(latched), True)):
+        m.handle("down", VK_RCTRL, injected=False)
+        if latch:
+            # Latch WITHOUT letting go of the hotkey — the moment this is
+            # about.
+            m.handle("down", VK_LEFT, injected=False)
+            m.handle("up", VK_LEFT, injected=False)
+        _strike(m, VK_F8)
+        m.handle("down", 0x5B, injected=False)
+        m.handle("down", VK_LSHIFT_, injected=False)
+        spy.swallowed = m.handle("down", 0x53, injected=False)
+        m.handle("up", 0x53, injected=False)
+        m.handle("up", VK_LSHIFT_, injected=False)
+        m.handle("up", 0x5B, injected=False)
+
+    assert held.events == ["start", "correct", "capture"], held.events
+    assert latched.events == ["start", "latch", "correct", "capture"], \
+        latched.events
+    assert held.swallowed is True and latched.swallowed is True, \
+        "the S is taken from Windows in both states or in neither"
+
+
+def test_a_refused_feature_key_costs_nothing_but_the_press() -> None:
+    """A key the policy says no to must not also destroy the recording.
+    Silence is the answer, and main.py makes a noise about it."""
+    spy = Spy()
+    m = _parallel_machine(
+        spy, {parse_binding("ctrl+f9"): "translate"}, allowed=_screens_only)
+    m.handle("down", VK_RCTRL, injected=False)
+    _strike(m, VK_LCTRL_, 0x78)                    # ctrl+F9: not a screen key
+    assert spy.events == ["start"], spy.events
+    m.handle("up", VK_RCTRL, injected=False)
+    assert spy.events == ["start", "stop"], spy.events
+
+
+def test_ctrl_c_still_throws_a_held_recording_away() -> None:
+    """The rule the abort test was bought for, and it has to survive all
+    of the above: a combo the app has NOT bound means the user is typing,
+    not dictating."""
+    spy = Spy()
+    m = _parallel_machine(
+        spy, {parse_binding("ctrl+f10"): "visual_qa"}, allowed=_screens_only)
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LCTRL_, injected=False)
+    m.handle("down", VK_C, injected=False)
+    assert spy.events == ["start", "abort:'c' pressed mid-hold"], spy.events
+
+
+def test_an_overlay_on_screen_owns_escape_and_the_lock_survives() -> None:
+    """Esc cancels the region selector, the capture overlay, the camera and
+    the ask card — and it also discards a locked recording. One keystroke
+    must not do both, and the window that needs it is FOCUSED, so it
+    cannot simply be swallowed the way the lookup box's Esc is."""
+    spy = Spy()
+    claimed = {"now": True}
+    m = _parallel_machine(spy, {parse_binding("ctrl+f10"): "visual_qa"},
+                          allowed=_screens_only,
+                          claimed=lambda: claimed["now"])
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LEFT, injected=False)
+    m.handle("up", VK_RCTRL, injected=False)
+    assert m.handle("down", VK_ESC, injected=False) is False, \
+        "the overlay is focused and has to RECEIVE its own Esc"
+    assert spy.events == ["start", "latch"], spy.events
+    claimed["now"] = False           # the overlay is gone
+    m.handle("up", VK_ESC, injected=False)
+    m.handle("down", VK_ESC, injected=False)
+    assert spy.events[-1] == "abort:esc pressed while locked", spy.events
 
 
 def test_latch_hotkey_must_not_collide_in_config() -> None:
@@ -9174,12 +9781,28 @@ def test_a_busy_clipboard_is_a_message_not_a_traceback() -> None:
     """injector.set_text raises ClipboardBusyError when another program
     is holding the clipboard — a thing that happens — and v1 let it out
     of a Tk callback, where it became a traceback on stderr and no
-    feedback at all in the window."""
+    feedback at all in the window.
+
+    The copy runs on a thread now (the clipboard is a queue shared with
+    the whole process, and a card that stopped repainting for two seconds
+    because somebody pressed the lookup key would read as a hang), so the
+    answer arrives through the pump. What must not change is that it
+    arrives at all: both outcomes still reach the status line, in the
+    right colour."""
     _run_window_script('''
-import os
+import os, time
 from PIL import Image
 import injector
 import visual_qa as vq
+
+def settle(win):
+    """The copy is on a thread and reports through the card's queue."""
+    for _ in range(200):
+        win._drain()
+        win.root.update()
+        if win.status.cget("text"):
+            return
+        time.sleep(0.01)
 
 img = Image.new("RGB", (320, 160), (30, 30, 30))
 win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
@@ -9192,13 +9815,16 @@ try:
     injector.set_text = lambda _t: (_ for _ in ()).throw(
         injector.ClipboardBusyError("held by something else"))
     win._copy()
+    settle(win)
     assert "clipboard busy" in win.status.cget("text"), \\
         win.status.cget("text")
     assert win.status.cget("fg") == vq.AMBER, win.status.cget("fg")
 
     copied = []
+    win._status("", vq.DIM)
     injector.set_text = copied.append
     win._copy()
+    settle(win)
     assert copied == ["תשובה להעתקה"], copied
     assert win.status.cget("text") == "copied", win.status.cget("text")
     assert win.status.cget("fg") == vq.GREEN, win.status.cget("fg")
@@ -10439,6 +11065,13 @@ def test_a_capture_press_is_refused_while_one_is_already_up() -> None:
     app._capture = FakeCapture()
     app._cue_lock = threading.Lock()
     app._cue_last = {}
+    # PUT BACK, not deleted. `del type(app).capture` removed App's real
+    # property for the whole rest of the process — the assignment above
+    # replaces the class attribute rather than shadowing it — so every
+    # test after this one ran against an App with no `capture` at all.
+    # Nothing happened to need it until one did, and then it failed here
+    # rather than where the damage was done.
+    real_capture = main_mod.App.capture
     type(app).capture = property(lambda self: self._capture)
     try:
         app._tap_capture()
@@ -10454,7 +11087,7 @@ def test_a_capture_press_is_refused_while_one_is_already_up() -> None:
         app._tap_record()
         assert app._capture.started == 3, "the stop press was refused"
     finally:
-        del type(app).capture
+        type(app).capture = real_capture
 
 
 def test_the_capture_keys_are_kept_away_from_the_lookup_box() -> None:

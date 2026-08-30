@@ -2192,6 +2192,27 @@ def _select_region(cancel: threading.Event, background
     return bbox, crop, path
 
 
+def _copy_worker(q: "queue.Queue", text: str) -> None:
+    """Put the answer on the clipboard and post how it went. NOT a method.
+
+    A module-level function taking a queue and a string, for the same
+    reason _ask_worker is one: a running thread must not hold a reference
+    to the card, or closing the card mid-copy leaves its Tcl interpreter
+    alive on this thread and the teardown panics.
+    """
+    import injector
+    try:
+        injector.set_text(text)
+    except injector.ClipboardBusyError:
+        q.put(("copied", ("clipboard busy — try again", AMBER)))
+        return
+    except Exception as e:
+        log.info("visual qa could not copy the answer (%s)", e)
+        q.put(("copied", ("could not copy", AMBER)))
+        return
+    q.put(("copied", ("copied", GREEN)))
+
+
 def _ask_worker(q: "queue.Queue", ask_fn, image, question: str,
                 history: list, encoded: dict, gen: int,
                 cancel: threading.Event) -> None:
@@ -2592,8 +2613,16 @@ class AskWindow:
                  speaker: Speaker, speak_mode: str,
                  ask_fn, cue=lambda kind: None, auto_send: bool = True,
                  alpha: float = 0.93, reselect_fn=None, last_pos=None,
-                 on_move=None, full=None, path=None):
+                 on_move=None, full=None, path=None, mic_live=None):
         self.image = image             # PIL image, RAM only
+        # () -> True while the microphone is capturing. Not the same
+        # question as _level_fn, which is only ever set for a dictation
+        # that STARTED with this card already open: the card can now be
+        # opened in the middle of one aimed at the user's document, and it
+        # is exactly that case where reading an answer aloud would be
+        # heard by a microphone nobody told the card about. See
+        # _start_speaking.
+        self.mic_live = mic_live
         self.speaker = speaker
         self.speak_mode = speak_mode
         self.ask_fn = ask_fn
@@ -3401,6 +3430,9 @@ class AskWindow:
                         self.speak_btn.config_text("Speak")
                     if payload:
                         self._status("stopped", ttl_ms=FLASH_MS)
+                elif kind == "copied":
+                    text, colour = payload
+                    self._status(text, colour, ttl_ms=FLASH_MS)
         except queue.Empty:
             pass
 
@@ -3808,20 +3840,25 @@ class AskWindow:
     # -- the two buttons --
 
     def _copy(self) -> None:
+        """Copy the answer — on a thread, and reporting through the pump.
+
+        This is a Tk button handler, so it runs on the card's own event
+        loop and anything slow here is a frozen card. The clipboard is now
+        a queue shared with the whole process (injector._board_lock), and
+        the longest thing on it — a lookup that found nothing selected —
+        holds it for up to 2.1 s while it waits out a straggling copy. A
+        card that stopped repainting for two seconds because somebody
+        pressed the lookup key would read as a hang.
+
+        The same shape popup.py's copy button already uses, and for the
+        same reason. The QUEUE and not self, so the thread cannot keep the
+        interpreter alive past the card's teardown: see _ask_worker.
+        """
         if not self.answer_text:
             return
-        import injector
-        try:
-            injector.set_text(self.answer_text)
-        except injector.ClipboardBusyError:
-            self._status("clipboard busy — try again", AMBER,
-                         ttl_ms=FLASH_MS)
-            return
-        except Exception as e:
-            log.info("visual qa could not copy the answer (%s)", e)
-            self._status("could not copy", AMBER, ttl_ms=FLASH_MS)
-            return
-        self._status("copied", GREEN, ttl_ms=FLASH_MS)
+        q, answer = self._q, self.answer_text
+        threading.Thread(target=_copy_worker, args=(q, answer),
+                         daemon=True, name="vqa-copy").start()
 
     def _toggle_speak(self) -> None:
         if self.speaker.playing:
@@ -3840,6 +3877,21 @@ class AskWindow:
         """
         if not self.answer_text or self.speaker.playing:
             return
+        if self._mic_is_live():
+            # NEVER TALK INTO A LIVE MICROPHONE. The only barge-in this
+            # card had ran the other way — a dictation starting silences
+            # the speech — and that was enough while a card could only
+            # exist between dictations. It can now be opened in the middle
+            # of one, and on any machine whose output is not the headset
+            # the answer would be recorded and transcribed as if the user
+            # had said it. Refused rather than deferred: by the time the
+            # recording ends the answer is old news, and the Speak button
+            # is right there.
+            self._status("not reading it out while you are talking",
+                         ttl_ms=FLASH_MS)
+            if self.speak_btn is not None:
+                self.speak_btn.config_text("Speak")
+            return
         if self.speak_btn is not None:
             self.speak_btn.config_text("Stop")
         self._status("speaking…")
@@ -3849,6 +3901,16 @@ class AskWindow:
         q = self._q
         self.speaker.speak(self.answer_text,
                            on_done=lambda: q.put(("tts_done", False)))
+
+    def _mic_is_live(self) -> bool:
+        """Is the microphone capturing right now? False if nobody said."""
+        probe = self.mic_live
+        if probe is None:
+            return False
+        try:
+            return bool(probe())
+        except Exception:
+            return False
 
     # -- closing --
 
@@ -3888,8 +3950,14 @@ class Controller:
     never binds the key pays nothing for the idea of it.
     """
 
-    def __init__(self, cfg_provider):
+    def __init__(self, cfg_provider, recording_now=None):
         self._cfg_of = cfg_provider       # () -> Config, read fresh: keys move
+        # () -> True while the microphone is capturing, handed in by
+        # main.py because main.py owns the recorder. A callable and not
+        # the recorder itself, for the same reason notify_recording is
+        # given a bound meter: the card gets a way to ASK and no way to
+        # touch anything.
+        self._recording_now = recording_now
         self._busy = threading.Event()
         self._cancel = threading.Event()
         self._window: AskWindow | None = None
@@ -4048,7 +4116,8 @@ class Controller:
             reselect_fn=self._grab_selection, last_pos=self._last_pos,
             on_move=self._remember_position,
             full=getattr(self, "_last_full", None),
-            path=getattr(self, "_last_path", None))
+            path=getattr(self, "_last_path", None),
+            mic_live=self._recording_now)
         with self._lock:
             self._window = window
         window.run()

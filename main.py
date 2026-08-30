@@ -75,6 +75,14 @@ NESTED_HOTKEYS = {
     "camera_hotkey": "camera.camera_hotkey",
 }
 
+# The feature keys that ask for PIXELS. Named as a set because the one
+# question anybody asks of them is "is this action in it" — see
+# App._tap_allowed, which is where the reason lives. The four that are NOT
+# here (translate, punctuate, correct, lookup) are the ones that read or
+# rewrite the text at the cursor, and the cursor is a shared resource
+# during a dictation.
+_SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo"})
+
 
 def report_fatal(message: str) -> None:
     """Startup failures must be visible even with no console — otherwise
@@ -173,8 +181,10 @@ class App:
         parse_chord(cfg.paste_chord)  # fail fast on a bad chord name
         # The str|None is the language the key declared, None meaning it
         # declared nothing — see App.bindings and Config.auto_language.
+        # The bool is where the finished text goes, decided at the press
+        # and carried rather than re-asked: see _on_start.
         self.queue: queue.Queue[
-            tuple[bytes, float, int, str | None]] = queue.Queue()
+            tuple[bytes, float, int, str | None, bool]] = queue.Queue()
         # Built BEFORE the transcriber: the local backend takes the hotword
         # callable at construction, and a vocabulary that arrived afterwards
         # would silently do nothing until the next restart.
@@ -243,11 +253,20 @@ class App:
             taps=taps, on_tap=self._on_tap,
             latch_vk=latch_vk, on_latch=self._on_latch,
             pause_vk=pause_vk, on_pause=self._on_pause,
-            on_key_down=self._popup_key)
+            on_key_down=self._popup_key,
+            tap_allowed=self._tap_allowed,
+            cancel_guard=self._esc_is_claimed)
         self.hook = HookThread(self.machine)
         # What the dot is showing, kept here so the dashboard can report the
         # same thing in words. Every set_state goes through _set_state.
         self._activity = "ready"
+        # Both decided at the press and read again at the release — see
+        # _on_start. Seeded here only so that a release with no matching
+        # press (there should be none; the state machine sees to that)
+        # cannot raise inside the keyboard hook, where an exception is a
+        # dropped hook and a frozen keyboard.
+        self._to_card = False
+        self._start_hwnd = 0
         self._started_at = time.monotonic()
         # Asked once. status() is polled by the dashboard several times a
         # second and device_label() goes out to PortAudio to enumerate
@@ -309,13 +328,20 @@ class App:
         # One Whisper model, several threads that want it (the desktop
         # worker, and every phone request).
         self._model_lock = threading.Lock()
-        # One cursor and one clipboard, wanted by four threads: the
-        # dictation worker, the translate/punctuate worker, the correction
-        # worker and the control thread. They could previously only collide
-        # by bad luck of timing and mostly did not, which is not the same as
-        # being safe — a translate that grabs the field while a transcript
-        # is being pasted into it corrupts both. Every stretch of code that
-        # sends keystrokes or borrows the clipboard takes this.
+        # THE CURSOR, wanted by four threads: the dictation worker, the
+        # translate/punctuate worker, the correction worker and the control
+        # thread. They could previously only collide by bad luck of timing
+        # and mostly did not, which is not the same as being safe — a
+        # translate that grabs the field while a transcript is being pasted
+        # into it corrupts both.
+        #
+        # It used to say "and one clipboard" as well, and that half was
+        # never true: capture.py writes a screenshot from a thread of its
+        # own, the lookup box copies from another, and neither has ever
+        # heard of this lock. The clipboard is now serialised where its
+        # borrowers actually are — injector._board_lock, which every module
+        # that touches the clipboard goes through. This one is about the
+        # CARET: who may send keystrokes at the focused window.
         self._cursor_lock = threading.Lock()
         # The only thing on screen once loading is done: a dot that says
         # the app is alive, and what it is doing.
@@ -337,7 +363,15 @@ class App:
             import visual_qa as visual_qa_mod
             # A callable, not the object: keys move through rebind() and
             # every use should read what config.toml says NOW.
-            vqa = visual_qa_mod.Controller(lambda: self.cfg)
+            #
+            # `recording_now` is the card's answer to "may I read this
+            # out?". It has to come from here because main.py owns the
+            # recorder, and it has to exist at all because the card can now
+            # be opened in the MIDDLE of a dictation aimed at somewhere
+            # else — the one case where the card has not been told the
+            # microphone is live and would happily speak into it.
+            vqa = visual_qa_mod.Controller(
+                lambda: self.cfg, recording_now=self._recording_now)
             self._vqa = vqa
         return vqa
 
@@ -443,6 +477,116 @@ class App:
         return next((getattr(key, "trigger", key)
                      for key, name in taps.items() if name == action), None)
 
+    def _copy_text(self, text: str) -> None:
+        """Put text on the clipboard from a thread of its own, and say so
+        if it fails. The dashboard has already been told the copy was
+        made, so a failure has to reach the user somewhere — the log and
+        the dashboard's own note line are where every other clipboard
+        failure in this app is reported."""
+        try:
+            injector.set_text(text)
+        except Exception as e:
+            beep("error")
+            self._say(f"could not copy the last dictation: {e}")
+            log.warning("could not copy the last dictation: %s", e)
+
+    def _recording_now(self) -> bool:
+        """Is the microphone capturing this instant?
+
+        Asked by the ask card before it reads an answer aloud. The
+        recorder's own meter, whose second value is exactly this question
+        and which is documented as safe from any thread — two attribute
+        reads, no lock, never blocks.
+        """
+        try:
+            return bool(self.recorder.meter()[1])
+        except Exception:
+            return False
+
+    def _tap_allowed(self, action: str, state: str) -> bool:
+        """May this feature key fire while a dictation is running?
+
+        The keyboard splits in two, and the split is about what a key
+        TOUCHES rather than about how important it is.
+
+        The four SCREEN keys — ask-the-screen, screenshot, screen
+        recording, camera — take pixels. At the moment of the press they
+        want no hands, no caret and no clipboard, so they are exactly as
+        true mid-sentence as they are at rest. That is the whole of what
+        the owner asked for: keep talking and ask about the screen at the
+        same time.
+
+        The four TEXT keys — translate, punctuate, correct, lookup — read
+        or rewrite whatever is selected AT THE CURSOR, and the cursor is
+        where the transcript now being recorded is about to land.
+
+        - LATCHED they are allowed, and this is not a concession. Latching
+          exists so the hands are free; `_cursor_lock` already serialises
+          every one of those workers against the paste (see its comment),
+          and each already refuses itself with a cue while one of its own
+          kind is in flight. Refusing here would be inventing a
+          restriction the machine does not actually have.
+        - HELD they are not. One hand is pinned to Right Ctrl, so there is
+          no selection to act on and nothing for them to do; a key
+          arriving in that state is far more likely to be a slip than a
+          request. It is refused OUT LOUD, because the alternative — a key
+          that silently does nothing — is what "the button disappeared"
+          felt like in the first place.
+
+        Runs on the keyboard hook thread. Two set lookups and a cue that
+        is already used from here by every _tap_* method.
+        """
+        if state != hotkey_mod.RECORDING or action in _SCREEN_ACTIONS:
+            return True
+        self._cue_once("noop", f"held-{action}")
+        log.info("'%s' needs the text at the cursor, and the cursor is "
+                 "where this dictation is going — let go of the key, or "
+                 "latch it, and press it again", action)
+        return False
+
+    def _esc_is_claimed(self) -> bool:
+        """Is Escape spoken for by something already on screen?
+
+        Asked by the state machine, and only about a LOCKED recording,
+        where Esc means "throw the last few minutes of speech away". The
+        surfaces this app can now put up mid-dictation — the region
+        selector, the capture overlay, the clip bar, the camera, the ask
+        card — are all dismissed with Esc too, and one keystroke must not
+        do both.
+
+        THE QUESTION IS WHO HAS THE FOREGROUND, not who is busy. Asking
+        the controllers was the obvious first answer and it was wrong in
+        both directions, measured: `capture.busy` stays set through the
+        post-shot toast (5 s) and the clip toast (7 s of encode, copy and
+        card), and neither of those reads Escape or takes focus — so for
+        twelve seconds after a screenshot, Esc silently stopped being the
+        way out of a locked recording, with nothing consuming it and
+        nothing logged. Focus is the honest question: a key goes to the
+        window that has it, and every overlay here that reads Escape is
+        one that took the foreground to do it. Two syscalls, no
+        bookkeeping to get out of step, and it is right for windows that
+        do not exist yet.
+
+        The lookup box is the exception it always was — it never takes
+        focus, which is what lets it appear over a web page — so it is
+        asked separately. In practice `_popup_key` has already swallowed
+        that Esc before this is reached; the check is here so the box does
+        not depend on which of its two doors answers first.
+
+        Runs on the hook thread, so nothing here may build anything or
+        block: no controller is touched at all now, and the popup is a
+        plain window-visibility read.
+        """
+        try:
+            if injector.is_our_window(injector.foreground_window()):
+                return True
+        except Exception:
+            pass
+        try:
+            return bool(self.popup.visible())
+        except Exception:
+            return False
+
     def _popup_key(self, vk: int) -> bool:
         """Every key-down on this machine, offered to the lookup box.
 
@@ -511,7 +655,28 @@ class App:
         Ready and idle only: not recording, not transcribing, not paused
         (paused usually means a game owns this GPU), nothing queued and no
         text key mid-flight. The engine re-asks before every decode.
+
+        The screen features are in the list now, and a screen RECORDING is
+        the one that made it necessary: it encodes video for as long as it
+        runs, and a study decode starting underneath it drops frames in a
+        file the user cannot re-take. An ask card counts too — it is a
+        vision model on the same card, and it is the feature most likely to
+        be open while the app otherwise looks idle.
+
+        Read through the already-built slots and never through the `vqa` /
+        `capture` properties: those IMPORT their modules on first touch,
+        and the study thread asking a question must not be what drags Tk
+        and a video encoder into the process.
         """
+        for name in ("_capture", "_vqa"):
+            controller = getattr(self, name, None)
+            if controller is None:
+                continue
+            try:
+                if controller.busy or getattr(controller, "recording", False):
+                    return False
+            except Exception:
+                return False
         return (self._activity == "ready"
                 and self.queue.empty()
                 and not self._text_busy.is_set()
@@ -527,6 +692,25 @@ class App:
         return (self._activity, counts)
 
     def _set_state(self, state: str) -> None:
+        """What the dot shows, and what the dashboard reports in words.
+
+        A LIVE RECORDING OUTRANKS "ready" AND "busy". `_activity` is one
+        string written by several threads, and once feature keys can be
+        pressed mid-dictation the transcription worker's closing
+        `_set_state("ready")` — for the PREVIOUS dictation, or for a
+        screen question asked over this one — lands on top of a recording
+        that is still running and reports it as finished. The dot goes
+        green while the microphone is live, which is the one lie this
+        indicator must never tell, and `_learning_quiet` reads the same
+        field to decide the GPU is free.
+
+        Only those two are held back. "paused" and "locked" and
+        "recording" are all statements about the recording itself and are
+        allowed to overwrite each other in any order.
+        """
+        if state in ("ready", "busy") \
+                and self.machine.state != hotkey_mod.IDLE:
+            return
         self._activity = state
         self.dot.set_state(state)
 
@@ -781,6 +965,22 @@ class App:
             # num_predict=1 call goes out in the background now.
             threading.Thread(target=self.vqa.warm, daemon=True,
                              name="vqa-warmup").start()
+        # And the IMPORTS themselves, off the hook thread, which is a
+        # different problem from either warm-up above and now a sharper
+        # one. `self.capture` and `self.vqa` build on first touch, and
+        # every one of those touches is a keyboard callback: measured
+        # 2026-08-30, importing capture.py costs 163-174 ms of the 300 ms
+        # Windows allows a low-level hook before it silently unhooks it —
+        # and an unhooked app is one where every key on the machine has
+        # stopped answering, with nothing in the log.
+        #
+        # It has always been that close. What changed is that these keys
+        # can now be pressed DURING a dictation, where losing the hook
+        # also means losing the key-up that ends the recording, which then
+        # runs to max_seconds and is discarded. One thread at startup
+        # costs nothing and takes the whole risk off the table.
+        threading.Thread(target=self._warm_feature_keys, daemon=True,
+                         name="feature-warmup").start()
         if self.phone is not None:
             try:
                 self.phone.start()
@@ -861,7 +1061,16 @@ class App:
                     text = (self._last or {}).get("final", "")
                 if not text:
                     return {"ok": False, "error": "nothing dictated yet"}
-                injector.set_text(text)
+                # ON A THREAD, to keep the promise this method's docstring
+                # makes. The clipboard is a queue shared with the whole
+                # process now (injector._board_lock) and the longest thing
+                # on it — a lookup that found nothing selected — holds it
+                # for up to 2.1 s. Waiting that out HERE would stall the
+                # poll the dashboard uses to decide the app is alive, and
+                # a running app would be drawn as a dead one.
+                threading.Thread(
+                    target=self._copy_text, args=(text,), daemon=True,
+                    name="copy-last").start()
                 return {"ok": True, "message": f"{len(text)} chars copied"}
             if command == "quit":
                 singleton.request_quit()
@@ -972,7 +1181,38 @@ class App:
         # this runs inside the keyboard hook, and classic has no visual_qa
         # module to import even if something asked it to.
         vqa = getattr(self, "_vqa", None)
-        if vqa is not None and vqa.sink_active:
+        # WHERE THIS DICTATION IS GOING IS DECIDED HERE, at the press, and
+        # is not asked again when the transcript comes back.
+        #
+        # It used to be read at transcription time, which was safe only
+        # while the ask card could not possibly open in between — and it
+        # cannot, if the key that opens it is dead for as long as anyone is
+        # speaking. That is exactly what changed. Ask about the screen in
+        # the middle of dictating a paragraph and the paragraph would be
+        # swallowed into the card's question box instead of landing in the
+        # document it was aimed at, with nothing on screen to explain why.
+        #
+        # The rule is the one a person would state: if the card was up when
+        # you started talking, you were talking to the card. If it was not,
+        # you were talking to your document, and a card opening while you
+        # speak does not change who you were addressing.
+        self._to_card = bool(vqa is not None and vqa.sink_active)
+        # And for the same reason, the window is remembered NOW as well as
+        # at the release. Our own overlays take the foreground, so a
+        # dictation that ends over a capture overlay would otherwise be
+        # aimed at that overlay. See _on_stop.
+        #
+        # FILTERED HERE TOO, and it has to be: the clip bar of a screen
+        # recording takes the foreground when Tk realises it and never
+        # gives it back, so it is perfectly possible to press the hotkey
+        # while one of ours is already in front. An unfiltered fallback
+        # would then be a second of our own windows, both tests in _handle
+        # would pass against it, and the marker and the transcript would
+        # both be fired into it and logged as a success. 0 means "nowhere
+        # known", which _handle answers with the clipboard.
+        start = injector.foreground_window()
+        self._start_hwnd = 0 if injector.is_our_window(start) else start
+        if self._to_card:
             # The meter rides along so the card can draw the wave from the
             # real microphone. A bound method of the recorder, not the
             # recorder: the card is given a way to READ a level and no way
@@ -1004,7 +1244,18 @@ class App:
         # paste, transcription) happens on the worker: this callback runs
         # inside the OS keyboard hook, and blocking here would make Windows
         # drop the hook and freeze input.
-        self.queue.put((wav, seconds, injector.foreground_window(), language))
+        #
+        # The window at the RELEASE, unless one of ours is in front of it.
+        # The release is normally the better of the two moments — a person
+        # who alt-tabs mid-sentence means the window they ended in — but a
+        # screenshot overlay or an ask card opened while they spoke is not
+        # a window they alt-tabbed to and is not a place a transcript can
+        # go. In that one case the window they were in when they STARTED
+        # is the only honest answer.
+        hwnd = injector.foreground_window()
+        if hwnd and injector.is_our_window(hwnd):
+            hwnd = self._start_hwnd
+        self.queue.put((wav, seconds, hwnd, language, self._to_card))
         log.info("captured %.1f s of %s -> transcribing (%s)...", seconds,
                  language_label(language),
                  self.transcriber.name)
@@ -1271,9 +1522,9 @@ class App:
 
     def _worker(self) -> None:
         while True:
-            wav, seconds, hwnd, language = self.queue.get()
+            wav, seconds, hwnd, language, to_card = self.queue.get()
             try:
-                self._handle(wav, seconds, hwnd, language)
+                self._handle(wav, seconds, hwnd, language, to_card)
             except Exception:
                 beep("error")
                 log.exception("unexpected failure handling a recording")
@@ -2071,6 +2322,31 @@ class App:
                           "as it came out of the backend")
         return text
 
+    def _warm_feature_keys(self) -> None:
+        """Touch the lazily-built controllers once, on a thread that is
+        allowed to be slow, so no keyboard callback ever pays for their
+        import. Only the ones this config actually binds a key to — an
+        app with [visual_qa] enabled = false must not import a vision
+        chain because a warm-up was not told about the kill switch.
+        """
+        cap = getattr(self.cfg, "capture", None)
+        cam = getattr(self.cfg, "camera", None)
+        wants_capture = (
+            (cap is not None and getattr(cap, "enabled", False))
+            or (cam is not None and getattr(cam, "enabled", False)))
+        vqa_cfg = getattr(self.cfg, "visual_qa", None)
+        for wanted, name in ((wants_capture, "capture"),
+                             (vqa_cfg is not None and vqa_cfg.enabled,
+                              "vqa")):
+            if not wanted:
+                continue
+            try:
+                getattr(self, name)
+            except Exception as e:
+                # Not fatal: the key still works, it just pays the import
+                # on the hook thread the way it always did.
+                log.info("could not warm the %s key (%s)", name, e)
+
     def _warm_polish(self) -> None:
         try:
             polisher = self._polish()
@@ -2090,15 +2366,23 @@ class App:
         return self._polisher
 
     def _handle(self, wav: bytes, seconds: float, hwnd: int,
-                language: str | None = None) -> None:
+                language: str | None = None,
+                to_card: bool | None = None) -> None:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
         # A screen question owns the next dictation: no marker in the app
         # underneath, because nothing will ever be pasted over it.
+        #
+        # `to_card` is that decision, made when the hotkey went DOWN and
+        # carried here on the queue — see _on_start for why it can no
+        # longer be re-asked at this end. None means nobody decided, which
+        # today is only a caller reaching straight in (the tests do), and
+        # then the old question is still the best one available.
         vqa_cfg = getattr(self.cfg, "visual_qa", None)
         diverting = (vqa_cfg is not None and vqa_cfg.enabled
-                     and self.vqa.sink_active)
+                     and (self.vqa.sink_active if to_card is None
+                          else to_card))
         if fb.enabled and hwnd and not diverting:
             # BOUNDED, unlike the paste below, and the focus test is INSIDE
             # the lock rather than in front of it. A translate or punctuate
@@ -2199,8 +2483,7 @@ class App:
         # swap still applies (instant, offline); the context pass does
         # NOT — a vision model is robust to one misheard word, and the
         # question path stays free, fast and quota-neutral by design.
-        if vqa_cfg is not None and vqa_cfg.enabled \
-                and self.vqa.sink_active:
+        if diverting:
             if shown:
                 # The marker was pasted before the window opened; it is
                 # not where the answer is going any more.
@@ -2214,9 +2497,29 @@ class App:
             if item:
                 item.discard()
             if not self.vqa.deliver_transcript(cleaned):
-                log.warning("the screen-question window vanished before "
-                            "the transcription landed — text is in "
-                            "transcripts.log only")
+                # THE CARD IS GONE, so put the words somewhere the user can
+                # reach them. Deciding the destination at the press is what
+                # makes this reachable: a question asked at a card that is
+                # then closed mid-sentence used to fall back to pasting at
+                # the cursor, because the far end re-read sink_active and
+                # found it False. That fallback was itself the bug (it is
+                # how a dictation aimed at a document ended up in a card),
+                # but the answer to it is not "drop the speech" — the
+                # clipboard is where every other homeless transcript in
+                # this module goes.
+                try:
+                    with self._cursor_lock:
+                        injector.set_text(cleaned)
+                    beep("stop")
+                    log.warning("the screen-question window closed before "
+                                "the transcription landed — it is on your "
+                                "clipboard, press %s to paste it: %s",
+                                self.cfg.paste_chord, cleaned)
+                except Exception as e:
+                    log.warning("the screen-question window vanished before "
+                                "the transcription landed, and the "
+                                "clipboard would not take it (%s) — text is "
+                                "in transcripts.log only", e)
             return
 
         # IN FRONT OF THE PASTE, on purpose, and this is the one decision
@@ -2258,7 +2561,19 @@ class App:
                     status = injector.replace_placeholder(
                         placeholder, cleaned, self.cfg.paste_chord,
                         self.cfg.restore_delay_ms, hwnd)
-                elif hwnd and injector.foreground_window() != hwnd:
+                elif not hwnd:
+                    # NOBODY KNOWS where this belongs. Reachable since the
+                    # release-time window stopped being trusted when it is
+                    # one of ours: the fallback is the window at the press,
+                    # and that is 0 if the foreground could not be read
+                    # then either. Pasting on "0" means pasting into
+                    # whatever has focus NOW, which in this situation is
+                    # most likely the overlay that caused the question —
+                    # so it goes to the clipboard with an explanation
+                    # instead, the same answer as a focus change.
+                    raise injector.FocusChangedError(
+                        "there is no window to paste into")
+                elif injector.foreground_window() != hwnd:
                     # No placeholder because focus had already moved when
                     # the worker picked this up. Pasting now would drop the
                     # text into a window the user never dictated into.

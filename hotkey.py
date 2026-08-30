@@ -384,18 +384,51 @@ class PTTStateMachine:
     - a hotkey down while idle      -> on_start(language)
     - that hotkey down while recording -> ignored (Windows auto-repeat)
     - that hotkey up while recording   -> on_stop(language)
-    - any other PHYSICAL key-down while recording -> on_abort(reason):
+    - an UNBOUND physical key-down while recording -> on_abort(reason):
       the user is typing a combo (e.g. holding Right Ctrl for Ctrl+C),
       not dictating. Injected key-downs (our own paste chord, test
       drivers) never abort. Key-UPs of other keys never abort either.
-      The OTHER hotkey counts as "any other key" — pressing both aborts
-      rather than silently picking a language.
+      The OTHER hotkey does abort — pressing both is ambiguous about which
+      language was meant, and it aborts even when it is itself a modifier
+      (the English key can be Right Alt), because a registered hotkey is
+      never merely a modifier.
+
+    Two things that key-down is careful NOT to call stray, and both were
+    bought by the same report — every feature key "disappearing" the
+    moment anyone started talking:
+
+    - a key registered in `taps`. A key this app has bound is not somebody
+      typing, so it fires (if the policy below allows it) and the
+      recording lives. It does not abort even on a press that matched no
+      chord: losing a dictation to a mistimed Ctrl is a far worse answer
+      than doing nothing.
+    - a MODIFIER on its own, which now DEFERS instead of aborting. Every
+      chord starts with one, so aborting on the way down made ctrl+F10 and
+      win+shift+s unpressable mid-dictation by construction. Nothing is
+      lost: a modifier alone is not a combo, and the letter that completes
+      one arrives a moment later and aborts then. Ctrl+C still throws the
+      recording away — on the C.
 
     `taps` registers keys that ACT on a press instead of being held, for
     things that are not recordings (translating what is already at the
     cursor). A tap key fires once per physical press — auto-repeat is
-    swallowed — and only while idle: pressed mid-recording it falls
-    through to the abort rule above, like any other key.
+    swallowed — in EVERY state, subject to `tap_allowed`.
+
+    `tap_allowed(action, state)` is who may fire when, and it lives
+    outside this class because the reason is about what a key DOES rather
+    than about recording: main.py lets the keys that take PIXELS fire
+    whenever, and holds back the ones that read or rewrite the text at the
+    cursor while the hotkey is HELD, since the cursor is where the
+    transcript is about to land. Left unset, the answer is the rule this
+    class was born with — taps are an idle-only thing — so every caller
+    that predates the policy keeps exactly the behaviour it had.
+
+    It is asked OUTSIDE the lock, like `on_key_down` and for the same
+    reason: it is somebody else's code on the OS hook thread. Which means
+    a chord is matched, marked spent and (for a Win chord) SWALLOWED
+    before the policy is consulted. That order is deliberate — a Win chord
+    the app refuses must still not reach Windows, or one press of
+    Win+Shift+S would open the Snipping Tool and nothing else.
 
     A tap may ask for MODIFIERS as well: `{Binding({0x11}, VK_F6):
     "punctuate"}` means ctrl+F6. Bare keys ran out — the owner lives in
@@ -434,6 +467,18 @@ class PTTStateMachine:
       user typed. The app's own paste chord puts ctrl down and up again
       inside one SendInput batch, and that must not be able to complete a
       chord for a keystroke that happens to land inside it.
+    - and neither does THE KEY HOLDING A RECORDING OPEN. Right Ctrl is the
+      hold hotkey on this machine, and while it is doing that job it is
+      not standing in as a ctrl. Counted as held it would make win+shift+s
+      read as ctrl+win+shift+s, which the exact-match rule above rightly
+      refuses, and the capture key would be unreachable for as long as
+      anyone was speaking. The other direction of the same rule is what
+      keeps a bare "f8" (correct) from quietly becoming "ctrl+f8" (lookup)
+      just because the hand on the hotkey happens to be a ctrl. So mid-
+      dictation a ctrl chord is reached with the OTHER ctrl, which is the
+      free hand anyway. (`_match_tap(exclude=)`; only while RECORDING —
+      latched, the hotkey has been let go and `_mods_down` is simply the
+      truth.)
 
     Only taps take chords. Not the hold hotkeys: a chord there would mean
     holding ctrl in Chrome for the twenty seconds of a dictation, which
@@ -452,7 +497,16 @@ class PTTStateMachine:
       typing a combo, not dictating"; latched, their hands are free by
       design, and letting one stray keystroke destroy several minutes of
       speech would be far worse than recording a few extra seconds.
-    - `cancel_vk` (Esc) discards the recording — the deliberate way out.
+    - EVERY tap fires, hands being free is what latching is for, and this
+      is the state the parallel-features work is really about.
+    - `cancel_vk` (Esc) discards the recording — the deliberate way out,
+      unless `cancel_guard` says something on screen has a better claim
+      on that press. Every overlay this app can now open mid-dictation is
+      dismissed with Esc, and each of them is a focused window that has to
+      RECEIVE the key, so it cannot be swallowed the way the lookup box's
+      is; the guard is the third answer — claimed, passed through, and not
+      also spent on throwing a locked recording away. Asked outside the
+      lock, only for the cancel key, and only on a real press.
 
     The latch key is the one key this class asks the hook to SWALLOW, and
     only for the presses it actually consumes: it usually has a job of its
@@ -516,7 +570,9 @@ class PTTStateMachine:
                  cancel_vk: int | None = 0x1B,   # Esc
                  pause_vk: int | None = None,
                  on_pause: Callable[[bool], None] | None = None,
-                 on_key_down: Callable[[int], bool] | None = None):
+                 on_key_down: Callable[[int], bool] | None = None,
+                 tap_allowed: Callable[[str, str], bool] | None = None,
+                 cancel_guard: Callable[[], bool] | None = None):
         self._on_start = on_start
         self._on_stop = on_stop
         self._on_abort = on_abort
@@ -524,6 +580,12 @@ class PTTStateMachine:
         self._on_latch = on_latch
         self._on_pause = on_pause
         self._on_key_down = on_key_down
+        # Who may fire WHEN. None keeps the rule this class was born with —
+        # taps are an idle-only thing — so every existing caller and every
+        # existing test sees exactly what it saw before. main.py passes the
+        # real policy; see the class docstring.
+        self._tap_allowed = tap_allowed
+        self._cancel_guard = cancel_guard
         self._cancel_vk = cancel_vk
         self._state = IDLE
         self._paused = False
@@ -623,7 +685,8 @@ class PTTStateMachine:
                              "handler")
         return keys, tap_keys, latch_vk, pause_vk
 
-    def _match_tap(self, vk: int) -> tuple[Binding, str] | None:
+    def _match_tap(self, vk: int,
+                   exclude: int | None = None) -> tuple[Binding, str] | None:
         """(the binding that matched, the action) — or None for "nothing on
         that key with those modifiers held".
 
@@ -639,13 +702,26 @@ class PTTStateMachine:
         (ctrl+shift+F6 is not ctrl+F6) and what makes "either ctrl" true
         without making "both ctrls down" false. Then any modifier that was
         named with a side must be that exact key.
+
+        `exclude` is the key currently HOLDING A RECORDING OPEN, and it is
+        what lets a chord be pressed mid-dictation at all. The hold hotkey
+        is Right Ctrl: counted as a held modifier it would make win+shift+s
+        look like ctrl+win+shift+s, which the exact-match rule above
+        rightly refuses, and the capture key would be unreachable for as
+        long as anyone was speaking. It is excluded because while it is
+        holding a recording open it is not acting as a modifier — it is
+        acting as the hotkey, which is a different job on the same key. The
+        consequence is deliberate and is the safe direction: a BARE F10
+        while Right Ctrl is held does not become ctrl+F10, so "f8"
+        (correct) can never quietly turn into "ctrl+f8" (lookup) just
+        because the hand on the hotkey happens to be a ctrl.
         """
         # The trigger's own group is not a condition on itself: a bare
         # binding on "right alt" would otherwise never match, because
         # pressing it is what put alt down.
         trigger_group = _MOD_GROUP.get(vk)
         held = {m for m in self._mods_down
-                if _MOD_GROUP[m] != trigger_group}
+                if _MOD_GROUP[m] != trigger_group and m != exclude}
         held_groups = {_MOD_GROUP[m] for m in held}
         fallback = None
         for bound, action in self._taps.get(vk, ()):
@@ -659,6 +735,71 @@ class PTTStateMachine:
             if all(m in _SIDES or m in held for m in bound.mods):
                 return bound, action
         return fallback
+
+    def _try_tap(self, vk: int, exclude: int | None = None):
+        """One press of a possible tap key -> the action to fire, or None.
+
+        Factored out of the idle branch so that the SAME arming, matching
+        and swallowing happen in all three states. Before this existed the
+        rules lived inside `if self._state == IDLE`, which is the whole
+        reason a feature key "disappeared" the moment anyone started
+        talking: not a focus problem, not a Windows problem, just a branch
+        that only one state could reach.
+
+        Called with the lock held, from the hook callback. Everything it
+        does is set arithmetic — the DECISION about whether the action may
+        run right now is the caller's, made outside the lock, because it is
+        somebody else's code (see `handle`).
+
+        Returns None when the key is not a tap trigger, or when its press
+        is spent (Windows auto-repeat), or when nothing on that trigger
+        matched the modifiers held. The caller cannot tell those apart on
+        purpose: for every one of them the answer is "no action", and the
+        separate question "was this a stray keystroke that should abort a
+        hold?" is answered by membership in `self._taps` alone. A key this
+        app has taken is never a stray keystroke, even on a press that
+        matched no chord — losing a dictation to a mistimed Ctrl is a much
+        worse answer than doing nothing.
+        """
+        if vk not in self._taps or vk in self._tap_held:
+            return None
+        # Marked spent whether or not anything matched, so a press that
+        # missed cannot be rescued by a modifier arriving later and an
+        # auto-repeat firing on it.
+        self._tap_held.add(vk)   # ignore Windows auto-repeat
+        matched = self._match_tap(vk, exclude=exclude)
+        if matched is None:
+            return None
+        bound, action = matched
+        if _takes_the_key(bound):
+            # The ONE exception to "tap keys are not swallowed", and it is
+            # what makes a Win chord possible at all: bind Win+Shift+S and
+            # both this app and the Snipping Tool would answer it. Measured
+            # 2026-08-26 — with the S eaten here, the overlay never opens
+            # and the Start menu still works, because Win itself is
+            # untouched. Taken on the MATCH and not on the decision below:
+            # if the app is going to refuse the action it must still not
+            # hand the press to Windows, or one press would open the
+            # Snipping Tool and nothing else.
+            self._swallow_tap_up.add(vk)
+            return action, True
+        return action, False
+
+    def _tap_may_fire(self, action: str, state: str) -> bool:
+        """Is this action allowed to run in this state? Outside the lock.
+
+        No policy means the rule this class was born with: taps are an
+        idle-only thing. main.py owns the real answer because the reason
+        one key may fire mid-dictation and another may not is about what
+        the key DOES — pixels or the text at the cursor — and that is not
+        this module's knowledge to hold.
+        """
+        if self._tap_allowed is None:
+            return state == IDLE
+        try:
+            return bool(self._tap_allowed(action, state))
+        except Exception:
+            return state == IDLE
 
     @property
     def state(self) -> str:
@@ -761,6 +902,19 @@ class PTTStateMachine:
                 eaten = bool(self._on_key_down(vk))
             except Exception:
                 eaten = False
+        # And the same treatment for the same reason: somebody else's code,
+        # so it runs OUTSIDE the lock, before it. Only ever asked about the
+        # cancel key, because that is the only key it can answer for, and
+        # only on a real press — the app's own injected Esc, if there ever
+        # is one, is not the user reaching for a window.
+        cancel_claimed = False
+        if event_type == "down" and not injected \
+                and self._cancel_guard is not None \
+                and self._cancel_vk is not None and vk == self._cancel_vk:
+            try:
+                cancel_claimed = bool(self._cancel_guard())
+            except Exception:
+                cancel_claimed = False
         with self._lock:
             # Auto-repeat bookkeeping, done whatever the state: a tap key
             # pressed mid-recording aborts without being marked held, and
@@ -834,27 +988,14 @@ class PTTStateMachine:
                     self._active_vk = vk
                     language = self._hotkeys[vk]
                     fire = lambda: self._on_start(language)
-                elif vk in self._taps and event_type == "down" \
-                        and vk not in self._tap_held:
-                    # Marked spent whether or not anything matched, so a
-                    # press that missed cannot be rescued by a modifier
-                    # arriving later and an auto-repeat firing on it.
-                    self._tap_held.add(vk)   # ignore Windows auto-repeat
-                    matched = self._match_tap(vk)
-                    if matched is not None:
-                        bound, action = matched
-                        fire = lambda: self._on_tap(action)
-                        if _takes_the_key(bound):
-                            # The ONE exception to "tap keys are not
-                            # swallowed", and it is what makes a Win chord
-                            # possible at all: bind Win+Shift+S and both
-                            # this app and the Snipping Tool would answer
-                            # it. Measured 2026-08-26 — with the S eaten
-                            # here, the overlay never opens and the Start
-                            # menu still works, because Win itself is
-                            # untouched.
-                            swallow = True
-                            self._swallow_tap_up.add(vk)
+                elif event_type == "down":
+                    took = self._try_tap(vk)
+                    if took is not None:
+                        action, swallow_it = took
+                        swallow = swallow or swallow_it
+                        fire = lambda action=action: (
+                            self._on_tap(action)
+                            if self._tap_may_fire(action, IDLE) else None)
                 # The latch key is inert while idle — it keeps its normal
                 # job in whatever app has focus.
             elif self._state == RECORDING:
@@ -875,16 +1016,48 @@ class PTTStateMachine:
                         swallow = True
                         fire = self._on_latch
                 elif event_type == "down" and not injected:
-                    # A modifier counts as "any other key" here and always
-                    # has: pressing ctrl mid-hold is the user reaching for
-                    # a combo, and chords do not change that. They only
-                    # ever matter while idle, so nothing here has to know
-                    # about them — do not "fix" this to hold fire for a
-                    # chord that has not been pressed yet.
-                    self._state = IDLE
-                    self._active_vk = None
-                    reason = f"'{vk_name(vk)}' pressed mid-hold"
-                    fire = lambda: self._on_abort(reason)
+                    # THE ABORT RULE, and the two things it now lets past.
+                    #
+                    # It used to read "any other physical key-down means
+                    # the user is typing a combo, not dictating", modifiers
+                    # included. That was right about Ctrl+C and wrong about
+                    # everything this app itself binds: a feature key
+                    # pressed mid-dictation destroyed the dictation and
+                    # never ran, which is how Ctrl+F10 and Win+Shift+S came
+                    # to "disappear" the moment anyone started talking.
+                    #
+                    # 1. A key this app has TAKEN is never a stray
+                    #    keystroke. It fires (if the policy lets it) and
+                    #    the recording lives.
+                    # 2. A MODIFIER on its own no longer aborts, it defers.
+                    #    Every chord starts with one, so aborting on the
+                    #    way down made ctrl+F10 and win+shift+s unpressable
+                    #    by construction. Nothing is lost: a modifier alone
+                    #    is not a combo, and the letter that completes one
+                    #    arrives a moment later and aborts then. Ctrl+C
+                    #    still throws the recording away — on the C.
+                    #
+                    # The OTHER hotkey is the exception to (2) and keeps
+                    # aborting on its own key-down, even though it may well
+                    # be a modifier (the English key can be Right Alt).
+                    # Pressing both is ambiguous about which language was
+                    # meant, and a registered hotkey is never merely a
+                    # modifier — deferring it would make the app guess.
+                    took = self._try_tap(vk, exclude=self._active_vk)
+                    stray = (vk not in self._taps
+                             and (vk in self._hotkeys
+                                  or not is_modifier_key(vk)))
+                    if took is not None:
+                        action, swallow_it = took
+                        swallow = swallow or swallow_it
+                        fire = lambda action=action: (
+                            self._on_tap(action)
+                            if self._tap_may_fire(action, RECORDING) else None)
+                    elif stray:
+                        self._state = IDLE
+                        self._active_vk = None
+                        reason = f"'{vk_name(vk)}' pressed mid-hold"
+                        fire = lambda: self._on_abort(reason)
             elif self._state == LATCHED:
                 # `not was_down` is load-bearing for BOTH: the hotkey is
                 # still physically held at the moment of latching, and
@@ -902,9 +1075,48 @@ class PTTStateMachine:
                         swallow = True
                 elif vk == self._cancel_vk and event_type == "down" \
                         and not injected:
-                    self._state = IDLE
-                    self._active_vk = None
-                    fire = lambda: self._on_abort("esc pressed while locked")
+                    # Esc goes to whatever is ON SCREEN first, and the
+                    # recording is last in the queue for it. Every overlay
+                    # this app can now open mid-dictation — the region
+                    # selector, the capture overlay, the camera, the ask
+                    # card — is cancelled with Esc, and each of them is a
+                    # focused window that has to RECEIVE that Esc, so it
+                    # cannot simply be swallowed the way the lookup box's
+                    # is (see `on_key_down`). The guard is the third
+                    # answer: claimed by something on screen, passed
+                    # through to it, and not also spent on throwing a
+                    # locked recording away. Asked here and nowhere else,
+                    # and asked LAST, so the cost is one call per Esc
+                    # pressed during a locked recording.
+                    if not cancel_claimed:
+                        self._state = IDLE
+                        self._active_vk = None
+                        fire = lambda: self._on_abort(
+                            "esc pressed while locked")
+                elif event_type == "down":
+                    # Latched, the hands are free BY DESIGN — that is what
+                    # latching is for — so this is the state where every
+                    # feature key must work. Nothing here can abort: a
+                    # press that matches nothing falls through to the
+                    # ignore rule below exactly as it always did.
+                    #
+                    # `exclude` for the same reason as the hold branch, and
+                    # it is not dead here: latching happens WHILE the
+                    # hotkey is still down, so there is a window — until
+                    # the hand comes off — in which Right Ctrl is both
+                    # holding a recording open and sitting in _mods_down.
+                    # Without this the two states disagree about the same
+                    # physical hand position: measured, F8 gave 'correct'
+                    # while RECORDING and 'lookup' one keystroke later
+                    # while LATCHED, and win+shift+s went from firing (and
+                    # being taken from Windows) to matching nothing at all.
+                    took = self._try_tap(vk, exclude=self._active_vk)
+                    if took is not None:
+                        action, swallow_it = took
+                        swallow = swallow or swallow_it
+                        fire = lambda action=action: (
+                            self._on_tap(action)
+                            if self._tap_may_fire(action, LATCHED) else None)
                 # Anything else is ignored on purpose: latched, the user's
                 # hands are free, and a stray keystroke must not throw away
                 # minutes of speech.

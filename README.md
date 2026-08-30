@@ -619,6 +619,67 @@ Details worth knowing:
   switches keyboard layout** in Windows, so it would flip you between Hebrew
   and English mid-dictation.
 
+## Using the other keys while you are still talking
+
+The feature keys used to disappear the moment you started dictating. Press
+`Ctrl+F10` mid-sentence and nothing happened at all — not an error, not a
+beep, as if the key did not exist. Hold Right Ctrl and press it and you
+lost the recording instead. That is fixed: the keys work **at the same
+time** as a dictation, and which ones depends on which hand you have free.
+
+**Locked (← tapped): everything works.** Ask about the screen, take a
+screenshot, start a screen recording, open the camera, translate,
+punctuate, correct, look something up — all of it, while the recording
+keeps running. Locking the key is what frees your hands, so this is the
+mode the whole thing is built around.
+
+**Holding Right Ctrl: the four screen keys work.** `Ctrl+F10` (ask about
+the screen), `Win+Shift+S` (screenshot), `Ctrl+F12` (screen recording) and
+`Ctrl+F6` (camera) all fire without touching the recording. The four that
+read or rewrite **the text at your cursor** — translate, punctuate,
+correct, lookup — make the "not now" sound instead and say why in the log.
+With one hand pinned to Right Ctrl you have no selection for them to work
+on, and your cursor is where the transcript is about to land.
+
+Things that follow from it, all of them deliberate:
+
+- **A key the app has bound never cancels a recording any more.** Only an
+  unbound key does. `Ctrl+C` mid-hold still throws the dictation away —
+  that is the rule it was bought for — but it now happens on the `C`
+  rather than on the `Ctrl`, because every chord starts with a modifier
+  and cancelling on the way down made `Ctrl+F10` unpressable.
+- **Right Ctrl is a hotkey, not a Ctrl, while it is holding a recording
+  open.** So use the LEFT Ctrl for `Ctrl+F10` while dictating. This is
+  also what makes `Win+Shift+S` reachable at all mid-dictation, and what
+  stops a bare `F8` quietly becoming `Ctrl+F8`.
+- **Esc goes to whatever is on screen.** With a selector, a capture
+  overlay, a camera card, an ask card or a lookup box up, Esc closes that
+  and leaves the recording alone. Press it again with nothing on screen
+  and it discards the locked recording, as before.
+- **Where your words go is decided when you START talking.** Open the ask
+  card in the middle of dictating an email and the email still lands in
+  the email — the card gets the *next* thing you say. Start talking with
+  the card already up and it is a question, as always.
+- **Your screenshots do not have our dot in them.** The status indicator
+  is excluded from every screen capture on the machine, so a shot taken
+  mid-dictation is your screen and nothing else.
+- **The card will not read an answer out loud while the microphone is
+  live** — it would be recorded and transcribed as if you had said it.
+  The Speak button is there when you have finished.
+- **One clipboard, one queue.** A screenshot taken in the half-second a
+  transcript is being pasted used to arrive *as* the paste — the picture
+  in your document instead of your sentence (39 times out of 40, measured).
+  Everything that touches the clipboard now takes its turn.
+- **And the screenshot is still on your clipboard afterwards.** The paste
+  used to be able to save and put back text only, so a transcript landing
+  a second after a screenshot replaced it. Take the shot mid-sentence and
+  both survive.
+
+One collision is left, and it is the documented behaviour of the latch
+rather than a bug: **tapping Right Ctrl while locked finishes the
+recording.** So reach for the left Ctrl when you want a chord — the right
+one will end the dictation and then the rest of the chord fires on its own.
+
 ## Translating to English
 
 Dictation always writes what you said, in the language you said it. When

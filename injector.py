@@ -67,6 +67,63 @@ def erase_units(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
 
 
+# ONE CLIPBOARD, AND EVERY THREAD IN THIS PROCESS THAT WANTS IT.
+#
+# It lives here rather than on main.App because the borrowers are not all
+# main's: capture.py writes a screenshot from `capture-shot`, the lookup
+# box copies from `lookup-copy`, the ask card has a copy button, and none
+# of them has ever heard of App._cursor_lock. That lock's own comment
+# claims "every stretch of code that sends keystrokes or borrows the
+# clipboard takes this", and it was true of the four threads it named and
+# of nothing else.
+#
+# It did not matter much while the screenshot key was dead for as long as
+# anyone was speaking. It matters now: a screenshot taken mid-dictation
+# lands its CF_DIB in the ~350 ms between this app staging a transcript
+# and the target app asynchronously reading it, and the user gets the
+# picture pasted into their document instead of their sentence — with the
+# placeholder already backspaced away and the transcript surviving only in
+# transcripts.log.
+#
+# MEASURED 2026-08-30, 40 pastes against capture.copy_image firing 4 ms
+# into each one: without this lock the clipboard held the image rather
+# than the transcript at read time in 39 of 40; with it, 0 of 40. That is
+# not a rare race, it is what happens.
+#
+# A retry loop cannot stand in for this and never could. Measured and
+# written up in popup.py: OpenClipboard does NOT serialise two threads of
+# the SAME process — the second one is handed a success it cannot honour,
+# because the handle belongs to the task and not to the caller — so
+# _open_clipboard's retry never even fires, and the next call raises
+# Windows error 1418 instead. 21 writes of 300 failed that way under a
+# competitor writing every 4 ms (tests.py, 2026-08-20).
+#
+# Reentrant because the public calls nest: inject() holds it across
+# snapshot -> paste -> restore, and every one of those takes it again.
+_board_lock = threading.RLock()
+
+
+def board_held():
+    """Own the clipboard for a whole operation. A context manager.
+
+    For code OUTSIDE this module that writes the clipboard without going
+    through set_text — capture.py's copy_image and copy_file, which speak
+    CF_DIB and CF_HDROP that this module has no opinion about. They keep
+    their own win32clipboard calls; all they take from here is the queue.
+
+    IT WAITS, and there is deliberately no timeout to pass. One was
+    offered and taken out again: a `with` body runs whether or not
+    __enter__ handed back a lock, so "give up rather than block" written
+    that way does not give up — it proceeds UNLOCKED, which is the one
+    outcome this whole mechanism exists to prevent, and does it silently.
+    A caller that genuinely must not block can take `_board_lock` itself
+    and check. Nobody does: the operations this serialises are a few
+    hundred milliseconds at their longest, and a screenshot that reaches
+    the clipboard 300 ms late is a screenshot that reached the clipboard.
+    """
+    return _board_lock
+
+
 def _open_clipboard(retries: int = 10, delay_s: float = 0.05) -> None:
     for _ in range(retries):
         try:
@@ -77,6 +134,24 @@ def _open_clipboard(retries: int = 10, delay_s: float = 0.05) -> None:
     raise ClipboardBusyError(
         "clipboard is locked by another application (retried %d times)"
         % retries)
+
+
+def _close_clipboard() -> None:
+    """CloseClipboard, and never the reason a caller hears about.
+
+    In a `finally` over a body that is already raising, an exception out of
+    here REPLACES the one being raised — and the failure this pairs with is
+    exactly the one where it happens: 1418 is "this thread does not have a
+    clipboard open", so the close fails for the same reason the write did,
+    and the ClipboardBusyError the callers are written to catch would be
+    swapped for a bare pywintypes.error on its way out. Swallowed, and only
+    here: every other close in this module is inside a `try` whose body
+    succeeded.
+    """
+    try:
+        win32clipboard.CloseClipboard()
+    except Exception:
+        pass
 
 
 def _format_count() -> int:
@@ -96,6 +171,11 @@ def _format_count() -> int:
 
 def snapshot() -> tuple[str, str | None]:
     """('empty'|'text'|'other', text) for the current clipboard contents."""
+    with _board_lock:
+        return _snapshot_locked()
+
+
+def _snapshot_locked() -> tuple[str, str | None]:
     _open_clipboard()
     try:
         if _format_count() == 0:
@@ -148,12 +228,22 @@ def _claimed_since(mark: int | None) -> bool:
 def _put_text(text: str) -> None:
     """The write itself, claiming nothing. For text this module is only
     passing through the clipboard on its way somewhere else."""
-    _open_clipboard()
-    try:
-        win32clipboard.EmptyClipboard()
-        win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
-    finally:
-        win32clipboard.CloseClipboard()
+    with _board_lock:
+        _open_clipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
+        except Exception as e:
+            # Windows 1418 and its neighbours come out of pywin32 as a bare
+            # error, and every `except ClipboardBusyError` in the app was
+            # blind to them — one such escape from show_placeholder used to
+            # leave _handle before the audio had been spooled, losing the
+            # recording as well as the paste. Now that the whole process
+            # queues here they should not happen at all; if one still does,
+            # it arrives as the exception the callers already handle.
+            raise ClipboardBusyError(f"could not write the clipboard: {e}")
+        finally:
+            _close_clipboard()
 
 
 def set_text(text: str) -> None:
@@ -183,26 +273,42 @@ def set_text(text: str) -> None:
     so the usual failure writes nothing and moves nothing — but it can
     also fail with the clipboard already emptied, and that one MUST be
     restored over rather than stood down on.
+
+    THE BOARD IS TAKEN AROUND BOTH, and it has to be taken FIRST. "Claim
+    then write" is only safe while the two are microseconds apart; queue
+    the write behind another operation and the claim is visible for as
+    long as that operation lasts, with nothing on the clipboard to go with
+    it. read_selection would see the bump, conclude the user had copied
+    something mid-capture, re-baseline and throw away the answer to its
+    own chord — for a copy that had not happened yet. Owning the board
+    across the pair closes the gap the other way round: nobody can observe
+    the claim, because nobody can look. Measured 2026-08-30 by asking
+    _claimed_since while holding the board with a set_text queued behind
+    it: 0 of 30 saw a claim whose write had not landed.
     """
     global _claims
-    with _claim_lock:
-        _claims += 1
-    try:
-        _put_text(text)
-    except BaseException:
+    with _board_lock:
         with _claim_lock:
-            _claims -= 1
-        raise
+            _claims += 1
+        try:
+            _put_text(text)
+        except BaseException:
+            with _claim_lock:
+                _claims -= 1
+            raise
 
 
 def clear() -> None:
     """Empty the clipboard. Used as a probe: after this, anything on the
     clipboard demonstrably came from the copy we just sent."""
-    _open_clipboard()
-    try:
-        win32clipboard.EmptyClipboard()
-    finally:
-        win32clipboard.CloseClipboard()
+    with _board_lock:
+        _open_clipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+        except Exception as e:
+            raise ClipboardBusyError(f"could not empty the clipboard: {e}")
+        finally:
+            _close_clipboard()
 
 
 def get_text() -> str:
@@ -224,13 +330,25 @@ def paste_text(text: str, paste_chord: str, restore_delay_ms: int) -> None:
     _put_text and not set_text: this text is on its way to a paste chord
     and the caller means to take it back off again, so claiming the
     clipboard here would make every paste stand its own restore down.
+
+    THE WHOLE SPAN IS OWNED, not just the write. The sleep at the end is
+    not politeness, it is the target app reading the clipboard on its own
+    schedule — so from the write to the end of that wait, whatever is on
+    the clipboard is what the user is about to get. A screenshot landing
+    in that window (43 ms to encode, then two SetClipboardData calls, on a
+    thread of capture.py's own) does not corrupt the paste, it BECOMES the
+    paste: the picture arrives in the document where the sentence should
+    have been, and by then the placeholder has already been backspaced
+    away. That collision was unreachable while the screenshot key was dead
+    during a dictation. It is one keystroke away now.
     """
-    _put_text(text)
-    time.sleep(SETTLE_SECONDS)
-    send_chord(paste_chord)
-    # The target app reads the clipboard asynchronously after the chord
-    # arrives; restoring too early would paste the OLD content.
-    time.sleep(max(restore_delay_ms, 0) / 1000)
+    with _board_lock:
+        _put_text(text)
+        time.sleep(SETTLE_SECONDS)
+        send_chord(paste_chord)
+        # The target app reads the clipboard asynchronously after the chord
+        # arrives; restoring too early would paste the OLD content.
+        time.sleep(max(restore_delay_ms, 0) / 1000)
 
 
 def restore(state: tuple[str, str | None], what: str = "transcript",
@@ -261,11 +379,46 @@ def restore(state: tuple[str, str | None], what: str = "transcript",
 
 def inject(text: str, paste_chord: str, restore_delay_ms: int) -> str:
     """Save clipboard -> set transcript -> paste -> restore. Returns a short
-    status string for the console."""
-    state = snapshot()
-    mark = claim_mark()
-    paste_text(text, paste_chord, restore_delay_ms)
-    return restore(state, since=mark)
+    status string for the console.
+
+    All four steps under one owner. Split across separate acquisitions the
+    snapshot could be of somebody else's write and the restore could put
+    it back over a copy the user had since made — and `since=mark` only
+    protects against the copies this app CLAIMS, which a screenshot's raw
+    CF_DIB is not.
+
+    AND A PICTURE COMES BACK NOW, not just text. `restore()` can only put
+    text back; for anything else it says so and leaves the transcript
+    where the user's content was. That was a fair v0 trade while the only
+    way to have an image on the clipboard was to have put it there some
+    time ago — and it stopped being one the moment the screenshot key
+    started working mid-dictation, because "take a screenshot while you
+    talk" then ends with the transcript pasting over the screenshot you
+    just took. The machinery already existed for the lookup key
+    (snapshot_all / restore_all, which is what keeps that key from
+    disturbing anything at all); this reaches for it exactly when the
+    text-only path would have given up.
+    """
+    with _board_lock:
+        state = snapshot()
+        blobs = None
+        if state[0] == "other":
+            try:
+                blobs = snapshot_all()
+            except ClipboardBusyError:
+                blobs = None        # fall through to the old answer
+        mark = claim_mark()
+        paste_text(text, paste_chord, restore_delay_ms)
+        # `blobs` empty means the formats on there are not ones this module
+        # knows how to put back (RESTORABLE_FORMATS) — and restore_all([])
+        # would EMPTY the clipboard, which is worse than the honest "cannot
+        # restore it" the text path already answers with.
+        if blobs and not _claimed_since(mark):
+            if restore_all(blobs):
+                return "old clipboard restored"
+            return ("what was on your clipboard could not be put back; "
+                    "the transcript is on it")
+        return restore(state, since=mark)
 
 
 def grab(copy_chord: str, select_all_chord: str,
@@ -287,20 +440,30 @@ def grab(copy_chord: str, select_all_chord: str,
     then inserts rather than replaces, so the line ends up duplicated and
     needs one Ctrl+Z. Chat-style inputs — the actual use case — copy
     nothing on an empty selection and are unaffected.
-    """
-    clear()
-    time.sleep(SETTLE_SECONDS)
-    send_chord(copy_chord)
-    time.sleep(settle_s)
-    text = get_text()
-    if text.strip():
-        return text, True
 
-    send_chord(select_all_chord)
-    time.sleep(SETTLE_SECONDS)
-    send_chord(copy_chord)
-    time.sleep(settle_s)
-    return get_text(), False
+    Owned end to end, because the whole method is an inference from an
+    empty clipboard: empty it, copy, and believe what appears. Anything
+    else in this process writing inside that window is read as the answer
+    to our own chord — and for translate and punctuate the answer is what
+    gets PASTED OVER the user's selection. A screenshot arriving here does
+    not read as text at all, so the probe reports "nothing was selected",
+    the select-all fallback fires, and the whole field is translated in
+    place of the phrase that was meant.
+    """
+    with _board_lock:
+        clear()
+        time.sleep(SETTLE_SECONDS)
+        send_chord(copy_chord)
+        time.sleep(settle_s)
+        text = get_text()
+        if text.strip():
+            return text, True
+
+        send_chord(select_all_chord)
+        time.sleep(SETTLE_SECONDS)
+        send_chord(copy_chord)
+        time.sleep(settle_s)
+        return get_text(), False
 
 
 # -------------------------------------------------------------------------
@@ -350,6 +513,13 @@ user32.SetClipboardData.restype = ctypes.c_void_p
 user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
 user32.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
                                  ctypes.c_int]
+# c_void_p for the HWND, like every other window call declared here: a
+# bare Python int defaults to c_int and a 64-bit handle would be silently
+# truncated, which reads as "that window belongs to somebody else".
+user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p,
+                                            ctypes.POINTER(ctypes.c_ulong)]
+user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
+kernel32.GetCurrentProcessId.restype = ctypes.c_ulong
 kernel32.GlobalAlloc.restype = ctypes.c_void_p
 kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
 kernel32.GlobalLock.restype = ctypes.c_void_p
@@ -374,6 +544,33 @@ def window_class(hwnd: int) -> str:
 def is_console_window(hwnd: int) -> bool:
     """True for a window it is not safe to send a copy chord at."""
     return window_class(hwnd) in CONSOLE_CLASSES
+
+
+def is_our_window(hwnd: int) -> bool:
+    """Does this window belong to THIS process?
+
+    Asked of a paste target, because a transcript can never be meant for
+    one of our own windows. Once the screenshot and ask-the-screen keys
+    could be pressed mid-dictation, the window in front at the moment the
+    hotkey is released is quite often our own fullscreen overlay, and
+    aiming a paste at it would send the sentence nowhere — worse, it would
+    send the placeholder marker there too and then refuse to take it back
+    down, because the focus test would pass.
+
+    By PROCESS ID rather than by class name: the class names are Tk's, so
+    a list of them would also match any other Tk app the owner happens to
+    be running, and a dictation into a Tk text editor must still paste.
+    Returns False on any failure — "not ours" is the answer that leaves
+    the old behaviour in place.
+    """
+    if not hwnd:
+        return False
+    try:
+        pid = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return bool(pid.value) and pid.value == kernel32.GetCurrentProcessId()
+    except Exception:
+        return False
 
 
 def clipboard_sequence() -> int:
@@ -633,60 +830,69 @@ def read_selection(copy_chord: str, *, timeout_ms: int = 600,
                          "running there", candidate, window_class(candidate))
                 return "", "console"
 
-    try:
-        saved = snapshot_all()
-    except ClipboardBusyError:
-        return "", "clipboard-locked"
+    # OWNED FROM THE SAVE TO THE RESTORE, like every other operation in
+    # this module that is an inference from what the clipboard does. This
+    # one is a READER and so cannot paste the wrong thing — but its restore
+    # puts every saved format back, and a screenshot copied by another
+    # thread of this process while it runs would be wiped by that restore
+    # with nothing anywhere to say so. Worst case it is held for
+    # timeout_ms + late_sweep_ms, and only on a press that found nothing
+    # selected.
+    with _board_lock:
+        try:
+            saved = snapshot_all()
+        except ClipboardBusyError:
+            return "", "clipboard-locked"
 
-    # Taken with the snapshot and not later: the box from the LAST press
-    # is still on screen while this one runs, and a copy taken off it
-    # belongs to the user, not to this capture. See claim_mark().
-    mark = claim_mark()
-    seq0 = clipboard_sequence()
-    text = ""
-    reason = "nothing-selected"
-    try:
-        send_chord(copy_chord)
-        deadline = time.perf_counter() + timeout_ms / 1000
-        # The loop's own baseline, moved on by a copy that was not ours.
-        # `mark` itself is left alone: the restore in the finally reads it
-        # to decide whether to stand down, and that decision is about the
-        # whole call, not about one bump.
-        claimed = mark
-        while time.perf_counter() < deadline:
-            if clipboard_sequence() != seq0:
-                time.sleep(settle_ms / 1000)   # let every format land
-                if _claimed_since(claimed):
-                    # A copy the USER took, off a box that was already on
-                    # screen — its copy button, or ctrl+C on a selection
-                    # in it. It moved the sequence, but it is not an
-                    # answer to the chord this function just sent, and
-                    # reading it as one hands the app its own text back.
-                    # For the lookup key that is a box quoting itself; for
-                    # translate and punctuate it is worse, because those
-                    # PASTE what they read over whatever the user had
-                    # selected. Re-baseline and keep waiting — the copy
-                    # this call asked for may still be on its way.
-                    claimed = claim_mark()
-                    seq0 = clipboard_sequence()
-                    continue
-                text = get_text()
-                reason = "ok" if text.strip() else "nothing-selected"
-                break
-            time.sleep(poll_ms / 1000)
-    except ClipboardBusyError:
-        text, reason = "", "clipboard-locked"
-    finally:
-        # In a finally, and not after the loop, because anything raising
-        # between the copy and the restore leaves the user's clipboard
-        # holding the captured selection: verified destroyed 3/3 without
-        # this, survived 2/2 with it.
-        if not _restore_if_touched(saved, seq0, late_sweep_ms, mark):
-            text, reason = "", "clipboard-locked"
-
-    if not text.strip():
+        # Taken with the snapshot and not later: the box from the LAST press
+        # is still on screen while this one runs, and a copy taken off it
+        # belongs to the user, not to this capture. See claim_mark().
+        mark = claim_mark()
+        seq0 = clipboard_sequence()
         text = ""
-    return text, reason
+        reason = "nothing-selected"
+        try:
+            send_chord(copy_chord)
+            deadline = time.perf_counter() + timeout_ms / 1000
+            # The loop's own baseline, moved on by a copy that was not ours.
+            # `mark` itself is left alone: the restore in the finally reads it
+            # to decide whether to stand down, and that decision is about the
+            # whole call, not about one bump.
+            claimed = mark
+            while time.perf_counter() < deadline:
+                if clipboard_sequence() != seq0:
+                    time.sleep(settle_ms / 1000)   # let every format land
+                    if _claimed_since(claimed):
+                        # A copy the USER took, off a box that was already on
+                        # screen — its copy button, or ctrl+C on a selection
+                        # in it. It moved the sequence, but it is not an
+                        # answer to the chord this function just sent, and
+                        # reading it as one hands the app its own text back.
+                        # For the lookup key that is a box quoting itself; for
+                        # translate and punctuate it is worse, because those
+                        # PASTE what they read over whatever the user had
+                        # selected. Re-baseline and keep waiting — the copy
+                        # this call asked for may still be on its way.
+                        claimed = claim_mark()
+                        seq0 = clipboard_sequence()
+                        continue
+                    text = get_text()
+                    reason = "ok" if text.strip() else "nothing-selected"
+                    break
+                time.sleep(poll_ms / 1000)
+        except ClipboardBusyError:
+            text, reason = "", "clipboard-locked"
+        finally:
+            # In a finally, and not after the loop, because anything raising
+            # between the copy and the restore leaves the user's clipboard
+            # holding the captured selection: verified destroyed 3/3 without
+            # this, survived 2/2 with it.
+            if not _restore_if_touched(saved, seq0, late_sweep_ms, mark):
+                text, reason = "", "clipboard-locked"
+
+        if not text.strip():
+            text = ""
+        return text, reason
 
 
 def show_placeholder(text: str, paste_chord: str,

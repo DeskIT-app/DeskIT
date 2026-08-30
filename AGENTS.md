@@ -464,6 +464,68 @@ back.
   `wght` axis with `makeClone` (`skin/boot.py::_rubik`).
 - **Branch switches restart the running instance** (~25 s of model
   loading). That is expected, not a crash.
+- **The feature keys work DURING a dictation, and that is load-bearing.**
+  Until 2026-08-30 they did not: `PTTStateMachine` fired taps only in
+  `IDLE`, aborted the recording on any other key mid-HOLD, and ignored
+  everything while LATCHED. The owner's report was that Ctrl+F10 "had
+  simply vanished — there is no such button, because the app is locked
+  onto the audio." Five rules replaced that, and none of them is
+  cosmetic:
+  - a key this app has BOUND is never a stray keystroke, so it fires
+    instead of aborting; only an unbound key still kills a hold, and
+    Ctrl+C still does (on the C);
+  - a modifier alone DEFERS rather than aborting — every chord starts
+    with one, so aborting on the way down made `ctrl+f10` and
+    `win+shift+s` unpressable by construction;
+  - the key HOLDING a recording open is not a chord modifier
+    (`_match_tap(exclude=)`). Without this, `win+shift+s` reads as
+    ctrl+win+shift+s and never matches; with it, bare F8 cannot quietly
+    become `ctrl+f8`;
+  - screen keys (ask-the-screen, screenshot, screen recording, camera)
+    fire in every state; the four that touch TEXT AT THE CURSOR are
+    refused while the hotkey is HELD and allowed while LATCHED, because
+    latching is what frees the hands (`App._tap_allowed`);
+  - Escape belongs to whatever is on screen, and the recording is last in
+    line for it (`App._esc_is_claimed` -> `cancel_guard`).
+- **WHERE a dictation goes is decided when it STARTS, not when it
+  transcribes.** `_handle` used to re-read `vqa.sink_active` at the far
+  end. Once the ask card can be opened mid-sentence, that reading is of a
+  different moment than the one the user was in: a paragraph dictated
+  into Chrome was swallowed by a card opened 55 seconds later, and the
+  `...` marker left behind could not even be cleared, because the card
+  had the foreground. The decision rides the queue item. Same for the
+  paste target — the window at the key RELEASE is preferred, unless it is
+  one of ours (`injector.is_our_window`), and then the window at the
+  press is the only honest answer.
+- **`injector._board_lock` is the process-wide clipboard queue, and a
+  retry loop is not a substitute for it.** `OpenClipboard` does NOT
+  serialise two threads of the same process — the second gets a success
+  it cannot honour — so `_open_clipboard`'s retry never fires and the
+  next call raises Windows 1418. `App._cursor_lock` never covered this:
+  capture.py writes from `capture-shot`, the lookup box from
+  `lookup-copy`, and neither has heard of it. Measured 2026-08-30 with
+  `copy_image` firing 4 ms into each paste: **the clipboard held the
+  screenshot rather than the transcript at read time in 39 of 40 pastes
+  without the lock, 0 of 40 with it.** Anything new that touches the
+  clipboard goes through `injector`, or takes `injector.board_held()`.
+  Two rules fell out of it and both are load-bearing. `set_text` takes the
+  board BEFORE bumping the claim counter — claim-then-write is only safe
+  while the two are microseconds apart, and a queued write leaves the
+  claim visible with nothing behind it, at which point `read_selection`
+  concludes the user copied something mid-capture and throws away the
+  answer to its own chord. And **no UI thread may take the board**: the
+  longest holder is a lookup that found nothing selected, at 2.1 s, so
+  popup.py's already-threaded copy button has been joined by the ask
+  card's, the capture editor's, the toast's, and the dashboard's
+  `copy_last`. Separately, `injector.inject` now saves and restores ALL
+  formats when the clipboard holds something it cannot describe as text —
+  otherwise the transcript pastes over the screenshot just taken, which is
+  the headline gesture undoing itself.
+- **Our own windows must not appear in the user's screenshots.**
+  `capture.hide_from_capture` (WDA_EXCLUDEFROMCAPTURE) is the flag;
+  `overlay.StatusDot` now applies it too, because the screenshot key can
+  be pressed while the dot is pulsing red. Re-measured on the dot's own
+  window: 3600/3600 magenta pixels before, 0/3600 after.
 
 ## Where things live
 
