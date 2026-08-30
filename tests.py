@@ -2992,10 +2992,13 @@ def test_the_context_pass_never_reaches_for_gemini() -> None:
         assert names == ["ollama"], (
             f"without keys the pass must be classic-shaped: {names}")
 
-        # With keys: groq first (prefer's default), everything behind it.
+        # With keys: groq first (prefer's default), Ollama behind it, and
+        # NOT Cerebras — their free tier answers 402 to everything, so as a
+        # fallback it can only spend the user's wait to fail. It is opt-in
+        # now: only prefer = "cerebras" builds it.
         apikey_mod.find_key = all_keys
         names = [b.name for b in polisher._backends(text)]
-        assert names == ["groq", "cerebras", "ollama"], names
+        assert names == ["groq", "ollama"], names
     finally:
         apikey_mod.find_key = original
 
@@ -3018,7 +3021,28 @@ def test_polish_prefer_ollama_reverses_the_repair_order() -> None:
         names = [b.name for b in polisher._backends("משפט לבדיקה בבקשה")]
     finally:
         apikey_mod.find_key = original
-    assert names == ["ollama", "groq", "cerebras"], names
+    assert names == ["ollama", "groq"], names
+
+
+def test_cerebras_is_opt_in_but_still_reachable() -> None:
+    """Out of the fallback chain, not out of the app: whoever still holds
+    quota there sets prefer = "cerebras" and gets it first, as before."""
+    import dataclasses
+
+    import apikey as apikey_mod
+    import polish as polish_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dataclasses.replace(cfg, polish=dataclasses.replace(
+        cfg.polish, prefer="cerebras"))
+    polisher = polish_mod.Polisher(cfg, _tmp_vocab())
+    original = apikey_mod.find_key
+    try:
+        apikey_mod.find_key = lambda names: ("test-key", "test")
+        names = [b.name for b in polisher._backends("משפט לבדיקה בבקשה")]
+    finally:
+        apikey_mod.find_key = original
+    assert names == ["cerebras", "groq", "ollama"], names
 
 
 def test_reply_caps_are_sized_from_the_text() -> None:

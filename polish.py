@@ -311,7 +311,16 @@ class Polisher:
                 setting="polish.ollama_model", num_predict=cap)
 
         order = {"groq": groq, "cerebras": cerebras, "ollama": ollama}
-        ranked = ([prefer] + [name for name in order if name != prefer])
+        # Cerebras is opt-IN, never a fallback. Their free tier is gone —
+        # HTTP 402 on every model, verified 2026-08-22 and again on this
+        # machine 2026-08-28 ("Payment required to access this resource").
+        # A backend that is certain to refuse must not sit between Groq and
+        # Ollama: it cannot repair anything, and the request it wastes is
+        # paid for in the one place the user feels it, the wait before the
+        # text lands. Whoever still holds quota there sets prefer =
+        # "cerebras" and gets it first, exactly as before.
+        ranked = ([prefer] + [name for name in order
+                              if name != prefer and name != "cerebras"])
         return [(name, order[name]) for name in ranked]
 
     def _backends(self, text: str):

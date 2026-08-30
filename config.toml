@@ -1011,7 +1011,9 @@ prefer = "groq"           # FAST VERSION ONLY — classic ignores this key and
                           # groq | cerebras | ollama — WHICH BACKEND REPAIRS
                           # FIRST. The others follow in order underneath it,
                           # ollama always among them, so this is a preference
-                          # and never a commitment.
+                          # and never a commitment. ONE EXCEPTION: cerebras
+                          # is never a fallback, only a first choice — see
+                          # its entry below.
                           #   "groq"     Groq's free API (console.groq.com).
                           #              No credit card, ~1,000 requests a day
                           #              against the dozens a working day of
@@ -1026,7 +1028,13 @@ prefer = "groq"           # FAST VERSION ONLY — classic ignores this key and
                           #              account 2026-08-22: HTTP 402 on every
                           #              model, cheapest plan $1,500+/month.
                           #              Kept working for whoever still holds
-                          #              quota there.
+                          #              quota there — but OPT-IN ONLY. It is
+                          #              out of the fallback chain, because a
+                          #              backend certain to answer 402 cannot
+                          #              repair anything and spends the one
+                          #              thing you feel, the wait before the
+                          #              text lands. Name it here and it runs
+                          #              first, exactly as it always did.
                           #   "ollama"   local gemma3:12b, no cloud ever.
                           #              This IS the classic version's
                           #              behavior, in one line.
