@@ -24,7 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import apikey
 import config as config_mod
+import hint as hint_mod
 import injector
+import overlay as overlay_mod
 import singleton
 import vocab as vocab_mod
 import hotkey as hotkey_mod
@@ -867,6 +869,13 @@ def _worker_app(backend, spool_dir, retry_seconds=5.0):
     # Everything below is built by the real App.__init__; this helper has to
     # mirror it or the worker path under test dies on a missing attribute.
     app._model_lock = threading.Lock()
+    # The ask card's echo notes: _handle adds to these when a dictation was
+    # aimed at the card, and _on_card_closed hands them to the field the
+    # card interrupted. [visual_qa] echo_to_field.
+    app._echo_lines = []
+    app._question_texts = []
+    app._field_hwnd = 0
+    app._echo_lock = threading.Lock()
     app.recent = None                    # no audio ring in the worker tests
     app.vocab = vocab_mod.Vocab(Path(spool_dir) / "vocab.json")
     app._hotwords = app.vocab.hotwords
@@ -913,15 +922,40 @@ class _FakeSink:
     """A stand-in ask card. `busy` is what claims Escape, `sink_active` is
     what used to decide where a transcript went."""
 
-    def __init__(self, sink_active=False, busy=False, recording=False):
+    def __init__(self, sink_active=False, busy=False, recording=False,
+                 echoing=True):
         self.sink_active = sink_active
         self.busy = busy
         self.recording = recording
+        # The switch in the card's title strip: is what is dictated here
+        # also going to the field the card was opened over?
+        self.echoing = echoing
         self.delivered = []
 
     def deliver_transcript(self, text):
         self.delivered.append(text)
         return True
+
+
+class _FakeHint:
+    """A stand-in hint card: it only records what it was asked to show.
+
+    Every test that drives _set_state on a hand-built App needs one,
+    because the card rides the same state the dot does and is deliberately
+    fed from the same line — see main.App._set_state.
+    """
+
+    def __init__(self):
+        self.shown = []
+
+    def show(self, card):
+        self.shown.append(card)
+
+    def start(self):
+        pass
+
+    def stop(self):
+        pass
 
 
 def _policy_app():
@@ -1107,6 +1141,7 @@ def test_a_transcript_is_never_aimed_at_one_of_our_own_windows() -> None:
         main_mod.injector = _Windows
         app.cfg, app.recorder = _Cfg(), _Recorder()
         app.dot = type("D", (), {"set_state": lambda s, v: None})()
+        app.hint = _FakeHint()
         app.machine = type("M", (), {"state": hotkey_mod.RECORDING})()
         app._activity = "ready"
         app._vqa = None
@@ -1254,6 +1289,7 @@ def test_a_live_recording_outranks_ready_on_the_indicator() -> None:
         state = hotkey_mod.LATCHED
 
     app.dot, app.machine, app._activity = _Dot(), _Machine(), "locked"
+    app.hint = _FakeHint()
     app._set_state("ready")
     app._set_state("busy")
     assert app._activity == "locked" and seen == [], (app._activity, seen)
@@ -8099,6 +8135,7 @@ def test_pausing_takes_the_lookup_box_with_it() -> None:
         app = _lookup_app(tmp, fake, "שביר")
         app._auto_paused = False
         app.dot = type("_Dot", (), {"set_state": lambda self, s: None})()
+        app.hint = _FakeHint()
         fake.selection = "brittle"
         app._lookup(fake.focus, (400, 300))
         assert app.popup.visible(), "the answer never went up"
@@ -10216,6 +10253,649 @@ assert not ctrl.busy, "the flow never finished"
 freed = gc.collect()
 assert freed == 0, f"the card left {freed} objects for another thread"
 ''')
+
+
+def test_no_global_keeps_a_card_interpreter_alive_past_its_thread() -> None:
+    """The same abort as the test above, by the one route that test is
+    blind to: SPEAKING into the card.
+
+    `gc.collect() == 0` only proves nothing is CYCLIC GARBAGE. A module
+    global is not garbage — it is reachable — so a global holding a Tk
+    object sails past that assertion and still kills the app, later, on
+    whichever thread happens to drop the last reference.
+
+    skin\wave.py did exactly that: `_owner = canvas.tk` cached the ring
+    sprites against the interpreter they belonged to, and in doing so kept
+    THE INTERPRETER. The rings are painted only while the microphone is
+    live, so the leak needed a dictation to happen at all — which is why
+    the owner only ever saw it when he talked to the card, and why the
+    suite never saw it.
+
+    Measured 2026-08-31 on the unfixed file: one card dictated into aborts
+    at process exit, and two in a row abort mid-run when the second card's
+    pump thread drops the first card's interpreter — "Tcl_AsyncDelete:
+    async handler deleted by the wrong thread", exit 3, no traceback and
+    nothing in app.log. Both rounds exit 0 once the cache belongs to the
+    card.
+
+    Two rounds and not one, because one card only proves the exit path.
+    """
+    _run_window_script('''
+import gc, threading, time
+from pathlib import Path
+from PIL import Image
+import config
+import visual_qa as vq
+
+gc.disable()                 # only explicit collects: we choose the thread
+
+cfg = config.load(Path("config.toml"))
+ctrl = vq.Controller(lambda: cfg, recording_now=lambda: True)
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
+ctrl._ask = lambda *a, **k: ("ארבעים ושתיים", "test")
+
+for round_no in (1, 2):
+    assert ctrl.begin_selection(), f"round {round_no}: already busy"
+    deadline = time.monotonic() + 30
+    while not ctrl.sink_active and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert ctrl.sink_active, f"round {round_no}: the card never came up"
+
+    # The step the sibling test never takes: the owner holds the dictation
+    # key while the card is open. notify_recording starts the wave (main.py
+    # hands it the recorder's meter from inside the keyboard hook), and the
+    # transcript is delivered ON THE TRANSCRIPTION WORKER, as main.py does.
+    ctrl.notify_recording(level=lambda: (0.3, True))
+    time.sleep(0.6)                       # let the wave paint some rings
+    done = threading.Event()
+    threading.Thread(
+        target=lambda: (ctrl.deliver_transcript("מה כתוב פה"), done.set()),
+        name="transcribe-worker").start()
+    done.wait(10)
+    time.sleep(1.2)                       # auto_send asks, the answer lands
+
+    ctrl.stop()
+    while ctrl.busy and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not ctrl.busy, f"round {round_no}: the flow never finished"
+    freed = gc.collect()
+    assert freed == 0, f"round {round_no} left {freed} for another thread"
+    ctrl._cancel.clear()
+
+# The assertion that would have caught it directly: nothing module-level
+# in the skin may hold a Tk object, because module-level outlives every
+# thread that could legally free one.
+import skin.wave as wave_mod
+held = [name for name, value in vars(wave_mod).items()
+        if type(value).__module__ == "_tkinter"
+        or type(value).__name__ in ("PhotoImage", "Tk", "Canvas")]
+assert not held, f"skin.wave still holds Tk objects: {held}"
+for name, value in vars(wave_mod).items():
+    if isinstance(value, dict) and value:
+        kinds = {type(v).__name__ for v in value.values()}
+        assert not (kinds & {"PhotoImage", "tkapp"}), (name, kinds)
+''')
+
+
+def test_the_hotkey_asks_the_card_instead_of_ending_a_locked_dictation(
+) -> None:
+    """The bug the owner kept hitting, and the shape of the fix.
+
+    LATCHED, the dictation hotkey means STOP. That is exactly wrong once
+    the ask card is up, because the card tells you to hold that same key
+    to speak a question — so reaching for it ended the paragraph he was in
+    the middle of dictating instead of asking anything.
+
+    With the card up it means ASK: down starts a question, up ends it, and
+    the locked recording underneath is never touched. The latch key is
+    deliberately NOT included; it is the one key that has to keep meaning
+    "done" whatever is on screen.
+    """
+    VK_LEFT = 0x25
+
+    def build(card_open):
+        seen: list[str] = []
+        machine = PTTStateMachine(
+            VK_RCTRL,
+            on_start=lambda lang: seen.append("start"),
+            on_stop=lambda lang: seen.append("stop"),
+            on_abort=lambda why: seen.append(f"abort:{why}"),
+            latch_vk=VK_LEFT, on_latch=lambda: seen.append("latch"),
+            ask_open=lambda: card_open[0],
+            on_ask_start=lambda lang: seen.append("ask-start"),
+            on_ask_stop=lambda lang: seen.append("ask-stop"))
+        return machine, seen
+
+    def latch(machine):
+        machine.handle("down", VK_RCTRL, False)
+        machine.handle("down", VK_LEFT, False)      # tap: lock it on
+        machine.handle("up", VK_LEFT, False)
+        machine.handle("up", VK_RCTRL, False)       # the hand comes off
+        assert machine.state == hotkey_mod.LATCHED, machine.state
+
+    # No card: the hotkey is the stop key, exactly as it always was.
+    card = [False]
+    machine, seen = build(card)
+    latch(machine)
+    machine.handle("down", VK_RCTRL, False)
+    assert machine.state == hotkey_mod.IDLE, machine.state
+    assert seen == ["start", "latch", "stop"], seen
+
+    # Card up: two questions, and the lock survives both.
+    card = [True]
+    machine, seen = build(card)
+    latch(machine)
+    machine.handle("down", VK_RCTRL, False)
+    assert machine.state == hotkey_mod.LATCHED, "the dictation was ended"
+    machine.handle("up", VK_RCTRL, False)
+    machine.handle("down", VK_RCTRL, False)
+    machine.handle("up", VK_RCTRL, False)
+    assert machine.state == hotkey_mod.LATCHED, machine.state
+    machine.handle("down", VK_LEFT, False)       # the latch still finishes
+    machine.handle("up", VK_LEFT, False)
+    assert machine.state == hotkey_mod.IDLE, machine.state
+    assert seen == ["start", "latch", "ask-start", "ask-stop",
+                    "ask-start", "ask-stop", "stop"], seen
+
+    # Closed while the key is still held: the UP must still land, or the
+    # machine would sit inside a question forever.
+    card = [True]
+    machine, seen = build(card)
+    latch(machine)
+    machine.handle("down", VK_RCTRL, False)
+    card[0] = False
+    machine.handle("up", VK_RCTRL, False)
+    assert machine.state == hotkey_mod.LATCHED, machine.state
+    assert seen == ["start", "latch", "ask-start", "ask-stop"], seen
+    machine.handle("down", VK_RCTRL, False)      # and stop means stop again
+    assert machine.state == hotkey_mod.IDLE, machine.state
+
+    # Windows repeats key-down while a key is held; one hold is one
+    # question, not six.
+    card = [True]
+    machine, seen = build(card)
+    latch(machine)
+    for _ in range(6):
+        machine.handle("down", VK_RCTRL, False)
+    assert seen.count("ask-start") == 1, seen
+    machine.handle("up", VK_RCTRL, False)
+    assert machine.state == hotkey_mod.LATCHED, machine.state
+
+    # Esc still throws a locked recording away when nothing claims it.
+    card = [False]
+    machine, seen = build(card)
+    latch(machine)
+    machine.handle("down", 0x1B, False)
+    assert machine.state == hotkey_mod.IDLE, machine.state
+    assert "abort:esc pressed while locked" in seen, seen
+
+
+def test_the_app_actually_hands_the_machine_the_ask_callbacks() -> None:
+    """Every link in this feature is tested on its own, and all of them
+    are useless if App.__init__ never wires them up. This is the joint."""
+    import inspect
+
+    import main as main_mod
+
+    built = inspect.getsource(main_mod.App.__init__)
+    for wire in ("ask_open=self._ask_card_open",
+                 "on_ask_start=self._on_ask_start",
+                 "on_ask_stop=self._on_ask_stop"):
+        assert wire in built, wire
+
+    # the slice is taken and never an end(), or the dictation would stop
+    stop = inspect.getsource(main_mod.App._on_ask_stop)
+    assert "slice_since" in stop, stop
+    assert "recorder.end()" not in stop, stop
+    assert "exclude_since" in stop, stop
+    start = inspect.getsource(main_mod.App._on_ask_start)
+    assert "recorder.mark()" in start, start
+    assert "begin()" not in start, start
+
+
+def test_a_question_is_a_slice_and_the_recording_never_notices() -> None:
+    """What makes one continuous paste possible.
+
+    The question spoken into the card is READ out of the recording that is
+    still running, not cut out of it: slice_since copies and mutates
+    nothing. So the same speech is both the question the card answers and
+    part of the sentence still being dictated — and when the latch is
+    finally tapped, everything lands at once, with the words said to the
+    card sitting where they were said.
+    """
+    import recorder as recorder_mod
+
+    rec = recorder_mod.Recorder.__new__(recorder_mod.Recorder)
+    rec._lock = threading.Lock()
+    rec._state = recorder_mod.ACTIVE
+    rec.sample_rate = 16000
+    rec._chunks = [np.zeros(1600, dtype=np.int16) for _ in range(5)]
+    rec._samples = 8000
+
+    before = rec.mark()
+    assert before == 5, before
+    rec._chunks += [np.ones(1600, dtype=np.int16) for _ in range(3)]
+
+    wav, seconds = rec.slice_since(before)
+    assert wav is not None
+    assert abs(seconds - 0.3) < 0.01, seconds
+    # THE POINT: nothing was consumed.
+    assert len(rec._chunks) == 8, len(rec._chunks)
+    assert rec._state == recorder_mod.ACTIVE, rec._state
+    whole, whole_s = rec.slice_since(0)
+    assert abs(whole_s - 0.8) < 0.01, whole_s
+    assert len(whole) > len(wav), (len(whole), len(wav))
+
+    # A mark taken when nothing is recording is not a licence to slice.
+    rec._state = recorder_mod.IDLE
+    assert rec.mark() == 0
+    assert rec.slice_since(0) == (None, 0.0)
+
+
+def test_the_switch_cuts_the_question_out_of_the_dictation_itself(
+) -> None:
+    """What the card switch has to mean once the question is INSIDE the
+    recording.
+
+    There is one microphone and no second channel, so a question spoken
+    while a dictation is locked is part of that dictation whether anybody
+    likes it or not. "Keep this out of what I am writing" therefore cannot
+    mean "do not record it" — it means the finished utterance is assembled
+    without those frames. What is on either side still joins seamlessly,
+    because whole chunks are dropped.
+    """
+    import io
+    import wave as wave_mod
+
+    import recorder as recorder_mod
+
+    rec = recorder_mod.Recorder.__new__(recorder_mod.Recorder)
+    rec._lock = threading.Lock()
+    rec._state = recorder_mod.ACTIVE
+    rec.sample_rate = 16000
+    rec._chunks, rec._excluded, rec._samples = [], [], 0
+    rec._questions = []
+    # begin() restores the runaway cap, so a hand-built recorder needs the
+    # two fields that carry it.
+    rec._default_max_samples = rec._max_samples = float('inf')
+
+    def say(value: int, chunks: int) -> None:
+        rec._chunks += [np.full(1600, value, dtype=np.int16)
+                        for _ in range(chunks)]
+        rec._samples += 1600 * chunks
+
+    say(1, 5)                       # what he said before opening the card
+    question = rec.mark()
+    say(2, 3)                       # what he said to the card
+    rec.exclude_since(question)     # ...with the switch turned off
+    say(3, 4)                       # and what he said after closing it
+
+    wav, seconds = rec.end()
+    assert wav is not None
+    assert abs(seconds - 0.9) < 0.01, seconds       # 9 chunks, not 12
+    with wave_mod.open(io.BytesIO(wav)) as w:
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+    kept = sorted(set(pcm.tolist()))
+    assert kept == [1, 3], kept      # the middle is gone, the ends abut
+
+    # With the switch left alone, nothing is dropped: the question is part
+    # of the sentence, which is the whole point of the feature.
+    rec._state = recorder_mod.ACTIVE
+    rec._chunks, rec._excluded, rec._samples = [], [], 0
+    rec._questions = []
+    say(1, 5)
+    say(2, 3)
+    say(3, 4)
+    wav, seconds = rec.end()
+    assert abs(seconds - 1.2) < 0.01, seconds
+    with wave_mod.open(io.BytesIO(wav)) as w:
+        pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+    assert sorted(set(pcm.tolist())) == [1, 2, 3]
+
+    # begin() and abort() both wipe the exclusions, or the next dictation
+    # would be missing a hole punched in the last one.
+    rec._excluded = [(0, 1)]
+    rec.begin()
+    assert rec._excluded == []
+    rec._excluded = [(0, 1)]
+    rec.abort()
+    assert rec._excluded == []
+
+
+def test_a_question_in_the_middle_is_spliced_not_transcribed_again(
+) -> None:
+    """The last thing that was still losing words.
+
+    A question asked mid-dictation is a short utterance stranded between
+    two long silences — you stop talking, drag a rectangle, say one thing,
+    read the answer, carry on — and Whisper drops exactly that shape.
+    Measured 2026-08-31 on a real 35 s recording: the owner said "four" to
+    the card, and it was in the audio, and correct in the transcript of
+    its own slice, and simply absent from the transcript of the whole
+    file. vad_filter=False put it back and made everything else worse.
+
+    So the recording is cut at the question and only the stretches around
+    it go to Whisper. The question keeps the text it was given the moment
+    it was spoken, which is the one transcript of it that can be trusted.
+    """
+    import main as main_mod
+
+    class Interrupted:
+        _question_texts = ["ארבע."]
+
+        def _transcribe(self, wav, language=None):
+            return {b"before": "אחת שתיים שלוש", b"after": "חמש"}[wav], "local"
+
+    who = Interrupted()
+    text, backend = main_mod.App._transcribe_pieces(
+        who, [(False, b"before"), (True, b"asked"), (False, b"after")], None)
+    assert text == "אחת שתיים שלוש ארבע. חמש", text
+    assert backend == "local", backend
+    assert who._question_texts == [], who._question_texts   # consumed
+
+    # Two questions, in order, and the stretches between them.
+    class Twice:
+        _question_texts = ["ארבע.", "שש."]
+
+        def _transcribe(self, wav, language=None):
+            return {b"a": "אחת", b"b": "חמש", b"c": "שבע"}[wav], "local"
+
+    text, _ = main_mod.App._transcribe_pieces(
+        Twice(), [(False, b"a"), (True, b"q1"), (False, b"b"),
+                  (True, b"q2"), (False, b"c")], None)
+    assert text == "אחת ארבע. חמש שש. שבע", text
+
+    # If the remembered text never arrived — nothing was heard, or the
+    # card closed before it landed — the audio is transcribed like any
+    # other piece. Losing speech is worse than transcribing it twice.
+    class Forgot:
+        _question_texts = []
+
+        def _transcribe(self, wav, language=None):
+            return {b"a": "אחת", b"q": "ארבע", b"b": "חמש"}[wav], "local"
+
+    text, _ = main_mod.App._transcribe_pieces(
+        Forgot(), [(False, b"a"), (True, b"q"), (False, b"b")], None)
+    assert text == "אחת ארבע חמש", text
+
+
+def test_the_recording_comes_back_cut_where_the_card_interrupted_it(
+) -> None:
+    """end_pieces is what makes the splice possible: one wav for the
+    spool, and the same audio cut at the questions for the transcript. A
+    recording nobody asked anything during is a single piece, so the
+    ordinary dictation path is untouched."""
+    import recorder as recorder_mod
+
+    def fresh():
+        rec = recorder_mod.Recorder.__new__(recorder_mod.Recorder)
+        rec._lock = threading.Lock()
+        rec._state = recorder_mod.ACTIVE
+        rec.sample_rate = 16000
+        rec._chunks, rec._excluded, rec._questions, rec._samples = [], [], [], 0
+        return rec
+
+    def say(rec, value, chunks):
+        rec._chunks += [np.full(1600, value, dtype=np.int16)
+                        for _ in range(chunks)]
+        rec._samples += 1600 * chunks
+
+    # kept: three pieces, and the whole file still holds all of it
+    rec = fresh()
+    say(rec, 1, 5)
+    at = rec.mark()
+    say(rec, 2, 3)
+    rec.note_question(at)
+    say(rec, 3, 4)
+    whole, pieces, seconds = rec.end_pieces()
+    assert [q for q, _ in pieces] == [False, True, False], pieces
+    assert abs(seconds - 1.2) < 0.01, seconds
+    assert whole is not None and len(whole) > max(len(w) for _q, w in pieces)
+
+    # excused: cut out entirely, and what is left is one piece again
+    rec = fresh()
+    say(rec, 1, 5)
+    at = rec.mark()
+    say(rec, 2, 3)
+    rec.exclude_since(at)
+    say(rec, 3, 4)
+    _whole, pieces, seconds = rec.end_pieces()
+    assert [q for q, _ in pieces] == [False], pieces
+    assert abs(seconds - 0.9) < 0.01, seconds
+
+    # nothing asked: exactly what it always was
+    rec = fresh()
+    say(rec, 1, 5)
+    _whole, pieces, seconds = rec.end_pieces()
+    assert [q for q, _ in pieces] == [False], pieces
+    assert abs(seconds - 0.5) < 0.01, seconds
+
+
+def test_a_sliced_question_is_never_echoed_twice_into_the_field() -> None:
+    """The trap in having both mechanisms.
+
+    A question asked from inside a LOCKED dictation is already in that
+    recording — it will be pasted, in place, when the latch is tapped.
+    Echoing it as well would put the same sentence in the field twice, and
+    the second copy in the wrong place. So `sliced` turns the echo off,
+    and only the echo: the card is still handed the question.
+    """
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-sliced-"))
+    fake = _FakeInjector()
+    real = main_mod.injector
+    try:
+        main_mod.injector = fake
+        app = _worker_app(_Flaky(fail_times=0), tmp)
+        card = _FakeSink(sink_active=True, echoing=True)
+        app._vqa = card
+
+        # An ordinary question, with no dictation underneath it: kept,
+        # because nothing else is ever going to deliver it.
+        app._handle(b"RIFF-audio", 4.0, 0, None, True)
+        assert card.delivered == ["שלום"], card.delivered
+        assert app._echo_lines == ["שלום"], app._echo_lines
+
+        # The same question, sliced out of a recording that is still
+        # running: delivered to the card, and NOT kept.
+        app._echo_lines = []
+        app._handle(b"RIFF-audio", 4.0, 0, None, True, sliced=True)
+        assert card.delivered == ["שלום", "שלום"], card.delivered
+        assert app._echo_lines == [], app._echo_lines
+        assert fake.calls == [], fake.calls      # and nothing was pasted
+    finally:
+        main_mod.injector = real
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_dot_never_says_idle_while_a_locked_recording_runs() -> None:
+    """A question asked from inside the card is transcribed while the
+    dictation underneath keeps going. The worker puts the dot back when it
+    finishes, and putting back the plain blue "running" dot there would
+    announce a stop that did not happen — which is the one thing the owner
+    reads that dot to know."""
+    import main as main_mod
+
+    assert main_mod._DOT_FOR[hotkey_mod.LATCHED] == "locked"
+    assert main_mod._DOT_FOR[hotkey_mod.RECORDING] == "recording"
+    assert main_mod._DOT_FOR.get(hotkey_mod.IDLE, "ready") == "ready"
+    # and every name it can produce is one the dot actually knows
+    for state in set(main_mod._DOT_FOR.values()) | {"ready"}:
+        assert state in overlay_mod.STATES, state
+
+
+def test_the_card_has_a_switch_for_where_a_question_also_goes() -> None:
+    """The card is opened in the middle of writing to somebody, so what is
+    asked of it also lands in what is being written. Not always: some
+    questions about the screen have no business in the letter. The switch
+    in the title strip is that exception, and it has to be a switch rather
+    than a setting because you find out which kind of question it is
+    while you are already looking at the card.
+
+    It draws the FIELD, struck through, and not a muted microphone: the
+    microphone is live either way — you are still talking to the card —
+    and what is being turned off is the second destination.
+    """
+    _run_window_script('''
+import os
+from PIL import Image
+import visual_qa as vq
+
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off",
+                   lambda *a, **k: ("", "test"), echo=True)
+try:
+    win.root.update()
+    assert win.echo_on is True
+
+    box = win.surface.boxes.get("echo")
+    assert box is not None, sorted(win.surface.boxes)
+    assert box != win.surface.boxes["close"], box     # not the X renamed
+    # _hit works in WINDOW coordinates and the boxes are card-local, so
+    # the card's own offset goes back on before asking (visual_qa:2980).
+    x = (box[0] + box[2]) // 2 + win._cx
+    y = (box[1] + box[3]) // 2 + win._cy
+    assert win._hit(x, y) == "echo", win._hit(x, y)
+
+    win._toggle_echo()
+    win.root.update()
+    assert win.echo_on is False
+    # The rectangle keeps its name when the glyph changes. It draws
+    # "echo_off" now, and if the hit key followed the glyph the second
+    # click would land on nothing and the switch would be one-way.
+    assert win.surface.boxes.get("echo") == box, win.surface.boxes
+    assert win._hit(x, y) == "echo", win._hit(x, y)
+
+    win._toggle_echo()
+    win.root.update()
+    assert win.echo_on is True
+
+    # and both glyphs are real drawings, not one silently reused
+    on = vq._icon("echo", 18).tobytes()
+    off = vq._icon("echo_off", 18).tobytes()
+    assert on != off
+finally:
+    win.root.destroy()
+os._exit(0)
+''')
+
+
+def test_the_switch_is_asked_of_the_card_not_of_the_config() -> None:
+    """Where a question ALSO goes is the card's live state, not what
+    config.toml said when the app started — config only chooses which way
+    the switch starts. And main.py asks at the moment the question lands,
+    so turning the switch off does not un-send what was already asked."""
+    import inspect
+    import visual_qa as vq_mod
+
+    ctrl = vq_mod.Controller(lambda: None)
+    assert ctrl.echoing is False, "no card means nothing to echo into"
+
+    class OnlyTheFlag:
+        echo_on = True
+
+    ctrl._window = OnlyTheFlag()
+    try:
+        assert ctrl.echoing is True
+        ctrl._window.echo_on = False
+        assert ctrl.echoing is False
+    finally:
+        ctrl._window = None
+
+    # config chooses the starting position, and nothing else
+    opened = inspect.getsource(vq_mod.Controller._open_ask)
+    assert 'echo=getattr(vq, "echo_to_field", True)' in opened, opened
+
+    # and the reading is done where the question lands, not at the close
+    import main as main_mod
+    handled = inspect.getsource(main_mod.App._handle)
+    assert "self.vqa.echoing" in handled, "main.py never asks the switch"
+    closed = inspect.getsource(main_mod.App._on_card_closed)
+    assert "echoing" not in closed, closed
+
+
+def test_a_question_asked_mid_sentence_rejoins_the_field_it_interrupted(
+) -> None:
+    """[visual_qa] echo_to_field.
+
+    The card is opened in the MIDDLE of writing to somebody more often
+    than not, and until now what you asked it went to the card and
+    nowhere else — afterwards findable only in transcripts.log, which is
+    not where you were typing.
+
+    It cannot be handed over while the card is up: the card owns the
+    foreground, so that paste would land in the card itself or tear focus
+    off it mid-question. So it is KEPT and given back at the close, and
+    only to the window the dictation was actually aimed at — never fired
+    at whatever happens to be in front by then.
+    """
+    import main as main_mod
+
+    class Interrupted:
+        _echo_lock = threading.Lock()
+        _cursor_lock = threading.Lock()
+
+    who = Interrupted()
+    who.cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    who._echo_lines = ["מה כתוב פה", "ומה זה אומר"]
+    who._field_hwnd = 4321
+
+    pasted: list[str] = []
+    copied: list[str] = []
+    saved = (injector.foreground_window, injector.inject, injector.set_text,
+             main_mod.beep)
+    try:
+        injector.foreground_window = lambda: 4321
+        injector.inject = lambda text, chord, delay: pasted.append(text)
+        injector.set_text = copied.append
+        main_mod.beep = lambda _kind: None
+
+        main_mod.App._on_card_closed(who)
+        # ONE paste, both sentences: consecutive questions are consecutive
+        # sentences as far as the field is concerned.
+        assert pasted == ["מה כתוב פה ומה זה אומר"], pasted
+        assert copied == [], copied
+
+        # and the notes are torn up, so a second close hands over nothing
+        main_mod.App._on_card_closed(who)
+        assert len(pasted) == 1, pasted
+
+        # Focus somewhere the owner chose: the clipboard, said out loud,
+        # rather than a paste into a window nobody dictated at. Same
+        # answer every other homeless transcript in main.py gets.
+        who._echo_lines = ["שאלה"]
+        injector.foreground_window = lambda: 9999
+        main_mod.App._on_card_closed(who)
+        assert len(pasted) == 1, pasted
+        assert copied == ["שאלה"], copied
+    finally:
+        (injector.foreground_window, injector.inject, injector.set_text,
+         main_mod.beep) = saved
+
+
+def test_the_echo_is_off_the_card_and_never_holds_it() -> None:
+    """on_closed takes NO argument and fires after the flow has buried the
+    card — both deliberate. A listener handed the window could keep it,
+    and a reference that outlives that collect is the Tcl_AsyncDelete
+    abort in AGENTS.md, which skin\wave.py already re-armed once."""
+    import inspect
+    import visual_qa as vq_mod
+
+    src = inspect.getsource(vq_mod.Controller._closed)
+    assert "self._on_closed()" in src, src        # called with nothing
+    assert "_cancel.is_set()" in src, src         # silent during shutdown
+
+    for name in ("_flow", "_flow_given"):
+        body = inspect.getsource(getattr(vq_mod.Controller, name))
+        collect = body.index("gc.collect()")
+        clear = body.index("self._busy.clear()")
+        told = body.index("self._closed()")
+        assert collect < clear < told, (name, collect, clear, told)
 
 
 def test_an_arriving_answer_never_eats_what_you_typed_while_waiting() -> None:
@@ -12706,13 +13386,24 @@ def test_every_skin_window_is_click_through_and_never_focusable() -> None:
         f"overlay at most 40 px wide")
     source = (Path(__file__).resolve().parent / "skin" / "glass.py").read_text(
         "utf-8")
-    creation = source[source.index("self.hwnd = _user32.CreateWindowExW("):]
+    creation = source[source.index("        style = (WS_EX_LAYERED"):]
     creation = creation[:creation.index("if not self.hwnd")]
-    for flag in ("WS_EX_LAYERED", "WS_EX_TRANSPARENT", "WS_EX_NOACTIVATE",
-                 "WS_EX_TOOLWINDOW", "WS_EX_TOPMOST"):
+    for flag in ("WS_EX_LAYERED", "WS_EX_NOACTIVATE", "WS_EX_TOOLWINDOW",
+                 "WS_EX_TOPMOST"):
         assert flag in creation, f"a skin window is created without {flag}"
+    # Click-through is still the DEFAULT and still unconditional for every
+    # window that does not ask for the mouse: the hint card is the only one
+    # that does, it takes it in four small rectangles, and everything else
+    # it is asked about answers HTTRANSPARENT (see the hit-test test).
+    assert "if hit is None:\n            style |= WS_EX_TRANSPARENT" in \
+        creation, "a window with no hit test is no longer click-through"
     assert glass_mod.WS_EX_TRANSPARENT == 0x20
     assert glass_mod.WS_EX_NOACTIVATE == 0x08000000
+    assert glass_mod.HTTRANSPARENT == -1
+    for name in ("dot", "boot", "reveal", "burst"):
+        text = (Path(__file__).resolve().parent / "skin"
+                / f"{name}.py").read_text("utf-8")
+        assert "hit=" not in text, f"skin/{name}.py now takes the mouse"
     # SW_SHOWNOACTIVATE, not deiconify: AGENTS.md measured Tk taking the
     # foreground the instant it realises a window, and the fix there is to
     # take it BACK. A plain popup shown this way never takes it at all.
@@ -13617,6 +14308,524 @@ def test_the_study_never_relearns_what_the_live_pass_already_fixed() -> None:
     # though the unendorsed verified text equals the live text
     assert result["disputed"] and not study_mod.Engine._silver(
         item.meta, result), result
+
+def _hint_cfg(**over):
+    """The shipped config, with fields replaced, for the card's rows."""
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    return dataclasses.replace(cfg, **over) if over else cfg
+
+
+def test_hint_settings_are_present_in_the_real_config() -> None:
+    """A default that lives only in code is a default nobody can find."""
+    cfg = _hint_cfg()
+    assert cfg.hint.corner in config_mod.HINT_CORNERS, cfg.hint.corner
+    # The delay is the whole reason this is not clutter: an ordinary
+    # dictation has to finish before the card would have appeared.
+    assert 150 <= cfg.hint.after_ms <= 1200, cfg.hint.after_ms
+    text = (Path(__file__).resolve().parent / "config.toml").read_text("utf-8")
+    assert "[hint]" in text and "after_ms" in text
+
+
+def test_a_bad_hint_corner_is_refused_at_load() -> None:
+    """Refused where it can still be reported, not at the first paint."""
+    import shutil
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-hint-"))
+    try:
+        path = tmp / "config.toml"
+        base = (Path(__file__).resolve().parent / "config.toml"
+                ).read_text("utf-8")
+        path.write_text(base.replace('corner = "top-right"',
+                                     'corner = "middle"'), "utf-8")
+        try:
+            config_mod.load(path)
+        except config_mod.ConfigError as e:
+            assert "corner" in str(e), e
+        else:
+            raise AssertionError("a nonsense corner loaded happily")
+        path.write_text(base.replace("after_ms = 400", "after_ms = -1"),
+                        "utf-8")
+        try:
+            config_mod.load(path)
+        except config_mod.ConfigError as e:
+            assert "after_ms" in str(e), e
+        else:
+            raise AssertionError("a negative delay loaded happily")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_card_lists_exactly_the_keys_the_state_machine_taps() -> None:
+    """The one way this feature can lie without anyone noticing.
+
+    A card naming a key you have rebound, or one this app never bound, is
+    worse than no card. Both lists are built from the same Config by
+    different code, so this compares them rather than trusting that they
+    were written to agree.
+    """
+    import main as main_mod
+
+    cfg = _hint_cfg()
+    _hotkeys, taps, _latch, _pause = main_mod.App.bindings(cfg)
+    from_machine = set(taps.values())
+    from_card = {action for action, _binding in hint_mod.bindings(cfg)}
+    assert from_card == from_machine, (from_card ^ from_machine)
+    # and every one of them has a human name, not a bare action string
+    for action in from_card:
+        assert action in hint_mod.LABELS, action
+
+
+def test_held_greys_the_text_keys_and_latched_does_not() -> None:
+    """main._allowed's rule, read off the card instead of the log."""
+    import main as main_mod
+
+    cfg = _hint_cfg()
+    held = hint_mod.card_for(cfg, hint_mod.HOLD, main_mod._SCREEN_ACTIONS)
+    latched = hint_mod.card_for(cfg, hint_mod.LATCHED,
+                                main_mod._SCREEN_ACTIONS)
+    assert hint_mod.card_for(cfg, "idle", main_mod._SCREEN_ACTIONS) is None
+    live = {k for k, _l, on in held["keys"] if on}
+    dead = {k for k, _l, on in held["keys"] if not on}
+    assert live and dead, held["keys"]
+    # The four screen keys fire mid-hold; the four that read or write text
+    # at the cursor do not, and say why rather than going quiet.
+    for key, label, on in held["keys"]:
+        if not on:
+            assert hint_mod.NEEDS_A_HAND in label, label
+    assert all(on for _k, _l, on in latched["keys"]), latched["keys"]
+    assert live | dead == {k for k, _l, _o in latched["keys"]}
+    # Held offers the release and the latch; latched offers neither.
+    assert any(k == "שחרר" for k, _l, _o in held["rows"])
+    assert not any(k == "שחרר" for k, _l, _o in latched["rows"])
+    assert all(any(k == "Esc" for k, _l, _o in c["rows"])
+               for c in (held, latched))
+
+
+def test_rebinding_a_key_moves_it_on_the_card_and_a_kill_switch_removes_it(
+) -> None:
+    """Built from the live Config, so it cannot describe last week's keys."""
+    import main as main_mod
+
+    cfg = dataclasses.replace(_hint_cfg(), punctuate_hotkey="ctrl+f7")
+    card = hint_mod.card_for(cfg, hint_mod.LATCHED, main_mod._SCREEN_ACTIONS)
+    rows = dict((label, key) for key, label, _on in card["keys"])
+    assert rows[hint_mod.LABELS["punctuate"]] == "Ctrl+F7", rows
+    gone = dataclasses.replace(cfg, punctuate_hotkey="", lookup_hotkey="")
+    card = hint_mod.card_for(gone, hint_mod.LATCHED, main_mod._SCREEN_ACTIONS)
+    labels = {label for _key, label, _on in card["keys"]}
+    assert hint_mod.LABELS["punctuate"] not in labels, labels
+    assert hint_mod.LABELS["lookup"] not in labels, labels
+
+
+def test_key_names_are_written_the_way_a_person_reads_them() -> None:
+    assert hint_mod.pretty("ctrl+f10") == "Ctrl+F10"
+    assert hint_mod.pretty("win+shift+s") == "Win+Shift+S"
+    assert hint_mod.pretty("right ctrl") == "Right Ctrl"
+    # The latch key is an arrow on the keyboard and an arrow on the card.
+    assert hint_mod.pretty("left") == "←"
+    assert hint_mod.pretty("") == ""
+
+
+def test_the_card_goes_in_the_corner_it_was_asked_for() -> None:
+    """Pure arithmetic, so all four are checked without a screen."""
+    screen = (1920, 1080)
+    got = {}
+    for corner in config_mod.HINT_CORNERS:
+        card = overlay_mod.HintCard(corner=corner, margin=10)
+        got[corner] = card.origin(300, 400, screen)
+    assert got["top-left"] == (10, 10), got
+    assert got["bottom-left"] == (10, 1080 - 400 - 10), got
+    assert got["bottom-right"] == (1920 - 300 - 10, 1080 - 400 - 10), got
+    # top-right alone stops short, so the status dot keeps its own square.
+    # The dot is the one thing on screen that says the app is alive, and it
+    # does not move for a panel that is only up while a key is held.
+    x, y = got["top-right"]
+    assert y == 10, got
+    assert x == 1920 - 300 - 10 - overlay_mod.HintCard.DOT_ROOM, got
+
+
+def test_the_shadow_margin_does_not_move_the_visible_edge() -> None:
+    """The glass card leaves room around itself for its own shadow and the
+    Tk one does not, so the same corner has to put the same PICTURE in the
+    same place from two different window sizes."""
+    screen = (1920, 1080)
+    card = overlay_mod.HintCard(corner="top-left", margin=12)
+    plain = card.origin(300, 400, screen)
+    padded = card.origin(300 + 52, 400 + 52, screen, inset=26)
+    assert plain == (12, 12), plain
+    # window corner is 26 px up and left, so the card inside it lands at 12
+    assert padded == (12 - 26, 12 - 26), padded
+
+
+def test_where_it_was_dragged_to_beats_the_corner_and_stays_reachable(
+) -> None:
+    """A card dragged onto a monitor that is no longer plugged in must not
+    come back somewhere nobody can see it."""
+    screen = (1920, 1080)
+    moved = overlay_mod.HintCard(corner="top-right", x=400, y=250)
+    assert moved.moved() and moved.origin(300, 400, screen) == (400, 250)
+    lost = overlay_mod.HintCard(corner="top-right", x=5000, y=4000)
+    x, y = lost.origin(300, 400, screen)
+    assert x < 1920 and y < 1080, (x, y)
+    # and far enough on to be grabbed by the strip along its top
+    assert x + 300 > 0 and y + 400 > 0, (x, y)
+    # nothing saved at all still means the corner
+    assert not overlay_mod.HintCard(corner="top-left").moved()
+
+
+def test_a_card_left_on_the_screen_to_the_LEFT_stays_there() -> None:
+    """The bug this is here for, and it shipped.
+
+    A monitor to the left of the primary has NEGATIVE screen coordinates —
+    on this machine the virtual desktop starts at x = -1920 — so a card
+    dragged there saves a negative x. The sentinel for "never moved" was
+    -1, `x >= 0` was the test for "has been moved", and the two collided:
+    every drag onto that screen was written to config.toml correctly and
+    thrown away on the next read, so the card snapped back beside the dot.
+    Only drags that ended at a positive x and more than a shadow's depth
+    below the top of the screen survived, which is what "it saves about one
+    time in eight" looks like from the outside.
+    """
+    assert overlay_mod.HINT_UNSET == config_mod.HINT_UNSET
+    assert overlay_mod.HINT_UNSET < -32768, (
+        "the sentinel has to be past anything a virtual desktop can reach")
+    primary = (2560, 1440)
+    desktop = (-1920, 0, 4480, 1440)       # a second screen on the left
+    for x, y in ((-369, 438), (-1900, 12), (-1, -1), (0, 0), (-26, -26)):
+        card = overlay_mod.HintCard(corner="top-right", x=x, y=y)
+        assert card.moved(), (x, y)
+        got = card.origin(392, 528, primary, 26, desktop)
+        assert got == (x - 26, y - 26), (x, y, got)
+
+
+def test_what_is_saved_is_the_card_you_can_see_not_the_window() -> None:
+    """The other half of the same bug. The glass window is bigger than the
+    card by the room it leaves for its shadow, so saving the window's
+    corner stored a y 26 px higher than anything on screen — negative for
+    every drag near the top, which the sentinel then ate."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    primary, desktop = (2560, 1440), (0, 0, 2560, 1440)
+    inset = skin_hint.SHADOW
+    card = overlay_mod.HintCard(corner="top-right")
+    # what skin/hint.py does when a drag ends: window corner + the inset
+    window_was = (700, -16)
+    card.placed(window_was[0] + inset, window_was[1] + inset)
+    assert (card.x, card.y) == (726, 10), (card.x, card.y)
+    # and it comes back to exactly the window position it was dragged to
+    assert card.origin(392, 528, primary, inset, desktop) == window_was
+
+
+def test_an_unchanged_position_is_not_written_again() -> None:
+    """A drag ends in more than one message and this is the line editor's
+    most frequent caller."""
+    saved = []
+    card = overlay_mod.HintCard(on_change=saved.append)
+    card.placed(300, 200)
+    card.placed(300, 200)
+    card.placed(300, 200)
+    assert saved == [{"x": 300, "y": 200}], saved
+    card.placed(301, 200)
+    assert len(saved) == 2, saved
+
+
+def test_moving_resizing_and_dismissing_are_written_down() -> None:
+    """"I moved it" has to outlive the dictation it was moved during."""
+    saved = []
+    card = overlay_mod.HintCard(on_change=saved.append)
+    card.placed(120, 340)
+    card.resized(0.8)
+    assert (card.x, card.y, card.scale) == (120, 340, 0.8)
+    assert saved == [{"x": 120, "y": 340}, {"scale": 0.8}], saved
+    # Ticking the box is not "hide it for now": the card stops accepting
+    # anything at all, and the reason is written down.
+    card.dismissed()
+    assert saved[-1] == {"enabled": False}, saved
+    card._thread = object()                # pretend it is running
+    card.show({"a": 1})
+    assert card._q.empty(), "a dismissed card still queued a picture"
+
+
+def test_a_failed_save_never_reaches_the_keyboard_thread() -> None:
+    """The card runs on the overlay thread; config.toml can be read-only,
+    locked, or on a disconnected drive. None of that may kill the card."""
+    def explode(_fields):
+        raise OSError("config.toml is read-only")
+
+    card = overlay_mod.HintCard(on_change=explode)
+    card.placed(10, 20)                    # must not raise
+    assert (card.x, card.y) == (10, 20)
+
+
+def test_the_card_takes_the_mouse_in_four_places_and_nowhere_else() -> None:
+    """Everything else answers HTTRANSPARENT, so a click aimed at the close
+    button of a maximised window underneath still reaches it — the trap the
+    status dot paid for once already."""
+    try:
+        from skin import glass as skin_glass, hint as skin_hint
+    except Exception:
+        return
+    import main as main_mod
+
+    card = hint_mod.card_for(_hint_cfg(), hint_mod.HOLD,
+                             main_mod._SCREEN_ACTIONS)
+    for scale in (0.6, 1.0, 1.4):
+        boxes = skin_hint.regions(card, scale)
+        width, height = skin_hint.measure(card, scale)
+        pad = skin_hint.SHADOW
+        for name, (x0, y0, x1, y1) in boxes.items():
+            assert x1 > x0 and y1 > y0, (name, boxes[name])
+            assert x0 >= pad - 8 and y0 >= pad - 8, (name, boxes[name])
+            assert x1 <= pad + width + 8 and y1 <= pad + height + 8, (
+                name, boxes[name], width, height)
+            # every claimed rectangle answers something other than "pass
+            # this through", and the middle of the card always passes
+            code, what = skin_hint.hit_test(
+                card, scale, (x0 + x1) / 2, (y0 + y1) / 2)
+            assert what == name, (name, what)
+            assert code != skin_glass.HTTRANSPARENT, (name, code)
+        middle = skin_hint.hit_test(card, scale, pad + width / 2,
+                                    pad + height / 2)
+        assert middle == (skin_glass.HTTRANSPARENT, None), middle
+        # and so does everything outside the card entirely
+        assert skin_hint.hit_test(card, scale, 2, 2)[0] == \
+            skin_glass.HTTRANSPARENT
+    # the size buttons must not sit on top of each other
+    boxes = skin_hint.regions(card, 1.0)
+    assert boxes[skin_hint.SMALLER][2] <= boxes[skin_hint.BIGGER][0], boxes
+
+
+def test_the_size_buttons_stop_at_the_ends_of_their_range() -> None:
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    assert skin_hint.clamp_scale(99) == skin_hint.SCALE_MAX
+    assert skin_hint.clamp_scale(0.01) == skin_hint.SCALE_MIN
+    assert skin_hint.clamp_scale(1.0) == 1.0
+    # and the range the card enforces is the range config.py will accept,
+    # or a size chosen on screen would refuse to load next time
+    assert skin_hint.SCALE_MIN == config_mod.HINT_SCALE_MIN
+    assert skin_hint.SCALE_MAX == config_mod.HINT_SCALE_MAX
+
+
+def test_a_saved_card_position_keeps_every_comment_in_the_config() -> None:
+    """It is written from the overlay thread on every drag, so this is the
+    line-editor's most frequent caller — a round-trip here would quietly
+    delete the measurements the file is made of."""
+    import shutil
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-hint-save-"))
+    try:
+        path = tmp / "config.toml"
+        base = (Path(__file__).resolve().parent / "config.toml"
+                ).read_text("utf-8")
+        path.write_text(base, "utf-8")
+        before = base.count("#")
+        config_mod.set_values(path, {"hint.x": 640, "hint.y": 210,
+                                     "hint.scale": 0.8})
+        after = path.read_text("utf-8")
+        assert after.count("#") == before, "comments were lost"
+        cfg = config_mod.load(path)
+        assert (cfg.hint.x, cfg.hint.y) == (640, 210), cfg.hint
+        assert cfg.hint.scale == 0.8, cfg.hint
+        config_mod.set_values(path, {"hint.enabled": False})
+        assert config_mod.load(path).hint.enabled is False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_disabled_card_never_starts_a_thread_or_a_window() -> None:
+    card = overlay_mod.HintCard.off()
+    card.start()
+    assert card._thread is None
+    card.show({"anything": True})           # must not raise, must not queue
+    assert card._q.empty()
+    card.stop()                             # and must not hang
+
+
+def test_the_dot_and_the_card_can_never_disagree_about_a_recording(
+) -> None:
+    """One line in _set_state feeds both, which is the point.
+
+    The early return that stops a stale "ready" from reporting a live
+    microphone as finished has to cover the card as well — a card that
+    stayed up after the dictation ended, or vanished while it ran, would
+    be the same lie in a different font.
+    """
+    import main as main_mod
+
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg = _hint_cfg()
+    app.hint = _FakeHint()
+    seen = []
+    app.dot = type("_Dot", (), {"set_state": lambda s, v: seen.append(v)})()
+    app.machine = type("_M", (), {"state": hotkey_mod.RECORDING})()
+    app._activity = "recording"
+
+    app._set_state("ready")                 # stale, from the last dictation
+    assert seen == [] and app.hint.shown == [], (seen, app.hint.shown)
+    app._set_state("recording")
+    assert app.hint.shown[-1]["state"] == hint_mod.HOLD
+    app._set_state("locked")
+    assert app.hint.shown[-1]["state"] == hint_mod.LATCHED
+    app.machine.state = hotkey_mod.IDLE
+    app._set_state("ready")
+    assert app.hint.shown[-1] is None, app.hint.shown[-1]
+    assert len(app.hint.shown) == len(seen), (app.hint.shown, seen)
+
+
+def test_the_card_is_measured_from_its_rows_not_a_guess() -> None:
+    """Its height decides the window's, so a wrong one clips the footer."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return                              # no skia here: the Tk card runs
+    import main as main_mod
+
+    cfg = _hint_cfg()
+    full = hint_mod.card_for(cfg, hint_mod.LATCHED, main_mod._SCREEN_ACTIONS)
+    fewer = dataclasses.replace(cfg, punctuate_hotkey="", lookup_hotkey="",
+                                translate_hotkey="", correct_hotkey="")
+    small = hint_mod.card_for(fewer, hint_mod.LATCHED,
+                              main_mod._SCREEN_ACTIONS)
+    w1, h1 = skin_hint.measure(full)
+    w2, h2 = skin_hint.measure(small)
+    assert w1 == w2, (w1, w2)
+    dropped = len(full["keys"]) - len(small["keys"])
+    assert dropped == 4, dropped
+    assert h1 - h2 == dropped * skin_hint.ROW_H, (h1, h2)
+
+
+# --------------------------------------------------------------------------
+# The first-run wizard (firstrun.py)
+# --------------------------------------------------------------------------
+
+
+def test_the_wizard_runs_once_per_copy_and_can_say_so_on_a_fresh_one(
+) -> None:
+    """The bug this is here for, caught before it shipped.
+
+    "Has this been set up" was a line in config.toml for about an hour,
+    and could not work there. config.toml is TRACKED, so the committed
+    file is what a fresh download gets — `done = true` means nobody ever
+    sees the wizard, `done = false` re-runs it on every install that
+    updated — and `config.set_values` is a LINE EDITOR that can only
+    change a key already in the file, so on any config.toml written before
+    the section existed, marking the wizard finished RAISED. It would have
+    come back on every launch, for ever, which is the one thing the wizard
+    was asked not to do.
+
+    So the record is a gitignored file: a fact about one installation, in
+    the same place .env and vocab.json live.
+    """
+    import shutil
+
+    import firstrun
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-setup-"))
+    try:
+        marker = tmp / ".setup-done"
+        fresh = dataclasses.replace(
+            config_mod.load(Path(__file__).resolve().parent / "config.toml"),
+            setup=config_mod.SetupConfig(done=False))
+        assert firstrun.needed(fresh, marker), "a fresh copy skipped setup"
+        assert firstrun.mark_done(marker) is True
+        assert marker.exists()
+        assert not firstrun.needed(fresh, marker), "it asked a second time"
+        # the config line is an override, and still works on its own
+        off = dataclasses.replace(fresh,
+                                  setup=config_mod.SetupConfig(done=True))
+        assert not firstrun.needed(off, tmp / "nothing-here")
+        # a marker that cannot be written is reported rather than assumed:
+        # silently believing it had saved is how it comes back for ever
+        assert firstrun.mark_done(tmp / "no-such-dir" / ".setup-done") is False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_shipped_config_lets_a_fresh_download_see_the_wizard() -> None:
+    """Whatever is committed here is what someone downloading this gets."""
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    assert cfg.setup.done is False, (
+        "the committed config switches the wizard off, so no new install "
+        "would ever see it — the per-copy record belongs in .setup-done")
+    text = (Path(__file__).resolve().parent / ".gitignore").read_text("utf-8")
+    assert ".setup-done" in text, "the per-copy marker would be committed"
+
+
+def test_a_bluetooth_microphone_has_a_name_a_person_can_read() -> None:
+    """Windows hands PortAudio the raw registry value for some devices,
+    and for Bluetooth that is an unresolved indirect string with a driver
+    path, a resource id and an embedded CRLF in it. Rendered as-is the row
+    breaks in half and reads as a fault in this program."""
+    import firstrun
+
+    raw = ("Headset (@System32\\drivers\\bthhfenum.sys,#2;"
+           "%1 Hands-Free%0\r\n;(Nothing Ear))")
+    assert firstrun.clean_name(raw) == "Nothing Ear", firstrun.clean_name(raw)
+    # an ordinary name is left exactly alone
+    for name in ("Headset Microphone (Arctis 7 Chat)",
+                 "Microphone (Realtek HD Audio Mic input)"):
+        assert firstrun.clean_name(name) == name
+    assert firstrun.clean_name("") == "?"
+    assert "\n" not in firstrun.clean_name(raw)
+
+
+def test_the_microphone_you_already_use_is_the_row_at_the_top() -> None:
+    """The list is sorted WASAPI-first, and on this machine the device
+    config.toml names is an MME one that landed ninth — so the row the
+    owner actually uses was off the bottom of a list of their own
+    microphones."""
+    import firstrun
+
+    listing = [(20, "webcam", "Windows WASAPI"),
+               (21, "headset", "Windows WASAPI"),
+               (1, "the one in config.toml", "MME"),
+               (5, "line in", "Windows WDM-KS")]
+    assert firstrun.order_for(listing, "1")[0][0] == 1
+    assert len(firstrun.order_for(listing, "1")) == len(listing)
+    # nothing selected changes nothing
+    assert firstrun.order_for(listing, "") == listing
+    assert firstrun.order_for(listing, "999") == listing
+
+
+def test_the_wizards_test_runs_the_apps_own_backend() -> None:
+    """The point of the step is to prove the pipeline the user is about to
+    rely on. A wizard that passed on a simpler code path while the app
+    failed would be worse than no wizard."""
+    import firstrun
+
+    cfg = dataclasses.replace(
+        config_mod.load(Path(__file__).resolve().parent / "config.toml"),
+        backend="fake")
+    text, problem = firstrun.transcribe(cfg, frames_to_wav(
+        [np.zeros(16000, dtype=np.int16)], 16000))
+    assert not problem, problem
+    # It went through transcribers.get_transcriber, so the backend named
+    # in the config is the one that answered — here, the fake.
+    assert text and "מזויף" in text, text
+    # a broken backend is reported, not raised: this runs before the app
+    broken = dataclasses.replace(cfg, backend="fake")
+    object.__setattr__(broken, "backend", "no-such-backend")
+    text, problem = firstrun.transcribe(broken, b"")
+    assert text == "" and problem, (text, problem)
+
+
+def test_the_meter_says_something_moved_before_anyone_gives_up() -> None:
+    """Silence is not an error anywhere in Windows' audio API — the stream
+    opens, the callbacks arrive, every sample is zero — so nothing
+    downstream can report the privacy switch. The threshold has to sit
+    above room noise and well below speech, and the wait has to be short
+    enough to beat the conclusion that the app is broken."""
+    import firstrun
+
+    assert 0.01 < firstrun.SPEECH < 0.15, firstrun.SPEECH
+    assert 3.0 <= firstrun.QUIET_S <= 12.0, firstrun.QUIET_S
+    assert firstrun.TEST_S >= 2.0, firstrun.TEST_S
+
 
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())

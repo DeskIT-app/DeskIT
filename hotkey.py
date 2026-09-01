@@ -572,7 +572,10 @@ class PTTStateMachine:
                  on_pause: Callable[[bool], None] | None = None,
                  on_key_down: Callable[[int], bool] | None = None,
                  tap_allowed: Callable[[str, str], bool] | None = None,
-                 cancel_guard: Callable[[], bool] | None = None):
+                 cancel_guard: Callable[[], bool] | None = None,
+                 ask_open: Callable[[], bool] | None = None,
+                 on_ask_start: Callable[[str], None] | None = None,
+                 on_ask_stop: Callable[[str], None] | None = None):
         self._on_start = on_start
         self._on_stop = on_stop
         self._on_abort = on_abort
@@ -586,6 +589,20 @@ class PTTStateMachine:
         # real policy; see the class docstring.
         self._tap_allowed = tap_allowed
         self._cancel_guard = cancel_guard
+        # WHILE THE ASK CARD IS UP AND A DICTATION IS LATCHED, the hotkey
+        # stops meaning "stop" and means "ask". Held down it marks the
+        # start of a question, released it marks the end, and the locked
+        # recording underneath is never touched — main.py takes a SLICE of
+        # it (recorder.slice_since) rather than ending it. That is what
+        # lets the owner talk into a field, ask the screen something in
+        # the middle, keep talking, and get one continuous paste.
+        #
+        # None everywhere keeps the behaviour this class was born with, so
+        # every existing test sees exactly what it saw before.
+        self._ask_open = ask_open
+        self._on_ask_start = on_ask_start
+        self._on_ask_stop = on_ask_stop
+        self._asking_vk: int | None = None
         self._cancel_vk = cancel_vk
         self._state = IDLE
         self._paused = False
@@ -815,11 +832,27 @@ class PTTStateMachine:
         vk = self._active_vk
         return self._hotkeys.get(vk) if vk is not None else None
 
+    def _ask_is_open(self) -> bool:
+        """Is the ask card on screen right now?
+
+        Wrapped because it is somebody else's code called from the OS hook
+        thread while this class holds its lock: a raise here would drop
+        the hook and freeze every key on the machine, and "no card" is the
+        answer that leaves the old behaviour exactly in place.
+        """
+        if self._ask_open is None:
+            return False
+        try:
+            return bool(self._ask_open())
+        except Exception:
+            return False
+
     def _reset_locked(self) -> None:
         """Back to idle. The caller holds the lock and is responsible for
         telling the app about any recording this threw away."""
         self._state = IDLE
         self._active_vk = None
+        self._asking_vk = None
         self._swallow_latch_up = False
 
     def set_paused(self, paused: bool) -> bool:
@@ -1065,7 +1098,34 @@ class PTTStateMachine:
                 # the recording would stop the instant it locked.
                 finish = not was_down and (vk == self._latch_vk
                                            or vk in self._hotkeys)
-                if finish and event_type == "down":
+                # THE ASK CARD CHANGES WHAT THE HOTKEY MEANS, and only
+                # here. Latched, the hotkey is the stop key — which is
+                # exactly wrong once the card is up, because the owner
+                # reaches for it to SPEAK TO THE CARD and would end the
+                # dictation he is in the middle of instead. With the card
+                # up it marks a question: down starts it, up ends it, and
+                # `finish` is suppressed for both so the locked recording
+                # runs on underneath, buffer intact.
+                #
+                # `_asking_vk is not None` is in the test so the key-UP is
+                # still recognised when the card closed mid-question. The
+                # latch key is excluded: it is the one key that must keep
+                # meaning "done" no matter what is on screen.
+                asking = (vk in self._hotkeys and vk != self._latch_vk
+                          and (self._asking_vk is not None
+                               or self._ask_is_open()))
+                if asking:
+                    finish = False
+                    if (event_type == "down" and not was_down
+                            and self._asking_vk is None):
+                        self._asking_vk = vk
+                        asked = self._hotkeys[vk]
+                        fire = (lambda lang=asked: self._on_ask_start(lang))                             if self._on_ask_start is not None else None
+                    elif event_type == "up" and vk == self._asking_vk:
+                        self._asking_vk = None
+                        asked = self._hotkeys[vk]
+                        fire = (lambda lang=asked: self._on_ask_stop(lang))                             if self._on_ask_stop is not None else None
+                if fire is None and finish and event_type == "down":
                     self._state = IDLE
                     language = self._hotkeys[self._active_vk]
                     self._active_vk = None

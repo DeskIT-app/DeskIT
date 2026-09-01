@@ -129,6 +129,26 @@ def dot_run(dot) -> bool:
         return False
 
 
+def hint_run(card) -> bool:
+    """And for the hint card, whose fallback is a real one.
+
+    The splash and the dot fall back to a picture that is merely older.
+    This one falls back to the same card without the glass — Tk cannot
+    composite per-pixel alpha over the desktop at all — so returning False
+    here is a downgrade in looks and nothing else. That is the point of
+    the folder being deletable.
+    """
+    if not on():
+        return False
+    try:
+        from .hint import run
+        run(card)
+        return True
+    except Exception:
+        _log.info("skin hint card failed, falling back", exc_info=True)
+        return False
+
+
 def paint_wave(card) -> bool:
     """The microphone wave in the ask-the-screen card.
 

@@ -35,6 +35,8 @@ APP_DIR = Path(__file__).resolve().parent
 import config as config_mod
 import control
 import cues
+import firstrun
+import hint as hint_mod
 import injector
 import popup as popup_mod
 import server as server_mod
@@ -82,6 +84,16 @@ NESTED_HOTKEYS = {
 # rewrite the text at the cursor, and the cursor is a shared resource
 # during a dictation.
 _SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo"})
+
+# What the dot should say for a machine state, when a worker has finished
+# with something and is deciding what to put back. Only two states are
+# named because only two mean "still listening": everything else — idle,
+# paused, whatever comes next — is the plain running dot. It exists
+# because a question asked from inside the ask card is transcribed while
+# the LOCKED recording underneath keeps going, and the dot turning blue
+# there would announce a stop that never happened.
+_DOT_FOR = {hotkey_mod.LATCHED: "locked",
+            hotkey_mod.RECORDING: "recording"}
 
 
 def report_fatal(message: str) -> None:
@@ -255,7 +267,10 @@ class App:
             pause_vk=pause_vk, on_pause=self._on_pause,
             on_key_down=self._popup_key,
             tap_allowed=self._tap_allowed,
-            cancel_guard=self._esc_is_claimed)
+            cancel_guard=self._esc_is_claimed,
+            ask_open=self._ask_card_open,
+            on_ask_start=self._on_ask_start,
+            on_ask_stop=self._on_ask_stop)
         self.hook = HookThread(self.machine)
         # What the dot is showing, kept here so the dashboard can report the
         # same thing in words. Every set_state goes through _set_state.
@@ -267,6 +282,24 @@ class App:
         # dropped hook and a frozen keyboard.
         self._to_card = False
         self._start_hwnd = 0
+        # [visual_qa] echo_to_field. What was dictated INTO the ask card,
+        # kept until the card closes and the field it belongs to is in
+        # front again — see _on_card_closed for why it cannot be pasted
+        # any earlier. _field_hwnd is the last window a dictation was
+        # actually AIMED at, which is not _start_hwnd once the card is up:
+        # the card is in front then, and _start_hwnd is 0 for our own
+        # windows by design.
+        # Where in the LOCKED recording the question being spoken to the
+        # ask card began. The recording is never ended for it — see
+        # _on_ask_stop.
+        self._ask_mark = 0
+        # What was said to the card during THIS recording, in order, as
+        # transcribed at the moment it was said. The splice puts these
+        # back where they belong — see _transcribe_pieces.
+        self._question_texts: list[str] = []
+        self._echo_lines: list[str] = []
+        self._field_hwnd = 0
+        self._echo_lock = threading.Lock()
         self._started_at = time.monotonic()
         # Asked once. status() is polled by the dashboard several times a
         # second and device_label() goes out to PortAudio to enumerate
@@ -347,6 +380,14 @@ class App:
         # the app is alive, and what it is doing.
         self.dot = (overlay_mod.StatusDot() if cfg.indicator
                     else overlay_mod.StatusDot.off())
+        # And, for the press someone hesitated on, a card naming what the
+        # keys will do. Off by config, and off by construction the rest of
+        # the time: nothing is on screen until a key has been held for
+        # hint.after_ms, which an ordinary dictation never reaches.
+        self.hint = (overlay_mod.HintCard(
+            cfg.hint.after_ms, cfg.hint.corner, x=cfg.hint.x, y=cfg.hint.y,
+            scale=cfg.hint.scale, on_change=self._save_hint)
+            if cfg.hint.enabled else overlay_mod.HintCard.off())
         self.phone: server_mod.PhoneServer | None = None
         if cfg.server.enabled:
             self.phone = server_mod.PhoneServer(
@@ -371,7 +412,8 @@ class App:
             # else — the one case where the card has not been told the
             # microphone is live and would happily speak into it.
             vqa = visual_qa_mod.Controller(
-                lambda: self.cfg, recording_now=self._recording_now)
+                lambda: self.cfg, recording_now=self._recording_now,
+                on_closed=self._on_card_closed)
             self._vqa = vqa
         return vqa
 
@@ -502,6 +544,134 @@ class App:
             return bool(self.recorder.meter()[1])
         except Exception:
             return False
+
+    def _ask_card_open(self) -> bool:
+        """Is the ask card on screen? Asked by the state machine to decide
+        what the dictation hotkey MEANS right now.
+
+        Off the already-built controller and never through the `vqa`
+        property: this runs inside the keyboard hook, where building one
+        would import Tk and Pillow and drop the hook.
+        """
+        vqa = getattr(self, "_vqa", None)
+        return bool(vqa is not None and vqa.sink_active)
+
+    def _on_ask_start(self, language: str | None = "he") -> None:
+        """The hotkey went down with the ask card up and a dictation
+        LOCKED. Remember where in that recording the question starts.
+
+        Runs inside the keyboard hook: one call and one assignment.
+        """
+        self._ask_mark = self.recorder.mark()
+        vqa = getattr(self, "_vqa", None)
+        if vqa is not None:
+            vqa.notify_recording(level=self.recorder.meter)
+
+    def _on_ask_stop(self, language: str | None = "he") -> None:
+        """The question is finished. Hand the card a COPY of it.
+
+        THE RECORDING IS NOT ENDED. slice_since reads the frames and
+        mutates nothing, so the words just spoken are both the question
+        the card is about to answer AND part of the sentence still being
+        dictated underneath. When the latch is finally tapped, all of it —
+        before the card, into the card, after the card — lands as one
+        continuous paste, which is the whole point.
+
+        The dot is deliberately NOT moved to amber here: the locked
+        recording never stopped, and a dot that said "transcribing" would
+        be describing something that is not happening to it.
+        """
+        mark, self._ask_mark = self._ask_mark, 0
+        wav, seconds = self.recorder.slice_since(mark)
+        vqa = getattr(self, "_vqa", None)
+        if vqa is not None and not vqa.echoing:
+            # The switch in the card's title strip, and the only thing it
+            # CAN mean here. The question is already inside the recording
+            # — one microphone, no second channel — so "keep this out of
+            # what I am writing" has to be done by leaving those frames
+            # out of the utterance when it is finally assembled.
+            self.recorder.exclude_since(mark)
+            log.info("that question stays in the card — it will not be in "
+                     "the dictation when it lands")
+        else:
+            # It stays in the dictation, and the dictation is cut here so
+            # this stretch is never handed to Whisper twice — the text
+            # transcribed NOW, on its own, is the one that survives. See
+            # recorder.note_question for why that matters.
+            self.recorder.note_question(mark)
+        if not wav:
+            log.info("nothing was said to the card — the dictation "
+                     "underneath is still running")
+            return
+        # to_card=True routes it into the card and never to the cursor.
+        # sliced=True says it is already inside a recording that will be
+        # pasted later, so it must not ALSO be echoed; in_stream says that
+        # recording is going to keep it, so its text is worth remembering
+        # for the splice.
+        in_stream = bool(vqa is not None and vqa.echoing)
+        self.queue.put((wav, seconds, 0, language, True,
+                        {"sliced": True, "in_stream": in_stream}))
+
+    def _on_card_closed(self) -> None:
+        """The ask card is gone: give the field back what was said to it.
+
+        A question dictated INTO the card went to the card and nowhere
+        else, which is right when the card is the whole errand. It is
+        wrong when the card was opened in the MIDDLE of writing to
+        somebody — the usual way it gets opened — because then those
+        sentences are also part of what was being written, and the owner
+        finds them only in transcripts.log, which is not where he was
+        typing. [visual_qa] echo_to_field is that repair.
+
+        WHY IT WAITS FOR THE CLOSE. The card holds the foreground for as
+        long as it is up, so there is no such thing as pasting into the
+        field "at the same time": the text would land in the card itself,
+        or tear the foreground off it in the middle of a question. The
+        close is the first moment the field is reachable again.
+
+        Runs on the visual-qa thread, after that thread has buried the
+        card (see visual_qa.Controller._closed). It is handed nothing and
+        reads nothing off the window, deliberately — a reference kept past
+        that burial is the Tcl_AsyncDelete abort in AGENTS.md.
+        """
+        with self._echo_lock:
+            lines, hwnd = self._echo_lines, self._field_hwnd
+            self._echo_lines = []
+        if not lines:
+            return
+        # One paste, not one per question: they were consecutive sentences
+        # in the same breath as far as the field is concerned.
+        text = " ".join(lines)
+        # The foreground does not come back the instant the card is
+        # destroyed — Windows hands it on when it is ready. A second is
+        # far longer than that takes, and still short enough that somebody
+        # who deliberately clicked elsewhere is not left waiting.
+        deadline = time.monotonic() + 1.0
+        while hwnd and time.monotonic() < deadline:
+            if injector.foreground_window() == hwnd:
+                break
+            time.sleep(0.03)
+        try:
+            with self._cursor_lock:
+                if hwnd and injector.foreground_window() == hwnd:
+                    injector.inject(text, self.cfg.paste_chord,
+                                    self.cfg.restore_delay_ms)
+                    log.info("what you asked the screen is back in the "
+                             "field you were writing in (%d chars): %s",
+                             len(text), text)
+                    return
+                # Focus went somewhere the owner chose. The clipboard is
+                # where every other homeless transcript in this module
+                # goes, and it says so out loud rather than dropping it.
+                injector.set_text(text)
+                beep("stop")
+                log.warning("the field you were writing in is not in front "
+                            "any more — what you asked the screen is on "
+                            "your clipboard, press %s to paste it: %s",
+                            self.cfg.paste_chord, text)
+        except Exception as e:
+            log.warning("could not hand the field back what you asked the "
+                        "screen (%s) — it is in transcripts.log", e)
 
     def _tap_allowed(self, action: str, state: str) -> bool:
         """May this feature key fire while a dictation is running?
@@ -713,6 +883,47 @@ class App:
             return
         self._activity = state
         self.dot.set_state(state)
+        # The card rides the same state, so it can never disagree with the
+        # dot about whether a recording is live — including the early
+        # return above, which is exactly the case where "ready" is a lie.
+        self.hint.show(self._hint_card(state))
+
+    def _save_hint(self, fields: dict) -> None:
+        """Write what the owner did to the card back into config.toml.
+
+        Called from the overlay thread when a drag ends, a size button is
+        pressed or the box is ticked. Everything goes through
+        `config.set_values`, which is a line-wise edit that keeps the
+        comments — a TOML round-trip here would delete the measurements
+        the file is made of.
+
+        The live Config is replaced too, so the dashboard and a later
+        rebind read the same numbers this just saved rather than the ones
+        the app started with.
+        """
+        self.cfg = dataclasses.replace(
+            self.cfg, hint=dataclasses.replace(self.cfg.hint, **fields))
+        config_mod.set_values(self.config_path,
+                              {f"hint.{k}": v for k, v in fields.items()})
+        log.info("hint card: %s",
+                 ", ".join(f"{k}={v}" for k, v in fields.items()))
+
+    def _hint_card(self, state: str) -> dict | None:
+        """The card for a dot state, or None for the states with no card.
+
+        Rebuilt on every transition rather than cached because a rebind
+        through the dashboard changes the keys under it, and the whole
+        point of building it from the live Config is that it cannot go
+        stale. Two dict comprehensions on the keyboard hook thread.
+        """
+        which = {"recording": hint_mod.HOLD, "locked": hint_mod.LATCHED}
+        if state not in which:
+            return None
+        try:
+            return hint_mod.card_for(self.cfg, which[state], _SCREEN_ACTIONS)
+        except Exception:
+            log.debug("could not build the hint card", exc_info=True)
+            return None
 
     def _cue_once(self, kind: str, reason: str, every: float = 4.0) -> None:
         """Play a cue unless the same one just played for the same reason.
@@ -947,6 +1158,7 @@ class App:
         self.lookup_worker.start()
         self.hook.start()
         self.dot.start()
+        self.hint.start()
         if self.cfg.auto_pause_fullscreen:
             self._watcher = threading.Thread(target=self._watch_fullscreen,
                                              daemon=True, name="fullscreen")
@@ -1015,6 +1227,7 @@ class App:
         if getattr(self, "_study", None) is not None:
             self._study.stop()
         self.dot.stop()
+        self.hint.stop()
         # Its own thread and its own window, and the window is destroyed
         # rather than hidden. That matters more than it did: the box waits
         # to be closed now, so quitting with one on screen must take it
@@ -1172,6 +1385,7 @@ class App:
 
     def _on_start(self, language: str | None = "he") -> None:
         self.recorder.begin()   # also restores the cap a latch may have lifted
+        self._question_texts = []
         self._cap, self._latched = self.cfg.max_seconds, False
         self._set_state("recording")
         # An ask-the-screen card that is reading an answer aloud stops the
@@ -1212,6 +1426,11 @@ class App:
         # known", which _handle answers with the clipboard.
         start = injector.foreground_window()
         self._start_hwnd = 0 if injector.is_our_window(start) else start
+        # The last window that was somebody ELSE'S. Sticky on purpose: it
+        # is what the ask card interrupted, and the card being in front is
+        # exactly when _start_hwnd stops being able to tell us.
+        if self._start_hwnd:
+            self._field_hwnd = self._start_hwnd
         if self._to_card:
             # The meter rides along so the card can draw the wave from the
             # real microphone. A bound method of the recorder, not the
@@ -1225,7 +1444,11 @@ class App:
                  if self.cfg.latch_hotkey else "")
 
     def _on_stop(self, language: str | None = "he") -> None:
-        wav, seconds = self.recorder.end()
+        # end_pieces, not end: a recording the ask card interrupted comes
+        # back cut at the questions, so the worker can transcribe what
+        # surrounds them and splice the questions back in. Nothing asked
+        # means one piece and the old path exactly.
+        wav, pieces, seconds = self.recorder.end_pieces()
         self._set_state("busy")
         if wav is None:
             # overflowed at the cap — beep already fired at cap time
@@ -1255,7 +1478,8 @@ class App:
         hwnd = injector.foreground_window()
         if hwnd and injector.is_our_window(hwnd):
             hwnd = self._start_hwnd
-        self.queue.put((wav, seconds, hwnd, language, self._to_card))
+        self.queue.put((wav, seconds, hwnd, language, self._to_card,
+                        {"pieces": pieces} if len(pieces) > 1 else {}))
         log.info("captured %.1f s of %s -> transcribing (%s)...", seconds,
                  language_label(language),
                  self.transcriber.name)
@@ -1501,6 +1725,38 @@ class App:
             return backend.transcribe(wav, language=language)
         return backend.transcribe(wav)
 
+    def _transcribe_pieces(self, pieces: list,
+                           language: str | None = None) -> tuple[str, str]:
+        """A recording the ask card interrupted, as one continuous text.
+
+        The stretches AROUND each question go to Whisper. The questions
+        themselves do not: they were transcribed the moment they were
+        spoken, alone, and that is the only transcript of them that can be
+        relied on. Whisper's VAD drops a short utterance stranded between
+        two long silences, and a question asked mid-dictation is exactly
+        that shape — measured 2026-08-31 on a real 35 s recording, where
+        "four" was in the audio, correct in its own slice, and simply
+        missing from the transcript of the whole file.
+
+        If the remembered text is not there after all (nothing was heard,
+        or the card was closed before it landed) the piece is transcribed
+        like any other rather than dropped. Losing audio is worse than
+        transcribing it twice.
+        """
+        asked = list(self._question_texts)
+        self._question_texts = []
+        out: list[str] = []
+        backend = ""
+        for was_question, part in pieces:
+            said = asked.pop(0).strip() if (was_question and asked) else ""
+            if not said:
+                said, used = self._transcribe(part, language)
+                backend = used or backend
+                said = said.strip()
+            if said:
+                out.append(said)
+        return " ".join(out), backend or "local"
+
     def _transcribe(self, wav: bytes,
                     language: str | None = None) -> tuple[str, str]:
         """Cloud first; local only once every cloud model is out of quota.
@@ -1522,16 +1778,29 @@ class App:
 
     def _worker(self) -> None:
         while True:
-            wav, seconds, hwnd, language, to_card = self.queue.get()
+            item = self.queue.get()
+            wav, seconds, hwnd, language, to_card = item[:5]
+            # Anything the ask card needs said about this recording, as
+            # keywords. Five-field items — and every test that builds one
+            # — mean the ordinary thing.
+            extra = (item[5] if len(item) > 5 and isinstance(item[5], dict)
+                     else {})
             try:
-                self._handle(wav, seconds, hwnd, language, to_card)
+                self._handle(wav, seconds, hwnd, language, to_card, **extra)
             except Exception:
                 beep("error")
                 log.exception("unexpected failure handling a recording")
             finally:
                 # Back to plain "running" however it went — a dot stuck on
                 # amber would report a hang that isn't happening.
-                self._set_state("ready")
+                #
+                # UNLESS a dictation is still live underneath, which is
+                # what a question asked from inside the ask card leaves
+                # behind: that recording was never ended, so a dot turning
+                # blue here would be announcing a stop that did not
+                # happen. The owner reads that dot to know whether it is
+                # still listening.
+                self._set_state(_DOT_FOR.get(self.machine.state, "ready"))
 
     # ---- correction worker ----
 
@@ -2367,7 +2636,9 @@ class App:
 
     def _handle(self, wav: bytes, seconds: float, hwnd: int,
                 language: str | None = None,
-                to_card: bool | None = None) -> None:
+                to_card: bool | None = None,
+                sliced: bool = False, in_stream: bool = False,
+                pieces: list | None = None) -> None:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
@@ -2417,7 +2688,11 @@ class App:
         while True:
             attempt += 1
             try:
-                text, backend = self._transcribe(wav, language)
+                if pieces and len(pieces) > 1:
+                    text, backend = self._transcribe_pieces(pieces,
+                                                            language)
+                else:
+                    text, backend = self._transcribe(wav, language)
                 break
             except TranscriptionError as e:
                 last_error = str(e)
@@ -2520,6 +2795,26 @@ class App:
                                 "the transcription landed, and the "
                                 "clipboard would not take it (%s) — text is "
                                 "in transcripts.log only", e)
+            elif in_stream:
+                # This question is INSIDE a recording that will be pasted
+                # in full later, and this is the only transcript of it
+                # that can be trusted — see _transcribe_pieces. Kept, not
+                # echoed: echoing it as well would say it twice.
+                self._question_texts.append(cleaned)
+            elif (getattr(vqa_cfg, "echo_to_field", False)
+                    and not sliced and self.vqa.echoing):
+                # KEPT, not pasted. The card owns the foreground while it
+                # is up, so this is the one thing that cannot happen now.
+                # See _on_card_closed.
+                #
+                # `echoing` is the switch in the card's title strip, asked
+                # HERE and not at the close, so it means "was the second
+                # destination on when I said this" rather than "was it on
+                # when I shut the card". Turning it off is how you ask the
+                # screen something that has no business in what you are
+                # writing, and it must not un-send what you already said.
+                with self._echo_lock:
+                    self._echo_lines.append(cleaned)
             return
 
         # IN FRONT OF THE PASTE, on purpose, and this is the one decision
@@ -2848,6 +3143,12 @@ def main() -> int:
                              "answered and how long it took, without the "
                              "keyboard, the clipboard or the box. Safe to "
                              "run while dictation is running.")
+    parser.add_argument("--setup", action="store_true",
+                        help="run the first-run wizard again: pick a "
+                             "microphone, watch the meter move, say one "
+                             "sentence and read it back. It runs on its "
+                             "own the first time; this is how to see it "
+                             "afterwards")
     parser.add_argument("--benchmark", action="store_true",
                         help="replay every recording you have corrected, "
                              "with the learned vocabulary on and off, and "
@@ -2912,6 +3213,16 @@ def main() -> int:
         return 1
     if args.fake:
         cfg = dataclasses.replace(cfg, backend="fake")
+
+    # The first-run wizard, BEFORE any model is loaded. Two reasons for
+    # the position: a wizard that appears after 25 s of nothing has
+    # already lost the argument it exists to win, and the microphone it
+    # writes has to be the one the Recorder is then opened on.
+    if args.setup or (firstrun.needed(cfg) and not args.fake):
+        if firstrun.run(cfg, Path(args.config)):
+            cfg = config_mod.load(Path(args.config))   # it wrote the device
+        if args.setup:
+            return 0
 
     if args.check:
         try:

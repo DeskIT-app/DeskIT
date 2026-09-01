@@ -538,3 +538,388 @@ def _mix(colour: str, towards: str, k: float) -> str:
     b = [int(towards[i:i + 2], 16) for i in (1, 3, 5)]
     return "#%02x%02x%02x" % tuple(
         max(0, min(255, round(x * k + y * (1 - k)))) for x, y in zip(a, b))
+
+
+# "never moved". NOT -1: a monitor to the left of the primary has real
+# negative screen coordinates — measured here, the virtual desktop starts
+# at x = -1920 — so -1 threw away every card that was dragged onto it. The
+# sentinel has to be a number no desktop can reach. Mirrors
+# config.HINT_UNSET; a test asserts the two agree.
+HINT_UNSET = -100000
+
+
+class HintCard:
+    """The card that says what the keys will do while one is held down.
+
+    Third of the on-screen things, and the only one with something to
+    READ on it. Same contract as StatusDot — its own thread, its own Tk
+    interpreter, callers only ever put items on a queue — for the same
+    three reasons: Tk is not thread-safe, `quit()` is a module-level
+    global that would close the other overlay's loop, and an overlay that
+    can take the app down is not an overlay.
+
+    THE DELAY IS THE FEATURE. `after_ms` is not a fade-in: nothing is
+    created until the key has been down that long, so an ordinary
+    two-second dictation never puts a window on screen at all. The card is
+    for the press someone hesitated on.
+
+    IT MUST BE INVISIBLE TO SCREENSHOTS, and that is not tidiness. Its
+    whole reason to exist is that Win+Shift+S now works mid-dictation, so
+    the one moment it is on screen is the moment a screenshot is most
+    likely to be taken. `_hide_from_capture` is the same call the dot
+    makes, for a weaker version of the same reason.
+
+    Click-through, like the dot, and for the identical hard-won reason:
+    `top-right` is the close button of every maximised window. The "don't
+    show this again" row is therefore drawn as a place to look, and turned
+    off in the dashboard — the card cannot take a click without also
+    taking the ones aimed at the X underneath it.
+    """
+
+    def __init__(self, after_ms: int = 400, corner: str = "top-right",
+                 margin: int = 14, x: int = HINT_UNSET, y: int = HINT_UNSET,
+                 scale: float = 1.0, on_change=None) -> None:
+        self._q: queue.Queue = queue.Queue()
+        self._after = max(0, int(after_ms)) / 1000.0
+        self._corner = corner
+        self._margin = margin
+        # Where the owner dragged it to and how big they made it. -1 means
+        # never moved: `corner` decides. Written from the overlay thread
+        # when a drag ends or a size button is pressed, and handed to
+        # `on_change` so main.py can put it in config.toml — the card is
+        # the only thing that knows these, and it has to survive a restart
+        # or "I moved it" lasts exactly one dictation.
+        self.x, self.y = int(x), int(y)
+        self.scale = float(scale)
+        self._on_change = on_change
+        self._thread: threading.Thread | None = None
+        self._alive = threading.Event()
+        self._closing = threading.Event()
+        self._enabled = True
+
+    @classmethod
+    def off(cls) -> "HintCard":
+        obj = cls()
+        obj._enabled = False
+        return obj
+
+    # -- caller's thread --
+
+    def start(self) -> None:
+        if not self._enabled:
+            return
+        try:
+            import tkinter  # noqa: F401
+        except Exception:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="hint-card")
+        self._thread.start()
+        self._alive.wait(timeout=3)
+
+    def show(self, card: dict | None) -> None:
+        """Put a card up, or take it down with None.
+
+        Safe from the keyboard hook — it only enqueues, which is the whole
+        reason the drawing lives on another thread. A card that arrives
+        while one is already up replaces it without the delay running
+        again: hold, then latch, and the panel changes in place.
+        """
+        if self._thread is not None and self._enabled:
+            self._q.put(card)
+
+    # -- the overlay thread's way of reporting what the owner did --
+
+    def placed(self, x: int, y: int) -> None:
+        """Remember where a drag left it, and write it down.
+
+        `x, y` IS THE VISIBLE CARD'S TOP-LEFT, not the window's, and the
+        difference is a bug that shipped: the glass window is bigger than
+        the card by the room it leaves for its own shadow, so its corner
+        sits 26 px above and left of anything you can see. Saving that
+        made every drag near the top of the screen store a NEGATIVE y —
+        which `-1` claims as "never moved" — so the card snapped back to
+        the corner, and only drags that ended more than 26 px down stuck.
+        Storing what the owner can actually see keeps the sentinel out of
+        reach and makes the number in config.toml one they could type.
+
+        Clamped at zero for the same reason. A card dragged half off the
+        top-left is still a card you can grab; a negative saved position
+        is one the next launch throws away.
+
+        NOT clamped to positive. A monitor to the left of the primary has
+        genuinely negative screen coordinates — measured here, the virtual
+        desktop starts at x = -1920 — so a card dragged onto that screen
+        has a real negative x, and refusing it would drag the card back
+        onto the primary every time. That is why UNSET is a number no
+        desktop can reach rather than -1.
+
+        A drag ends in more than one message, so an unchanged position is
+        not written again — this is the line editor's most frequent
+        caller and it rewrites config.toml every time.
+        """
+        x, y = int(x), int(y)
+        if (x, y) == (self.x, self.y):
+            return
+        self.x, self.y = x, y
+        self._changed(x=self.x, y=self.y)
+
+    def resized(self, scale: float) -> None:
+        self.scale = float(scale)
+        self._changed(scale=round(self.scale, 3))
+
+    def dismissed(self) -> None:
+        """The box on the card was ticked: never again, and not just for
+        this run — the whole point of a "don't show this again" is that it
+        outlives the thing it was ticked on."""
+        self._enabled = False
+        self._changed(enabled=False)
+
+    def _changed(self, **fields) -> None:
+        if self._on_change is None:
+            return
+        try:
+            self._on_change(fields)
+        except Exception:
+            _log.info("could not save the hint card's %s",
+                      ", ".join(fields), exc_info=True)
+
+    def stop(self) -> None:
+        if self._thread is not None:
+            self._q.put(_DONE)
+            self._thread.join(timeout=2)
+
+    # -- overlay thread --
+
+    def _run(self) -> None:
+        try:
+            if skin is not None and skin.hint_run(self):   # --- SKIN
+                return
+            self._build_and_loop()
+        except Exception as e:
+            _log.info("hint card unavailable: %r", e)
+        finally:
+            self._alive.set()
+
+    # The status dot's corner, which this never takes. The dot is the one
+    # thing on screen that says the app is alive; it does not move for a
+    # panel that is only up while a key is held.
+    DOT_ROOM = 46
+
+    UNSET = HINT_UNSET
+
+    def moved(self) -> bool:
+        return self.x > self.UNSET and self.y > self.UNSET
+
+    def origin(self, width: int, height: int, screen: tuple[int, int],
+               inset: int = 0, bounds: tuple[int, int, int, int] | None = None
+               ) -> tuple[int, int]:
+        """Where the window's top-left goes.
+
+        `inset` is the transparent margin the picture leaves around itself
+        for its own shadow, so both the glass card (which has one) and the
+        Tk card (which does not) put the VISIBLE edge in the same place.
+
+        `screen` is the PRIMARY monitor, which is where the corners are.
+        `bounds` is the whole virtual desktop — every monitor — and it is
+        what a saved position is clamped against, because clamping to the
+        primary would walk a card off a second screen and back onto this
+        one every time the app restarted.
+
+        A saved position wins over the corner, and is still clamped: a
+        card dragged onto a monitor that is no longer plugged in must not
+        come back somewhere nobody can reach it.
+
+        Pure arithmetic, so a test can check every corner and every saved
+        position without a screen.
+        """
+        sw, sh = screen
+        m = self._margin
+        if self.moved():
+            # Saved as the CARD's top-left (see placed); the window starts
+            # `inset` above and left of it.
+            vx, vy, vw, vh = bounds if bounds else (0, 0, sw, sh)
+            keep = 60                      # this much must stay reachable
+            card_w, card_h = width - inset * 2, height - inset * 2
+            x = max(vx + keep - card_w, min(self.x, vx + vw - keep))
+            y = max(vy + keep - card_h, min(self.y, vy + vh - keep))
+            return int(x - inset), int(y - inset)
+        # Beside the dot, not under it: on the right-hand corners the card
+        # stops short of the dot's own square by DOT_ROOM.
+        room = self.DOT_ROOM if self._corner == "top-right" else 0
+        if self._corner.endswith("left"):
+            x = m - inset
+        else:
+            x = sw - m - room - width + inset
+        y = (m - inset if self._corner.startswith("top")
+             else sh - m - height + inset)
+        return int(x), int(y)
+
+    def _build_and_loop(self) -> None:
+        """The fallback picture: flat Tk, no glass.
+
+        skin\\hint.py draws the real one on a layered window with per-pixel
+        alpha. Tk cannot do that at all — `-transparentcolor` is a chroma
+        key and Tk antialiases nothing — so what this paints is the same
+        card with a solid face. Deleting skin\\ costs the glass and keeps
+        the card, which is the rule the whole skin is built on.
+        """
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()                    # nothing on screen until asked
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.configure(bg=CARD_BG)
+        canvas = tk.Canvas(root, bg=CARD_BG, highlightthickness=0, bd=0)
+        canvas.pack()
+        self._alive.set()
+
+        shown = {"card": None, "due": None, "up": False}
+
+        def hide() -> None:
+            if shown["up"]:
+                root.withdraw()
+                shown["up"] = False
+
+        def draw(card: dict) -> None:
+            w, h = _hint_paint(canvas, card, self.scale)
+            canvas.configure(width=w, height=h)
+            x, y = self.origin(w, h, (root.winfo_screenwidth(),
+                                      root.winfo_screenheight()))
+            root.geometry(f"{w}x{h}+{x}+{y}")
+            root.deiconify()
+            root.update_idletasks()
+            if not shown["up"]:
+                # Both need a realised window, and both silently succeed
+                # on an unrealised one — the bug that put the dot on the
+                # close button. After deiconify, every time.
+                _no_activate(root, click_through=True)
+                _hide_from_capture(root)
+            shown["up"] = True
+
+        def pump() -> None:
+            try:
+                while True:
+                    item = self._q.get_nowait()
+                    if item is _DONE:
+                        self._closing.set()
+                        return
+                    if item is None:
+                        shown["card"] = shown["due"] = None
+                        hide()
+                    else:
+                        # Already up: swap the picture now. Not up yet:
+                        # keep the deadline that is already running rather
+                        # than restarting it, so hold-then-latch does not
+                        # pay the delay twice.
+                        if shown["due"] is None and not shown["up"]:
+                            shown["due"] = time.monotonic() + self._after
+                        shown["card"] = item
+                        if shown["up"]:
+                            draw(item)
+            except queue.Empty:
+                pass
+            due, card = shown["due"], shown["card"]
+            if card is not None and not shown["up"] and due is not None \
+                    and time.monotonic() >= due:
+                draw(card)
+            root.after(40, pump)
+
+        pump()
+        try:
+            _pump_until(root, self._closing)
+        finally:
+            import gc                       # see Splash: same Tcl teardown
+            try:
+                _forget_window(root)
+                root.destroy()
+            except Exception:
+                pass
+            draw = pump = hide = None                 # noqa: F841
+            canvas = root = None                      # noqa: F841
+            gc.collect()
+
+
+# The fallback card's palette. These are ui.py's ORIGINAL values, spelled
+# out rather than imported: ui.py builds Tk styles at import and this
+# module is imported before any of that exists. skin\ repaints its own
+# copy and never reads these.
+CARD_BG = "#161b25"
+CARD_LINE = "#232a36"
+CARD_FG = "#e8ecf4"
+CARD_DIM = "#8b97ad"
+CARD_FAINT = "#5d6779"
+CARD_KEY_BG = "#1a2740"
+CARD_KEY_EDGE = "#2b3f66"
+CARD_KEY_FG = "#8fb2f5"
+CARD_DOT = {"recording": "#e0352b", "locked": "#e0a32b"}
+
+_HINT_PAD = 14
+_HINT_ROW = 26
+_HINT_CHIP = 19
+
+
+def _hint_paint(canvas, card: dict, scale: float = 1.0) -> tuple[int, int]:
+    """Draw the card onto a Tk canvas; return the size it needs.
+
+    Two columns, never one string: a chip on the right and the label to
+    its left, each its own canvas item. A single "Esc — ביטול" string is
+    exactly the mixed Hebrew-and-Latin line Tk 8.6 lays out backwards
+    (popup.py proved this glyph by glyph), and there is no bidi to reach
+    for here. Two items sidestep the question entirely.
+
+    `scale` is honoured but cannot be CHANGED from here: this window is
+    click-through, for the same reason the dot is, and skin\\hint.py is
+    where the − and + live. A size chosen there still comes back here,
+    because it is saved in config.toml rather than held in a window.
+    """
+    s = max(0.6, min(1.4, float(scale)))
+    font = ("Rubik", max(6, round(9 * s)))
+    bold = ("Rubik", max(6, round(9 * s)), "bold")
+    head = ("Rubik", max(7, round(11 * s)), "bold")
+    canvas.delete("all")
+    width = round(300 * s)
+    right = width - _HINT_PAD
+    y = _HINT_PAD
+
+    canvas.create_oval(right - 9, y + 3, right - 1, y + 11, width=0,
+                       fill=CARD_DOT.get(card.get("dot"), CARD_FG))
+    canvas.create_text(right - 16, y + 7, text=card["title"], anchor="e",
+                       fill=CARD_FG, font=head)
+    canvas.create_text(right - 16, y + 25, text=card["sub"], anchor="e",
+                       fill=CARD_DIM, font=("Rubik", 8))
+    y += 42
+    canvas.create_line(_HINT_PAD, y, right, y, fill=CARD_LINE)
+    y += 8
+
+    def rows(items):
+        nonlocal y
+        for key, label, on in items:
+            chip_w = max(30, 7 * len(key) + 14)
+            canvas.create_rectangle(
+                right - chip_w, y + 2, right, y + 2 + _HINT_CHIP,
+                fill=CARD_KEY_BG if on else CARD_BG,
+                outline=CARD_KEY_EDGE if on else CARD_LINE)
+            canvas.create_text(right - chip_w / 2, y + 2 + _HINT_CHIP / 2,
+                               text=key, anchor="center", font=bold,
+                               fill=CARD_KEY_FG if on else CARD_FAINT)
+            canvas.create_text(right - chip_w - 9, y + 2 + _HINT_CHIP / 2,
+                               text=label, anchor="e", font=font,
+                               fill=CARD_FG if on else CARD_FAINT)
+            y += _HINT_ROW
+
+    rows(card["rows"])
+    y += 2
+    canvas.create_text(right, y + 4, text=card["section"], anchor="e",
+                       fill=CARD_FAINT, font=("Rubik", 8, "bold"))
+    y += 17
+    rows(card["keys"])
+    y += 6
+    canvas.create_line(_HINT_PAD, y, right, y, fill=CARD_LINE)
+    y += 10
+    canvas.create_rectangle(right - 12, y, right, y + 12,
+                            fill=CARD_BG, outline=CARD_LINE)
+    canvas.create_text(right - 20, y + 6, text=card["footer"], anchor="e",
+                       fill=CARD_DIM, font=("Rubik", 8))
+    return width, y + 12 + _HINT_PAD

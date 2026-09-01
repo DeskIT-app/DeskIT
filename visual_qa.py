@@ -1567,6 +1567,20 @@ def _icon(kind: str, size: int = 21, colour=INK, width: int = 2):
                             outline=c, width=lw)
         d.arc((n * .26, n * .34, n * .74, n * .76), 0, 180, fill=c, width=lw)
         d.line([(n * .5, n * .76), (n * .5, n * .90)], fill=c, width=lw)
+    elif kind in ("echo", "echo_off"):
+        # A field with a line of text in it: WHERE WHAT YOU SAY ALSO
+        # LANDS. Not a muted microphone, which is what was asked for and
+        # would have been a lie — the microphone is live either way, you
+        # are still talking to the card. What the switch turns off is the
+        # SECOND DESTINATION, so the second destination is what it draws,
+        # struck through when it is not receiving.
+        d.rounded_rectangle((n * .12, n * .26, n * .88, n * .74), n * .10,
+                            outline=c, width=lw)
+        d.line([(n * .27, n * .45), (n * .63, n * .45)], fill=c, width=lw)
+        d.line([(n * .27, n * .59), (n * .49, n * .59)], fill=c, width=lw)
+        if kind == "echo_off":
+            d.line([(n * .14, n * .86), (n * .86, n * .14)], fill=c,
+                   width=lw)
     elif kind == "send":
         d.line([(n * .5, n * .82), (n * .5, n * .18)], fill=c, width=lw)
         d.line([(n * .5, n * .18), (n * .24, n * .44)], fill=c, width=lw)
@@ -2388,7 +2402,8 @@ class _CardSurface:
                 state.get("strokes"), id(state.get("thumb")),
                 state.get("mode"), round(state.get("open", 0.0), 2),
                 state.get("listening"), state.get("speak_on"),
-                state.get("speak_ready"), state.get("copy_ready"))
+                state.get("speak_ready"), state.get("copy_ready"),
+                state.get("echo_on"))
 
     def compose(self, box, state):
         """The card as an RGB image, corners and all.
@@ -2451,15 +2466,24 @@ class _CardSurface:
             out.paste(thumb, (tx, ty))
             self.boxes["thumb"] = (tx, ty, tx + tw, ty + th)
 
-        icons = [("close", INK_DIM, True), ("pin", INK, state.get("pinned"))]
+        # (hit key, glyph, lit colour, is it on). The key is separate from
+        # the glyph because the echo switch draws two different glyphs for
+        # one button, and the rectangle it is clicked on must not rename
+        # itself when it is turned off.
+        icons = [("close", "close", INK_DIM, True),
+                 ("pin", "pin", INK, state.get("pinned"))]
         if state.get("speak_on") is not None:
-            icons.append(("speak", INK, state.get("speak_ready")))
-        icons.append(("copy", INK, state.get("copy_ready")))
+            icons.append(("speak", "speak", INK, state.get("speak_ready")))
+        icons.append(("copy", "copy", INK, state.get("copy_ready")))
+        echo_on = state.get("echo_on")
+        if echo_on is not None:
+            icons.append(("echo", "echo" if echo_on else "echo_off",
+                          INK, echo_on))
         ix = pw - pad - 18
-        for name, lit, on in icons:
+        for key, glyph, lit, on in icons:
             out.alpha_composite(
-                _icon(name, 18, lit if on else INK_FAINT), (ix, y + 1))
-            self.boxes[name] = (ix - 7, y - 6, ix + 25, y + 26)
+                _icon(glyph, 18, lit if on else INK_FAINT), (ix, y + 1))
+            self.boxes[key] = (ix - 7, y - 6, ix + 25, y + 26)
             ix -= 30
         y += 32
         out.alpha_composite(rr_layer((pw - pad * 2, 1), 0,
@@ -2613,7 +2637,8 @@ class AskWindow:
                  speaker: Speaker, speak_mode: str,
                  ask_fn, cue=lambda kind: None, auto_send: bool = True,
                  alpha: float = 0.93, reselect_fn=None, last_pos=None,
-                 on_move=None, full=None, path=None, mic_live=None):
+                 on_move=None, full=None, path=None, mic_live=None,
+                 echo: bool = True):
         self.image = image             # PIL image, RAM only
         # () -> True while the microphone is capturing. Not the same
         # question as _level_fn, which is only ever set for a dictation
@@ -2623,6 +2648,10 @@ class AskWindow:
         # heard by a microphone nobody told the card about. See
         # _start_speaking.
         self.mic_live = mic_live
+        # Does what is dictated here ALSO reach the field the card was
+        # opened over? config says where it starts; the switch in the
+        # title strip is for changing your mind mid-conversation.
+        self.echo_on = bool(echo)
         self.speaker = speaker
         self.speak_mode = speak_mode
         self.ask_fn = ask_fn
@@ -3017,6 +3046,8 @@ class AskWindow:
             self._copy()
         elif target == "speak":
             self._toggle_speak()
+        elif target == "echo":
+            self._toggle_echo()
         elif target in ("keyboard", "talk"):
             self._toggle_keyboard() if target == "keyboard" else                 self._status("hold Right Ctrl and talk", ttl_ms=FLASH_MS)
             self._repaint()
@@ -3030,7 +3061,8 @@ class AskWindow:
         if self._drawing and hit == "selection":
             want = "pencil"
         elif hit in ("close", "pin", "pencil", "keyboard", "send", "undo",
-                     "copy", "speak", "talk") or (hit or "").startswith("ask"):
+                     "copy", "speak", "talk",
+                     "echo") or (hit or "").startswith("ask"):
             want = "hand2"
         else:
             want = "arrow"
@@ -3467,6 +3499,7 @@ class AskWindow:
             "speak_ready": self.speak_btn is not None
             and self.speak_btn.enabled,
             "copy_ready": self.copy_btn.enabled,
+            "echo_on": self.echo_on,
         }
         image = self.surface.compose(self._card_box(), state)
 
@@ -3860,6 +3893,23 @@ class AskWindow:
         threading.Thread(target=_copy_worker, args=(q, answer),
                          daemon=True, name="vqa-copy").start()
 
+    def _toggle_echo(self) -> None:
+        """Turn the second destination on and off.
+
+        Everything said to this card also lands in the field it was opened
+        over, because the card is usually opened in the middle of writing
+        to somebody. This is for the times it is not — a question about
+        what is on screen that has no business in what you are writing.
+
+        Per QUESTION, not per card: what was already asked while the
+        switch was on is still on its way, and turning it back on does not
+        retrieve what was asked while it was off.
+        """
+        self.echo_on = not self.echo_on
+        self._status("questions also go to your text" if self.echo_on
+                     else "questions stay in this card", ttl_ms=FLASH_MS)
+        self._repaint()
+
     def _toggle_speak(self) -> None:
         if self.speaker.playing:
             self.speaker.stop()
@@ -3950,7 +4000,8 @@ class Controller:
     never binds the key pays nothing for the idea of it.
     """
 
-    def __init__(self, cfg_provider, recording_now=None):
+    def __init__(self, cfg_provider, recording_now=None,
+                 on_closed=None):
         self._cfg_of = cfg_provider       # () -> Config, read fresh: keys move
         # () -> True while the microphone is capturing, handed in by
         # main.py because main.py owns the recorder. A callable and not
@@ -3958,6 +4009,10 @@ class Controller:
         # given a bound meter: the card gets a way to ASK and no way to
         # touch anything.
         self._recording_now = recording_now
+        # () -> None, fired once the card is gone AND buried. main.py uses
+        # it to flush what was dictated into the card back into the field
+        # the owner was writing in. See _closed for why it takes nothing.
+        self._on_closed = on_closed
         self._busy = threading.Event()
         self._cancel = threading.Event()
         self._window: AskWindow | None = None
@@ -3982,6 +4037,19 @@ class Controller:
     @property
     def busy(self) -> bool:
         return self._busy.is_set()
+
+    @property
+    def echoing(self) -> bool:
+        """Is the open card also feeding the field it was opened over?
+
+        Read from main.py on the transcription worker, right after a
+        question has been handed to the card. Returns the FLAG and never
+        the window: nothing in this class hands a card out to another
+        thread — see _closed.
+        """
+        window = self._window
+        return bool(window is not None
+                    and getattr(window, "echo_on", False))
 
     # ---- the hotkey tap ----
 
@@ -4065,6 +4133,7 @@ class Controller:
             # while this one still has a corpse to bury, and that second
             # thread allocates.
             self._busy.clear()
+            self._closed()
 
     def open_with(self, image, bbox) -> bool:
         """Ask about a picture SOMEBODY ELSE took. False if we are busy.
@@ -4104,6 +4173,29 @@ class Controller:
             self._last_full = None
             gc.collect()
             self._busy.clear()
+            self._closed()
+
+    def _closed(self) -> None:
+        """Tell whoever asked that the card is gone.
+
+        AFTER the collect and after _busy, and taking NO ARGUMENT, both
+        deliberately. Anything handed out of here would be a reference to
+        a card this thread has just finished burying, and a reference that
+        outlives that collect is the Tcl_AsyncDelete abort in AGENTS.md —
+        the exact bug skin\wave.py re-armed by keeping one in a global.
+        A listener that wants to know WHAT was said must have been keeping
+        its own notes; it may not be handed the window to read them off.
+
+        Silent during shutdown: stop() sets _cancel, and a card closed
+        because the app is going down has nothing to hand back to a field
+        that is about to lose its process anyway.
+        """
+        if self._on_closed is None or self._cancel.is_set():
+            return
+        try:
+            self._on_closed()
+        except Exception:
+            log.exception("the ask card's close callback failed")
 
     def _open_ask(self, image, bbox) -> None:
         vq = self._cfg_of().visual_qa
@@ -4117,7 +4209,8 @@ class Controller:
             on_move=self._remember_position,
             full=getattr(self, "_last_full", None),
             path=getattr(self, "_last_path", None),
-            mic_live=self._recording_now)
+            mic_live=self._recording_now,
+            echo=getattr(vq, "echo_to_field", True))
         with self._lock:
             self._window = window
         window.run()

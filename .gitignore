@@ -41,3 +41,6 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+
+# The first-run wizard has run on this copy (firstrun.py).
+.setup-done

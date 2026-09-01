@@ -65,6 +65,63 @@ class FeedbackConfig:
 
 
 @dataclass(frozen=True)
+class HintConfig:
+    """The card that appears while the dictation key is held.
+
+    It exists for one complaint: mid-dictation the other keys used to do
+    nothing at all, silently, and a key that does nothing silently is
+    indistinguishable from a key that is broken. The card names what a
+    release, the latch arrow and Escape will do, and lists the feature
+    keys with the ones that are REFUSED right now greyed out and given a
+    reason — an answer instead of a shrug.
+
+    `after_ms` is why this is not clutter. A two-second dictation never
+    sees it; the card is for the press you hesitated on, which is exactly
+    when someone has forgotten what the keys do.
+    """
+    enabled: bool = True
+    after_ms: int = 400
+    corner: str = "top-right"
+    # Where it was last dragged to, and how big it was last made. Written
+    # by the card itself, which is why they are settings and not state in
+    # a side file — everything else the card knows lives here, and a
+    # second store would be a second place to look when it comes back in
+    # the wrong place.
+    #
+    # HINT_UNSET, not -1, and that is a bug this already had: a monitor to
+    # the LEFT of the primary has genuinely negative screen coordinates
+    # (measured on this machine: the virtual desktop starts at x = -1920),
+    # so every card dragged onto it saved a negative x that -1's rule then
+    # discarded. The sentinel has to be a number no desktop can reach.
+    x: int = -100000
+    y: int = -100000
+    scale: float = 1.0
+
+
+HINT_CORNERS = ("top-right", "top-left", "bottom-right", "bottom-left")
+HINT_SCALE_MIN, HINT_SCALE_MAX = 0.6, 1.4
+HINT_UNSET = -100000
+
+
+@dataclass(frozen=True)
+class SetupConfig:
+    """Switch the first-run wizard off by hand.
+
+    NOT the record of whether it has run — that is `.setup-done`, a
+    gitignored file beside config.toml (see firstrun.MARKER). This file is
+    tracked, so whatever is committed here is what a fresh download gets:
+    true would mean nobody ever saw the wizard, false would re-run it on
+    every install that updated, and there is no third value that means
+    "this particular copy, yes; that one, no". A fact about one
+    installation belongs in a file that installations do not share.
+
+    It stays here as an override because a setting someone can find and
+    flip beats a dotfile they have to be told about.
+    """
+    done: bool = False
+
+
+@dataclass(frozen=True)
 class LocalConfig:
     model: str = "ivrit-ai/whisper-large-v3-turbo-ct2"
     language: str = "he"  # pinned — the ivrit-ai fine-tune broke autodetect
@@ -276,6 +333,14 @@ class VisualQAConfig:
     # speaking again over an answer supersedes it — the conversation is
     # meant to run by voice alone. false restores speak-then-Enter.
     auto_send: bool = True
+    # What you dictate INTO the card is a question, and until now that was
+    # ALL it was: it went to the card and nowhere else, which is right
+    # until the card is something you opened in the middle of writing.
+    # true also pastes it into the field you were dictating into before
+    # the card opened — ONCE THE CARD CLOSES, never while it is up: the
+    # card holds the foreground, so pasting from under it would either
+    # steal focus mid-sentence or land in the card itself.
+    echo_to_field: bool = True
     # The floating card's opacity. Below ~0.85 ClearType over a
     # translucent surface stops being crisp (popup.py's measurement);
     # the card goes fully opaque while the pointer is over it anyway.
@@ -661,6 +726,8 @@ class Config:
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
     local: LocalConfig = field(default_factory=LocalConfig)
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
+    hint: HintConfig = field(default_factory=HintConfig)
+    setup: SetupConfig = field(default_factory=SetupConfig)
     translate: TranslateConfig = field(default_factory=TranslateConfig)
     punctuate: PunctuateConfig = field(default_factory=PunctuateConfig)
     lookup: LookupConfig = field(default_factory=LookupConfig)
@@ -874,6 +941,8 @@ def load(path: Path) -> Config:
     gemini = data.get("gemini", {})
     local = data.get("local", {})
     feedback = data.get("feedback", {})
+    hint = data.get("hint", {})
+    setup = data.get("setup", {})
     translate = data.get("translate", {})
     punctuate = data.get("punctuate", {})
     lookup = data.get("lookup", {})
@@ -959,6 +1028,17 @@ def load(path: Path) -> Config:
             enabled=bool(feedback.get("enabled", FeedbackConfig.enabled)),
             retry_seconds=float(feedback.get(
                 "retry_seconds", FeedbackConfig.retry_seconds)),
+        ),
+        hint=HintConfig(
+            enabled=bool(hint.get("enabled", HintConfig.enabled)),
+            after_ms=int(hint.get("after_ms", HintConfig.after_ms)),
+            corner=str(hint.get("corner", HintConfig.corner)).strip().lower(),
+            x=int(hint.get("x", HintConfig.x)),
+            y=int(hint.get("y", HintConfig.y)),
+            scale=float(hint.get("scale", HintConfig.scale)),
+        ),
+        setup=SetupConfig(
+            done=bool(setup.get("done", SetupConfig.done)),
         ),
         translate=TranslateConfig(
             target=str(translate.get("target",
@@ -1085,6 +1165,8 @@ def load(path: Path) -> Config:
                                     VisualQAConfig.voice)).strip(),
             auto_send=bool(visual_qa.get("auto_send",
                                          VisualQAConfig.auto_send)),
+            echo_to_field=bool(visual_qa.get(
+                "echo_to_field", VisualQAConfig.echo_to_field)),
             window_alpha=float(visual_qa.get(
                 "window_alpha", VisualQAConfig.window_alpha)),
             warmup=bool(visual_qa.get("warmup",
@@ -1354,6 +1436,15 @@ def load(path: Path) -> Config:
                           "feedback.enabled is true (nothing to erase)")
     if cfg.feedback.retry_seconds < 0:
         raise ConfigError("feedback.retry_seconds must be >= 0")
+    if cfg.hint.after_ms < 0:
+        raise ConfigError("hint.after_ms must be >= 0")
+    if cfg.hint.corner not in HINT_CORNERS:
+        raise ConfigError(f"hint.corner must be one of {HINT_CORNERS}, "
+                          f"got {cfg.hint.corner!r}")
+    if not (HINT_SCALE_MIN <= cfg.hint.scale <= HINT_SCALE_MAX):
+        raise ConfigError(
+            f"hint.scale must be between {HINT_SCALE_MIN} and "
+            f"{HINT_SCALE_MAX}, got {cfg.hint.scale!r}")
     if cfg.local.device not in ("auto", "cuda", "cpu"):
         raise ConfigError('local.device must be "auto", "cuda" or "cpu", '
                           f"got {cfg.local.device!r}")

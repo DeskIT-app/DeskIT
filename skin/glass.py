@@ -80,6 +80,12 @@ _user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
                                  ctypes.c_int, ctypes.c_uint]
 _user32.SystemParametersInfoW.argtypes = [ctypes.c_uint, ctypes.c_uint,
                                           ctypes.c_void_p, ctypes.c_uint]
+# Declared, not left to ctypes' defaults: an undeclared argument is passed
+# as a C int, and an HWND is a 64-bit handle. It happens to work while
+# handles stay small, which is exactly the kind of bug that appears on
+# someone else's machine after a long uptime.
+_user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+_user32.GetWindowRect.restype = ctypes.c_bool
 _gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
 _gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
 _gdi32.CreateDIBSection.restype = ctypes.c_void_p
@@ -105,6 +111,17 @@ SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE = 0x0002, 0x0001, 0x0010
 HWND_TOPMOST = ctypes.c_void_p(-1)
 SPI_GETCLIENTAREAANIMATION = 0x1042
 ERROR_CLASS_ALREADY_EXISTS = 1410
+
+# The hit-test answers a window may give. HTTRANSPARENT is the important
+# one: it hands the click to whatever is underneath, which is how a window
+# can be draggable by one strip and click-through everywhere else.
+WM_NCHITTEST = 0x0084
+WM_NCLBUTTONUP = 0x00A2
+WM_LBUTTONDOWN = 0x0201
+WM_EXITSIZEMOVE = 0x0232
+HTTRANSPARENT = -1
+HTCLIENT = 1
+HTCAPTION = 2
 
 
 class _BITMAPINFOHEADER(ctypes.Structure):
@@ -151,14 +168,46 @@ class _WNDCLASS(ctypes.Structure):
 CLASS_NAME = "HebrewDictationSkinGlass"
 _proc_ref = None                 # Windows calls this; it must outlive us
 _registered = False
+# hwnd -> Glass, for the one message that needs to reach the instance.
+# One shared window class serves every glass window in the process, so the
+# proc cannot close over a single one of them.
+_live: dict[int, "Glass"] = {}
+
+
+def _proc(hwnd, msg, wparam, lparam):
+    """Everything is DefWindowProc except the mouse, and the mouse only
+    matters for a window that asked to be interactive.
+
+    HTTRANSPARENT is returned for every pixel a window has not claimed,
+    which is what keeps the close button of a maximised window clickable
+    underneath a card sitting in that corner — the trap the status dot
+    already paid for once.
+    """
+    try:
+        glass = _live.get(int(hwnd or 0))
+        if glass is not None and glass.hit is not None:
+            if msg == WM_NCHITTEST:
+                # lparam is screen coords, low word x, high word y, signed.
+                x = ctypes.c_short(lparam & 0xFFFF).value
+                y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+                return glass.hit(x - glass.x, y - glass.y)
+            if msg == WM_LBUTTONDOWN and glass.clicked:
+                x = ctypes.c_short(lparam & 0xFFFF).value
+                y = ctypes.c_short((lparam >> 16) & 0xFFFF).value
+                glass.clicked(x, y)        # already window-relative here
+                return 0
+            if msg in (WM_EXITSIZEMOVE, WM_NCLBUTTONUP) and glass.moved:
+                glass.moved()
+    except Exception:
+        _log.debug("glass window proc", exc_info=True)
+    return _user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
 
 def _register() -> None:
     global _proc_ref, _registered
     if _registered:
         return
-    _proc_ref = _WNDPROC(
-        lambda hwnd, msg, wp, lp: _user32.DefWindowProcW(hwnd, msg, wp, lp))
+    _proc_ref = _WNDPROC(_proc)
     cls = _WNDCLASS()
     cls.lpfnWndProc = _proc_ref
     cls.lpszClassName = CLASS_NAME
@@ -223,11 +272,19 @@ class Glass:
     """
 
     def __init__(self, x: int, y: int, width: int, height: int,
-                 gpu: bool = True) -> None:
+                 gpu: bool = True, hit=None, moved=None, clicked=None) -> None:
         import skia                       # deferred: see skin/__init__
 
         self.x, self.y = int(x), int(y)
         self.width, self.height = int(width), int(height)
+        # hit(x, y) -> one of the HT* codes, in window-relative pixels.
+        # None keeps the old behaviour exactly: WS_EX_TRANSPARENT, and the
+        # mouse never sees the window at all. Passing one drops that style
+        # and hands every pixel to this function instead, which must
+        # answer HTTRANSPARENT for anything it does not want.
+        self.hit = hit
+        self.moved = moved               # called after a drag finishes
+        self.clicked = clicked           # called for a click on HTCLIENT
         self.hwnd = None
         self.dc = None
         self._bitmap = None
@@ -239,14 +296,21 @@ class Glass:
         self._info = None
 
         _register()
+        style = (WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                 | WS_EX_TOPMOST)
+        if hit is None:
+            style |= WS_EX_TRANSPARENT
         self.hwnd = _user32.CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE
-            | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
-            CLASS_NAME, "", WS_POPUP,
+            style, CLASS_NAME, "", WS_POPUP,
             self.x, self.y, self.width, self.height,
             None, None, None, None)
         if not self.hwnd:
             raise ctypes.WinError(ctypes.get_last_error())
+        # Registered AFTER the handle exists and removed in close(), so a
+        # message arriving on a half-built or half-dead window finds
+        # nothing and falls through to DefWindowProc.
+        if hit is not None or moved is not None or clicked is not None:
+            _live[int(self.hwnd)] = self
 
         screen = _user32.GetDC(None)
         try:
@@ -355,8 +419,24 @@ class Glass:
             _user32.TranslateMessage(ctypes.byref(msg))
             _user32.DispatchMessageW(ctypes.byref(msg))
 
+    def where(self) -> tuple[int, int]:
+        """Where the window actually is now.
+
+        A drag done by HTCAPTION is Windows moving the window, not us, so
+        `self.x` is stale afterwards and the position that gets saved has
+        to be read back off the handle rather than remembered.
+        """
+        if not self.hwnd:
+            return self.x, self.y
+        rect = w.RECT()
+        if _user32.GetWindowRect(self.hwnd, ctypes.byref(rect)):
+            self.x, self.y = int(rect.left), int(rect.top)
+            self._dst = _POINT(self.x, self.y)
+        return self.x, self.y
+
     def close(self) -> None:
         try:
+            _live.pop(int(self.hwnd or 0), None)
             self.surface = None
             self.canvas = None
             self._gr = None

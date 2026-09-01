@@ -203,6 +203,44 @@ back.
   it because they all end in `os._exit(0)`, which skips collection —
   `test_a_closed_card_leaves_no_interpreter_for_another_thread_to_free`
   deliberately does not.
+- **...and `gc.collect() == 0` does not prove you buried it. A module
+  global is not garbage.** The trap above came back on 2026-08-31 through
+  the other door: `skin\wave.py` cached the ring sprites in a module-level
+  dict and, to know which interpreter they belonged to, kept
+  `_owner = canvas.tk` — which is not a handle to the interpreter, it *is*
+  the interpreter. So the ask card's Tcl interpreter stayed reachable
+  after the card, its thread, and `_flow`'s collect were all gone, and was
+  freed later by whoever dropped the last reference: the NEXT card's pump
+  thread, or the main thread at exit. Same panic, same silence —
+  "Tcl_AsyncDelete: async handler deleted by the wrong thread", exit 3
+  (0x80000003), no traceback, nothing in `app.log`.
+  The rings are painted only while the microphone is live, so it fired
+  only when the owner SPOKE into the card — which is why the crash looked
+  like "dictation and ask-the-screen cannot be used together". Measured:
+  one card dictated into aborts at exit, two in a row abort mid-run; both
+  clean once the cache hangs off the card.
+  **So: nothing module-level may hold a Tk object — not a PhotoImage, not
+  a widget, and least of all a `tkapp`.** A cache belongs to the window it
+  draws, the way `visual_qa._Slabs` already does it. And the assertion
+  that catches this is not `gc.collect() == 0` (a global sails past it) but
+  "no global holds a Tk object" — see
+  `test_no_global_keeps_a_card_interpreter_alive_past_its_thread`.
+- **`ImageTk.PhotoImage(img)` with no `master=` does not bind to the
+  window you are drawing on — it binds to `tkinter._default_root`, which
+  is somebody else's.** `_default_root` is process-wide and is whatever Tk
+  was built first and not yet destroyed: after the splash goes, that is
+  the STATUS DOT, alive on its own thread for the whole run. So a
+  master-less image built on the ask card's thread is created in the
+  status dot's interpreter, from the wrong thread, and Tk answers with
+  `RuntimeError: main thread is not in main loop`. `skin\wave.py` swallowed
+  it in the `except Exception` that keeps decoration from being fatal, so
+  there was no crash and no message — the mic wave simply never appeared,
+  for months, in the only place it exists. Measured 2026-08-31 with a
+  long-lived overlay root standing: every `paint_wave` call declined;
+  every one drew once the image took `master=canvas`.
+  Every `ImageTk.PhotoImage` in `visual_qa.py` already passes `master=`.
+  Keep it that way, and note that a swallowed exception is exactly how a
+  feature that never runs looks identical to one that does.
 - **A tk.Frame is an opaque rectangle, forever.** No arrangement of them
   will ever look like glass, and `-alpha` is not the answer either: it is
   WHOLE-window, so it makes the text translucent too, which is where

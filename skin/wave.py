@@ -26,10 +26,26 @@ quantised (radius, age), and every later frame is an itemconfig and a
 coords — the same cost the ovals had.
 
 A PhotoImage belongs to the interpreter that made it, and visual_qa stands
-up a fresh Tk for every press, so the cache is keyed on the interpreter
-and dropped when a new one appears. Handing a stale image to a new Tk
-raises "image doesn't exist", which is the bug ui.forget_images() exists
-to prevent in the dashboard.
+up a fresh Tk for every press, so the cache HANGS OFF THE CARD and dies
+with it. It was a module-global keyed on the interpreter, and that is the
+Tcl_AsyncDelete abort in AGENTS.md re-armed: a module global that holds
+`canvas.tk` holds THE INTERPRETER ITSELF, so the card's Tcl interpreter
+outlived both the card and the thread that built it. It was then freed by
+whichever thread dropped the last reference — the next card's pump thread,
+or the main thread at exit — and Tcl answers a delete from the wrong
+thread with a panic: abort, no Python traceback, nothing in app.log.
+
+That made it the crash you get ONLY when you speak into the card, because
+the rings are painted only while the microphone is live. Reproduced
+2026-08-31: open the card, dictate into it, close it, and the process
+aborts with "Tcl_AsyncDelete: async handler deleted by the wrong thread"
+(exit 3) — while `gc.collect()` still reports 0, because a global
+reference is not garbage. Same run without the dictation exits 0.
+
+So: no module global may ever hold a Tk object. The cache is the card's,
+and every image is built with master= the card's own canvas rather than
+tkinter's process-wide default root — which is some OTHER window's
+interpreter (the status dot's, usually) whenever one is up.
 """
 from __future__ import annotations
 
@@ -47,15 +63,17 @@ MAX_R = 36                # px. Must not cross the chips above or the key
 #                           the four-ring version was already answering.
 STEP = 2                  # radius quantisation, in px, for the cache key
 
-_cache: dict = {}
-_owner = None             # the interpreter the cached images belong to
+def _sprite(cache: dict, canvas, radius: int, age: int, width: float, tint):
+    """One antialiased ring as an RGBA PhotoImage, cached on the card.
 
-
-def _sprite(radius: int, age: int, width: float, tint):
-    """One antialiased ring as an RGBA PhotoImage, cached."""
+    `cache` and `canvas` are passed in rather than reached for: between
+    them they are the two halves of the rule this module broke once
+    already — the images belong to ONE card, and to the interpreter that
+    card is drawn on. See the module docstring.
+    """
     from PIL import Image, ImageDraw, ImageTk
     key = (radius, age)
-    got = _cache.get(key)
+    got = cache.get(key)
     if got is not None:
         return got
     s = 4                                   # supersample, then LANCZOS down
@@ -71,8 +89,8 @@ def _sprite(radius: int, age: int, width: float, tint):
                       box * s / 2 + r, box * s / 2 + r),
                      outline=tuple(tint) + (int(215 * mul),), width=int(w))
     img = img.resize((box, box), Image.LANCZOS)
-    photo = ImageTk.PhotoImage(img)
-    _cache[key] = photo
+    photo = ImageTk.PhotoImage(img, master=canvas)
+    cache[key] = photo
     return photo
 
 
@@ -84,15 +102,16 @@ def paint(card) -> bool:
     five in two places, and the whole point of a hook is that the code it
     sits in front of does not change.
     """
-    global _owner
     canvas = getattr(card, "canvas", None)
     if canvas is None:
         return False
     try:
-        interp = canvas.tk
-        if interp is not _owner:            # a new Tk: the old images are
-            _cache.clear()                  # not this interpreter's to use
-            _owner = interp
+        # The card's own cache, made on first use and buried with the card
+        # by the thread that built it. Nothing module-level holds a Tk
+        # object here, and that is load-bearing — see the docstring.
+        cache = card.__dict__.get("_wave_sprites")
+        if cache is None:
+            cache = card._wave_sprites = {}
 
         for item in card._wave_items:
             canvas.delete(item)
@@ -119,7 +138,7 @@ def paint(card) -> bool:
             tint = lerp_rgb(LIGHT_CORE if age == 0 else LIGHT_MID,
                             LIGHT_ACCENT, 0.20 + 0.6 * (age / float(RINGS)))
             width = 1.7 * fade + 0.5
-            photo = _sprite(radius, age, width, tint)
+            photo = _sprite(cache, canvas, radius, age, width, tint)
             item = canvas.create_image(cx, cy, image=photo)
             # Tk keeps no reference to a canvas image's PhotoImage, and the
             # cache is what stops it being collected mid-frame

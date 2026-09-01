@@ -209,6 +209,49 @@ indicator = true              # small dot, top-right: blue = running, red = reco
                               # red breathing = locked on, amber = transcribing.
                               # Click-through, so it never blocks the X button
 
+[hint]
+# The card that appears while you are still holding the key. It says what
+# a release, the latch arrow and Escape will do, and lists the feature
+# keys — the ones that are REFUSED at this instant greyed out WITH the
+# reason. That is the whole point: mid-dictation those keys used to do
+# nothing at all, silently, and a key that does nothing silently reads as
+# a key that is broken.
+enabled = true                # false = never show it. The "don't show this
+                              # again" box on the card writes this line
+after_ms = 400                # how long the key must be held before it appears.
+                              # A short dictation never sees it — the card is
+                              # for the press you hesitated on, which is exactly
+                              # when someone has forgotten what the keys do
+corner = "top-right"          # top-right | top-left | bottom-right | bottom-left.
+                              # Where it starts before you have moved it. On the
+                              # right it is placed BESIDE the status dot, never
+                              # over it: the dot does not move for this
+x = -1950                      # the top-left of the CARD where you last dragged
+y = 241                       # it, in screen pixels — what you can SEE, not the
+                              # window, which starts 26 px further up and left to
+                              # leave room for its own shadow. -100000 = never
+                              # moved: use `corner`. It has to be a number no
+                              # desktop can reach, because a monitor to the LEFT
+                              # of the primary has real negative coordinates
+                              # (this one starts at x = -1920) and the -1 this
+                              # used to mean threw every card dragged there away
+scale = 0.9                   # how big you last made it (0.6 .. 1.4). The − and
+                              # + on the card step this by 10% and save it
+
+[setup]
+# The first-run wizard: pick a microphone, watch the meter move, say one
+# sentence, read it back. It runs ONCE per copy of the app.
+#
+# THE RECORD OF "IT HAS RUN" IS NOT HERE. It is `.setup-done`, a gitignored
+# file beside this one, because it is a fact about one installation rather
+# than a setting — and because this file is TRACKED: whatever is committed
+# here is what a fresh download gets, so `true` would mean nobody ever sees
+# the wizard and `false` would re-run it on every install that updated.
+#
+# This line is the override: true switches the wizard off without hunting
+# for a dotfile. To see it again: run  main.py --setup
+done = false
+
 [audio]
 sample_rate = 16000
 device = "1"                  # Arctis 7 headset mic (from --list-devices; "" = system default)
@@ -566,6 +609,26 @@ auto_send = true               # a SPOKEN question sends itself the moment
                                # asked, and the model answers all of it in
                                # one reply. false restores type-or-speak,
                                # then Enter, for editing before sending
+echo_to_field = true           # a question you SPEAK to the card is also
+                               # pasted into the field you were dictating
+                               # into, once the card closes. The card is
+                               # opened mid-sentence more often than not —
+                               # you are writing to somebody, you ask the
+                               # screen something, and what you asked is
+                               # part of what you were saying. It could not
+                               # be pasted WHILE the card is up: the card
+                               # owns the foreground, so the paste would
+                               # land in the card or steal focus off it.
+                               # false keeps a question a question. This
+                               # only chooses which way the switch STARTS:
+                               # the card carries it in its title strip (a
+                               # text field, struck through when off) so
+                               # the one question that has no business in
+                               # what you are writing can be excused
+                               # without leaving the card. Asked per
+                               # question, so turning it off never
+                               # un-sends what you already said, and it is
+                               # in transcripts.log either way
 window_alpha = 0.93            # how SOLID the blue glass is. It used to be
                                # Tk's whole-window -alpha, which made the
                                # TEXT translucent too — popup.py had already
