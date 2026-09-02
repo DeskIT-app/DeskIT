@@ -64,6 +64,7 @@ NEEDS_SCREEN = (
     "test_the_card_grows_to_fit_a_long_answer_and_then_scrolls",
     "test_the_card_has_a_switch_for_where_a_question_also_goes",
     "test_the_card_is_a_borderless_pane_that_can_be_moved",
+    "test_the_word_prompt_answers_enter_and_buries_its_window",
 )
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)

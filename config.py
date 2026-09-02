@@ -689,6 +689,7 @@ class ReviewConfig:
     accept_key: str = "v"
     reject_key: str = "x"
     later_key: str = "l"
+    edit_key: str = "e"
     # Accepting also corrects the text in the field it was pasted into,
     # when that window is still in front and still holds it verbatim.
     fix_in_field: bool = True
@@ -1192,6 +1193,8 @@ def load(path: Path) -> Config:
                 "reject_key", ReviewConfig.reject_key)).strip().lower(),
             later_key=str(review.get(
                 "later_key", ReviewConfig.later_key)).strip().lower(),
+            edit_key=str(review.get(
+                "edit_key", ReviewConfig.edit_key)).strip().lower(),
             fix_in_field=bool(review.get("fix_in_field",
                                          ReviewConfig.fix_in_field)),
             max_clip_seconds=float(review.get(
@@ -1559,7 +1562,7 @@ def load(path: Path) -> Config:
     if not (0 <= cfg.review.witness <= 3):
         raise ConfigError("review.witness must be between 0 and 3 (there "
                           "are three extra decodes)")
-    for name in ("accept_key", "reject_key", "later_key"):
+    for name in ("accept_key", "reject_key", "later_key", "edit_key"):
         if not getattr(cfg.review, name):
             raise ConfigError(f"review.{name} must name a key")
     if cfg.local.device not in ("auto", "cuda", "cpu"):

@@ -2451,9 +2451,12 @@ the sentence would read after the change: the changed word on a pill, a
 few words either side, and a reason beneath (`אוכלים מנטוס, לא מטוס`),
 because "is this what you said" can only be answered against the
 sentence. Three buttons, three keys that work while the mouse is on the
-card (<kbd>V</kbd> yes, <kbd>X</kbd> no, <kbd>L</kbd> later), and a bar
-under the title that is the card's clock — 20 seconds, paused while the
-pointer is on it. Two kinds of proposal:
+card (<kbd>V</kbd> yes, <kbd>X</kbd> no, <kbd>L</kbd> later), a pencil at
+the end of every row (or <kbd>E</kbd> for the first) that opens a
+one-line box for the word you actually meant — Enter accepts the card
+with that word, Escape leaves it pending — and a bar under the title
+that is the card's clock — 20 seconds, paused while the pointer is on
+it. Two kinds of proposal:
 
 - **A replacement**, from the language model (Groq first, the local
   model underneath; text only — audio never leaves the machine). It is

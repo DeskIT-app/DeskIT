@@ -418,9 +418,13 @@ class App:
             on_change=self._save_review_card,
             on_verdict=self._review_verdict, seconds=rcfg.card_seconds,
             keys={"accept": rcfg.accept_key, "reject": rcfg.reject_key,
-                  "later": rcfg.later_key})
+                  "later": rcfg.later_key,
+                  "edit": getattr(rcfg, "edit_key", "e")},
+            on_edit=self._review_edit)
             if rcfg is not None and rcfg.enabled and rcfg.card_seconds > 0
             else overlay_mod.ReviewCard.off())
+        # The pencil's box: one line, takes the keyboard, on purpose.
+        self._word_prompt = overlay_mod.WordPrompt()
         self._review = None
         # The decoder's per-word confidence for the LAST live transcription,
         # read under the model lock in _transcribe and written into the
@@ -991,6 +995,28 @@ class App:
         engine = getattr(self, "_review", None)
         if engine is not None:
             engine.decide(sid, verdict, by="card")
+
+    def _review_edit(self, sid: str, row: int, rect) -> None:
+        """The pencil on the card: a box asks what the word should be.
+        Enter accepts the proposal with that word — learned, and fixed in
+        the field if it still holds the text — and Escape leaves it
+        pending. From the card's thread; the box runs on its own."""
+        engine = getattr(self, "_review", None)
+        if engine is None:
+            return
+        item = engine.store.get(sid)
+        changes = (item or {}).get("changes") or []
+        if not item or row >= len(changes):
+            return
+        change = changes[row]
+        initial = change.get("after") or change.get("before") or ""
+
+        def done(text) -> None:
+            if text is None:
+                return                    # Escape: it stays a question
+            engine.decide(sid, "accepted", by="pencil", edits={row: text})
+
+        self._word_prompt.ask(initial, rect, done)
 
     def _review_fix(self, item: dict) -> None:
         """An accepted proposal, applied where the text was pasted — if

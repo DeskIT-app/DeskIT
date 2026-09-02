@@ -163,8 +163,8 @@ def run(card) -> None:
     def on_click(x, y):
         if shown is None:
             return
-        _code, what = rc.hit_test(shown, card.scale, x, y)
-        if what in (rc.ACCEPT, rc.REJECT, rc.LATER):
+        code, what = rc.hit_test(shown, card.scale, x, y)
+        if code == rc.HTCLIENT and what:
             card.pressed(what)
 
     def paint(progress: float):

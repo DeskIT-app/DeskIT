@@ -90,6 +90,7 @@ KEEP_DECIDED = 300
 # card next to the sentence it is about.
 WHY_TAIL = "מילים שאף פענוח אחר לא שמע"
 WHY_DEFAULT = "נשמע כמו טעות שמיעה"
+WHY_TYPED = "תיקנת בעצמך"
 
 PENDING, ACCEPTED, REJECTED = "pending", "accepted", "rejected"
 VERDICTS = (ACCEPTED, REJECTED)
@@ -785,9 +786,15 @@ class Store:
             self._save(data)
             return dict(found)
 
-    def decide(self, sid: str, verdict: str, by: str = "card") -> dict | None:
+    def decide(self, sid: str, verdict: str, by: str = "card",
+               edits: dict | None = None) -> dict | None:
         """Record a verdict. Only a PENDING proposal can be decided, and
-        only once — the dashboard and the card may both hold it open."""
+        only once — the dashboard and the card may both hold it open.
+
+        `edits` is the pencil: {row: text} replaces that change's "after"
+        with what the owner typed. A word typed exactly as it was pasted
+        says the pasted word was right — that change goes, and if none
+        is left the verdict becomes a rejection, whatever was asked."""
         if verdict not in VERDICTS:
             raise ValueError(f"unknown verdict {verdict!r}")
         with self._locked():
@@ -796,6 +803,25 @@ class Store:
                          None)
             if found is None or found.get("status") != PENDING:
                 return None
+            if edits:
+                keep = []
+                for row, change in enumerate(found.get("changes") or []):
+                    typed = edits.get(row, edits.get(str(row)))
+                    if typed is None:
+                        keep.append(change)
+                        continue
+                    typed = " ".join(str(typed).split())
+                    before = str(change.get("before", ""))
+                    if not typed or typed.lower() == before.lower():
+                        continue
+                    keep.append(dict(change, after=typed, kind="replace",
+                                     why=WHY_TYPED,
+                                     family=vocab_mod.family(before, typed)))
+                found["changes"] = keep
+                found["proposed"] = (apply_changes(found.get("text", ""), keep)
+                                     if keep else found.get("text", ""))
+                if not keep:
+                    verdict = REJECTED
             found.update(status=verdict, by=by, learned=False,
                          decided=time.strftime("%Y-%m-%d %H:%M:%S"))
             self._save(data)
@@ -885,10 +911,12 @@ class Engine:
         the paste; only enqueues."""
         self._q.put(("read", item, int(hwnd or 0), bool(card), 0))
 
-    def decide(self, sid: str, verdict: str, by: str = "card") -> None:
+    def decide(self, sid: str, verdict: str, by: str = "card",
+               edits: dict | None = None) -> None:
         """A verdict from the card or the keys. Only enqueues — the
-        learning runs here, on this thread, never on the card's."""
-        self._q.put(("decide", sid, verdict, by))
+        learning runs here, on this thread, never on the card's. `edits`
+        is the pencil's {row: typed word}."""
+        self._q.put(("decide", sid, verdict, by, edits))
 
     def busy(self) -> bool:
         return not self._q.empty()
@@ -1004,8 +1032,9 @@ class Engine:
 
     # ---- what a verdict does ----
 
-    def _decide(self, sid: str, verdict: str, by: str) -> None:
-        item = self.store.decide(sid, verdict, by)
+    def _decide(self, sid: str, verdict: str, by: str,
+                edits: dict | None = None) -> None:
+        item = self.store.decide(sid, verdict, by, edits=edits)
         if item is None:
             log.info("review %s: no pending proposal to mark %s", sid, verdict)
             return

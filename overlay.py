@@ -841,6 +841,129 @@ class HintCard:
             gc.collect()
 
 
+class WordPrompt:
+    """One line, one question: what should this word be?
+
+    The pencil on the review card. Unlike every other window in this
+    module it TAKES the keyboard, on purpose — a box you type into must —
+    and only because the owner just clicked for it. Own thread, own Tk
+    interpreter, destroyed and collected on that thread (the same burial
+    the cards get). Enter answers with the text, Escape answers None;
+    either way the box is gone before `on_done` is called, so the app
+    underneath has its focus back by the time anything is learned or
+    pasted.
+    """
+
+    WIDTH, HEIGHT = 300, 86
+
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+
+    def ask(self, initial: str, near, on_done, prompt: str = "מה התכוונת?"
+            ) -> bool:
+        """Open the box below `near` (a screen rect, or None). One at a
+        time: a second question while one is open is dropped."""
+        if self._thread is not None and self._thread.is_alive():
+            return False
+        self._thread = threading.Thread(
+            target=self._run, args=(initial, near, on_done, prompt),
+            daemon=True, name="review-edit")
+        self._thread.start()
+        return True
+
+    @staticmethod
+    def _take_focus(root, entry) -> None:
+        """visual_qa.take_foreground's recipe: SetForegroundWindow first
+        (this process just took a click, so it may), the Alt tap only if
+        that bounced — an Alt the app underneath also sees arms its menu
+        bar, which is a price worth paying only when needed."""
+        try:
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            hwnd = int(root.winfo_id())
+            target = user32.GetParent(hwnd) or hwnd
+            user32.SetForegroundWindow(target)
+            root.focus_force()
+            entry.focus_set()
+            root.update()
+            time.sleep(0.05)
+            if user32.GetForegroundWindow() != target:
+                user32.keybd_event(0xA4, 0, 0, 0)       # Alt down
+                user32.keybd_event(0xA4, 0, 2, 0)       # Alt up
+                user32.SetForegroundWindow(target)
+                root.focus_force()
+                entry.focus_set()
+        except Exception:
+            _log.debug("word prompt: could not take the keyboard",
+                       exc_info=True)
+
+    def _run(self, initial, near, on_done, prompt) -> None:
+        import gc
+        import tkinter as tk
+        result = {"text": None}
+        closing = threading.Event()
+        root = entry = None
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            root.overrideredirect(True)
+            root.attributes("-topmost", True)
+            root.configure(bg=CARD_BG, highlightthickness=1,
+                           highlightbackground=CARD_KEY_EDGE)
+            # Pure Hebrew, so a plain Label lays it out right (mixed
+            # strings are the ones Tk scrambles); the word being typed
+            # is one word and gets the same pass.
+            tk.Label(root, text=prompt, bg=CARD_BG, fg=CARD_DIM,
+                     font=("Rubik", 9)).pack(anchor="e", padx=14,
+                                             pady=(10, 2))
+            entry = tk.Entry(root, bg=CARD_KEY_BG, fg=CARD_FG,
+                             insertbackground=CARD_FG, bd=0,
+                             highlightthickness=1,
+                             highlightbackground=CARD_KEY_EDGE,
+                             highlightcolor=CARD_KEY_FG,
+                             font=("Rubik", 13), justify="right")
+            entry.pack(fill="x", padx=14, pady=(0, 12), ipady=4)
+            entry.insert(0, initial or "")
+            entry.select_range(0, "end")
+            entry.icursor("end")
+
+            def done(_event=None) -> None:
+                result["text"] = entry.get().strip()
+                closing.set()
+
+            def cancel(_event=None) -> None:
+                closing.set()
+
+            entry.bind("<Return>", done)
+            entry.bind("<KP_Enter>", done)
+            entry.bind("<Escape>", cancel)
+            if near:
+                x, y = int(near[0]), int(near[3]) + 8
+            else:
+                x = (root.winfo_screenwidth() - self.WIDTH) // 2
+                y = (root.winfo_screenheight() - self.HEIGHT) // 2
+            root.geometry(f"{self.WIDTH}x{self.HEIGHT}+{x}+{y}")
+            root.deiconify()
+            root.update_idletasks()
+            self._take_focus(root, entry)
+            _pump_until(root, closing)
+        except Exception as e:
+            _log.info("the word prompt could not open: %r", e)
+        finally:
+            try:
+                if root is not None:
+                    _forget_window(root)
+                    root.destroy()
+            except Exception:
+                pass
+            entry = root = None                          # noqa: F841
+            gc.collect()
+        try:
+            on_done(result["text"])
+        except Exception:
+            _log.info("word prompt: could not report the answer",
+                      exc_info=True)
+
+
 _REVIEW_BUTTONS = ("accept", "reject", "later")
 
 
@@ -879,12 +1002,16 @@ class ReviewCard(HintCard):
     def __init__(self, corner: str = "right", margin: int = 14,
                  x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
                  on_change=None, on_verdict=None, seconds: float = 20.0,
-                 keys: dict | None = None) -> None:
+                 keys: dict | None = None, on_edit=None) -> None:
         super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
                          scale=scale, on_change=on_change)
         self._on_verdict = on_verdict
+        # The pencil: on_edit(id, row, rect) — the owner wants to type the
+        # word himself. The card is down by the time it is called.
+        self._on_edit = on_edit
         self.seconds = float(seconds)
-        self._keys = {"accept": "v", "reject": "x", "later": "l"}
+        self._keys = {"accept": "v", "reject": "x", "later": "l",
+                      "edit": "e"}
         if keys:
             self._keys.update({k: str(v).strip().lower()
                                for k, v in keys.items() if v})
@@ -908,7 +1035,8 @@ class ReviewCard(HintCard):
     # -- caller's threads --
 
     def key_labels(self) -> tuple:
-        return tuple(self._keys[n].upper() for n in _REVIEW_BUTTONS)
+        return tuple(self._keys[n].upper()
+                     for n in _REVIEW_BUTTONS + ("edit",))
 
     def show(self, suggestion: dict) -> None:
         """Put a proposal up. Only enqueues, so safe from the engine
@@ -954,7 +1082,7 @@ class ReviewCard(HintCard):
             vks: dict = {}
             try:
                 from hotkey import vk_for
-                for name in _REVIEW_BUTTONS:
+                for name in _REVIEW_BUTTONS + ("edit",):
                     try:
                         vks[int(vk_for(self._keys[name]))] = name
                     except Exception:
@@ -977,14 +1105,33 @@ class ReviewCard(HintCard):
         return True
 
     def pressed(self, name: str) -> None:
-        """A button, by click or key. Takes the card down and reports."""
-        if name not in _REVIEW_BUTTONS:
+        """A button, by click or key. Takes the card down and reports.
+        "edit", or "edit<row>", is the pencil: the owner types the word
+        himself, and that goes out through on_edit instead of a verdict."""
+        pencil = name.startswith("edit")
+        if not (pencil or name in _REVIEW_BUTTONS):
             return
         with self._state_lock:
             sid, self._current = self._current, None
+        rect = self.rect
         if self._thread is not None:
             self._q.put(None)
-        if sid is None or name == "later" or self._on_verdict is None:
+        if sid is None:
+            return
+        if pencil:
+            if self._on_edit is None:
+                return
+            try:
+                row = int(name[4:] or 0)
+            except ValueError:
+                row = 0
+            try:
+                self._on_edit(sid, row, rect)
+            except Exception:
+                _log.info("review card: could not open the pencil",
+                          exc_info=True)
+            return
+        if name == "later" or self._on_verdict is None:
             return
         try:
             self._on_verdict(sid, "accepted" if name == "accept"
@@ -1107,7 +1254,7 @@ class ReviewCard(HintCard):
 
         def on_press(event) -> None:
             code, what = hit(event)
-            if what in _REVIEW_BUTTONS:
+            if code == rc.HTCLIENT and what:
                 self.pressed(what)
             elif code == rc.HTCAPTION:
                 st["drag"] = (event.x_root - root.winfo_x(),
@@ -1118,8 +1265,8 @@ class ReviewCard(HintCard):
                 dx, dy = st["drag"]
                 root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
                 return
-            _code, what = hit(event)
-            want = what if what in _REVIEW_BUTTONS else None
+            code, what = hit(event)
+            want = what if code == rc.HTCLIENT else None
             if want != st["hover"]:
                 st["hover"] = want
                 paint()

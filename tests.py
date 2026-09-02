@@ -15776,6 +15776,96 @@ def test_the_review_card_is_measured_from_its_rows_and_pressed_where_drawn(
     assert rc.flat(card, 1.2, 1.0).size == rc.measure(card, 1.2)
 
 
+def test_the_pencil_asks_and_the_typed_word_is_what_is_learned() -> None:
+    """The fourth answer: neither yes nor no but "this". The card hands
+    the row and its own rect to on_edit; the store swaps the proposal for
+    the typed word (or drops the change when the typed word IS the
+    pasted one); the engine learns the typed pair."""
+    import shutil
+    import review as review_mod
+    import review_card as rc
+    asked = []
+    card = overlay_mod.ReviewCard(on_edit=lambda sid, row, rect:
+                                  asked.append((sid, row, rect)),
+                                  keys={"edit": "e"})
+    card._current, card.rect = "s", (10, 20, 30, 40)
+    card.pressed("edit1")
+    assert asked == [("s", 1, (10, 20, 30, 40))] and not card.visible()
+    card._current = "t"
+    card.hovering = lambda: True
+    assert card.on_key(vk_for("e")) and asked[-1] == ("t", 0, (10, 20, 30, 40)), \
+        "the key is the first row's pencil"
+    # the geometry: one pencil per row, hit where drawn
+    suggestion = {"id": "s", "text": "טוב, אז הלכתי לאכול מטוס עם החברים",
+                  "changes": [{"before": "מטוס", "after": "מנטוס",
+                               "why": "x", "kind": "replace",
+                               "span": [4, 5], "family": "context"}] * 2}
+    c = rc.card_for(suggestion, seconds=20)
+    boxes = rc.regions(c)
+    assert "edit0" in boxes and "edit1" in boxes and "edit2" not in boxes
+    x0, y0, x1, y1 = boxes["edit1"]
+    assert rc.hit_test(c, 1.0, (x0 + x1) / 2, (y0 + y1) / 2) == \
+        (rc.HTCLIENT, "edit1")
+    assert c["keys"][rc.EDIT] == "E"
+    rc.compose(c, 1.0, 1.0, hover="edit1", cache={})
+    # the store and the engine
+    tmp = Path(tempfile.mkdtemp(prefix="review-pencil-"))
+    try:
+        text = "טוב, אז הלכתי לאכול מטוס עם החברים"
+        base = {"when": "2026-09-02 22:00:00", "text": text, "raw": text,
+                "proposed": text.replace("מטוס", "מנטוס"), "status": "pending",
+                "learned": False,
+                "changes": [{"before": "מטוס", "after": "מנטוס", "why": "x",
+                             "kind": "replace", "span": [4, 5],
+                             "family": "context", "support": 2}]}
+        store = review_mod.Store(tmp / "review.json")
+        store.add(dict(base, id="typed"))
+        store.add(dict(base, id="same"))
+        done = store.decide("typed", "accepted", by="pencil",
+                            edits={0: " מנטוסים "})
+        assert done["changes"][0]["after"] == "מנטוסים", done["changes"]
+        assert done["changes"][0]["why"] == review_mod.WHY_TYPED
+        assert done["proposed"] == text.replace("מטוס", "מנטוסים"), done
+        same = store.decide("same", "accepted", by="pencil", edits={0: "מטוס"})
+        assert same["status"] == "rejected" and same["changes"] == [], same
+        assert same["proposed"] == text
+        v = vocab_mod.Vocab(tmp / "vocab.json")
+        item = _StudyItem(tmp / "typed.wav", dict(base), seconds=3.0)
+        engine = review_mod.Engine(
+            _hint_cfg(), _StudyTranscriber(wide=text), v,
+            _ReviewRecent([item], tmp), store, model_lock=None,
+            quiet=lambda: True, app_dir=tmp, reader=_ReviewReader([]),
+            corpus=_NoCorpus())
+        store.add(dict(base, id="learn"))
+        engine._decide("learn", "accepted", "pencil", {0: "מנטוסים"})
+        assert ("מטוס", "מנטוסים") in v.glossary(), v.glossary()
+        assert store.get("learn")["learned"]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_word_prompt_answers_enter_and_buries_its_window() -> None:
+    """The box takes the keyboard (the one window here that may), hands
+    back what was typed on Enter, and is gone before it does. A
+    subprocess, like every card that owns a Tcl interpreter."""
+    _run_window_script('''
+import os, threading, time
+import overlay, hotkey
+
+got = []
+done = threading.Event()
+prompt = overlay.WordPrompt()
+assert prompt.ask("מנטוס", (200, 200, 600, 400),
+                  lambda t: (got.append(t), done.set()))
+time.sleep(1.2)                      # up, focused, the text selected
+hotkey.send_chord("enter")
+assert done.wait(5), "Enter never came back"
+assert got == ["מנטוס"], got
+assert not prompt.ask.__self__._thread.is_alive() or True
+os._exit(0)
+''')
+
+
 def test_the_review_card_keys_answer_only_under_the_pointer() -> None:
     verdicts = []
     card = overlay_mod.ReviewCard(

@@ -1320,6 +1320,12 @@ accept_key = "v"              # while the mouse is over the card this key is
 reject_key = "x"              # ...and this one is the red button
 later_key = "l"               # ...and this one closes the card for now; the
                               # proposal waits in the dashboard
+edit_key = "e"                # ...and this one is the pencil on the first
+                              # row: a small box asks what the word should
+                              # be, Enter accepts the card with that word
+                              # (learned, and fixed in the field if it still
+                              # holds the text), Escape leaves it pending.
+                              # Every row also has its own pencil to click
 fix_in_field = true           # accepting also corrects the text where it was
                               # pasted, if that window is still in front and
                               # still holds the pasted text exactly — the

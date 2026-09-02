@@ -51,6 +51,9 @@ SCALE_MIN, SCALE_MAX = 0.6, 1.4
 MAX_ROWS = 3
 
 ACCEPT, REJECT, LATER, DRAG = "accept", "reject", "later", "drag"
+EDIT = "edit"             # a row's pencil is named "edit0", "edit1", ...
+PENCIL_W = 22             # the pencil's own column at the left end of a row
+PENCIL = "\u270e"          # ✎
 VERDICT_OF = {ACCEPT: "accepted", REJECT: "rejected"}
 BUTTONS = ((ACCEPT, 112), (REJECT, 92), (LATER, 104))   # name, width at 1.0
 
@@ -88,8 +91,8 @@ def clamp_scale(scale: float) -> float:
 # the words
 # ---------------------------------------------------------------------------
 
-def card_for(suggestion: dict, *, seconds: float, keys=("V", "X", "L"),
-             max_rows: int = MAX_ROWS) -> dict:
+def card_for(suggestion: dict, *, seconds: float,
+             keys=("V", "X", "L", "E"), max_rows: int = MAX_ROWS) -> dict:
     """The whole card as data: what overlay.ReviewCard queues and every
     painter consumes. `seconds` is how long the clock runs; 0 means the
     caller shows no card at all and this is only ever measured."""
@@ -104,7 +107,8 @@ def card_for(suggestion: dict, *, seconds: float, keys=("V", "X", "L"),
     return {"id": suggestion.get("id", ""),
             "title": TITLE, "sub": sub, "rows": rows, "more": more,
             "seconds": float(seconds),
-            "keys": {ACCEPT: keys[0], REJECT: keys[1], LATER: keys[2]}}
+            "keys": {ACCEPT: keys[0], REJECT: keys[1], LATER: keys[2],
+                     EDIT: keys[3] if len(keys) > 3 else ""}}
 
 
 def note_for(row: dict) -> str:
@@ -154,6 +158,12 @@ def regions(card: dict, scale: float = 1.0) -> dict:
         bw = w * s
         out[name] = (x - bw, y_top, x, y1)
         x -= bw + BTN_GAP * s
+    # a pencil at the left end of every row's sentence line
+    y = y0 + (PAD + HEAD_H + BAR_H + 10) * s
+    for i in range(len(card.get("rows") or [])):
+        out[f"{EDIT}{i}"] = (x0 + pad, y + 2 * s, x0 + pad + PENCIL_W * s,
+                             y + 30 * s)
+        y += ROW_H * s
     out[DRAG] = (x0, y0, x0 + width, y0 + height)
     return out
 
@@ -169,6 +179,9 @@ def hit_test(card: dict, scale: float, x: int, y: int):
     boxes = regions(card, scale)
     for name, _w in BUTTONS:
         if _in(boxes[name], x, y):
+            return HTCLIENT, name
+    for name, box in boxes.items():
+        if name.startswith(EDIT) and _in(box, x, y):
             return HTCLIENT, name
     if _in(boxes[DRAG], x, y):
         return HTCAPTION, DRAG
@@ -295,12 +308,17 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     # -- the rows
     rows = card.get("rows") or []
     pt = 11.0 * s
-    avail = width - 2 * pad
-    for row in rows:
+    avail = width - 2 * pad - (PENCIL_W + 8) * s
+    for index, row in enumerate(rows):
         ri, word, li, pill_w = _fit(cache, row, avail, pt, s)
         line_h = max(word.height, ri.height if ri else 0,
                      li.height if li else 0) + 6 * s
         cy = y + line_h / 2
+        # the pencil: type what the word should be
+        pen = _text(cache, PENCIL, 12.0 * s, rtl=False,
+                    colour=INK if hover == f"{EDIT}{index}" else INK_FAINT)
+        img.alpha_composite(pen, (int(pad + (PENCIL_W * s - pen.width) / 2),
+                                  int(cy - pen.height / 2)))
         x = right
         if ri is not None:
             img.alpha_composite(ri, (int(x - ri.width),
@@ -387,4 +405,4 @@ def flat(card: dict, scale: float = 1.0, progress: float = 1.0,
 
 __all__ = ["card_for", "note_for", "measure", "regions", "hit_test",
            "compose", "flat", "clamp_scale", "SHADOW", "ACCEPT", "REJECT",
-           "LATER", "DRAG", "VERDICT_OF", "BUTTONS"]
+           "LATER", "EDIT", "DRAG", "VERDICT_OF", "BUTTONS"]
