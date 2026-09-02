@@ -581,6 +581,41 @@ class _NullLock:
         return False
 
 
+def decoder_form(text: str, raw: str, span) -> str:
+    """What the decoder wrote where the pasted text has `span`.
+
+    The pasted text is the decoder's output after the vocabulary swap and
+    the repair pass, so the words a card shows are not always the words
+    the decoder produced — and the lesson an acceptance teaches has to be
+    keyed on what the DECODER said, or it can never fire again. First
+    live accept, 2026-09-02: the card said "קומפלט", the decoder had
+    said "קומית", the repair pass had done the rest. The two texts are
+    aligned word by word and the raw words under the span are returned;
+    "" when the span maps to nothing, or to more than a term's worth.
+    """
+    tw, rw = words(text), words(raw)
+    i1, i2 = int(span[0]), int(span[1])
+    if not tw or not rw or i1 >= i2:
+        return ""
+    lo, hi = None, None
+    for tag, a1, a2, b1, b2 in difflib.SequenceMatcher(
+            None, _low(tw), _low(rw), autojunk=False).get_opcodes():
+        if tag == "insert" or a2 <= i1 or a1 >= i2:
+            continue
+        if tag == "equal":
+            # the same words: map the overlap one for one
+            s, e = max(a1, i1), min(a2, i2)
+            j1, j2 = b1 + (s - a1), b1 + (e - a1)
+        else:
+            j1, j2 = b1, b2
+        lo = j1 if lo is None else min(lo, j1)
+        hi = j2 if hi is None else max(hi, j2)
+    if lo is None or hi is None or hi <= lo \
+            or hi - lo > vocab_mod.MAX_SPAN_WORDS:
+        return ""
+    return " ".join(rw[lo:hi])
+
+
 def glossary_for(vocab, text: str, limit: int = 30) -> list[tuple[str, str]]:
     """The confusions worth telling the model about for THIS text: every
     learned pair whose heard side occurs in it, then the usual top of the
@@ -1014,8 +1049,17 @@ class Engine:
             # THE BACKWARD-LEARNING GUARD, as on every other learning
             # path: a "before" the decoder never produced is the repair
             # pass's own doing, and learning it would teach the reverse.
+            # Unlike the other paths this one knows WHERE the change sits,
+            # so it can go back to the decoder's own words at that spot
+            # and teach those instead of nothing (decoder_form).
             if raw:
                 pairs = vocab_mod.heard_by_decoder(pairs, raw)
+                if not pairs and change.get("span"):
+                    heard = decoder_form(item.get("text") or "", raw,
+                                         change["span"])
+                    after = str(change["after"])
+                    if heard and heard.lower() != after.lower():
+                        pairs = [(heard, after)]
             for heard, meant in pairs:
                 self._vocab.learn(heard, meant)
                 learned.append((heard, meant))

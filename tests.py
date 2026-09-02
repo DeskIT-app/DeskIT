@@ -15695,8 +15695,29 @@ def test_the_engine_proposes_on_a_card_and_learns_only_what_was_accepted(
         assert applied and applied[0]["id"] == "again"
         assert engine.store.unlearned() == []
         assert engine.store.get("again")["by"] == "dashboard"
+        # The repair pass had already rewritten the word before the paste:
+        # the lesson is keyed on what the DECODER wrote at that spot.
+        repaired = dict(shown[0], id="raw", status="pending", learned=False,
+                        raw="טוב, אז הלכתי לאכול מאטוס עם החברים")
+        engine.store.add(repaired)
+        engine._decide("raw", "accepted", "card")
+        assert ("מאטוס", "מנטוס") in v.glossary(), v.glossary()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_an_accepted_card_teaches_the_decoders_word_not_the_repairs() -> None:
+    """2026-09-02 22:38: the card said קומפלט, the decoder had said קומית
+    and the repair pass had rewritten it; accepting must teach קומית."""
+    import review as review_mod
+    text = "הפעלתי מחדש, במידה וזה יעבוד תעשה קומפלט"
+    raw = "הפעלתי מחדש, במידה וזה יעבוד תעשה קומית"
+    assert review_mod.decoder_form(text, raw, [6, 7]) == "קומית"
+    assert review_mod.decoder_form(text, raw, [0, 1]) == "הפעלתי"
+    assert review_mod.decoder_form(text, text, [6, 7]) == "קומפלט"
+    # a span the decoder had no words for, or a whole sentence's worth
+    assert review_mod.decoder_form(text, "הפעלתי מחדש", [6, 7]) == ""
+    assert review_mod.decoder_form("א ב ג ד ה ו", "x y z w v u q r", [0, 6]) == ""
 
 
 def test_a_hebrew_one_hit_correction_stays_out_of_the_decoder_prompt() -> None:
