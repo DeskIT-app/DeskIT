@@ -73,6 +73,7 @@ import control
 import history
 import hotkey as hotkey_mod
 import launch
+import settings as settings_mod
 import singleton
 import ui
 
@@ -113,7 +114,8 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
            "faint": ui.FAINT}
 
 NAV = (("overview", "Overview"), ("history", "History"),
-       ("keys", "Keys"), ("version", "Version"), ("settings", "Settings"))
+       ("review", "Review"), ("keys", "Keys"), ("version", "Version"),
+       ("settings", "Settings"))
 
 # Which keys belong together on the Keys screen. HOTKEY_FIELDS is still
 # the one place a new key has to be added: anything not named here lands
@@ -139,6 +141,10 @@ NESTED_HOTKEYS = {
     "record_hotkey": "capture.record_hotkey",
     "camera_hotkey": "camera.camera_hotkey",
 }
+
+# The right-hand column of a settings row: a switch, a menu, or a field.
+CONTROL_W = 236
+ENTRY_W = 150
 
 # "Dictate (hold)" is one string in config.py because that is all the old
 # window needed. Here the how is its own column.
@@ -313,24 +319,33 @@ def _dark_caption(root) -> None:
         pass          # Windows 10, or an older build: the window still works
 
 
-def _mic_from_config(cfg) -> str:
-    """What the microphone is set to, for when there is no running app to
-    ask what it actually opened."""
-    device = getattr(getattr(cfg, "audio", None), "device", None)
-    if device is None or device == "":
-        return "system default"
-    return f"device {device}" if isinstance(device, int) else str(device)
+def _keys_screen_paths() -> set[str]:
+    """The config.toml paths the Keys screen owns. The Settings screen
+    leaves those to it — one place to rebind a key — and a test holds the
+    two screens to covering the file between them."""
+    return {NESTED_HOTKEYS.get(field, field)
+            for field, _label in config_mod.HOTKEY_FIELDS}
 
 
-def _words_on_disk() -> int:
-    """The vocabulary without loading the vocabulary: the file is the
-    record, and this window has no business opening the real store."""
-    import json
-    try:
-        data = json.loads((APP_DIR / "vocab.json").read_text("utf-8"))
-        return len(data.get("corrections") or [])
-    except Exception:
-        return 0
+def _shown(value) -> str:
+    """A value as the field shows it, and as config.set_values will read
+    it back: repr for a float so 6.0 stays 6.0, str for the rest."""
+    if isinstance(value, float):
+        return repr(value)
+    return str(value)
+
+
+def _parse(raw: str, kind: str):
+    """What was typed, as the kind the file holds. An int field refuses a
+    fraction rather than rounding it: config.py would int() it silently,
+    and 400.5 becoming 400 without a word is the kind of edit nobody can
+    later explain."""
+    raw = raw.strip()
+    if kind == "int":
+        return int(raw)
+    if kind == "float":
+        return float(raw)
+    return raw
 
 
 def _log_icon_problem(error) -> None:
@@ -399,6 +414,14 @@ class Dashboard:
         self._toast_after = None
         self._pump_after = None
         self._search_after = None
+        self._settings_query = ""
+        self._settings_after = None
+        self._settings_tab = settings_mod.TABS[0].name
+        self._settings_searching = False
+        # The settings cards still to be built, one per tick — see
+        # _fill_settings — and the tick that will build the next.
+        self._settings_left: list = []
+        self._settings_tick = None
         self._rows_after = None
         self._rows_left: list = []
         self._slide_after = None
@@ -548,6 +571,7 @@ class Dashboard:
         self._hide_toast()
         {"Overview": self._screen_overview,
          "History": self._screen_history,
+         "Review": self._screen_review,
          "Keys": self._screen_keys,
          "Version": self._screen_version,
          "Settings": self._screen_settings}[name]()
@@ -987,12 +1011,15 @@ class Dashboard:
 
     def _stop_rows(self) -> None:
         self._rows_left = []
-        if self._rows_after is not None:
-            try:
-                self.root.after_cancel(self._rows_after)
-            except Exception:
-                pass
-            self._rows_after = None
+        self._settings_left = []
+        for name in ("_rows_after", "_settings_tick"):
+            pending = getattr(self, name)
+            if pending is not None:
+                try:
+                    self.root.after_cancel(pending)
+                except Exception:
+                    pass
+                setattr(self, name, None)
 
     def _history_row(self, scroller: ui.Scroller, event: history.Event) -> None:
         """One event, one canvas — drawn, not built out of widgets.
@@ -1066,6 +1093,166 @@ class Dashboard:
         row.bind("<Button-1>", lambda _e, t=text: self._copy(t))
         scroller.bind_wheel(row)
 
+    # ------------------------------------------------------------- review
+
+    def _review_store(self):
+        """review.json, read straight off the disk — this window has to
+        list and decide proposals while nothing is running, the same
+        reason History reads transcripts.log itself."""
+        import review as review_mod
+        return review_mod.Store(APP_DIR / review_mod.STORE_NAME)
+
+    def _review_stat(self):
+        try:
+            st = os.stat(APP_DIR / "review.json")
+            return (st.st_size, st.st_mtime_ns)
+        except OSError:
+            return None
+
+    def _screen_review(self) -> None:
+        self._title("Review", "what the second reading proposes — you decide")
+        p = self.parts
+        p["review_head"] = tk.Label(self.sheet, text="", bg=ui.PANE,
+                                    fg=ui.DIM, font=(ui.UI, 10))
+        p["review_head"].place(x=PAD, y=66)
+        p["review_list"] = ui.Scroller(self.sheet, CW + 10, 500)
+        p["review_list"].place(x=PAD, y=100)
+        p["review_empty"] = tk.Label(self.sheet, text="", bg=ui.PANE,
+                                     fg=ui.FAINT, font=(ui.UI, 10))
+        tk.Label(self.sheet,
+                 text="After each dictation a card asks the same question "
+                      "for a few seconds; what it got no answer to waits "
+                      "here. Yes teaches the vocabulary; No is remembered.",
+                 bg=ui.PANE, fg=ui.FAINT, font=(ui.UI, 8),
+                 wraplength=CW, justify="left").place(x=PAD, y=606)
+        self._review_stamp = None
+        self._fill_review()
+
+    def _poll_review(self) -> None:
+        """Once a second from _refresh: redraw only when the file moved —
+        a new proposal from the app, or a decision from its card."""
+        if "review_list" not in self.parts:
+            return
+        if self._review_stat() != getattr(self, "_review_stamp", None):
+            self._fill_review()
+
+    def _fill_review(self) -> None:
+        if "review_list" not in self.parts:
+            return
+        self._review_stamp = self._review_stat()
+        try:
+            store = self._review_store()
+            pending, decided = store.pending(), store.decided(30)
+            summary = store.summary()
+        except Exception:                 # noqa: BLE001 — a broken file
+            pending, decided = [], []
+            summary = {"pending": 0, "accepted": 0, "rejected": 0}
+        self.parts["review_head"].config(
+            text=f"{summary.get('pending', 0)} waiting   ·   "
+                 f"{summary.get('accepted', 0)} accepted   ·   "
+                 f"{summary.get('rejected', 0)} rejected")
+        scroller = self.parts["review_list"]
+        scroller.clear()
+        empty = self.parts["review_empty"]
+        empty.place_forget()
+        if not pending and not decided:
+            empty.config(text="Nothing to review yet — dictate, and the "
+                              "second reading speaks up when it disagrees.")
+            empty.place(x=PAD + CW / 2, y=300, anchor="center")
+        for item in pending:
+            self._review_row(scroller, item, pending=True)
+        if decided:
+            tk.Label(scroller.inner, text="DECIDED", bg=ui.PANE,
+                     fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
+                anchor="w", pady=(8 if pending else 0, 6))
+        for item in decided:
+            self._review_row(scroller, item, pending=False)
+        scroller.to_top()
+
+    def _review_row(self, scroller: ui.Scroller, item: dict,
+                    pending: bool) -> None:
+        """One proposal, one canvas — the sentence as it would read, the
+        changed words as pills, the reason, and Yes / No while it is
+        still a question. Same layout rules as a history row: time and
+        the buttons on the left, text flush right."""
+        text = item.get("proposed") or item.get("text") or ""
+        changes = item.get("changes") or []
+        left, edge = 106, CW - 14
+        width = edge - left
+        photo, text_h, _lines = ui.draw_text(
+            text, pt=11, width=width, max_lines=2,
+            colour=ui.FG if pending else ui.DIM, bg=ui.CARD)
+        why = "   ·   ".join(c.get("why", "") for c in changes
+                             if c.get("why"))
+        note = None
+        note_h = 0
+        if why:
+            note, note_h, _l = ui.draw_text(why, pt=8, width=width,
+                                            max_lines=1, colour=ui.FAINT,
+                                            bg=ui.CARD)
+        height = 13 + text_h + (38 if changes else 0) \
+            + (note_h + 6 if note is not None else 0) + 12
+        height = max(height, 80)
+        row = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.PANE,
+                        highlightthickness=0, bd=0)
+        row.pack(pady=(0, 8))
+        row.create_image(0, 0, anchor="nw", image=ui.rounded(
+            CW, height, 12, ui.CARD, ui.PANE,
+            ui.TILE_EDGE if pending else ui.LINE))
+        when = str(item.get("when", ""))
+        row.create_text(14, 15, text=when[11:16], anchor="nw",
+                        font=(ui.UI, 10, "bold"), fill=ui.FG)
+        try:
+            day = time.strftime("%d %b", time.strptime(when,
+                                                       "%Y-%m-%d %H:%M:%S"))
+        except ValueError:
+            day = ""
+        row.create_text(14, 34, text=day, anchor="nw", font=(ui.UI, 8),
+                        fill=ui.FAINT)
+        row.create_image(left, 13, anchor="nw", image=photo)
+        y = 13 + text_h + 8
+        if changes:
+            x = edge
+            for change in changes[:4]:
+                after = change.get("after") or "—"
+                x -= ui.pair_pill(row, x, y, change.get("before", ""),
+                                  after, ui.CARD) + 6
+            y += 36
+        if note is not None:
+            row.create_image(edge, y, anchor="ne", image=note)
+        if pending:
+            sid = str(item.get("id", ""))
+            yes = ui.Button(row, "Yes", lambda s=sid: self._review_decide(
+                s, "accepted"), w=44, h=26, quiet=True, fg=ui.GREEN)
+            no = ui.Button(row, "No", lambda s=sid: self._review_decide(
+                s, "rejected"), w=40, h=26, quiet=True, fg=ui.RED)
+            row.create_window(14, height - 38, window=yes, anchor="nw")
+            row.create_window(62, height - 38, window=no, anchor="nw")
+        else:
+            accepted = item.get("status") == "accepted"
+            by = item.get("by") or ""
+            row.create_text(14, height - 26, anchor="nw", font=(ui.UI, 8),
+                            fill=ui.GREEN if accepted else ui.FAINT,
+                            text=("accepted" if accepted else "rejected")
+                            + (f"  ·  {by}" if by else ""))
+        scroller.bind_wheel(row)
+
+    def _review_decide(self, sid: str, verdict: str) -> None:
+        """Yes or No on a row. Written to review.json here — the app
+        learns it at its next idle tick, or now if it is listening."""
+        try:
+            item = self._review_store().decide(sid, verdict, by="dashboard")
+        except Exception as e:            # noqa: BLE001
+            self._note(f"could not save that: {e}")
+            return
+        if item is None:
+            self._note("that one was already decided")
+        else:
+            self._note("accepted — the app will learn it"
+                       if verdict == "accepted" else "rejected")
+            self._ask("review_absorb")
+        self._fill_review()
+
     # --------------------------------------------------------------- keys
 
     def _screen_keys(self) -> None:
@@ -1135,48 +1322,371 @@ class Dashboard:
     # ----------------------------------------------------------- settings
 
     def _screen_settings(self) -> None:
-        self._title("Settings", "written straight into config.toml")
+        """Every line of config.toml, drawn from the file itself — behind
+        tabs that say the common ones plainly.
+
+        Nothing here is typed by hand except the words: settings.py reads
+        the file, and settings.TABS says which lines get a plain label, a
+        short sentence and a menu with names on it. Everything else is on
+        the last tab, "Everything", with the comment from the file as its
+        help, and the magnifier searches all of it. A test holds this
+        screen and the Keys screen to covering the file between them, so
+        a setting cannot drop off — it can only be said plainly or said
+        in full. That is the owner's rule from both directions: "show all
+        of them" the first time, "I do not need to know all of this" the
+        second.
+
+        Writes go through config.set_values, the line editor that keeps
+        the comments, and through the running app when there is one, so
+        config.toml has one writer at a time and the app can take the
+        change live where it knows how (main.set_option).
+        """
+        self._title("Settings", "written back into config.toml, in place")
         p = self.parts
+        try:
+            sections = settings_mod.read(CONFIG_PATH)
+        except Exception as e:
+            card = ui.Card(self.sheet, CW, 96, pad=18)
+            card.place(x=PAD, y=64)
+            tk.Label(card.body, text="SETTINGS UNAVAILABLE", bg=ui.CARD,
+                     fg=ui.FAINT, font=(ui.UI, 8)).place(x=0, y=0)
+            tk.Label(card.body, text=str(e)[:300], bg=ui.CARD, fg=ui.DIM,
+                     font=(ui.UI, 9), wraplength=CW - 72,
+                     justify="left").place(x=0, y=24)
+            return
+        p["sections"] = sections
+        p["rows"] = {}       # path -> [(control kind, widget), ...]
+        p["values"] = {}     # path -> what the file holds now
+        self._settings_searching = False
+        self._settings_query = ""
+        bar = tk.Frame(self.sheet, bg=ui.PANE, width=CW, height=36)
+        bar.place(x=PAD, y=64)
+        bar.pack_propagate(False)
+        p["settings_bar"] = bar
+        p["settings_list"] = ui.Scroller(self.sheet, CW + 10, H - 110 - 24)
+        p["settings_list"].place(x=PAD, y=110)
+        self._settings_bar()
+        self._fill_settings()
 
-        rows = (("engine", "Transcription engine", "engine",
-                 "local is Whisper on this GPU, gemini is the cloud"),
-                ("mic", "Microphone", "mic",
-                 "set by index in config.toml — names get truncated"),
-                ("learned", "Vocabulary", "vocab",
-                 "words it has been taught, fed to the next transcription"))
-        card = ui.Card(self.sheet, CW, 62 + len(rows) * 52, pad=18)
-        card.place(x=PAD, y=64)
-        tk.Label(card.body, text="WHAT IT IS USING", bg=ui.CARD,
-                 fg=ui.FAINT, font=(ui.UI, 8)).place(x=0, y=0)
-        row = 26
-        for glyph, label, key, hint in rows:
-            tk.Label(card.body, text=ui.ICON[glyph], bg=ui.CARD, fg=ui.DIM,
-                     font=(ui.ICONS, 11)).place(x=0, y=row + 6)
-            tk.Label(card.body, text=label, bg=ui.CARD, fg=ui.FG,
-                     font=(ui.UI, 10)).place(x=26, y=row + 2)
-            tk.Label(card.body, text=hint, bg=ui.CARD, fg=ui.FAINT,
-                     font=(ui.UI, 8)).place(x=26, y=row + 22)
-            p[f"set_{key}"] = tk.Label(card.body, text="—", bg=ui.CARD,
-                                       fg=ui.ACCENT_TEXT, font=(ui.UI, 10))
-            p[f"set_{key}"].place(x=CW - 36, y=row + 4, anchor="ne")
-            row += 52
+    def _settings_bar(self) -> None:
+        """The tabs and the magnifier — or, while searching, the field and
+        the cross that brings the tabs back."""
+        p = self.parts
+        bar = p.get("settings_bar")
+        if bar is None:
+            return
+        for child in bar.winfo_children():
+            child.destroy()
+        if self._settings_searching:
+            box = ui.Card(bar, CW, 36, radius=11, pad=9)
+            box.pack()
+            tk.Label(box.body, text=ui.ICON["search"], bg=ui.CARD,
+                     fg=ui.FAINT, font=(ui.ICONS, 10)).place(x=0, y=1)
+            entry = tk.Entry(box.body, bg=ui.CARD, fg=ui.FG, bd=0,
+                             highlightthickness=0, font=(ui.UI, 10),
+                             insertbackground=ui.ACCENT)
+            entry.place(x=26, y=0, width=CW - 100, height=18)
+            entry.insert(0, self._settings_query)
+            entry.bind("<KeyRelease>",
+                       lambda _e: self._settings_search_soon(entry.get()))
+            entry.bind("<Escape>", lambda _e: self._settings_close_search())
+            p["settings_search"] = entry
+            p["settings_placeholder"] = tk.Label(
+                box.body, text="a word from a setting's name or its "
+                               "comment — Esc brings the tabs back",
+                bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9))
+            if not self._settings_query:
+                p["settings_placeholder"].place(x=26, y=1)
+            entry.bind("<FocusIn>",
+                       lambda _e: p["settings_placeholder"].place_forget())
+            close = tk.Label(box.body, text="✕", bg=ui.CARD, fg=ui.DIM,
+                             font=(ui.UI, 10), cursor="hand2")
+            close.place(x=CW - 18 - 10, y=-1, anchor="ne")
+            close.bind("<Button-1>", lambda _e: self._settings_close_search())
+            close.bind("<Enter>", lambda _e: close.configure(fg=ui.FG))
+            close.bind("<Leave>", lambda _e: close.configure(fg=ui.DIM))
+            entry.focus_set()
+            return
+        p["settings_tabs"] = {}
+        names = [tab.name for tab in settings_mod.TABS]
+        names.append(settings_mod.EVERYTHING)
+        for name in names:
+            chip = ui.Chip(bar, name, lambda n=name: self._settings_go(n),
+                           active=(name == self._settings_tab))
+            chip.pack(side="left", padx=(0, 6), pady=3)
+            p["settings_tabs"][name] = chip
+        glass = tk.Label(bar, text=ui.ICON["search"], bg=ui.PANE, fg=ui.DIM,
+                         font=(ui.ICONS, 12), cursor="hand2")
+        glass.pack(side="right", padx=(0, 10))
+        glass.bind("<Button-1>", lambda _e: self._settings_open_search())
+        glass.bind("<Enter>", lambda _e: glass.configure(fg=ui.FG))
+        glass.bind("<Leave>", lambda _e: glass.configure(fg=ui.DIM))
+        p["settings_glass"] = glass
 
-        y = 64 + 62 + len(rows) * 52 + 14
-        behaviour = ui.Card(self.sheet, CW, 98, pad=18)
-        behaviour.place(x=PAD, y=y)
-        tk.Label(behaviour.body, text="BEHAVIOUR", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8)).place(x=0, y=0)
-        tk.Label(behaviour.body,
-                 text="Pause by itself while a game is fullscreen",
-                 bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10)).place(x=0, y=26)
-        tk.Label(behaviour.body,
-                 text="the dictation key belongs to the game while it is in "
-                      "front — it only ever un-pauses its own pause",
-                 bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8)).place(x=0, y=46)
-        p["auto"] = ui.Switch(behaviour.body, command=self._toggle_auto)
-        p["auto"].place(x=CW - 36 - 42, y=28)
+    def _settings_go(self, name: str) -> None:
+        """Another tab. The values cache stays, so a switch flipped on
+        Common is already flipped where the same line is drawn again."""
+        self._settings_tab = name
+        for tab_name, chip in (self.parts.get("settings_tabs") or {}).items():
+            chip.set(tab_name == name)
+        self._fill_settings()
 
-        y += 112
+    def _settings_open_search(self) -> None:
+        self._settings_searching = True
+        self._settings_query = ""
+        self._settings_bar()
+        self._fill_settings()
+
+    def _settings_close_search(self) -> None:
+        self._settings_searching = False
+        self._settings_query = ""
+        self._settings_bar()
+        self._fill_settings()
+
+    def _fill_settings(self) -> None:
+        """The cards for the tab that is up — or, while searching, every
+        line of the file that matches, section by section.
+
+        The first card is built here and the rest one per tick, the way
+        the History screen draws its rows: seventeen cards of real
+        widgets cost ~1 s on this machine (measured 2026-09-01, after the
+        text had already been moved off widgets and onto the canvas), and
+        a window that does nothing for a second after a click reads as a
+        window that did not hear it. Switching screens mid-build cancels
+        the rest — _stop_rows clears the queue.
+        """
+        p = self.parts
+        scroller = p.get("settings_list")
+        if scroller is None:
+            return
+        self._stop_rows()
+        scroller.clear()
+        p["rows"] = {}
+        sections = p["sections"]
+        elsewhere = _keys_screen_paths()
+        builders: list = []
+        everything = self._settings_tab == settings_mod.EVERYTHING
+        if self._settings_searching or everything:
+            query = self._settings_query if self._settings_searching else ""
+            for section in sections:
+                rows = [s for s in section.settings
+                        if s.path not in elsewhere
+                        and settings_mod.matches(s, query)]
+                if not rows:
+                    continue
+                keys_here = [s for s in section.settings
+                             if s.path in elsewhere]
+                note = ("" if not keys_here or query else
+                        f"\n{len(keys_here)} of its lines are keys — those "
+                        "are on the Keys screen.")
+                builders.append(lambda s=section, r=rows, n=note:
+                                self._settings_card(scroller,
+                                                    s.title.upper(),
+                                                    s.help + n, r))
+            if everything and not self._settings_searching:
+                builders.append(lambda: self._files_card(scroller))
+        else:
+            tab = (settings_mod.tab_named(self._settings_tab)
+                   or settings_mod.TABS[0])
+            for group in tab.groups:
+                pairs = [(row, s) for row in group.rows
+                         if (s := settings_mod.find(sections, row.path))
+                         is not None]
+                if pairs:
+                    builders.append(lambda g=group, pr=pairs:
+                                    self._friendly_card(scroller, g.title,
+                                                        pr))
+        if not builders:
+            card = ui.Card(scroller.inner, CW, 60, pad=18)
+            card.pack(anchor="w", pady=(0, 14))
+            tk.Label(card.body, text=f"nothing in config.toml matches "
+                                     f"{self._settings_query!r}",
+                     bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9)).place(x=0, y=2)
+            return
+        self._settings_left = builders
+        self._draw_settings()
+        scroller.to_top()
+
+    def _draw_settings(self) -> None:
+        """One card per tick, until the queue is empty."""
+        self._settings_tick = None
+        if self.closing or "settings_list" not in self.parts \
+                or not self._settings_left:
+            return
+        build = self._settings_left.pop(0)
+        build()
+        if self._settings_left:
+            self._settings_tick = self.root.after(16, self._draw_settings)
+
+    def _finish_settings(self) -> None:
+        """Build whatever is still queued, now. For a test, or anything
+        else that wants the whole screen rather than the first frame."""
+        while self._settings_left:
+            self._settings_left.pop(0)()
+        if self._settings_tick is not None:
+            try:
+                self.root.after_cancel(self._settings_tick)
+            except Exception:
+                pass
+            self._settings_tick = None
+
+    # -- the cards
+
+    def _new_card(self, scroller, height: int):
+        """A card drawn as canvas ITEMS rather than widgets.
+
+        A hundred and forty rows of two or three Labels each is four
+        hundred widgets, and Tk on Windows spent 2.2 s creating them —
+        measured 2026-09-01, and it made the screen feel broken. A text
+        item on the card's own canvas costs one Tcl call and no window.
+        Only the controls are real widgets, put on the canvas with
+        create_window, so the count is one per row rather than three.
+        """
+        card = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.PANE,
+                         highlightthickness=0, bd=0)
+        card.create_image(0, 0, anchor="nw",
+                          image=ui.rounded(CW, height, 14, ui.CARD, ui.PANE,
+                                           ui.LINE))
+        card.pack(anchor="w", pady=(0, 14))
+        return card
+
+    def _friendly_help(self, row) -> tuple[str, int]:
+        if not row.help:
+            return "", 0
+        return ui.clamp(row.help, ui.UI, 8, CW - 36 - CONTROL_W - 12, 2)
+
+    def _friendly_card(self, scroller, title: str, pairs) -> None:
+        heights = [22 + self._friendly_help(row)[1] * 15 + 8
+                   for row, _setting in pairs]
+        y = 18 if title else 8
+        card = self._new_card(scroller, y + 18 * bool(title) + sum(heights)
+                              + (6 if title else 10))
+        if title:
+            card.create_text(18, y, text=title, anchor="nw", fill=ui.FAINT,
+                             font=(ui.UI, 8))
+            y += 18
+        for (row, setting), height in zip(pairs, heights):
+            card.create_text(18, y, text=row.label, anchor="nw", fill=ui.FG,
+                             font=(ui.UI, 10))
+            text, lines = self._friendly_help(row)
+            if lines:
+                card.create_text(18, y + 21, text=text, anchor="nw",
+                                 fill=ui.FAINT, font=(ui.UI, 8))
+            self._control(card, y, setting, self._menu_for(row, setting))
+            y += height
+        scroller.bind_wheel(card)
+
+    def _row_help(self, setting) -> tuple[str, int]:
+        text = setting.help.replace("\n", " ")
+        if not text:
+            return "", 0
+        return ui.clamp(text, ui.UI, 8, CW - 36 - CONTROL_W - 12, 3)
+
+    def _settings_card(self, scroller, title: str, help_text: str,
+                       rows) -> None:
+        """A section of the file as it is written: the key, its comment,
+        and the one control its kind calls for."""
+        shown, lines = ("", 0)
+        if help_text:
+            shown, lines = ui.clamp(help_text.replace("\n", " "), ui.UI, 8,
+                                    CW - 36, 4)
+        heights = [22 + self._row_help(s)[1] * 15 + 8 for s in rows]
+        card = self._new_card(scroller, 28 + (lines * 15 + 8 if lines else 0)
+                              + sum(heights) + 6)
+        y = 18
+        card.create_text(18, y, text=title, anchor="nw", fill=ui.FAINT,
+                         font=(ui.UI, 8))
+        y += 18
+        if lines:
+            card.create_text(18, y, text=shown, anchor="nw", fill=ui.DIM,
+                             font=(ui.UI, 8))
+            y += lines * 15 + 8
+        for setting, height in zip(rows, heights):
+            card.create_text(18, y, text=setting.key, anchor="nw",
+                             fill=ui.FG, font=(ui.UI, 10))
+            text, lines = self._row_help(setting)
+            if lines:
+                card.create_text(18, y + 21, text=text, anchor="nw",
+                                 fill=ui.FAINT, font=(ui.UI, 8))
+            self._control(card, y, setting, self._menu_for(None, setting))
+            y += height
+        scroller.bind_wheel(card)
+
+    def _microphones(self) -> list:
+        """(index as the file writes it, a name) for every input device,
+        the way the first-run setup lists them. Asked once per visit."""
+        p = self.parts
+        if "mics" not in p:
+            try:
+                import firstrun
+                devices = firstrun._devices()
+            except Exception:
+                devices = []
+            p["mics"] = ([("", "System default")]
+                         + [(str(index), f"{name} — {api}")
+                            for index, name, api in devices])
+        return list(p["mics"])
+
+    def _menu_for(self, row, setting) -> list:
+        """(value, label) for a row's menu: the microphones on this
+        machine for the microphone, the names the words give it, or the
+        file's own choices. [] = a field."""
+        if setting.path == "audio.device":
+            mics = self._microphones()
+            if len(mics) > 1:
+                return mics
+        if row is not None and row.names:
+            return list(row.names)
+        return [(c, c) for c in setting.choices]
+
+    def _control(self, card, y: int, setting, options) -> None:
+        """The one control a line calls for, on the right of its row. A
+        list, and a Hebrew string, get a button to the file instead — the
+        line editor writes scalars, and Tk cannot edit Hebrew (ui.py)."""
+        p = self.parts
+        right = CW - 18
+        value = p["values"].setdefault(setting.path, setting.value)
+        if setting.kind == "bool":
+            switch = ui.Switch(card, bool(value),
+                               command=lambda v, s=setting:
+                               self._apply_setting(s, v), bg=ui.CARD)
+            card.create_window(right, y + 1, window=switch, anchor="ne")
+            self._register_row(setting, "switch", switch)
+        elif not setting.editable:
+            button = ui.Button(card, "In the file",
+                               lambda: launch.open_path(CONFIG_PATH),
+                               w=104, h=30, quiet=True,
+                               icon=ui.ICON["settings"])
+            card.create_window(right, y - 2, window=button, anchor="ne")
+            self._register_row(setting, "file", button)
+        elif options:
+            menu = ui.Dropdown(card, options, value,
+                               command=lambda v, s=setting:
+                               self._apply_setting(s, v),
+                               bg=ui.CARD, w=CONTROL_W)
+            card.create_window(right, y - 2, window=menu, anchor="ne")
+            self._register_row(setting, "dropdown", menu)
+        else:
+            entry = tk.Entry(card, bg=ui.EDGE, fg=ui.FG, bd=0,
+                             highlightthickness=1,
+                             highlightbackground=ui.STROKE,
+                             highlightcolor=ui.ACCENT,
+                             insertbackground=ui.ACCENT, font=(ui.UI, 10),
+                             justify="right", disabledbackground=ui.EDGE,
+                             readonlybackground=ui.EDGE)
+            card.create_window(right, y, window=entry, anchor="ne",
+                               width=ENTRY_W, height=26)
+            entry.insert(0, _shown(value))
+            entry.bind("<Return>", lambda _e, s=setting, w=entry:
+                       self._entry_done(s, w))
+            entry.bind("<FocusOut>", lambda _e, s=setting, w=entry:
+                       self._entry_done(s, w))
+            self._register_row(setting, "entry", entry)
+
+    def _register_row(self, setting, kind: str, widget) -> None:
+        self.parts["rows"].setdefault(setting.path, []).append((kind, widget))
+
+    def _files_card(self, scroller) -> None:
         # Named for what they ARE, not what they are called on disk — the
         # filename is the small print. "What is transcripts.log" was a
         # question this screen used to make the owner ask.
@@ -1194,8 +1704,8 @@ class Dashboard:
              str(APP_DIR),
              APP_DIR),
         )
-        files = ui.Card(self.sheet, CW, 60 + len(openers) * 44, pad=18)
-        files.place(x=PAD, y=y)
+        files = ui.Card(scroller.inner, CW, 60 + len(openers) * 44, pad=18)
+        files.pack(anchor="w", pady=(0, 14))
         tk.Label(files.body, text="FILES", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.UI, 8)).place(x=0, y=0)
         row = 24
@@ -1211,29 +1721,118 @@ class Dashboard:
                       w=76, h=30, quiet=True).place(x=CW - 36 - 76,
                                                     y=row + 3)
             row += 44
+        scroller.bind_wheel(files)
+
+    # -- changing one
+
+    def _entry_done(self, setting, entry) -> None:
+        """Return, or the focus leaving: what is in the field goes to the
+        file if it parses as the kind the file holds and differs from
+        what is there."""
+        try:
+            raw = entry.get()
+        except tk.TclError:
+            return                        # the screen went away under it
+        current = self.parts["values"].get(setting.path, setting.value)
+        try:
+            value = _parse(raw, setting.kind)
+        except ValueError:
+            self._paint_setting(setting.path, current)
+            self._note(f"{setting.path}: {raw.strip()!r} is not "
+                       f"a{'n' if setting.kind == 'int' else ''} "
+                       f"{setting.kind}")
+            return
+        if value == current and type(value) is type(current):
+            return
+        self._apply_setting(setting, value)
+
+    def _apply_setting(self, setting, value) -> None:
+        """Through the running app when there is one — it writes the line
+        and takes the change live where it can — and straight into the
+        file otherwise."""
+        if self.running:
+            self._ask("option",
+                      then=lambda r, s=setting, v=value:
+                      self._setting_answered(s, v, r),
+                      name=setting.path, value=value)
+            return
+        self._write_setting(setting, value)
+
+    def _write_setting(self, setting, value) -> None:
+        try:
+            config_mod.set_values(CONFIG_PATH, {setting.path: value})
+        except Exception as e:
+            self._paint_setting(setting.path, self.parts["values"].get(
+                setting.path, setting.value))
+            self._note(str(e))
+            return
+        self.parts["values"][setting.path] = value
+        self._paint_setting(setting.path, value)
+        self._note(f"{setting.path} saved — it applies the next time it "
+                   "starts")
+
+    def _setting_answered(self, setting, value, reply) -> None:
+        if reply is None:           # it stopped between the poll and the click
+            self._write_setting(setting, value)
+            return
+        if not reply.get("ok"):
+            self._paint_setting(setting.path, self.parts["values"].get(
+                setting.path, setting.value))
+            self._note(reply.get("error", "that did not work"))
+            return
+        self.parts["values"][setting.path] = value
+        self._paint_setting(setting.path, value)
+        self._note(reply.get("message") or f"{setting.path} saved")
+
+    def _paint_setting(self, path: str, value) -> None:
+        """Every control that shows `path` set to `value`, without any of
+        them telling anyone."""
+        for kind, widget in self.parts.get("rows", {}).get(path, []):
+            try:
+                if kind == "switch":
+                    widget.set(bool(value))
+                elif kind == "dropdown":
+                    widget.set(value)
+                elif kind == "entry":
+                    widget.delete(0, "end")
+                    widget.insert(0, _shown(value))
+            except tk.TclError:
+                pass
 
     def _paint_settings(self) -> None:
+        """The one value the running app can change on its own: the
+        fullscreen auto-pause, which its status reports."""
         p = self.parts
-        if "set_engine" not in p:
+        if "rows" not in p or not self.status:
             return
-        status = self.status
-        cfg = None
-        if not status:
-            try:
-                cfg = config_mod.load(CONFIG_PATH)
-            except Exception:
-                cfg = None
-        p["set_engine"].config(text=status.get("backend")
-                               or (getattr(cfg, "backend", "") if cfg else "")
-                               or "—")
-        p["set_mic"].config(text=status.get("mic") or _mic_from_config(cfg))
-        vocab = status.get("vocab") or {}
-        p["set_vocab"].config(text=f"{vocab['corrections']} words" if vocab
-                              else f"{_words_on_disk()} words")
-        auto = status.get("auto_pause_fullscreen")
+        auto = self.status.get("auto_pause_fullscreen")
         if auto is None:
-            auto = self._read_keys().get("_auto", False)
-        p["auto"].set(bool(auto))
+            return
+        if p["values"].get("auto_pause_fullscreen") != bool(auto):
+            p["values"]["auto_pause_fullscreen"] = bool(auto)
+            self._paint_setting("auto_pause_fullscreen", bool(auto))
+
+    def _settings_search_soon(self, text: str) -> None:
+        if self._settings_after is not None:
+            try:
+                self.root.after_cancel(self._settings_after)
+            except Exception:
+                pass
+        self._settings_after = self.root.after(
+            SEARCH_MS, lambda: self._settings_search(text))
+
+    def _settings_search(self, text: str) -> None:
+        self._settings_after = None
+        if not self._settings_searching or text == self._settings_query:
+            return
+        self._settings_query = text
+        placeholder = self.parts.get("settings_placeholder")
+        if placeholder is not None:
+            if text:
+                placeholder.place_forget()
+            elif self.parts.get("settings_search") is not self.root.focus_get():
+                placeholder.place(x=26, y=1)
+        self._fill_settings()
 
     # ------------------------------------------------------------- version
 
@@ -1261,7 +1860,12 @@ class Dashboard:
         change it. Versions are git branches of this very folder;
         versions.py owns the mechanics (stop the instance, carry
         config.toml across untouched, flip the branch, restart). This
-        screen is its face."""
+        screen is its face.
+
+        Every card here is sized from its text. The first version placed
+        a three-line description in a card built for two, and the third
+        line was clipped mid-glyph by the card's own edge — which read as
+        garbage, and the owner said so."""
         self._title("Version", "two whole apps in one folder")
         p = self.parts
 
@@ -1284,7 +1888,13 @@ class Dashboard:
             return
 
         info = registry.get(here, {"label": here, "desc": ""})
-        now = ui.Card(self.sheet, CW, 122, pad=18)
+        desc, desc_lines = ("", 0)
+        if info["desc"]:
+            desc, desc_lines = ui.clamp(info["desc"], ui.UI, 8, CW - 36, 4)
+        # The card's body is 36 px shorter than the card (pad=18 top and
+        # bottom), and the description starts 66 px into the body.
+        now_h = 36 + 66 + desc_lines * 15 + 8
+        now = ui.Card(self.sheet, CW, now_h, pad=18)
         now.place(x=PAD, y=64)
         tk.Label(now.body, text="RUNNING NOW", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.UI, 8)).place(x=0, y=0)
@@ -1293,51 +1903,64 @@ class Dashboard:
                  font=(ui.DISPLAY, 19, "bold")).place(x=0, y=16)
         tk.Label(now.body, text=f"branch '{here}'", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.UI, 8)).place(x=0, y=48)
-        tk.Label(now.body, text=info["desc"], bg=ui.CARD, fg=ui.DIM,
-                 font=(ui.UI, 8), wraplength=CW - 36,
-                 justify="left").place(x=0, y=66)
+        if desc_lines:
+            tk.Label(now.body, text=desc, bg=ui.CARD, fg=ui.DIM,
+                     font=(ui.UI, 8), justify="left",
+                     anchor="nw").place(x=0, y=66)
 
         others = [n for n in known if n != here]
-        row_h = 58
-        card_h = 62 + len(others) * row_h + 62
+        blurbs = {}
+        for name in others:
+            oinfo = registry.get(name, {"label": name, "desc": ""})
+            blurbs[name] = (ui.clamp(oinfo["desc"], ui.UI, 8, CW - 210, 3)
+                            if oinfo["desc"] else ("", 0))
+        footer_text = ("switching stops the app, flips the folder and starts "
+                       "it again (~25 s of model loading). your settings "
+                       "come across untouched; a switch refuses while any "
+                       "file other than config.toml has uncommitted "
+                       "changes.")
+        footer, footer_lines = ui.clamp(footer_text, ui.UI, 8, CW - 36, 3)
+        rows_h = sum(30 + blurbs[n][1] * 15 + 10 for n in others) or 24
+        # 26 px of title, the rows, a status line, the footer, and the
+        # card's own 36 px of padding around all of it.
+        card_h = 36 + 26 + rows_h + 24 + footer_lines * 15 + 12
         card = ui.Card(self.sheet, CW, card_h, pad=18)
-        card.place(x=PAD, y=198)
+        card.place(x=PAD, y=64 + now_h + 12)
         tk.Label(card.body, text="SWITCH TO", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.UI, 8)).place(x=0, y=0)
         row = 26
         for name in others:
             oinfo = registry.get(name, {"label": name, "desc": ""})
+            blurb, lines = blurbs[name]
             tk.Label(card.body, text=ui.ICON["version"], bg=ui.CARD,
                      fg=ui.ACCENT, font=(ui.ICONS, 11)).place(x=0, y=row + 7)
             tk.Label(card.body, text=f"{oinfo['label']}  ({name})",
                      bg=ui.CARD, fg=ui.FG,
                      font=(ui.UI, 10)).place(x=26, y=row + 1)
-            tk.Label(card.body, text=oinfo["desc"], bg=ui.CARD, fg=ui.FAINT,
-                     font=(ui.UI, 8), wraplength=CW - 210,
-                     justify="left").place(x=26, y=row + 21)
+            if lines:
+                tk.Label(card.body, text=blurb, bg=ui.CARD, fg=ui.FAINT,
+                         font=(ui.UI, 8), justify="left",
+                         anchor="nw").place(x=26, y=row + 21)
             btn = ui.Button(card.body, "Use this",
                             lambda t=name: self._use_version(t),
                             w=96, h=32, quiet=True, icon=ui.ICON["play"])
             btn.place(x=CW - 36 - 96, y=row + 6)
             p[f"use_{name}"] = btn
-            row += row_h
+            row += 30 + lines * 15 + 10
         if not others:
             tk.Label(card.body, text="no other version exists on this "
                                      "machine — see versions.py",
                      bg=ui.CARD, fg=ui.FAINT,
                      font=(ui.UI, 9)).place(x=0, y=row)
+            row += 24
 
         p["ver_status"] = tk.Label(card.body, text="", bg=ui.CARD,
                                    fg=ui.AMBER, font=(ui.UI, 8),
                                    wraplength=CW - 36, justify="left")
-        p["ver_status"].place(x=0, y=row + 6)
-        tk.Label(card.body,
-                 text="switching stops the app, flips the folder and starts "
-                      "it again (~25 s of model loading). your settings come "
-                      "across untouched; a switch refuses while any file "
-                      "other than config.toml has uncommitted changes.",
-                 bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
-                 wraplength=CW - 36, justify="left").place(x=0, y=row + 28)
+        p["ver_status"].place(x=0, y=row + 4)
+        tk.Label(card.body, text=footer, bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 8), justify="left",
+                 anchor="nw").place(x=0, y=row + 24)
 
     def _use_version(self, target: str) -> None:
         """Switch whole-app version, entirely off the Tk thread.
@@ -1489,21 +2112,6 @@ class Dashboard:
         self._busy_until = time.monotonic() + 1
         self._ask("toggle", then=lambda r: self._announce(
             r, "paused" if (r or {}).get("paused") else "listening again"))
-
-    def _toggle_auto(self, value: bool) -> None:
-        if self.running:
-            self._ask("option",
-                      then=lambda r: self._announce(r, "saved"),
-                      name="auto_pause_fullscreen", value=value)
-            return
-        try:
-            config_mod.set_values(CONFIG_PATH,
-                                  {"auto_pause_fullscreen": value})
-            self._note("saved — it applies the next time it starts")
-        except Exception as e:
-            if "auto" in self.parts:
-                self.parts["auto"].set(not value)
-            self._note(str(e))
 
     def _copy(self, text: str) -> None:
         """The clipboard, from here rather than from the app: what is on
@@ -1821,6 +2429,7 @@ class Dashboard:
                                   else "no dictation key set")
 
         {"Overview": self._paint_overview, "History": lambda: None,
+         "Review": self._poll_review,
          "Keys": self._paint_keys,
          "Version": lambda: None,
          "Settings": self._paint_settings}[self.screen]()

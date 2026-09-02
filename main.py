@@ -77,6 +77,24 @@ NESTED_HOTKEYS = {
     "camera_hotkey": "camera.camera_hotkey",
 }
 
+# What the dashboard may change while the app runs and have it FELT
+# without a restart (App.set_option): the sections whose values are read
+# at the moment they matter, each with the lazily built worker that has to
+# be thrown away for the change to reach it — a worker holds the Config it
+# was built with — and the top-level keys the paste reads on every
+# dictation. Everything else is still written, through the same validated
+# line edit, and answered with "applies the next time it starts".
+LIVE_SECTIONS = {"punctuate": "_punctuator", "translate": "_translator",
+                 "polish": "_polisher", "feedback": None, "vocab": None,
+                 "hint": None, "review": None}
+LIVE_TOP_LEVEL = ("auto_pause_fullscreen", "paste_chord", "restore_delay_ms")
+
+# Fewer words than this and the auto punctuation pass stands down. A one-
+# or two-word dictation is an answer — "כן", "ארבע" — the decoder already
+# closes those with a mark of its own, and the round trip would cost more
+# than the utterance took to say.
+AUTO_PUNCTUATE_MIN_WORDS = 3
+
 # The feature keys that ask for PIXELS. Named as a set because the one
 # question anybody asks of them is "is this action in it" — see
 # App._tap_allowed, which is where the reason lives. The four that are NOT
@@ -203,7 +221,8 @@ class App:
         self.vocab = vocab_mod.Vocab(
             APP_DIR / "vocab.json", seed_terms=cfg.vocab.terms,
             max_terms=cfg.vocab.max_terms,
-            replace_after_hits=cfg.vocab.replace_after_hits)
+            replace_after_hits=cfg.vocab.replace_after_hits,
+            hebrew_after_hits=getattr(cfg.vocab, "hebrew_after_hits", 3))
         hotwords = self.vocab.hotwords if cfg.vocab.enabled else None
         self.transcriber = get_transcriber(cfg, hotwords)  # fail fast: no key
         self._hotwords = hotwords
@@ -388,6 +407,25 @@ class App:
             cfg.hint.after_ms, cfg.hint.corner, x=cfg.hint.x, y=cfg.hint.y,
             scale=cfg.hint.scale, on_change=self._save_hint)
             if cfg.hint.enabled else overlay_mod.HintCard.off())
+        # And the second reading's card (review.py): one proposal, three
+        # buttons, a clock. Off by config, and off by construction until a
+        # reading has something to say — see _review_show. Built like the
+        # hint card: getattr, so a config.py without [review] (classic)
+        # gets the inert one.
+        rcfg = getattr(cfg, "review", None)
+        self.review_card = (overlay_mod.ReviewCard(
+            rcfg.corner, x=rcfg.x, y=rcfg.y, scale=rcfg.scale,
+            on_change=self._save_review_card,
+            on_verdict=self._review_verdict, seconds=rcfg.card_seconds,
+            keys={"accept": rcfg.accept_key, "reject": rcfg.reject_key,
+                  "later": rcfg.later_key})
+            if rcfg is not None and rcfg.enabled and rcfg.card_seconds > 0
+            else overlay_mod.ReviewCard.off())
+        self._review = None
+        # The decoder's per-word confidence for the LAST live transcription,
+        # read under the model lock in _transcribe and written into the
+        # recording's sidecar for the second reading.
+        self._last_words: list = []
         self.phone: server_mod.PhoneServer | None = None
         if cfg.server.enabled:
             self.phone = server_mod.PhoneServer(
@@ -787,6 +825,14 @@ class App:
         bind lookup to C and popup.py never sees the Ctrl+C it would
         otherwise take, because this returns first.
         """
+        # The second reading's card first: its three keys are claimed only
+        # while a card is up AND the pointer is on it (overlay.ReviewCard),
+        # so this is a rect test and never eats a letter being typed.
+        try:
+            if self.review_card.on_key(vk):
+                return True
+        except Exception:
+            pass
         if self._lookup_vk is not None and vk == self._lookup_vk:
             return False
         if self._vqa_vk is not None and vk == self._vqa_vk:
@@ -907,6 +953,113 @@ class App:
                               {f"hint.{k}": v for k, v in fields.items()})
         log.info("hint card: %s",
                  ", ".join(f"{k}={v}" for k, v in fields.items()))
+
+    def _save_review_card(self, fields: dict) -> None:
+        """The review card's twin of _save_hint: where it was dragged to,
+        written into [review] through the same comment-keeping line edit."""
+        self.cfg = dataclasses.replace(
+            self.cfg, review=dataclasses.replace(self.cfg.review, **fields))
+        config_mod.set_values(self.config_path,
+                              {f"review.{k}": v for k, v in fields.items()})
+        log.info("review card: %s",
+                 ", ".join(f"{k}={v}" for k, v in fields.items()))
+
+    # ---- the second reading (review.py) ----
+
+    def _review_submit(self, kept, hwnd: int) -> None:
+        """Hand a pasted recording to the second reading. From the
+        transcribe worker, after the paste; only enqueues."""
+        engine = getattr(self, "_review", None)
+        if engine is None or kept is None:
+            return
+        try:
+            engine.submit(kept, hwnd=hwnd,
+                          card=self.cfg.review.card_seconds > 0)
+        except Exception:
+            log.exception("could not hand the recording to the second "
+                          "reading")
+
+    def _review_show(self, suggestion: dict) -> None:
+        """A reading with something to say — the card goes up. From the
+        review thread; the card only enqueues."""
+        self.review_card.show(suggestion)
+
+    def _review_verdict(self, sid: str, verdict: str) -> None:
+        """A button on the card, or one of its keys. From the painter's
+        thread or the hook's — so this only enqueues; the learning runs
+        on the review thread."""
+        engine = getattr(self, "_review", None)
+        if engine is not None:
+            engine.decide(sid, verdict, by="card")
+
+    def _review_fix(self, item: dict) -> None:
+        """An accepted proposal, applied where the text was pasted — if
+        it still is.
+
+        The punctuation key's read-and-paste, with one more condition:
+        the field must still contain the pasted text EXACTLY, because
+        what gets pasted back is the field with that one substring
+        swapped. A field that was edited since, a different window in
+        front, a selection, or a document-sized field all mean "taught,
+        not fixed" — the vocabulary learned the pair either way, and a
+        card must never be the thing that rewrote a paragraph.
+
+        On the review thread. The grab selects the whole field, so on
+        every early exit after it the field is pasted back as it was —
+        the selection would otherwise sit there waiting for the next
+        keystroke to replace everything.
+        """
+        rcfg = self.cfg.review
+        if not rcfg.fix_in_field:
+            return
+        hwnd = int(item.get("hwnd") or 0)
+        pasted = (item.get("text") or "").strip()
+        proposed = (item.get("proposed") or "").strip()
+        if not hwnd or not pasted or not proposed or pasted == proposed:
+            return
+        if injector.foreground_window() != hwnd:
+            log.info("review: the window the text went to is not in "
+                     "front — taught, not fixed")
+            return
+        tcfg = self.cfg.translate
+        if not self._cursor_lock.acquire(timeout=2.0):
+            log.info("review: something else is working at the cursor — "
+                     "taught, not fixed")
+            return
+        try:
+            state = injector.snapshot()
+            kept = injector.claim_mark()
+            try:
+                field, had_selection = injector.grab(
+                    tcfg.copy_chord, tcfg.select_all_chord,
+                    tcfg.settle_ms / 1000)
+                usable = (not had_selection and field
+                          and len(field) <= tcfg.max_chars
+                          and pasted in field
+                          and injector.foreground_window() == hwnd)
+                if not usable:
+                    if not had_selection and field:
+                        injector.paste_text(field, self.cfg.paste_chord,
+                                            self.cfg.restore_delay_ms)
+                    log.info("review: the field no longer holds the pasted "
+                             "text as it was — taught, not fixed")
+                    return
+                fixed = field.replace(pasted, proposed, 1)
+                injector.paste_text(fixed, self.cfg.paste_chord,
+                                    self.cfg.restore_delay_ms)
+                transcript_log.info("REVIEW | fixed | %s || %s", pasted,
+                                    proposed)
+                log.info("review: fixed the text in the field: %s", proposed)
+            finally:
+                try:
+                    injector.restore(state, "the fixed text", since=kept)
+                except injector.ClipboardBusyError as e:
+                    log.warning("could not restore your clipboard: %s", e)
+        except injector.ClipboardBusyError as e:
+            log.warning("review: could not read the field (%s) — taught, "
+                        "not fixed", e)
+        finally:
+            self._cursor_lock.release()
 
     def _hint_card(self, state: str) -> dict | None:
         """The card for a dot state, or None for the states with no card.
@@ -1130,14 +1283,57 @@ class App:
         return message
 
     def set_option(self, name: str, value) -> str:
-        """The dashboard's checkboxes. Only the settings that can be
-        honoured without a restart are here — anything else would be a
-        control that lies about having done something."""
-        if name != "auto_pause_fullscreen":
-            raise ValueError(f"{name!r} cannot be changed while it runs")
-        value = bool(value)
-        self.cfg = dataclasses.replace(self.cfg, auto_pause_fullscreen=value)
+        """A setting changed from the dashboard while the app runs.
+
+        WRITTEN FIRST, and the running app then reads it back from the
+        file rather than trusting the argument: config.set_values parses
+        and validates the whole file before it swaps it in, so a value the
+        app cannot read never reaches the disk, and the parse that will
+        run at the next start is the one that decides what runs now.
+
+        Only the settings in LIVE_SECTIONS / LIVE_TOP_LEVEL are then taken
+        into the running Config — they are the ones read at the moment
+        they matter, or held by a worker cheap enough to rebuild. The
+        rest is still written, through this one path so config.toml has
+        one writer, and the reply says it applies at the next start —
+        which is the truth, rather than a control that lies about having
+        done something.
+        """
+        name = (name or "").strip()
+        if not name:
+            raise ValueError("no setting was named")
         config_mod.set_values(self.config_path, {name: value})
+        fresh = config_mod.load(self.config_path)
+        section, _, key = name.rpartition(".")
+        if name == "auto_pause_fullscreen":
+            return self._set_auto_pause(fresh.auto_pause_fullscreen)
+        live = False
+        if not section and name in LIVE_TOP_LEVEL:
+            self.cfg = dataclasses.replace(self.cfg,
+                                           **{name: getattr(fresh, name)})
+            live = True
+        elif section in LIVE_SECTIONS and hasattr(fresh, section) \
+                and hasattr(self.cfg, section):
+            self.cfg = dataclasses.replace(
+                self.cfg, **{section: getattr(fresh, section)})
+            worker = LIVE_SECTIONS[section]
+            if worker:
+                # Built with the old Config; the next use builds it again.
+                setattr(self, worker, None)
+            if section == "hint":
+                self._hint_power(fresh.hint)
+            live = True
+        message = (f"{name} saved" if live
+                   else f"{name} saved — it applies the next time it starts")
+        self._say(message)
+        log.info("%s", message)
+        return message
+
+    def _set_auto_pause(self, value: bool) -> str:
+        """The one option with a side effect beyond the Config: the
+        fullscreen watcher thread, started on demand and never left
+        holding a pause it can no longer undo."""
+        self.cfg = dataclasses.replace(self.cfg, auto_pause_fullscreen=value)
         if value and (self._watcher is None or not self._watcher.is_alive()):
             self._watcher = threading.Thread(target=self._watch_fullscreen,
                                              daemon=True, name="fullscreen")
@@ -1159,6 +1355,7 @@ class App:
         self.hook.start()
         self.dot.start()
         self.hint.start()
+        self.review_card.start()
         if self.cfg.auto_pause_fullscreen:
             self._watcher = threading.Thread(target=self._watch_fullscreen,
                                              daemon=True, name="fullscreen")
@@ -1207,8 +1404,29 @@ class App:
         # section — classic — this whole block is four cheap no-ops and
         # main.py stays byte-identical on both branches.
         self._study = None
+        self._review = None
+        # The second reading (review.py) comes first and, while it is on,
+        # instead of the study pass: the same three decodes serve both,
+        # shown as a card rather than learned in silence. Same guarded
+        # shape as the study block under it, for the same reason.
+        rcfg = getattr(self.cfg, "review", None)
+        if rcfg is not None and rcfg.enabled and self.recent is not None \
+                and hasattr(self.transcriber, "study_decode"):
+            try:
+                import review as review_mod
+                self._review = review_mod.Engine(
+                    self.cfg, self.transcriber, self.vocab, self.recent,
+                    review_mod.Store(APP_DIR / review_mod.STORE_NAME),
+                    model_lock=self._model_lock,
+                    quiet=self._learning_quiet, app_dir=APP_DIR,
+                    on_suggest=self._review_show,
+                    on_accept=self._review_fix)
+                self._review.start()
+            except Exception as e:      # noqa: BLE001 — optional feature
+                log.info("second reading unavailable (%s)", e)
         scfg = getattr(self.cfg, "study", None)
-        if scfg is not None and scfg.enabled and self.recent is not None \
+        if self._review is None and scfg is not None and scfg.enabled \
+                and self.recent is not None \
                 and hasattr(self.transcriber, "study_decode"):
             try:
                 import study as study_mod
@@ -1226,8 +1444,11 @@ class App:
         self._stopping.set()      # ends the fullscreen watcher's wait()
         if getattr(self, "_study", None) is not None:
             self._study.stop()
+        if getattr(self, "_review", None) is not None:
+            self._review.stop()
         self.dot.stop()
         self.hint.stop()
+        self.review_card.stop()
         # Its own thread and its own window, and the window is destroyed
         # rather than hidden. That matters more than it did: the box waits
         # to be closed now, so quitting with one on screen must take it
@@ -1285,6 +1506,16 @@ class App:
                     target=self._copy_text, args=(text,), daemon=True,
                     name="copy-last").start()
                 return {"ok": True, "message": f"{len(text)} chars copied"}
+            if command == "review_absorb":
+                # The dashboard decided a proposal straight in review.json;
+                # learn it now rather than at the engine's next idle tick.
+                # On a thread: the learning writes vocab.json.
+                engine = getattr(self, "_review", None)
+                if engine is None:
+                    return {"ok": False, "error": "the second reading is off"}
+                threading.Thread(target=engine.absorb_decisions, daemon=True,
+                                 name="review-absorb").start()
+                return {"ok": True}
             if command == "quit":
                 singleton.request_quit()
                 return {"ok": True}
@@ -1371,15 +1602,90 @@ class App:
         would put the wrong sentence in front of the one person able to act
         on either.
         """
-        import punctuate as punctuate_mod
-        if self._punctuator is None:
-            self._punctuator = punctuate_mod.Punctuator(self.cfg)
         transcript_log.info("PUNCTUATE-IN  | phone | %s", text)
         started = time.monotonic()
-        out, backend = self._punctuator.punctuate(text)
+        out, backend = self._punctuation().punctuate(text)
         transcript_log.info("PUNCTUATE-OUT | %.1fs | %s | %s",
                             time.monotonic() - started, backend, out)
         return out, backend
+
+    def _punctuation(self):
+        """The one Punctuator. The key, the phone and the auto pass share
+        it, and set_option throws it away when [punctuate] changes so the
+        next press builds one from the new Config."""
+        if self._punctuator is None:
+            import punctuate as punctuate_mod
+            self._punctuator = punctuate_mod.Punctuator(self.cfg)
+        return self._punctuator
+
+    def _auto_punctuate(self, text: str) -> str:
+        """Punctuation on the way to the cursor, when the box is ticked.
+
+        Between the repair pass and the paste, so it works on the final
+        words, and bounded by punctuate.max_wait_s because the "..."
+        marker is up the whole time it runs. Never raises, and every
+        failure has the same shape: the transcript lands as it came. The
+        guard is punctuate.is_safe, letter for letter — a reply that
+        changed a word is thrown away, not pasted, exactly as the key
+        does it.
+        """
+        pcfg = getattr(self.cfg, "punctuate", None)
+        if pcfg is None or not getattr(pcfg, "auto", False):
+            return text
+        import punctuate as punctuate_mod
+        if not punctuate_mod.needs_punctuation(text):
+            return text
+        if len(text.split()) < AUTO_PUNCTUATE_MIN_WORDS:
+            return text
+        if len(text) > pcfg.max_chars:
+            log.info("not punctuating %d chars on the way to the cursor "
+                     "(punctuate.max_chars = %d)", len(text), pcfg.max_chars)
+            return text
+        started = time.monotonic()
+        try:
+            fixed, backend = self._punctuation().punctuate(
+                text, max_wait_s=getattr(pcfg, "max_wait_s", 6.0))
+        except punctuate_mod.UnsafeReply as e:
+            log.warning("auto punctuation REJECTED — %s. The transcript "
+                        "lands as it came.", e)
+            return text
+        except TimeoutError as e:
+            log.warning("auto punctuation gave up waiting (%s) — the "
+                        "transcript lands as it came. Raise "
+                        "punctuate.max_wait_s, or switch auto off.", e)
+            return text
+        except Exception as e:
+            log.warning("auto punctuation failed (%s) — the transcript "
+                        "lands as it came", e)
+            return text
+        if fixed.strip() == text.strip():
+            return text
+        transcript_log.info("PUNCTUATED | %.1fs | %s | %s",
+                            time.monotonic() - started, backend, fixed)
+        log.info("punctuated on the way to the cursor (%s, %.1f s)",
+                 backend, time.monotonic() - started)
+        return fixed
+
+    def _hint_power(self, hcfg) -> None:
+        """Rebuild the card from a changed [hint] — switched on or off,
+        moved, resized or given a new delay from the dashboard.
+
+        On its own thread: the old card's thread is joined and the new
+        one's is waited for, and this is called from the control pipe,
+        which has to answer at once. The card's own "don't show this
+        again" box does not come through here — it only writes the line,
+        and the card it was ticked on stops showing itself.
+        """
+        def swap() -> None:
+            old = self.hint
+            new = (overlay_mod.HintCard(
+                hcfg.after_ms, hcfg.corner, x=hcfg.x, y=hcfg.y,
+                scale=hcfg.scale, on_change=self._save_hint)
+                if hcfg.enabled else overlay_mod.HintCard.off())
+            old.stop()
+            self.hint = new
+            new.start()
+        threading.Thread(target=swap, daemon=True, name="hint-swap").start()
 
     # ---- hook-thread callbacks: keep them fast ----
 
@@ -1768,13 +2074,18 @@ class App:
         """
         with self._model_lock:
             try:
-                return (self._call(self.transcriber, wav, language),
-                        self.transcriber.name)
+                text = self._call(self.transcriber, wav, language)
+                self._last_words = list(
+                    getattr(self.transcriber, "last_words", None) or [])
+                return text, self.transcriber.name
             except RateLimitError:
                 local = self._local_backend()
                 if local is None:
                     raise
-                return self._call(local, wav, language), local.name
+                text = self._call(local, wav, language)
+                self._last_words = list(
+                    getattr(local, "last_words", None) or [])
+                return text, local.name
 
     def _worker(self) -> None:
         while True:
@@ -2192,10 +2503,8 @@ class App:
             transcript_log.info("PUNCTUATE-IN  | %s | %s", what, text)
 
             started = time.monotonic()
-            if self._punctuator is None:
-                self._punctuator = punctuate_mod.Punctuator(self.cfg)
             try:
-                fixed, backend = self._punctuator.punctuate(text)
+                fixed, backend = self._punctuation().punctuate(text)
             except punctuate_mod.UnsafeReply as e:
                 # Told apart from every other failure on purpose. "It could
                 # not be reached" sends someone to check Ollama; this means
@@ -2832,13 +3141,21 @@ class App:
         # nothing is final, and when the text appears it is done and will
         # not move again. polish.max_wait_s bounds how long that can take.
         cleaned = self._improve(cleaned, wait=True)
+        # And the punctuation, if the box is ticked — after the repair, so
+        # it works on the final words; punctuate.max_wait_s bounds it.
+        cleaned = self._auto_punctuate(cleaned)
         kept = None
+        # The decoder's per-word confidence belongs to ONE decode; a
+        # recording transcribed in pieces has several, so it carries none.
+        words = ([] if (pieces and len(pieces) > 1)
+                 else list(getattr(self, "_last_words", []) or []))
         if self.recent is not None:
             try:
                 kept = self.recent.save(
                     wav, seconds, "",
                     extra={"text": cleaned, "raw": text.strip(),
-                           "backend": backend, "language": language or "auto"})
+                           "backend": backend, "language": language or "auto",
+                           "words": words})
             except OSError as e:
                 log.info("could not keep this recording for later "
                          "measurement: %s", e)
@@ -2901,6 +3218,9 @@ class App:
                   f"{latency:.1f} s via {backend}")
         log.info("pasted %d chars (%.1f s round trip via %s; %s): %s",
                  len(cleaned), latency, backend, status, cleaned)
+        # AFTER the paste, never before: the reading is slower than the
+        # text and must not be what the text waits for.
+        self._review_submit(kept, hwnd)
 
 
 def setup_logging() -> None:
@@ -3008,7 +3328,8 @@ def benchmark(cfg: config_mod.Config) -> int:
 
     v = vocab_mod.Vocab(APP_DIR / "vocab.json", seed_terms=cfg.vocab.terms,
                         max_terms=cfg.vocab.max_terms,
-                        replace_after_hits=cfg.vocab.replace_after_hits)
+                        replace_after_hits=cfg.vocab.replace_after_hits,
+                        hebrew_after_hits=cfg.vocab.hebrew_after_hits)
     on = {"enabled": False}
     from transcribers import local_kwargs
     from transcribers.local_whisper import LocalWhisperTranscriber
@@ -3071,7 +3392,8 @@ def show_vocab(cfg: config_mod.Config) -> int:
     """
     v = vocab_mod.Vocab(APP_DIR / "vocab.json", seed_terms=cfg.vocab.terms,
                         max_terms=cfg.vocab.max_terms,
-                        replace_after_hits=cfg.vocab.replace_after_hits)
+                        replace_after_hits=cfg.vocab.replace_after_hits,
+                        hebrew_after_hits=cfg.vocab.hebrew_after_hits)
     print(f"{v.path}\n")
     if not v.corrections:
         print("Nothing learned yet. Dictate something, then tap "
@@ -3158,6 +3480,10 @@ def main() -> int:
                              "never corrected: re-decode it several ways, "
                              "adjudicate, and report what the live pass "
                              "got wrong (see study.py)")
+    parser.add_argument("--review", action="store_true",
+                        help="run the second reading over every recording a "
+                             "human has labelled and score its proposals "
+                             "against the truth (see review.py)")
     parser.add_argument("--vocab", action="store_true",
                         help="print what the app has learned (vocab.json) "
                              "and the hotword list it builds, then exit")
@@ -3320,6 +3646,18 @@ def main() -> int:
             print("This version's config has no [study] section.")
             return 2
         return study_mod.study_all(cfg, APP_DIR)
+
+    if args.review:
+        try:
+            import review as review_mod
+        except ImportError:
+            print("The second reading is not part of this version — switch "
+                  "to fast (Versions.vbs) to use it.")
+            return 2
+        if getattr(cfg, "review", None) is None:
+            print("This version's config has no [review] section.")
+            return 2
+        return review_mod.review_all(cfg, APP_DIR)
 
     if args.drain:
         return drain(cfg)

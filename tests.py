@@ -3266,7 +3266,7 @@ def test_the_shared_half_of_the_app_is_one_file_on_both_versions() -> None:
     """
     shared = ("popup.py", "lookup.py", "main.py", "versions.py",
               "injector.py", "hotkey.py", "vocab.py", "singleton.py",
-              "config.toml")
+              "settings.py", "config.toml")
     drifted = []
     for name in shared:
         one = _committed_on("fast", name)
@@ -14827,9 +14827,1077 @@ def test_the_meter_says_something_moved_before_anyone_gives_up() -> None:
     assert firstrun.TEST_S >= 2.0, firstrun.TEST_S
 
 
+# ------------------------------------------------- the settings screen
+#
+# Nothing on it is typed by hand: settings.py reads config.toml and the
+# dashboard draws what it found. The owner's rule, in his words: show all
+# of them, so that a setting somebody else uses does not quietly drop off.
+
+
+def _config_paths() -> set[str]:
+    """Every key in the real config.toml as the dotted path set_values
+    writes, straight from tomllib — the parser the app trusts."""
+    import tomllib
+
+    data = tomllib.loads((Path(__file__).resolve().parent / "config.toml")
+                         .read_text("utf-8"))
+    paths: set[str] = set()
+    for key, value in data.items():
+        if isinstance(value, dict):
+            paths |= {f"{key}.{inner}" for inner in value}
+        else:
+            paths.add(key)
+    return paths
+
+
+def test_every_line_of_config_toml_is_a_setting_the_screen_can_draw() -> None:
+    """The two parsers agree: the line scan that reads the comments found
+    exactly the keys tomllib found, each on the line it sits on, with the
+    kind tomllib gave its value."""
+    import settings as settings_mod
+
+    here = Path(__file__).resolve().parent
+    sections = settings_mod.read(here / "config.toml")
+    flat = settings_mod.flatten(sections)
+    assert {s.path for s in flat} == _config_paths()
+    assert len(flat) == len({s.path for s in flat}), "a key was read twice"
+    lines = (here / "config.toml").read_text("utf-8").splitlines()
+    for setting in flat:
+        line = lines[setting.line - 1]
+        assert line.lstrip().startswith(setting.key), (setting.path, line)
+        assert setting.kind == settings_mod.kind_of(setting.value)
+    names = [s.name for s in sections]
+    assert names[:3] == ["", "hint", "setup"], names[:3]
+
+
+def test_the_help_on_a_setting_is_the_comment_in_the_file() -> None:
+    """Three kinds of comment, all read: the block under a header, the
+    block above a key, and the key's own — what follows the value plus
+    the indented lines under it. A menu at the front of a comment becomes
+    the choices and leaves the help."""
+    import settings as settings_mod
+
+    sections = settings_mod.read(
+        Path(__file__).resolve().parent / "config.toml")
+
+    def find(path):
+        setting = settings_mod.find(sections, path)
+        assert setting is not None, path
+        return setting
+
+    hint = next(s for s in sections if s.name == "hint")
+    assert hint.help.startswith("The card that appears while you are still "
+                                "holding the key"), hint.help[:80]
+    after = find("hint.after_ms")
+    assert after.kind == "int" and after.choices == ()
+    assert "how long the key must be held" in after.help, after.help
+    assert "forgotten what the keys do" in after.help, \
+        "the indented lines under the key were dropped"
+    above = find("auto_pause_fullscreen")
+    assert "Pause by itself while a game" in above.help, \
+        "the block above the key was dropped"
+    assert find("hotkey").help.startswith("hold = dictate Hebrew")
+    for path, choices in (
+            ("punctuate.prefer", ("groq", "gemini", "ollama")),
+            ("hint.corner", ("top-right", "top-left", "bottom-right",
+                             "bottom-left")),
+            ("backend", ("gemini", "local", "fake")),
+            ("polish.when", ("never", "known", "always")),
+            ("local.device", ("auto", "cuda", "cpu"))):
+        setting = find(path)
+        assert setting.choices == choices, (path, setting.choices)
+        assert " | " not in setting.help, (path, setting.help[:60])
+    assert find("punctuate.prefer").help.startswith("Whichever goes first")
+    general = sections[0]
+    assert general.name == "" and general.title == "general"
+    assert general.help.startswith("Hebrew push-to-talk dictation"), \
+        "the file's preamble is the general section's"
+    assert "Hebrew push-to-talk" not in find("hotkey").help
+    terms = find("vocab.terms")
+    assert terms.kind == "list" and not terms.editable
+    prompt = find("local.initial_prompt")
+    assert prompt.kind == "str" and not prompt.editable, \
+        "Hebrew cannot be edited in a Tk field"
+    assert find("audio.device").editable
+    assert find("punctuate.auto").kind == "bool"
+
+
+def test_the_plain_words_name_lines_the_file_has() -> None:
+    """settings.TABS is the one hand-written thing on the screen, so it
+    is the one thing that can go stale: every path it names must be in
+    the file, every menu name must be a value the file allows, and no
+    tab may name a line twice."""
+    import settings as settings_mod
+
+    sections = settings_mod.read(
+        Path(__file__).resolve().parent / "config.toml")
+    paths = _config_paths()
+    assert settings_mod.TABS[0].name == "Common"
+    assert settings_mod.tab_named(settings_mod.EVERYTHING) is None
+    for tab in settings_mod.TABS:
+        seen: list = []
+        for group in tab.groups:
+            for row in group.rows:
+                assert row.path in paths, (tab.name, row.path)
+                assert row.label, row.path
+                assert row.path not in seen, (tab.name, row.path)
+                seen.append(row.path)
+                setting = settings_mod.find(sections, row.path)
+                if row.names:
+                    assert setting.kind == "str", row.path
+                    if setting.choices:
+                        assert ({v for v, _ in row.names}
+                                == set(setting.choices)), \
+                            (row.path, row.names, setting.choices)
+
+
+def test_the_two_screens_cover_the_whole_file_between_them() -> None:
+    """Keys on the Keys screen, every other line on Settings' last tab,
+    nothing in neither — and each plain-words tab draws exactly the
+    lines the words name. A new line in config.toml is on the screen the
+    moment the file is saved; a new hotkey field has to be registered in
+    HOTKEY_FIELDS, which the Keys screen tests already hold it to."""
+    import settings as settings_mod
+
+    import dashboard as dash
+
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Settings")
+        board._settings_go(settings_mod.EVERYTHING)
+        board._finish_settings()
+        drawn = set(board.parts["rows"])
+        keys = dash._keys_screen_paths()
+        assert not drawn & keys, drawn & keys
+        assert drawn | keys == _config_paths(), \
+            sorted(_config_paths() - drawn - keys)
+        assert all(len(v) == 1 for v in board.parts["rows"].values())
+        for tab in settings_mod.TABS:
+            board._settings_go(tab.name)
+            board._finish_settings()
+            named = {row.path for group in tab.groups for row in group.rows}
+            assert set(board.parts["rows"]) == named, \
+                (tab.name, set(board.parts["rows"]) ^ named)
+
+
+def test_the_settings_screen_can_reach_its_last_row() -> None:
+    """The assertion the Keys screen once lacked: listing a row is not
+    showing it. Scrolled to the end of Everything, the last line of the
+    file has its control inside the viewport."""
+    import settings as settings_mod
+
+    import dashboard as dash
+
+    try:
+        board = dash.Dashboard()
+    except Exception as e:                      # no display: nothing to test
+        print(f"    (skipped: no Tk window — {e})")
+        return
+    try:
+        board.closing = True
+        board._show("Settings")
+        board._settings_go(settings_mod.EVERYTHING)
+        board._finish_settings()
+        board.root.update()
+        last = settings_mod.flatten(board.parts["sections"])[-1]
+        _kind, widget = board.parts["rows"][last.path][-1]
+        scroller = board.parts["settings_list"]
+        scroller.canvas.yview_moveto(1.0)
+        board.root.update()
+        top = widget.winfo_rooty() - scroller.canvas.winfo_rooty()
+        assert 0 <= top, f"{last.path} sits above the viewport ({top})"
+        assert top + widget.winfo_height() <= scroller.canvas.winfo_height(), \
+            f"{last.path} ends past the viewport — unreachable"
+    finally:
+        try:
+            board.root.destroy()
+        except Exception:
+            pass
+
+
+def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
+    """The write is config.set_values with the dotted path and nothing
+    else — the line editor that keeps the comments. A refused value
+    (set_values validates the whole file first) puts the switch back and
+    says why, in both places the row is drawn."""
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Settings")                 # opens on Common
+        board._finish_settings()
+        written: list = []
+        real = config_mod.set_values
+        config_mod.set_values = lambda path, updates: written.append(
+            (Path(path).name, dict(updates)))
+        try:
+            [(kind, switch)] = board.parts["rows"]["punctuate.auto"]
+            assert kind == "switch" and switch.get() is False, kind
+            switch.toggle()
+            assert written == [("config.toml", {"punctuate.auto": True})], \
+                written
+            assert board.parts["values"]["punctuate.auto"] is True
+            assert "punctuate.auto saved" in board._toast_text, \
+                board._toast_text
+            # The same line on another tab shows the new value.
+            board._settings_go("Text")
+            board._finish_settings()
+            [(kind, again)] = board.parts["rows"]["punctuate.auto"]
+            assert again.get() is True, "the Text tab did not follow"
+
+            def refuse(path, updates):
+                raise config_mod.ConfigError("punctuate.auto must be a bool")
+            config_mod.set_values = refuse
+            again.toggle()
+            assert again.get() is True, \
+                "a refused write left the switch flipped"
+            assert "must be a bool" in board._toast_text, board._toast_text
+        finally:
+            config_mod.set_values = real
+
+
+def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
+    """One writer for config.toml. With the app running the dashboard
+    sends `option` and lets the app write the line and take it live
+    where it can; the reply's message is what the owner sees, and a
+    refusal puts the control back."""
+    import settings as settings_mod
+
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Settings")
+        board._settings_go("Text")
+        board._finish_settings()
+        board.running = True
+        asked: list = []
+
+        def ask(command, then=None, **args):
+            asked.append((command, args))
+            if then is not None:
+                then({"ok": True, "message": f"{args['name']} saved"})
+
+        def never(*_a, **_k):
+            raise AssertionError("the dashboard wrote the file itself")
+
+        board._ask = ask
+        real = config_mod.set_values
+        config_mod.set_values = never
+        try:
+            sections = board.parts["sections"]
+            prefer = settings_mod.find(sections, "punctuate.prefer")
+            [(kind, menu)] = board.parts["rows"]["punctuate.prefer"]
+            assert kind == "dropdown" and menu.get() == "groq", \
+                (kind, menu.get())
+            assert menu.label_for("groq").startswith("Groq"), \
+                "the menu shows the value, not its name"
+            board._apply_setting(prefer, "ollama")
+            assert asked == [("option", {"name": "punctuate.prefer",
+                                         "value": "ollama"})], asked
+            assert menu.get() == "ollama"
+            assert board.parts["values"]["punctuate.prefer"] == "ollama"
+            assert "punctuate.prefer saved" in board._toast_text
+
+            def refuse(command, then=None, **args):
+                then({"ok": False, "error": "punctuate.prefer must be one "
+                                            "of groq, gemini, ollama"})
+            board._ask = refuse
+            board._apply_setting(prefer, "gemini")
+            assert menu.get() == "ollama", "a refused pick stayed picked"
+            assert "must be one of" in board._toast_text
+
+            # A field: what was typed has to parse as what the file holds.
+            board._settings_go("Card")
+            board._finish_settings()
+            after = settings_mod.find(sections, "hint.after_ms")
+            [(kind, entry)] = board.parts["rows"]["hint.after_ms"]
+            assert kind == "entry"
+            entry.delete(0, "end")
+            entry.insert(0, "abc")
+            board._entry_done(after, entry)
+            assert entry.get() == "400", entry.get()
+            assert "not an int" in board._toast_text, board._toast_text
+            board._ask = ask
+            asked.clear()
+            entry.delete(0, "end")
+            entry.insert(0, "650")
+            board._entry_done(after, entry)
+            assert asked == [("option", {"name": "hint.after_ms",
+                                         "value": 650})], asked
+            board._entry_done(after, entry)
+            assert len(asked) == 1, "an unchanged field was written again"
+        finally:
+            config_mod.set_values = real
+
+
+def test_a_search_narrows_the_settings_to_the_lines_that_match() -> None:
+    import settings as settings_mod
+
+    import dashboard as dash
+
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Settings")
+        board._settings_open_search()
+        assert board._settings_searching
+        board._settings_search("punctuat")
+        board._finish_settings()
+        drawn = set(board.parts["rows"])
+        expected = {s.path
+                    for s in settings_mod.flatten(board.parts["sections"])
+                    if settings_mod.matches(s, "punctuat")}
+        expected -= dash._keys_screen_paths()
+        assert drawn == expected, drawn ^ expected
+        assert "punctuate.auto" in drawn and "hint.after_ms" not in drawn
+        assert all(len(v) == 1 for v in board.parts["rows"].values())
+        board._settings_search("no such setting anywhere")
+        board._finish_settings()
+        assert board.parts["rows"] == {}
+        # The cross: the tabs come back, on the tab that was up.
+        board._settings_close_search()
+        board._finish_settings()
+        assert not board._settings_searching and not board._settings_query
+        common = {row.path for group in settings_mod.TABS[0].groups
+                  for row in group.rows}
+        assert set(board.parts["rows"]) == common
+
+
+# ------------------------------------------------- auto punctuation
+
+
+def test_auto_punctuation_ships_off_and_the_knobs_around_it_validate() -> None:
+    """One switch, off. The file says so, the dataclass says so, and the
+    validation refuses the two values that would make the switch lie: a
+    backend that is not in the chain, and a deadline of nothing."""
+    import shutil
+    import tempfile
+
+    here = Path(__file__).resolve().parent
+    cfg = config_mod.load(here / "config.toml")
+    assert cfg.punctuate.auto is False
+    assert config_mod.PunctuateConfig().auto is False
+    assert cfg.punctuate.max_wait_s > 0
+    assert cfg.punctuate.prefer == "groq", cfg.punctuate.prefer
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-punct-"))
+    try:
+        copy = tmp / "config.toml"
+        shutil.copy(here / "config.toml", copy)
+        config_mod.set_values(copy, {"punctuate.auto": True})
+        assert config_mod.load(copy).punctuate.auto is True
+        for bad in ({"punctuate.prefer": "cerebras"},
+                    {"punctuate.max_wait_s": 0}):
+            before = copy.read_bytes()
+            try:
+                config_mod.set_values(copy, bad)
+            except config_mod.ConfigError as e:
+                assert "punctuate" in str(e), e
+            else:
+                raise AssertionError(f"{bad} was accepted")
+            assert copy.read_bytes() == before, \
+                "a refused value reached the file"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_auto_pass_runs_after_the_repair_and_pastes_only_what_the_guard_allows() -> None:  # noqa: E501
+    """Between the repair pass and the paste, bounded, and never a reason
+    for the transcript not to land: a safe reply is pasted, an unsafe one
+    is dropped for the raw text, a slow one is abandoned at the deadline,
+    a two-word answer is left alone, and with the switch off the backend
+    is never asked."""
+    import dataclasses
+    import shutil
+    import tempfile
+    import time as time_mod
+
+    import main as main_mod
+
+    said = "תריץ את זה שוב בבקשה"
+    fixed = "תריץ את זה שוב, בבקשה."
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-autopunct-"))
+    fake = _FakeInjector()
+    real = main_mod.injector
+    try:
+        main_mod.injector = fake
+
+        def app_with(backend, auto=True, max_wait_s=6.0, text=said):
+            app = _worker_app(_Flaky(fail_times=0, text=text), tmp)
+            app.cfg = dataclasses.replace(
+                app.cfg, punctuate=dataclasses.replace(
+                    app.cfg.punctuate, auto=auto, max_wait_s=max_wait_s))
+            app._punctuator = _punctuator(backend)
+            return app
+
+        def pasted():
+            texts = [c[2] for c in fake.calls if c[0] == "replace"]
+            fake.calls.clear()
+            return texts
+
+        good = _FakePunctuateBackend("groq", reply=fixed)
+        app = app_with(good)
+        app._handle(b"RIFF-audio", 4.0, fake.focus, None, False)
+        assert pasted() == [fixed] and good.calls == 1
+        assert app._last["final"] == fixed and app._last["raw"] == said, \
+            app._last
+
+        bad = _FakePunctuateBackend("groq", reply="Sure, running it again!")
+        app_with(bad)._handle(b"RIFF-audio", 4.0, fake.focus, None, False)
+        assert pasted() == [said], "an unsafe reply reached the cursor"
+
+        class _Slow:
+            name = "ollama"
+
+            def translate(self, text):
+                time_mod.sleep(1.5)
+                return fixed
+
+        started = time_mod.monotonic()
+        app_with(_Slow(), max_wait_s=0.2)._handle(b"RIFF-audio", 4.0,
+                                                  fake.focus, None, False)
+        assert pasted() == [said]
+        assert time_mod.monotonic() - started < 1.2, \
+            "the paste waited past the deadline"
+
+        off = _FakePunctuateBackend("groq", reply=fixed)
+        app_with(off, auto=False)._handle(b"RIFF-audio", 4.0, fake.focus,
+                                          None, False)
+        assert pasted() == [said] and off.calls == 0
+
+        short = _FakePunctuateBackend("groq", reply="כן, בטח.")
+        app_with(short, text="כן בטח")._handle(b"RIFF-audio", 4.0,
+                                                fake.focus, None, False)
+        assert pasted() == ["כן בטח"] and short.calls == 0, \
+            "two words are an answer, not a sentence"
+    finally:
+        main_mod.injector = real
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_set_option_writes_first_and_takes_the_live_ones_into_the_running_app() -> None:  # noqa: E501
+    """The dashboard's one path to a running app's settings. The line is
+    written and validated before anything else; a live section replaces
+    its block of the running Config and throws away the worker built on
+    the old one; the rest is written and honestly reported as waiting
+    for a restart; a bad value never reaches the file."""
+    import shutil
+    import tempfile
+    import time as time_mod
+
+    import main as main_mod
+    import overlay as overlay_mod
+
+    here = Path(__file__).resolve().parent
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-option-"))
+    try:
+        copy = tmp / "config.toml"
+        shutil.copy(here / "config.toml", copy)
+        app = main_mod.App.__new__(main_mod.App)
+        app.cfg = config_mod.load(copy)
+        app.config_path = copy
+        app._punctuator = app._translator = app._polisher = object()
+        app._watcher, app._auto_paused = None, False
+        app._note = ""
+        app._say = lambda message: None
+        stopped: list = []
+
+        class _Hint:
+            def stop(self):
+                stopped.append(True)
+
+        app.hint = _Hint()
+
+        message = app.set_option("punctuate.auto", True)
+        assert "punctuate.auto saved" in message and "next time" not in message, \
+            message
+        assert config_mod.load(copy).punctuate.auto is True
+        assert app.cfg.punctuate.auto is True
+        assert app._punctuator is None, \
+            "the worker built on the old Config was kept"
+        assert app._translator is not None, \
+            "an unrelated worker was thrown away"
+
+        message = app.set_option("local.beam_size", 3)
+        assert "next time" in message, message
+        assert config_mod.load(copy).local.beam_size == 3
+        assert app.cfg.local.beam_size == 5, \
+            "a setting the app cannot take live was taken anyway"
+
+        before = copy.read_bytes()
+        try:
+            app.set_option("punctuate.prefer", "cerebras")
+        except config_mod.ConfigError:
+            pass
+        else:
+            raise AssertionError("a bad value was accepted")
+        assert copy.read_bytes() == before
+        assert app.cfg.punctuate.prefer == "groq"
+
+        app.set_option("hint.enabled", False)
+        for _ in range(60):
+            if stopped and isinstance(app.hint, overlay_mod.HintCard):
+                break
+            time_mod.sleep(0.05)
+        assert stopped, "the old card was not stopped"
+        assert isinstance(app.hint, overlay_mod.HintCard), app.hint
+        assert not app.hint._enabled and app.cfg.hint.enabled is False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_punctuation_chain_is_prefer_first_then_the_rest_in_order() -> None:
+    """groq first by default (measured — see punctuate.ORDER), and whoever
+    is preferred, the other two follow; a backend that cannot be built on
+    this version — classic's translate.py has no Groq — is left out
+    rather than failing the press."""
+    import dataclasses
+
+    import punctuate as punctuate_mod
+    import translate as translate_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    for prefer, expected in (("groq", ["groq", "gemini", "ollama"]),
+                             ("gemini", ["gemini", "groq", "ollama"]),
+                             ("ollama", ["ollama", "groq", "gemini"])):
+        p = punctuate_mod.Punctuator(dataclasses.replace(
+            cfg, punctuate=dataclasses.replace(cfg.punctuate, prefer=prefer)))
+        p._groq_backend = lambda: _FakePunctuateBackend("groq")
+        p._gemini_backend = lambda: _FakePunctuateBackend("gemini")
+        p._ollama_backend = lambda: _FakePunctuateBackend("ollama")
+        chain = [b.name for b in p._backends()]
+        assert chain == expected, (prefer, chain)
+    real = translate_mod.GroqTranslator
+    del translate_mod.GroqTranslator
+    try:
+        p = punctuate_mod.Punctuator(cfg)
+        p._gemini_backend = lambda: _FakePunctuateBackend("gemini")
+        p._ollama_backend = lambda: _FakePunctuateBackend("ollama")
+        assert [b.name for b in p._backends()] == ["gemini", "ollama"]
+    finally:
+        translate_mod.GroqTranslator = real
+
+
+def test_the_auto_pass_gives_up_at_its_deadline_and_the_key_never_does() -> None:
+    import time as time_mod
+
+    class _Slow:
+        name = "ollama"
+
+        def translate(self, text):
+            time_mod.sleep(1.0)
+            return "שלום, עולם."
+
+    started = time_mod.monotonic()
+    try:
+        _punctuator(_Slow()).punctuate("שלום עולם", max_wait_s=0.2)
+    except TimeoutError as e:
+        assert "ollama" in str(e), e
+    else:
+        raise AssertionError("the deadline did not fire")
+    assert time_mod.monotonic() - started < 0.8
+    text, backend = _punctuator(_Slow()).punctuate("שלום עולם")
+    assert (text, backend) == ("שלום, עולם.", "ollama")
+
+
+def test_a_menu_opens_under_its_pill_and_a_pick_closes_it() -> None:
+    """The one control on the Settings screen that is neither a switch
+    nor a field. It shows the NAME of a value, not the value; it closes
+    on a pick and on Escape; and it tells its owner only when the value
+    actually changed."""
+    import tkinter as tk
+
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        picked: list = []
+        menu = ui_mod.Dropdown(root, [("groq", "Groq — fast"),
+                                      ("gemini", "Gemini"),
+                                      ("ollama", "Ollama")],
+                               "groq", command=picked.append)
+        menu.pack()
+        root.update()
+        assert menu.get() == "groq"
+        assert menu.label_for("groq") == "Groq — fast"
+        assert menu.label_for("something else") == "something else"
+        menu.open()
+        root.update()
+        popup = menu._popup
+        assert isinstance(popup, tk.Toplevel), popup
+        rows = popup.winfo_children()[0].winfo_children()
+        assert [row.cget("text") for row in rows] == ["Groq — fast",
+                                                      "Gemini", "Ollama"]
+        menu._pick("ollama")
+        root.update()
+        assert picked == ["ollama"] and menu.get() == "ollama"
+        assert menu._popup is None, "the pick did not close the list"
+        menu.open()
+        root.update()
+        menu._pick("ollama")
+        assert picked == ["ollama"], "an unchanged pick was reported"
+        menu.open()
+        root.update()
+        assert menu._popup is not None
+        menu._popup.event_generate("<Escape>")
+        root.update()
+        assert menu._popup is None, "Escape did not close the list"
+        menu.set("gemini")
+        assert menu.get() == "gemini" and picked == ["ollama"], \
+            "set() is a repaint, not a pick"
+    finally:
+        root.destroy()
+
+
+# --------------------------------------------------------------------------
+# The second reading (review.py, review_card.py, overlay.ReviewCard)
+# --------------------------------------------------------------------------
+
+# The 2026-09-02 clip: five real words, then 24 the decoder invented and
+# stamped into the last 140 ms. Two other decodes of the same audio stop at
+# the fifth word.
+_INVENTED = ("תעצור, זהו. כבר יש קובץ שואל הרצץ מיוחדים במהלך שלנו ואין לנו "
+             "את זה כדי לדבר על איזה תקופת דעתי. אני רוצה להגיד לכם שאלותיי "
+             "בעיקרונות נוספות בוועדות הכניסטוריות")
+_HEARD_SHORT = ["תעצור זהו, כבר יש קובץ", "תעצור, זהו. כבר יש קובץ."]
+
+
+def test_the_invented_tail_is_found_from_the_decodes_alone() -> None:
+    """No language model needed: an ending no other decode heard is a
+    drop, and applying it leaves the five words that were said."""
+    import review as review_mod
+    change = review_mod.tail_drop(_INVENTED, [], _HEARD_SHORT)
+    assert change is not None and change["kind"] == "drop", change
+    assert change["span"] == [5, 29], change["span"]
+    assert change["before"].startswith("שואל הרצץ"), change["before"]
+    fixed = review_mod.apply_changes(_INVENTED, [change])
+    assert fixed == "תעצור, זהו. כבר יש קובץ", fixed
+    assert review_mod.tail_drop(_INVENTED, [], _HEARD_SHORT[:1]) is None, \
+        "one witness is an anecdote"
+    assert review_mod.tail_drop(_INVENTED, [], [_INVENTED, _INVENTED]) \
+        is None, "decodes that heard the whole thing propose nothing"
+    # the card shows how a long tail starts, not all 24 words
+    snip = review_mod.snippet(_INVENTED, change)
+    assert snip["word"].endswith("…") and len(snip["word"].split()) == 6, snip
+    assert snip["was"] == change["before"]
+
+
+def test_the_decoders_own_confidence_gates_the_drop() -> None:
+    """A tail two decodes missed but the live decoder was SURE of is a
+    VAD difference, not an invention; a single doubted word is dropped
+    only when the decoder barely believed it (שאלות at p=0.21 on silence,
+    the second clip of 2026-09-02)."""
+    import review as review_mod
+    text = "מה אני לא אמרתי את קודם אלא אמרתי רק תעצור זהו כבר יש קובץ שאלות"
+    heard = ["מה אני לא אמרתי את קודם אלא אמרתי רק תעצור זהו כבר יש קובץ",
+             "מה אני לא אמרתי את קודם אני אמרתי רק תעצר זהו כבר יש קובץ"]
+    words = [(w, 0.0, 0.0, 0.95) for w in text.split()]
+    words[-1] = ("שאלות", 4.56, 5.26, 0.21)
+    change = review_mod.tail_drop(text, words, heard)
+    assert change is not None and change["before"] == "שאלות", change
+    words[-1] = ("שאלות", 4.56, 5.26, 0.5)
+    assert review_mod.tail_drop(text, words, heard) is None, \
+        "one word at p=0.5 is a doubt, not an invention"
+    sure = [(w, 0.0, 0.0, 0.99) for w in _INVENTED.split()]
+    assert review_mod.tail_drop(_INVENTED, sure, _HEARD_SHORT) is None, \
+        "a confident tail is kept even when the other decodes lack it"
+    plain = _INVENTED.replace(",", "").replace(".", "").split()
+    doubted = [(w, 0.0, 0.0, 0.99 if i < 5 else 0.3)
+               for i, w in enumerate(plain)]
+    change = review_mod.tail_drop(_INVENTED, doubted, _HEARD_SHORT)
+    assert change is not None and change["span"] == [5, 29], change
+
+
+def test_proposals_are_checked_in_code_not_in_the_prompt() -> None:
+    """Every rule the prompt states is enforced here: "before" must be in
+    the text, spans are bounded, nothing may overlap, and a reply that
+    would touch a quarter of the words is a rewrite, discarded whole."""
+    import review as review_mod
+    text = "טוב, אז הלכתי לאכול מטוס עם החברים ואחר כך חזרנו הביתה ברגל"
+    heard = ["טוב אז הלכתי לאכול מנטוס עם החברים ואחר כך חזרנו הביתה ברגל"]
+    got = review_mod.validate(text, [
+        {"before": "מטוס", "after": "מנטוס", "why": "אוכלים מנטוס"},
+        {"before": "אווירון", "after": "מנטוס", "why": "not in the text"},
+        {"before": "הלכתי לאכול מטוס עם", "after": "x", "why": "four words"},
+        {"before": "ברגל", "after": "ברגל", "why": "no change"},
+        {"before": "לאכול מטוס", "after": "לשתות", "why": "overlaps"},
+    ], heard, witness=1)
+    assert [c["before"] for c in got] == ["מטוס"], got
+    assert got[0]["span"] == [4, 5] and got[0]["support"] == 1, got[0]
+    assert got[0]["family"] == "context" and got[0]["kind"] == "replace"
+    rewrite = [{"before": w, "after": w + "x", "why": ""}
+               for w in ("טוב", "אז", "הלכתי", "לאכול", "מטוס")]
+    assert review_mod.validate(text, rewrite, heard, max_changes=8,
+                               witness=0) == []
+    assert review_mod.validate(text, [{"before": "מטוס", "after": ""}],
+                               heard) == [], "an empty after is not a change"
+    # THE WITNESSES: a word no decode heard is a guess, unless taught;
+    # one decode is the general model's own mishearing, two is evidence
+    guess = [{"before": "ברגל", "after": "באוטו", "why": "guess"}]
+    assert review_mod.validate(text, guess, heard, witness=1) == []
+    taught = review_mod.validate(text, guess, heard,
+                                 glossary=[("ברגל", "באוטו")])
+    assert [c["after"] for c in taught] == ["באוטו"], taught
+    loose = review_mod.validate(text, guess, heard, witness=0)
+    assert [c["after"] for c in loose] == ["באוטו"], loose
+    one = [{"before": "מטוס", "after": "מנטוס", "why": ""}]
+    assert review_mod.validate(text, one, heard, witness=2) == [], \
+        "one decode heard it: not enough"
+    twice = review_mod.validate(text, one, heard * 2, witness=2)
+    assert [c["support"] for c in twice] == [2], twice
+
+
+def test_apply_and_snippet_keep_the_sentence_around_a_change() -> None:
+    import review as review_mod
+    text = "טוב, אז הלכתי לאכול מטוס עם החברים ואחר כך חזרנו הביתה ברגל"
+    change = {"before": "מטוס", "after": "מנטוס", "kind": "replace",
+              "span": [4, 5], "why": "x"}
+    assert review_mod.apply_changes(text, [change]) == \
+        text.replace("מטוס", "מנטוס")
+    snip = review_mod.snippet(text, change, side=2)
+    assert snip["right"] == "…הלכתי לאכול" and snip["left"] == "עם החברים…", \
+        snip
+    assert snip["word"] == "מנטוס" and snip["was"] == "מטוס"
+    drop = {"before": "הביתה ברגל", "after": "", "kind": "drop",
+            "span": [10, 12], "why": "y"}
+    assert review_mod.apply_changes(text, [drop]) == \
+        "טוב, אז הלכתי לאכול מטוס עם החברים ואחר כך חזרנו"
+    both = review_mod.apply_changes(text, [change, drop])
+    assert both == "טוב, אז הלכתי לאכול מנטוס עם החברים ואחר כך חזרנו", both
+
+
+def test_a_reply_is_parsed_with_its_wrappers_and_refused_without_an_array(
+        ) -> None:
+    import review as review_mod
+    one = '[{"before": "a", "after": "b", "why": "c"}]'
+    assert review_mod.parse_reply(one) == [{"before": "a", "after": "b",
+                                            "why": "c"}]
+    assert review_mod.parse_reply("```json\n[]\n```") == []
+    assert review_mod.parse_reply(
+        'Sure: {"changes": [{"before": "a", "after": "b"}]}') == \
+        [{"before": "a", "after": "b"}]
+    assert review_mod.parse_reply("I could not find anything.") is None
+    assert review_mod.parse_reply("") is None
+
+
+def test_the_store_keeps_a_proposal_until_someone_answers_it() -> None:
+    import shutil
+    import review as review_mod
+    tmp = Path(tempfile.mkdtemp(prefix="review-"))
+    try:
+        store = review_mod.Store(tmp / "review.json")
+        store.add({"id": "a", "when": "2026-09-02 16:08:31", "text": "x",
+                   "proposed": "y", "status": "pending", "learned": False,
+                   "changes": [{"before": "x", "after": "y",
+                                "kind": "replace", "family": "context"}]})
+        assert [i["id"] for i in store.pending()] == ["a"]
+        assert store.unlearned() == []
+        decided = store.decide("a", "accepted", by="card")
+        assert decided and decided["status"] == "accepted" \
+            and decided["by"] == "card", decided
+        assert store.pending() == []
+        assert [i["id"] for i in store.unlearned()] == ["a"]
+        assert store.decide("a", "rejected") is None, "decided once"
+        store.mark_learned("a")
+        assert store.unlearned() == []
+        summary = store.summary()
+        assert summary["accepted"] == 1 and summary["pending"] == 0, summary
+        assert summary["families"]["context"]["accepted"] == 1, summary
+        assert summary["top"] == [(("x", "y"), 1)], summary["top"]
+        again = review_mod.Store(tmp / "review.json")   # another process
+        assert again.decided()[0]["id"] == "a"
+        try:
+            store.decide("a", "maybe")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("an unknown verdict was accepted")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+class _ReviewRecent:
+    """A recent\\ spool stand-in: the members review.Engine touches."""
+
+    def __init__(self, items, root):
+        self._items = items
+        self.dir = root
+
+    def pending(self):
+        return list(self._items)
+
+    def update(self, item, **fields):
+        item.meta.update(fields)
+
+
+class _ReviewReader:
+    def __init__(self, proposals):
+        self._proposals = proposals
+        self.asked = 0
+
+    def ask(self, final, variants, glossary=(), context=()):
+        self.asked += 1
+        return self._proposals
+
+
+class _NoCorpus:
+    def admit(self, *a, **k):
+        return False
+
+
+def test_the_engine_proposes_on_a_card_and_learns_only_what_was_accepted(
+        ) -> None:
+    """The whole channel, no models and no network: a clip is read, a
+    card goes up, nothing is learned until a verdict — and a rejection
+    teaches nothing while an acceptance teaches the pair."""
+    import shutil
+    import review as review_mod
+    text = "טוב, אז הלכתי לאכול מטוס עם החברים"
+    tmp = Path(tempfile.mkdtemp(prefix="review-"))
+    try:
+        item = _StudyItem(tmp / "clip.wav",
+                          {"text": text, "raw": text, "seconds": 3.0},
+                          seconds=3.0)
+        recent = _ReviewRecent([item], tmp)
+        v = vocab_mod.Vocab(tmp / "vocab.json")
+        shown, applied = [], []
+        engine = review_mod.Engine(
+            _hint_cfg(),
+            _StudyTranscriber(wide="טוב אז הלכתי לאכול מנטוס עם החברים",
+                              general="טוב אז הלכתי לאכול מנטוס עם החברים",
+                              loose="טוב אז הלכתי לאכול מטוס עם החברים"),
+            v, recent, review_mod.Store(tmp / "review.json"),
+            model_lock=None, quiet=lambda: True, app_dir=tmp,
+            on_suggest=shown.append, on_accept=applied.append,
+            reader=_ReviewReader([{"before": "מטוס", "after": "מנטוס",
+                                   "why": "אוכלים מנטוס"}]),
+            corpus=_NoCorpus())
+        engine._read(item, 0, True, 0)
+        assert len(shown) == 1, shown
+        change = shown[0]["changes"][0]
+        assert change["after"] == "מנטוס" and change["support"] == 2, change
+        assert shown[0]["proposed"] == text.replace("מטוס", "מנטוס")
+        assert item.meta["review"]["engine"] == review_mod.ENGINE
+        assert item.meta["review"]["changes"] == 1
+        assert not review_mod.needs_review(item), "read once, stamped once"
+        sid = shown[0]["id"]
+        waiting = engine.store.pending()
+        assert waiting[0]["id"] == sid and waiting[0]["shown"], waiting
+        assert v.terms() == [] and v.glossary() == [], \
+            "a card going up teaches nothing"
+        engine._decide(sid, "rejected", "card")
+        assert v.glossary() == [] and applied == [], \
+            "a rejection teaches nothing"
+        engine.store.add(dict(shown[0], id="again", status="pending",
+                              learned=False))
+        engine._decide("again", "accepted", "dashboard")
+        assert ("מטוס", "מנטוס") in v.glossary(), v.glossary()
+        assert applied and applied[0]["id"] == "again"
+        assert engine.store.unlearned() == []
+        assert engine.store.get("again")["by"] == "dashboard"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_hebrew_one_hit_correction_stays_out_of_the_decoder_prompt() -> None:
+    """The 2026-09-02 bug, as a rule. Nine Hebrew pairs learned from one
+    correction each sat at the tail of the hotword prompt and the decoder
+    echoed them into a 2.8 s clip; a name in Latin letters is what the
+    prompt is for and still gets in at once."""
+    v = _tmp_vocab(seed_terms=("GitHub",), hebrew_after_hits=3)
+    for heard, meant in (("אירוע פה", "יש לי ריפו"), ("גיטאבים", "גיטאהאב"),
+                         ("ארצות המיליון", "הרצץ מיליון"),
+                         ("xpogo", "Expo Go")):
+        v.learn(heard, meant)
+    assert v.terms() == ["GitHub", "Expo Go"], v.terms()
+    assert ("אירוע פה", "יש לי ריפו") in v.glossary(), \
+        "the repair pass still hears about it"
+    v.learn("גיטאבים", "גיטאהאב")
+    v.learn("גיטאבים", "גיטאהאב")
+    assert "גיטאהאב" in v.terms(), "three corrections is a name, not a word"
+    assert "יש לי ריפו" not in v.terms()
+    import study as study_mod
+    assert study_mod.family("ארצות המיליון", "הרצץ מיליון") == "context"
+    assert study_mod.family("xpogo", "Expo Go") == "term"
+
+
+def test_the_review_card_is_measured_from_its_rows_and_pressed_where_drawn(
+        ) -> None:
+    import review_card as rc
+    suggestion = {"id": "s", "text": "טוב, אז הלכתי לאכול מטוס עם החברים",
+                  "changes": [{"before": "מטוס", "after": "מנטוס",
+                               "why": "אוכלים מנטוס", "kind": "replace",
+                               "span": [4, 5], "family": "context",
+                               "support": 1}]}
+    card = rc.card_for(suggestion, seconds=20)
+    assert card["id"] == "s" and len(card["rows"]) == 1 and card["more"] == 0
+    row = card["rows"][0]
+    assert row["word"] == "מנטוס" and row["was"] == "מטוס", row
+    assert "במקום: מטוס" in rc.note_for(row), rc.note_for(row)
+    w, h = rc.measure(card)
+    five = rc.card_for(dict(suggestion, changes=suggestion["changes"] * 5),
+                       seconds=20)
+    assert len(five["rows"]) == rc.MAX_ROWS and five["more"] == 2, five
+    assert rc.measure(five)[1] > h, "more rows, taller card"
+    boxes = rc.regions(card)
+    for name, _w in rc.BUTTONS:
+        x0, y0, x1, y1 = boxes[name]
+        assert rc.SHADOW <= x0 < x1 <= rc.SHADOW + w, (name, boxes[name])
+        assert rc.SHADOW <= y0 < y1 <= rc.SHADOW + h, (name, boxes[name])
+        assert rc.hit_test(card, 1.0, (x0 + x1) / 2, (y0 + y1) / 2) == \
+            (rc.HTCLIENT, name), name
+    assert rc.hit_test(card, 1.0, rc.SHADOW + 10, rc.SHADOW + 10) == \
+        (rc.HTCAPTION, rc.DRAG)
+    assert rc.hit_test(card, 1.0, 2, 2) == (rc.HTTRANSPARENT, None), \
+        "the shadow margin is not ours"
+    img = rc.compose(card, 1.0, 0.5, hover=rc.ACCEPT, cache={})
+    assert img.size == (w, h), (img.size, (w, h))
+    assert rc.flat(card, 1.2, 1.0).size == rc.measure(card, 1.2)
+
+
+def test_the_review_card_keys_answer_only_under_the_pointer() -> None:
+    verdicts = []
+    card = overlay_mod.ReviewCard(
+        on_verdict=lambda sid, v: verdicts.append((sid, v)),
+        keys={"accept": "v", "reject": "x", "later": "l"})
+    assert not card.visible() and not card.on_key(vk_for("v"))
+    card._current, card.rect = "s", (0, 0, 10, 10)
+    card.hovering = lambda: False
+    assert not card.on_key(vk_for("v")), "off the card, V is a letter"
+    card.hovering = lambda: True
+    assert not card.on_key(vk_for("q")), "an unrelated key passes through"
+    assert card.on_key(vk_for("v"))
+    assert verdicts == [("s", "accepted")] and not card.visible(), verdicts
+    card._current = "t"
+    assert card.on_key(vk_for("l")) and verdicts == [("s", "accepted")], \
+        "later decides nothing"
+    card._current = "u"
+    assert card.on_key(vk_for("x")) and verdicts[-1] == ("u", "rejected")
+
+
+def test_the_review_card_sits_mid_height_on_the_right_and_stays_where_put(
+        ) -> None:
+    card = overlay_mod.ReviewCard(corner="right", margin=14)
+    x, y = card.origin(400, 200, (2560, 1440), 26, (-1920, 0, 4480, 1440))
+    assert (x, y) == (2560 - 14 - 400 + 26, (1440 - 200) // 2), (x, y)
+    left = overlay_mod.ReviewCard(corner="left", margin=14)
+    assert left.origin(400, 200, (2560, 1440), 26)[0] == 14 - 26
+    moved = overlay_mod.ReviewCard(corner="right", x=-1500, y=300)
+    assert moved.origin(400, 200, (2560, 1440), 26,
+                        (-1920, 0, 4480, 1440)) == (-1526, 274), \
+        "a saved position on the left monitor is kept"
+    top = overlay_mod.ReviewCard(corner="top-right", margin=14)
+    assert top.origin(400, 200, (2560, 1440), 26)[1] == 14 - 26
+
+
+def test_review_settings_are_in_the_real_config_and_checked_at_load() -> None:
+    import shutil
+    cfg = _hint_cfg()
+    assert cfg.review.corner in config_mod.REVIEW_CORNERS, cfg.review.corner
+    assert cfg.review.card_seconds > 0 and cfg.review.max_changes >= 1
+    here = Path(__file__).resolve().parent
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-review-"))
+    try:
+        path = tmp / "config.toml"
+        base = (here / "config.toml").read_text("utf-8")
+        assert base.count('corner = "right"') == 1, "the [review] corner"
+        path.write_text(base.replace('corner = "right"',
+                                     'corner = "middle"'), "utf-8")
+        try:
+            config_mod.load(path)
+        except config_mod.ConfigError as e:
+            assert "review.corner" in str(e), e
+        else:
+            raise AssertionError("a nonsense corner loaded happily")
+        path.write_text(base.replace("card_seconds = 20",
+                                     "card_seconds = -3"), "utf-8")
+        try:
+            config_mod.load(path)
+        except config_mod.ConfigError as e:
+            assert "card_seconds" in str(e), e
+        else:
+            raise AssertionError("a negative clock loaded happily")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    import settings as settings_mod
+    sections = {s.name: s for s in settings_mod.read(here / "config.toml")}
+    assert "review" in sections, list(sections)
+    corner = next(s for s in sections["review"].settings if s.key == "corner")
+    assert "right" in corner.choices and "bottom-left" in corner.choices, \
+        corner.choices
+
+
+def test_an_accepted_reading_shows_up_in_the_history_as_learned() -> None:
+    import shutil
+    import history as history_mod
+    tmp = Path(tempfile.mkdtemp(prefix="review-log-"))
+    try:
+        log = tmp / "transcripts.log"
+        log.write_text(
+            "2026-09-02 16:08:31,528 | REVIEW | accepted | מטוס || מנטוס\n"
+            "2026-09-02 16:08:32,528 | REVIEW | rejected | ברגל || ב-Uber\n",
+            "utf-8")
+        events = history_mod._events_in(log)
+        assert len(events) == 1, events
+        assert events[0].kind == "learned", events[0]
+        assert events[0].pairs == [("מטוס", "מנטוס")], events[0].pairs
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_review_screen_lists_what_waits_and_decides_it() -> None:
+    import shutil
+    import tkinter as tk
+    import dashboard as dash
+    import review as review_mod
+    tmp = Path(tempfile.mkdtemp(prefix="review-dash-"))
+    store = review_mod.Store(tmp / "review.json")
+    base = {"when": "2026-09-02 16:08:31", "text": "הלכתי לאכול מטוס",
+            "proposed": "הלכתי לאכול מנטוס", "status": "pending",
+            "learned": False,
+            "changes": [{"before": "מטוס", "after": "מנטוס",
+                         "why": "אוכלים מנטוס", "kind": "replace",
+                         "family": "context"}]}
+    store.add(dict(base, id="p"))
+    store.add(dict(base, id="d"))
+    store.decide("d", "rejected", by="card")
+    saved = dash.Dashboard._review_store
+    dash.Dashboard._review_store = lambda self: store
+    try:
+        with _window() as board:
+            if board is None:
+                return
+            board._show("Review")
+
+            def rows():
+                return [w for w in
+                        board.parts["review_list"].inner.winfo_children()
+                        if isinstance(w, tk.Canvas)]
+            assert len(rows()) == 2, len(rows())
+            head = board.parts["review_head"].cget("text")
+            assert "1 waiting" in head and "1 rejected" in head, head
+            board._review_decide("p", "accepted")
+            assert store.pending() == [] and store.get("p")["by"] == "dashboard"
+            assert len(rows()) == 2, "decided rows stay, greyed"
+            assert "0 waiting" in board.parts["review_head"].cget("text")
+    finally:
+        dash.Dashboard._review_store = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]
+    # `tests.py a b` runs only the tests whose name contains a or b; a
+    # leading `-` excludes instead (`tests.py -drag`). tests_quiet.py uses
+    # this to run the few that need the real screen in the open and the
+    # rest on a hidden desktop.
+    picks = [a for a in sys.argv[1:] if not a.startswith("-")]
+    skips = [a[1:] for a in sys.argv[1:] if a.startswith("-") and a[1:]]
+    if picks:
+        tests = [(n, f) for n, f in tests if any(p in n for p in picks)]
+    if skips:
+        tests = [(n, f) for n, f in tests if not any(s in n for s in skips)]
     print(f"running {len(tests)} tests", flush=True)
     for test_name, fn in tests:
         check(test_name, fn)

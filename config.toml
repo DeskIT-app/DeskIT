@@ -103,7 +103,7 @@ latch_hotkey = "left"
 # Google app, Word, Excel, PowerPoint, Outlook, Teams, WhatsApp Web,
 # Spotify or the NVIDIA overlay. The finger does not move.
 # "" turns it off. See [translate] below.
-translate_hotkey = "ctrl+f9"
+translate_hotkey = "f8"
 # TAP to put the PUNCTUATION into what is already at the cursor: whatever
 # is selected, or the whole field when nothing is selected. Whisper
 # transcribes sounds, not sentences — the local Hebrew model gives you a
@@ -144,7 +144,7 @@ punctuate_hotkey = "f2"
 # register costs you a translation box instead of a lesson and changes
 # nothing on screen.
 # "" turns it off. See [vocab] below.
-correct_hotkey = "f8"
+correct_hotkey = "ctrl+f9"
 # The key that looks something up without touching it. Select a word or a
 # sentence, tap this, and a small box appears with the Hebrew — or with
 # the English, if what you selected was already Hebrew. Nothing is typed,
@@ -226,8 +226,8 @@ corner = "top-right"          # top-right | top-left | bottom-right | bottom-lef
                               # Where it starts before you have moved it. On the
                               # right it is placed BESIDE the status dot, never
                               # over it: the dot does not move for this
-x = -1950                      # the top-left of the CARD where you last dragged
-y = 241                       # it, in screen pixels — what you can SEE, not the
+x = -1865                      # the top-left of the CARD where you last dragged
+y = 761                       # it, in screen pixels — what you can SEE, not the
                               # window, which starts 26 px further up and left to
                               # leave room for its own shadow. -100000 = never
                               # moved: use `corner`. It has to be a number no
@@ -294,22 +294,40 @@ settle_ms = 120               # how long the focused app gets to answer a copy
 # be identical. A model that rewrote a word, dropped a hesitation, translated
 # a term or answered your text instead of punctuating it fails that check and
 # its reply is discarded — your text stays exactly as it was.
+auto = false                  # punctuate EVERY dictation on its way to the
+                              # cursor, so the key is never needed. The same
+                              # guarantee: a reply that changed a word is
+                              # thrown away and the transcript lands as it
+                              # came. Measured 2026-09-01 on 12 real
+                              # dictations: groq answered in 0.5-1.5 s (median
+                              # 0.8) and kept every word 10 times out of 12 —
+                              # the two it lost were spelling "fixes" the
+                              # check caught. So that is the price: about a
+                              # second more before the text lands, with the
+                              # "..." marker up while it waits
+max_wait_s = 6                # how long a dictation may wait for that answer
+                              # before it is pasted as it came. Read only
+                              # when auto = true; the key has no deadline,
+                              # because nothing is waiting on it
 max_chars = 5000              # same guard as translate.max_chars: with nothing
                               # selected this takes the WHOLE field
-prefer = "gemini"             # gemini | ollama. Measured on real dictations
-                              # 2026-08-15: gemini put in every comma, full
-                              # stop and question mark and took 0.6-3.2 s;
-                              # llama3.1:8b passed the safety check too but
-                              # came back with only a full stop on one of the
-                              # two, and took 17.7 s on the first request
-                              # after idling, 3.6 s after. So gemini first —
-                              # "is this a question?" is a judgement call, and
-                              # this is a key you tap rather than something
-                              # that runs on every dictation.
-                              # Switch to "ollama" if you end up tapping it
-                              # after EVERY dictation: the free tier is 20
-                              # requests/day/model and translation draws on
-                              # the same bucket
+prefer = "groq"               # groq | gemini | ollama. Whichever goes first,
+                              # the other two follow in that order, so a spent
+                              # quota costs one fallback and not the key.
+                              # Measured on real dictations 2026-08-15: gemini
+                              # put in every comma, full stop and question
+                              # mark and took 0.6-3.2 s; llama3.1:8b passed
+                              # the safety check too but came back with only
+                              # a full stop on one of the two, and took 17.7 s
+                              # on the first request after idling, 3.6 s after.
+                              # Re-measured 2026-09-01 with groq in the mix,
+                              # the same prompt on 12 dictations: groq 10/12
+                              # kept the words, median 0.8 s; gemini 4/5,
+                              # median 0.9 s. Same quality, and groq's free
+                              # tier is ~1,000 requests/day against gemini's
+                              # 20/day/model — the bucket translation draws
+                              # on. So groq first, for the key and for auto
+groq_model = ""               # "" = reuse [polish] groq_model
 ollama_model = ""             # "" = reuse [translate] ollama_model
 nikud = false                 # also add Hebrew VOWEL POINTS, not just
                               # punctuation. A much bigger change to the text;
@@ -943,6 +961,15 @@ replace_after_hits = 2    # how many times the SAME garble must be corrected
                           # before it is also repaired automatically. 1 would
                           # let one slip in the correction box start rewriting
                           # a word you really say
+hebrew_after_hits = 3     # a HEBREW correction reaches the decoder's word
+                          # list only after this many corrections of the
+                          # same garble; a name in Latin letters gets in at
+                          # once. A real Hebrew word in that list makes the
+                          # decoder say it unbidden: measured 2026-09-02,
+                          # nine one-hit Hebrew phrases turned a 2.8 s clip
+                          # of five words into 29 (the Latin terms alone
+                          # decoded it cleanly). The pair still repairs the
+                          # text and feeds the repair pass either way
 keep_audio = 50           # keep this many recent recordings in recent\, so a
                           # correction can be tied to the AUDIO that produced
                           # it. That is what makes `main.py --benchmark` able
@@ -1234,3 +1261,83 @@ drop_trailing_boilerplate = true # drop parliamentary phrases stuck to the END
 extra_boilerplate = []           # your own phrases, e.g. ["תודה שצפיתם"].
                                  # WHOLE PHRASES only: a single common word
                                  # here would delete real speech
+
+[review]
+# FAST VERSION ONLY. The second reading (review.py): the moment a
+# dictation has landed at the cursor, the recording is decoded three MORE
+# ways on the local models (audio never leaves the machine) and a language
+# model reads the sentence for words that were probably misheard. Where it
+# finds one, a small card appears with the sentence as it would read after
+# the change, the changed word marked, and a reason. Accept teaches the
+# vocabulary and fixes the text if the field still holds it; reject is
+# remembered; ignoring the card decides nothing and the proposal waits in
+# the dashboard's Review screen. Nothing is ever learned or rewritten
+# without a click. While this is on it stands in for [study].
+#
+# Measured 2026-09-02 with `main.py --review` on the 17-18 clips a human
+# had corrected (the hard ones by construction), one run per setting of
+# `witness` below, and the model answers differ run to run:
+#   witness 0: 13 proposals, 4 exactly the correction, 4 more right where
+#              the correction itself kept a garble, 5 wrong; word error
+#              rate 10.19% -> 9.12% if every one were accepted blindly
+#   witness 1: 11 proposals, 3 right, 8 wrong; 9.97% -> 9.97%
+#   witness 2:  2 proposals, 0 right (one arguable), 2 wrong; 9.21% -> 9.72%
+# So the model alone is a coin flip, and the card's steady value is the
+# invented endings it finds without a model and the pairs you taught
+# that it asks you to confirm. The default asks for two witnesses: few
+# cards, and No stays one click either way.
+enabled = true                # false = no cards and no proposals; the
+                              # [study] pass learns quietly, as before
+card_seconds = 20             # how long the card stays on screen before it
+                              # gives up and leaves the proposal to the
+                              # dashboard. The bar under the title is this
+                              # clock, and it pauses while the mouse is on
+                              # the card. 0 = never show a card, list only
+corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
+                              # appears before you have dragged it: "right"
+                              # is mid-height on the right edge
+x = 2010                   # the top-left of the CARD where you last
+y = 667                   # dragged it, in screen pixels. -100000 = never
+                              # moved: use `corner`. Negative is real on a
+                              # monitor to the left of the primary
+scale = 1.0                   # how big it is drawn (0.6 .. 1.4)
+max_changes = 4               # the most changes one reading may propose. A
+                              # reading that wants more is a rewrite; the
+                              # card shows three and counts the rest
+witness = 2                   # a replacement is proposed only when this many
+                              # of the three extra decodes heard the new
+                              # words, or the pair is one you already taught.
+                              # Measured 2026-09-02 on the corrected clips:
+                              # with none, the model turned a correct
+                              # "לחיברתי" into "לכיביתי" on the strength of
+                              # the sentence before; with one, the wrong
+                              # proposals mostly had exactly one witness —
+                              # the general model's own mishearing ("רע",
+                              # "אין") — while the right ones had two or
+                              # three. 0 = let the model guess
+accept_key = "v"              # while the mouse is over the card this key is
+                              # the green button; anywhere else it types
+reject_key = "x"              # ...and this one is the red button
+later_key = "l"               # ...and this one closes the card for now; the
+                              # proposal waits in the dashboard
+fix_in_field = true           # accepting also corrects the text where it was
+                              # pasted, if that window is still in front and
+                              # still holds the pasted text exactly — the
+                              # same read-and-paste the punctuation key
+                              # does. Otherwise accepting only teaches.
+                              # false = teach only, never touch the field
+max_clip_seconds = 120        # longer recordings are not re-read: three
+                              # extra decodes of a very long clip hold the
+                              # model for little extra evidence
+llm_per_day = 200             # language-model readings a day, from the same
+                              # free Groq bucket the repair pass uses
+                              # (~1,000/day). Past it the reading still runs
+                              # without the model and can only propose the
+                              # invented endings it finds on its own. Groq
+                              # also meters per MINUTE: in a burst of
+                              # dictations it may refuse that reading
+local_model = false           # ask the local repair model when Groq refuses.
+                              # Off: measured 2026-09-02, it answered one
+                              # clip and both of its proposals were wrong;
+                              # a reading without a model still finds the
+                              # invented endings on its own

@@ -151,7 +151,7 @@ ICON = {
     "translate": "\ue8c1", "punctuate": "\ue8bd", "learned": "\ue90f",
     "error": "\uea39", "discarded": "\ue74d", "file": "\ue8a5",
     "page": "\ue7c3", "folder": "\ue8b7", "engine": "\ue9d9",
-    "version": "\ue895",
+    "version": "\ue895", "review": "\ue8fb",
 }
 
 _cache: dict = {}
@@ -188,11 +188,39 @@ def rounded_pil(w: int, h: int, radius: int, fill: str, bg: str,
     rounded() instead, cache and all.
     """
     s = 4
-    image = Image.new("RGB", (max(1, w * s), max(1, h * s)), bg)
+    w, h = max(1, w), max(1, h)
+    # A big face — a card the height of a screen — is drawn from a SMALL
+    # one. Everything that needs anti-aliasing is in the corners; the
+    # straight runs between them downsample to one uniform column or row,
+    # so a tile holding the four corners and a slice of each edge, cut and
+    # stretched, is the same picture pixel for pixel. Measured 2026-09-01:
+    # the settings screen's eighteen 680 px faces cost 0.96 s drawn whole
+    # at 4x and LANCZOS'd, which was most of the wait for that screen.
+    corner = radius + 2
+    tile = 2 * corner + 2
+    if w > tile + 8 and h > tile + 8:
+        small = rounded_pil(tile, tile, radius, fill, bg, border)
+        image = Image.new("RGB", (w, h), fill)
+        c = corner
+        for box, at in (((0, 0, c, c), (0, 0)),
+                        ((tile - c, 0, tile, c), (w - c, 0)),
+                        ((0, tile - c, c, tile), (0, h - c)),
+                        ((tile - c, tile - c, tile, tile), (w - c, h - c))):
+            image.paste(small.crop(box), at)
+        top = small.crop((c, 0, c + 1, c)).resize((w - 2 * c, c))
+        bottom = small.crop((c, tile - c, c + 1, tile)).resize((w - 2 * c, c))
+        left = small.crop((0, c, c, c + 1)).resize((c, h - 2 * c))
+        right = small.crop((tile - c, c, tile, c + 1)).resize((c, h - 2 * c))
+        image.paste(top, (c, 0))
+        image.paste(bottom, (c, h - c))
+        image.paste(left, (0, c))
+        image.paste(right, (w - c, c))
+        return image
+    image = Image.new("RGB", (w * s, h * s), bg)
     ImageDraw.Draw(image).rounded_rectangle(
         (0, 0, w * s - 1, h * s - 1), radius=radius * s, fill=fill,
         outline=border, width=s if border else 0)
-    return image.resize((max(1, w), max(1, h)), Image.LANCZOS)
+    return image.resize((w, h), Image.LANCZOS)
 
 
 def rounded(w: int, h: int, radius: int, fill: str, bg: str,
@@ -459,6 +487,107 @@ class Switch(tk.Canvas):
         self.set(not self._value)
         if self._command:
             self._command(self._value)
+
+
+class Dropdown(tk.Canvas):
+    """A closed menu: the current choice on a pill, the choices under it
+    when clicked.
+
+    The list is a borderless Toplevel in this palette, not a
+    ttk.Combobox — that is a native light-grey control with a white
+    list, and one of those on this window undoes the whole exercise. It
+    closes on a pick, on Escape, and when the focus goes anywhere else.
+    """
+
+    def __init__(self, parent, options, value, command=None, *,
+                 bg: str = CARD, w: int = 236, h: int = 30):
+        super().__init__(parent, width=w, height=h, bg=bg,
+                         highlightthickness=0, bd=0, cursor="hand2")
+        # NOT self._options and NOT self._w / self._h: tkinter's Misc keeps
+        # its option parser and the widget's own Tcl path name under those
+        # names, and shadowing either breaks every later call.
+        self._choices = [(v, str(label)) for v, label in options]
+        self._command = command
+        self._width, self._height = w, h
+        self._idle = rounded(w, h, 9, EDGE, bg, STROKE)
+        self._hover = rounded(w, h, 9, EDGE_HI, bg, ACCENT)
+        self._image = self.create_image(0, 0, anchor="nw", image=self._idle)
+        self._label = self.create_text(12, h / 2 + 1, text="", anchor="w",
+                                       font=(UI, 10), fill=FG)
+        self.create_text(w - 12, h / 2, text="▾", anchor="e",
+                         font=(UI, 10), fill=DIM)
+        self._popup = None
+        self._value = None
+        self.set(value)
+        self.bind("<Enter>", lambda _e: self.itemconfig(self._image,
+                                                        image=self._hover))
+        self.bind("<Leave>", lambda _e: self.itemconfig(self._image,
+                                                        image=self._idle))
+        self.bind("<Button-1>", lambda _e: self.open())
+
+    def label_for(self, value) -> str:
+        for candidate, label in self._choices:
+            if candidate == value:
+                return label
+        return str(value)
+
+    def set(self, value) -> None:
+        """Show `value` without telling anyone — for a repaint."""
+        self._value = value
+        text, _lines = clamp(self.label_for(value), UI, 10,
+                             self._width - 40, 1)
+        self.itemconfig(self._label, text=text)
+
+    def get(self):
+        return self._value
+
+    def open(self) -> None:
+        if self._popup is not None:
+            self.close()
+            return
+        top = tk.Toplevel(self)
+        top.overrideredirect(True)
+        try:
+            top.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        top.configure(bg=STROKE)
+        inner = tk.Frame(top, bg=CARD)
+        inner.pack(padx=1, pady=1, fill="both")
+        for value, label in self._choices:
+            row = tk.Label(inner, text=label, bg=CARD,
+                           fg=ACCENT_TEXT if value == self._value else FG,
+                           font=(UI, 10), anchor="w", padx=12, pady=6,
+                           cursor="hand2")
+            row.pack(fill="x")
+            row.bind("<Enter>", lambda _e, r=row: r.configure(bg=CARD_HI))
+            row.bind("<Leave>", lambda _e, r=row: r.configure(bg=CARD))
+            row.bind("<Button-1>", lambda _e, v=value: self._pick(v))
+        top.update_idletasks()
+        width = max(self._width, inner.winfo_reqwidth() + 2)
+        height = inner.winfo_reqheight() + 2
+        x, y = self.winfo_rootx(), self.winfo_rooty() + self._height + 2
+        top.geometry(f"{width}x{height}+{x}+{y}")
+        top.bind("<Escape>", lambda _e: self.close())
+        top.bind("<FocusOut>", lambda _e: self.close())
+        self._popup = top
+        top.focus_force()
+
+    def _pick(self, value) -> None:
+        self.close()
+        if value == self._value:
+            return
+        self.set(value)
+        if self._command:
+            self._command(value)
+
+    def close(self) -> None:
+        popup, self._popup = self._popup, None
+        if popup is not None:
+            try:
+                popup.destroy()
+            except tk.TclError:
+                pass
 
 
 class KeyCap(tk.Canvas):

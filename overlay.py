@@ -841,6 +841,355 @@ class HintCard:
             gc.collect()
 
 
+_REVIEW_BUTTONS = ("accept", "reject", "later")
+
+
+class ReviewCard(HintCard):
+    """The card that shows one proposal from the second reading
+    (review.py) and takes the answer.
+
+    The hint card's contract, inherited — its own thread, callers only
+    ever enqueue, a Glass on the skin path and its own Tk interpreter on
+    the fallback path — plus three things a card that asks a question
+    needs and a card that only informs does not:
+
+    - IT TAKES CLICKS, on three buttons and nowhere else; the rest of the
+      face is the handle you drag it by. Placed mid-height on the right
+      edge by default, well away from any window's close button, which
+      is what lets it be solid where the hint card had to be click-
+      through.
+    - IT TAKES KEYS, but only while the mouse is over it. The hook offers
+      every key-down to `on_key`; the three keys answer the card when the
+      pointer is on it and are ordinary letters everywhere else — a card
+      that ate a letter being typed into the chat beneath it would be
+      worse than no card.
+    - IT KEEPS TIME. The presenter runs the clock and calls `timed_out`;
+      the answer to a clock running out is "nothing", and the proposal
+      stays in the dashboard. `pressed("later")` is the same nothing, one
+      click sooner.
+
+    Verdicts go out through `on_verdict(id, verdict)` on whichever thread
+    pressed the button — the painter's or the hook's — so that callback
+    must only enqueue (main.py hands it to the review engine).
+    """
+
+    CORNERS = ("right", "left", "top-right", "top-left",
+               "bottom-right", "bottom-left")
+
+    def __init__(self, corner: str = "right", margin: int = 14,
+                 x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
+                 on_change=None, on_verdict=None, seconds: float = 20.0,
+                 keys: dict | None = None) -> None:
+        super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
+                         scale=scale, on_change=on_change)
+        self._on_verdict = on_verdict
+        self.seconds = float(seconds)
+        self._keys = {"accept": "v", "reject": "x", "later": "l"}
+        if keys:
+            self._keys.update({k: str(v).strip().lower()
+                               for k, v in keys.items() if v})
+        self._vks: dict | None = None
+        self.rect = None          # screen rect of the visible card, or None
+        self._current = None      # the suggestion id on screen
+        self._state_lock = threading.Lock()
+
+    def start(self) -> None:
+        if not self._enabled:
+            return
+        try:
+            import tkinter  # noqa: F401
+        except Exception:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="review-card")
+        self._thread.start()
+        self._alive.wait(timeout=3)
+
+    # -- caller's threads --
+
+    def key_labels(self) -> tuple:
+        return tuple(self._keys[n].upper() for n in _REVIEW_BUTTONS)
+
+    def show(self, suggestion: dict) -> None:
+        """Put a proposal up. Only enqueues, so safe from the engine
+        thread. A new proposal replaces the one on screen — that one is
+        still in the dashboard, undecided."""
+        if self._thread is None or not self._enabled:
+            return
+        import review_card as rc
+        card = rc.card_for(suggestion, seconds=self.seconds,
+                           keys=self.key_labels())
+        with self._state_lock:
+            self._current = card["id"]
+        self._q.put(card)
+
+    def hide(self) -> None:
+        with self._state_lock:
+            self._current = None
+        if self._thread is not None:
+            self._q.put(None)
+
+    def visible(self) -> bool:
+        return self._current is not None
+
+    def current(self):
+        return self._current
+
+    def hovering(self) -> bool:
+        """Is the pointer on the card right now? Asked by the hook for a
+        key and by the painter for the clock. Cheap: a rect and a point,
+        no window handle."""
+        rect = self.rect
+        if rect is None or not self.visible():
+            return False
+        try:
+            pt = ctypes.wintypes.POINT()
+            ctypes.WinDLL("user32").GetCursorPos(ctypes.byref(pt))
+        except Exception:
+            return False
+        return rect[0] <= pt.x <= rect[2] and rect[1] <= pt.y <= rect[3]
+
+    def _vk_map(self) -> dict:
+        if self._vks is None:
+            vks: dict = {}
+            try:
+                from hotkey import vk_for
+                for name in _REVIEW_BUTTONS:
+                    try:
+                        vks[int(vk_for(self._keys[name]))] = name
+                    except Exception:
+                        _log.info("review card: no key named %r for %s",
+                                  self._keys[name], name)
+            except Exception:
+                pass
+            self._vks = vks
+        return self._vks
+
+    def on_key(self, vk: int) -> bool:
+        """A key-down from the hook. True swallows it — only for one of
+        the three keys, only with a card up, only with the pointer on it."""
+        if not self.visible() or not self.hovering():
+            return False
+        name = self._vk_map().get(int(vk))
+        if name is None:
+            return False
+        self.pressed(name)
+        return True
+
+    def pressed(self, name: str) -> None:
+        """A button, by click or key. Takes the card down and reports."""
+        if name not in _REVIEW_BUTTONS:
+            return
+        with self._state_lock:
+            sid, self._current = self._current, None
+        if self._thread is not None:
+            self._q.put(None)
+        if sid is None or name == "later" or self._on_verdict is None:
+            return
+        try:
+            self._on_verdict(sid, "accepted" if name == "accept"
+                             else "rejected")
+        except Exception:
+            _log.info("review card: could not report a verdict",
+                      exc_info=True)
+
+    def timed_out(self) -> None:
+        """The clock ran out: no verdict. The painter takes it down."""
+        with self._state_lock:
+            self._current = None
+
+    # -- placement --
+
+    def origin(self, width: int, height: int, screen: tuple,
+               inset: int = 0, bounds=None) -> tuple:
+        """Mid-height on the right (or left) edge by default; the four
+        corners and a saved position exactly as the hint card does them."""
+        if self.moved() or self._corner not in ("right", "left"):
+            return super().origin(width, height, screen, inset, bounds)
+        sw, sh = screen
+        m = self._margin
+        x = (m - inset) if self._corner == "left" \
+            else (sw - m - width + inset)
+        y = (sh - height) // 2
+        return int(x), int(y)
+
+    # -- overlay thread --
+
+    def _run(self) -> None:
+        try:
+            if skin is not None and skin.review_run(self):   # --- SKIN
+                return
+            self._build_and_loop()
+        except Exception as e:
+            _log.info("review card unavailable: %r", e)
+        finally:
+            self._alive.set()
+
+    def _build_and_loop(self) -> None:
+        """The fallback: the same card on a flat face, in Tk.
+
+        review_card.flat paints the whole thing as one image; this window
+        only shows it, moves it, and turns a click or a key into
+        `pressed`. Same teardown as the hint card's: destroyed on the
+        thread that built it, then collected there.
+        """
+        import tkinter as tk
+        import review_card as rc
+        from PIL import ImageTk
+
+        root = tk.Tk()
+        root.withdraw()
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.configure(bg=CARD_BG)
+        canvas = tk.Canvas(root, bg=CARD_BG, highlightthickness=0, bd=0)
+        canvas.pack()
+        self._alive.set()
+
+        st = {"card": None, "up": False, "deadline": None, "hover": None,
+              "drag": None, "photo": None, "last": 0.0,
+              "tick": time.monotonic()}
+        cache: dict = {}
+
+        def progress() -> float:
+            deadline, card = st["deadline"], st["card"]
+            if deadline is None or card is None:
+                return 1.0
+            seconds = float(card.get("seconds") or 0)
+            if seconds <= 0:
+                return 1.0
+            return max(0.0, (deadline - time.monotonic()) / seconds)
+
+        def hide() -> None:
+            st["card"], st["deadline"], st["hover"] = None, None, None
+            self.rect = None
+            cache.clear()
+            if st["up"]:
+                root.withdraw()
+                st["up"] = False
+
+        def paint() -> None:
+            if st["card"] is None:
+                return
+            img = rc.flat(st["card"], self.scale, progress(), st["hover"],
+                          cache)
+            photo = ImageTk.PhotoImage(img, master=root)
+            canvas.delete("all")
+            canvas.configure(width=img.width, height=img.height)
+            canvas.create_image(0, 0, anchor="nw", image=photo)
+            st["photo"] = photo               # Tk keeps no reference
+            st["last"] = time.monotonic()
+
+        def put_up(card: dict) -> None:
+            st["card"], st["hover"] = card, None
+            cache.clear()
+            w, h = rc.measure(card, self.scale)
+            x, y = self.origin(w, h, (root.winfo_screenwidth(),
+                                      root.winfo_screenheight()))
+            seconds = float(card.get("seconds") or 0)
+            st["deadline"] = ((time.monotonic() + seconds)
+                              if seconds > 0 else None)
+            paint()
+            root.geometry(f"{w}x{h}+{x}+{y}")
+            self.rect = (x, y, x + w, y + h)
+            root.deiconify()
+            root.update_idletasks()
+            if not st["up"]:
+                _no_activate(root)
+                _hide_from_capture(root)
+            st["up"] = True
+
+        def hit(event):
+            if st["card"] is None:
+                return None, None
+            return rc.hit_test(st["card"], self.scale,
+                               event.x + rc.SHADOW, event.y + rc.SHADOW)
+
+        def on_press(event) -> None:
+            code, what = hit(event)
+            if what in _REVIEW_BUTTONS:
+                self.pressed(what)
+            elif code == rc.HTCAPTION:
+                st["drag"] = (event.x_root - root.winfo_x(),
+                              event.y_root - root.winfo_y())
+
+        def on_motion(event) -> None:
+            if st["drag"] is not None:
+                dx, dy = st["drag"]
+                root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+                return
+            _code, what = hit(event)
+            want = what if what in _REVIEW_BUTTONS else None
+            if want != st["hover"]:
+                st["hover"] = want
+                paint()
+
+        def on_leave(_event) -> None:
+            if st["hover"] is not None:
+                st["hover"] = None
+                paint()
+
+        def on_release(_event) -> None:
+            if st["drag"] is None:
+                return
+            st["drag"] = None
+            x, y = root.winfo_x(), root.winfo_y()
+            if st["card"] is not None:
+                w, h = rc.measure(st["card"], self.scale)
+                self.rect = (x, y, x + w, y + h)
+            self.placed(x, y)
+
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_motion)
+        canvas.bind("<Motion>", on_motion)
+        canvas.bind("<Leave>", on_leave)
+        canvas.bind("<ButtonRelease-1>", on_release)
+
+        def pump() -> None:
+            try:
+                while True:
+                    item = self._q.get_nowait()
+                    if item is _DONE:
+                        self._closing.set()
+                        return
+                    if item is None:
+                        hide()
+                    else:
+                        put_up(item)
+            except queue.Empty:
+                pass
+            now = time.monotonic()
+            dt, st["tick"] = now - st["tick"], now
+            if st["card"] is not None and st["up"]:
+                if st["deadline"] is not None:
+                    if self.hovering():
+                        st["deadline"] += dt      # reading: the clock waits
+                    if st["deadline"] - now <= 0:
+                        self.timed_out()
+                        hide()
+                        root.after(30, pump)
+                        return
+                if now - st["last"] >= 0.1:
+                    paint()
+            root.after(30, pump)
+
+        pump()
+        try:
+            _pump_until(root, self._closing)
+        finally:
+            import gc                       # see Splash: same Tcl teardown
+            try:
+                _forget_window(root)
+                root.destroy()
+            except Exception:
+                pass
+            st.clear()
+            cache.clear()
+            paint = pump = hide = put_up = None          # noqa: F841
+            canvas = root = None                          # noqa: F841
+            gc.collect()
+
+
 # The fallback card's palette. These are ui.py's ORIGINAL values, spelled
 # out rather than imported: ui.py builds Tk styles at import and this
 # module is imported before any of that exists. skin\ repaints its own

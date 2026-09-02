@@ -11,7 +11,7 @@ Hebrew push-to-talk dictation for Windows: hold **Right Ctrl**, speak,
 release, and a cleaned transcript lands at your cursor via clipboard +
 Ctrl+V. Around that core: a repair pass that fixes misheard words, a
 translate key, a punctuate key, a lookup key, a correction box that teaches
-a vocabulary, a background study pass that re-examines sent dictations and learns without being asked (fast only, study.py), a screenshot/screen-recording pair of keys, a webcam key
+a vocabulary, a background study pass that re-examines sent dictations and learns without being asked (fast only, study.py), a second reading that re-reads every pasted dictation and proposes corrections on a card — learning only what is approved (fast only, review.py, review_card.py, overlay.ReviewCard, the dashboard's Review screen; it stands in for the study pass while on), a screenshot/screen-recording pair of keys, a webcam key
 that takes a photo into the same editor, a phone endpoint, and a
 dashboard. Everything is documented,
 with measurements, in `README.md` and `config.toml`.
@@ -60,7 +60,13 @@ back.
 6. **`config.toml` comments are load-bearing.** Most lines carry
    measurements. Edit it programmatically ONLY through
    `config.set_values()` (line-wise editor that preserves comments); a
-   TOML round-trip would delete hours of work.
+   TOML round-trip would delete hours of work. Since 2026-09-01 they are
+   also USER-FACING: the dashboard's Settings screen is generated from
+   the file (`settings.py`), each key's comment is the help under its
+   row, and a `gemini | local | fake` at the front of a comment is read
+   as that key's menu. Write a new key's comment as a sentence someone
+   will read on screen, keep the menu form for enumerations, and never
+   add a settings row by hand — the file is the list.
 
 ## The machine
 
@@ -82,7 +88,11 @@ back.
 
 ## Traps we already paid for — do not re-arm them
 
-- **Tests:** `.venv\Scripts\python.exe tests.py` — plain asserts, **449 test
+- **Tests:** `.venv\Scripts\python.exe tests_quiet.py` runs the suite on a
+  hidden Windows desktop so none of its windows flash over the owner's
+  work (asked for 2026-09-02; same tests.py, same exit code, output
+  printed at the end). `.venv\Scripts\python.exe tests.py` is the
+  same suite in the open — plain asserts, **449 test
   functions** carrying 1,691 of them as of 2026-08-28, safe to run while
   dictation is live (two bugs that used to kill the app mid-suite are
   fixed; see git log). Run them BEFORE claiming done. (This line read "367"
@@ -139,6 +149,27 @@ back.
   for this reason and should stay refusing them. Any fix has to gate on
   evidence the decoder already produces (`word_timestamps` is on: a silence
   gap before the token, or an outlying `avg_logprob`), not on the word.
+- **A human correction went into the decoder prompt with no family
+  gate, and the prompt is where the decoder gets its ideas.** The study
+  pass always kept pure-Hebrew machine pairs out of the hotword list
+  (`glossary_only`); the correction key did not, so nine one-hit Hebrew
+  phrases ("יש לי ריפו", "גיטאהאב", "הרצץ מיליון", "באן יאללה דרוס"...)
+  accumulated at the tail of the prompt. Measured 2026-09-02: a 2.8 s
+  clip of five words ("תעצור זהו כבר יש קובץ") came out as 29, the
+  extra 24 stamped into its last 140 ms at zero duration and p
+  0.04-0.58; the same clip decoded cleanly with the Latin terms alone,
+  and with the list as it stood before the last two Hebrew pairs were
+  learned. Nothing downstream could catch it: temperature is pinned, so
+  faster-whisper logs "log probability threshold is not met" at DEBUG
+  and keeps the window; `hallucination_silence_threshold` needs a
+  silence gap and the tail was glued to the last real word; the
+  parliamentary filter knows fixed phrases; polish and the study
+  adjudicator are forbidden to drop words. Fixed in `vocab._ranked`
+  (`[vocab] hebrew_after_hits`, default 3) and turned into the second
+  reading's structural drop (`review.tail_drop`). When words the user
+  never said appear, ABLATE THE HOTWORDS FIRST — decode the `recent\`
+  wav with `hotwords=None` and with `word_timestamps` — before blaming
+  the model or the thresholds.
 - **Subprocesses under pythonw allocate consoles.** Every `subprocess.run`
   needs `creationflags=CREATE_NO_WINDOW` (0x08000000) or each git/python
   spawn freezes the UI thread for hundreds of ms. This froze the dashboard
@@ -581,7 +612,8 @@ back.
 | `punctuate.py` / `lookup.py` | F2 rewrite-in-place / reading box |
 | `visual_qa.py` | ask-the-screen: region select, vision chain, answer window, TTS |
 | `capture.py` | screenshots (select, edit, clipboard, save), screen recording (BitBlt + PyAV), and the webcam photo key (dshow through the same PyAV, into the same editor) |
-| `dashboard.py` + `ui.py` | control window incl. the Version screen |
+| `dashboard.py` + `ui.py` | control window incl. the Version screen and the generated Settings screen |
+| `settings.py` | config.toml as data: every key, its comment as help, `a \| b \| c` as choices — what the Settings screen draws |
 | `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |
 | `versions.py` | whole-app version switching |
 | `tests.py` | the suite; run it |

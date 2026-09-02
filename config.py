@@ -201,12 +201,26 @@ class PunctuateConfig:
     # nothing selected the key takes the whole field, which in a document
     # editor is the whole document.
     max_chars: int = 5000
-    # Gemini first (see punctuate.py) — "ollama" reverses it, which is the
-    # setting to reach for if this key gets tapped after every dictation
-    # and starts eating the free-tier requests translation also needs.
-    prefer: str = "gemini"
+    # Groq first (see punctuate.py). Measured 2026-09-01 on 12 real
+    # dictations: it kept every word 10 times, in 0.5-1.5 s (median 0.8) —
+    # gemini's quality at ~1,000 requests/day instead of gemini's
+    # 20/day/model, which is the bucket translation also draws on. The
+    # other two follow whichever goes first, so a spent quota costs one
+    # fallback and not the key.
+    prefer: str = "groq"
+    # "" = reuse polish.groq_model — or, where the Config has no [polish]
+    # fields at all (classic's), the model polish.py was measured on.
+    groq_model: str = ""
     # "" = reuse translate.ollama_model.
     ollama_model: str = ""
+    # Punctuate every dictation on its way to the cursor, so the key is
+    # never needed. Off by default: it is about a second more before the
+    # text lands (the measurement above), and the owner chose to pay that
+    # only by ticking a box — one switch, no warning.
+    auto: bool = False
+    # How long the auto pass may hold the paste before the transcript goes
+    # in as it came. The key has no deadline: nothing is waiting on it.
+    max_wait_s: float = 6.0
     # Also add Hebrew vowel points, not only punctuation. Off by default:
     # it is a much bigger change to the text, and the same safety check
     # covers it either way (nikud are combining marks, so they vanish from
@@ -516,6 +530,11 @@ class VocabConfig:
     # repaired automatically. 1 would let a slip in the edit box start
     # rewriting a word you really say.
     replace_after_hits: int = 2
+    # How many corrections a HEBREW pair needs before its corrected form
+    # is fed to the decoder as a hotword; a Latin term gets in at once.
+    # Measured 2026-09-02: nine one-hit Hebrew phrases in the prompt
+    # turned a 2.8 s clip of five words into 29 (vocab.py, _ranked).
+    hebrew_after_hits: int = 3
     # How many recent recordings to keep, so a correction can be tied to the
     # audio that produced it. 0 = keep none.
     #
@@ -641,6 +660,47 @@ class StudyConfig:
 
 
 @dataclass(frozen=True)
+class ReviewConfig:
+    """The second reading — see review.py. FAST VERSION ONLY, like
+    [study], which it stands in for while enabled: the same three extra
+    decodes serve both, shown as a card instead of learned in silence."""
+    enabled: bool = True
+    # How long the card stays up before the proposal is left to the
+    # dashboard's Review screen. 0 = never a card; the list only.
+    card_seconds: float = 20.0
+    corner: str = "right"
+    # Where it was last dragged to and how big it was made. The card
+    # writes these itself, exactly as [hint] does — same sentinel, same
+    # reason (a monitor to the left has real negative coordinates).
+    x: int = -100000
+    y: int = -100000
+    scale: float = 1.0
+    # The most changes one reading may propose; more is a rewrite.
+    max_changes: int = 4
+    # A replacement needs this many witnesses: other decodes of the same
+    # audio that heard the new words — or the pair is one the owner
+    # taught. With one, the weak general model's own mishearing counted
+    # as a witness (review.validate); 0 lets the model guess.
+    witness: int = 2
+    # Ask the local repair model when Groq refuses. Off: measured
+    # 2026-09-02, it answered one clip and both proposals were wrong.
+    local_model: bool = False
+    # The keys that answer the card while the mouse is over it.
+    accept_key: str = "v"
+    reject_key: str = "x"
+    later_key: str = "l"
+    # Accepting also corrects the text in the field it was pasted into,
+    # when that window is still in front and still holds it verbatim.
+    fix_in_field: bool = True
+    max_clip_seconds: float = 120.0
+    # Language-model readings a day, from the polish pass's Groq bucket.
+    llm_per_day: int = 200
+
+
+REVIEW_CORNERS = HINT_CORNERS + ("right", "left")
+
+
+@dataclass(frozen=True)
 class ServerConfig:
     """The phone endpoint: dictate from the phone, transcribe on this GPU.
 
@@ -733,6 +793,7 @@ class Config:
     lookup: LookupConfig = field(default_factory=LookupConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     study: StudyConfig = field(default_factory=StudyConfig)
+    review: ReviewConfig = field(default_factory=ReviewConfig)
     vocab: VocabConfig = field(default_factory=VocabConfig)
     polish: PolishConfig = field(default_factory=PolishConfig)
     visual_qa: VisualQAConfig = field(default_factory=VisualQAConfig)
@@ -951,6 +1012,7 @@ def load(path: Path) -> Config:
     polish = data.get("polish", {})
     visual_qa = data.get("visual_qa", {})
     study = data.get("study", {})
+    review = data.get("review", {})
     capture = data.get("capture", {})
     camera = data.get("camera", {})
 
@@ -1066,8 +1128,13 @@ def load(path: Path) -> Config:
                                         PunctuateConfig.max_chars)),
             prefer=str(punctuate.get(
                 "prefer", PunctuateConfig.prefer)).strip().lower(),
+            groq_model=str(punctuate.get(
+                "groq_model", PunctuateConfig.groq_model)).strip(),
             ollama_model=str(punctuate.get(
                 "ollama_model", PunctuateConfig.ollama_model)).strip(),
+            auto=bool(punctuate.get("auto", PunctuateConfig.auto)),
+            max_wait_s=float(punctuate.get("max_wait_s",
+                                           PunctuateConfig.max_wait_s)),
             nikud=bool(punctuate.get("nikud", PunctuateConfig.nikud)),
         ),
         lookup=LookupConfig(
@@ -1105,6 +1172,33 @@ def load(path: Path) -> Config:
             corpus_keep=int(study.get("corpus_keep",
                                       StudyConfig.corpus_keep)),
         ),
+        review=ReviewConfig(
+            enabled=bool(review.get("enabled", ReviewConfig.enabled)),
+            card_seconds=float(review.get("card_seconds",
+                                          ReviewConfig.card_seconds)),
+            corner=str(review.get("corner",
+                                  ReviewConfig.corner)).strip().lower(),
+            x=int(review.get("x", ReviewConfig.x)),
+            y=int(review.get("y", ReviewConfig.y)),
+            scale=float(review.get("scale", ReviewConfig.scale)),
+            max_changes=int(review.get("max_changes",
+                                       ReviewConfig.max_changes)),
+            witness=int(review.get("witness", ReviewConfig.witness)),
+            local_model=bool(review.get("local_model",
+                                        ReviewConfig.local_model)),
+            accept_key=str(review.get(
+                "accept_key", ReviewConfig.accept_key)).strip().lower(),
+            reject_key=str(review.get(
+                "reject_key", ReviewConfig.reject_key)).strip().lower(),
+            later_key=str(review.get(
+                "later_key", ReviewConfig.later_key)).strip().lower(),
+            fix_in_field=bool(review.get("fix_in_field",
+                                         ReviewConfig.fix_in_field)),
+            max_clip_seconds=float(review.get(
+                "max_clip_seconds", ReviewConfig.max_clip_seconds)),
+            llm_per_day=int(review.get("llm_per_day",
+                                       ReviewConfig.llm_per_day)),
+        ),
         server=ServerConfig(
             enabled=bool(server.get("enabled", ServerConfig.enabled)),
             host=str(server.get("host", ServerConfig.host)).strip(),
@@ -1117,6 +1211,8 @@ def load(path: Path) -> Config:
             max_terms=int(vocab.get("max_terms", VocabConfig.max_terms)),
             replace_after_hits=int(vocab.get(
                 "replace_after_hits", VocabConfig.replace_after_hits)),
+            hebrew_after_hits=int(vocab.get(
+                "hebrew_after_hits", VocabConfig.hebrew_after_hits)),
             keep_audio=int(vocab.get("keep_audio", VocabConfig.keep_audio)),
         ),
         polish=PolishConfig(
@@ -1239,11 +1335,15 @@ def load(path: Path) -> Config:
             raise ConfigError("translate.max_chars must be positive")
         if not cfg.translate.target:
             raise ConfigError("translate.target must name a language")
-    if cfg.punctuate_hotkey and cfg.punctuate.max_chars <= 0:
+    if ((cfg.punctuate_hotkey or cfg.punctuate.auto)
+            and cfg.punctuate.max_chars <= 0):
         raise ConfigError("punctuate.max_chars must be positive")
-    if cfg.punctuate.prefer not in ("gemini", "ollama"):
-        raise ConfigError('punctuate.prefer must be "gemini" or "ollama", '
-                          f"got {cfg.punctuate.prefer!r}")
+    if cfg.punctuate.prefer not in ("groq", "gemini", "ollama"):
+        raise ConfigError('punctuate.prefer must be "groq", "gemini" or '
+                          f'"ollama", got {cfg.punctuate.prefer!r}')
+    if cfg.punctuate.max_wait_s <= 0:
+        raise ConfigError("punctuate.max_wait_s must be positive — it is "
+                          "how long a dictation waits for its punctuation")
     # All three text keys read the grab mechanics out of [translate] — the
     # chords and the settle time belong to the machine, not to the job —
     # so this is checked whenever ANY of them is bound.
@@ -1445,6 +1545,23 @@ def load(path: Path) -> Config:
         raise ConfigError(
             f"hint.scale must be between {HINT_SCALE_MIN} and "
             f"{HINT_SCALE_MAX}, got {cfg.hint.scale!r}")
+    if cfg.review.corner not in REVIEW_CORNERS:
+        raise ConfigError(f"review.corner must be one of {REVIEW_CORNERS}, "
+                          f"got {cfg.review.corner!r}")
+    if not (HINT_SCALE_MIN <= cfg.review.scale <= HINT_SCALE_MAX):
+        raise ConfigError(
+            f"review.scale must be between {HINT_SCALE_MIN} and "
+            f"{HINT_SCALE_MAX}, got {cfg.review.scale!r}")
+    if cfg.review.card_seconds < 0:
+        raise ConfigError("review.card_seconds must be >= 0")
+    if cfg.review.max_changes < 1:
+        raise ConfigError("review.max_changes must be >= 1")
+    if not (0 <= cfg.review.witness <= 3):
+        raise ConfigError("review.witness must be between 0 and 3 (there "
+                          "are three extra decodes)")
+    for name in ("accept_key", "reject_key", "later_key"):
+        if not getattr(cfg.review, name):
+            raise ConfigError(f"review.{name} must name a key")
     if cfg.local.device not in ("auto", "cuda", "cpu"):
         raise ConfigError('local.device must be "auto", "cuda" or "cpu", '
                           f"got {cfg.local.device!r}")

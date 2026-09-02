@@ -102,8 +102,7 @@ def family(heard: str, meant: str) -> str:
     are pure Hebrew: the heard form is a legitimate word, so only
     polish.py's context reading may ever act on it.
     """
-    return ("term" if _LATIN.search(meant) or _LATIN.search(heard)
-            else "context")
+    return vocab_mod.family(heard, meant)
 
 
 # ---------------------------------------------------------------------------
@@ -698,7 +697,9 @@ def study_all(cfg, app_dir: Path) -> int:
 
     v = vocab_mod.Vocab(app_dir / "vocab.json", seed_terms=cfg.vocab.terms,
                         max_terms=cfg.vocab.max_terms,
-                        replace_after_hits=cfg.vocab.replace_after_hits)
+                        replace_after_hits=cfg.vocab.replace_after_hits,
+                        hebrew_after_hits=getattr(cfg.vocab,
+                                                  "hebrew_after_hits", 3))
     from transcribers import local_kwargs
     from transcribers.local_whisper import LocalWhisperTranscriber
     print(f"{len(todo)} recording(s) to study "

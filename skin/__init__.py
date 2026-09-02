@@ -149,6 +149,26 @@ def hint_run(card) -> bool:
         return False
 
 
+def review_run(card) -> bool:
+    """The second-reading card (review.py's proposals), on glass.
+
+    The same trade as the hint card: the queue, the clock and the verdict
+    callbacks stay in overlay.ReviewCard, and this only paints. Named
+    review_run rather than review for the reason paint_wave gives below —
+    a hook that shares its name with skin\\review.py would overwrite
+    itself on its first call.
+    """
+    if not on():
+        return False
+    try:
+        from .review import run
+        run(card)
+        return True
+    except Exception:
+        _log.info("skin review card failed, falling back", exc_info=True)
+        return False
+
+
 def paint_wave(card) -> bool:
     """The microphone wave in the ask-the-screen card.
 

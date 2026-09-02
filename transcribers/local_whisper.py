@@ -288,6 +288,14 @@ class LocalWhisperTranscriber:
         # --benchmark and kept only if the WER trade is worth it.
         self._beam_size = max(1, int(beam_size))
         self.last_removed: list[str] = []
+        # The decoder's own opinion of every word of the LAST live
+        # transcription: (word, start, end, probability). Read by main.py
+        # right after the call and kept in the recording's sidecar for
+        # the second reading (review.py), which uses it to tell an
+        # invented ending from a real one. Instance state like
+        # last_removed, and for the same reason the study decodes never
+        # touch it.
+        self.last_words: list[tuple] = []
         self._guards = hallucination_guards(guard_hallucinations)
 
         attempts = ([("cuda", "float16"), ("cpu", "int8")]
@@ -455,10 +463,23 @@ class LocalWhisperTranscriber:
                 hotwords=self._current_hotwords(),
                 **self._guards,
             )
-            text = " ".join(s.text.strip() for s in segments).strip()
+            segs = list(segments)
+            text = " ".join(s.text.strip() for s in segs).strip()
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
 
+        # Where an invented tail sits, every word is stamped into the last
+        # few ms at zero duration and p < 0.6, while the words really
+        # spoken are 0.89-1.00 — measured 2026-09-02 on the 2.8 s clip that
+        # grew 24 words. word_timestamps is already on for the silence
+        # guard; this only keeps what it computed.
+        # getattr: the test suite's segment stand-ins carry text only, and
+        # a decoder that could not time its words has still transcribed.
+        self.last_words = [(w.word.strip(), round(float(w.start), 2),
+                            round(float(w.end), 2),
+                            round(float(w.probability), 3))
+                           for s in segs
+                           for w in (getattr(s, "words", None) or [])]
         self.last_removed = []
         # A long letter-run means the decoder looped — and while it loops,
         # the audio keeps advancing, so words spoken during and after it

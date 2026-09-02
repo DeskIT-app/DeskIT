@@ -58,6 +58,8 @@ from __future__ import annotations
 
 import difflib
 import logging
+import threading
+import time
 
 from transcribers.base import RateLimitError, TranscriptionError
 from vocab import words
@@ -172,17 +174,96 @@ def is_safe(original: str, candidate: str) -> tuple[bool, str]:
                   f"{_what_changed(original, candidate)}"
 
 
+# The order the backends are tried in, whichever one `prefer` puts first.
+# Measured 2026-09-01 on 12 real dictations with this module's own prompt:
+# groq (openai/gpt-oss-120b, reasoning low) kept every word 10/12 times at
+# a median 0.83 s (0.47-1.47); gemini 4/5 at 0.89 s (0.61-1.14). The words
+# each lost were spelling "corrections" — שהכול -> שהכל — which is_safe
+# threw away. Same quality, and groq's tier is ~1,000 requests a day
+# against gemini's 20 per model, so groq is the default first.
+ORDER = ("groq", "gemini", "ollama")
+
+# The Groq model when there is no [polish] groq_model to borrow — classic's
+# Config has no such field — and the one the numbers above were taken on.
+GROQ_MODEL = "openai/gpt-oss-120b"
+
+
+def _token_cap(text: str) -> int:
+    """A reply bound sized from the text. The honest answer is the input
+    plus a few marks, so a generation running well past it was never
+    going to pass is_safe. Hebrew costs 2-4 tokens a word on the models in
+    play, and the reasoning model spends its hidden thought out of the
+    same budget, so the floor stays generous."""
+    words_in = max(1, len(text.split()))
+    return min(4096, max(256, words_in * 4 + 64))
+
+
+def _within(backend, text: str, limit: float) -> str:
+    """One request, abandoned — not cancelled — after `limit` seconds.
+
+    The same shape as polish.py's deadline, for the same reason: there is
+    no cancelling an HTTP request mid-flight, and no wish to — it is
+    almost always a cold Ollama loading the model, and letting it finish
+    is exactly what makes the next one fast. A daemon thread, so it can
+    never hold the app open.
+    """
+    box: dict = {}
+
+    def run() -> None:
+        try:
+            box["text"] = backend.translate(text)
+        except Exception as e:            # noqa: BLE001 — re-raised below
+            box["error"] = e
+
+    t = threading.Thread(target=run, daemon=True,
+                         name=f"punctuate-{backend.name}")
+    t.start()
+    t.join(limit)
+    if t.is_alive():
+        raise TimeoutError(
+            f"{backend.name} did not answer within {limit:.1f}s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("text", "")
+
+
 class Punctuator:
-    """Both backends built lazily — nothing is contacted, and no API key is
-    looked for, until the key is actually pressed."""
+    """Every backend built lazily — nothing is contacted, and no API key is
+    looked for, until the key is actually pressed (or, with punctuate.auto
+    on, until the first dictation reaches the cursor)."""
 
     def __init__(self, cfg):
         self._cfg = cfg
-        self._gemini = None      # None = not built, False = unavailable
+        self._groq = None        # None = not built, False = unavailable
+        self._gemini = None
         self._ollama = None
 
     def _system_prompt(self) -> str:
         return _prompt(self._cfg.punctuate.nikud)
+
+    def _groq_backend(self):
+        """Groq, where translate.py knows it. The classic version's does
+        not, and there it is simply not in the chain — the getattr is
+        that whole rule."""
+        import translate as translate_mod
+
+        if self._groq is None:
+            cls = getattr(translate_mod, "GroqTranslator", None)
+            if cls is None:
+                self._groq = False
+                return None
+            try:
+                polish = getattr(self._cfg, "polish", None)
+                model = (self._cfg.punctuate.groq_model
+                         or getattr(polish, "groq_model", "")
+                         or GROQ_MODEL)
+                self._groq = cls(model, self._cfg.translate.timeout_s,
+                                 system_prompt=self._system_prompt)
+            except Exception as e:
+                log.info("no Groq to punctuate with (%s)",
+                         str(e).splitlines()[0][:160])
+                self._groq = False
+        return self._groq or None
 
     def _gemini_backend(self):
         import translate as translate_mod
@@ -216,18 +297,19 @@ class Punctuator:
         return self._ollama
 
     def _backends(self):
-        if self._cfg.punctuate.prefer == "ollama":
-            yield self._ollama_backend()
-            gemini = self._gemini_backend()
-            if gemini is not None:
-                yield gemini
-            return
-        gemini = self._gemini_backend()
-        if gemini is not None:
-            yield gemini
-        yield self._ollama_backend()
+        """Ready backends, `prefer` first and the rest of ORDER after it.
+        One that cannot be built (no key, no class on this version) is
+        left out rather than failing the press."""
+        prefer = self._cfg.punctuate.prefer
+        ranked = [prefer] + [name for name in ORDER if name != prefer]
+        for name in ranked:
+            build = getattr(self, f"_{name}_backend", None)
+            backend = build() if build is not None else None
+            if backend is not None:
+                yield backend
 
-    def punctuate(self, text: str) -> tuple[str, str]:
+    def punctuate(self, text: str,
+                  max_wait_s: float | None = None) -> tuple[str, str]:
         """Returns (punctuated_text, backend_name).
 
         Raises UnsafeReply when every backend answered but none of them kept
@@ -235,12 +317,27 @@ class Punctuator:
         two need different words in front of the user: one means "the model
         could not be reached", the other means "it rewrote your text and I
         threw that away".
+
+        `max_wait_s` is the auto pass's deadline, shared by the whole chain:
+        a transcript is holding its paste, so when the time is gone this
+        raises TimeoutError and the caller pastes what it has. The key
+        passes nothing and waits as long as it always did.
         """
+        deadline = (None if max_wait_s is None
+                    else time.monotonic() + max_wait_s)
         unsafe = ""
         errors: list[str] = []
         for backend in self._backends():
             try:
-                candidate = backend.translate(text)
+                if deadline is None:
+                    candidate = backend.translate(text)
+                else:
+                    left = deadline - time.monotonic()
+                    if left <= 0:
+                        raise TimeoutError(
+                            f"no time left for {backend.name} "
+                            f"(max_wait_s = {max_wait_s})")
+                    candidate = _within(backend, text, left)
             except RateLimitError as e:
                 log.warning("%s — punctuating with the next backend", e)
                 errors.append(f"{backend.name}: {e}")

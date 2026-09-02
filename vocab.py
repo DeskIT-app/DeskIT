@@ -104,6 +104,22 @@ MIN_PREFIXABLE = 2
 # Hard ceiling from faster_whisper's get_prompt(); see the module docstring.
 HOTWORD_TOKEN_LIMIT = 223
 
+_LATIN = re.compile(r"[A-Za-z0-9]")
+
+
+def family(heard: str, meant: str) -> str:
+    """The A/B split of the module docstring, decided from one pair.
+
+    "term" (family A) when either side carries Latin or digits — an
+    unknown name, a flag, a tool. "context" (family B) when both sides
+    are pure Hebrew: the heard form is a legitimate word, so only a
+    reading of the sentence around it may ever act on it. Lives here,
+    not in study.py, because the hotword list below needs the same
+    answer and study.py imports this module.
+    """
+    return ("term" if _LATIN.search(meant or "") or _LATIN.search(heard or "")
+            else "context")
+
 
 def words(text: str) -> list[str]:
     return _WORD.findall(text or "")
@@ -235,11 +251,15 @@ class Vocab:
 
     def __init__(self, path: Path, seed_terms: tuple[str, ...] = (),
                  max_terms: int = 40, replace_after_hits: int = 2,
-                 auto_after: int = 2, max_auto_terms: int = 12):
+                 auto_after: int = 2, max_auto_terms: int = 12,
+                 hebrew_after_hits: int = 3):
         self.path = path
         self.seed_terms = tuple(t.strip() for t in seed_terms if t.strip())
         self.max_terms = max_terms
         self.replace_after_hits = replace_after_hits
+        # How many corrections a HEBREW pair needs before its corrected
+        # form is fed to the decoder as a hotword. See _ranked.
+        self.hebrew_after_hits = hebrew_after_hits
         # Machine evidence (study.py). Stricter than the human threshold on
         # purpose: a human correction is a person saying "this was wrong",
         # a study pair is a model's inference. auto_after counts DIFFERENT
@@ -378,8 +398,29 @@ class Vocab:
         Ranked by hits then recency: a name you have corrected four times is
         one you say often, and it earns its slot ahead of a one-off.
         """
+        # A human correction earns a hotword slot at once ONLY when it is
+        # a term — Latin or digits on either side, family A. A Hebrew word
+        # swapped for a Hebrew word (family B) is a real word the owner
+        # says, and a prompt made of real words is how the decoder comes
+        # to emit them unbidden. Measured 2026-09-02: nine one-hit Hebrew
+        # phrases at the tail of the prompt ("יש לי ריפו גיטאהאב אתה
+        # שואל הרצץ מיליון באן יאללה דרוס ...") made a 2.8 s clip of five
+        # words come out as 29, the extra 24 stamped into its last 140 ms
+        # at p 0.04-0.58; the same clip decoded cleanly with the Latin
+        # terms alone, and again with the list as it stood before the
+        # last two Hebrew pairs were learned. A Hebrew pair still reaches
+        # the prompt once it has been corrected `hebrew_after_hits` times
+        # — that many corrections is a name, not a word — and it feeds
+        # apply() and the polish glossary regardless, which is where a
+        # context confusion belongs. study.py drew this line for machine
+        # pairs a week earlier (glossary_only); this closes it for human
+        # ones.
         human = sorted((c for c in self.corrections
-                        if int(c.get("hits", 1)) > 0),
+                        if int(c.get("hits", 1)) > 0
+                        and (family(c.get("heard", ""), c.get("meant", ""))
+                             == "term"
+                             or int(c.get("hits", 1))
+                             >= self.hebrew_after_hits)),
                        key=lambda c: (int(c.get("hits", 1)),
                                       str(c.get("last", ""))),
                        reverse=True)

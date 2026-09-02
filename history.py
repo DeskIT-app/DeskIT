@@ -206,6 +206,17 @@ def _events_in(path: Path) -> list[Event]:
                 note=("1 word" if len(pairs) == 1 else f"{len(pairs)} words")
                 if pairs else ""))
 
+        elif head == "REVIEW":
+            # REVIEW | accepted | before || after — a second-reading card
+            # the owner said yes to (review.py). A rejection is a record,
+            # not a lesson, and makes no row.
+            if len(parts) > 1 and parts[1].strip().lower() == "accepted":
+                before, _, after = _tail(parts, 2).partition(" || ")
+                events.append(Event(
+                    when, "learned", text=after or before, source=before,
+                    pairs=[(before, after)] if after else [],
+                    note="second reading"))
+
         elif head == "ERROR":
             kept = _tail(parts, 4)
             events.append(Event(

@@ -232,10 +232,39 @@ in that column is still here; it stopped being one scroll of unrelated
 things. The state and the three buttons that change it are on
 **Overview**; everything you have said is on **History**; the keys are on
 **Keys**; which whole-app version is running, and the one-click way to
-change it, is on **Version**; what it is using and where its files are is
-on **Settings**. The status dot stays in the corner of the sidebar on all
+change it, is on **Version**; every other line of `config.toml` is on
+**Settings**. The status dot stays in the corner of the sidebar on all
 of them, because "is it on?" is the question the window exists to answer
 and it must never be a click away.
+
+**Settings is the file, drawn — behind tabs that say the common lines
+plainly.** Six tabs across the top (Common, Dictation, Text, Card,
+Screen, Phone) hold the fifty-odd lines most people touch, each with a
+plain label, one short sentence and — where a value names a model or a
+mode — a menu with names on it ("Groq — fast, free tier", "Only words it
+has been taught") instead of the raw value. The last tab, **Everything**,
+is the whole of `config.toml` as it is written: `settings.py` reads the
+file, every assignment becomes a row, the comment around it becomes the
+help under the row, and a `gemini | local | fake` at the front of a
+comment becomes the row's menu. A switch for a `true`/`false`, a menu for
+a choice, a field for a number or a word, and an "In the file" button for
+the two things a field cannot hold — a list, and a Hebrew string (Tk has
+no bidi caret). The magnifier at the right of the tabs opens a search
+over all of it — a word from a name or a comment — and the cross brings
+the tabs back. A setting added to the file is on Everything the moment
+the file is saved, the words in `settings.TABS` are checked against the
+file by a test, and another test holds Keys and Settings to covering the
+file between them — which is what the owner asked for, from both sides:
+show all of them, and do not make me read all of them.
+
+Writes go through `config.set_values`, the line editor that keeps the
+comments. While the app runs they go through the app (`set_option`, over
+the pipe), so the file has one writer at a time and the app can take the
+change without a restart where it knows how — `[punctuate]`,
+`[feedback]`, `[vocab]`, `[polish]`, `[translate]`, `[hint]` (the card
+is rebuilt), and the paste chord and delay. Anything else is written all
+the same and the reply says so: "saved — it applies the next time it
+starts".
 
 ```
 ┌──────────────────┬──────────────────────────────────────────────────┐
@@ -764,20 +793,52 @@ A failed reply is never pasted. The other backend is tried, and if that
 fails too your text is left exactly as it was, with an error cue and the
 reason in `app.log`.
 
+### Or on every dictation, with one switch
+
+`[punctuate] auto = true` — or the first row of the dashboard's Settings
+screen, **Punctuate every dictation** — runs the same pass on every
+transcript on its way to the cursor, after the repair pass and before the
+paste, so the key is never needed. Off by default, and there is no
+warning next to the switch: what it costs is written here instead.
+
+- **Same guarantee.** The reply goes through the same letter-for-letter
+  check; one that changed a word is thrown away and the transcript lands
+  as it came. In the measurement below that was 2 dictations of 12, both
+  spelling "corrections" (`שהכול` -> `שהכל`) the check caught.
+- **About a second.** Groq answered in 0.5–1.5 s (median 0.8) with the
+  `...` marker up the whole time. `[punctuate] max_wait_s` (6) bounds it:
+  past that the transcript is pasted unpunctuated and the answer, if it
+  ever comes, is dropped — the key itself has no deadline, because
+  nothing is waiting on it.
+- **Short answers are left alone.** Fewer than three words and the pass
+  stands down: "כן" and "ארבע" already come out of the decoder with a
+  mark on them, and the round trip would cost more than they took to say.
+
+Flip it from the dashboard while the app runs and it takes effect on the
+next dictation — no restart, because [`set_option`](#the-dashboard) hands
+the running app the new `[punctuate]` block and it rebuilds its
+punctuator from that.
+
 ### Which model
 
-Gemini first, Ollama when the daily cap is spent — same order as the
-translate key, and the same `ollama pull llama3.1:8b`. Measured on real
-dictations 2026-08-15:
+Groq first, then Gemini, then Ollama — whichever `[punctuate] prefer`
+names goes first and the other two follow in that order, so a spent
+quota costs one fallback and not the key. Measured on real dictations,
+first 2026-08-15 with two backends and again 2026-09-01 with three, the
+same prompt over 12 transcripts with their punctuation stripped:
 
-| | punctuation | speed |
-|---|---|---|
-| Gemini | every comma, full stop and question mark, plus the maqaf in `ה-commit` | 0.6–3.2 s |
-| llama3.1:8b | never broke a word, but added only a trailing full stop on one of two samples | 17.7 s cold, 3.6 s warm |
+| | punctuation | kept every word | speed |
+|---|---|---|---|
+| Groq (`openai/gpt-oss-120b`, reasoning low) | every comma, full stop and question mark | 10 of 12 | 0.47–1.47 s, median 0.83 |
+| Gemini | every comma, full stop and question mark, plus the maqaf in `ה-commit` | 4 of 5 | 0.61–1.14 s, median 0.89 |
+| llama3.1:8b | never broke a word, but added only a trailing full stop on one of two samples | 2 of 2 | 17.7 s cold, 3.6 s warm |
 
-Set `[punctuate] prefer = "ollama"` if you end up tapping this after
-*every* dictation — the free tier is 20 requests/day/model and the
-translate key draws on the same bucket.
+Same quality, and Groq's free tier is ~1,000 requests a day against
+Gemini's 20 per model — the bucket the translate key draws on. That is
+why Groq moved to the front, for the key and for the switch above. No
+`GROQ_API_KEY`? Groq is simply not in the chain, and the order is what it
+was: Gemini, then Ollama. `[punctuate] groq_model` is `""` = borrow
+`[polish] groq_model`.
 
 `[punctuate] nikud = true` adds Hebrew vowel points as well as
 punctuation. The same letter-for-letter check covers it, because nikud are
@@ -2370,6 +2431,93 @@ adjudications from the same free Groq bucket the polish pass uses.
 in the foreground over everything unstudied and prints what it found —
 including, for clips you corrected, the verified text scored against
 your own correction.
+
+## The second reading — a card that asks, and learns only from yes (fast)
+
+The study pass above learned in silence, and its lessons went into the
+decoder's word list unseen — which is how nine everyday Hebrew phrases
+came to sit at the tail of the prompt and, on 2026-09-02, turned a 2.8 s
+dictation of five words into 29 (see `[vocab] hebrew_after_hits`). The
+second reading (`review.py`) keeps the decodes and changes what they are
+for: the moment a dictation has landed at the cursor, the recording is
+decoded three more ways on the local models, a language model reads the
+sentence for words that were probably misheard, and what it finds is
+**shown** — a small card, mid-height on the right — instead of learned.
+While `[review] enabled` is true the study pass stands down; the same
+three decodes serve both.
+
+The card is the sentence, not a pair of words. Each proposal is drawn as
+the sentence would read after the change: the changed word on a pill, a
+few words either side, and a reason beneath (`אוכלים מנטוס, לא מטוס`),
+because "is this what you said" can only be answered against the
+sentence. Three buttons, three keys that work while the mouse is on the
+card (<kbd>V</kbd> yes, <kbd>X</kbd> no, <kbd>L</kbd> later), and a bar
+under the title that is the card's clock — 20 seconds, paused while the
+pointer is on it. Two kinds of proposal:
+
+- **A replacement**, from the language model (Groq first, the local
+  model underneath; text only — audio never leaves the machine). It is
+  shown the other decodes and your known confusions, and asked for
+  mishearings only. Its answer is JSON, checked in code
+  (`review.validate`): every "before" must be found verbatim in the
+  text, spans are bounded, nothing may overlap, a reply that would touch
+  a quarter of the words is thrown away whole as a rewrite — and every
+  replacement needs a **witness**: another decode of the same audio that
+  heard the new words, or a pair you taught (`[review] witness`). The
+  first live card had flipped a correct `לחיברתי` to `לכיביתי` on the
+  strength of the previous sentence; nothing had heard it.
+- **A drop**, found without any model (`review.tail_drop`): a tail of
+  words that no other decode heard and that the live decoder itself was
+  unsure of. The decoder's per-word confidence is kept for this
+  (`recent\*.json`, `"words"`) — on the 2026-09-02 clip the five spoken
+  words scored 0.89–1.00 and the 24 invented ones 0.04–0.58, all stamped
+  into the last 140 ms.
+
+What a verdict does, and what nothing else may:
+
+| you | the vocabulary | the text on screen |
+|---|---|---|
+| **Yes** | learns the pair as a `Ctrl+F8` correction would (one human hit, the backward-learning guard applies) | fixed in place — only if that window is still in front and still holds the pasted text exactly (the punctuation key's read-and-paste); otherwise taught, not fixed |
+| **No** | nothing; the refusal is recorded | untouched |
+| **Later**, or the clock runs out | nothing | untouched |
+
+Nothing is learned and nothing is rewritten without a click. What the
+card got no answer to waits in the dashboard's **Review** screen, with
+the same two buttons and the list of what was decided. The dashboard
+writes the verdict to `review.json` (gitignored, next to `vocab.json`)
+and the running app learns it within seconds — or at its next start.
+
+Measured on this machine with `main.py --review`, 2026-09-02, over the
+17-18 clips a human had corrected — the hard ones by construction — one
+run per setting of `[review] witness` (Groq's answers differ run to run,
+so these are draws, not constants):
+
+| witness | proposals | exactly the correction | right, the correction kept a garble | wrong | WER if all accepted |
+|---|---|---|---|---|---|
+| 0 (trust the model) | 13 | 4 | 4 | 5 | 10.19% → 9.12% |
+| 1 | 11 | 3 | 0 | 8 | 9.97% → 9.97% |
+| 2 (default) | 2 | 0 | 1 | 1 | 9.21% → 9.72% |
+
+The model alone is a coin flip: the right ones with no witness included
+`אלך על זה -> לך על זה`, `תשאל -> אתה שואל` and `מתגייסים סין ->
+מתגייסים` (an invented word gone), and the wrong ones with exactly one
+witness were mostly the general model's own mishearing dressed as
+evidence (`אירוע -> רע`). The first live card, with no witness rule,
+flipped a correct `לחיברתי` to `לכיביתי` on the strength of the previous
+sentence. So the default asks for two witnesses, which makes the card
+rare, and the reading's steady value is what needs no model at all: the
+invented endings it finds from the decodes and the decoder's own
+confidence, and the pairs you taught that it asks you to confirm. Set
+`witness = 0` for more proposals and two in three of them wrong.
+
+Controls, `config.toml [review]`: `card_seconds` (20; 0 = the list only,
+no card), `corner` / `x` / `y` / `scale` (the card remembers where you
+drag it, like the hint card), `max_changes` (4), the three keys,
+`fix_in_field`, `max_clip_seconds` (120) and `llm_per_day` (200, from
+the same free Groq bucket as the repair pass). `main.py --review` runs
+the reading over every clip a human has labelled — the corpus's gold
+clips and the corrected recordings in `recent\` — and scores its
+proposals against the truth.
 
 ## Nothing is ever lost
 

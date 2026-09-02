@@ -16,6 +16,10 @@ corpus/
 vocab.json
 vocab.json.bak-*
 lookup_cache.json
+# The second reading's proposals (review.py): sentences you dictated and
+# what the app thinks you meant — the same record vocab.json is.
+review.json
+review.lock
 
 # Saved web pages parked in the folder while testing the lookup and
 # translate keys (ch/pp/cp_play/np_passport and friends). Like the logs
