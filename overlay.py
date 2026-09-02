@@ -858,18 +858,35 @@ class WordPrompt:
 
     def __init__(self) -> None:
         self._thread: threading.Thread | None = None
+        self._result: dict = {"text": None}
+        self._closing = threading.Event()
 
-    def ask(self, initial: str, near, on_done, prompt: str = "מה התכוונת?"
-            ) -> bool:
+    def ask(self, initial: str, near, on_done, prompt: str = "מה התכוונת?",
+            focus: bool = True) -> bool:
         """Open the box below `near` (a screen rect, or None). One at a
-        time: a second question while one is open is dropped."""
+        time: a second question while one is open is dropped. `focus`
+        is the keyboard grab; a test passes False and answers through
+        `answer` instead of typing — a synthetic Enter aimed at a box
+        that did not get the foreground lands in the owner's window."""
         if self._thread is not None and self._thread.is_alive():
             return False
+        self._result = {"text": None}
+        self._closing = threading.Event()
         self._thread = threading.Thread(
-            target=self._run, args=(initial, near, on_done, prompt),
+            target=self._run, args=(initial, near, on_done, prompt, focus),
             daemon=True, name="review-edit")
         self._thread.start()
         return True
+
+    def answer(self, text) -> None:
+        """Close the box with `text` (None = as Escape would), from any
+        thread. What Enter and Escape do, reachable without a keyboard."""
+        self._result["text"] = text
+        self._closing.set()
+
+    def open(self) -> bool:
+        return (self._thread is not None and self._thread.is_alive()
+                and not self._closing.is_set())
 
     @staticmethod
     def _take_focus(root, entry) -> None:
@@ -896,11 +913,11 @@ class WordPrompt:
             _log.debug("word prompt: could not take the keyboard",
                        exc_info=True)
 
-    def _run(self, initial, near, on_done, prompt) -> None:
+    def _run(self, initial, near, on_done, prompt, focus=True) -> None:
         import gc
         import tkinter as tk
-        result = {"text": None}
-        closing = threading.Event()
+        result = self._result
+        closing = self._closing
         root = entry = None
         try:
             root = tk.Tk()
@@ -944,7 +961,8 @@ class WordPrompt:
             root.geometry(f"{self.WIDTH}x{self.HEIGHT}+{x}+{y}")
             root.deiconify()
             root.update_idletasks()
-            self._take_focus(root, entry)
+            if focus:
+                self._take_focus(root, entry)
             _pump_until(root, closing)
         except Exception as e:
             _log.info("the word prompt could not open: %r", e)

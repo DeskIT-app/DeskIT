@@ -15844,24 +15844,35 @@ def test_the_pencil_asks_and_the_typed_word_is_what_is_learned() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_the_word_prompt_answers_enter_and_buries_its_window() -> None:
-    """The box takes the keyboard (the one window here that may), hands
-    back what was typed on Enter, and is gone before it does. A
-    subprocess, like every card that owns a Tcl interpreter."""
+def test_the_word_prompt_answers_and_buries_its_window() -> None:
+    """The box hands back what it holds when answered, is gone before it
+    reports, and takes one question at a time. Answered through the
+    hook, never the keyboard: a synthetic Enter aimed at a box that did
+    not get the foreground lands in the owner's window (it did, once).
+    A subprocess, like every card that owns a Tcl interpreter."""
     _run_window_script('''
 import os, threading, time
-import overlay, hotkey
+import overlay
 
 got = []
 done = threading.Event()
 prompt = overlay.WordPrompt()
 assert prompt.ask("מנטוס", (200, 200, 600, 400),
-                  lambda t: (got.append(t), done.set()))
-time.sleep(1.2)                      # up, focused, the text selected
-hotkey.send_chord("enter")
-assert done.wait(5), "Enter never came back"
-assert got == ["מנטוס"], got
-assert not prompt.ask.__self__._thread.is_alive() or True
+                  lambda t: (got.append(t), done.set()), focus=False)
+time.sleep(0.8)
+assert prompt.open(), "the box never opened"
+assert not prompt.ask("x", None, lambda t: None, focus=False), \
+    "one question at a time"
+prompt.answer("מנטוסים")
+assert done.wait(5), "the answer never came back"
+assert got == ["מנטוסים"], got
+assert not prompt.open()
+done.clear()
+assert prompt.ask("a", None, lambda t: (got.append(t), done.set()),
+                  focus=False)
+time.sleep(0.6)
+prompt.answer(None)                  # Escape
+assert done.wait(5) and got[-1] is None, got
 os._exit(0)
 ''')
 
