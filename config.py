@@ -512,6 +512,32 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
+class NightConfig:
+    """Night mode — see night.py: the screen off, the machine awake, so
+    the phone can drive it through Claude until morning.
+
+    One key and a dashboard screen. The key toggles; the screen has the
+    same switch, "screen off again" for after the mouse lit it, and a
+    check that says whether the machine will still be there at seven.
+    `enabled = false` unregisters the key; the dashboard's button keeps
+    working, because the engine is built either way.
+    """
+    enabled: bool = True
+    hotkey: str = "ctrl+alt+n"
+    # Also pin the sleep/hibernate idle timers to "never" while night
+    # mode is on and put the old numbers back on the way out — or at
+    # the next start, from night_state.json, if the app died with it on.
+    # Off: SetThreadExecutionState already covers classic S3 sleep (what
+    # this machine does), and a pinned timer is a second thing to
+    # restore.
+    pin_timeouts: bool = False
+    # The screen is put out again this many seconds after the first
+    # time, because the mouse movement that follows the click lights it
+    # straight back up. 0 = once only.
+    screen_off_again_s: int = 3
+
+
+@dataclass(frozen=True)
 class VocabConfig:
     """The learned vocabulary — see vocab.py.
 
@@ -800,6 +826,7 @@ class Config:
     visual_qa: VisualQAConfig = field(default_factory=VisualQAConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
+    night: NightConfig = field(default_factory=NightConfig)
 
     @property
     def capture_hotkey(self) -> str:
@@ -820,6 +847,11 @@ class Config:
     def camera_hotkey(self) -> str:
         """The webcam key, read out of [camera]."""
         return self.camera.hotkey
+
+    @property
+    def night_hotkey(self) -> str:
+        """The night-mode toggle, read out of [night]."""
+        return self.night.hotkey
 
     @property
     def visual_qa_hotkey(self) -> str:
@@ -863,6 +895,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
     ("record_hotkey", "Record the screen (tap)"),
     ("camera_hotkey", "Photo from the camera (tap)"),
     ("pause_hotkey", "Pause / resume"),
+    ("night_hotkey", "Night mode (tap)"),
 )
 
 
@@ -876,7 +909,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
 CHORD_FIELDS: frozenset[str] = frozenset((
     "translate_hotkey", "punctuate_hotkey", "correct_hotkey",
     "lookup_hotkey", "visual_qa_hotkey", "capture_hotkey", "record_hotkey",
-    "camera_hotkey",
+    "camera_hotkey", "night_hotkey",
 ))
 
 
@@ -899,6 +932,9 @@ def with_field(cfg: "Config", name: str, value) -> "Config":
     if name == "camera_hotkey":
         return dataclasses.replace(
             cfg, camera=dataclasses.replace(cfg.camera, hotkey=str(value)))
+    if name == "night_hotkey":
+        return dataclasses.replace(
+            cfg, night=dataclasses.replace(cfg.night, hotkey=str(value)))
     if name == "visual_qa_hotkey":
         return dataclasses.replace(
             cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
@@ -1016,6 +1052,7 @@ def load(path: Path) -> Config:
     review = data.get("review", {})
     capture = data.get("capture", {})
     camera = data.get("camera", {})
+    night = data.get("night", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -1324,6 +1361,15 @@ def load(path: Path) -> Config:
             edit_after_shot=bool(camera.get(
                 "edit_after_shot", CameraConfig.edit_after_shot)),
         ),
+        night=NightConfig(
+            enabled=bool(night.get("enabled", NightConfig.enabled)),
+            hotkey=str(night.get(
+                "night_hotkey", NightConfig.hotkey)).strip().lower(),
+            pin_timeouts=bool(night.get("pin_timeouts",
+                                        NightConfig.pin_timeouts)),
+            screen_off_again_s=int(night.get(
+                "screen_off_again_s", NightConfig.screen_off_again_s)),
+        ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
         splash=bool(data.get("splash", Config.splash)),
@@ -1333,6 +1379,9 @@ def load(path: Path) -> Config:
     if cfg.backend not in VALID_BACKENDS:
         raise ConfigError(f"backend must be one of {VALID_BACKENDS}, got {cfg.backend!r}")
     check_hotkeys(cfg)
+    if not 0 <= cfg.night.screen_off_again_s <= 60:
+        raise ConfigError("night.screen_off_again_s must be 0-60 "
+                          "seconds")
     if cfg.translate_hotkey:
         if cfg.translate.max_chars <= 0:
             raise ConfigError("translate.max_chars must be positive")

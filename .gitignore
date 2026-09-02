@@ -48,3 +48,9 @@ android/local.properties
 
 # The first-run wizard has run on this copy (firstrun.py).
 .setup-done
+
+# Night mode (night.py): the marker that says it is on and what to put
+# back if the app dies with it on, and the timestamped record of every
+# entry and exit with what the probe found.
+night_state.json
+night.log

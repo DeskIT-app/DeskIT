@@ -1813,6 +1813,56 @@ route from a photo to a model is the editor's **Ask** button, which obeys
 7. **Press Ask.** The ask card must open on the photo, with whatever you
    drew on it.
 
+## Night mode (`ctrl+alt+n`)
+
+The screen goes dark and the computer stays awake, so it can be driven
+from the phone through Claude until morning. Tap `ctrl+alt+n`, or press
+**Night mode on** on the dashboard's Night screen, and within a second the
+monitor is off; tap or press again and everything is back to normal.
+Nothing is locked — the session stays open, which is what lets Claude
+take a screenshot or open a program from the phone.
+
+**What it does, and what it deliberately does not.** The hold is one API
+call, `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`, kept
+alive by a thread of its own in the running app: no admin, no fake mouse
+wiggling, no registry, and Windows drops it by itself if the app dies.
+`ES_DISPLAY_REQUIRED` is left out on purpose — the screen is supposed to go
+off, and the monitor timer is what puts it out again after a stray nudge
+lights it. The screen is put out directly as well (`SC_MONITORPOWER`,
+broadcast with a timeout so a hung window cannot hang the app), twice: at
+once, and again three seconds later, because the mouse movement that
+follows a click lights it straight back up. **Screen off again** on the
+Night screen does the same on demand.
+
+**Why this machine turned off at night — measured before a line was
+written (2026-09-02).** `powercfg /a`: classic S3 sleep, no Modern
+Standby. `Sleep after` on AC: 30 minutes; hibernate: off. The System log's
+restarts were all the owner's own or Windows Update at ten in the morning.
+So the culprit was the idle timer, which is exactly what the hold prevents.
+Two things the hold cannot fix are read by **Check status** and named on
+the screen with what to do: the network card's "Allow the computer to turn
+off this device to save power" box (ON here — Device Manager, needs
+admin), and Windows Update's active hours (9:00–2:00 here, so an update
+may restart the machine between two and nine).
+
+**Check status** is the truth check the spec asks for. `powercfg /requests`
+needs an elevated prompt, which this app does not have, so the hold is
+read from the kernel instead — `CallNtPowerInformation(SystemExecutionState)`
+returns the same ES_* flags without the process names — and the row says
+"held" only when this app is holding AND the kernel agrees. It also shows
+the sleep timer, the standby type, the network card's power-saving flag,
+the update window and whether Claude is running. It runs by itself when
+the screen opens and again after every switch.
+
+**If the app dies with night mode on.** The hold dies with the process and
+needs no cleanup. The optional `[night] pin_timeouts` (off by default) also
+sets the sleep and hibernate timers to never while it is on; those outlive
+the process, so `night_state.json` is written on entry and, if it is still
+there at the next start, the saved numbers are put back and the file
+removed. `night.log` records every entry and exit with a timestamp and
+what the check found. `[night] enabled = false` unregisters the key; the
+dashboard's button keeps working.
+
 ## Dictating from the phone
 
 The phone records; **this machine transcribes**. That is the whole point —

@@ -12,7 +12,10 @@ release, and a cleaned transcript lands at your cursor via clipboard +
 Ctrl+V. Around that core: a repair pass that fixes misheard words, a
 translate key, a punctuate key, a lookup key, a correction box that teaches
 a vocabulary, a background study pass that re-examines sent dictations and learns without being asked (fast only, study.py), a second reading that re-reads every pasted dictation and proposes corrections on a card — learning only what is approved (fast only, review.py, review_card.py, overlay.ReviewCard, the dashboard's Review screen; it stands in for the study pass while on), a screenshot/screen-recording pair of keys, a webcam key
-that takes a photo into the same editor, a phone endpoint, and a
+that takes a photo into the same editor, a phone endpoint, a night
+mode that holds the machine awake with the screen off so the phone can
+drive it through Claude (night.py, the dashboard's Night screen,
+`ctrl+alt+n`), and a
 dashboard. Everything is documented,
 with measurements, in `README.md` and `config.toml`.
 

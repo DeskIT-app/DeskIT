@@ -38,6 +38,7 @@ LABELS: dict[str, str] = {
     "punctuate": "פיסוק",
     "correct": "למד מילה שטעה בה",
     "lookup": "חיפוש מילה",
+    "night": "מצב לילה",
 }
 
 # The reason a text key is greyed rather than simply missing. Short enough
@@ -101,6 +102,9 @@ def bindings(cfg) -> list[tuple[str, str]]:
     cam = getattr(cfg, "camera", None)
     if cam is not None and cam.enabled and cam.hotkey:
         out.append(("photo", cam.hotkey))
+    night = getattr(cfg, "night", None)
+    if night is not None and night.enabled and night.hotkey:
+        out.append(("night", night.hotkey))
     if cfg.punctuate_hotkey:
         out.append(("punctuate", cfg.punctuate_hotkey))
     if cfg.translate_hotkey:

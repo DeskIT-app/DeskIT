@@ -152,6 +152,7 @@ ICON = {
     "error": "\uea39", "discarded": "\ue74d", "file": "\ue8a5",
     "page": "\ue7c3", "folder": "\ue8b7", "engine": "\ue9d9",
     "version": "\ue895", "review": "\ue8fb",
+    "night": "\ue708", "power": "\ue7e8", "check": "\ue73e",
 }
 
 _cache: dict = {}

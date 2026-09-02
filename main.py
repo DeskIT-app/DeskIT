@@ -38,6 +38,7 @@ import cues
 import firstrun
 import hint as hint_mod
 import injector
+import night as night_mod
 import popup as popup_mod
 import server as server_mod
 import singleton
@@ -75,6 +76,7 @@ NESTED_HOTKEYS = {
     "capture_hotkey": "capture.capture_hotkey",
     "record_hotkey": "capture.record_hotkey",
     "camera_hotkey": "camera.camera_hotkey",
+    "night_hotkey": "night.night_hotkey",
 }
 
 # What the dashboard may change while the app runs and have it FELT
@@ -101,7 +103,10 @@ AUTO_PUNCTUATE_MIN_WORDS = 3
 # here (translate, punctuate, correct, lookup) are the ones that read or
 # rewrite the text at the cursor, and the cursor is a shared resource
 # during a dictation.
-_SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo"})
+# Night mode rides with them: it touches the power state and the monitor,
+# never the cursor, so it is as true mid-sentence as a screenshot is.
+_SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo",
+                             "night"})
 
 # What the dot should say for a machine state, when a worker has finished
 # with something and is deciding what to put back. Only two states are
@@ -291,6 +296,10 @@ class App:
             on_ask_start=self._on_ask_start,
             on_ask_stop=self._on_ask_stop)
         self.hook = HookThread(self.machine)
+        # Night mode (night.py): the screen off, the machine awake. Built
+        # whether or not the key is bound — the dashboard's button goes
+        # through the control channel and needs the engine either way.
+        self.night = night_mod.Engine(APP_DIR, getattr(cfg, "night", None))
         # What the dot is showing, kept here so the dashboard can report the
         # same thing in words. Every set_state goes through _set_state.
         self._activity = "ready"
@@ -539,6 +548,11 @@ class App:
         cam = getattr(cfg, "camera", None)
         if cam is not None and cam.enabled and cam.hotkey:
             taps[parse_binding(cam.hotkey)] = "photo"
+        # Night mode's toggle, on the same terms: [night] enabled = false
+        # unregisters the key, and the dashboard's button still works.
+        night = getattr(cfg, "night", None)
+        if night is not None and night.enabled and night.hotkey:
+            taps[parse_binding(night.hotkey)] = "night"
         return (hotkeys, taps,
                 vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
                 vk_for(cfg.pause_hotkey) if cfg.pause_hotkey else None)
@@ -1177,6 +1191,10 @@ class App:
                                    if self.cfg.vocab.enabled else 0)},
             "pending": len(self.spool.pending()),
             "phone": (self.phone.url or "") if self.phone else "",
+            # getattr: the test suite builds half-initialised Apps.
+            "night": (self.night.state()
+                      if getattr(self, "night", None) is not None
+                      else {"active": False}),
         }
 
     # ---- pause ----
@@ -1468,6 +1486,11 @@ class App:
 
     def stop(self) -> None:
         self._stopping.set()      # ends the fullscreen watcher's wait()
+        # Night mode first: it is the one thing here that changed the
+        # MACHINE (a pinned sleep timer), and the rest of this method
+        # cannot fail in a way that should leave that in place.
+        if getattr(self, "night", None) is not None:
+            self.night.release()
         if getattr(self, "_study", None) is not None:
             self._study.stop()
         if getattr(self, "_review", None) is not None:
@@ -1542,6 +1565,33 @@ class App:
                 threading.Thread(target=engine.absorb_decisions, daemon=True,
                                  name="review-absorb").start()
                 return {"ok": True}
+            if command == "night":
+                # on | off | toggle | screen. The engine's switches are a
+                # thread start, a small file and a log line — the screen
+                # broadcast and the probe go to threads of their own —
+                # so this answers within the poll's patience. (With
+                # [night] pin_timeouts it also runs powercfg, ~0.3 s.)
+                do = str(args.get("do", "toggle")).strip().lower()
+                if do == "screen":
+                    self.night.screen_off()
+                    return {"ok": True, "message": "screen off again",
+                            "night": self.night.state()}
+                if do == "on":
+                    state = self.night.on(by="dashboard")
+                elif do == "off":
+                    state = self.night.off(by="dashboard")
+                elif do == "toggle":
+                    state = self.night.toggle(by="dashboard")
+                else:
+                    return {"ok": False, "error": f"unknown night action "
+                                                  f"{do!r}"}
+                if state.get("ok") is False:
+                    return {"ok": False, "error": state.get("error", ""),
+                            "night": state}
+                self._say("night mode on — the screen goes off, the "
+                          "machine stays awake" if state.get("active")
+                          else "night mode off — back to normal")
+                return {"ok": True, "night": state}
             if command == "quit":
                 singleton.request_quit()
                 return {"ok": True}
@@ -1854,6 +1904,9 @@ class App:
         if action == "photo":
             self._tap_photo()
             return
+        if action == "night":
+            self._tap_night()
+            return
         if action not in ("translate", "punctuate"):
             return
         # Remember WHERE the text is before anything slow happens, for the
@@ -2007,6 +2060,22 @@ class App:
         if self.capture.begin_photo():
             log.info("opening the camera - space or the shutter takes the "
                      "picture, t sets a timer, m mirrors it, esc closes")
+
+    def _tap_night(self) -> None:
+        """Toggle night mode from the key. On a thread, like every tap:
+        the engine's own work is small, but with [night] pin_timeouts it
+        runs powercfg, and nothing that spawns a process may run inside
+        the keyboard hook's 300 ms."""
+        def work() -> None:
+            state = self.night.toggle(by="key")
+            if state.get("ok") is False:
+                self._say(state.get("error", "night mode failed"))
+            elif state.get("active"):
+                self._say("night mode on — the screen goes off, the "
+                          "machine stays awake")
+            else:
+                self._say("night mode off — back to normal")
+        threading.Thread(target=work, daemon=True, name="night-key").start()
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
@@ -3763,6 +3832,13 @@ def main() -> int:
         report_fatal(message)
         return 1
 
+    # A night_state.json from a session that died with night mode on
+    # (Task Manager, a crash, a power cut): the hold went with the
+    # process, but a pinned sleep timer did not. Put it back before
+    # anything else, so a bad night cannot become a permanent setting.
+    leftover = night_mod.recover(APP_DIR)
+    if leftover:
+        log.warning("%s", leftover)
     try:
         splash.status("loading the transcription model…")
         app = App(cfg, config_path=Path(args.config))
@@ -3892,6 +3968,12 @@ def main() -> int:
                  cfg.pause_hotkey,
                  "; fullscreen apps pause it automatically"
                  if cfg.auto_pause_fullscreen else "")
+    night_cfg = getattr(cfg, "night", None)
+    if night_cfg is not None and night_cfg.enabled and night_cfg.hotkey:
+        log.info("tap %r for NIGHT MODE - the screen goes off and the "
+                 "machine stays awake for the phone; tap again to end it. "
+                 "The dashboard's Night screen has the same switch and a "
+                 "check that says whether it is holding", night_cfg.hotkey)
     log.info("mic: %s | backend: %s | transcripts: %s",
              app.recorder.device_label(), cfg.backend,
              APP_DIR / "transcripts.log")

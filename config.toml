@@ -928,6 +928,42 @@ edit_after_shot = true         # open the photo in the screenshot editor,
                                # way" — the file and the clipboard are
                                # identical either way
 
+[night]
+# NIGHT MODE - the screen goes dark and the computer stays awake, so it
+# can be driven from the phone through Claude until morning. One press
+# (`night_hotkey`, or the Night screen in the dashboard) holds the
+# machine awake with SetThreadExecutionState - no admin, no fake mouse,
+# and Windows drops it by itself if the app dies - and puts the monitor
+# out. The screen comes back the moment the mouse moves, and nothing is
+# locked: the session stays open so Claude can see the screen and open
+# programs from the phone. Press again, or the dashboard's button, and
+# everything is back to normal.
+#
+# DIAGNOSED ON THIS MACHINE, 2026-09-02, before this existed: classic S3
+# sleep (no Modern Standby), sleep after 30 minutes plugged in, hibernate
+# off, and every restart in the System log was the owner's own or an
+# update at ten in the morning - so what turned the machine off at night
+# was the idle timer, which is exactly what the hold prevents. Two things
+# the hold cannot fix, and the dashboard's Check status names them: the
+# network card's "let the computer turn this off to save power" box (ON
+# here; Device Manager, needs admin), and Windows Update's active hours
+# (9:00-2:00 here, so a restart may come between two and nine).
+enabled = true                 # false unregisters the key entirely; the
+                               # dashboard's button still works
+night_hotkey = "ctrl+alt+n"    # tap to toggle night mode from anywhere.
+                               # Rebind from the dashboard
+pin_timeouts = false           # also set "sleep after" and "hibernate
+                               # after" to never while night mode is on,
+                               # and put the old numbers back on the way
+                               # out - or at the next start, if the app
+                               # died with it on (night_state.json). Off
+                               # because the hold already covers S3 sleep
+                               # and this is a second thing to restore
+screen_off_again_s = 3         # the screen is put out again this many
+                               # seconds after the first time: the mouse
+                               # movement that follows the click lights
+                               # it straight back up. 0 = once only
+
 [server]
 # Dictate from the PHONE, transcribe on this GPU: the phone records and
 # posts the audio here, so you keep the Hebrew fine-tune instead of falling
