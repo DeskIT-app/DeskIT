@@ -16331,8 +16331,73 @@ def test_the_screens_off_write_the_vitals_on_the_way_in_and_out() -> None:
         off_line = record.rindex("| SCREENS ON by test")   # the second cycle's
         assert on_at < off_line < record.index("screens on: fake"), \
             "the coming-back snapshot must follow the SCREENS ON line"
-        assert len(reads) == 2, "lighten() must stop the periodic reader"
+        assert len(reads) == 2, \
+            "inside a minute only the two edge snapshots may land"
         eng.release()
+
+
+def test_the_vitals_watch_spans_the_hold_and_the_alarms_shout() -> None:
+    """The watch belongs to the hold, not to the screens. It goes up with
+    hold() in broad daylight — the leak measured on 2026-09-03 crawled
+    this machine all afternoon with the screens ON, and the one log that
+    would have named it only ran at night — and it comes down with
+    release(). And a number out of range is no longer merely recorded: it
+    gets an ALARM line of its own, with the cure written into it."""
+    import awake as awake_mod
+
+    gb = 1 << 30
+    healthy = {"commit": 10 * gb, "commit_limit": 44 * gb,
+               "nonpaged": 0.9 * gb, "handles_top": ("svchost", 39_100)}
+    assert awake_mod.alarms(healthy) == [], awake_mod.alarms(healthy)
+
+    # The real numbers off this machine, 2026-09-03, while it crawled.
+    sick = {"commit": 48 * gb, "commit_limit": 50 * gb,
+            "nonpaged": 2.47 * gb,
+            "handles_top": ("nvcontainer.exe", 825_247)}
+    said = awake_mod.alarms(sick)
+    assert len(said) == 3, said
+    assert "nvcontainer.exe holds 825,247 handles" in said[0], said[0]
+    assert "without a reboot" in said[0], said[0]
+    assert "non-paged pool 2.5 GB" in said[1], said[1]
+    assert "96% of the limit" in said[2], said[2]
+
+    # Each threshold stands alone: no single number may hide behind the
+    # other two being fine, which is exactly how this one was missed.
+    for key, value in (("handles_top", ("nvcontainer.exe", 825_247)),
+                       ("nonpaged", 2.47 * gb),
+                       ("commit", 40 * gb)):
+        alone = dict(healthy)
+        alone[key] = value
+        assert len(awake_mod.alarms(alone)) == 1, (key,
+                                                   awake_mod.alarms(alone))
+
+    reads: list[int] = []
+    def fake_vitals() -> str:
+        reads.append(len(reads))
+        return "fake vitals"
+    with tempfile.TemporaryDirectory() as d:
+        eng = awake_mod.Engine(Path(d), None,
+                               hold_factory=lambda: awake_mod.Hold(
+                                   setter=lambda flags: 0x80000000),
+                               sender=lambda s: True, run=_FakePowercfg(),
+                               vitals_fn=fake_vitals,
+                               alarms_fn=lambda: ["the pool is 2.5 GB"])
+        eng.again_s = 0
+        eng.keep_off_s = 0
+        eng.vitals_minutes = 1
+        assert not eng._vitals_watching, "nothing watches before the hold"
+        eng.hold(by="start")
+        assert eng._vitals_watching, \
+            "the watch must go up with the hold, screens lit or not"
+        eng.darken(by="test")
+        _awake_until(lambda: len(reads) >= 1)
+        eng.lighten(by="test")
+        assert eng._vitals_watching, \
+            "the screens coming back must not end the watch"
+        eng.release()
+        assert not eng._vitals_watching, "release() is what ends it"
+        record = (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
+        assert "|   ALARM | the pool is 2.5 GB" in record, record
 
 
 def test_the_screens_stay_off_after_input_lights_them() -> None:

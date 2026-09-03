@@ -752,6 +752,53 @@ def vitals_line(v: dict) -> str:
     return " | ".join(parts)
 
 
+# The thresholds an ALARM line is written at. Not guesses. Measured on
+# this machine on 2026-09-03, thirty hours after a boot, while it
+# crawled: nvcontainer.exe holding 825,247 of the machine's 996,636
+# handles and 2.47 GB of non-paged pool, commit at 48.3 of 49.7 GB with
+# Windows growing the page file to keep up. A `Restart-Service
+# NvContainerLocalSystem` — no reboot — put it back to 2,544 handles and
+# 0.96 GB in eight seconds, which is what makes these numbers worth
+# catching early: the cure is cheap and the warning was the missing half.
+#
+# Each is set where a working machine has never been and the sick one
+# had passed hours before anyone could feel it. One image at 100,000
+# handles is not a busy program, it is a leak; a healthy desktop here
+# runs under 1 GB of non-paged pool; and past 85% of the commit limit
+# Windows is already paging the world out to keep up.
+ALARM_HANDLES = 100_000
+ALARM_NONPAGED = 1.5 * (1 << 30)
+ALARM_COMMIT = 0.85
+
+
+def alarms(v: dict) -> list[str]:
+    """The sentences vitals() earns when a number has left the range a
+    working machine stays in — empty on a healthy one, which is the
+    common case and costs nothing.
+
+    Written because on 2026-09-03 the numbers were already being logged
+    and still nobody was told: a line in a log nobody reads at three in
+    the morning is a record, not a warning. Each sentence names what is
+    wrong AND what ends it, because the owner reads these from a phone."""
+    out: list[str] = []
+    top = v.get("handles_top")
+    if top and top[1] >= ALARM_HANDLES:
+        out.append(f"{top[0]} holds {top[1]:,} handles — that is a leak, "
+                   f"not a busy program. Restarting the service that owns "
+                   f"it frees them without a reboot")
+    nonpaged = v.get("nonpaged")
+    if nonpaged and nonpaged >= ALARM_NONPAGED:
+        out.append(f"non-paged pool {_gb(nonpaged)} GB — kernel memory "
+                   f"that cannot be paged out. The machine will crawl "
+                   f"while it is there")
+    commit, limit = v.get("commit"), v.get("commit_limit")
+    if commit and limit and commit >= ALARM_COMMIT * limit:
+        out.append(f"commit {_gb(commit)} of {_gb(limit)} GB "
+                   f"({100 * commit / limit:.0f}% of the limit) — Windows "
+                   f"is growing the page file to keep up")
+    return out
+
+
 def is_elevated() -> bool:
     try:
         return bool(ctypes.WinDLL("shell32").IsUserAnAdmin())
@@ -919,6 +966,7 @@ class Engine:
                  sender: Callable[[int], bool] | None = None,
                  run=None, clock: Callable[[], float] = time.time,
                  vitals_fn: Callable[[], str] | None = None,
+                 alarms_fn: Callable[[], list[str]] | None = None,
                  input_fn: Callable[[], float] | None = None) -> None:
         self.app_dir = Path(app_dir)
         self.state_path = self.app_dir / STATE_NAME
@@ -933,7 +981,9 @@ class Engine:
         self._run = run or _run_powercfg
         self._clock = clock
         self._vitals = vitals_fn or (lambda: vitals_line(vitals()))
+        self._alarms = alarms_fn or (lambda: alarms(vitals()))
         self._vitals_stop = threading.Event()
+        self._vitals_watching = False
         self._last_input = input_fn or last_input
         self._keep_stop = threading.Event()
         self._lock = threading.RLock()
@@ -1020,6 +1070,7 @@ class Engine:
             log.info("holding the machine awake (%s) — it will not sleep "
                      "while this runs; the screens go dark on their own "
                      "timer", by)
+            self._start_vitals()
             return self.state()
 
     def release(self) -> None:
@@ -1044,6 +1095,8 @@ class Engine:
                 self._hold = None
                 self._hold_since = None
                 self._saved = None
+                self._vitals_stop.set()
+                self._vitals_watching = False
                 self._clear_state()
                 self._log(f"RELEASE | after {seconds} s{restored}")
                 log.info("wake hold released after %d s", seconds)
@@ -1070,10 +1123,10 @@ class Engine:
             threading.Thread(target=self._probe_to_log, daemon=True,
                              name="awake-probe").start()
             if self.vitals_minutes > 0:
-                self._vitals_stop = threading.Event()
-                threading.Thread(target=self._vitals_worker,
-                                 args=(self._vitals_stop,), daemon=True,
+                threading.Thread(target=self._vitals_to_log,
+                                 args=("screens off",), daemon=True,
                                  name="awake-vitals").start()
+            self._start_vitals()
             if self.keep_off_s > 0:
                 self._keep_stop = threading.Event()
                 threading.Thread(target=self._keep_off_worker,
@@ -1092,7 +1145,6 @@ class Engine:
             self._by = ""
             self._blank_id += 1          # a pending second MONITOR_OFF stays home
             self._keep_stop.set()
-            self._vitals_stop.set()
             self._log(f"SCREENS ON by {by} | after {seconds} s")
             log.info("screens on (%s) after %d s", by, seconds)
             # The state the owner walked in on — before the stop that
@@ -1212,12 +1264,39 @@ class Engine:
         except Exception as e:        # noqa: BLE001
             line = f"vitals failed: {e}"
         self._log(f"  vitals | {tag + ': ' if tag else ''}{line}")
+        try:
+            said = self._alarms()
+        except Exception:             # noqa: BLE001
+            return
+        for sentence in said:
+            self._log(f"  ALARM | {sentence}")
+            log.warning("awake: %s", sentence)
+
+    def _start_vitals(self) -> None:
+        """The watch, up for as long as the hold is. Idempotent: hold()
+        and darken() both ask, and on a night that must be one thread,
+        not two.
+
+        It used to go up with the screens and die with them, which is
+        why 2026-09-03 was measured only after the fact: the leak that
+        crawled the machine ran all afternoon with the screens ON, and
+        the one log that would have named it was not running. The hold
+        is the honest boundary — the machine is being kept awake for
+        the owner's phone, so something should be watching what it does
+        while it is up, day or night."""
+        with self._lock:
+            if self.vitals_minutes <= 0 or self._vitals_watching:
+                return
+            self._vitals_watching = True
+            self._vitals_stop = threading.Event()
+            threading.Thread(target=self._vitals_worker,
+                             args=(self._vitals_stop,), daemon=True,
+                             name="awake-vitals").start()
 
     def _vitals_worker(self, stop: threading.Event) -> None:
-        """A vitals line now and every [awake] vitals_minutes until
-        lighten() sets `stop` — the record of the time away, read on
-        coming back."""
-        self._vitals_to_log("screens off")
+        """A vitals line every [awake] vitals_minutes until release()
+        sets `stop` — the record of the hours away, read on coming back,
+        and the ALARM lines that do not wait to be read."""
         while not stop.wait(self.vitals_minutes * 60):
             self._vitals_to_log()
 
