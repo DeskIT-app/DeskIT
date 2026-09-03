@@ -364,6 +364,15 @@ class VisualQAConfig:
     cloud_timeout_s: int = 30
 
 
+# The ceiling on capture.toast_stack, and deliberately a COPY of
+# capture.TOAST_STACK_MAX rather than an import of it: importing capture
+# costs 163-174 ms (measured 2026-08-30, main.py) because it pulls in
+# visual_qa and Pillow, and config.py is loaded before anything at all.
+# The two numbers have to agree; they are eight because eight cards of
+# frozen desktop is already about 145 MB.
+TOAST_STACK_MAX = 8
+
+
 @dataclass(frozen=True)
 class CaptureConfig:
     """Screenshots and screen recordings — see capture.py.
@@ -410,6 +419,17 @@ class CaptureConfig:
     # How long it waits before giving up on you. The clock pauses while
     # the pointer is on the card.
     toast_seconds: int = 5
+    # How many cards may be up at once, oldest at the top.
+    #
+    # The key is never dead: a second press while a card is up puts a
+    # second card under it with its own countdown. Past this many, the
+    # OLDEST comes down early — and loses nothing, because every capture
+    # is on the clipboard the moment the mouse comes up. It is a memory
+    # dial as well as a taste one: each card holds the whole desktop
+    # frozen so its editor can open on the pixels as they WERE, about
+    # 18 MB apiece on this machine. 1 keeps the old one-card look and
+    # still answers every press.
+    toast_stack: int = 4
     # Write EVERY capture to `folder`, or only the ones you ask to keep.
     #
     # false is the default, and it is the one setting here that gives up
@@ -1341,6 +1361,8 @@ def load(path: Path) -> Config:
                 CaptureConfig.toast_corner)).strip().lower(),
             toast_seconds=int(capture.get(
                 "toast_seconds", CaptureConfig.toast_seconds)),
+            toast_stack=int(capture.get(
+                "toast_stack", CaptureConfig.toast_stack)),
             always_save=bool(capture.get(
                 "always_save", CaptureConfig.always_save)),
             copy_clip_path=bool(capture.get(
@@ -1565,6 +1587,13 @@ def load(path: Path) -> Config:
         raise ConfigError("capture.toast_seconds must be between 1 and 60 — "
                           "under a second nobody can reach it, and past a "
                           "minute it is not a notification any more")
+    if not 1 <= cfg.capture.toast_stack <= TOAST_STACK_MAX:
+        raise ConfigError(
+            f"capture.toast_stack must be between 1 and {TOAST_STACK_MAX}, "
+            f'got {cfg.capture.toast_stack} — 0 means no card at all and '
+            'after_shot = "nothing" already says that, while every card '
+            "above holds a frozen copy of the whole screen, so a taller "
+            "stack costs real memory rather than tidiness")
     if cfg.camera.timer not in (0, 3, 10):
         raise ConfigError("camera.timer must be 0, 3 or 10 seconds, got "
                           f"{cfg.camera.timer} — the key cycles through "

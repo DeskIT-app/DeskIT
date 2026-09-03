@@ -1491,7 +1491,8 @@ the whole screen after every capture, for a picture that nine times out of
 ten was going straight into a chat window — a modal dialog in nicer
 clothes, making the common case pay for the rare one. Now the drag ends
 silently with the picture on the clipboard, and a card appears in the
-corner for five seconds:
+corner for five seconds — one per capture, stacked, so the key is never
+dead while one is up:
 
 - a **thumbnail**, so you can see whether it caught the bit you meant
   without opening anything
@@ -1505,6 +1506,42 @@ corner for five seconds:
   worse than no card
 - it **never takes the keyboard**: a capture taken mid-sentence does not
   eat the next keystroke
+- and it is **not in the next screenshot**. The card carries the same
+  don't-photograph-me flag the recording pill and the status dot carry, so
+  pressing the key again while one is up gives you the screen and not our
+  own furniture sitting in the corner of it
+
+**And the key is never dead.** It used to be. For as long as a card sat in
+that corner the screenshot key did nothing at all — press it again inside
+those five seconds and the app wrote "already up" to the log and ignored
+you. The reason was ours rather than yours (a Tcl interpreter the card
+owned), and it turned up at exactly the moment you are working fastest:
+three things off one page, one after another, quicker than any card can
+count to five. **Press it again whenever you like.** A second press is a
+second capture and a second card, and the cards stack:
+
+- **oldest at the top, newest at the bottom.** The corner is where the eye
+  already goes, so the capture you just took is never the one you have to
+  hunt for. What `toast_corner` changes is which end of the column is
+  pinned — top corners fill downwards, bottom corners upwards — and not
+  the order
+- **every card has its own clock.** They arrived at different times, so
+  they leave at different times, and resting the pointer on one holds that
+  one and not the rest
+- **the stack holds still while your hand is on it**, so nothing slides
+  out from under the pointer: a card whose time is up waits while you are
+  on the stack rather than dropping the one you were reaching for a
+  card-height down the screen
+- **a card belongs to the monitor its capture came from**, so two screens
+  carry two independent stacks, each counted from its own corner — the
+  monitor to the *left* of the primary included, whose coordinates are
+  negative and have caught this app out before
+- past **`toast_stack`** cards (four by default, eight at most) the oldest
+  goes early to make room, and it takes nothing with it. Every one of
+  those captures reached the clipboard the moment you let go of the mouse,
+  before any card existed, so an early card is an offer expiring and never
+  a picture lost — and with Windows' clipboard history on, `Win+V` still
+  has the lot of them
 
 **And the file is now opt-in.** `[capture] always_save = false` is the
 default: the picture goes to the clipboard and nowhere else until you press
@@ -1684,29 +1721,34 @@ backends are not merely unused but unconstructable.
    anything else, paste into Paint — it must already be there. `captures\`
    must be **empty**, and the corner card must say "not saved".
    Then press Save on the card and look again.
-2. **Shift-drag a lasso around something round.** The png must be
+2. **Press it three times in a row without waiting.** Every press must be
+   taken: three captures, three cards stacked from the corner, the first
+   one you took at the top and the one you just took at the bottom, each
+   with its own draining line. Then check the second and third pictures —
+   the earlier cards must not be in them.
+3. **Shift-drag a lasso around something round.** The png must be
    transparent outside the shape, not black and not white.
-3. **Press Enter instead of dragging.** The whole monitor the pointer is
+4. **Press Enter instead of dragging.** The whole monitor the pointer is
    on, taskbar included.
-4. **Draw an arrow, then Undo, then crop, then Undo.** The crop must come
+5. **Draw an arrow, then Undo, then crop, then Undo.** The crop must come
    back with the arrow still on it, in the place it was drawn.
-5. **Blur something, save, and reopen the file.** The blocks must be in the
+6. **Blur something, save, and reopen the file.** The blocks must be in the
    file, not just on screen.
-6. **Press Ask.** The ask card must open on what you drew, not on the
+7. **Press Ask.** The ask card must open on what you drew, not on the
    original.
-7. **Tap `ctrl+f12` and click the `Screen 2` chip.** The whole second
+8. **Tap `ctrl+f12` and click the `Screen 2` chip.** The whole second
    monitor, with no drag involved.
-8. **Record ten seconds, tap the key again.** The announcement must appear
+9. **Record ten seconds, tap the key again.** The announcement must appear
    and then shrink to the corner pill; neither it nor the blue frame may be
    in the video. Paste into a chat window — the file itself should arrive.
-9. **Hover the pill.** Discard, mute, pause and stop must appear without
-   the pill moving away from its corner.
-10. **Record, then press pause for five seconds, then resume and stop.**
+10. **Hover the pill.** Discard, mute, pause and stop must appear without
+    the pill moving away from its corner.
+11. **Record, then press pause for five seconds, then resume and stop.**
     The pause must be a cut, not five seconds of still image.
-11. **Press `Win+Shift+S` while the app is running.** This editor must
+12. **Press `Win+Shift+S` while the app is running.** This editor must
     open and the Snipping Tool must not. Then press `Win` on its own —
     Start must still open, and so must `Win+E`.
-12. **Crop something small, then pick crop again.** The whole picture must
+13. **Crop something small, then pick crop again.** The whole picture must
     reappear faintly behind the bright rectangle; drag a bigger one and the
     picture must grow back, marks and all.
 
@@ -2874,6 +2916,7 @@ for `מבשרים`, all of which the local model got right.
 | `[capture] after_shot` | `toast` | `toast` \| `editor` \| `nothing`. What happens when you let go. `toast` puts a small card in a corner with a thumbnail and the editor one click away; `editor` opens the editor immediately, the way this key used to; `nothing` is a pure grab-and-go |
 | `[capture] toast_corner` | `bottom-right` | which corner that card appears in. Its own setting and not `timer_corner`'s, because the recording pill and the capture card can want different corners on the same desk |
 | `[capture] toast_seconds` | `5` | how long it waits. The clock **pauses** while the pointer is on the card |
+| `[capture] toast_stack` | `4` | how many cards may be up at once. The key is never refused — past this the oldest card goes early to make room, and it takes nothing with it, because every capture was on the clipboard before its card appeared. 1 to 8; a screen too short for that many holds what it can |
 | `[capture] always_save` | `false` | write **every** capture to `folder`, or only the ones you ask to keep. `false` means the picture is on the clipboard and nowhere else until Save is pressed — the one setting here that gives something up, in exchange for a folder that holds what you meant to keep |
 | `[capture] copy_clip_path` | `true` | a finished recording goes on the clipboard as a **file** (CF_HDROP), so it pastes into a chat or a folder |
 | `[capture] fps` | `30` | measured achievable with zero dropped frames at 720p and 1080p; 1440p settles at ~28 and stays real-time because frames carry wall-clock stamps, not frame numbers |

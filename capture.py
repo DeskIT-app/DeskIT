@@ -105,8 +105,21 @@ TRAPS PAID FOR HERE
   composited, or they punch a hole through the screenshot.
 - **A Tk window must be COLLECTED by the thread that built it.** The full
   Tcl_AsyncDelete story is in AGENTS.md and visual_qa.py; the shape of the
-  answer here is the same — `Controller._flow` runs `gc.collect()` in a
-  `finally` once the window is unreachable, and only then clears `_busy`.
+  answer here is the same — each flow runs `gc.collect()` in a `finally`
+  once the window is unreachable, on the thread that built it. The corner
+  cards are the one thing that outlive their flow, and they answer the
+  same rule the other way round: ONE interpreter, built and pumped and
+  buried by one long-lived thread (`ShotCards`), with every card a
+  Toplevel on it. A root that never dies is a `Tcl_DeleteInterp` that
+  never runs, on any thread.
+- **`_busy` means "a window that OWNS THE SCREEN is up"** — the selector,
+  the editor, the camera, the clip bar — and NOT "a capture flow is
+  running". It stopped meaning the second thing when the corner cards
+  started stacking: a card is a small thing in a corner that leaves the
+  screen and the screenshot key alone, so holding the flag across it made
+  the key dead for five seconds after every capture, which is exactly the
+  thing being fixed. `Controller._take_screen` is the only way to claim
+  it and `_free_screen` the only way to let it go.
 - **h264 wants even dimensions.** yuv420p subsamples chroma by two, so an
   odd-width region is a libx264 error at `container.add_stream` time, long
   after the user has started recording. `even_box` shrinks the rectangle
@@ -289,6 +302,14 @@ TOAST_W, TOAST_H = 384, 96
 TOAST_THUMB = (112, 72)
 TOAST_TEXT_X = 136
 
+# THE CARDS STACK, so two more numbers: the air between them, and a
+# ceiling `capture.toast_stack` is validated against. The ceiling is not
+# taste — every card holds a frozen copy of the whole desktop so the
+# editor can still open on the pixels as they WERE, and on this machine
+# (3 monitors, 2026-09-03) that is about 18 MB apiece.
+TOAST_GAP = 10               # between stacked cards
+TOAST_STACK_MAX = 8          # the ceiling toast_stack is validated against
+
 # 1/1000 s. Wall-clock presentation stamps rather than frame numbers, so a
 # clip that could only manage 24 fps plays at real speed instead of fast.
 CLOCK_HZ = 1000
@@ -441,6 +462,93 @@ def corner_at(box: tuple[int, int, int, int], size: tuple[int, int],
     x = left + margin if corner.endswith("left") else right - width - margin
     y = top + margin if corner.startswith("top") else bottom - height - margin
     return (x, y)
+
+
+def stack_fits(box: tuple[int, int, int, int], size: tuple[int, int],
+               margin: int = CORNER_MARGIN, gap: int = TOAST_GAP) -> int:
+    """How many cards this WORK area can hold in one column.
+
+    THIS IS THE CEILING THE SCREEN IMPOSES, not the one the owner chose.
+    `capture.toast_stack` is a preference; this is arithmetic, and the
+    smaller of the two is what actually goes up. A column taller than the
+    work area would push the oldest card off the top of it, where it is
+    neither readable nor clickable — and a card you cannot reach is worse
+    than one that was never offered, because it still costs the memory of
+    a frozen screen.
+
+    The margin is paid twice (once at each end) and the gap is paid
+    between cards but not after the last one, which is what the `+ gap`
+    is doing: n cards need `n * height + (n - 1) * gap`.
+
+    At least one, always. A work area too short for a single card is not
+    a reason to show nothing — it is a reason to show the one card that
+    matters, which is the newest.
+    """
+    left, top, right, bottom = box
+    width, height = size
+    return max(1, (bottom - top - 2 * margin + gap) // (height + gap))
+
+
+def stack_at(box: tuple[int, int, int, int], size: tuple[int, int],
+             corner: str, index: int, count: int,
+             margin: int = CORNER_MARGIN,
+             gap: int = TOAST_GAP) -> tuple[int, int]:
+    """Top-left for card `index` of `count`, OLDEST FIRST.
+
+    OLDEST AT THE TOP AND NEWEST AT THE BOTTOM, in all four corners. That
+    is the order a stack of paper lands in and the order every notifier
+    on this desk already uses, so it is the one the hand expects: the card
+    that is about to go is the one furthest from where the next one will
+    appear, and nothing you were reading jumps sideways when one arrives.
+
+    Which means the two families of corner anchor from OPPOSITE ENDS. A
+    top corner pins the OLDEST at the margin and hangs the rest below it;
+    a bottom corner pins the NEWEST at the margin and stacks the rest
+    above it. Anchoring both from the oldest would make a bottom-corner
+    stack grow down into the taskbar, and anchoring both from the newest
+    would make a top-corner stack grow up off the screen.
+
+    Reduces to `corner_at` exactly when `count == 1`, which is what keeps
+    `toast_stack = 1` looking precisely like the card that shipped before
+    any of this existed.
+    """
+    x, y = corner_at(box, size, corner, margin)
+    step = size[1] + gap
+    if corner.startswith("top"):
+        y += index * step
+    else:
+        y -= (count - 1 - index) * step
+    return (x, y)
+
+
+def stack_layout(anchors, size: tuple[int, int], corner: str,
+                 margin: int = CORNER_MARGIN,
+                 gap: int = TOAST_GAP) -> list[tuple[int, int]]:
+    """One (x, y) per card, oldest first.
+
+    `anchors` is each card's OWN WORK AREA — the one `ShotToast` already
+    picks from the middle of the capture, so a shot dragged on the left
+    monitor leaves its card on the left monitor. Two monitors therefore
+    mean two INDEPENDENT COLUMNS, each numbered from its own oldest, and
+    that is the whole reason this is not a single `enumerate`: a card on
+    the other screen must not leave a hole in this screen's stack, and
+    counting all of them against one corner would do exactly that.
+
+    Order is preserved twice over. Within a group the cards keep the order
+    they arrived in, so "oldest first" still means oldest first per
+    monitor; and the returned list is in the caller's ORIGINAL index
+    order, so it can be zipped straight back onto the card list.
+    """
+    anchors = list(anchors)
+    groups: dict[tuple, list[int]] = {}
+    for index, rect in enumerate(anchors):
+        groups.setdefault(tuple(rect), []).append(index)
+    places: list[tuple[int, int]] = [(0, 0)] * len(anchors)
+    for rect, members in groups.items():
+        for slot, index in enumerate(members):
+            places[index] = stack_at(rect, size, corner, slot, len(members),
+                                     margin, gap)
+    return places
 
 
 def bar_phase(elapsed: float, hovering: bool,
@@ -1546,6 +1654,17 @@ def capture_dir(folder: str) -> Path:
     return path
 
 
+# THE GLOB AND THE WRITE HAVE TO BE ONE STEP. capture_name picks a name by
+# looking at what is already in the folder, so two saves that read the
+# folder before either has written it choose the SAME name and the second
+# silently overwrites the first. That was impossible while a capture flow
+# was strictly sequential; it stopped being impossible the moment the cards
+# stacked, because two cards can both have a Save button under a hand in
+# the same second. A Lock is not a Tk object, so the "nothing module-level
+# holds a Tk object" rule has nothing to say about it.
+_SAVE_LOCK = threading.Lock()
+
+
 def save_image(image, folder: str, when: float | None = None,
                kind: str = "shot") -> Path:
     """Write a picture and return where it went.
@@ -1553,10 +1672,11 @@ def save_image(image, folder: str, when: float | None = None,
     `kind` is "shot" off the screenshot key and "photo" off the camera
     key. Same folder, same PNG, different first word — see capture_name.
     """
-    directory = capture_dir(folder)
-    taken = {p.name for p in directory.glob(f"{kind} *.png")}
-    path = directory / capture_name(kind, when, taken)
-    image.save(path, "PNG")
+    with _SAVE_LOCK:
+        directory = capture_dir(folder)
+        taken = {p.name for p in directory.glob(f"{kind} *.png")}
+        path = directory / capture_name(kind, when, taken)
+        image.save(path, "PNG")
     return path
 
 
@@ -3972,7 +4092,8 @@ class ShotToast:
 
     def __init__(self, image, box: tuple[int, int, int, int], *,
                  saved: Path | None = None, corner: str = "bottom-right",
-                 seconds: int = 5, copied: bool = True):
+                 seconds: int = 5, copied: bool = True,
+                 master=None, owned=()):
         import tkinter as tk
         self.tk = tk
         self.image = image
@@ -3982,21 +4103,42 @@ class ShotToast:
         self.seconds = max(1, int(seconds))
         self.copied = copied
         self.action: str | None = None
-        self.root = tk.Tk()
+        # ONE ROOT PER PROCESS, N CARDS ON IT. With `master` given this is
+        # a Toplevel of the deck's hidden root, which is what lets a dead
+        # card's cyclic widget tree be collected by ANY thread later on
+        # without Tcl_DeleteInterp ever running: the interpreter belongs
+        # to the root, and the root outlives every card. Everything below
+        # — withdraw, overrideredirect, -topmost, geometry, the Canvas,
+        # the PhotoImages, no_activate, round_window, deiconify — is
+        # identical on a Tk and on a Toplevel.
+        #
+        # `master=None` is still a whole, standalone card that owns its
+        # own interpreter, and it is not dead code: it is the fallback
+        # Controller._offer takes when the deck cannot start, and it is
+        # what the focus test constructs.
+        self.root = tk.Tk() if master is None else tk.Toplevel(master)
         self.done = threading.Event()
         self._keep: dict = {}
         self._hover: str | None = None
         self._inside = False
         self._left_at = 0.0
-        self._build()
+        self._build(tuple(owned))
 
     # -- construction --
 
-    def _build(self) -> None:
+    def _build(self, owned: tuple = ()) -> None:
         from PIL import ImageTk
         # Read BEFORE anything Tk touches: by the time the window exists,
         # the answer is this window. See give_focus_back.
         self._had_focus = _user32.GetForegroundWindow()
+        # A CARD MAY ALREADY BE IN FRONT. With a stack, "what had the
+        # keyboard" can be the previous card's own window, and handing it
+        # "back" would make the stack take the keyboard no_activate exists
+        # to leave alone. `owned` is every HWND this stack owns; 0 makes
+        # give_focus_back a no-op, which is right — the first card already
+        # gave the foreground back and nothing has taken it since.
+        if self._had_focus in owned:
+            self._had_focus = 0
         width, height = TOAST_W, TOAST_H
         left, top, right, bottom = self.box
         anchor = work_area_near((left + right) // 2, (top + bottom) // 2)
@@ -4022,6 +4164,14 @@ class ShotToast:
         canvas.create_image(0, 0, anchor="nw", image=self._keep["face"])
         root.update_idletasks()
         no_activate(root)
+        # LOAD-BEARING NOW THAT THEY STACK. The second card's frozen
+        # screen is grabbed while the FIRST one is still on the desk, so
+        # without WDA_EXCLUDEFROMCAPTURE the first card is literally in
+        # the second screenshot — and then in the third, twice. The clip
+        # bar has done this on both its windows since it shipped; the
+        # corner card only got away without it because there was never
+        # more than one of it. Measured 0/60000 pixels, AGENTS.md.
+        hide_from_capture(root)
         round_window(root, CLIP_BAR_RADIUS)
         root.deiconify()
         root.update_idletasks()
@@ -4213,19 +4363,8 @@ class ShotToast:
             while not self.done.is_set():
                 now = time.monotonic()
                 elapsed, last = now - last, now
-                if self._inside and now - self._left_at > 0.2 \
-                        and not self._pointer_inside():
-                    self._inside = False
-                if not self._inside:
-                    # HELD, not restarted, while the pointer is on it:
-                    # the clock resumes where it stopped, so a card
-                    # brushed by a passing pointer does not outstay its
-                    # welcome and a card being read does not vanish
-                    # halfway through the reach for it.
-                    self._left -= elapsed
-                    if self._left <= 0:
-                        break
-                self._paint()
+                if self.tick(elapsed):
+                    break
                 try:
                     root.update()
                 except self.tk.TclError:
@@ -4239,6 +4378,488 @@ class ShotToast:
                 pass
             gc.collect()
         return self.action
+
+    def tick(self, elapsed: float) -> bool:
+        """One frame of one card's clock. True when the clock ran out.
+
+        KEEP THIS METHOD BELOW run(). test_the_cards_clock_pauses_under_the_
+        pointer slices capture.py from `    def run(self)` to the end of the
+        file and asserts the three lines below are in that slice.
+
+        IT IS ITS OWN METHOD BECAUSE THERE IS MORE THAN ONE CARD NOW. The
+        deck's pump owns a single Tk root and calls this once per card per
+        frame, so each card keeps its own countdown, its own pause under
+        the pointer and its own repaint — and a card standing alone still
+        runs the identical code through run(), which is the only way the
+        stacked and the standalone paths cannot drift apart.
+        """
+        now = time.monotonic()
+        if self._inside and now - self._left_at > 0.2 \
+                and not self._pointer_inside():
+            self._inside = False
+        if not self._inside:
+            # HELD, not restarted, while the pointer is on it: the clock
+            # resumes where it stopped, so a card brushed by a passing
+            # pointer does not outstay its welcome and a card being read
+            # does not vanish halfway through the reach for it.
+            self._left -= elapsed
+            if self._left <= 0:
+                return True
+        self._paint()
+        return False
+
+
+# "Stop" on the deck's queue. A sentinel OBJECT rather than None, because
+# None is a perfectly good value for half the fields a payload carries and
+# a queue that cannot tell them apart is a shutdown that fires by accident.
+# The same trick overlay.py's `_DONE` plays, for the same reason.
+_DECK_DONE = object()
+
+
+class ShotCards:
+    """The deck the corner cards live in, and the thread that draws it.
+
+    WHAT THIS FIXES IS A DEAD KEY. Until now the card blocked the whole
+    capture flow: `_busy` was held across its five seconds, so pressing
+    the screenshot key again while a card was up did nothing at all
+    except log "the capture overlay is already up". That is the wrong
+    answer to the most ordinary thing a person does with a screenshot
+    key, which is press it twice — the second half of a conversation, the
+    error message and then the stack trace under it. So the key is never
+    dead now: press it again and a second card joins the first, with its
+    own countdown, and the pair stack OLDEST AT THE TOP, NEWEST AT THE
+    BOTTOM in whichever corner `toast_corner` names.
+
+    ONE tk.Tk(), WITHDRAWN, NEVER SHOWN, OWNING N Toplevels, PUMPED BY
+    ONE THREAD. That is the whole architecture and it is not a matter of
+    taste — it is the only shape that obeys the rule AGENTS.md paid for
+    three times: a Tk interpreter must be COLLECTED by the thread that
+    built it, and `destroy()` does not do that, because a widget tree is
+    cyclic and only the generational collector ever frees one, on
+    whichever thread happens to trip the allocation threshold. With one
+    root held for the life of the process by the thread that made it, a
+    dead card's cycle can be collected by anybody at any time and
+    `Tcl_DeleteInterp` still never runs. N roots on N threads would
+    reopen that abort once per card.
+
+    It generalises `ClipBar` (one root, a sibling Toplevel, one pump, one
+    joint burial) wearing `overlay.ReviewCard`'s clothes (a long-lived
+    thread, a withdrawn root, a queue in, a `root.after` pump, and a
+    per-item deadline that pauses under the pointer).
+
+    THE STACK HOLDS STILL WHILE YOUR HAND IS ON IT. Re-flowing the column
+    under the pointer would move the button being reached for, which is
+    the same broken promise as a card that vanishes mid-reach — so while
+    the pointer is inside any card nothing is re-laid-out and a new
+    arrival waits in the queue with its clock not yet started. Released
+    on pointer-leave, or after 20 s, whichever comes first.
+    """
+
+    # How long the layout may be frozen by a pointer resting on a card
+    # before it is released anyway. A hand left on the desk over the
+    # corner would otherwise hold the queue for as long as it stayed
+    # there, and a capture that never appears is a capture that looks
+    # lost — even though the clipboard has had it all along.
+    HOLD_S = 20.0
+
+    def __init__(self, cfg_provider, on_action=None):
+        self._cfg_of = cfg_provider        # () -> the [capture] section
+        self._on_action = on_action        # (action, payload) -> None
+        self._q: queue.Queue = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._alive = threading.Event()
+        self._closing = threading.Event()
+        self._hushed = threading.Event()
+        self._settled = threading.Event()  # cards are down: hush() may return
+        self._count = 0                    # read from other threads
+
+    # -- the caller's thread --
+
+    @property
+    def count(self) -> int:
+        """How many cards are up. A plain int, written by the pump and
+        read by anybody: nothing here is a Tk object, so it crosses."""
+        return self._count
+
+    def start(self) -> bool:
+        """Build the deck's thread. False if Tk is not available at all.
+
+        Nothing Tk happens here — the root is built by the thread that
+        will own it, which is the entire point.
+        """
+        if self._thread is not None:
+            return True
+        try:
+            import tkinter  # noqa: F401
+        except Exception as e:
+            log.info("no corner cards this run: %r", e)
+            return False
+        self._closing.clear()
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="capture-cards")
+        self._thread.start()
+        if not self._alive.wait(timeout=3):
+            log.info("the corner-card deck did not come up in three "
+                     "seconds — falling back to a single card")
+            self._thread = None
+            return False
+        return True
+
+    def add(self, image, box, *, saved=None, corner="bottom-right",
+            seconds=5, copied=True, full=None, on_action=None) -> None:
+        """Offer one capture. Called from OTHER THREADS.
+
+        PLAIN DATA ONLY over this queue: a PIL image, a rectangle, a
+        path, three settings, the frozen desktop and a callable. Not one
+        Tk object crosses, because a Tk object touched off its own thread
+        is the abort with no traceback that AGENTS.md is mostly about.
+        """
+        if self._thread is None:
+            raise CaptureError("the corner-card deck was never started")
+        payload = {"image": image, "box": box, "saved": saved,
+                   "corner": corner, "seconds": seconds, "copied": copied,
+                   "full": full, "on_action": on_action or self._on_action}
+        self._q.put(payload)
+        if full is not None:
+            # THE TRADE, IN NUMBERS, so it is falsifiable rather than a
+            # feeling. Each card holds the whole desktop frozen at the
+            # moment it was taken, which is what lets its editor open on
+            # the pixels as they WERE — and on this desk that is ~18 MB
+            # a card. If this line ever reads like a memory leak, lower
+            # `toast_stack`; it is the dial for exactly this.
+            n = self._count + self._q.qsize()
+            log.debug("capture cards: %d up, holding %.0f MiB of frozen "
+                      "screen", n, n * full.width * full.height * 3
+                      / (1 << 20))
+
+    def hush(self, timeout: float = 0.25) -> None:
+        """Take every card off the screen and stop every clock.
+
+        A full-screen capture window is about to map. Topmost cards in a
+        corner would be photographed by it, and worse, they would eat the
+        drag over that corner — the bottom-right is where the taskbar
+        clock is and where people drag TO. So the deck goes dark for the
+        length of the selection and comes back with the same seconds left
+        it had, because none of them were spent on a screen nobody could
+        see.
+
+        Waits briefly so the cards are actually gone before the selector
+        maps — but ONLY WHEN THERE IS SOMETHING TO WAIT FOR. This is
+        called from `begin_shot`, which main.py runs inside the OS
+        keyboard hook, and hotkey.py's budget there is 300 ms: exceed it
+        and Windows silently unhooks, whose symptom is "my hotkey stopped
+        working" with nothing logged anywhere. With no cards up — the
+        common case — the flag is set and this returns in microseconds;
+        with cards up it is one pump frame, about 50 ms; the quarter of a
+        second is the ceiling for a pump that has stopped answering, and
+        it is still inside the budget.
+        """
+        if self._thread is None:
+            return
+        self._settled.clear()
+        self._hushed.set()
+        if not self._count:
+            return
+        self._settled.wait(timeout=timeout)
+
+    def unhush(self) -> None:
+        """The screen is the owner's again. Put the cards back."""
+        self._hushed.clear()
+
+    def stop(self) -> None:
+        """Bury the deck: every card, then the root, then collect — all
+        on the thread that built them. The join is bounded because
+        shutdown must not hang on a window."""
+        if self._thread is None:
+            return
+        self._q.put(_DECK_DONE)
+        self._closing.set()
+        self._thread.join(timeout=3)
+        self._thread = None
+
+    # -- the deck's own thread --
+
+    def _run(self) -> None:
+        try:
+            self._build_and_loop()
+        except Exception:
+            log.exception("the corner-card deck died")
+        finally:
+            self._alive.clear()
+            self._count = 0
+            self._settled.set()
+
+    def _build_and_loop(self) -> None:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        cards: list[ShotToast] = []
+        state = {"tick": time.monotonic(), "held_at": 0.0, "held": False,
+                 "expired": False, "moved": False, "dark": False}
+        self._alive.set()
+
+        def owned() -> tuple:
+            """Every HWND this deck owns, for the focus guard."""
+            out = []
+            for card in cards:
+                try:
+                    out.append(_user32.GetParent(int(card.root.winfo_id()))
+                               or int(card.root.winfo_id()))
+                    out.append(int(card.root.winfo_id()))
+                except Exception:
+                    pass
+            return tuple(out)
+
+        def bury(card: ShotToast) -> None:
+            # ORDER MATTERS AND IT IS THE ORDER ShotToast.run's finally
+            # already uses. ImageTk.PhotoImage.__del__ calls back into
+            # Tcl; freed on a foreign thread it raises inside __del__ and
+            # leaks a Tcl image, so the pictures are dropped first, here,
+            # by the thread that made them, and the window second.
+            try:
+                card._keep.clear()
+            except Exception:
+                pass
+            try:
+                card.root.destroy()
+            except Exception:
+                pass
+
+        def limit(card: ShotToast) -> int:
+            """The live ceiling: the owner's number, capped by the screen.
+
+            Read fresh every time, like every other config value in this
+            module — the dashboard writes `toast_stack` while the app is
+            running and the next capture should honour it.
+            """
+            try:
+                wanted = int(getattr(self._cfg_of(), "toast_stack", 4))
+            except Exception:
+                wanted = 4
+            return max(1, min(wanted, stack_fits(self._anchor(card),
+                                                 (TOAST_W, TOAST_H))))
+
+        def relay() -> None:
+            """Put every card where the stack says it belongs.
+
+            Only when something CHANGED. Re-issuing the same geometry
+            twenty times a second is the mistake `_paint` already
+            documents from the other side: the pixels come out identical
+            and the CPU does not.
+            """
+            if not cards or not state["moved"]:
+                return
+            state["moved"] = False
+            places = stack_layout([self._anchor(c) for c in cards],
+                                  (TOAST_W, TOAST_H), cards[-1].corner)
+            for card, (x, y) in zip(cards, places):
+                try:
+                    card.root.geometry(f"{TOAST_W}x{TOAST_H}+{x}+{y}")
+                except Exception:
+                    pass
+
+        def holding() -> bool:
+            """Is a hand on the stack? Then nothing moves and nothing new
+            arrives — until HOLD_S says otherwise.
+
+            Once the 20 s are up the hold STAYS released until the pointer
+            actually leaves, rather than re-arming: a hand resting on the
+            corner would otherwise make every later capture wait another
+            twenty seconds, one at a time, forever.
+            """
+            if not any(c._inside for c in cards):
+                state["held"] = state["expired"] = False
+                return False
+            if state["expired"]:
+                return False
+            now = time.monotonic()
+            if not state["held"]:
+                state["held"], state["held_at"] = True, now
+                return True
+            if now - state["held_at"] < self.HOLD_S:
+                return True
+            log.info("the pointer has been on the capture cards for %.0f s "
+                     "— letting the stack move again", self.HOLD_S)
+            state["expired"] = True
+            return False
+
+        def take(payload: dict) -> None:
+            card = ShotToast(payload["image"], payload["box"],
+                             saved=payload["saved"],
+                             corner=payload["corner"],
+                             seconds=payload["seconds"],
+                             copied=payload["copied"],
+                             master=root, owned=owned())
+            card.full = payload["full"]
+            card.on_action = payload["on_action"]
+            cards.append(card)
+            ceiling = limit(card)
+            while len(cards) > ceiling:
+                # OLDEST OUT, and immediately. Nothing is lost: every one
+                # of these captures is already on the clipboard, and the
+                # ones written to `folder` are already on disk. What goes
+                # is the OFFER, and the offer the owner is least likely
+                # to still want is the one that has been sitting there
+                # longest.
+                old = cards.pop(0)
+                log.info("capture cards: %d is the most that fit here — "
+                         "taking the oldest one down early (its picture is "
+                         "still on the clipboard)", ceiling)
+                bury(old)
+            state["moved"] = True
+            relay()
+            # FLUSHED IN THE SAME BREATH AS THE MAP. ShotToast._build
+            # deiconifies the card at corner_at's single-card position,
+            # because that is all a card on its own has ever needed to
+            # know; relay() then moves it to its slot. Letting those two
+            # be separated by a pump frame would show the new card at the
+            # top corner for 20 ms before it dropped into place.
+            try:
+                root.update_idletasks()
+            except Exception:
+                pass
+
+        def drain() -> bool:
+            """Queue in. False when the sentinel says to shut down."""
+            while True:
+                try:
+                    item = self._q.get_nowait()
+                except queue.Empty:
+                    return True
+                if item is _DECK_DONE:
+                    return False
+                if self._hushed.is_set() or holding():
+                    # BACK ON THE QUEUE, CLOCK NOT STARTED. A card built
+                    # behind a selector or under a resting hand would
+                    # spend its seconds where nobody could act on it.
+                    self._q.put(item)
+                    return True
+                try:
+                    take(item)
+                except Exception:
+                    log.exception("a capture card could not be built")
+
+        def hush_state() -> bool:
+            """Withdraw or restore the whole deck. True while it is dark.
+
+            Only on the EDGE — withdrawing an already-withdrawn window
+            twenty times a second is twenty pointless trips through the
+            window manager, and deiconify() on the way back is where a
+            flicker would come from if it were issued every frame.
+            """
+            want = self._hushed.is_set()
+            if want != state["dark"]:
+                state["dark"] = want
+                for card in cards:
+                    try:
+                        if want:
+                            card.root.withdraw()
+                        else:
+                            card.root.deiconify()
+                    except Exception:
+                        log.debug("a capture card would not hide",
+                                  exc_info=True)
+                state["moved"] = True
+            if want:
+                self._settled.set()
+            return want
+
+        def pump() -> None:
+            if not drain():
+                self._closing.set()
+                return
+            now = time.monotonic()
+            elapsed, state["tick"] = now - state["tick"], now
+            if hush_state():
+                # FROZEN, NOT SPENT: no clock is touched while the cards
+                # are off the screen, so each one comes back with exactly
+                # the seconds it had. A card must not run out behind a
+                # full-screen selector nobody could have clicked it from.
+                self._count = len(cards)
+                root.after(50, pump)
+                return
+            spent = []
+            for card in cards:
+                try:
+                    if card.done.is_set() or card.tick(elapsed):
+                        spent.append(card)
+                except Exception:
+                    log.debug("a capture card stopped painting",
+                              exc_info=True)
+                    spent.append(card)
+            for card in spent:
+                if card in cards:
+                    cards.remove(card)
+                self._answer(card)
+                bury(card)
+                state["moved"] = True
+            if not holding():
+                relay()
+            self._count = len(cards)
+            root.after(50, pump)
+
+        pump()
+        try:
+            self._pump(root)
+        finally:
+            self._count = 0
+            for card in cards:
+                bury(card)
+            cards.clear()
+            try:
+                root.destroy()
+            except Exception:
+                pass
+            owned = bury = limit = relay = None            # noqa: F841
+            holding = take = drain = hush_state = pump = None   # noqa: F841
+            root = None                                    # noqa: F841
+            gc.collect()
+
+    def _pump(self, root) -> None:
+        """update() in a loop, never mainloop().
+
+        overlay.py's module docstring has the reproduction: `quitMainLoop`
+        is a MODULE-LEVEL global in _tkinter, so one interpreter's quit()
+        can end another interpreter's loop. With a status dot and a splash
+        alive at once it was a coin toss which loop died. update() touches
+        nothing shared.
+        """
+        while not self._closing.is_set():
+            try:
+                root.update()
+            except Exception:
+                return
+            time.sleep(0.02)
+
+    @staticmethod
+    def _anchor(card: "ShotToast") -> tuple[int, int, int, int]:
+        """The WORK area a card belongs to — the monitor its capture was
+        taken on, which is why two screens make two columns."""
+        left, top, right, bottom = card.box
+        return work_area_near((left + right) // 2, (top + bottom) // 2)
+
+    def _answer(self, card: "ShotToast") -> None:
+        """Hand a finished card's verdict back to whoever offered it.
+
+        THE HANDLER MUST RETURN AT ONCE and it is the caller's job to see
+        that it does — "edit" opens a full-screen editor with an
+        interpreter of its own, and doing that here would stop every
+        other card's clock for as long as the editor stayed open, on the
+        one thread that is allowed to touch them. Controller._offer's
+        handler spawns `capture-card-action` and returns; this end only
+        packs the plain data and logs if the hand-off throws.
+        """
+        action, handler = card.action, getattr(card, "on_action", None)
+        if action is None or handler is None:
+            return
+        payload = {"action": action, "image": card.image, "box": card.box,
+                   "saved": card.saved, "full": getattr(card, "full", None)}
+        try:
+            handler(payload)
+        except Exception:
+            log.exception("the capture card's %s could not be started",
+                          action)
 
 
 # ------------------------------------------------------------ the camera
@@ -4889,12 +5510,25 @@ class Controller:
     and sounddevice all load on the first press, so an owner who never
     presses either key pays nothing for the idea of them.
 
-    All three flows are strictly sequential and own their thread: the
-    selector closes before the editor opens, the editor closes before a
-    recording starts, the camera window closes before the editor opens on
-    its photo. One Tk interpreter at a time, built and destroyed and
-    collected on the same thread, which is the rule overlay.py wrote down
-    and AGENTS.md re-states in full.
+    ONE THING AT A TIME OWNS THE SCREEN, and that is what `_busy` means
+    now: the selector, the editor, the camera window, the clip bar. Each
+    of those covers the desk or takes the mouse, so a second one would be
+    two overlays fighting over the same drag. `_take_screen` claims it
+    atomically and `_free_screen` gives it back.
+
+    THE CORNER CARDS ARE NOT THAT, and used to be treated as if they
+    were. A card is 384×96 in a corner; it owns nothing. Holding `_busy`
+    across its five seconds made the screenshot key dead for five seconds
+    after every screenshot — the single most common thing to do with that
+    key being the one thing it refused. So the cards live on their own
+    long-lived deck (`ShotCards`) with the flag clear, they stack, and the
+    key answers every press.
+
+    Each screen-owning flow still owns its thread and its interpreter,
+    built and destroyed and collected on that same thread, which is the
+    rule overlay.py wrote down and AGENTS.md re-states in full. The deck
+    obeys it too, from the other end: its interpreter is built once and
+    never dies.
     """
 
     def __init__(self, cfg_provider, ask_provider=None):
@@ -4909,6 +5543,11 @@ class Controller:
         self._lock = threading.Lock()
         self._recorder: ScreenRecorder | None = None
         self._camera: Camera | None = None
+        # BUILT ON THE FIRST CARD, not at start-up. The promise three
+        # paragraphs up is that an owner who never presses the key pays
+        # nothing for the idea of it, and a Tk root plus a live thread is
+        # not nothing.
+        self._cards: ShotCards | None = None
 
     # ---- what main.py reads (hook-thread safe) ----
 
@@ -4935,13 +5574,77 @@ class Controller:
         except Exception:
             pass
 
+    # ---- who owns the screen ----
+
+    def _take_screen(self) -> bool:
+        """Claim the screen for a window that is about to cover it.
+
+        ATOMIC, BECAUSE THREE FLOWS NOW RACE FOR IT. It used to be two
+        hotkeys on one hook thread, where `if is_set(): return` followed
+        by `set()` could not lose — but a card's Edit button starts a
+        fourth claimant on a thread of its own, and check-then-set across
+        two threads is the oldest bug there is. The `with` makes the
+        answer to "may I" and the act of taking it one step.
+
+        Hushing the cards is part of taking the screen and not a separate
+        courtesy: a topmost card in the bottom-right would be
+        photographed by the selector about to map, and worse, it would
+        eat a drag that ended in that corner.
+        """
+        with self._lock:
+            if self._busy.is_set():
+                return False
+            self._busy.set()
+        self._hush_cards()
+        return True
+
+    def _free_screen(self) -> None:
+        """Give it back, and put the cards up again."""
+        self._busy.clear()
+        self._unhush_cards()
+
+    def _hush_cards(self) -> None:
+        deck = self._cards
+        if deck is not None:
+            deck.hush()
+
+    def _unhush_cards(self) -> None:
+        deck = self._cards
+        if deck is not None:
+            deck.unhush()
+
+    def _deck(self) -> "ShotCards | None":
+        """The corner-card deck, built on the FIRST card and never before.
+
+        None when Tk is not there or the deck's thread refused to come
+        up, and the caller falls back to a single standalone card. The
+        feature degrades to what shipped before it; it does not vanish.
+
+        Built OUTSIDE the lock — `start()` waits up to three seconds for
+        the thread to answer, and holding `_lock` for three seconds would
+        stall the very hotkey this exists to keep alive. Two threads
+        racing here both build one and the loser buries its own.
+        """
+        deck = self._cards
+        if deck is not None:
+            return deck
+        deck = ShotCards(self._cfg)
+        if not deck.start():
+            return None
+        with self._lock:
+            if self._cards is None:
+                self._cards = deck
+                deck = None
+        if deck is not None:
+            deck.stop()               # somebody else got there first
+        return self._cards
+
     # ---- the screenshot key ----
 
     def begin_shot(self) -> bool:
         """Start the select-and-edit flow. False if one is already up."""
-        if self._busy.is_set():
+        if not self._take_screen():
             return False
-        self._busy.set()
         self._cancel.clear()
         threading.Thread(target=self._shot_flow, daemon=True,
                          name="capture-shot").start()
@@ -4983,22 +5686,125 @@ class Controller:
             # thread — an abort with no traceback. AGENTS.md tells the whole
             # story; this is the line that obeys it.
             gc.collect()
-            self._busy.clear()
+            self._free_screen()
 
     def _offer(self, full, result: dict, cfg) -> None:
-        """The corner card, and the editor if it is asked for.
+        """Hand the capture to the corner-card deck and get out of the way.
 
         THE INTERRUPTION IS THE THING BEING FIXED HERE. An editor that
         opens over the whole screen after every capture makes the common
         case — drag, paste, carry on — pay for the rare one, and the
         common case is nine captures in ten. So the drag ends silently
-        with the picture already on the clipboard, and this offers the
-        rest for five seconds in a corner.
+        with the picture already on the clipboard, and a small card in a
+        corner offers the rest for a few seconds.
 
-        The frozen screen is still held while the card is up, which is
-        what lets the editor open on the pixels as they WERE rather than
-        as they are now — five seconds is long enough for the window
-        underneath to have scrolled.
+        THIS METHOD USED TO RUN THAT CARD TO COMPLETION, on this thread,
+        with `_busy` held — which is why the screenshot key was dead for
+        the whole five seconds after every screenshot. It now returns as
+        soon as the payload is on the deck's queue, and the flow's
+        `finally` releases the screen a moment later. Press the key
+        again and the second card joins the first.
+
+        The frozen screen goes with it, which is what lets the editor
+        open on the pixels as they WERE rather than as they are now —
+        seconds are long enough for the window underneath to have
+        scrolled. That is also the memory this costs, and `add` logs it.
+        """
+        if self._cancel.is_set():
+            log.info("the app is shutting down — no card for this capture "
+                     "(the picture is on your clipboard)")
+            return
+        deck = self._deck()
+        if deck is None:
+            return self._offer_alone(full, result, cfg)
+        try:
+            deck.add(result["image"], result["box"],
+                     saved=result.get("path"),
+                     corner=cfg.toast_corner,
+                     seconds=cfg.toast_seconds,
+                     copied=cfg.copy_to_clipboard,
+                     full=full,
+                     on_action=lambda answer: self._card_action(
+                         answer, full, result, cfg))
+        except Exception:
+            log.exception("the corner card could not be offered")
+            self._offer_alone(full, result, cfg)
+
+    def _card_action(self, answer: dict, full, result: dict, cfg) -> None:
+        """A card was clicked. Start the work and RETURN AT ONCE.
+
+        Called on the deck's pump thread, which is the one thread allowed
+        to touch any card — so everything slow goes to a thread of its
+        own or every other card's clock stops with it.
+        """
+        threading.Thread(target=self._edit_flow, daemon=True,
+                         name="capture-card-action",
+                         args=(answer.get("action"), full, result,
+                               cfg)).start()
+
+    def _edit_flow(self, action: str | None, full, result: dict,
+                   cfg) -> None:
+        """What Save and Edit on a card actually do.
+
+        SAVE NEEDS NOTHING FROM THE SCREEN, so it just writes the file —
+        two cards saved in the same second no longer collide, because
+        save_image now holds a lock across the glob and the write.
+
+        EDIT NEEDS THE WHOLE SCREEN, so it has to queue for it like every
+        other flow. If the selector, the camera or a recording already has
+        it, the honest answer is to say so and stop: an editor that opened
+        LATER, over whatever the owner had moved on to, would be a window
+        arriving out of nowhere — and nothing is lost by refusing, because
+        the picture has been on the clipboard since the mouse came up.
+        """
+        editor = None
+        try:
+            if self._cancel.is_set():
+                return
+            if action == "save":
+                path = save_image(result["image"], cfg.folder, kind="shot")
+                log.info("screenshot saved on request: %s", path)
+                self._cue("shot")
+                return
+            if action != "edit":
+                return
+            if not self._take_screen():
+                log.info("something else owns the screen — the picture is "
+                         "still on your clipboard")
+                self._cue("error")
+                return
+            try:
+                editor = ShotWindow(full, mode="shot", cfg=cfg,
+                                    folder=cfg.folder,
+                                    copy=cfg.copy_to_clipboard, edit=True,
+                                    save=cfg.always_save,
+                                    start_box=result["box"],
+                                    start_shape=result.get("shape"),
+                                    saved=result.get("path"),
+                                    on_ask=self._ask_of)
+                out = editor.run()
+                if out and "ask" in out:
+                    self._hand_to_ask(*out["ask"])
+            finally:
+                editor = None
+                gc.collect()
+                self._free_screen()
+        except Exception:
+            log.exception("the capture card's %s failed", action)
+            self._cue("error")
+        finally:
+            editor = None
+            gc.collect()
+
+    def _offer_alone(self, full, result: dict, cfg) -> None:
+        """One card, run to completion here, the way it worked before.
+
+        THE FALLBACK, and it is deliberately today's exact path: the deck
+        could not start (no Tk, or its thread never answered) and the
+        answer to that is one card instead of none. `_busy` is already
+        held by the flow that called this, so nothing else can take the
+        screen while it is up — which is the old behaviour, including its
+        one flaw, and that is the point of a fallback.
         """
         toast = editor = None
         try:
@@ -5064,9 +5870,8 @@ class Controller:
 
     def begin_photo(self) -> bool:
         """Open the camera and offer the shutter. False if busy."""
-        if self._busy.is_set():
+        if not self._take_screen():
             return False
-        self._busy.set()
         self._cancel.clear()
         threading.Thread(target=self._photo_flow, daemon=True,
                          name="capture-photo").start()
@@ -5126,7 +5931,7 @@ class Controller:
             with self._lock:
                 self._camera = None
             gc.collect()
-            self._busy.clear()
+            self._free_screen()
 
     @staticmethod
     def _choose(names: list[str], wanted: str) -> tuple[str, str]:
@@ -5206,9 +6011,8 @@ class Controller:
         if self._recorder is not None:
             self._stop_clip.set()
             return True
-        if self._busy.is_set():
+        if not self._take_screen():
             return False
-        self._busy.set()
         self._cancel.clear()
         self._stop_clip.clear()
         threading.Thread(target=self._clip_flow, daemon=True,
@@ -5285,7 +6089,7 @@ class Controller:
             with self._lock:
                 self._recorder = None
             gc.collect()
-            self._busy.clear()
+            self._free_screen()
 
     def _new_recorder(self, box, cfg) -> ScreenRecorder:
         directory = capture_dir(cfg.folder)
@@ -5310,6 +6114,17 @@ class Controller:
     # ---- shutdown ----
 
     def stop(self) -> None:
+        """Everything this controller started, stopped.
+
+        `_cancel` HAS A READER NOW. It was set here and cleared in three
+        places and read in NONE of them, which meant it announced a
+        shutdown to nobody: a capture already in flight would put a card
+        up on the way out, and the card would be the last thing left on a
+        screen belonging to an app that had been asked to quit. `_offer`
+        and `_edit_flow` both check it, so a flow that is mid-drag when
+        the app is asked to close finishes quietly with the picture on
+        the clipboard and nothing on screen.
+        """
         self._cancel.set()
         self._stop_clip.set()
         recorder = self._recorder
@@ -5322,3 +6137,9 @@ class Controller:
         camera = self._camera
         if camera is not None:
             camera.close()
+        # The deck last, and by its own thread: stop() enqueues a sentinel
+        # and joins, so every card is destroyed and the root collected by
+        # the thread that built them. Nothing here touches a Tk object.
+        deck, self._cards = self._cards, None
+        if deck is not None:
+            deck.stop()

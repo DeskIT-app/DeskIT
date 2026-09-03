@@ -11401,7 +11401,13 @@ def test_the_two_settings_that_change_the_gesture_are_actually_read(
     assert "copy=cfg.copy_to_clipboard" in flow, flow
     assert 'edit=(cfg.after_shot == "editor")' in flow, flow
     assert "save=cfg.always_save" in flow, flow
-    assert 'cfg.after_shot == "toast"' in flow, flow
+    # The branch that decides whether a card is offered at all can live in
+    # either half — the flow that took the picture, or the _offer it hands
+    # to now that offering does not block. What matters is that SOMETHING
+    # still reads the setting, so this follows the branch instead of
+    # pinning it to one method.
+    decides = flow + inspect.getsource(cap.Controller._offer)
+    assert 'cfg.after_shot == "toast"' in decides, decides
 
 
 def test_every_tool_and_action_has_an_icon_that_draws() -> None:
@@ -11666,7 +11672,11 @@ def test_a_recording_toggles_off_with_the_key_that_started_it() -> None:
     assert fake.stopped is True
 
     idle = cap.Controller(lambda: None)
-    idle._busy.set()                        # the selector is on screen
+    # Set means a window that OWNS THE SCREEN is up — the selector, the
+    # editor, the camera, the clip bar. It stopped meaning "a corner card
+    # is up" when the cards learned to stack, and both refusals below are
+    # about the screen-owning half, so both still hold.
+    idle._busy.set()
     assert idle.toggle_clip() is False, "a second selector must be refused"
     assert idle.begin_shot() is False
 
@@ -11724,10 +11734,20 @@ def test_a_paused_recording_holds_its_clock_still() -> None:
     assert recorder.elapsed >= held
 
 
-def test_a_capture_press_is_refused_while_one_is_already_up() -> None:
-    """Refuse-when-busy, never queue-when-busy: a second overlay while the
+def test_a_capture_press_is_refused_while_a_selector_owns_the_screen(
+) -> None:
+    """Refuse-when-busy, never queue-when-busy: a second OVERLAY while the
     first still owns a Tcl interpreter is the thread-ownership abort
-    AGENTS.md spends a paragraph on."""
+    AGENTS.md spends a paragraph on.
+
+    That reasoning is about the SELECTOR — the frozen, dimmed, whole-screen
+    window you drag a box on — and it is as true as it ever was. What is no
+    longer true is that it covers the corner card: a card owns a corner and
+    not the screen, so a second card is legal and a second press while one
+    is up now takes a second capture. That is asserted next door, in
+    test_a_second_capture_press_is_a_second_capture. `busy` here means what
+    it means now: a window that owns the screen.
+    """
     import main as main_mod
 
     class FakeCapture:
@@ -11769,6 +11789,58 @@ def test_a_capture_press_is_refused_while_one_is_already_up() -> None:
         app._capture.recording = True
         app._tap_record()
         assert app._capture.started == 3, "the stop press was refused"
+    finally:
+        type(app).capture = real_capture
+
+
+def test_a_second_capture_press_is_a_second_capture() -> None:
+    """THE WHOLE POINT OF THE STACK, in one assertion.
+
+    The key used to go dead for as long as a card sat in the corner: press
+    it again inside those five seconds and the app logged "already up" and
+    did nothing. That is the app refusing its one job at the exact moment
+    you are working fastest — three things off a page, one after another —
+    and the reason given was an implementation detail, a Tcl interpreter
+    the card owned, which is not the owner's problem.
+
+    A corner card no longer makes the controller busy, so the tap no
+    longer refuses. Three presses, three captures, three cards. The
+    sibling test above still guards the case that IS refused, which is a
+    selector owning the screen.
+    """
+    import main as main_mod
+
+    class FakeCapture:
+        def __init__(self):
+            self.busy = False         # a card in a corner is not busy
+            self.recording = False
+            self.started = 0
+
+        def begin_shot(self):
+            self.started += 1
+            return True
+
+        def toggle_clip(self):
+            self.started += 1
+            return True
+
+    app = main_mod.App.__new__(main_mod.App)
+    app._capture = FakeCapture()
+    app._cue_lock = threading.Lock()
+    app._cue_last = {}
+    # PUT BACK, not deleted — the same restore dance the test above
+    # explains at length. The assignment below replaces App's real
+    # property for the whole process, not just for this instance.
+    real_capture = main_mod.App.capture
+    type(app).capture = property(lambda self: self._capture)
+    try:
+        app._tap_capture()
+        app._tap_capture()
+        app._tap_capture()
+        assert app._capture.started == 3, (
+            f"{3 - app._capture.started} presses were swallowed while a "
+            "card was in the corner, which is the behaviour this feature "
+            "exists to remove")
     finally:
         type(app).capture = real_capture
 
@@ -12922,6 +12994,238 @@ def test_the_shipped_screenshot_key_is_the_one_windows_uses() -> None:
 # things that make a notification a notification rather than an interruption
 # are tested here: it does not take the keyboard, and it does not vanish
 # while the hand is reaching for it.
+#
+# There is more than one of them now. The key used to go DEAD for as long
+# as a card was up: press it again inside those five seconds and the app
+# answered the screenshot key by logging "already up" and doing nothing —
+# and the reason was a Tcl interpreter the card owned, which is nobody's
+# business but ours. So the cards STACK: oldest at the top, newest at the
+# bottom, each on its own clock. The arithmetic that puts them there is
+# pure, and it is tested first, because a stack whose only card is not
+# exactly where the only card used to be is a regression in a feature's
+# clothes.
+
+
+def test_a_stack_of_one_is_exactly_the_card_in_the_corner() -> None:
+    """The reduction property, and the reason all the rest of this is safe.
+
+    A stack is a GENERALISATION of the card that was already there, so
+    with one card in it the answer has to be the old answer, to the pixel,
+    in every corner. One capture at a time is the overwhelmingly common
+    case; if this holds, nothing about it can have moved, and if it does
+    not, nothing else measured here is worth measuring.
+    """
+    import capture as cap
+
+    size = (cap.TOAST_W, cap.TOAST_H)
+    for box in ((0, 0, 2560, 1400), (-1920, 0, 0, 1040), (0, 0, 1366, 728)):
+        for corner in ("top-left", "top-right", "bottom-left",
+                       "bottom-right"):
+            assert cap.stack_at(box, size, corner, 0, 1) == \
+                cap.corner_at(box, size, corner), (box, corner)
+
+
+def test_the_newest_card_takes_the_bottom_corner_and_pushes_the_rest_up(
+) -> None:
+    """Bottom-right is the shipped corner, and down there the card that
+    just appeared is the one IN the corner while the older one moves up.
+
+    That way round because the corner is where the eye already goes — it
+    is where the only card has always been — so the capture you just took
+    is never the one you have to look for. The gap between them is real
+    space and not a border: two cards touching read as one tall card with
+    a seam in it.
+    """
+    import capture as cap
+
+    box, size = (0, 0, 2560, 1400), (cap.TOAST_W, cap.TOAST_H)
+    step = cap.TOAST_H + cap.TOAST_GAP
+    x0, y0 = cap.stack_at(box, size, "bottom-right", 0, 2)
+    x1, y1 = cap.stack_at(box, size, "bottom-right", 1, 2)
+    assert x0 == x1, "a stack is one column, not a staircase"
+    assert y0 < y1, "the older card must be the higher one"
+    assert y1 - y0 == step, (y0, y1, step)
+    assert y1 == cap.corner_at(box, size, "bottom-right")[1], \
+        "the newest card is not where the only card would have been"
+    assert cap.TOAST_GAP > 0, "cards flush against each other read as one"
+
+
+def test_the_oldest_card_keeps_the_top_corner_and_the_rest_hang_below(
+) -> None:
+    """The same rule from the other end: a stack grows AWAY from the
+    corner it is anchored to, so it can never need room the screen has
+    already run out of.
+
+    Oldest at the top and newest at the bottom holds in every corner —
+    what the corner decides is which END of the column is pinned. Up here
+    the pinned end is the top, so the oldest card is the one that never
+    moves and each new one appears below it, which is the direction
+    Windows' own notifications grow.
+    """
+    import capture as cap
+
+    box, size = (0, 0, 2560, 1400), (cap.TOAST_W, cap.TOAST_H)
+    step = cap.TOAST_H + cap.TOAST_GAP
+    for corner in ("top-left", "top-right"):
+        x0, y0 = cap.stack_at(box, size, corner, 0, 2)
+        x1, y1 = cap.stack_at(box, size, corner, 1, 2)
+        assert x0 == x1, corner
+        assert y0 == cap.corner_at(box, size, corner)[1], \
+            "the oldest card left the corner it was anchored to"
+        assert y1 == y0 + step, (corner, y0, y1)
+
+
+def test_a_full_stack_stays_inside_the_work_area() -> None:
+    """A card is drawn where it is told, so an arithmetic slip here does
+    not look like a bug — it looks like a card half under the taskbar, or
+    off the top of the screen where it can be neither read nor clicked.
+
+    Checked on the three panels this desk has seen — 1440, 1080 and a
+    768-tall laptop screen — in all four corners, at every depth up to the
+    shipped `toast_stack` of four. The box IS the work area, which is what
+    keeps the bottom corners off the taskbar.
+    """
+    import capture as cap
+
+    size = (cap.TOAST_W, cap.TOAST_H)
+    margin, step = cap.CORNER_MARGIN, cap.TOAST_H + cap.TOAST_GAP
+    for width, height in ((2560, 1440), (1920, 1080), (1366, 768)):
+        box = (0, 0, width, height)
+        for corner in ("top-left", "top-right", "bottom-left",
+                       "bottom-right"):
+            for count in range(1, 5):
+                spots = [cap.stack_at(box, size, corner, i, count)
+                         for i in range(count)]
+                for x, y in spots:
+                    assert x >= margin, (width, corner, x)
+                    assert x + cap.TOAST_W <= width - margin, (width, x)
+                    assert y >= margin, (height, corner, count, y)
+                    assert y + cap.TOAST_H <= height - margin, \
+                        (height, corner, count, y)
+                ys = [y for _x, y in spots]
+                assert ys == sorted(ys), (corner, ys)
+                assert all(b - a == step for a, b in zip(ys, ys[1:])), ys
+
+
+def test_the_stack_on_the_left_hand_monitor_keeps_its_negative_x() -> None:
+    """The second monitor on this desk sits to the LEFT of the primary
+    one, which puts its entire work area at negative x. That is the layout
+    this app documents, because it is the one it was built on.
+
+    Every coordinate in capture.py is virtual-screen, so a clamp to zero —
+    the reflex when a number looks wrong — would pile every card taken
+    over there onto the left edge of the primary monitor. A card belongs
+    to the screen its capture came from, wherever that screen is.
+    """
+    import capture as cap
+
+    size = (cap.TOAST_W, cap.TOAST_H)
+    left = (-1920, 0, 0, 1040)
+    right = (0, 0, 1920, 1040)
+    for corner in ("bottom-left", "top-left"):
+        for index in range(3):
+            x, y = cap.stack_at(left, size, corner, index, 3)
+            assert x == -1920 + cap.CORNER_MARGIN, (corner, x)
+            assert x < 0, "the card was clamped onto the primary monitor"
+            # the column is the same height either side of zero
+            assert y == cap.stack_at(right, size, corner, index, 3)[1]
+    for corner in ("bottom-right", "top-right"):
+        for index in range(3):
+            x, _y = cap.stack_at(left, size, corner, index, 3)
+            assert x == 0 - cap.TOAST_W - cap.CORNER_MARGIN, (corner, x)
+            assert x < 0, "the card was clamped onto the primary monitor"
+
+
+def test_two_monitors_carry_two_stacks_and_not_one() -> None:
+    """A card belongs to the monitor its capture came from — that is what
+    `corner_at` has always promised — so two screens are two INDEPENDENT
+    columns, each counted from its own corner.
+
+    Interleaving is the case that gets this wrong: a capture on the left
+    screen, one on the right, one on the left, one on the right. Lay all
+    four out as a single column and the second monitor's cards sit a
+    card-height too high, over whatever is up there. And the answers come
+    back in the order they were asked for, because the caller holds one
+    card per position and has no way to re-sort them.
+    """
+    import capture as cap
+
+    size = (cap.TOAST_W, cap.TOAST_H)
+    a = (0, 0, 2560, 1400)
+    b = (2560, 0, 4480, 1040)
+    corner = "bottom-right"
+    out = cap.stack_layout([a, b, a, b], size, corner)
+    assert len(out) == 4, out
+    assert out[0] == cap.stack_at(a, size, corner, 0, 2), out
+    assert out[2] == cap.stack_at(a, size, corner, 1, 2), out
+    assert out[1] == cap.stack_at(b, size, corner, 0, 2), out
+    assert out[3] == cap.stack_at(b, size, corner, 1, 2), out
+    # The columns do not know about each other: take the other screen's
+    # cards away entirely and nothing over here moves.
+    assert [out[1], out[3]] == cap.stack_layout([b, b], size, corner), out
+    assert [out[0], out[2]] == cap.stack_layout([a, a], size, corner), out
+
+
+def test_a_card_expiring_from_the_middle_closes_the_gap() -> None:
+    """Every card has its own clock, so they do not go in the order they
+    arrived: hold the pointer on the middle one and the two either side of
+    it run out first. What is left has to be a STACK again — one column
+    with no hole in it — and the newest card must not jump while that
+    happens, because the newest card is the one being looked at.
+    """
+    import capture as cap
+
+    size = (cap.TOAST_W, cap.TOAST_H)
+    box, corner = (0, 0, 2560, 1400), "bottom-right"
+    three = cap.stack_layout([box, box, box], size, corner)
+    survivors = cap.stack_layout([box, box], size, corner)   # the 1st and 3rd
+    assert survivors == [cap.stack_at(box, size, corner, 0, 2),
+                         cap.stack_at(box, size, corner, 1, 2)], survivors
+    assert survivors[1] == three[2], \
+        "the newest card moved when an older one above it went"
+    assert survivors[0] == three[1], \
+        "the gap the middle card left was not closed"
+
+
+def test_a_screen_is_told_how_many_cards_it_can_hold() -> None:
+    """`toast_stack` caps the deck at one number and the SCREEN caps it at
+    another; the smaller wins. What makes that worth a function is that
+    the two have to agree with `stack_at`: a screen said to hold n cards
+    must be a screen where n are all fully visible and n+1 are not, or the
+    cap is a number that means nothing.
+
+    Measured against the panels this runs on. A 1440 and a 1080 monitor
+    each hold more than `TOAST_STACK_MAX` allows, so up there the cap is
+    the deck's own; a 768-tall laptop screen holds fewer, so down there it
+    is the screen's. And it never answers zero however small the box —
+    a capture that leaves nothing behind at all is the failure the card
+    exists to avoid, so the last card is shown even where it does not fit.
+    """
+    import capture as cap
+
+    size = (cap.TOAST_W, cap.TOAST_H)
+    margin = cap.CORNER_MARGIN
+    for height in (1440, 1080, 768):
+        box = (0, 0, 1920, height)
+        fits = cap.stack_fits(box, size)
+        assert fits >= 1, (height, fits)
+        for corner in ("top-left", "bottom-right"):
+            top = cap.stack_at(box, size, corner, 0, fits)[1]
+            last = cap.stack_at(box, size, corner, fits - 1, fits)[1]
+            assert top >= margin, (height, corner, fits, top)
+            assert last + cap.TOAST_H <= height - margin, \
+                (height, corner, fits, last)
+            over_top = cap.stack_at(box, size, corner, 0, fits + 1)[1]
+            over_end = cap.stack_at(box, size, corner, fits, fits + 1)[1]
+            assert (over_top < margin
+                    or over_end + cap.TOAST_H > height - margin), \
+                f"{height} px was said to hold only {fits} cards"
+    assert cap.stack_fits((0, 0, 2560, 1440), size) >= cap.TOAST_STACK_MAX
+    assert cap.stack_fits((0, 0, 1920, 1080), size) >= cap.TOAST_STACK_MAX
+    assert cap.stack_fits((0, 0, 1366, 768), size) < cap.TOAST_STACK_MAX, \
+        "the laptop panel no longer runs out first — check TOAST_STACK_MAX"
+    assert cap.stack_fits((0, 0, 200, 100), size) == 1, \
+        "a screen with no room was told to show no card at all"
 
 
 def test_the_corner_card_never_takes_the_keyboard() -> None:
@@ -12933,8 +13237,16 @@ def test_the_corner_card_never_takes_the_keyboard() -> None:
     activating the card and does not stop that first grab, so the grab is
     undone instead — which is allowed, because at that instant this process
     owns the foreground.
+
+    WITH A STACK UP, "whatever had the keyboard before this card" can be
+    ONE OF OUR OWN CARDS: the window in front when the second capture
+    lands may well be the first card. Handing the keyboard "back" to that
+    would be the deck passing focus round its own windows while the
+    sentence being typed underneath goes nowhere — so an HWND the deck
+    owns is remembered as nothing at all.
     """
     import ctypes as ct
+    import inspect
 
     import capture as cap
     from PIL import Image
@@ -12951,6 +13263,21 @@ def test_the_corner_card_never_takes_the_keyboard() -> None:
     assert build.index("no_activate(root)") < build.index("root.deiconify"), \
         "the flag has to be on the window before it is first shown"
     assert "give_focus_back" in build
+
+    # The two-card case, asserted on the logic rather than by standing up
+    # two real windows: a test that needs the foreground to hold still
+    # across two window builds fails for reasons nothing to do with this.
+    params = inspect.signature(cap.ShotToast.__init__).parameters
+    for name in ("master", "owned"):
+        assert name in params, (name, list(params))
+        assert params[name].kind is inspect.Parameter.KEYWORD_ONLY, name
+    assert params["owned"].default == (), params["owned"].default
+    assert "owned" in build, "the card cannot tell our windows from yours"
+    assert "self._had_focus = 0" in build, \
+        "a card that finds one of OUR windows in front has to remember " \
+        "nothing, rather than remember a sibling card"
+    assert build.index("self._had_focus = 0") < build.index("tk.Canvas"), \
+        "the sibling has to be filtered out before the window is built"
 
     user32 = ct.WinDLL("user32")
     before = user32.GetForegroundWindow()
@@ -12971,7 +13298,20 @@ def test_the_cards_clock_pauses_under_the_pointer() -> None:
     capture the bit I meant". A card that vanishes mid-reach is worse than
     no card, so the clock holds while the pointer is on it — and RESUMES
     rather than restarting, so a card brushed by a passing pointer does not
-    outstay its welcome."""
+    outstay its welcome.
+
+    THE CLOCK MOVED, and the slice below is shaped around where it went.
+    One frame of one card's countdown is `tick` now, so a deck can drive N
+    cards off one pump and each still runs its own clock; `run` keeps its
+    body and calls it, and `tick` is defined immediately AFTER `run`. That
+    is why this reads from `def run` to the END OF THE FILE instead of to
+    the end of a method — narrow it back to `run` alone and it is looking
+    at a frame that no longer contains the arithmetic.
+
+    Do not widen it to the whole class either. `_build` contains the
+    literal `self._left = float(self.seconds)`, which is a card being
+    WOUND UP once when it is made; a class-wide slice would read that as
+    the clock restarting and fail on correct code."""
     source = (Path(__file__).resolve().parent / "capture.py").read_text(
         "utf-8")
     at = source.index("class ShotToast:")
@@ -12980,6 +13320,187 @@ def test_the_cards_clock_pauses_under_the_pointer() -> None:
     assert "if not self._inside:" in pump, "it drains under the pointer too"
     assert "self._left = float(self.seconds)" not in pump, \
         "the clock restarts instead of resuming"
+    assert "    def tick(self" in pump, \
+        "tick is gone, or it is no longer defined after run — either way " \
+        "the slice above is measuring the wrong lines"
+
+
+def test_the_corner_card_does_not_hold_the_screen() -> None:
+    """`busy` NARROWED, and this is the line it narrowed to.
+
+    It used to mean "a capture is in progress", and a card in a corner
+    counted — so for five seconds after every screenshot the key that
+    takes screenshots did nothing. It means "a window that OWNS THE
+    SCREEN is up" now: the selector, the editor, the camera, the clip bar.
+    A card owns 384x96 pixels of one corner and owns nothing else.
+
+    The mechanism is what is asserted, because it is what made the old
+    meaning unavoidable: `_offer` used to call `toast.run()`, and that
+    call does not return until the card is gone, so the flag the flow
+    holds could not be released before then however it was defined. The
+    card goes to the deck and `_offer` returns.
+    """
+    import inspect
+
+    import capture as cap
+
+    offer = inspect.getsource(cap.Controller._offer)
+    assert "toast.run()" not in offer, \
+        "_offer still blocks on the card, so the key is dead while it is up"
+    for name in ("_take_screen", "_free_screen", "_edit_flow"):
+        assert hasattr(cap.Controller, name), name
+    assert "_take_screen" in inspect.getsource(cap.Controller.begin_shot), \
+        "the screen is claimed somewhere other than where it is taken"
+    assert "_free_screen" in inspect.getsource(cap.Controller._shot_flow), \
+        "the selector's flow never gives the screen back"
+    # The editor a card can still open runs on a thread of its own. Built
+    # on the deck's pump it would own the deck's interpreter, which is the
+    # Tcl_AsyncDelete abort AGENTS.md spends a paragraph on.
+    assert "capture-card-action" in inspect.getsource(cap.Controller), \
+        "the card's save/edit branch has no thread of its own"
+    for name in ("start", "add", "hush", "unhush", "stop"):
+        assert callable(getattr(cap.ShotCards, name)), name
+    assert isinstance(cap.ShotCards.count, property), \
+        "count has to be readable from the hook thread without a call"
+    # Nothing has been pressed, so nothing owns the screen.
+    assert cap.Controller(lambda: None).busy is False
+
+
+def test_the_corner_card_is_not_in_the_next_screenshot() -> None:
+    """AGENTS.md's rule, which until now nothing enforced: our own windows
+    must not appear in the owner's captures. `hide_from_capture` sets
+    WDA_EXCLUDEFROMCAPTURE, the same flag the clip bar and the status dot
+    carry, and grep found it in neither this test file nor this card.
+
+    It was survivable while there was only ever one card and the key was
+    dead underneath it. It is not survivable now, because pressing the key
+    again while a card is up IS the feature: without the flag the second
+    screenshot has the first one's card sitting in the corner of it, and
+    the third has two.
+    """
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+    build = source[source.index("class ShotToast:"):]
+    build = build[build.index("    def _build"):build.index("    # -- layout")]
+    assert "hide_from_capture(" in build, \
+        "the card will be photographed by the next capture"
+
+
+def test_a_closed_deck_of_cards_leaves_no_interpreter_to_free() -> None:
+    """The abort AGENTS.md documents, on the one window nothing watches.
+
+    A Tk widget tree is CYCLIC, so dropping the last reference to a card
+    never frees it — only the collector does, on whichever thread happens
+    to trip the allocation threshold. Freeing it there runs
+    Tcl_DeleteInterp on a thread that did not build the interpreter, and
+    Tcl answers with a panic: abort, no traceback, nothing in app.log.
+    The two tests that assert this already both drive visual_qa's ask
+    card. The deck is a NEW long-lived interpreter with N Toplevels
+    hanging off it on a thread of its own, which is exactly the shape
+    that aborts, and it was covered by nothing at all.
+
+    So the deck's own thread has to bury the deck, and it has to have
+    done it by the time `stop()` has returned and that thread has ended.
+    What proves it is that the Tk objects are dead HERE with the collector
+    switched off — nothing else could have freed them — and that a collect
+    run from a thread that never touched Tcl then finds none of ours left.
+    The collect is deliberately AFTER that check: if anything were still
+    garbage, running it here is the abort rather than a failed assertion.
+    """
+    import inspect
+
+    import capture as cap
+    from PIL import Image
+
+    root = _tk_or_skip()
+    if root is None:
+        return
+    root.destroy()
+    del root
+    gc.collect()
+
+    def windows() -> int:
+        """Tk windows alive in this process right now.
+
+        Counted rather than looked up through the deck's own attributes,
+        so this asks the question the crash asks — is an interpreter still
+        allocated — without knowing anything about how the deck holds it.
+        The list of strong references this builds is dropped with the
+        frame, and it frees nothing that was reachable before it.
+        """
+        found = 0
+        for obj in gc.get_objects():
+            kind = type(obj)
+            if kind.__module__ == "tkinter" and kind.__name__ in (
+                    "Tk", "Toplevel"):
+                found += 1
+        return found
+
+    # The deck reads `toast_stack` off whatever this hands it, fresh, the
+    # same way everything else in that module reads its settings.
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    deck = cap.ShotCards(lambda: cfg.capture)
+    gc.disable()                 # only explicit collects: we pick the thread
+    try:
+        empty = windows()
+        assert deck.start() is True, "the deck would not come up"
+        wanted = inspect.signature(cap.ShotCards.add).parameters
+        extras = {name: value for name, value in
+                  (("saved", None), ("corner", "bottom-right"),
+                   ("seconds", 30), ("copied", False))
+                  if name in wanted}
+        deck.add(Image.new("RGB", (320, 160), (30, 30, 30)),
+                 (100, 100, 420, 260), **extras)
+        deadline = time.monotonic() + 30
+        while deck.count < 1 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert deck.count == 1, "the card never came up"
+        assert any(t.name == "capture-cards" for t in threading.enumerate()), \
+            [t.name for t in threading.enumerate()]
+        # the root that is never shown, and one Toplevel for the card
+        assert windows() >= empty + 2, (empty, windows())
+
+        deck.stop()
+        while (any(t.name == "capture-cards" for t in threading.enumerate())
+               and time.monotonic() < deadline):
+            time.sleep(0.02)
+        assert not any(t.name == "capture-cards"
+                       for t in threading.enumerate()), \
+            "the deck's thread outlived stop()"
+
+        left = windows() - empty
+        if left:
+            print(f"    (leak: {left} Tk windows survived stop())",
+                  flush=True)
+        assert left == 0, (
+            f"{left} Tk objects were still allocated after stop() with the "
+            "collector switched off, so the deck did not bury its own "
+            "interpreter — whichever thread next trips the GC threshold "
+            "will, and Tcl aborts the process with no traceback when it "
+            "does")
+
+        # ...and now a thread that never touched Tcl runs a collect. It is
+        # deliberately after the check above: if anything WERE still
+        # garbage, this line is the abort rather than a failed assertion.
+        freed: list = []
+        stranger = threading.Thread(target=lambda: freed.append(gc.collect()),
+                                    name="not-the-deck")
+        stranger.start()
+        stranger.join(30)
+        assert freed, "the collecting thread never finished"
+        assert windows() == empty, (empty, windows())
+    finally:
+        gc.enable()
+        deck = None
+
+    # A module global is not garbage — it is reachable — so it sails past
+    # every collect above and still kills the app later, on whichever
+    # thread drops the last reference. skin\wave.py did exactly that with
+    # one cache line, and the suite could not see it.
+    held = [name for name, value in vars(cap).items()
+            if type(value).__module__ in ("tkinter", "_tkinter", "PIL.ImageTk")
+            or type(value).__name__ in ("Tk", "Toplevel", "PhotoImage")]
+    assert not held, f"capture.py still holds Tk objects: {held}"
 
 
 def test_the_card_offers_save_only_when_there_is_nothing_saved() -> None:
@@ -13077,11 +13598,13 @@ def test_the_after_shot_settings_parse_and_are_bounded() -> None:
             'after_shot = "editor"\n'
             'toast_corner = "top-left"\n'
             "toast_seconds = 12\n"
+            "toast_stack = 8\n"
             "always_save = true\n", "utf-8")
         cap = config_mod.load(path).capture
         assert cap.after_shot == "editor"
         assert cap.toast_corner == "top-left"
         assert cap.toast_seconds == 12
+        assert cap.toast_stack == 8
         assert cap.always_save is True
 
         defaults = config_mod.CaptureConfig()
@@ -13089,11 +13612,18 @@ def test_the_after_shot_settings_parse_and_are_bounded() -> None:
             "the editor is an offer, not a step"
         assert defaults.always_save is False
         assert defaults.toast_seconds == 5
+        # Four, not one and not eight: one is the old dead key back again,
+        # and a screen with eight cards on it is a wall. Four is what a
+        # 768-tall laptop panel can show without the stack having to be
+        # trimmed for the screen instead of for the setting.
+        assert defaults.toast_stack == 4
 
         for key, value, word in (("after_shot", '"maybe"', "after_shot"),
                                  ("toast_corner", '"off"', "toast_corner"),
                                  ("toast_seconds", "0", "toast_seconds"),
-                                 ("toast_seconds", "600", "toast_seconds")):
+                                 ("toast_seconds", "600", "toast_seconds"),
+                                 ("toast_stack", "0", "toast_stack"),
+                                 ("toast_stack", "9", "toast_stack")):
             path.write_text(f'hotkey = "right ctrl"\n[capture]\n'
                             f"{key} = {value}\n", "utf-8")
             try:
@@ -13109,7 +13639,7 @@ def test_the_after_shot_settings_parse_and_are_bounded() -> None:
     text = (here / "config.toml").read_text("utf-8")
     section = text[text.index("[capture]"):]
     section = section[:section.index("\n[", 1)]
-    for key in ("after_shot", "toast_corner", "toast_seconds",
+    for key in ("after_shot", "toast_corner", "toast_seconds", "toast_stack",
                 "always_save"):
         assert f"\n{key} = " in section, f"{key} is not a writable line"
     assert "edit_after_shot" not in section, \

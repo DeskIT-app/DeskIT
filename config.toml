@@ -226,8 +226,8 @@ corner = "top-right"          # top-right | top-left | bottom-right | bottom-lef
                               # Where it starts before you have moved it. On the
                               # right it is placed BESIDE the status dot, never
                               # over it: the dot does not move for this
-x = -1865                      # the top-left of the CARD where you last dragged
-y = 761                       # it, in screen pixels — what you can SEE, not the
+x = -1691                      # the top-left of the CARD where you last dragged
+y = 473                       # it, in screen pixels — what you can SEE, not the
                               # window, which starts 26 px further up and left to
                               # leave room for its own shadow. -100000 = never
                               # moved: use `corner`. It has to be a number no
@@ -767,6 +767,21 @@ toast_seconds = 5              # how long the card waits before giving up
                                # is on it — a card that vanishes while the
                                # hand is reaching for it is worse than no
                                # card at all
+toast_stack = 4                # how many capture cards may be up at once.
+                               # The screenshot key is never dead now:
+                               # press it again while a card is up and a
+                               # second card joins it, oldest at the TOP
+                               # and newest at the BOTTOM, each with its
+                               # own countdown. A capture past this many
+                               # takes the oldest card down early and
+                               # nothing is lost — every one of them is
+                               # already on the clipboard. It is a memory
+                               # dial as much as a taste one: each card
+                               # holds the whole screen frozen so its
+                               # editor can open on the pixels as they
+                               # WERE, about 18 MB apiece on this
+                               # desktop. 1 keeps the old one-card look
+                               # and still never swallows a press
 always_save = false            # write EVERY capture to `folder`, or only
                                # the ones you ask to keep.
                                #
@@ -1359,8 +1374,8 @@ card_seconds = 20             # how long the card stays on screen before it
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
-x = 2010                   # the top-left of the CARD where you last
-y = 667                   # dragged it, in screen pixels. -100000 = never
+x = -711                   # the top-left of the CARD where you last
+y = 715                   # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a
                               # monitor to the left of the primary
 scale = 1.0                   # how big it is drawn (0.6 .. 1.4)
