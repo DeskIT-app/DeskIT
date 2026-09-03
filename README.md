@@ -1863,6 +1863,60 @@ removed. `night.log` records every entry and exit with a timestamp and
 what the check found. `[night] enabled = false` unregisters the key; the
 dashboard's button keeps working.
 
+**The vitals, and the morning that made them.** Two mornings running
+(2026-09-02, 09-03) the owner came home to a machine that crawled until
+this app was stopped — and stopping it cured the machine in about a
+second, which is why the app looked guilty. Nothing helped: `app.log`,
+Ollama's log, the System log and the task scheduler all had *no line at
+all* between the last phone dictation at 11:09 and the key at 14:54.
+
+What it actually was, diagnosed the same afternoon and confirmed by
+intervention:
+
+- The USB webcam (eMeet C960, `USB\VID_328F&PID_2013`) had started
+  connecting and disconnecting by itself every ~4 s — 5 arrivals and 5
+  removals per 40 s, counted with a `WM_DEVICECHANGE` listener. It began
+  2026-09-01 19:34, the same evening the freezes started (`app.log`:
+  "the camera ... stopped: I/O error").
+- Every flap makes NVIDIA's `nvcontainer.exe` (NVIDIA App 11.0.7.247,
+  its UXDriver plugin) re-scan the GPU and leak one Thread + one Event
+  handle. After 25 h of uptime it held **823,369 handles of the
+  machine's 988,258**, and ~1.5 GB of extra **non-paged kernel pool** —
+  memory that by definition cannot be paged out. A known NVIDIA bug.
+- The leak ran at ~6 handles/s **whether or not this app was running**
+  (measured across a deliberate one-minute stop), so the app never
+  caused it.
+- Unplugging the camera stopped it dead: 0 device-change messages in
+  30 s, 0 handles/s. The 823,369 already leaked stay until a reboot.
+
+So the app was the last straw, not the leak: thrashing is a cliff rather
+than a slope, and freeing this app's few GB puts the machine back over
+the edge instantly — which is exactly why stopping it "fixes" the
+machine in a second while changing nothing about the cause. It also
+explains the history: 28- and 50-hour runs had been fine, because
+before 09-01 nothing was eating the pool and the app's footprint never
+reached the cliff.
+
+**What that bought.** While night mode is on, `night.py` writes a
+`vitals` line to `night.log` every `[night] vitals_minutes` (default 10)
+and one more the moment night mode goes off — the state the owner walks
+in on, recorded *before* the stop that cures it. Each line carries free
+RAM, commit against its limit, non-paged pool, GPU memory
+(`nvidia-smi`), this process, the five heaviest programs by working set,
+and the machine's handle count **with the name of the process holding
+most of them**. Win32 through ctypes, ~300 ms a read; the GPU number is
+the one subprocess.
+
+That last name is load-bearing, and it is why `night.processes()` reads
+the process list from `NtQuerySystemInformation` instead of the obvious
+`EnumProcesses` + `OpenProcess`: this app does not run elevated, a
+non-elevated `OpenProcess` is refused for a service running as SYSTEM,
+and the first implementation of this therefore reported "msedgewebview2
+holds 17,654" on a machine where `nvcontainer.exe` held 823,369. In a
+leak, the process that needs naming is precisely the one that cannot be
+opened. Verified against `Get-Process`: same handle counts, same working
+sets, and 330 processes seen where `Get-Process` sees 325.
+
 ## Dictating from the phone
 
 The phone records; **this machine transcribes**. That is the whole point —

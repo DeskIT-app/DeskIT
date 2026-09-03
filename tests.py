@@ -16073,7 +16073,8 @@ def test_the_night_section_is_in_the_real_config_and_bounded() -> None:
     assert "night" in sections, sorted(sections)
     keys = {s.key for s in sections["night"].settings}
     assert keys == {"enabled", "night_hotkey", "pin_timeouts",
-                    "screen_off_again_s"}, keys
+                    "screen_off_again_s", "vitals_minutes"}, keys
+    assert cfg.night.vitals_minutes == 10
     assert sections["night"].help, "the section has no help text"
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "config.toml"
@@ -16163,6 +16164,115 @@ def test_night_mode_holds_through_a_thread_and_lets_go_on_off() -> None:
         record = (Path(d) / night_mod.LOG_NAME).read_text("utf-8")
         assert "| ON by test" in record and "| OFF by test" in record, record
         assert eng.off(by="test")["active"] is False, "off twice is fine"
+
+
+def test_the_process_list_sees_the_processes_it_cannot_open() -> None:
+    """The ntdll list, not OpenProcess. THE point of it: a service
+    running as SYSTEM is refused to a non-elevated OpenProcess, and a
+    leak is exactly where such a process needs naming (2026-09-03:
+    nvcontainer.exe, 823,369 handles of the machine's 988,258, invisible
+    to the first implementation of this).
+
+    Cross-checked against ntdll's own machine-wide counters rather than
+    a hard-coded name: the sum of the per-process handles has to land
+    near GetPerformanceInfo's total, which is computed by the kernel by
+    a different route. Windows itself is the fixture."""
+    import night as night_mod
+
+    procs = night_mod.processes()
+    assert len(procs) > 50, f"only {len(procs)} processes"
+    assert all(name and ws >= 0 and commit >= 0 and handles >= 0
+               for name, ws, commit, handles in procs), procs[:5]
+    # The kernel counted the same handles a different way; a few hundred
+    # of drift between the two reads is ordinary on a live machine.
+    total = sum(handles for _n, _w, _c, handles in procs)
+    v = night_mod.vitals(gpu=False)
+    assert abs(total - v["handles"]) < max(2000, v["handles"] // 50), \
+        f"per-process sum {total} vs machine total {v['handles']}"
+    # And the biggest holder is what the line names.
+    biggest = max(procs, key=lambda r: r[3])
+    assert v["handles_top"][1] >= biggest[3] // 2, (v["handles_top"], biggest)
+    # A process this test can definitely not open, present on every
+    # Windows: the kernel itself, pid 4, which has no image name.
+    assert any(name == "System" for name, _w, _c, _h in procs), \
+        "the ntdll list is missing pid 4 — this is the OpenProcess bug again"
+
+
+def test_the_vitals_read_this_machine_without_a_subprocess() -> None:
+    """vitals() is Win32 through ctypes: RAM, commit, the non-paged pool,
+    this process, the heaviest programs by image. The GPU number is the
+    one subprocess and is skipped here; the line renders without it."""
+    import night as night_mod
+
+    t0 = time.perf_counter()
+    v = night_mod.vitals(top=3, gpu=False)
+    took = time.perf_counter() - t0
+    assert 0 < v["ram_free"] <= v["ram_total"], v
+    assert 0 < v["commit"] <= v["commit_limit"], v
+    assert v["nonpaged"] > 0 and v["processes"] > 1, v
+    assert 0 < v["self_ws"] and 0 < v["self_private"], v
+    assert len(v["top"]) == 3 and all(r[0] and r[1] > 0 for r in v["top"]), v
+    assert v["gpu"] is None
+    # The name that ends the argument: a total says the machine is full
+    # of handles, not whose they are (2026-09-03: nvcontainer, 812,918).
+    name, count = v["handles_top"]
+    assert name and 0 < count <= v["handles"], v["handles_top"]
+    assert took < 2.0, f"vitals took {took:.2f} s"
+    line = night_mod.vitals_line(v)
+    assert "RAM free" in line and "commit" in line and "heaviest" in line, line
+    assert f"{name} holds {count}" in line, line
+    assert "GPU" not in line, line
+    assert "GPU 5.8 of 15.9 GB" in night_mod.vitals_line(
+        {"gpu": (5903 << 20, 16311 << 20)}), "GiB, like nvidia-smi"
+    assert "this app 0.05 GB in RAM" in night_mod.vitals_line(
+        {"self_ws": 50 << 20, "self_private": 3 << 30}), \
+        "two decimals under a gigabyte, or a 50 MB process reads as 0.0"
+
+
+def test_night_mode_writes_the_vitals_on_the_way_in_and_out() -> None:
+    """One line at ON, one every vitals_minutes, one at OFF — the record
+    of a night the morning can read. The reader is injected: the test
+    is about the log, not the machine."""
+    import night as night_mod
+
+    reads: list[float] = []
+    def fake_vitals() -> str:
+        reads.append(time.monotonic())
+        return f"fake vitals {len(reads)}"
+    with tempfile.TemporaryDirectory() as d:
+        eng = night_mod.Engine(Path(d), None,
+                               hold_factory=lambda: night_mod.Hold(
+                                   setter=lambda flags: 0x80000000),
+                               sender=lambda s: True, run=_FakePowercfg(),
+                               vitals_fn=fake_vitals)
+        eng.again_s = 0
+        eng.vitals_minutes = 0
+        eng.on(by="test")
+        time.sleep(0.3)
+        eng.off(by="test")
+        time.sleep(0.3)
+        assert not reads, "vitals_minutes = 0 must mean no reads at all"
+        record = (Path(d) / night_mod.LOG_NAME).read_text("utf-8")
+        assert "vitals" not in record, record
+
+        eng.vitals_minutes = 1
+        eng.on(by="test")
+        deadline = time.monotonic() + 2
+        while len(reads) < 1 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        eng.off(by="test")
+        deadline = time.monotonic() + 2
+        while len(reads) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.1)
+        record = (Path(d) / night_mod.LOG_NAME).read_text("utf-8")
+        assert "|   vitals | at ON: fake vitals 1" in record, record
+        assert "|   vitals | at OFF: fake vitals 2" in record, record
+        on_at = record.index("at ON:")
+        off_line = record.rindex("| OFF by test")   # the second cycle's
+        assert on_at < off_line < record.index("at OFF:"), \
+            "the OFF snapshot must follow the OFF line"
+        assert len(reads) == 2, "off() must stop the periodic reader"
 
 
 def test_night_mode_refused_by_windows_is_reported_not_pretended() -> None:

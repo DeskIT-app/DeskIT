@@ -392,6 +392,323 @@ def process_count(image: str = "claude.exe") -> int | None:
                if line.lower().startswith(image.lower()))
 
 
+# ------------------------------------------------------------- the vitals
+#
+# What the machine is carrying, in one read. Written after two mornings
+# running (2026-09-02, 2026-09-03) the owner came home to a machine that
+# crawled until this app was stopped — and every log on it, this app's,
+# Ollama's, the System log, the task scheduler, had NOTHING between the
+# last phone dictation at 11:09 and the key at 14:54. Nothing had run;
+# something had grown, or Windows had paged the world out on the ~2 GB
+# of RAM this machine keeps free with everything loaded (measured: 15.9
+# GB, 12.3 GB in working sets, 2.4 GB of non-paged kernel pool). This is
+# the log that was missing: a line every [night] vitals_minutes while
+# night mode is on, and one more at the moment it goes off — the state
+# the owner walked in on, before the stop that cures it.
+#
+# All of it is Win32 through ctypes (~30 ms, no subprocess) except the
+# GPU number, which is nvidia-smi (~150 ms) and simply absent without it.
+
+# The per-process list comes from ntdll, not from OpenProcess. Measured
+# 2026-09-03, and it is the whole reason this is written twice: the
+# OpenProcess version named "msedgewebview2 holds 17,654" on a machine
+# where nvcontainer.exe was holding 812,918 of 984,349 — a service
+# running as SYSTEM, which a non-elevated OpenProcess is simply refused,
+# and therefore invisible. The processes worth naming in a leak are
+# exactly the ones that cannot be opened. NtQuerySystemInformation
+# answers for every process unelevated, in one call.
+SYSTEM_PROCESS_INFORMATION = 5
+STATUS_INFO_LENGTH_MISMATCH = 0xC0000004
+
+
+class _MEMORYSTATUSEX(ctypes.Structure):
+    _fields_ = [("dwLength", ctypes.c_uint32),
+                ("dwMemoryLoad", ctypes.c_uint32),
+                ("ullTotalPhys", ctypes.c_uint64),
+                ("ullAvailPhys", ctypes.c_uint64),
+                ("ullTotalPageFile", ctypes.c_uint64),
+                ("ullAvailPageFile", ctypes.c_uint64),
+                ("ullTotalVirtual", ctypes.c_uint64),
+                ("ullAvailVirtual", ctypes.c_uint64),
+                ("ullAvailExtendedVirtual", ctypes.c_uint64)]
+
+
+class _PERFORMANCE_INFORMATION(ctypes.Structure):
+    _fields_ = [("cb", ctypes.c_uint32),
+                ("CommitTotal", ctypes.c_size_t),
+                ("CommitLimit", ctypes.c_size_t),
+                ("CommitPeak", ctypes.c_size_t),
+                ("PhysicalTotal", ctypes.c_size_t),
+                ("PhysicalAvailable", ctypes.c_size_t),
+                ("SystemCache", ctypes.c_size_t),
+                ("KernelTotal", ctypes.c_size_t),
+                ("KernelPaged", ctypes.c_size_t),
+                ("KernelNonpaged", ctypes.c_size_t),
+                ("PageSize", ctypes.c_size_t),
+                ("HandleCount", ctypes.c_uint32),
+                ("ProcessCount", ctypes.c_uint32),
+                ("ThreadCount", ctypes.c_uint32)]
+
+
+class _PROCESS_MEMORY_COUNTERS_EX(ctypes.Structure):
+    _fields_ = [("cb", ctypes.c_uint32),
+                ("PageFaultCount", ctypes.c_uint32),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+                ("PrivateUsage", ctypes.c_size_t)]
+
+
+class _UNICODE_STRING(ctypes.Structure):
+    _fields_ = [("Length", ctypes.c_ushort),
+                ("MaximumLength", ctypes.c_ushort),
+                ("Buffer", ctypes.c_void_p)]
+
+
+class _SYSTEM_PROCESS_INFORMATION(ctypes.Structure):
+    """ntdll's per-process record, in ntddk's field order. Only the first
+    few members are read here; the rest are declared so ctypes lays out
+    the x64 padding exactly as the kernel does, and so the next member
+    anyone wants is already named. Verified against Get-Process on this
+    machine (handle counts and working sets agree)."""
+    _fields_ = [("NextEntryOffset", ctypes.c_uint32),
+                ("NumberOfThreads", ctypes.c_uint32),
+                ("WorkingSetPrivateSize", ctypes.c_int64),
+                ("HardFaultCount", ctypes.c_uint32),
+                ("NumberOfThreadsHighWatermark", ctypes.c_uint32),
+                ("CycleTime", ctypes.c_uint64),
+                ("CreateTime", ctypes.c_int64),
+                ("UserTime", ctypes.c_int64),
+                ("KernelTime", ctypes.c_int64),
+                ("ImageName", _UNICODE_STRING),
+                ("BasePriority", ctypes.c_int32),
+                ("UniqueProcessId", ctypes.c_void_p),
+                ("InheritedFromUniqueProcessId", ctypes.c_void_p),
+                ("HandleCount", ctypes.c_uint32),
+                ("SessionId", ctypes.c_uint32),
+                ("UniqueProcessKey", ctypes.c_size_t),
+                ("PeakVirtualSize", ctypes.c_size_t),
+                ("VirtualSize", ctypes.c_size_t),
+                ("PageFaultCount", ctypes.c_uint32),
+                ("PeakWorkingSetSize", ctypes.c_size_t),
+                ("WorkingSetSize", ctypes.c_size_t),
+                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                ("PagefileUsage", ctypes.c_size_t),
+                ("PeakPagefileUsage", ctypes.c_size_t),
+                ("PrivatePageCount", ctypes.c_size_t)]
+
+
+_vitals_kernel32 = None
+_vitals_ntdll = None
+
+
+def _nt():
+    """A private ntdll handle for the process list."""
+    global _vitals_ntdll
+    if _vitals_ntdll is None:
+        n = ctypes.WinDLL("ntdll")
+        n.NtQuerySystemInformation.restype = ctypes.c_int32
+        n.NtQuerySystemInformation.argtypes = [
+            ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32)]
+        _vitals_ntdll = n
+    return _vitals_ntdll
+
+
+def processes() -> list[tuple[str, int, int, int]]:
+    """Every process as (image, working set, commit, handles). Bytes for
+    the two memory numbers. Empty when ntdll refuses.
+
+    `PagefileUsage` is the commit charge — the same number
+    PROCESS_MEMORY_COUNTERS_EX calls PrivateUsage and Task Manager calls
+    "Commit size", so the rows here and the self_* pair above are the
+    same measurement.
+    """
+    nt = _nt()
+    size = 1 << 20
+    buf = None
+    for _attempt in range(8):
+        buf = ctypes.create_string_buffer(size)
+        need = ctypes.c_uint32(0)
+        status = nt.NtQuerySystemInformation(
+            SYSTEM_PROCESS_INFORMATION, buf, size,
+            ctypes.byref(need)) & 0xFFFFFFFF
+        if status == STATUS_INFO_LENGTH_MISMATCH:
+            # It grew between the sizing and the read: ask for what it
+            # said it needs, plus room for the processes started since.
+            size = max(int(need.value) + (1 << 16), size * 2)
+            continue
+        if status != 0:
+            return []
+        break
+    else:
+        return []
+    out: list[tuple[str, int, int, int]] = []
+    offset = 0
+    limit = len(buf) - ctypes.sizeof(_SYSTEM_PROCESS_INFORMATION)
+    while 0 <= offset <= limit:
+        rec = _SYSTEM_PROCESS_INFORMATION.from_buffer(buf, offset)
+        name = ""
+        if rec.ImageName.Buffer and rec.ImageName.Length:
+            try:
+                name = ctypes.wstring_at(rec.ImageName.Buffer,
+                                         rec.ImageName.Length // 2)
+            except Exception:         # noqa: BLE001
+                name = ""
+        if name.lower().endswith(".exe"):
+            name = name[:-4]
+        # pid 0 and 4 have no image name; they are the kernel itself.
+        out.append((name or "System", int(rec.WorkingSetSize),
+                    int(rec.PagefileUsage), int(rec.HandleCount)))
+        step = int(rec.NextEntryOffset)
+        if step <= 0:
+            break
+        offset += step
+    return out
+
+
+def _vk():
+    """A fourth private kernel32 handle, for the psapi family (K32* lives
+    in kernel32 since Windows 7). Separate from _dlls() so the hold's
+    argtypes and these never touch each other."""
+    global _vitals_kernel32
+    if _vitals_kernel32 is None:
+        k = ctypes.WinDLL("kernel32", use_last_error=True)
+        k.GlobalMemoryStatusEx.restype = ctypes.c_int
+        k.GlobalMemoryStatusEx.argtypes = [ctypes.c_void_p]
+        k.K32GetPerformanceInfo.restype = ctypes.c_int
+        k.K32GetPerformanceInfo.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        k.K32GetProcessMemoryInfo.restype = ctypes.c_int
+        k.K32GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                              ctypes.c_uint32]
+        k.GetCurrentProcess.restype = ctypes.c_void_p
+        k.GetCurrentProcess.argtypes = []
+        _vitals_kernel32 = k
+    return _vitals_kernel32
+
+
+def gpu_memory(timeout: float = 5) -> tuple[int, int] | None:
+    """(used, total) bytes on the first NVIDIA GPU, from nvidia-smi. None
+    without one, or when it does not answer."""
+    try:
+        done = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=timeout,
+            creationflags=CREATE_NO_WINDOW, encoding="utf-8",
+            errors="replace")
+        used, total = done.stdout.strip().splitlines()[0].split(",")
+        return int(used) << 20, int(total) << 20
+    except Exception:                 # noqa: BLE001
+        return None
+
+
+def vitals(top: int = 5, gpu: bool = True) -> dict:
+    """The machine's memory right now. Bytes throughout.
+
+    ram_total / ram_free, commit / commit_limit, nonpaged (the kernel's
+    non-paged pool — where driver-pinned memory lands), processes,
+    threads, handles; self_ws / self_private for this process; `top`,
+    the heaviest programs by working set as (image name, working set,
+    private bytes, process count), grouped by image the way Task
+    Manager groups them; `handles_top`, the ONE image holding the most
+    handles as (name, count); and `gpu` as (used, total) or None.
+
+    handles_top earns its place: the 2026-09-02/03 slowdowns were a
+    handle leak, and a machine-wide total alone does not say whose.
+    Measured that afternoon: nvcontainer.exe holding 812,918 of the
+    machine's 984,349, a Thread+Event pair per flap of a failing USB
+    webcam, at ~6/s whether or not this app was running. What the total
+    hides is exactly the name that ends the argument.
+
+    Every process is counted, protected and SYSTEM ones included — see
+    processes() for why that is not the obvious implementation.
+    """
+    k = _vk()
+    out: dict = {"at": time.time()}
+    ms = _MEMORYSTATUSEX()
+    ms.dwLength = ctypes.sizeof(ms)
+    if k.GlobalMemoryStatusEx(ctypes.byref(ms)):
+        out["ram_total"] = int(ms.ullTotalPhys)
+        out["ram_free"] = int(ms.ullAvailPhys)
+    pi = _PERFORMANCE_INFORMATION()
+    pi.cb = ctypes.sizeof(pi)
+    if k.K32GetPerformanceInfo(ctypes.byref(pi), pi.cb):
+        page = int(pi.PageSize) or 4096
+        out["commit"] = int(pi.CommitTotal) * page
+        out["commit_limit"] = int(pi.CommitLimit) * page
+        out["nonpaged"] = int(pi.KernelNonpaged) * page
+        out["processes"] = int(pi.ProcessCount)
+        out["threads"] = int(pi.ThreadCount)
+        out["handles"] = int(pi.HandleCount)
+    pm = _PROCESS_MEMORY_COUNTERS_EX()
+    pm.cb = ctypes.sizeof(pm)
+    if k.K32GetProcessMemoryInfo(k.GetCurrentProcess(), ctypes.byref(pm),
+                                 pm.cb):
+        out["self_ws"] = int(pm.WorkingSetSize)
+        out["self_private"] = int(pm.PrivateUsage)
+
+    by_name: dict[str, list[int]] = {}
+    for name, ws, commit, handles in processes():
+        row = by_name.setdefault(name, [0, 0, 0, 0])
+        row[0] += ws
+        row[1] += commit
+        row[2] += 1
+        row[3] += handles
+    rows = [(n, ws, pv, c, hc) for n, (ws, pv, c, hc) in by_name.items()]
+    out["top"] = sorted(((n, ws, pv, c) for n, ws, pv, c, _hc in rows),
+                        key=lambda r: r[1], reverse=True)[:max(0, int(top))]
+    out["handles_top"] = max(((n, hc) for n, _ws, _pv, _c, hc in rows),
+                             key=lambda r: r[1], default=None)
+    out["gpu"] = gpu_memory() if gpu else None
+    return out
+
+
+def _gb(n) -> str:
+    x = n / (1 << 30)
+    return f"{x:.2f}" if x < 1 else f"{x:.1f}"
+
+
+def vitals_line(v: dict) -> str:
+    """One line of night.log from vitals(): the numbers that decide
+    whether the machine is still usable, then the programs holding them."""
+    parts = []
+    if "ram_total" in v:
+        parts.append(f"RAM free {_gb(v['ram_free'])} of "
+                     f"{_gb(v['ram_total'])} GB")
+    if "commit" in v:
+        parts.append(f"commit {_gb(v['commit'])} of "
+                     f"{_gb(v['commit_limit'])} GB")
+        parts.append(f"nonpaged {_gb(v['nonpaged'])} GB")
+    if v.get("gpu"):
+        used, total = v["gpu"]
+        parts.append(f"GPU {_gb(used)} of {_gb(total)} GB")
+    if "self_ws" in v:
+        parts.append(f"this app {_gb(v['self_ws'])} GB in RAM, "
+                     f"{_gb(v['self_private'])} GB committed")
+    if v.get("top"):
+        parts.append("heaviest (in RAM/committed): " + ", ".join(
+            f"{name} {_gb(ws)}/{_gb(pv)} GB"
+            + (f" x{count}" if count > 1 else "")
+            for name, ws, pv, count in v["top"]))
+    if "processes" in v:
+        held = ""
+        if v.get("handles_top"):
+            name, count = v["handles_top"]
+            held = f" ({name} holds {count})"
+        parts.append(f"{v['processes']} processes, {v['threads']} threads, "
+                     f"{v['handles']} handles{held}")
+    return " | ".join(parts)
+
+
 def is_elevated() -> bool:
     try:
         return bool(ctypes.WinDLL("shell32").IsUserAnAdmin())
@@ -557,16 +874,20 @@ class Engine:
     def __init__(self, app_dir: Path, cfg=None, *,
                  hold_factory: Callable[[], Hold] = Hold,
                  sender: Callable[[int], bool] | None = None,
-                 run=None, clock: Callable[[], float] = time.time) -> None:
+                 run=None, clock: Callable[[], float] = time.time,
+                 vitals_fn: Callable[[], str] | None = None) -> None:
         self.app_dir = Path(app_dir)
         self.state_path = self.app_dir / STATE_NAME
         self.log_path = self.app_dir / LOG_NAME
         self.pin_timeouts = bool(getattr(cfg, "pin_timeouts", False))
         self.again_s = int(getattr(cfg, "screen_off_again_s", 3))
+        self.vitals_minutes = int(getattr(cfg, "vitals_minutes", 10))
         self._hold_factory = hold_factory
         self._sender = sender or send_monitor_power
         self._run = run or _run_powercfg
         self._clock = clock
+        self._vitals = vitals_fn or (lambda: vitals_line(vitals()))
+        self._vitals_stop = threading.Event()
         self._lock = threading.RLock()
         self._hold: Hold | None = None
         self._since: float | None = None
@@ -643,6 +964,11 @@ class Engine:
             self.screen_off()
             threading.Thread(target=self._probe_to_log, daemon=True,
                              name="night-probe").start()
+            if self.vitals_minutes > 0:
+                self._vitals_stop = threading.Event()
+                threading.Thread(target=self._vitals_worker,
+                                 args=(self._vitals_stop,), daemon=True,
+                                 name="night-vitals").start()
             return self.state()
 
     def off(self, *, by: str = "dashboard") -> dict:
@@ -666,6 +992,12 @@ class Engine:
             self._clear_state()
             self._log(f"OFF by {by} | after {seconds} s{restored}")
             log.info("night mode OFF (%s) after %d s", by, seconds)
+            # The state the owner walked in on — before the stop that
+            # cures it. On a thread: off() runs on the keyboard hook.
+            self._vitals_stop.set()
+            if self.vitals_minutes > 0:
+                threading.Thread(target=self._vitals_to_log, args=("at OFF",),
+                                 daemon=True, name="night-vitals").start()
             return self.state()
 
     def toggle(self, *, by: str = "key") -> dict:
@@ -742,6 +1074,20 @@ class Engine:
         self._last_probe = result
         for label, sentence, tone in verdict(self.state(), result):
             self._log(f"  {tone:4} | {label}: {sentence}")
+
+    def _vitals_to_log(self, tag: str = "") -> None:
+        try:
+            line = self._vitals()
+        except Exception as e:        # noqa: BLE001
+            line = f"vitals failed: {e}"
+        self._log(f"  vitals | {tag + ': ' if tag else ''}{line}")
+
+    def _vitals_worker(self, stop: threading.Event) -> None:
+        """A vitals line now and every [night] vitals_minutes until off()
+        sets `stop` — the record of the night, read the morning after."""
+        self._vitals_to_log("at ON")
+        while not stop.wait(self.vitals_minutes * 60):
+            self._vitals_to_log()
 
 
 def recover(app_dir: Path, run=None) -> str | None:

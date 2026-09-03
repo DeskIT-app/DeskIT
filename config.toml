@@ -963,6 +963,15 @@ screen_off_again_s = 3         # the screen is put out again this many
                                # seconds after the first time: the mouse
                                # movement that follows the click lights
                                # it straight back up. 0 = once only
+vitals_minutes = 10            # while night mode is on, a line in
+                               # night.log every this many minutes with
+                               # what the machine is carrying - free RAM,
+                               # commit, GPU, this app, the heaviest
+                               # programs - and one more the moment it
+                               # goes off. Written after two mornings
+                               # (2026-09-02, 09-03) the machine was
+                               # found crawling with nothing in any log:
+                               # this is the log that was missing. 0 = off
 
 [server]
 # Dictate from the PHONE, transcribe on this GPU: the phone records and

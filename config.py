@@ -535,6 +535,11 @@ class NightConfig:
     # time, because the mouse movement that follows the click lights it
     # straight back up. 0 = once only.
     screen_off_again_s: int = 3
+    # While night mode is on, a line in night.log every this many
+    # minutes with what the machine is carrying (free RAM, commit, GPU,
+    # this app, the heaviest programs), and one more the moment it goes
+    # off. 0 = none. See night.vitals().
+    vitals_minutes: int = 10
 
 
 @dataclass(frozen=True)
@@ -1369,6 +1374,8 @@ def load(path: Path) -> Config:
                                         NightConfig.pin_timeouts)),
             screen_off_again_s=int(night.get(
                 "screen_off_again_s", NightConfig.screen_off_again_s)),
+            vitals_minutes=int(night.get(
+                "vitals_minutes", NightConfig.vitals_minutes)),
         ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
@@ -1382,6 +1389,8 @@ def load(path: Path) -> Config:
     if not 0 <= cfg.night.screen_off_again_s <= 60:
         raise ConfigError("night.screen_off_again_s must be 0-60 "
                           "seconds")
+    if not 0 <= cfg.night.vitals_minutes <= 1440:
+        raise ConfigError("night.vitals_minutes must be 0-1440 (a day)")
     if cfg.translate_hotkey:
         if cfg.translate.max_chars <= 0:
             raise ConfigError("translate.max_chars must be positive")
