@@ -762,7 +762,7 @@ toast_corner = "bottom-right"  # top-left | top-right | bottom-left |
                                # the WORK area of the monitor the capture
                                # was taken on, so it is never under a
                                # taskbar and never on the wrong screen
-toast_seconds = 5              # how long the card waits before giving up
+toast_seconds = 10             # how long the card waits before giving up
                                # on you. The clock PAUSES while the pointer
                                # is on it — a card that vanishes while the
                                # hand is reaching for it is worse than no
