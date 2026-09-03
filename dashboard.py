@@ -1358,9 +1358,16 @@ class Dashboard:
             if night.get("pinned"):
                 bits.append("sleep timers pinned")
             meta = "   ·   ".join(bits)
-            hint = ("The machine is awake and the screen is off. The mouse "
-                    "lights the screen — Screen off again puts it out. Off "
-                    "returns everything to normal.")
+            keep = night.get("keep_screen_off_s") or 0
+            if keep:
+                hint = ("The machine is awake and the screen is off. "
+                        "Anything that lights the screen is put out again "
+                        f"{keep:g} s after the last touch; Screen off again "
+                        "does it now. Off returns everything to normal.")
+            else:
+                hint = ("The machine is awake and the screen is off. The "
+                        "mouse lights the screen — Screen off again puts "
+                        "it out. Off returns everything to normal.")
             if not held:
                 hint = ("The app asked Windows to stay awake and the hold "
                         "is not standing. Turn it off and on again, and "

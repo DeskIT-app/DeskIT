@@ -540,6 +540,12 @@ class NightConfig:
     # this app, the heaviest programs), and one more the moment it goes
     # off. 0 = none. See night.vitals().
     vitals_minutes: int = 10
+    # While night mode is on, anything that lights the screen — a key,
+    # the mouse, a click sent from the phone — is undone this many
+    # seconds after the last touch, for as long as night mode lasts.
+    # 0 = the screen stays lit until the monitor's own idle timer. See
+    # night.Engine._keep_off_worker.
+    keep_screen_off_s: int = 10
 
 
 @dataclass(frozen=True)
@@ -1376,6 +1382,8 @@ def load(path: Path) -> Config:
                 "screen_off_again_s", NightConfig.screen_off_again_s)),
             vitals_minutes=int(night.get(
                 "vitals_minutes", NightConfig.vitals_minutes)),
+            keep_screen_off_s=int(night.get(
+                "keep_screen_off_s", NightConfig.keep_screen_off_s)),
         ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
@@ -1391,6 +1399,8 @@ def load(path: Path) -> Config:
                           "seconds")
     if not 0 <= cfg.night.vitals_minutes <= 1440:
         raise ConfigError("night.vitals_minutes must be 0-1440 (a day)")
+    if not 0 <= cfg.night.keep_screen_off_s <= 600:
+        raise ConfigError("night.keep_screen_off_s must be 0-600 seconds")
     if cfg.translate_hotkey:
         if cfg.translate.max_chars <= 0:
             raise ConfigError("translate.max_chars must be positive")

@@ -30,6 +30,15 @@ THE MECHANISM, and what it deliberately is not:
   screen back on the instant it moves, and the click that pressed the
   button is followed by exactly that, so the command goes out twice: at
   once, and again a few seconds later ([night] screen_off_again_s).
+- And KEPT out for as long as night mode lasts ([night]
+  keep_screen_off_s). Any input lights the screen — a key, the mouse,
+  the click Claude sends from the phone — and Windows only puts it out
+  again on the monitor's own timer, five minutes here. A thread reads
+  `GetLastInputInfo` and puts the screen out again that many seconds
+  after the LAST touch, every time. The detector is the very tick that
+  lit the screen, so an untouched machine gets no broadcast at all;
+  and it includes the owner at the keyboard on purpose — night mode
+  means the screen is dark, and the key is how to keep it lit.
 - OPTIONALLY the sleep timers are pinned to "never" through `powercfg
   /change` (works unelevated, measured) and put back on the way out —
   [night] pin_timeouts, OFF by default because the hold above already
@@ -118,6 +127,10 @@ def _dlls():
             ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t,
             ctypes.c_ssize_t, ctypes.c_uint, ctypes.c_uint,
             ctypes.POINTER(ctypes.c_size_t)]
+        u.GetLastInputInfo.restype = ctypes.c_int
+        u.GetLastInputInfo.argtypes = [ctypes.c_void_p]
+        k.GetTickCount.restype = ctypes.c_uint32
+        k.GetTickCount.argtypes = []
         p = ctypes.WinDLL("powrprof")
         p.CallNtPowerInformation.restype = ctypes.c_int32
         p.CallNtPowerInformation.argtypes = [
@@ -230,6 +243,27 @@ def send_monitor_power(state: int = MONITOR_OFF,
                                SMTO_NORMAL | SMTO_ABORTIFHUNG, timeout_ms,
                                ctypes.byref(result))
     return bool(ok)
+
+
+class _LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint32), ("dwTime", ctypes.c_uint32)]
+
+
+def last_input() -> float:
+    """When the machine was last touched — a key, the mouse, an injected
+    click — as a time.monotonic() value, so it compares with the clock
+    the rest of this module waits on. GetLastInputInfo answers in
+    GetTickCount milliseconds, which wrap every 49.7 days; the idle
+    span is taken in 32 bits and subtracted from monotonic now, which
+    is correct across the wrap. 0.0 if Windows refused."""
+    k, u, _p = _dlls()
+    info = _LASTINPUTINFO()
+    info.cbSize = ctypes.sizeof(info)
+    now = time.monotonic()
+    if not u.GetLastInputInfo(ctypes.byref(info)):
+        return 0.0
+    idle_ms = (k.GetTickCount() - info.dwTime) & 0xFFFFFFFF
+    return now - idle_ms / 1000
 
 
 # ------------------------------------------------------------ the timers
@@ -875,19 +909,23 @@ class Engine:
                  hold_factory: Callable[[], Hold] = Hold,
                  sender: Callable[[int], bool] | None = None,
                  run=None, clock: Callable[[], float] = time.time,
-                 vitals_fn: Callable[[], str] | None = None) -> None:
+                 vitals_fn: Callable[[], str] | None = None,
+                 input_fn: Callable[[], float] | None = None) -> None:
         self.app_dir = Path(app_dir)
         self.state_path = self.app_dir / STATE_NAME
         self.log_path = self.app_dir / LOG_NAME
         self.pin_timeouts = bool(getattr(cfg, "pin_timeouts", False))
         self.again_s = int(getattr(cfg, "screen_off_again_s", 3))
         self.vitals_minutes = int(getattr(cfg, "vitals_minutes", 10))
+        self.keep_off_s = int(getattr(cfg, "keep_screen_off_s", 10))
         self._hold_factory = hold_factory
         self._sender = sender or send_monitor_power
         self._run = run or _run_powercfg
         self._clock = clock
         self._vitals = vitals_fn or (lambda: vitals_line(vitals()))
         self._vitals_stop = threading.Event()
+        self._last_input = input_fn or last_input
+        self._keep_stop = threading.Event()
         self._lock = threading.RLock()
         self._hold: Hold | None = None
         self._since: float | None = None
@@ -923,6 +961,7 @@ class Engine:
                 "by": self._by,
                 "pinned": self._saved is not None,
                 "screen_off_at": self._screen_at,
+                "keep_screen_off_s": self.keep_off_s,
             }
 
     # -- switches --
@@ -969,6 +1008,11 @@ class Engine:
                 threading.Thread(target=self._vitals_worker,
                                  args=(self._vitals_stop,), daemon=True,
                                  name="night-vitals").start()
+            if self.keep_off_s > 0:
+                self._keep_stop = threading.Event()
+                threading.Thread(target=self._keep_off_worker,
+                                 args=(self._keep_stop,), daemon=True,
+                                 name="night-keep-off").start()
             return self.state()
 
     def off(self, *, by: str = "dashboard") -> dict:
@@ -995,6 +1039,7 @@ class Engine:
             # The state the owner walked in on — before the stop that
             # cures it. On a thread: off() runs on the keyboard hook.
             self._vitals_stop.set()
+            self._keep_stop.set()
             if self.vitals_minutes > 0:
                 threading.Thread(target=self._vitals_to_log, args=("at OFF",),
                                  daemon=True, name="night-vitals").start()
@@ -1034,6 +1079,37 @@ class Engine:
                     self._sender(MONITOR_OFF)
         except Exception as e:        # noqa: BLE001
             log.info("night mode: screen-off broadcast failed (%s)", e)
+
+    def _keep_off_worker(self, stop: threading.Event) -> None:
+        """Put the screen out again [night] keep_screen_off_s seconds
+        after the last input, every time something lights it, until
+        off() sets `stop`. GetLastInputInfo is the whole detector: the
+        tick that lit the screen is the tick this reads, so an untouched
+        machine gets no broadcast at all — and the owner at the keyboard
+        is not exempt, on purpose."""
+        seen = self._last_input()        # the key or click that turned it on
+        wait = float(self.keep_off_s)
+        while not stop.wait(wait):
+            latest = self._last_input()
+            if latest <= seen:           # nothing has touched it
+                wait = self.keep_off_s
+                continue
+            quiet = time.monotonic() - latest
+            if quiet < self.keep_off_s:  # touched, and not yet still
+                wait = max(0.05, self.keep_off_s - quiet)
+                continue
+            seen = latest
+            with self._lock:
+                if stop.is_set() or not self.active:
+                    return
+                self._screen_at = self._clock()
+            try:
+                self._sender(MONITOR_OFF)
+            except Exception as e:    # noqa: BLE001
+                log.info("night mode: keep-off broadcast failed (%s)", e)
+            self._log(f"screen lit by input, put out again after "
+                      f"{quiet:.0f} s quiet")
+            wait = self.keep_off_s
 
     # -- the record --
 

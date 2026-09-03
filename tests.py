@@ -16073,8 +16073,10 @@ def test_the_night_section_is_in_the_real_config_and_bounded() -> None:
     assert "night" in sections, sorted(sections)
     keys = {s.key for s in sections["night"].settings}
     assert keys == {"enabled", "night_hotkey", "pin_timeouts",
-                    "screen_off_again_s", "vitals_minutes"}, keys
+                    "screen_off_again_s", "vitals_minutes",
+                    "keep_screen_off_s"}, keys
     assert cfg.night.vitals_minutes == 10
+    assert cfg.night.keep_screen_off_s == 10
     assert sections["night"].help, "the section has no help text"
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "config.toml"
@@ -16273,6 +16275,61 @@ def test_night_mode_writes_the_vitals_on_the_way_in_and_out() -> None:
         assert on_at < off_line < record.index("at OFF:"), \
             "the OFF snapshot must follow the OFF line"
         assert len(reads) == 2, "off() must stop the periodic reader"
+
+
+def test_night_mode_keeps_the_screen_off_after_input_lights_it() -> None:
+    """[night] keep_screen_off_s: anything that touches the machine
+    lights the screen, and that many seconds after the LAST touch it is
+    put out again — for as long as night mode is on, the owner at the
+    keyboard included. The input clock is injected: nothing here moves
+    the real mouse, and an untouched machine gets no broadcast at all."""
+    import night as night_mod
+
+    real = night_mod.last_input()
+    assert 0 < real <= time.monotonic(), real
+    touched = [0.0]                       # monotonic time of the last input
+    sent: list[tuple[int, float]] = []
+    def sender(state: int) -> bool:
+        sent.append((state, time.monotonic()))
+        return True
+    with tempfile.TemporaryDirectory() as d:
+        eng = night_mod.Engine(Path(d), None,
+                               hold_factory=lambda: night_mod.Hold(
+                                   setter=lambda flags: 0x80000000),
+                               sender=sender, run=_FakePowercfg(),
+                               input_fn=lambda: touched[0])
+        eng.again_s = 0
+        eng.vitals_minutes = 0
+        eng.keep_off_s = 0
+        eng.on(by="test")
+        time.sleep(0.4)
+        assert [s for s, _t in sent] == [night_mod.MONITOR_OFF], \
+            "0 must mean the ON broadcast only"
+        eng.off(by="test")
+
+        sent.clear()
+        eng.keep_off_s = 0.2
+        touched[0] = time.monotonic()     # the key that turned it on
+        eng.on(by="test")
+        assert eng.state()["keep_screen_off_s"] == 0.2
+        deadline = time.monotonic() + 2
+        while not sent and time.monotonic() < deadline:
+            time.sleep(0.02)
+        time.sleep(0.6)
+        assert [s for s, _t in sent] == [night_mod.MONITOR_OFF], \
+            "an untouched machine gets no second broadcast"
+        touched[0] = time.monotonic()     # the mouse, or a click from the phone
+        deadline = time.monotonic() + 2
+        while len(sent) < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert [s for s, _t in sent] == [night_mod.MONITOR_OFF] * 2, sent
+        assert sent[1][1] - touched[0] >= 0.2, "put out before it was still"
+        record = (Path(d) / night_mod.LOG_NAME).read_text("utf-8")
+        assert "screen lit by input, put out again" in record, record
+        eng.off(by="test")
+        touched[0] = time.monotonic()     # the key that turned it off
+        time.sleep(0.6)
+        assert len(sent) == 2, "off() must stop the watchdog"
 
 
 def test_night_mode_refused_by_windows_is_reported_not_pretended() -> None:

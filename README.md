@@ -1863,6 +1863,17 @@ removed. `night.log` records every entry and exit with a timestamp and
 what the check found. `[night] enabled = false` unregisters the key; the
 dashboard's button keeps working.
 
+**Keeping it dark.** Any input lights the screen — a key, the mouse, the
+click Claude sends from the phone — and Windows only puts it out again on
+the monitor's own timer, five minutes here. So while night mode is on a
+thread reads `GetLastInputInfo` and puts the screen out again
+`[night] keep_screen_off_s` seconds (default 10) after the last touch,
+every time, with a line in `night.log` each time it does. The detector is
+the tick that lit the screen, so an untouched machine gets no broadcast at
+all — and the owner at the keyboard is not exempt, on purpose: night mode
+means the screen is dark, and `ctrl+alt+n` is how to keep it lit. `0`
+turns it off.
+
 **The vitals, and the morning that made them.** Two mornings running
 (2026-09-02, 09-03) the owner came home to a machine that crawled until
 this app was stopped — and stopping it cured the machine in about a

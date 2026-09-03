@@ -934,7 +934,8 @@ edit_after_shot = true         # open the photo in the screenshot editor,
 # (`night_hotkey`, or the Night screen in the dashboard) holds the
 # machine awake with SetThreadExecutionState - no admin, no fake mouse,
 # and Windows drops it by itself if the app dies - and puts the monitor
-# out. The screen comes back the moment the mouse moves, and nothing is
+# out. The screen comes back the moment the mouse moves and goes out
+# again `keep_screen_off_s` seconds after the last touch; nothing is
 # locked: the session stays open so Claude can see the screen and open
 # programs from the phone. Press again, or the dashboard's button, and
 # everything is back to normal.
@@ -972,6 +973,14 @@ vitals_minutes = 10            # while night mode is on, a line in
                                # (2026-09-02, 09-03) the machine was
                                # found crawling with nothing in any log:
                                # this is the log that was missing. 0 = off
+keep_screen_off_s = 10         # while night mode is on, anything that
+                               # lights the screen - a key, the mouse, a
+                               # click sent from the phone - is undone
+                               # this many seconds after the last touch,
+                               # for as long as night mode lasts. That
+                               # includes you at the keyboard: press
+                               # night_hotkey first. 0 = the screen stays
+                               # lit until the monitor's own timer
 
 [server]
 # Dictate from the PHONE, transcribe on this GPU: the phone records and
