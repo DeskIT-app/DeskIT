@@ -39,6 +39,7 @@ LABELS: dict[str, str] = {
     "correct": "למד מילה שטעה בה",
     "lookup": "חיפוש מילה",
     "screens": "מסכים כבויים",
+    "notify_dismiss": "סגור התראה",
 }
 
 # The reason a text key is greyed rather than simply missing. Short enough
@@ -105,6 +106,9 @@ def bindings(cfg) -> list[tuple[str, str]]:
     awake = getattr(cfg, "awake", None)
     if awake is not None and awake.enabled and awake.hotkey:
         out.append(("screens", awake.hotkey))
+    ncfg = getattr(cfg, "notify", None)
+    if ncfg is not None and ncfg.enabled and ncfg.hotkey:
+        out.append(("notify_dismiss", ncfg.hotkey))
     if cfg.punctuate_hotkey:
         out.append(("punctuate", cfg.punctuate_hotkey))
     if cfg.translate_hotkey:

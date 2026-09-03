@@ -153,6 +153,9 @@ ICON = {
     "page": "\ue7c3", "folder": "\ue8b7", "engine": "\ue9d9",
     "version": "\ue895", "review": "\ue8fb",
     "awake": "\ue708", "power": "\ue7e8", "check": "\ue73e",
+    "notify": "\uea8f",     # the bell (Ringer). \ue7e7, the codepoint the
+                            # plan named, renders as a message box here \u2014
+                            # rendered side by side 2026-09-04 to check
 }
 
 _cache: dict = {}

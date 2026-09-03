@@ -15,7 +15,10 @@ a vocabulary, a background study pass that re-examines sent dictations and learn
 that takes a photo into the same editor, a phone endpoint, a hold that
 keeps the machine awake for as long as the app runs and a key that puts
 the screens off and keeps them off so the phone can drive it through
-Claude (awake.py, the dashboard's Awake screen, `ctrl+alt+n`), and a
+Claude (awake.py, the dashboard's Awake screen, `ctrl+alt+n`), a notify
+door (notify.py, `POST /notify`, a card and a cue with reminders,
+`ctrl+alt+m` to dismiss — how Claude Code says it is done; the
+dashboard's Notify screen), and a
 dashboard. Everything is documented,
 with measurements, in `README.md` and `config.toml`.
 
@@ -615,6 +618,11 @@ back.
 | `punctuate.py` / `lookup.py` | F2 rewrite-in-place / reading box |
 | `visual_qa.py` | ask-the-screen: region select, vision chain, answer window, TTS |
 | `capture.py` | screenshots (select, edit, clipboard, save), screen recording (BitBlt + PyAV), and the webcam photo key (dshow through the same PyAV, into the same editor) |
+| `notify.py` | the notify door's engine: cleans what arrived (truncate, never interpret), the store (`notify.json`, last 100), the log (`notify.log`), the cue, the reminders and the dismiss |
+| `notify_card.py` | the card's words and picture — a pure painter, one `text_pil` image per string, no Tk |
+| `notify_hook.py` | the Claude Code hook (Stop + Notification, `--install-hook` writes them into `~/.claude/settings.json`) and the generic CLI (`--title ... --body ...`) — stdlib only, always exits 0 |
+| `server.py` | the loopback HTTP door on the `[server]` port: phone dictation, translate, punctuate, notify — every POST route bearer-token gated |
+| `control.py` | the named pipe between the dashboard and the app: status, commands, replies; handlers must never block |
 | `dashboard.py` + `ui.py` | control window incl. the Version screen and the generated Settings screen |
 | `settings.py` | config.toml as data: every key, its comment as help, `a \| b \| c` as choices — what the Settings screen draws |
 | `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |

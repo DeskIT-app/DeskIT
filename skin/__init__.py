@@ -169,6 +169,19 @@ def review_run(card) -> bool:
         return False
 
 
+def notify_run(card) -> bool:
+    """The notification card (notify.py's arrivals) — no glass presenter
+    yet, so this always declines and overlay.NotifyCard paints its flat
+    card, which IS the card: the same notify_card image on a solid face.
+    The hook exists now so that main.py, tests and a future skin\\notify
+    presenter all meet the same seam. Named notify_run rather than notify
+    for the reason paint_wave gives below — a hook that shares its name
+    with a skin\\notify.py would overwrite itself on its first call, and
+    this name is one no file in this folder can take.
+    """
+    return False
+
+
 def paint_wave(card) -> bool:
     """The microphone wave in the ask-the-screen card.
 

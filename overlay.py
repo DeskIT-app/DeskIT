@@ -374,6 +374,47 @@ def _hide_from_capture(root) -> bool:
         return False
 
 
+def _foreground() -> int:
+    """The window that has the keyboard right now, as an HWND; 0 if
+    Windows will not say. Read BEFORE a notification window is shown:
+    by the time it exists, the answer is that window."""
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        return int(user32.GetForegroundWindow() or 0)
+    except Exception:
+        return 0
+
+
+def _give_focus_back(hwnd: int) -> None:
+    """Hand the keyboard back to whatever had it before a card came up.
+
+    TK TAKES THE FOREGROUND THE MOMENT IT REALISES A WINDOW, and
+    WS_EX_NOACTIVATE does not stop it (AGENTS.md, "Tk takes the
+    foreground the moment it REALISES a window"): measured with the
+    window withdrawn, overrideredirect, topmost and already carrying the
+    flag, the foreground was Chrome before `update_idletasks()` and
+    TkTopLevel immediately after it. The flag still earns its place — a
+    later click no longer activates the window — but the first grab has
+    to be UNDONE, which is allowed because at that instant this process
+    owns the foreground. Repainting afterwards does not take it again.
+    capture.give_focus_back is the same recipe for the same reason; it
+    is not imported because capture.py drags in Pillow, Tk canvases and
+    a video encoder, and this module is on the startup path.
+
+    A private WinDLL handle, like every argtype declared in this module:
+    `ctypes.windll.user32` is one process-wide cached object and a
+    restype set on it would change it for every other file.
+    """
+    if not hwnd:
+        return
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        user32.SetForegroundWindow(ctypes.c_void_p(int(hwnd)))
+    except Exception:
+        _log.debug("could not hand the foreground back", exc_info=True)
+
+
 # The transparent-colour key. Any pixel painted exactly this shade is
 # punched out of the window, which is what turns a square Tk window into a
 # round dot. Deliberately a colour nothing else would pick.
@@ -1301,6 +1342,358 @@ class ReviewCard(HintCard):
             x, y = root.winfo_x(), root.winfo_y()
             if st["card"] is not None:
                 w, h = rc.measure(st["card"], self.scale)
+                self.rect = (x, y, x + w, y + h)
+            self.placed(x, y)
+
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_motion)
+        canvas.bind("<Motion>", on_motion)
+        canvas.bind("<Leave>", on_leave)
+        canvas.bind("<ButtonRelease-1>", on_release)
+
+        def pump() -> None:
+            try:
+                while True:
+                    item = self._q.get_nowait()
+                    if item is _DONE:
+                        self._closing.set()
+                        return
+                    if item is None:
+                        hide()
+                    else:
+                        put_up(item)
+            except queue.Empty:
+                pass
+            now = time.monotonic()
+            dt, st["tick"] = now - st["tick"], now
+            if st["card"] is not None and st["up"]:
+                if st["deadline"] is not None:
+                    if self.hovering():
+                        st["deadline"] += dt      # reading: the clock waits
+                    if st["deadline"] - now <= 0:
+                        self.timed_out()
+                        hide()
+                        root.after(30, pump)
+                        return
+                if now - st["last"] >= 0.1:
+                    paint()
+            root.after(30, pump)
+
+        pump()
+        try:
+            _pump_until(root, self._closing)
+        finally:
+            import gc                       # see Splash: same Tcl teardown
+            try:
+                _forget_window(root)
+                root.destroy()
+            except Exception:
+                pass
+            st.clear()
+            cache.clear()
+            paint = pump = hide = put_up = None          # noqa: F841
+            canvas = root = None                          # noqa: F841
+            gc.collect()
+
+
+class NotifyCard(HintCard):
+    """The card that says something ARRIVED: Claude finished, Claude is
+    waiting, a program on this machine has news (notify.py).
+
+    The hint card's contract, inherited — its own thread, callers only
+    ever enqueue, `skin.notify_run` first and its own Tk interpreter on
+    the fallback path — with the review card's manners for a card that
+    sits mid-height on the right edge and takes the mouse:
+
+    - IT TAKES CLICKS, and a click anywhere on it dismisses it; the same
+      press held and moved is the drag that puts it where the owner
+      wants it (saved through `on_change`, like the hint card's).
+    - IT TAKES ESC, but only while the mouse is over it. The hook offers
+      every key-down to `on_key`; Esc over the card dismisses it and is
+      an ordinary Esc everywhere else.
+    - IT KEEPS TIME, and running out is NOT a dismissal. The card takes
+      itself down after `seconds` (the clock waits while the pointer is
+      on it), the item stays unread, and the engine's reminders bring
+      it back. Only a click, Esc over it or the dismiss key mark things
+      seen — that is `on_dismiss`, fired on whichever thread pressed,
+      so the callback must only hand the work to another thread.
+    - IT IS A NOTIFICATION, not a window the owner asked for, so it
+      gives the keyboard back the instant Tk takes it (`_foreground` /
+      `_give_focus_back`) and it stays out of every screenshot.
+
+    NEVER `dismissed()`: that is the hint card's "don't show this again"
+    and writes `enabled = false` into config.toml. Dismissing a
+    notification means "seen", not "never again".
+    """
+
+    CORNERS = ("right", "left", "top-right", "top-left",
+               "bottom-right", "bottom-left")
+
+    def __init__(self, corner: str = "right", margin: int = 14,
+                 x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
+                 on_change=None, on_dismiss=None,
+                 seconds: float = 30.0) -> None:
+        super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
+                         scale=scale, on_change=on_change)
+        self._on_dismiss = on_dismiss
+        self.seconds = float(seconds)
+        self.rect = None          # screen rect of the visible card, or None
+        self._current = None      # the item id on screen
+        self._state_lock = threading.Lock()
+
+    def start(self) -> None:
+        if not self._enabled:
+            return
+        try:
+            import tkinter  # noqa: F401
+        except Exception:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="notify-card")
+        self._thread.start()
+        self._alive.wait(timeout=3)
+
+    # -- caller's threads --
+
+    def show(self, item: dict) -> None:
+        """Put a notification up. Only enqueues, so safe from the HTTP
+        thread the engine receives on. A new one replaces the one on
+        screen; the count of what is waiting rides in `item["unread"]`
+        and the sender's name in `item["label"]` (notify.Engine fills
+        both), so this module never imports notify.py."""
+        if self._thread is None or not self._enabled:
+            return
+        import notify_card as nc
+        try:
+            unread = int(item.get("unread", 1) or 1)
+        except (TypeError, ValueError):
+            unread = 1
+        card = nc.card_for(item, seconds=self.seconds, unread=unread,
+                           scale=self.scale)
+        with self._state_lock:
+            self._current = card["id"]
+        self._q.put(card)
+
+    def hide(self) -> None:
+        with self._state_lock:
+            self._current = None
+        if self._thread is not None:
+            self._q.put(None)
+
+    def visible(self) -> bool:
+        return self._current is not None
+
+    def current(self):
+        return self._current
+
+    def hovering(self) -> bool:
+        """Is the pointer on the card right now? Asked by the hook for a
+        key and by the painter for the clock. Cheap: a rect and a point,
+        no window handle."""
+        rect = self.rect
+        if rect is None or not self.visible():
+            return False
+        try:
+            pt = ctypes.wintypes.POINT()
+            ctypes.WinDLL("user32").GetCursorPos(ctypes.byref(pt))
+        except Exception:
+            return False
+        return rect[0] <= pt.x <= rect[2] and rect[1] <= pt.y <= rect[3]
+
+    def on_key(self, vk: int) -> bool:
+        """A key-down from the hook. True swallows it — only Esc, only
+        with a card up, only with the pointer on it."""
+        if int(vk) != 0x1B or not self.visible() or not self.hovering():
+            return False
+        self.pressed("dismiss")
+        return True
+
+    def pressed(self, name: str) -> None:
+        """The one button, by click or key: take the card down and say
+        so, once. Not HintCard.dismissed() — that writes enabled=false
+        into config.toml, and this is "seen", not "never again"."""
+        if name != "dismiss":
+            return
+        with self._state_lock:
+            sid, self._current = self._current, None
+        if self._thread is not None:
+            self._q.put(None)
+        if sid is None or self._on_dismiss is None:
+            return
+        try:
+            self._on_dismiss()
+        except Exception:
+            _log.info("notify card: could not report a dismissal",
+                      exc_info=True)
+
+    def timed_out(self) -> None:
+        """The clock ran out: the painter takes it down and nothing is
+        marked seen — the reminders exist for exactly this."""
+        with self._state_lock:
+            self._current = None
+
+    # -- placement --
+
+    def origin(self, width: int, height: int, screen: tuple,
+               inset: int = 0, bounds=None) -> tuple:
+        """Mid-height on the right (or left) edge by default; the four
+        corners and a saved position exactly as the hint card does them."""
+        if self.moved() or self._corner not in ("right", "left"):
+            return super().origin(width, height, screen, inset, bounds)
+        sw, sh = screen
+        m = self._margin
+        x = (m - inset) if self._corner == "left" \
+            else (sw - m - width + inset)
+        y = (sh - height) // 2
+        return int(x), int(y)
+
+    # -- overlay thread --
+
+    def _run(self) -> None:
+        try:
+            if skin is not None and skin.notify_run(self):   # --- SKIN
+                return
+            self._build_and_loop()
+        except Exception as e:
+            _log.info("notify card unavailable: %r", e)
+        finally:
+            self._alive.set()
+
+    def _build_and_loop(self) -> None:
+        """The card on a flat face, in Tk — and, until a glass presenter
+        exists, the only face it has.
+
+        notify_card.flat paints the whole thing as one image; this window
+        only shows it, moves it, keeps its clock, and turns a click, a
+        drag or Esc into `pressed` or `placed`. Same teardown as the
+        review card's: destroyed on the thread that built it, then
+        collected there.
+        """
+        import tkinter as tk
+        import notify_card as nc
+        from PIL import ImageTk
+
+        root = tk.Tk()
+        root.withdraw()
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.configure(bg=CARD_BG)
+        canvas = tk.Canvas(root, bg=CARD_BG, highlightthickness=0, bd=0)
+        canvas.pack()
+        self._alive.set()
+
+        st = {"card": None, "up": False, "deadline": None, "hover": None,
+              "drag": None, "from": None, "moved": 0, "photo": None,
+              "last": 0.0, "tick": time.monotonic()}
+        cache: dict = {}
+        CLICK_PX = 4          # a release that travelled less is a click
+
+        def progress() -> float:
+            deadline, card = st["deadline"], st["card"]
+            if deadline is None or card is None:
+                return 1.0
+            seconds = float(card.get("seconds") or 0)
+            if seconds <= 0:
+                return 1.0
+            return max(0.0, (deadline - time.monotonic()) / seconds)
+
+        def hide() -> None:
+            st["card"], st["deadline"], st["hover"] = None, None, None
+            st["drag"] = None
+            self.rect = None
+            cache.clear()
+            if st["up"]:
+                root.withdraw()
+                st["up"] = False
+
+        def paint() -> None:
+            if st["card"] is None:
+                return
+            img = nc.flat(st["card"], self.scale, progress(), st["hover"],
+                          cache)
+            photo = ImageTk.PhotoImage(img, master=root)
+            canvas.delete("all")
+            canvas.configure(width=img.width, height=img.height)
+            canvas.create_image(0, 0, anchor="nw", image=photo)
+            st["photo"] = photo               # Tk keeps no reference
+            st["last"] = time.monotonic()
+
+        def put_up(card: dict) -> None:
+            st["card"], st["hover"] = card, None
+            cache.clear()
+            w, h = nc.measure(card, self.scale)
+            x, y = self.origin(w, h, (root.winfo_screenwidth(),
+                                      root.winfo_screenheight()))
+            seconds = float(card.get("seconds") or 0)
+            st["deadline"] = ((time.monotonic() + seconds)
+                              if seconds > 0 else None)
+            paint()
+            root.geometry(f"{w}x{h}+{x}+{y}")
+            self.rect = (x, y, x + w, y + h)
+            # Read BEFORE the window is shown, every time it goes from
+            # withdrawn to shown: by the time it is mapped, the answer
+            # is this window. See _give_focus_back.
+            had = _foreground() if not st["up"] else 0
+            root.deiconify()
+            root.update_idletasks()
+            if not st["up"]:
+                # Both need a realised window, and both silently succeed
+                # on an unrealised one. Click-taking, not click-through:
+                # the click IS the dismissal.
+                _no_activate(root)
+                _hide_from_capture(root)
+                _give_focus_back(had)
+            st["up"] = True
+
+        def hit(event):
+            if st["card"] is None:
+                return None, None
+            return nc.hit_test(st["card"], self.scale,
+                               event.x + nc.SHADOW, event.y + nc.SHADOW)
+
+        def on_press(event) -> None:
+            code, what = hit(event)
+            if code == nc.HTCLIENT and what == "dismiss":
+                self.pressed("dismiss")
+            elif code == nc.HTCAPTION:
+                st["drag"] = (event.x_root - root.winfo_x(),
+                              event.y_root - root.winfo_y())
+                st["from"] = (event.x_root, event.y_root)
+                st["moved"] = 0
+
+        def on_motion(event) -> None:
+            if st["drag"] is not None:
+                ox, oy = st["from"]
+                st["moved"] = max(st["moved"], abs(event.x_root - ox)
+                                  + abs(event.y_root - oy))
+                if st["moved"] < CLICK_PX:
+                    return                # still a click until it is not
+                dx, dy = st["drag"]
+                root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+                return
+            code, what = hit(event)
+            want = what if code == nc.HTCLIENT else None
+            if want != st["hover"]:
+                st["hover"] = want
+                paint()
+
+        def on_leave(_event) -> None:
+            if st["hover"] is not None:
+                st["hover"] = None
+                paint()
+
+        def on_release(_event) -> None:
+            if st["drag"] is None:
+                return
+            st["drag"] = None
+            if st["moved"] < CLICK_PX:
+                # Pressed and let go where it was: a click on the card,
+                # which is the dismissal — the × is only the hint.
+                self.pressed("dismiss")
+                return
+            x, y = root.winfo_x(), root.winfo_y()
+            if st["card"] is not None:
+                w, h = nc.measure(st["card"], self.scale)
                 self.rect = (x, y, x + w, y + h)
             self.placed(x, y)
 

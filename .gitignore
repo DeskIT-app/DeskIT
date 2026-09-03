@@ -58,3 +58,7 @@ awake.log
 # which an app started before the rename still writes.
 night_state.json
 night.log
+# notify.py: every notification that arrived (titles and bodies from
+# other programs) and the record of reminders and dismissals.
+notify.json
+notify.log

@@ -17271,6 +17271,946 @@ def test_the_dashboard_has_an_awake_screen_that_waits_for_the_app() -> None:
         dash.AWAKE_AUTO_CHECK = saved
 
 
+# ----------------------------------------------------------------- notify
+# The notify door (notify.py, notify_card.py, notify_hook.py, the /notify
+# route, the card, the dashboard screen). Written 2026-09-03 in three
+# parallel packages; helpers above (_window, _skin_or_skip, _awake_until,
+# _hint_cfg) are reused, these are the few that were new.
+import inspect
+
+REPO = Path(__file__).resolve().parent
+
+
+class _FakeNotifyCard:
+    """Records what the engine asked of it; `visible` follows a flag."""
+
+    def __init__(self) -> None:
+        self.shown: list[dict] = []
+        self.hidden = 0
+        self.up = False
+
+    def start(self) -> None:
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def show(self, item: dict) -> None:
+        self.shown.append(item)
+        self.up = True
+
+    def hide(self) -> None:
+        self.hidden += 1
+        self.up = False
+
+    def visible(self) -> bool:
+        return self.up
+
+    def hovering(self) -> bool:
+        return False
+
+    def on_key(self, vk: int) -> bool:
+        return False
+
+
+def _notify_cfg(**over):
+    from types import SimpleNamespace
+    base = dict(enabled=True, cue=True, card_seconds=30, remind_every_s=0,
+                remind_times=2, coalesce_s=5)
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+def test_a_notification_is_cleaned_truncated_and_never_interpreted() -> None:
+    """Everything that arrives is coerced, stripped, cut and defaulted
+    into six strings — and nothing in it is ever parsed or formatted."""
+    import notify
+
+    try:
+        notify.clean([1, 2])
+        assert False, "a list is not a notification"
+    except ValueError as e:
+        assert "JSON object" in str(e), e
+    out = notify.clean({"title": "x", "evil": "y", "body": "b"})
+    assert set(out) == {"source", "kind", "title", "body", "project",
+                        "session"}, sorted(out)
+    assert "evil" not in out
+    out = notify.clean({"title": "a" * 81})
+    assert len(out["title"]) == 80 and out["title"].endswith("…"), out["title"]
+    out = notify.clean({"body": "b" * 401})
+    assert len(out["body"]) == 400 and out["body"].endswith("…")
+    assert notify.clean({"kind": "boom"})["kind"] == "info"
+    assert notify.clean({"kind": "done"})["kind"] == "done"
+    assert notify.clean({"title": "a\x07b"})["title"] == "ab"
+    assert notify.clean({"title": 5})["title"] == "5"
+    assert notify.clean({"title": None, "kind": "input"})["title"] == \
+        notify.DEFAULT_TITLE["input"]
+    assert notify.clean({})["title"] == "Notification"
+    assert notify.clean({"source": "Claude-Code"})["source"] == "claude-code"
+    assert notify.clean({})["source"] == "unknown"
+    out = notify.clean({"body": "one\n\n\n\nfour   five", "title": "a   b"})
+    assert out["body"] == "one\n\nfour   five", out["body"]
+    assert out["title"] == "a b"
+    assert notify.SOURCES["claude-code"] == "Claude Code"
+    assert notify.label_for("claude-code") == "Claude Code"
+    assert notify.label_for("x") == "x"
+
+
+def test_the_notify_store_keeps_a_hundred_and_survives_a_broken_file() -> None:
+    """notify.json holds the last KEEP items with rising ids, tells the
+    dashboard when it moved without being read, and a file that will
+    not parse is an empty store, not a dead one."""
+    import notify
+
+    with tempfile.TemporaryDirectory() as d:
+        store = notify.Store(Path(d) / "notify.json")
+        assert store.stamp() is None, "no file yet"
+        assert store.items() == []
+        ids = [store.add({"source": "test", "kind": "done",
+                          "title": f"t{i}", "body": "", "project": "",
+                          "session": ""})["id"] for i in range(105)]
+        assert ids == list(range(1, 106)), ids[:5]
+        items = store.items()
+        assert len(items) == 100, len(items)
+        assert [i["id"] for i in items] == list(range(6, 106)), \
+            "the oldest five must be gone"
+        assert all(not i["seen"] for i in items)
+        assert store.unread() == 100
+        assert store.recent(3)[0]["id"] == 105 and \
+            store.recent(3)[-1]["id"] == 103
+        assert store.last()["id"] == 105
+        before = store.stamp()
+        assert before is not None
+        assert store.mark_seen() == 100
+        assert store.mark_seen() == 0
+        assert store.unread() == 0
+        time.sleep(0.01)
+        store.add({"title": "again"})
+        assert store.stamp() != before, "a write must move the stamp"
+        assert store.stamp() == store.stamp(), "a read must not"
+        (Path(d) / "notify.json").write_text("{not json", "utf-8")
+        assert store.items() == []
+        item = store.add({"title": "after the break"})
+        assert item["id"] == 1 and store.items()[0]["title"] == \
+            "after the break"
+
+
+def test_receiving_plays_the_cue_shows_the_card_and_hands_back_counts() -> None:
+    """One arrival: stored, logged, cued once, shown with its label and
+    the unread count; the reply and state() carry counts, never a body;
+    an engine that is off refuses and stores nothing."""
+    import notify
+
+    with tempfile.TemporaryDirectory() as d:
+        cue: list[str] = []
+        card = _FakeNotifyCard()
+        eng = notify.Engine(Path(d), _notify_cfg(), cue=cue.append,
+                            card=card)
+        reply = eng.receive({"source": "claude-code", "kind": "done",
+                             "title": "Claude finished", "body": "b" * 50,
+                             "project": "HebrewDictation"})
+        assert reply == {"ok": True, "id": 1, "unread": 1,
+                         "coalesced": False}, reply
+        assert cue == ["notify"], cue
+        assert len(card.shown) == 1
+        shown = card.shown[0]
+        assert shown["unread"] == 1 and shown["label"] == "Claude Code", shown
+        assert shown["title"] == "Claude finished"
+        state = eng.state()
+        assert "body" not in state and "body" not in state["last"], state
+        assert state["last"]["title"] == "Claude finished"
+        assert state["last"]["label"] == "Claude Code"
+        assert state["unread"] == 1 and state["total"] == 1
+        assert state["card_up"] is True, "the fake shows itself"
+        assert state["enabled"] is True and state["reminding"] is False
+        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        assert "RECEIVED #1 from claude-code (done)" in log_text, log_text
+        assert eng.recent(5)[0]["body"] == "b" * 50, "recent carries bodies"
+
+    with tempfile.TemporaryDirectory() as d:
+        cue = []
+        card = _FakeNotifyCard()
+        eng = notify.Engine(Path(d), _notify_cfg(enabled=False),
+                            cue=cue.append, card=card)
+        reply = eng.receive({"title": "x"})
+        assert reply["ok"] is False and "off" in reply["error"], reply
+        assert eng.store.items() == [], "nothing stored while off"
+        assert cue == [] and card.shown == []
+        assert eng.state()["enabled"] is False
+
+
+def test_a_burst_from_one_source_updates_the_card_without_a_second_cue() -> None:
+    """Claude fires Stop and Notification a moment apart: the second
+    from the same source inside coalesce_s updates the card and skips
+    the cue; another source, or the window passing, plays again."""
+    import notify
+
+    with tempfile.TemporaryDirectory() as d:
+        now = [0.0]
+        cue: list[str] = []
+        card = _FakeNotifyCard()
+        eng = notify.Engine(Path(d), _notify_cfg(coalesce_s=5),
+                            cue=cue.append, card=card, clock=lambda: now[0])
+        first = eng.receive({"source": "claude-code", "title": "one"})
+        now[0] = 1.0
+        second = eng.receive({"source": "claude-code", "title": "two"})
+        assert first["coalesced"] is False and second["coalesced"] is True
+        assert cue == ["notify"], cue
+        assert len(card.shown) == 2, "the card still updates"
+        assert card.shown[1]["title"] == "two" and card.shown[1]["unread"] == 2
+        third = eng.receive({"source": "phone", "title": "three"})
+        assert third["coalesced"] is False and len(cue) == 2, cue
+        now[0] = 6.5
+        fourth = eng.receive({"source": "claude-code", "title": "four"})
+        assert fourth["coalesced"] is False and len(cue) == 3, cue
+        assert eng.state()["unread"] == 4
+
+
+def test_reminders_repeat_while_unread_and_stop_at_dismiss() -> None:
+    """While something is unread the cue replays and the card comes back
+    remind_times times; a dismissal cancels them and marks all seen;
+    stop() returns promptly with a reminder pending."""
+    import notify
+
+    with tempfile.TemporaryDirectory() as d:
+        cue: list[str] = []
+        card = _FakeNotifyCard()
+        eng = notify.Engine(Path(d), _notify_cfg(remind_every_s=0.05,
+                                                 remind_times=2,
+                                                 coalesce_s=0),
+                            cue=cue.append, card=card)
+        eng.receive({"source": "claude-code", "title": "one"})
+        _awake_until(lambda: len(cue) == 3, 2.0)
+        assert len(cue) == 3, cue
+        time.sleep(0.2)
+        assert len(cue) == 3, "no fourth reminder"
+        assert len(card.shown) == 3, "the card came back with each reminder"
+        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        assert "REMINDED 1/2" in log_text and "REMINDED 2/2" in log_text
+        assert eng.state()["reminding"] is False, eng.state()
+
+        eng.receive({"source": "claude-code", "title": "two"})
+        assert len(cue) == 4
+        state = eng.dismiss(by="key")
+        time.sleep(0.2)
+        assert len(cue) == 4, "a dismissed notification is not reminded"
+        assert state["unread"] == 0 and eng.state()["unread"] == 0
+        assert card.hidden >= 1, "dismiss takes the card down"
+        assert state["reminding"] is False
+        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        assert "DISMISSED by key | 2 marked seen" in log_text, log_text
+
+        eng.remind_every_s = 10.0
+        eng.receive({"source": "claude-code", "title": "three"})
+        assert eng.state()["reminding"] is True
+        assert eng.state()["reminders_left"] == 2
+        t0 = time.monotonic()
+        eng.stop()
+        assert time.monotonic() - t0 < 1.0, "stop() must not wait out a reminder"
+        assert eng.state()["reminding"] is False
+
+
+def test_the_notify_route_is_token_gated_and_fast() -> None:
+    """POST /notify: 401 before anything runs, 200 with the engine's
+    reply verbatim, 400 for what is not a JSON object (an empty body
+    included), 503 when there is no engine or it refused."""
+    import requests
+
+    import server as server_mod
+
+    cfg = config_mod.load(Path(sys.path[0]) / "config.toml")
+    cfg = dataclasses.replace(
+        cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
+                                            port=8796))
+    calls: list[dict] = []
+
+    class Fake:
+        reply: object = {"ok": True, "id": 1, "unread": 1, "coalesced": False}
+        raise_: Exception | None = None
+
+        def __call__(self, payload):
+            calls.append(payload)
+            if self.raise_ is not None:
+                raise self.raise_
+            return self.reply
+
+    fake = Fake()
+    fake_wav = lambda wav: ("", "fake")             # noqa: E731
+    srv = server_mod.PhoneServer(cfg, fake_wav, lambda: "fake", None, None,
+                                 notify=fake)
+    srv.start()
+    url = "http://127.0.0.1:8796/notify"
+    auth = {"Authorization": f"Bearer {server_mod.load_token()}"}
+    try:
+        r = requests.post(url, timeout=5, json={"title": "x"})
+        assert r.status_code == 401, r.status_code
+        r = requests.post(url, timeout=5, json={"title": "x"},
+                          headers={"Authorization": "Bearer nope"})
+        assert r.status_code == 401, r.status_code
+        assert calls == [], "a bad token must never reach the engine"
+        t0 = time.monotonic()
+        r = requests.post(url, timeout=5, json={"title": "x", "source": "t"},
+                          headers=auth)
+        assert r.status_code == 200, (r.status_code, r.text)
+        assert time.monotonic() - t0 < 2.0
+        assert r.json() == fake.reply, r.json()
+        assert calls == [{"title": "x", "source": "t"}], calls
+        r = requests.post(url, timeout=5, data=b"nope", headers=auth)
+        assert r.status_code == 400, r.status_code
+        r = requests.post(url, timeout=5, json=[1], headers=auth)
+        assert r.status_code == 400, r.status_code
+        r = requests.post(url, timeout=5, data=b"", headers=auth)
+        assert r.status_code == 400, (r.status_code, r.text)
+        assert "1.." in r.text, r.text
+        assert len(calls) == 1, "none of those reached the engine"
+        fake.raise_ = ValueError("x")
+        r = requests.post(url, timeout=5, json={}, headers=auth)
+        assert r.status_code == 400 and r.json()["error"] == "x", r.text
+        fake.raise_ = None
+        fake.reply = {"ok": False, "error": "off"}
+        r = requests.post(url, timeout=5, json={}, headers=auth)
+        assert r.status_code == 503 and r.json()["error"] == "off", r.text
+        r = requests.get("http://127.0.0.1:8796/notify", timeout=5)
+        assert r.status_code == 404, "never a GET"
+    finally:
+        srv.stop()
+    srv = server_mod.PhoneServer(cfg, fake_wav, lambda: "fake", None, None)
+    srv.start()
+    try:
+        r = requests.post(url, timeout=5, json={"title": "x"}, headers=auth)
+        assert r.status_code == 503, r.status_code
+        assert r.json()["error"] == "notifications are not available", r.text
+    finally:
+        srv.stop()
+
+
+def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
+    """The file is the Settings screen's list, so [notify] has to be IN
+    config.toml with every key and its help — and the bounds fire, with
+    the dotted key in the message."""
+    import settings as settings_mod
+
+    here = Path(sys.path[0])
+    cfg = config_mod.load(here / "config.toml")
+    assert cfg.notify.enabled is True
+    assert cfg.notify.cue is True
+    assert cfg.notify.card_seconds == 30
+    assert cfg.notify.remind_every_s == 120
+    assert cfg.notify.remind_times == 2
+    assert cfg.notify.coalesce_s == 5
+    assert cfg.notify.corner == "right"
+    assert cfg.notify.scale == 1.0
+    assert cfg.notify.hotkey == "ctrl+alt+m"
+    sections = {s.name: s for s in settings_mod.read(here / "config.toml")}
+    assert "notify" in sections, sorted(sections)
+    keys = {s.key for s in sections["notify"].settings}
+    assert keys == {"enabled", "cue", "card_seconds", "remind_every_s",
+                    "remind_times", "coalesce_s", "corner", "x", "y",
+                    "scale", "dismiss_hotkey"}, keys
+    assert sections["notify"].help, "the section has no help text"
+    corner = {s.key: s for s in sections["notify"].settings}["corner"]
+    assert "right" in corner.choices and "bottom-left" in corner.choices, \
+        corner.choices
+    assert len(corner.choices) == 6, corner.choices
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "config.toml"
+        p.write_text('[notify]\nremind_times = 99\n', "utf-8")
+        try:
+            config_mod.load(p)
+            assert False, "remind_times = 99 must be refused"
+        except config_mod.ConfigError as e:
+            assert "notify.remind_times" in str(e), e
+        p.write_text('[notify]\ncorner = "middle"\n', "utf-8")
+        try:
+            config_mod.load(p)
+            assert False, "corner = middle must be refused"
+        except config_mod.ConfigError as e:
+            assert "notify.corner" in str(e), e
+        p.write_text('[notify]\ncard_seconds = 0\nremind_every_s = 0\n',
+                     "utf-8")
+        assert config_mod.load(p).notify.card_seconds == 0, "0 is allowed"
+
+
+def test_the_dismiss_key_is_registered_where_config_main_and_hint_look() -> None:
+    """A tap key has eight registration points; every one of them has
+    the dismiss key, and switching [notify] off takes it out of all."""
+    import main as main_mod
+
+    fields = dict(config_mod.HOTKEY_FIELDS)
+    assert fields["dismiss_hotkey"].endswith("(tap)"), fields["dismiss_hotkey"]
+    assert config_mod.HOTKEY_FIELDS[-1][0] == "dismiss_hotkey", \
+        config_mod.HOTKEY_FIELDS[-1]
+    assert "dismiss_hotkey" in config_mod.CHORD_FIELDS
+    assert main_mod.NESTED_HOTKEYS["dismiss_hotkey"] == "notify.dismiss_hotkey"
+    cfg = config_mod.load(Path(sys.path[0]) / "config.toml")
+    assert cfg.dismiss_hotkey == cfg.notify.hotkey == "ctrl+alt+m"
+    moved = config_mod.with_field(cfg, "dismiss_hotkey", "ctrl+alt+k")
+    assert moved.notify.hotkey == "ctrl+alt+k"
+    assert dataclasses.replace(moved, notify=cfg.notify) == cfg, \
+        "with_field must change nothing else"
+    clash = config_mod.with_field(cfg, "dismiss_hotkey", cfg.screens_hotkey)
+    try:
+        config_mod.check_hotkeys(clash)
+        assert False, "the same chord on two keys must be refused"
+    except config_mod.ConfigError as e:
+        assert "dismiss_hotkey" in str(e) or "screens_hotkey" in str(e), e
+    _h, taps, _l, _p = main_mod.App.bindings(cfg)
+    assert taps.get(parse_binding("ctrl+alt+m")) == "notify_dismiss", taps
+    off = dataclasses.replace(cfg, notify=dataclasses.replace(
+        cfg.notify, enabled=False))
+    _h, taps_off, _l, _p = main_mod.App.bindings(off)
+    assert "notify_dismiss" not in taps_off.values(), taps_off
+    assert "notify_dismiss" in main_mod._SCREEN_ACTIONS
+    assert ("notify_dismiss", "ctrl+alt+m") in hint_mod.bindings(cfg)
+    assert "notify_dismiss" not in dict(hint_mod.bindings(off))
+    assert hint_mod.LABELS["notify_dismiss"], "the card needs a name for it"
+    assert {a for a, _b in hint_mod.bindings(cfg)} == set(taps.values()), \
+        "hint.bindings and the tap table must be the same set"
+
+
+def test_the_notify_command_goes_through_the_control_channel() -> None:
+    """The dashboard's buttons are pipe messages; the reply carries the
+    state so the screen repaints without a poll; and the engine and the
+    card are wired to the app's own start and stop."""
+    import inspect
+
+    import main as main_mod
+    import notify
+
+    assert "self.notify.state()" in inspect.getsource(main_mod.App.status)
+    assert "self.notify.stop()" in inspect.getsource(main_mod.App.stop)
+    assert "self.notify_card.start()" in inspect.getsource(main_mod.App.start)
+    assert "self.notify.start()" in inspect.getsource(main_mod.App.start)
+    with tempfile.TemporaryDirectory() as d:
+        app = main_mod.App.__new__(main_mod.App)
+        app._note = ""
+        cue: list[str] = []
+        fake = _FakeNotifyCard()
+        app.notify = notify.Engine(Path(d), None, cue=cue.append, card=fake)
+        app.notify_card = fake
+        try:
+            reply = app.control_command("notify", {"do": "test"})
+            assert reply["ok"] and reply["id"] == 1, reply
+            assert reply["notify"]["unread"] == 1, reply
+            assert "message" in reply and "sent" in app._note, app._note
+            assert cue == ["notify"] and fake.shown[0]["label"] == "Test"
+            reply = app.control_command("notify", {"do": "recent", "n": 5})
+            assert reply["ok"] and len(reply["items"]) == 1, reply
+            assert reply["items"][0]["body"], "recent carries the body"
+            reply = app.control_command("notify", {"do": "dismiss"})
+            assert reply["ok"] and reply["notify"]["unread"] == 0, reply
+            assert "dismissed" in app._note, app._note
+            assert fake.hidden == 1
+            reply = app.control_command("notify", {"do": "sideways"})
+            assert not reply["ok"] and "sideways" in reply["error"], reply
+        finally:
+            app.notify.stop()
+        bare = main_mod.App.__new__(main_mod.App)
+        bare._note = ""
+        reply = bare.control_command("notify", {"do": "dismiss"})
+        assert not reply["ok"] and "off" in reply["error"], reply
+
+
+def test_the_hook_script_maps_events_and_never_fails() -> None:
+    """Stop and the two waiting notifications become notifications;
+    subagents and continued turns do not; installing the hook is
+    idempotent and leaves everyone else's settings alone; and nothing
+    the script does can fail loudly."""
+    import notify_hook as hook
+
+    cwd = r"C:\Users\shimr\Desktop\Organized\Projects\HebrewDictation"
+    p = hook.payload_from_hook({"hook_event_name": "Stop", "cwd": cwd,
+                                "session_id": "abc",
+                                "last_assistant_message": "x " * 400})
+    assert p["kind"] == "done" and p["title"] == "Claude finished", p
+    assert p["source"] == "claude-code" and p["session"] == "abc"
+    assert p["project"] == "HebrewDictation", p["project"]
+    assert len(p["body"]) == 300, len(p["body"])
+    p = hook.payload_from_hook({"hook_event_name": "Notification",
+                                "notification_type": "idle_prompt",
+                                "message": "waiting"})
+    assert p["kind"] == "input" and p["title"] == "Claude is waiting for you"
+    assert p["body"] == "waiting" and p["project"] == ""
+    p = hook.payload_from_hook({"hook_event_name": "Notification",
+                                "notification_type": "permission_prompt"})
+    assert p["kind"] == "input" and p["title"] == "Claude needs a permission"
+    assert hook.payload_from_hook({"hook_event_name": "SubagentStop",
+                                   "cwd": cwd}) is None
+    assert hook.payload_from_hook({"hook_event_name": "Stop",
+                                   "stop_hook_active": True}) is None
+    assert hook.payload_from_hook({"hook_event_name": "Notification",
+                                   "notification_type": "auth_success"}) is None
+    assert hook.payload_from_hook("junk") is None
+
+    original = {"autoUpdatesChannel": "latest", "agentPushNotifEnabled": True,
+                "inputNeededNotifEnabled": True,
+                "skipWorkflowUsageWarning": True}
+    with tempfile.TemporaryDirectory() as d:
+        settings = Path(d) / "settings.json"
+        settings.write_text(json.dumps(original, indent=2) + "\n", "utf-8")
+        assert hook.install_hook(settings) is True
+        data = json.loads(settings.read_text("utf-8"))
+        for k, v in original.items():
+            assert data[k] == v, (k, data.get(k))
+        stop = data["hooks"]["Stop"]
+        assert len(stop) == 1, stop
+        cmd = stop[0]["hooks"][0]["command"]
+        assert "notify_hook.py" in cmd and "pythonw.exe" in cmd, cmd
+        assert stop[0]["hooks"][0]["timeout"] == 10
+        note = data["hooks"]["Notification"]
+        assert note[0]["matcher"] == "idle_prompt|permission_prompt", note
+        assert "notify_hook.py" in note[0]["hooks"][0]["command"]
+        first = settings.read_bytes()
+        assert hook.install_hook(settings) is False
+        assert settings.read_bytes() == first, "a second run must not churn"
+        foreign = {"hooks": [{"type": "command", "command": "echo hi"}]}
+        data["hooks"]["Stop"].insert(0, foreign)
+        settings.write_text(json.dumps(data, indent=2) + "\n", "utf-8")
+        assert hook.install_hook(settings, python="py.exe") is True
+        data = json.loads(settings.read_text("utf-8"))
+        assert data["hooks"]["Stop"][0] == foreign, "foreign entries stay"
+        assert len(data["hooks"]["Stop"]) == 2, data["hooks"]["Stop"]
+        assert data["hooks"]["Stop"][1]["hooks"][0]["command"].startswith(
+            '"py.exe"'), "ours is replaced in place, not appended"
+        missing = Path(d) / "new" / "settings.json"
+        assert hook.install_hook(missing) is True and missing.exists()
+
+    entries = hook.hook_entries("P", "S")
+    assert entries["Stop"][0]["hooks"][0]["command"] == '"P" "S"'
+    assert hook.server_url().startswith("http://127.0.0.1:") and \
+        hook.server_url().endswith("/notify")
+    t0 = time.monotonic()
+    assert hook.post({}, "http://127.0.0.1:1/notify", "t", timeout=0.5) is False
+    assert time.monotonic() - t0 < 2.0
+    assert hook.main(["--title", "x", "--url", "http://127.0.0.1:1/notify"]) == 0
+    assert hook.main(["--no-such-flag"]) == 0, "argparse errors must not leak"
+
+
+def test_the_notify_cue_exists_and_has_its_own_shape() -> None:
+    """A notification is 'something arrived', not 'you did a thing': its
+    own three-note rising shape, short, and unlike every pair above it."""
+    import cues
+
+    assert "notify" in cues.CUES
+    notes = cues.CUES["notify"]
+    assert len(notes) == 3, notes
+    pitches = [f for f, _ms in notes]
+    assert pitches == sorted(pitches) and len(set(pitches)) == 3, pitches
+    total = sum(ms for _f, ms in notes)
+    assert 200 <= total <= 400, total
+    for kind, segs in cues.CUES.items():
+        if kind != "notify":
+            assert [f for f, _ in segs] != pitches, kind
+
+
+def _item(**over) -> dict:
+    base = {"id": 7, "source": "claude-code", "label": "Claude Code",
+            "kind": "done", "title": "Claude finished",
+            "body": "It is done.", "project": "HebrewDictation",
+            "at": "2026-09-03T14:00:00", "session": "abc", "seen": False}
+    base.update(over)
+    return base
+
+
+# ----------------------------------------------------------------- notify
+
+
+def test_the_notify_card_is_measured_and_pressed_where_drawn() -> None:
+    """card_for is the card as data, measure grows with the body and
+    stops at BODY_LINES, and the hit test answers from the same boxes
+    the painter draws — so the × is pressed where it is seen."""
+    import notify_card as nc
+    from datetime import datetime
+    now_iso = datetime.now().replace(microsecond=0).isoformat()
+    card = nc.card_for(_item(at=now_iso), seconds=30, unread=1)
+    assert card["label"] == "Claude Code" and card["kind"] == "done"
+    assert card["colour"] == nc.KIND_COLOUR["done"]
+    assert card["when"] == "just now", card["when"]
+    assert card["badge"] == "" and card["unread"] == 1
+    assert card["seconds"] == 30.0 and card["footer"] == nc.FOOTER
+    assert card["id"] == 7 and card["title"] == "Claude finished"
+    three = nc.card_for(_item(), seconds=30, unread=3)
+    assert three["badge"] == "3" and three["unread"] == 3
+    odd = nc.card_for(_item(kind="boom"), seconds=0)
+    assert odd["kind"] == "info" and odd["colour"] == nc.KIND_COLOUR["info"]
+    assert nc.card_for(_item(label=None), seconds=0)["label"] == "claude-code"
+
+    one = nc.card_for(_item(body="one line"), seconds=30)
+    four = nc.card_for(_item(body="\n".join(["a line"] * 4)), seconds=30)
+    forty = nc.card_for(_item(body="\n".join(["a line"] * 40)), seconds=30)
+    w1, h1 = nc.measure(one)
+    w4, h4 = nc.measure(four)
+    w40, h40 = nc.measure(forty)
+    assert w1 == w4 == w40 == nc.CARD_W, (w1, w4, w40)
+    assert h4 > h1, "a four-line body must make the card taller"
+    assert h40 == h4, f"the body is cut at {nc.BODY_LINES} lines: {h40} vs {h4}"
+    assert nc.measure(one, 1.4)[0] > w1 > nc.measure(one, 0.6)[0]
+
+    boxes = nc.regions(four, 1.0)
+    w, h = nc.measure(four, 1.0)
+    for name in ("dismiss", "drag"):
+        x0, y0, x1, y1 = boxes[name]
+        assert nc.SHADOW <= x0 < x1 <= nc.SHADOW + w, (name, boxes[name])
+        assert nc.SHADOW <= y0 < y1 <= nc.SHADOW + h, (name, boxes[name])
+    dx0, dy0, dx1, dy1 = boxes["dismiss"]
+    assert (dx1 - dx0, dy1 - dy0) == (26, 26) and dx0 == nc.SHADOW + nc.PAD
+    assert nc.hit_test(four, 1.0, dx0 + 5, dy0 + 5) == (nc.HTCLIENT, "dismiss")
+    assert nc.hit_test(four, 1.0, nc.SHADOW + w // 2, nc.SHADOW + h // 2) \
+        == (nc.HTCAPTION, "drag")
+    assert nc.hit_test(four, 1.0, 3, 3) == (nc.HTTRANSPARENT, None)
+    assert nc.hit_test(four, 1.0, nc.SHADOW + w + 5, nc.SHADOW + 5) \
+        == (nc.HTTRANSPARENT, None)
+
+    cache: dict = {}
+    img = nc.compose(three, 1.0, 0.5, hover="dismiss", cache=cache)
+    assert img.mode == "RGBA" and img.size == nc.measure(three, 1.0)
+    assert img.getchannel("A").getbbox() is not None, "nothing was drawn"
+    assert cache, "the presenter's cache was not used"
+    face = nc.flat(three, 1.0, 0.5, None, cache)
+    assert face.size == img.size
+    cx, cy = face.width // 2, face.height // 2
+    assert face.getpixel((cx, cy))[3] == 255, "flat must be opaque"
+    assert face.getpixel((cx, 1))[:3] == nc.KIND_COLOUR["done"], \
+        "the colour bar runs along the top"
+
+
+def test_the_card_never_hands_one_string_both_hebrew_and_latin() -> None:
+    """Every string on the card is its own text_pil image: the chrome is
+    English and the title/body arrive verbatim, and nothing here ever
+    concatenates the two — that is the mixed line Tk lays out backwards
+    and DrawTextW lays out in ONE direction."""
+    import notify_card as nc
+    seen: list[str] = []
+    original = nc._text
+
+    def recording(cache, text, *a, **k):
+        seen.append(text)
+        return original(cache, text, *a, **k)
+
+    title = "קלוד סיים"
+    body = "בדיקה של עברית ו-English together, on more than one line."
+    nc._text = recording
+    try:
+        card = nc.card_for(_item(title=title, body=body,
+                                 label="Claude Code",
+                                 project="HebrewDictation"),
+                           seconds=30, unread=3)
+        nc.compose(card, 1.0, 1.0, "dismiss", {})
+    finally:
+        nc._text = original
+    assert seen, "nothing went through the painter"
+    hebrew = "\u0590"
+    for text in seen:
+        if text in (title, body):
+            continue
+        assert not any(hebrew <= ch <= "\u08ff" for ch in text), (
+            f"a chrome string carries Hebrew: {text!r}")
+    assert title in seen and body in seen, seen
+    assert nc._is_rtl(title) and not nc._is_rtl("Claude Code")
+    assert nc._is_rtl(body) and not nc._is_rtl("3") and not nc._is_rtl("")
+
+
+def test_relative_time_reads_naturally() -> None:
+    import notify_card as nc
+    from datetime import datetime
+    at = "2026-09-03T14:00:00"
+    base = datetime.fromisoformat(at).timestamp()
+    assert nc.ago(at, base + 30) == "just now"
+    assert nc.ago(at, base + 5 * 60) == "5 min ago"
+    assert nc.ago(at, base + 3 * 3600) == "3 h ago"
+    assert nc.ago(at, base + 86400) == "yesterday"
+    assert nc.ago(at, base + 10 * 86400) == "3 Sep"
+    assert nc.ago(at, base - 5) == "just now", "a clock skew is not the future"
+    assert nc.ago("garbage") == "" and nc.ago("") == "" and nc.ago(None) == ""
+
+
+def test_the_notify_card_sits_mid_height_and_keeps_a_saved_position(
+        ) -> None:
+    card = overlay_mod.NotifyCard(corner="right", margin=14)
+    x, y = card.origin(360, 200, (2560, 1440), 26, (-1920, 0, 4480, 1440))
+    assert (x, y) == (2560 - 14 - 360 + 26, (1440 - 200) // 2), (x, y)
+    left = overlay_mod.NotifyCard(corner="left", margin=14)
+    assert left.origin(360, 200, (2560, 1440), 26)[0] == 14 - 26
+    moved = overlay_mod.NotifyCard(corner="right", x=-1500, y=300)
+    assert moved.origin(360, 200, (2560, 1440), 26,
+                        (-1920, 0, 4480, 1440)) == (-1526, 274), \
+        "a saved position on the left monitor is kept"
+    top = overlay_mod.NotifyCard(corner="top-right", margin=14)
+    assert top.origin(360, 200, (2560, 1440), 26)[1] == 14 - 26
+    assert overlay_mod.NotifyCard.CORNERS == overlay_mod.ReviewCard.CORNERS
+
+
+def test_the_notify_card_dismisses_by_esc_only_under_the_pointer_and_reports_once(
+        ) -> None:
+    """Esc is the card's only key, only over it; a dismissal is reported
+    exactly once; running out of time reports nothing; and none of it
+    ever goes near HintCard.dismissed(), which writes enabled=false."""
+    rec: list = []
+    changed: list = []
+    card = overlay_mod.NotifyCard(on_dismiss=lambda: rec.append(1),
+                                  on_change=lambda f: changed.append(f))
+    card._thread = threading.Thread(target=lambda: None)   # never started
+    card.show(_item(id=7, unread=3))
+    assert card.visible() and card.current() == 7
+    queued = card._q.get_nowait()
+    assert queued["badge"] == "3" and queued["label"] == "Claude Code"
+    assert queued["seconds"] == 30.0
+    card.rect = (0, 0, 100, 100)
+    assert not card.hovering() or True         # depends on the real mouse
+    card.hovering = lambda: True
+    assert card.on_key(0x41) is False, "a letter is not the card's"
+    assert card.on_key(0x1B) is True and rec == [1]
+    assert not card.visible()
+    assert card._q.get_nowait() is None, "the painter is told to take it down"
+    assert card.on_key(0x1B) is False, "nothing up: Esc is not ours"
+    assert rec == [1]
+    card.show(_item(id=8))
+    card.timed_out()
+    assert rec == [1] and not card.visible(), "a timeout is not a dismissal"
+    card.show(_item(id=9))
+    card.pressed("dismiss")
+    card.pressed("dismiss")
+    assert rec == [1, 1], "reported once per card"
+    assert card._enabled is True and changed == [], \
+        "dismiss must never write enabled=false or anything else"
+    card.hovering = lambda: False
+    card.show(_item(id=10))
+    assert card.on_key(0x1B) is False and card.visible(), \
+        "Esc away from the card is somebody else's Esc"
+    src = __import__("inspect").getsource(overlay_mod.NotifyCard)
+    assert "self.dismissed(" not in src and "super().dismissed(" not in src \
+        and "_changed(enabled" not in src, \
+        "NotifyCard must never call HintCard.dismissed() (enabled=false)"
+
+
+def test_the_off_notify_card_is_inert() -> None:
+    card = overlay_mod.NotifyCard.off()
+    card.start()
+    assert card._thread is None
+    card.show(_item())
+    assert card.visible() is False and card.current() is None
+    card.hide()
+    assert card.on_key(0x1B) is False and card.hovering() is False
+    card.pressed("dismiss")
+    card.timed_out()
+    card.stop()
+
+
+def test_the_notify_card_gives_the_foreground_back_and_hides_from_capture(
+        ) -> None:
+    """The window is a notification: it hands the keyboard back the
+    moment Tk takes it, stays out of screenshots, is no-activate but
+    click-taking, and the skin hook keeps the deletable form."""
+    import inspect
+    src = inspect.getsource(overlay_mod.NotifyCard._build_and_loop)
+    i_fg = src.index("_foreground()")
+    i_de = src.index("deiconify")
+    assert i_fg < i_de, "read the foreground BEFORE the window is shown"
+    assert "_give_focus_back(" in src
+    assert src.index("_give_focus_back(") > src.index("update_idletasks")
+    assert "_hide_from_capture(root)" in src
+    assert "_no_activate(root)" in src
+    assert "click_through=True" not in src, "a click is the dismissal"
+    assert "ImageTk.PhotoImage(img, master=root)" in src
+    assert "gc.collect()" in src and "root.destroy()" in src
+    assert "master=root" in src
+    run_src = inspect.getsource(overlay_mod.NotifyCard._run)
+    assert "skin is not None and skin.notify_run(self)" in run_src
+    assert callable(overlay_mod._foreground) and \
+        callable(overlay_mod._give_focus_back)
+    overlay_mod._give_focus_back(0)            # a no-op, never raises
+    assert isinstance(overlay_mod._foreground(), int)
+    helper = inspect.getsource(overlay_mod._foreground) + \
+        inspect.getsource(overlay_mod._give_focus_back)
+    code = "\n".join(l for l in helper.splitlines()
+                     if l.strip() and not l.strip().startswith("#"))
+    assert 'ctypes.WinDLL("user32"' in code and \
+        "ctypes.windll.user32." not in code and "= ctypes.windll" not in code, \
+        "private handles only: a restype on ctypes.windll leaks everywhere"
+    source = (REPO / "overlay.py").read_text("utf-8")
+    assert "try:\n    import skin" in source
+    for line in source.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("if skin") and "skin." in stripped:
+            assert "skin is not None" in stripped, stripped
+    assert "notify" not in source.split("class NotifyCard")[0].lower() \
+        .replace("notification", ""), \
+        "overlay.py must not import notify.py at module level"
+    assert "import notify\n" not in source and \
+        "import notify as" not in source
+
+
+def test_skin_notify_run_declines_and_shadows_nothing() -> None:
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    was = os.environ.get("HD_SKIN")
+    try:
+        os.environ["HD_SKIN"] = "0"
+        skin.reset()
+        assert skin.on() is False
+        assert skin.notify_run(None) is False
+    finally:
+        if was is None:
+            os.environ.pop("HD_SKIN", None)
+        else:
+            os.environ["HD_SKIN"] = was
+        skin.reset()
+    assert skin.notify_run(None) is False, "no glass presenter yet"
+    folder = Path(skin.__file__).resolve().parent
+    assert "notify" not in {p.stem for p in folder.glob("*.py")}, \
+        "skin\\notify.py would shadow a hook named notify — hence *_run"
+    import ast
+    tree = ast.parse((folder / "__init__.py").read_text("utf-8"))
+    hooks = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+    assert "notify_run" in hooks and not (hooks & {p.stem for p in
+                                                   folder.glob("*.py")})
+
+
+def test_notify_is_in_the_nav_the_icon_table_and_both_dispatch_tables():
+    """A screen is five registrations (NAV, ICON, _show, _refresh, and
+    for its key KEY_GROUPS + NESTED_HOTKEYS); missing any one of them is
+    a KeyError the first time somebody clicks. Notify sits right after
+    Awake, its glyph is one BMP character of the icon face, and its key
+    is written to [notify] dismiss_hotkey."""
+    import dashboard as dash
+    import ui
+    names = [key for key, _label in dash.NAV]
+    assert ("notify", "Notify") in dash.NAV
+    assert names.index("notify") == names.index("awake") + 1, names
+    glyph = ui.ICON["notify"]
+    assert len(glyph) == 1 and ord(glyph) < 0x10000, repr(glyph)
+    assert '"Notify"' in inspect.getsource(dash.Dashboard._show)
+    assert '"Notify"' in inspect.getsource(dash.Dashboard._refresh)
+    named = {f for _title, fields in dash.KEY_GROUPS for f in fields}
+    assert "dismiss_hotkey" in named
+    assert dash.NESTED_HOTKEYS["dismiss_hotkey"] == "notify.dismiss_hotkey"
+
+
+def test_the_notify_screen_builds_and_paints_every_state():
+    """The hero has four states and status may lack the section entirely
+    (an app running older code); every branch has to paint without a
+    traceback, and the word has to be the one the owner reads."""
+    last = {"id": 5, "at": "2026-09-03T14:00:00", "source": "claude-code",
+            "label": "Claude Code", "kind": "done",
+            "title": "Claude finished", "project": "HebrewDictation",
+            "seen": False}
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Notify")
+        assert board.screen == "Notify"
+        board.running = False
+        board._paint_notify()
+        assert board.parts["notify_state"].cget("text") == "NOT RUNNING"
+        board.running = True
+        board.status = {"notify": {
+            "enabled": True, "unread": 3, "total": 5, "reminding": True,
+            "reminders_left": 1, "card_up": True, "last": last}}
+        board._paint_notify()
+        assert board.parts["notify_state"].cget("text") == "3 UNREAD"
+        assert "Claude Code" in board.parts["notify_meta"].cget("text")
+        assert "eminding" in board.parts["notify_hint"].cget("text")
+        board.status = {"notify": {
+            "enabled": True, "unread": 0, "total": 5, "reminding": False,
+            "reminders_left": 0, "card_up": False, "last": last}}
+        board._paint_notify()
+        assert board.parts["notify_state"].cget("text") == "ALL SEEN"
+        board.status = {"notify": {"enabled": False, "unread": 0}}
+        board._paint_notify()
+        assert board.parts["notify_state"].cget("text") == "OFF"
+        board.status = {}
+        board._paint_notify()          # no "notify" key at all: treated as {}
+        assert board.parts["notify_state"].cget("text") == "NOT WIRED"
+
+
+def test_the_notify_list_draws_the_file_and_notices_it_moved():
+    """The list is the file: a store with two items draws two rows (a
+    Hebrew title and a Latin one, through DrawTextW), an empty one shows
+    the empty line, and a store that raises leaves an empty list rather
+    than a dead screen. It redraws only when the stamp moved."""
+    import tkinter as tk
+
+    class Fake:
+        def __init__(self, items, boom=False):
+            self._items, self._boom = items, boom
+
+        def recent(self, n):
+            if self._boom:
+                raise OSError("broken file")
+            return list(self._items)[:n]
+
+    two = [{"id": 2, "at": "2026-09-03T14:22:05", "source": "claude-code",
+            "label": "Claude Code", "kind": "done",
+            "title": "קלוד סיים — Claude finished",
+            "body": "הכרטיס עובד — Hebrew and English both render.",
+            "project": "HebrewDictation", "seen": False},
+           {"id": 1, "at": "2026-09-03T13:00:00", "source": "cli",
+            "kind": "info", "title": "A Latin title", "body": "",
+            "project": "", "seen": True}]
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Notify")
+        board._notify_store = lambda: Fake(two)
+        board._notify_stamp = object()
+        board._poll_notify()
+        rows = [w for w in board.parts["notify_list"].inner.winfo_children()
+                if isinstance(w, tk.Canvas)]
+        assert len(rows) == 2, len(rows)
+        assert "2 kept" in board.parts["notify_count"].cget("text")
+        assert "1 unread" in board.parts["notify_count"].cget("text")
+        assert not board.parts["notify_empty"].winfo_manager()
+        # The stamp is remembered: the same file does not redraw.
+        board._notify_store = lambda: Fake([])
+        board._poll_notify()
+        rows = [w for w in board.parts["notify_list"].inner.winfo_children()
+                if isinstance(w, tk.Canvas)]
+        assert len(rows) == 2, "redrew without the file moving"
+        board._notify_stamp = object()
+        board._poll_notify()
+        rows = [w for w in board.parts["notify_list"].inner.winfo_children()
+                if isinstance(w, tk.Canvas)]
+        assert rows == []
+        assert board.parts["notify_empty"].winfo_manager() == "place"
+        board._notify_store = lambda: Fake([], boom=True)
+        board._notify_stamp = object()
+        board._poll_notify()              # must not raise
+        rows = [w for w in board.parts["notify_list"].inner.winfo_children()
+                if isinstance(w, tk.Canvas)]
+        assert rows == []
+        board._notify_store = lambda: None   # no notify.py on this checkout
+        board._notify_stamp = object()
+        board._poll_notify()
+        assert "nothing kept" in board.parts["notify_count"].cget("text")
+
+
+def test_the_readme_and_agents_document_notify():
+    """The README section sits between Awake and the phone, every [notify]
+    key has a Config reference row, and AGENTS.md's map names the three
+    new files plus the two doors it never listed."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    heading = "## Notify — when Claude (or anything) finishes (`ctrl+alt+m`)"
+    assert heading in readme
+    i = readme.index(heading)
+    assert readme.index("## Awake, and the screens off") < i
+    assert i < readme.index("## Dictating from the phone")
+    table = readme[readme.index("## Config reference"):]
+    for key in ("enabled", "cue", "card_seconds", "remind_every_s",
+                "remind_times", "coalesce_s", "corner", "x", "y", "scale",
+                "dismiss_hotkey"):
+        assert f"| `[notify] {key}` |" in table, key
+    assert "--install-hook" in readme
+    assert "irm 'http://127.0.0.1:8756/notify'" in readme
+    agents = (REPO / "AGENTS.md").read_text(encoding="utf-8")
+    what = agents[agents.index("## What this is"):agents.index("## House rules")]
+    assert "notify" in what
+    where = agents[agents.index("## Where things live"):]
+    for name in ("notify.py", "notify_card.py", "notify_hook.py",
+                 "server.py", "control.py"):
+        assert f"| `{name}` |" in where, name
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

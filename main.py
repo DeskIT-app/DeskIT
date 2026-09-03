@@ -39,6 +39,7 @@ import firstrun
 import hint as hint_mod
 import injector
 import awake as awake_mod
+import notify as notify_mod
 import popup as popup_mod
 import server as server_mod
 import singleton
@@ -77,6 +78,7 @@ NESTED_HOTKEYS = {
     "record_hotkey": "capture.record_hotkey",
     "camera_hotkey": "camera.camera_hotkey",
     "screens_hotkey": "awake.screens_hotkey",
+    "dismiss_hotkey": "notify.dismiss_hotkey",
 }
 
 # What the dashboard may change while the app runs and have it FELT
@@ -105,8 +107,11 @@ AUTO_PUNCTUATE_MIN_WORDS = 3
 # during a dictation.
 # The screens key rides with them: it touches the monitor and never the
 # cursor, so it is as true mid-sentence as a screenshot is.
+# And the notification-dismiss key: it touches no cursor and no clipboard
+# (a JSON write on a thread and a card taken down), and a card that
+# arrives mid-sentence must be dismissible mid-sentence.
 _SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo",
-                             "screens"})
+                             "screens", "notify_dismiss"})
 
 # What the dot should say for a machine state, when a worker has finished
 # with something and is deciding what to put back. Only two states are
@@ -433,6 +438,21 @@ class App:
             on_edit=self._review_edit)
             if rcfg is not None and rcfg.enabled and rcfg.card_seconds > 0
             else overlay_mod.ReviewCard.off())
+        # The notification card and its engine (notify.py). The card class
+        # is looked up rather than named: it lands with the card package,
+        # and until then — or on a branch without it — the engine gets the
+        # inert card and everything else (route, store, log, key) works.
+        ncfg = getattr(cfg, "notify", None)
+        card_cls = getattr(overlay_mod, "NotifyCard", None)
+        self.notify_card = (card_cls(
+            ncfg.corner, x=ncfg.x, y=ncfg.y, scale=ncfg.scale,
+            on_change=self._save_notify_card,
+            on_dismiss=self._notify_dismissed,
+            seconds=ncfg.card_seconds)
+            if card_cls is not None and ncfg is not None and ncfg.enabled
+            else notify_mod.NullCard())
+        self.notify = notify_mod.Engine(APP_DIR, ncfg, cue=beep,
+                                        card=self.notify_card)
         # The pencil's box: one line, takes the keyboard, on purpose.
         self._word_prompt = overlay_mod.WordPrompt()
         self._review = None
@@ -446,7 +466,8 @@ class App:
                 cfg, self._transcribe_for_phone,
                 lambda: self.transcriber.name,
                 self._translate_for_phone,
-                self._punctuate_for_phone)
+                self._punctuate_for_phone,
+                self._notify_from_outside)
 
     @property
     def vqa(self):
@@ -554,6 +575,11 @@ class App:
         awake = getattr(cfg, "awake", None)
         if awake is not None and awake.enabled and awake.hotkey:
             taps[parse_binding(awake.hotkey)] = "screens"
+        # The dismiss key, on the same terms again: [notify] enabled =
+        # false unregisters it, and a click on the card still works.
+        ncfg = getattr(cfg, "notify", None)
+        if ncfg is not None and ncfg.enabled and ncfg.hotkey:
+            taps[parse_binding(ncfg.hotkey)] = "notify_dismiss"
         return (hotkeys, taps,
                 vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
                 vk_for(cfg.pause_hotkey) if cfg.pause_hotkey else None)
@@ -852,6 +878,14 @@ class App:
                 return True
         except Exception:
             pass
+        # The notification card next, on the same terms: Esc, and only
+        # while it is up with the pointer on it (overlay.NotifyCard).
+        try:
+            card = getattr(self, "notify_card", None)
+            if card is not None and card.on_key(vk):
+                return True
+        except Exception:
+            pass
         if self._lookup_vk is not None and vk == self._lookup_vk:
             return False
         if self._vqa_vk is not None and vk == self._vqa_vk:
@@ -982,6 +1016,41 @@ class App:
                               {f"review.{k}": v for k, v in fields.items()})
         log.info("review card: %s",
                  ", ".join(f"{k}={v}" for k, v in fields.items()))
+
+    # ---- notifications (notify.py) ----
+
+    def _save_notify_card(self, fields: dict) -> None:
+        """The notification card's twin of _save_review_card: where it
+        was dragged to, written into [notify] through the same
+        comment-keeping line edit."""
+        self.cfg = dataclasses.replace(
+            self.cfg, notify=dataclasses.replace(self.cfg.notify, **fields))
+        config_mod.set_values(self.config_path,
+                              {f"notify.{k}": v for k, v in fields.items()})
+        log.info("notify card: %s",
+                 ", ".join(f"{k}={v}" for k, v in fields.items()))
+
+    def _notify_dismissed(self) -> None:
+        """A click on the card, or Esc over it. The callback arrives on
+        the card's Tk thread, and the engine's dismiss is a JSON write —
+        so it goes to a thread of its own, and the card's pump is never
+        made to wait on the disk."""
+        def work() -> None:
+            engine = getattr(self, "notify", None)
+            if engine is not None:
+                engine.dismiss(by="card")
+                self._say("notifications dismissed")
+        threading.Thread(target=work, daemon=True,
+                         name="notify-dismiss").start()
+
+    def _notify_from_outside(self, payload) -> dict:
+        """The /notify route's callable: from an HTTP request thread,
+        answered in milliseconds. ValueError (not an object) becomes the
+        route's 400; anything else its 503."""
+        engine = getattr(self, "notify", None)
+        if engine is None:
+            raise RuntimeError("notifications are off")
+        return engine.receive(payload)
 
     # ---- the second reading (review.py) ----
 
@@ -1196,6 +1265,13 @@ class App:
             "awake": (self.awake.state()
                       if getattr(self, "awake", None) is not None
                       else {"holding": False, "dark": False}),
+            # Counts and the last title only — never a body; see
+            # notify.Engine.state.
+            "notify": (self.notify.state()
+                       if getattr(self, "notify", None) is not None
+                       else {"enabled": False, "unread": 0, "total": 0,
+                             "reminding": False, "reminders_left": 0,
+                             "card_up": False, "last": None}),
         }
 
     # ---- pause ----
@@ -1408,6 +1484,8 @@ class App:
         self.dot.start()
         self.hint.start()
         self.review_card.start()
+        self.notify_card.start()
+        self.notify.start()
         if self.cfg.auto_pause_fullscreen:
             self._watcher = threading.Thread(target=self._watch_fullscreen,
                                              daemon=True, name="fullscreen")
@@ -1506,6 +1584,11 @@ class App:
         self.dot.stop()
         self.hint.stop()
         self.review_card.stop()
+        # The reminder thread first, then the card it would have shown.
+        if getattr(self, "notify", None) is not None:
+            self.notify.stop()
+        if getattr(self, "notify_card", None) is not None:
+            self.notify_card.stop()
         # Its own thread and its own window, and the window is destroyed
         # rather than hidden. That matters more than it did: the box waits
         # to be closed now, so quitting with one on screen must take it
@@ -1597,6 +1680,37 @@ class App:
                           "again to bring them back" if state.get("dark")
                           else "screens on")
                 return {"ok": True, "awake": state}
+            if command == "notify":
+                # dismiss | test | recent. dismiss is one JSON write and
+                # a queue put; test is receive() on this thread (the same
+                # write, an async cue); recent reads the file once. All
+                # inside the poll's patience, and the reply carries the
+                # fresh state so the Notify screen repaints at once.
+                engine = getattr(self, "notify", None)
+                if engine is None:
+                    return {"ok": False, "error": "notifications are off"}
+                do = str(args.get("do", "")).strip().lower()
+                if do == "dismiss":
+                    state = engine.dismiss(by="dashboard")
+                    self._say("notifications dismissed")
+                    return {"ok": True, "notify": state}
+                if do == "test":
+                    reply = engine.test(source="test")
+                    if not reply.get("ok"):
+                        return {"ok": False, "error": reply.get("error", "")}
+                    self._say("test notification sent")
+                    return {"ok": True, "message": "a test notification is "
+                                                   "on its way",
+                            "id": reply.get("id"), "notify": engine.state()}
+                if do == "recent":
+                    try:
+                        n = int(args.get("n", 30))
+                    except (TypeError, ValueError):
+                        n = 30
+                    return {"ok": True,
+                            "items": engine.recent(max(1, min(100, n)))}
+                return {"ok": False, "error": f"unknown notify action "
+                                              f"{do!r}"}
             if command == "quit":
                 singleton.request_quit()
                 return {"ok": True}
@@ -1912,6 +2026,9 @@ class App:
         if action == "screens":
             self._tap_screens()
             return
+        if action == "notify_dismiss":
+            self._tap_notify_dismiss()
+            return
         if action not in ("translate", "punctuate"):
             return
         # Remember WHERE the text is before anything slow happens, for the
@@ -2078,6 +2195,18 @@ class App:
             else:
                 self._say("screens on")
         threading.Thread(target=work, daemon=True, name="screens-key").start()
+
+    def _tap_notify_dismiss(self) -> None:
+        """The notification card down and everything marked seen, from
+        the key. On a thread, like every tap: the engine's dismiss writes
+        notify.json, and nothing that touches the disk runs inside the
+        keyboard hook's 300 ms."""
+        def work() -> None:
+            engine = getattr(self, "notify", None)
+            if engine is not None:
+                engine.dismiss(by="key")
+                self._say("notifications dismissed")
+        threading.Thread(target=work, daemon=True, name="notify-key").start()
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
@@ -3984,6 +4113,12 @@ def main() -> int:
                  "them back. The dashboard's Awake screen has the same "
                  "switch and a check that says whether the hold is "
                  "standing", awake_cfg.hotkey)
+    ncfg = getattr(cfg, "notify", None)
+    if ncfg is not None and ncfg.enabled:
+        log.info("notifications: POST /notify on the phone endpoint (token "
+                 "from server_token.txt) plays a cue and puts a card up%s; "
+                 "Claude Code is wired through notify_hook.py",
+                 f"; tap {ncfg.hotkey!r} to dismiss" if ncfg.hotkey else "")
     log.info("mic: %s | backend: %s | transcripts: %s",
              app.recorder.device_label(), cfg.backend,
              APP_DIR / "transcripts.log")

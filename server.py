@@ -241,6 +241,7 @@ class _Handler(BaseHTTPRequestHandler):
         "/transcribe": "_do_transcribe",
         "/translate": "_do_translate",
         "/punctuate": "_do_punctuate",
+        "/notify": "_do_notify",
     }
 
     def do_POST(self) -> None:
@@ -397,19 +398,57 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(200, {"text": out, "backend": backend,
                          "changed": out != text})
 
+    def _do_notify(self, raw: bytes) -> None:
+        """A notification from another program (notify.py).
+
+        The body is a JSON object with any of source / kind / title /
+        body / project / session, all optional — the engine's clean()
+        decides what each becomes, and this handler decides nothing
+        about the content. It only sorts the answers: 503 when the app
+        was built without the engine or the engine refused ([notify]
+        enabled = false), 400 when the body was not an object, 200 with
+        the engine's reply otherwise. The callable runs on this request
+        thread and is written to return in milliseconds; there is no
+        per-request timeout to hide behind.
+        """
+        if self.server.notify is None:
+            self._json(503, {"error": "notifications are not available"})
+            return
+        payload = self._text_body(raw)
+        if payload is None:
+            return
+        try:
+            result = self.server.notify(payload)
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
+            return
+        except Exception as e:
+            log.warning("notify failed: %s", e)
+            self._json(503, {"error": str(e)})
+            return
+        if isinstance(result, dict) and result.get("ok") is False:
+            self._json(503, result)
+            return
+        if not isinstance(result, dict):
+            result = {"ok": True}
+        log.info("phone: notification #%s from %s", result.get("id"),
+                 payload.get("source", "?"))
+        self._json(200, result)
+
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
     def __init__(self, addr, token, transcribe, backend_name, translate=None,
-                 max_chars=5000, punctuate=None):
+                 max_chars=5000, punctuate=None, notify=None):
         super().__init__(addr, _Handler)
         self.token = token
         self.transcribe = transcribe
         self.backend_name = backend_name
         self.translate = translate
         self.punctuate = punctuate
+        self.notify = notify
         self.max_chars = max_chars
 
 
@@ -418,12 +457,13 @@ class PhoneServer:
     the desktop hotkey must keep working regardless."""
 
     def __init__(self, cfg, transcribe, backend_name, translate=None,
-                 punctuate=None):
+                 punctuate=None, notify=None):
         self.cfg = cfg
         self._transcribe = transcribe
         self._backend_name = backend_name
         self._translate = translate
         self._punctuate = punctuate
+        self._notify = notify
         self._srv: _Server | None = None
         self._thread: threading.Thread | None = None
         self.url: str | None = None
@@ -434,7 +474,8 @@ class PhoneServer:
         token = load_token()
         self._srv = _Server((host, port), token, self._transcribe,
                             self._backend_name, self._translate,
-                            self.cfg.translate.max_chars, self._punctuate)
+                            self.cfg.translate.max_chars, self._punctuate,
+                            notify=self._notify)
         self._thread = threading.Thread(target=self._srv.serve_forever,
                                         daemon=True, name="phone-server")
         self._thread.start()

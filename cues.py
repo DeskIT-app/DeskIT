@@ -82,6 +82,12 @@ CUES: dict[str, list[tuple[int, int]]] = {
     # apart, the shape every recording light in the world already has.
     "recording": [(784, 90), (1175, 130)],
     "recorded": [(1175, 90), (784, 140)],
+    # Something ARRIVED: nothing was heard, nothing rewritten, a message
+    # is waiting (notify.py) — three short rising notes, its own shape,
+    # because every pair above means "you did a thing" and this is the
+    # one cue that plays when you did nothing. Replayed by every reminder
+    # rather than given a second shape: it is the same message, unread.
+    "notify": [(784, 70), (988, 70), (1319, 150)],
 }
 
 

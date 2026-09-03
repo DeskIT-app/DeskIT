@@ -115,8 +115,8 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
            "faint": ui.FAINT}
 
 NAV = (("overview", "Overview"), ("history", "History"),
-       ("review", "Review"), ("awake", "Awake"), ("keys", "Keys"),
-       ("version", "Version"), ("settings", "Settings"))
+       ("review", "Review"), ("awake", "Awake"), ("notify", "Notify"),
+       ("keys", "Keys"), ("version", "Version"), ("settings", "Settings"))
 
 # The Awake screen probes the machine (powercfg, PowerShell — a few
 # seconds) the moment it opens. Off for the tests, which open every
@@ -133,7 +133,7 @@ KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
                                   "visual_qa_hotkey")),
     ("What to do with the screen", ("capture_hotkey", "record_hotkey",
                                     "camera_hotkey")),
-    ("The app itself", ("pause_hotkey", "screens_hotkey")),
+    ("The app itself", ("pause_hotkey", "screens_hotkey", "dismiss_hotkey")),
 )
 
 # Keys that live INSIDE a config section, and the dotted path set_values
@@ -147,6 +147,7 @@ NESTED_HOTKEYS = {
     "record_hotkey": "capture.record_hotkey",
     "camera_hotkey": "camera.camera_hotkey",
     "screens_hotkey": "awake.screens_hotkey",
+    "dismiss_hotkey": "notify.dismiss_hotkey",
 }
 
 # The right-hand column of a settings row: a switch, a menu, or a field.
@@ -175,6 +176,27 @@ def human_time(seconds: float) -> str:
 def split_label(label: str) -> tuple[str, str]:
     match = HOW.match(label)
     return (match.group(1), match.group(2)) if match else (label, "")
+
+
+def ago(at_iso: str, now: float | None = None) -> str:
+    """"just now", "3 min ago", "2 h ago", "yesterday", "3 Sep" — how old
+    a notification is, for the hero line. `at` is notify.py's local ISO
+    stamp (2026-09-03T14:22:05); anything else reads as ''."""
+    try:
+        then = time.mktime(time.strptime(str(at_iso)[:19],
+                                         "%Y-%m-%dT%H:%M:%S"))
+    except (ValueError, OverflowError):
+        return ""
+    gap = (time.time() if now is None else now) - then
+    if gap < 60:
+        return "just now"
+    if gap < 3600:
+        return f"{int(gap // 60)} min ago"
+    if gap < 86400:
+        return f"{int(gap // 3600)} h ago"
+    if gap < 2 * 86400:
+        return "yesterday"
+    return time.strftime("%d %b", time.localtime(then)).lstrip("0")
 
 
 def _claim_taskbar_identity() -> None:
@@ -580,6 +602,7 @@ class Dashboard:
          "History": self._screen_history,
          "Review": self._screen_review,
          "Awake": self._screen_awake,
+         "Notify": self._screen_notify,
          "Keys": self._screen_keys,
          "Version": self._screen_version,
          "Settings": self._screen_settings}[name]()
@@ -1489,6 +1512,299 @@ class Dashboard:
         if label is not None and label.winfo_exists():
             label.config(text=f"checked {time.strftime('%H:%M:%S')}")
         self._paint_awake_rows()
+
+    # ------------------------------------------------------------- notify
+
+    def _notify_store(self):
+        """notify.json, read straight off the disk — the list has to show
+        what arrived while nothing is running, the same reason Review
+        reads review.json itself. The import is lazy and guarded: this
+        window is built identically on a checkout without notify.py, and
+        the screen has to draw there too (an empty list, not a traceback).
+        """
+        try:
+            import notify as notify_mod
+        except Exception:                 # noqa: BLE001 — no notify.py here
+            return None
+        return notify_mod.Store(APP_DIR / notify_mod.STORE_NAME)
+
+    def _notify_stat(self):
+        try:
+            st = os.stat(APP_DIR / "notify.json")
+            return (st.st_size, st.st_mtime_ns)
+        except OSError:
+            return None
+
+    def _screen_notify(self) -> None:
+        """What arrived from Claude — or anything else that knocked on
+        /notify — and whether it has been seen. notify.py.
+
+        Three cards, the Awake screen's shape. The hero is the count that
+        matters (UNREAD in amber, ALL SEEN in green) with the newest one's
+        source, title and age, and the one button that changes anything:
+        Dismiss all, which marks everything seen and takes the card down.
+        A strip under it sends a test notification through the running
+        app and opens notify.log; the list below is the last thirty from
+        notify.json, unseen ones edged brighter.
+
+        Dismiss and Send a test go through the RUNNING APP: the card, the
+        cue and the reminders live in the process with the hotkey in it,
+        not in this window, so with nothing running both are disabled and
+        the hint says why. The list does not need the app — it reads the
+        file — so it works either way, and follows the file while the
+        screen is open.
+        """
+        self._title("Notify", "when Claude — or anything — finishes")
+        p = self.parts
+        hero = ui.Card(self.sheet, CW, 148, pad=18)
+        hero.place(x=PAD, y=68)
+        body, inner = hero.body, CW - 36
+        p["notify_bar"] = tk.Label(body, bg=ui.CARD)
+        p["notify_bar"].place(x=-4, y=0)
+        p["notify_glyph"] = tk.Label(body, text=ui.ICON["notify"],
+                                     bg=ui.CARD, fg=ui.FAINT,
+                                     font=(ui.ICONS, 22))
+        p["notify_glyph"].place(x=6, y=2)
+        p["notify_state"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FG,
+                                     font=(ui.DISPLAY, 19, "bold"))
+        p["notify_state"].place(x=56, y=1)
+        p["notify_meta"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.DIM,
+                                    font=(ui.UI, 9), anchor="w")
+        p["notify_meta"].place(x=57, y=44)
+        p["notify_hint"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FAINT,
+                                    font=(ui.UI, 8), justify="left",
+                                    anchor="w")
+        p["notify_hint"].place(x=57, y=68)
+        p["notify_dismiss"] = ui.Button(body, "Dismiss all",
+                                        lambda: self._notify("dismiss"),
+                                        w=164, primary=True,
+                                        icon=ui.ICON["check"])
+        p["notify_dismiss"].place(x=inner, y=0, anchor="ne")
+
+        strip = ui.Card(self.sheet, CW, 76, pad=18)
+        strip.place(x=PAD, y=228)
+        p["notify_test"] = ui.Button(strip.body, "Send a test",
+                                     lambda: self._notify("test"), w=140,
+                                     icon=ui.ICON["play"])
+        p["notify_test"].place(x=0, y=2)
+        p["notify_log"] = ui.Button(strip.body, "Open notify.log",
+                                    self._notify_open_log, w=156, quiet=True,
+                                    icon=ui.ICON["page"])
+        p["notify_log"].place(x=152, y=2)
+        p["notify_count"] = tk.Label(strip.body, text="", bg=ui.CARD,
+                                     fg=ui.FAINT, font=(ui.UI, 8),
+                                     anchor="e")
+        p["notify_count"].place(x=CW - 36, y=12, anchor="ne")
+
+        p["notify_list"] = ui.Scroller(self.sheet, CW + 10, 330)
+        p["notify_list"].place(x=PAD, y=316)
+        p["notify_empty"] = tk.Label(self.sheet, text="", bg=ui.PANE,
+                                     fg=ui.FAINT, font=(ui.UI, 10))
+        self._notify_stamp = None
+        self._fill_notify()
+
+    def _paint_notify(self) -> None:
+        p = self.parts
+        if "notify_state" not in p:
+            return
+        info = (self.status.get("notify") or {}) if self.running else {}
+        enabled = bool(info.get("enabled"))
+        try:
+            unread = int(info.get("unread") or 0)
+        except (TypeError, ValueError):
+            unread = 0
+        last = info.get("last") or {}
+        kind = str(last.get("kind") or "info")
+        bits = [str(last.get("label") or last.get("source") or ""),
+                str(last.get("title") or ""), ago(str(last.get("at", "")))]
+        newest = "   ·   ".join(b for b in bits if b)
+        if not self.running:
+            colour, word = ui.FAINT, ui.FG
+            state = "NOT RUNNING"
+            meta = "the app puts the card up; start it first"
+            hint = ("The cue, the card and the reminders live in the "
+                    "running app — the process with the hotkey in it — so "
+                    "start dictation first. The list below is the file, "
+                    "and works without it.")
+        elif "notify" not in self.status:
+            # A running app that predates the door: its status has no
+            # section at all. Not "off" — the file may well say enabled.
+            colour, word = ui.DIM, ui.FG
+            state = "NOT WIRED"
+            meta = "the running app predates the notify door"
+            hint = ("The app that is running has no /notify route and no "
+                    "card. Stop it and start it again on this code.")
+        elif not enabled:
+            colour, word = ui.DIM, ui.FG
+            state = "OFF"
+            meta = "[notify] enabled = false"
+            hint = ("The route answers 503 and nothing is shown, stored or "
+                    "played. Turn it on in Settings and restart the app.")
+        elif unread > 0:
+            colour = ui.RED if kind == "error" else ui.AMBER
+            word = colour
+            state = f"{unread} UNREAD"
+            meta = newest or "something is waiting"
+            left = info.get("reminders_left") or 0
+            if info.get("reminding"):
+                hint = (f"Reminding: {left} more. Dismiss all marks "
+                        "everything seen and takes the card down; so does a "
+                        "click on the card, Esc over it, or the dismiss key.")
+            else:
+                hint = ("Waiting quietly. Dismiss all marks everything seen "
+                        "and takes the card down; so does a click on the "
+                        "card, Esc over it, or the dismiss key.")
+        else:
+            colour, word = ui.GREEN, ui.FG
+            state = "ALL SEEN"
+            meta = newest or "nothing has arrived yet"
+            hint = ("Anything that POSTs to /notify on the phone endpoint "
+                    "lands here — Claude Code through its hooks, or a "
+                    "program of your own. Send a test to hear the cue and "
+                    "see the card.")
+        p["notify_bar"].config(image=ui.rounded(4, 112, 2, colour, ui.CARD))
+        p["notify_glyph"].config(fg=colour if unread and self.running
+                                 else ui.FAINT)
+        p["notify_state"].config(text=state, fg=word)
+        p["notify_meta"].config(text=ui.clamp(meta, ui.UI, 9,
+                                              CW - 36 - 57 - 172, 1)[0])
+        p["notify_hint"].config(text=ui.clamp(hint, ui.UI, 8,
+                                              CW - 36 - 57, 2)[0])
+        p["notify_dismiss"].enable(self.running and enabled)
+        p["notify_test"].enable(self.running and enabled)
+        self._poll_notify()
+
+    def _poll_notify(self) -> None:
+        """Once a second from _refresh: redraw only when the file moved —
+        an arrival in the app, a dismissal from its card or key."""
+        if "notify_list" not in self.parts:
+            return
+        if self._notify_stat() != getattr(self, "_notify_stamp", None):
+            self._fill_notify()
+
+    def _fill_notify(self) -> None:
+        if "notify_list" not in self.parts:
+            return
+        self._notify_stamp = self._notify_stat()
+        items: list[dict] = []
+        kept = 0
+        try:
+            store = self._notify_store()
+            if store is not None:
+                items = list(store.recent(30))
+                try:
+                    kept = len(store.items())
+                except Exception:         # noqa: BLE001 — a store without it
+                    kept = len(items)
+        except Exception:                 # noqa: BLE001 — a broken file
+            items, kept = [], 0
+        unread = sum(1 for item in items if not item.get("seen"))
+        self.parts["notify_count"].config(
+            text=(f"{kept} kept   ·   {unread} unread" if kept
+                  else "nothing kept yet"))
+        scroller = self.parts["notify_list"]
+        scroller.clear()
+        empty = self.parts["notify_empty"]
+        empty.place_forget()
+        if not items:
+            empty.config(text="Nothing has arrived yet — Send a test, or "
+                              "let Claude finish something.")
+            empty.place(x=PAD + CW / 2, y=460, anchor="center")
+        for item in items:
+            self._notify_row(scroller, item)
+        scroller.to_top()
+
+    def _notify_row(self, scroller: ui.Scroller, item: dict) -> None:
+        """One notification, one canvas: time and day on the left, the
+        title and the first two lines of the body flush right, and who
+        sent it under them. Same layout rules as a review row — and the
+        same rule about text: title, body and the source line all go
+        through ui.draw_text (DrawTextW), because a title from Claude is
+        Hebrew, English or both in one line, and a create_text scrambles
+        the mixed case silently."""
+        seen = bool(item.get("seen"))
+        kind = str(item.get("kind") or "info")
+        colour = {"done": ui.GREEN, "input": ui.AMBER, "error": ui.RED,
+                  "info": ui.ACCENT}.get(kind, ui.ACCENT)
+        left, edge = 106, CW - 14
+        width = edge - left
+        title = str(item.get("title") or "")
+        body = str(item.get("body") or "")
+        photo, text_h, _lines = ui.draw_text(
+            title, pt=11, width=width, max_lines=1,
+            colour=ui.FG if not seen else ui.DIM, bg=ui.CARD)
+        more = None
+        more_h = 0
+        if body.strip():
+            more, more_h, _l = ui.draw_text(body, pt=9, width=width,
+                                            max_lines=2, colour=ui.FAINT,
+                                            bg=ui.CARD)
+        who = "   ·   ".join(
+            s for s in (str(item.get("label") or item.get("source") or ""),
+                        str(item.get("project") or "")) if s)
+        note = None
+        note_h = 0
+        if who:
+            note, note_h, _l = ui.draw_text(who, pt=8, width=width,
+                                            max_lines=1, colour=ui.FAINT,
+                                            bg=ui.CARD)
+        height = 13 + text_h + (more_h + 4 if more is not None else 0) \
+            + (note_h + 6 if note is not None else 0) + 12
+        height = max(height, 60)
+        row = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.PANE,
+                        highlightthickness=0, bd=0)
+        row.pack(pady=(0, 8))
+        row.create_image(0, 0, anchor="nw", image=ui.rounded(
+            CW, height, 12, ui.CARD, ui.PANE,
+            ui.TILE_EDGE if not seen else ui.LINE))
+        at = str(item.get("at", ""))
+        row.create_text(14, 15, text=at[11:16], anchor="nw",
+                        font=(ui.UI, 10, "bold"),
+                        fill=ui.FG if not seen else ui.DIM)
+        try:
+            day = time.strftime("%d %b", time.strptime(at[:19],
+                                                       "%Y-%m-%dT%H:%M:%S"))
+        except ValueError:
+            day = ""
+        row.create_text(14, 34, text=day, anchor="nw", font=(ui.UI, 8),
+                        fill=ui.FAINT)
+        row.create_image(left - 18, 19, anchor="nw",
+                         image=ui.rounded(8, 8, 4, colour, ui.CARD))
+        row.create_image(left, 13, anchor="nw", image=photo)
+        y = 13 + text_h + 4
+        if more is not None:
+            row.create_image(left, y, anchor="nw", image=more)
+            y += more_h + 6
+        if note is not None:
+            row.create_image(edge, y, anchor="ne", image=note)
+        scroller.bind_wheel(row)
+
+    def _notify(self, do: str) -> None:
+        """dismiss / test, through the running app."""
+        self._busy_until = time.monotonic() + 1
+        self._ask("notify", then=lambda r: self._notify_answered(r, do),
+                  do=do)
+
+    def _notify_answered(self, reply: dict | None, do: str) -> None:
+        self._announce(reply, {"dismiss": "all marked seen",
+                               "test": "test notification sent"}.get(do, do))
+        # The reply carries the new state; paint it now rather than one
+        # poll later, so Dismiss all is seen to do something at once. The
+        # paint ends in _poll_notify, which refills the list if the file
+        # moved — and a dismissal or a test always moves it.
+        if reply and reply.get("ok") and isinstance(reply.get("notify"),
+                                                    dict):
+            self.status["notify"] = reply["notify"]
+            self._paint_notify()
+        else:
+            self._fill_notify()
+
+    def _notify_open_log(self) -> None:
+        path = APP_DIR / "notify.log"
+        if not path.exists():
+            self._note("no notify.log yet — nothing has arrived")
+        elif not launch.open_path(path):
+            self._note(f"could not open {path.name}")
 
     def _screen_keys(self) -> None:
         """Every bindable key, in a column that scrolls.
@@ -2669,6 +2985,7 @@ class Dashboard:
         {"Overview": self._paint_overview, "History": lambda: None,
          "Review": self._poll_review,
          "Awake": self._paint_awake,
+         "Notify": self._paint_notify,
          "Keys": self._paint_keys,
          "Version": lambda: None,
          "Settings": self._paint_settings}[self.screen]()
