@@ -1542,6 +1542,14 @@ second capture and a second card, and the cards stack:
   before any card existed, so an early card is an offer expiring and never
   a picture lost — and with Windows' clipboard history on, `Win+V` still
   has the lot of them
+- **you can take a picture of the cards themselves.** The flag that keeps a
+  window out of a screenshot is absolute — it hides that window from *your*
+  grab as much as anyone else's, which is why a card wearing it could never
+  be shown to anybody. So the cards stay photographable, and what stops the
+  stack becoming a hall of mirrors is the order rather than the flag: the
+  desktop is frozen first and the cards are taken off the screen a moment
+  later, so a card lands in the picture once and is never in the way of the
+  drag. `toast_in_shots = false` hides them from every capture again
 
 **And the file is now opt-in.** `[capture] always_save = false` is the
 default: the picture goes to the clipboard and nowhere else until you press
@@ -1974,6 +1982,135 @@ holds 17,654" on a machine where `nvcontainer.exe` held 823,369. In a
 leak, the process that needs naming is precisely the one that cannot be
 opened. Verified against `Get-Process`: same handle counts, same working
 sets, and 330 processes seen where `Get-Process` sees 325.
+
+## Notify — when Claude (or anything) finishes (`ctrl+alt+m`)
+
+Claude Code has a "finished" notification of its own, and on this machine
+it never reaches the owner (2026-09-03: both notification switches are on
+in `~/.claude/settings.json`, and nothing has ever appeared) — so this app
+takes the job. Any program on this machine, or the phone over the same
+Tailscale link the dictation endpoint uses, POSTs a small JSON body to
+`/notify` on the `[server]` port with the bearer token from
+`server_token.txt`, and the app plays a three-note cue, puts a card up at
+the screen edge and keeps reminding you until the card is dismissed — a
+click on it, `Esc` with the mouse over it, a tap of `ctrl+alt+m`, or
+**Dismiss all** on the dashboard's Notify screen.
+
+**What happens.** The body is `{"source", "kind", "title", "body",
+"project", "session"}`, every field optional. `kind` is one of `done`,
+`input`, `error`, `info` (anything else reads as `info`) and colours the
+card's bar and the row's dot; an empty `title` gets the kind's own words
+("Finished", "Needs your input", "Something went wrong", "Notification").
+The card says who sent it, the title, the first four lines of the body,
+the project, and how long ago; it takes itself down after
+`[notify] card_seconds` (default 30, the clock paused while the mouse is
+on it; `0` = until dismissed) and the reminders bring it back. It never
+takes the foreground: the window that had the keyboard keeps it — the
+same recipe the capture toast uses — so a card arriving mid-sentence
+costs no keystroke.
+
+**How Claude Code is wired.** Two hooks in `C:\Users\shimr\.claude\settings.json`:
+`Stop` (every finished turn → `done`, "Claude finished", the first 300
+characters of the last message as the body) and `Notification` with the
+matcher `idle_prompt|permission_prompt` (→ `input`, "Claude is waiting for
+you" / "Claude needs a permission"). Both run `notify_hook.py`, which
+reads the event from stdin, maps it, and POSTs; `SubagentStop` and a
+`stop_hook_active` re-entry are ignored so a chain of agents is one
+notification, not five. It is installed once and idempotently:
+
+    .venv\Scripts\python.exe notify_hook.py --install-hook
+
+which adds the two entries under `hooks` (replacing any earlier entry of
+its own, leaving every other key and every foreign hook alone) and says
+on stderr whether the file changed. The hook is registered with
+`pythonw.exe` so no console flashes per turn; it exits `0` whatever
+happens and prints nothing on stdout, because a hook that fails would
+stop Claude, and a notification is never worth that.
+
+**Sending one by hand.** From PowerShell, against the running app:
+
+    $t=(gc 'C:\Users\shimr\Desktop\Organized\Projects\HebrewDictation\server_token.txt' -Raw).Trim(); irm 'http://127.0.0.1:8756/notify' -Method Post -Headers @{Authorization="Bearer $t"} -ContentType 'application/json; charset=utf-8' -Body '{"title":"Claude finished"}'
+
+(`-Raw` matters: without it `gc` returns an array and the header is
+wrong; and `irm` on PowerShell 5.1 throws on any non-2xx, which is the
+right behaviour for a one-liner.) Or, from any program, the same script
+Claude uses:
+
+    notify_hook.py --title "Build done" --body "17 tests, 0 failed" --source myapp --kind done
+
+`--project` and `--session` are optional; `--url` and `--token-file`
+override where it posts. The reply is `{"ok": true, "id": 12, "unread":
+3, "coalesced": false}`; `401` for a bad token, `400` for a body that is
+not a JSON object (an *empty* body is a 400 too — always send at least
+`{}`), `503` when `[notify] enabled = false`. `/notify` is POST-only and
+token-gated like every other route, which matters because `tailscale
+serve` fronts the whole port.
+
+**What is never interpreted.** Nothing in the body is parsed, formatted or
+run. `title` is cut to 80 characters, `body` to 400, `source` to 40,
+`project` to 60, `session` to 64 — each with a trailing `…` when cut —
+control characters are stripped, unknown keys dropped, and the result is
+drawn as text: every string on the card is its own picture through
+`DrawTextW`, so a Hebrew title with an English word in it reads the right
+way round, and the chrome (who, when, the project) is never concatenated
+with the title or body. The dashboard's rows do the same through
+`ui.draw_text`. A program on the far side of the token can make the card
+say anything; it cannot make the app *do* anything.
+
+**Reminders and coalescing.** While anything is unread the cue replays and
+the card comes back every `[notify] remind_every_s` (default 120)
+seconds, at most `[notify] remind_times` (default 2) times per arrival;
+then it waits quietly on the Notify screen, unread count intact. Dismiss
+marks *everything* seen at once — from the card, the key, or the
+dashboard — because "seen" means you looked, not that you clicked each
+one. Claude fires `Stop` and `Notification` a moment apart, so a second
+arrival from the SAME source within `[notify] coalesce_s` (default 5)
+seconds updates the card and skips the second cue; the item is still
+stored, the card shows the newest with an unread badge, and the reply
+says `coalesced: true`. Reminders are never coalesced. `[notify] cue =
+false` keeps the card and drops the sound.
+
+**Where it goes.** Every arrival, reminder and dismissal is one line in
+`notify.log` (`RECEIVED #12 from claude-code (done) | project
+HebrewDictation | title 'Claude finished' | 212 chars | unread 3`,
+`REMINDED 1/2`, `DISMISSED by key | 3 marked seen`); the last 100 items
+live in `notify.json`, which the dashboard's **Notify** screen reads
+straight off the disk — the count and the newest one's line in the hero,
+the last thirty as rows, unseen ones edged brighter — and follows while
+the screen is open, app running or not. **Send a test** and **Dismiss
+all** go through the running app, because the cue, the card and the
+reminders live in the process with the hotkey in it. `app.log` gets one
+`notify: received` line per arrival and a `rejected an unauthorised
+/notify` line per bad token. Both files are gitignored; titles and
+bodies are other programs' words and stay on this machine. The card's
+position is remembered in `[notify] x` / `y` when you drag it (`corner`
+says where it starts before you have), and `scale` sizes it.
+
+**Check it by hand.**
+1. Dashboard → Notify → **Send a test**: the cue, the card mid-height on
+   the right ("Test · A test notification", Hebrew and English on one
+   card), the hero says `1 UNREAD`, a row appears.
+2. Type a letter into whatever window you were in — it lands there, not
+   on the card.
+3. Leave the card alone: it goes at 30 s; at +120 s and +240 s the cue
+   replays and the card returns; `notify.log` shows `REMINDED 1/2`, `2/2`.
+4. Tap `ctrl+alt+m`: the card goes, the hero says `ALL SEEN`, `notify.log`
+   says `DISMISSED by key`.
+5. The PowerShell one-liner above twice within five seconds: one cue,
+   two rows, `coalesced: true` in the second reply.
+6. The same one-liner with the wrong token: `401`, and `app.log` gains
+   `rejected an unauthorised /notify`.
+
+**Rejected, 2026-09-03.** *The desktop app's own notification*: it does
+not fire for the owner, which is the whole reason this exists. *A `type:
+http` hook* in `settings.json`, posting straight to `/notify` with no
+script: Claude Code's docs do not say how a bearer token would be
+interpolated into the hook's headers, and a hook that sends the event
+unauthenticated would need the route opened up, which `tailscale serve`
+forbids. *A named-pipe door* beside the dashboard's `control.py`: local
+only, so the phone could never knock, and the phone is half the point.
+What shipped is the same `HintCard` the second reading already uses, on
+its own thread, dragged and remembered the same way.
 
 ## Dictating from the phone
 
@@ -2915,8 +3052,9 @@ for `מבשרים`, all of which the local model got right.
 | `[capture] copy_to_clipboard` | `true` | CF_DIB + the registered PNG format, so Paint, Word, Chrome and Slack all find one they like and a lasso keeps its alpha |
 | `[capture] after_shot` | `toast` | `toast` \| `editor` \| `nothing`. What happens when you let go. `toast` puts a small card in a corner with a thumbnail and the editor one click away; `editor` opens the editor immediately, the way this key used to; `nothing` is a pure grab-and-go |
 | `[capture] toast_corner` | `bottom-right` | which corner that card appears in. Its own setting and not `timer_corner`'s, because the recording pill and the capture card can want different corners on the same desk |
-| `[capture] toast_seconds` | `5` | how long it waits. The clock **pauses** while the pointer is on the card |
+| `[capture] toast_seconds` | `10` | how long it waits. The clock **pauses** while the pointer is on the card |
 | `[capture] toast_stack` | `4` | how many cards may be up at once. The key is never refused — past this the oldest card goes early to make room, and it takes nothing with it, because every capture was on the clipboard before its card appeared. 1 to 8; a screen too short for that many holds what it can |
+| `[capture] toast_in_shots` | `true` | may a screenshot **see** the cards? `true`, so you can photograph one and show it to somebody — the Windows flag that hides a window from a capture hides it from *your* grab too, which is why the camera card refuses it as well. It does not compound: the desktop is frozen before the deck is taken off the screen, so a card lands in a picture once and never eats the drag. `false` hides them from every capture and every recording |
 | `[capture] always_save` | `false` | write **every** capture to `folder`, or only the ones you ask to keep. `false` means the picture is on the clipboard and nowhere else until Save is pressed — the one setting here that gives something up, in exchange for a folder that holds what you meant to keep |
 | `[capture] copy_clip_path` | `true` | a finished recording goes on the clipboard as a **file** (CF_HDROP), so it pastes into a chat or a folder |
 | `[capture] fps` | `30` | measured achievable with zero dropped frames at 720p and 1080p; 1440p settles at ~28 and stays real-time because frames carry wall-clock stamps, not frame numbers |
@@ -2939,6 +3077,17 @@ for `מבשרים`, all of which the local model got right.
 | `[server] enabled` | `false` | the phone endpoint (see [Dictating from the phone](#dictating-from-the-phone)) |
 | `[server] host` | `""` | `""` = the Tailscale address when up, else `127.0.0.1`. Deliberately never `0.0.0.0` |
 | `[server] port` | `8756` | the port `tailscale serve` should front |
+| `[notify] enabled` | `true` | the notify door (see [Notify](#notify--when-claude-or-anything-finishes-ctrlaltm)). `false` = `/notify` answers 503 and nothing is shown, stored or played |
+| `[notify] cue` | `true` | play the three-note `notify` cue when one arrives and on every reminder. `false` = the card only |
+| `[notify] card_seconds` | `30` | how long the card stays up before it takes itself down; the reminders bring it back. The clock **pauses** while the mouse is on it. `0` = until dismissed |
+| `[notify] remind_every_s` | `120` | while something is unread, play the cue and show the card again this many seconds after the last time. `0` = never remind |
+| `[notify] remind_times` | `2` | ...at most this many times per arrival, then it waits quietly on the dashboard's Notify screen. `0` = never remind |
+| `[notify] coalesce_s` | `5` | a second notification from the **same** source within this many seconds updates the card instead of playing a second cue — Claude fires `Stop` and `Notification` a moment apart. The item is still stored |
+| `[notify] corner` | `right` | `right` \| `left` \| `top-right` \| `top-left` \| `bottom-right` \| `bottom-left`. Where the card appears before you have dragged it; `right` is mid-height on the right edge, like the second reading's card |
+| `[notify] x` | `-100000` | the top-left of the card where you last dragged it, in screen pixels. `-100000` = never moved: use `corner`. Negative is real on a monitor to the left of the primary |
+| `[notify] y` | `-100000` | same, vertically |
+| `[notify] scale` | `1.0` | how big the card is drawn, `0.6` to `1.4` |
+| `[notify] dismiss_hotkey` | `ctrl+alt+m` | **tap** to take the card down and mark everything seen, wherever the mouse is. Rebind from the dashboard's Keys screen; `""` = no key |
 
 ## Design notes
 

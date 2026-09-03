@@ -4093,7 +4093,7 @@ class ShotToast:
     def __init__(self, image, box: tuple[int, int, int, int], *,
                  saved: Path | None = None, corner: str = "bottom-right",
                  seconds: int = 5, copied: bool = True,
-                 master=None, owned=()):
+                 in_shots: bool = True, master=None, owned=()):
         import tkinter as tk
         self.tk = tk
         self.image = image
@@ -4102,6 +4102,13 @@ class ShotToast:
         self.corner = corner if corner in CORNERS else "bottom-right"
         self.seconds = max(1, int(seconds))
         self.copied = copied
+        # MAY THE NEXT SCREENSHOT SEE THIS CARD? The owner asked for yes
+        # (2026-09-04): a card you cannot photograph is a card you cannot
+        # show anybody, and the first thing he wanted to do with the new
+        # stack was take a picture of it. See _build for the flag this
+        # turns off and capture.py's camera card for the same argument
+        # reached independently.
+        self.in_shots = bool(in_shots)
         self.action: str | None = None
         # ONE ROOT PER PROCESS, N CARDS ON IT. With `master` given this is
         # a Toplevel of the deck's hidden root, which is what lets a dead
@@ -4164,14 +4171,23 @@ class ShotToast:
         canvas.create_image(0, 0, anchor="nw", image=self._keep["face"])
         root.update_idletasks()
         no_activate(root)
-        # LOAD-BEARING NOW THAT THEY STACK. The second card's frozen
-        # screen is grabbed while the FIRST one is still on the desk, so
-        # without WDA_EXCLUDEFROMCAPTURE the first card is literally in
-        # the second screenshot — and then in the third, twice. The clip
-        # bar has done this on both its windows since it shipped; the
-        # corner card only got away without it because there was never
-        # more than one of it. Measured 0/60000 pixels, AGENTS.md.
-        hide_from_capture(root)
+        # THE OWNER WANTS TO BE ABLE TO PHOTOGRAPH HIS OWN CARDS, and
+        # that is why this is a switch and not the flat rule the clip bar
+        # follows. WDA_EXCLUDEFROMCAPTURE is absolute: a window carrying
+        # it is invisible to EVERY grab, including the owner's own, so it
+        # cannot be shown to anyone — not in a bug report, not over a
+        # call. The camera card refuses the flag for exactly this reason
+        # and says so in its own docstring; this is the same argument
+        # reached from the other end.
+        #
+        # The cost, stated plainly because it is real: with `in_shots` on
+        # (the default), a screenshot of that corner has the cards in it.
+        # What stops the stack turning into a hall of mirrors is not this
+        # flag but the ORDER in `_shot_flow` — the desktop is frozen
+        # first and the deck is hushed immediately after, so a card is in
+        # the picture at most once and never eats the drag.
+        if not self.in_shots:
+            hide_from_capture(root)
         round_window(root, CLIP_BAR_RADIUS)
         root.deiconify()
         root.update_idletasks()
@@ -4506,7 +4522,8 @@ class ShotCards:
         return True
 
     def add(self, image, box, *, saved=None, corner="bottom-right",
-            seconds=5, copied=True, full=None, on_action=None) -> None:
+            seconds=5, copied=True, in_shots=True, full=None,
+            on_action=None) -> None:
         """Offer one capture. Called from OTHER THREADS.
 
         PLAIN DATA ONLY over this queue: a PIL image, a rectangle, a
@@ -4518,7 +4535,8 @@ class ShotCards:
             raise CaptureError("the corner-card deck was never started")
         payload = {"image": image, "box": box, "saved": saved,
                    "corner": corner, "seconds": seconds, "copied": copied,
-                   "full": full, "on_action": on_action or self._on_action}
+                   "in_shots": in_shots, "full": full,
+                   "on_action": on_action or self._on_action}
         self._q.put(payload)
         if full is not None:
             # THE TRADE, IN NUMBERS, so it is falsifiable rather than a
@@ -4535,13 +4553,19 @@ class ShotCards:
     def hush(self, timeout: float = 0.25) -> None:
         """Take every card off the screen and stop every clock.
 
-        A full-screen capture window is about to map. Topmost cards in a
-        corner would be photographed by it, and worse, they would eat the
-        drag over that corner — the bottom-right is where the taskbar
-        clock is and where people drag TO. So the deck goes dark for the
-        length of the selection and comes back with the same seconds left
-        it had, because none of them were spent on a screen nobody could
-        see.
+        A full-screen capture window is about to map, and topmost cards
+        in a corner would eat the drag over that corner — the
+        bottom-right is where the taskbar clock is and where people drag
+        TO. So the deck goes dark for the length of the selection and
+        comes back with the same seconds left it had, because none of
+        them were spent on a screen nobody could see.
+
+        THIS USED TO BE ABOUT THE PICTURE TOO, and it no longer is. The
+        screenshot flow now freezes the desktop BEFORE it calls this, on
+        purpose, so the cards are in the picture the owner is about to
+        take a crop of — that was the ask, 2026-09-04. Being off the live
+        screen for the drag and being absent from the freeze are two
+        different things, and only the first one was ever worth having.
 
         Waits briefly so the cards are actually gone before the selector
         maps — but ONLY WHEN THERE IS SOMETHING TO WAIT FOR. This is
@@ -4690,6 +4714,7 @@ class ShotCards:
                              corner=payload["corner"],
                              seconds=payload["seconds"],
                              copied=payload["copied"],
+                             in_shots=payload.get("in_shots", True),
                              master=root, owned=owned())
             card.full = payload["full"]
             card.on_action = payload["on_action"]
@@ -5576,7 +5601,7 @@ class Controller:
 
     # ---- who owns the screen ----
 
-    def _take_screen(self) -> bool:
+    def _take_screen(self, hush: bool = True) -> bool:
         """Claim the screen for a window that is about to cover it.
 
         ATOMIC, BECAUSE THREE FLOWS NOW RACE FOR IT. It used to be two
@@ -5587,15 +5612,26 @@ class Controller:
         answer to "may I" and the act of taking it one step.
 
         Hushing the cards is part of taking the screen and not a separate
-        courtesy: a topmost card in the bottom-right would be
-        photographed by the selector about to map, and worse, it would
-        eat a drag that ended in that corner.
+        courtesy: a topmost card in the bottom-right would eat a drag
+        that ended in that corner, and the bottom-right is where people
+        drag TO.
+
+        `hush=False` IS FOR THE SCREENSHOT KEY ALONE, and it is a
+        two-step rather than a refusal: the screenshot flow wants the
+        cards ON the desk for the length of one `ImageGrab`, so that a
+        capture CAN be taken of them, and off it for the drag that
+        follows. It therefore claims the screen without hushing and
+        hushes itself the instant the freeze is in hand. The camera and
+        the recorder have no such moment — nothing of theirs is
+        photographed before their window maps — so they take the
+        default.
         """
         with self._lock:
             if self._busy.is_set():
                 return False
             self._busy.set()
-        self._hush_cards()
+        if hush:
+            self._hush_cards()
         return True
 
     def _free_screen(self) -> None:
@@ -5643,7 +5679,10 @@ class Controller:
 
     def begin_shot(self) -> bool:
         """Start the select-and-edit flow. False if one is already up."""
-        if not self._take_screen():
+        # NOT HUSHED YET — _shot_flow does it, one line after the freeze,
+        # so the cards already on the desk are IN that freeze and can be
+        # captured. See _take_screen.
+        if not self._take_screen(hush=False):
             return False
         self._cancel.clear()
         threading.Thread(target=self._shot_flow, daemon=True,
@@ -5657,6 +5696,15 @@ class Controller:
             cfg = self._cfg()
             started = time.monotonic()
             full = ImageGrab.grab(all_screens=True).convert("RGB")
+            # THE CARDS ARE IN THAT PICTURE, AND NOW THEY GET OUT OF THE
+            # WAY. This one line is the whole reason the owner can
+            # photograph his own stack: the freeze above caught the desk
+            # as he sees it, cards and all, and the hush below takes them
+            # off the live screen before the selector maps so they cannot
+            # eat a drag over the corner they sit in. Hushing before the
+            # grab — which is what taking the screen does for every other
+            # flow — would have removed them from the picture as well.
+            self._hush_cards()
             log.debug("capture froze %dx%d in %.0f ms", full.width,
                       full.height, (time.monotonic() - started) * 1000)
             window = ShotWindow(full, mode="shot", cfg=cfg,
@@ -5723,6 +5771,7 @@ class Controller:
                      corner=cfg.toast_corner,
                      seconds=cfg.toast_seconds,
                      copied=cfg.copy_to_clipboard,
+                     in_shots=getattr(cfg, "toast_in_shots", True),
                      full=full,
                      on_action=lambda answer: self._card_action(
                          answer, full, result, cfg))
@@ -5812,7 +5861,8 @@ class Controller:
                               saved=result.get("path"),
                               corner=cfg.toast_corner,
                               seconds=cfg.toast_seconds,
-                              copied=cfg.copy_to_clipboard)
+                              copied=cfg.copy_to_clipboard,
+                              in_shots=getattr(cfg, "toast_in_shots", True))
             action = toast.run()
             toast = None
             gc.collect()

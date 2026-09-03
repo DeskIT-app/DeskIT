@@ -430,6 +430,18 @@ class CaptureConfig:
     # 18 MB apiece on this machine. 1 keeps the old one-card look and
     # still answers every press.
     toast_stack: int = 4
+    # May a screenshot see the cards? true, because a card you cannot
+    # photograph is a card you cannot show anybody — not in a bug
+    # report, not over a call — and WDA_EXCLUDEFROMCAPTURE is absolute:
+    # it hides the window from the OWNER's grab as much as anyone's.
+    # The camera card refuses the same flag for the same reason.
+    #
+    # The cost is real and worth stating: with this on, a screenshot of
+    # that corner has the cards in it. What keeps it from compounding is
+    # the ORDER in the flow, not this flag — the desktop is frozen
+    # first, the deck is hushed immediately after, so a card is in the
+    # picture at most once and never eats the drag.
+    toast_in_shots: bool = True
     # Write EVERY capture to `folder`, or only the ones you ask to keep.
     #
     # false is the default, and it is the one setting here that gives up
@@ -567,6 +579,44 @@ class AwakeConfig:
     # this app, the heaviest programs), and one more the moment they
     # come back. 0 = none. See awake.vitals().
     vitals_minutes: int = 10
+
+
+@dataclass(frozen=True)
+class NotifyConfig:
+    """Notifications from other programs — see notify.py.
+
+    Claude Code (through notify_hook.py), the phone, the command line:
+    anything with the server token may POST /notify, and the app plays
+    a cue, puts a card up and reminds until the card is dismissed.
+    `enabled = false` makes the route answer 503, unregisters the key
+    and builds the inert card; nothing is stored or played.
+    """
+    enabled: bool = True
+    # Play the "notify" cue on arrival and on every reminder. False:
+    # the card alone.
+    cue: bool = True
+    # How long the card stays up before it takes itself down; the
+    # reminders bring it back. 0 = until dismissed.
+    card_seconds: int = 30
+    # While anything is unread, cue and card again every this many
+    # seconds, at most `remind_times` times per arrival. 0 for either =
+    # never remind.
+    remind_every_s: int = 120
+    remind_times: int = 2
+    # A second arrival from the SAME source inside this many seconds
+    # updates the card and skips the cue — Claude fires Stop and
+    # Notification a moment apart. 0 = every arrival plays.
+    coalesce_s: int = 5
+    # Where the card appears before it has been dragged, and where it
+    # was dragged to — the review card's sentinels, the review card's
+    # reasons.
+    corner: str = "right"
+    x: int = -100000
+    y: int = -100000
+    scale: float = 1.0
+    # The dismiss key ("dismiss_hotkey" in the file): a tap takes the
+    # card down and marks everything seen, wherever the mouse is.
+    hotkey: str = "ctrl+alt+m"
 
 
 @dataclass(frozen=True)
@@ -859,6 +909,7 @@ class Config:
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
     awake: AwakeConfig = field(default_factory=AwakeConfig)
+    notify: NotifyConfig = field(default_factory=NotifyConfig)
 
     @property
     def capture_hotkey(self) -> str:
@@ -884,6 +935,11 @@ class Config:
     def screens_hotkey(self) -> str:
         """The screens-off toggle, read out of [awake]."""
         return self.awake.hotkey
+
+    @property
+    def dismiss_hotkey(self) -> str:
+        """The notification-dismiss key, read out of [notify]."""
+        return self.notify.hotkey
 
     @property
     def visual_qa_hotkey(self) -> str:
@@ -928,6 +984,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
     ("camera_hotkey", "Photo from the camera (tap)"),
     ("pause_hotkey", "Pause / resume"),
     ("screens_hotkey", "Screens off (tap)"),
+    ("dismiss_hotkey", "Dismiss the notification (tap)"),
 )
 
 
@@ -941,7 +998,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
 CHORD_FIELDS: frozenset[str] = frozenset((
     "translate_hotkey", "punctuate_hotkey", "correct_hotkey",
     "lookup_hotkey", "visual_qa_hotkey", "capture_hotkey", "record_hotkey",
-    "camera_hotkey", "screens_hotkey",
+    "camera_hotkey", "screens_hotkey", "dismiss_hotkey",
 ))
 
 
@@ -967,6 +1024,9 @@ def with_field(cfg: "Config", name: str, value) -> "Config":
     if name == "screens_hotkey":
         return dataclasses.replace(
             cfg, awake=dataclasses.replace(cfg.awake, hotkey=str(value)))
+    if name == "dismiss_hotkey":
+        return dataclasses.replace(
+            cfg, notify=dataclasses.replace(cfg.notify, hotkey=str(value)))
     if name == "visual_qa_hotkey":
         return dataclasses.replace(
             cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
@@ -1085,6 +1145,7 @@ def load(path: Path) -> Config:
     capture = data.get("capture", {})
     camera = data.get("camera", {})
     awake = data.get("awake", {})
+    notify = data.get("notify", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -1363,6 +1424,8 @@ def load(path: Path) -> Config:
                 "toast_seconds", CaptureConfig.toast_seconds)),
             toast_stack=int(capture.get(
                 "toast_stack", CaptureConfig.toast_stack)),
+            toast_in_shots=bool(capture.get(
+                "toast_in_shots", CaptureConfig.toast_in_shots)),
             always_save=bool(capture.get(
                 "always_save", CaptureConfig.always_save)),
             copy_clip_path=bool(capture.get(
@@ -1408,6 +1471,24 @@ def load(path: Path) -> Config:
                 "keep_screens_off_s", AwakeConfig.keep_screens_off_s)),
             vitals_minutes=int(awake.get(
                 "vitals_minutes", AwakeConfig.vitals_minutes)),
+        ),
+        notify=NotifyConfig(
+            enabled=bool(notify.get("enabled", NotifyConfig.enabled)),
+            cue=bool(notify.get("cue", NotifyConfig.cue)),
+            card_seconds=int(notify.get("card_seconds",
+                                        NotifyConfig.card_seconds)),
+            remind_every_s=int(notify.get("remind_every_s",
+                                          NotifyConfig.remind_every_s)),
+            remind_times=int(notify.get("remind_times",
+                                        NotifyConfig.remind_times)),
+            coalesce_s=int(notify.get("coalesce_s", NotifyConfig.coalesce_s)),
+            corner=str(notify.get("corner",
+                                  NotifyConfig.corner)).strip().lower(),
+            x=int(notify.get("x", NotifyConfig.x)),
+            y=int(notify.get("y", NotifyConfig.y)),
+            scale=float(notify.get("scale", NotifyConfig.scale)),
+            hotkey=str(notify.get(
+                "dismiss_hotkey", NotifyConfig.hotkey)).strip().lower(),
         ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
@@ -1656,6 +1737,27 @@ def load(path: Path) -> Config:
             f"{HINT_SCALE_MAX}, got {cfg.review.scale!r}")
     if cfg.review.card_seconds < 0:
         raise ConfigError("review.card_seconds must be >= 0")
+    # [notify]. After review's on purpose: a bad corner in a file that
+    # has both must still name review.corner first (a test holds it).
+    if not (0 <= cfg.notify.card_seconds <= 600):
+        raise ConfigError("notify.card_seconds must be 0-600 (0 = until "
+                          f"dismissed), got {cfg.notify.card_seconds!r}")
+    if not (0 <= cfg.notify.remind_every_s <= 3600):
+        raise ConfigError("notify.remind_every_s must be 0-3600 (0 = never), "
+                          f"got {cfg.notify.remind_every_s!r}")
+    if not (0 <= cfg.notify.remind_times <= 20):
+        raise ConfigError("notify.remind_times must be 0-20 (0 = never), "
+                          f"got {cfg.notify.remind_times!r}")
+    if not (0 <= cfg.notify.coalesce_s <= 60):
+        raise ConfigError("notify.coalesce_s must be 0-60, "
+                          f"got {cfg.notify.coalesce_s!r}")
+    if cfg.notify.corner not in REVIEW_CORNERS:
+        raise ConfigError(f"notify.corner must be one of {REVIEW_CORNERS}, "
+                          f"got {cfg.notify.corner!r}")
+    if not (HINT_SCALE_MIN <= cfg.notify.scale <= HINT_SCALE_MAX):
+        raise ConfigError(
+            f"notify.scale must be between {HINT_SCALE_MIN} and "
+            f"{HINT_SCALE_MAX}, got {cfg.notify.scale!r}")
     if cfg.review.max_changes < 1:
         raise ConfigError("review.max_changes must be >= 1")
     if not (0 <= cfg.review.witness <= 3):

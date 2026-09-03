@@ -782,6 +782,20 @@ toast_stack = 4                # how many capture cards may be up at once.
                                # WERE, about 18 MB apiece on this
                                # desktop. 1 keeps the old one-card look
                                # and still never swallows a press
+toast_in_shots = true          # may a screenshot SEE the cards? true, so
+                               # you can take a picture of one and show
+                               # it to somebody. The Windows flag that
+                               # hides a window from a capture is
+                               # absolute — it hides it from YOUR grab as
+                               # much as anyone else's — which is why the
+                               # camera card refuses it too. The cost is
+                               # real: a screenshot of that corner has
+                               # the cards in it. It does not pile up,
+                               # though, because the desktop is frozen
+                               # BEFORE the deck is taken off the screen,
+                               # so a card lands in the picture once and
+                               # never eats the drag. false hides them
+                               # from every capture and every recording
 always_save = false            # write EVERY capture to `folder`, or only
                                # the ones you ask to keep.
                                #
@@ -1005,6 +1019,52 @@ pin_timeouts = false           # also set Windows' own "sleep after" and
                                # died holding (awake_state.json). Off
                                # because the hold already covers S3 sleep
                                # and this is a second thing to restore
+
+[notify]
+# A DOOR FOR OTHER PROGRAMS TO KNOCK ON. Claude Code's own "finished"
+# notification never reaches the owner, so this app takes the job: any
+# program on this machine (or the phone, over the same Tailscale link the
+# dictation endpoint uses) POSTs a small JSON body to /notify on the
+# [server] port with the bearer token from server_token.txt, and the app
+# plays a three-note cue, puts a card up at the screen edge and keeps
+# REMINDING you until the card is dismissed - a click on it, Esc with the
+# mouse over it, or `dismiss_hotkey`. Nothing in the body is interpreted:
+# title and body are cut to 80 / 400 characters and drawn as text. Claude
+# Code is wired through a Stop hook and a Notification hook in
+# ~/.claude/settings.json that run notify_hook.py; `python notify_hook.py
+# --install-hook` writes them. Every arrival, reminder and dismissal is a
+# line in notify.log; the last 100 are kept in notify.json for the
+# dashboard's Notify screen.
+enabled = true                 # false = the route answers 503 and nothing
+                               # is shown, stored or played
+cue = true                     # play the "notify" cue when one arrives and
+                               # on every reminder. false = the card only
+card_seconds = 30              # how long the card stays up before it takes
+                               # itself down (the reminders bring it back).
+                               # The clock pauses while the mouse is on it.
+                               # 0 = it stays until dismissed
+remind_every_s = 120           # while something is unread, play the cue and
+                               # show the card again this many seconds
+                               # after the last time. 0 = never remind
+remind_times = 2               # ...at most this many times per arrival,
+                               # then it waits quietly in the dashboard.
+                               # 0 = never remind
+coalesce_s = 5                 # a second notification from the SAME source
+                               # within this many seconds updates the card
+                               # instead of playing a second cue - Claude
+                               # fires Stop and Notification a moment apart
+corner = "right"               # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
+                               # appears before you have dragged it: "right"
+                               # is mid-height on the right edge, like the
+                               # second reading's card
+x = -100000                    # the top-left of the CARD where you last
+y = -100000                    # dragged it, in screen pixels. -100000 = never
+                               # moved: use `corner`. Negative is real on a
+                               # monitor to the left of the primary
+scale = 1.0                    # how big it is drawn (0.6 .. 1.4)
+dismiss_hotkey = "ctrl+alt+m"  # tap: the card goes away and everything is
+                               # marked seen, wherever the mouse is. Rebind
+                               # from the dashboard; "" = no key
 
 [server]
 # Dictate from the PHONE, transcribe on this GPU: the phone records and
@@ -1374,8 +1434,8 @@ card_seconds = 20             # how long the card stays on screen before it
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
-x = -711                   # the top-left of the CARD where you last
-y = 715                   # dragged it, in screen pixels. -100000 = never
+x = -980                   # the top-left of the CARD where you last
+y = 916                   # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a
                               # monitor to the left of the primary
 scale = 1.0                   # how big it is drawn (0.6 .. 1.4)

@@ -11609,6 +11609,7 @@ def test_both_capture_keys_are_registered_everywhere_a_key_must_be() -> None:
         "record_hotkey": "capture.record_hotkey",
         "camera_hotkey": "camera.camera_hotkey",
         "screens_hotkey": "awake.screens_hotkey",
+        "dismiss_hotkey": "notify.dismiss_hotkey",
     }, dash_mod.NESTED_HOTKEYS
 
 
@@ -13366,24 +13367,43 @@ def test_the_corner_card_does_not_hold_the_screen() -> None:
     assert cap.Controller(lambda: None).busy is False
 
 
-def test_the_corner_card_is_not_in_the_next_screenshot() -> None:
-    """AGENTS.md's rule, which until now nothing enforced: our own windows
-    must not appear in the owner's captures. `hide_from_capture` sets
-    WDA_EXCLUDEFROMCAPTURE, the same flag the clip bar and the status dot
-    carry, and grep found it in neither this test file nor this card.
+def test_whether_the_card_is_in_the_next_screenshot_is_the_owners_call() -> None:
+    """The owner asked to be able to photograph his own cards (2026-09-04),
+    so `toast_in_shots` decides this and the default is YES.
 
-    It was survivable while there was only ever one card and the key was
-    dead underneath it. It is not survivable now, because pressing the key
-    again while a card is up IS the feature: without the flag the second
-    screenshot has the first one's card sitting in the corner of it, and
-    the third has two.
+    WDA_EXCLUDEFROMCAPTURE is absolute: a window carrying it is invisible
+    to every grab including the owner's own, so a card that always carried
+    it could never be shown to anybody. The camera card refuses the same
+    flag for the same reason. What keeps the default from compounding into
+    a hall of mirrors is not the flag but the ORDER in `_shot_flow` — the
+    desktop is frozen first and the deck hushed immediately after, so a
+    card lands in the picture at most once and never eats the drag. Both
+    halves are asserted here, because either one alone is the bug.
     """
+    import inspect
+
+    import capture as cap
+
     source = (Path(__file__).resolve().parent / "capture.py").read_text(
         "utf-8")
     build = source[source.index("class ShotToast:"):]
     build = build[build.index("    def _build"):build.index("    # -- layout")]
     assert "hide_from_capture(" in build, \
-        "the card will be photographed by the next capture"
+        "the card can no longer be hidden from a capture at all"
+    assert "if not self.in_shots:" in build, \
+        "the flag is unconditional again — the owner cannot photograph a card"
+
+    # The freeze has to come BEFORE the hush, or the cards are gone from
+    # the picture no matter what the setting says.
+    flow = inspect.getsource(cap.Controller._shot_flow)
+    assert "ImageGrab.grab(" in flow and "self._hush_cards()" in flow, \
+        "the shot flow no longer freezes and hushes in one place"
+    assert flow.index("ImageGrab.grab(") < flow.index("self._hush_cards()"), \
+        "hushed before the freeze — the cards are not in the picture"
+    # ...and the claim must not hush on the way in, which would undo it.
+    begin = inspect.getsource(cap.Controller.begin_shot)
+    assert "hush=False" in begin, \
+        "begin_shot hushes the deck before _shot_flow can freeze it"
 
 
 def test_a_closed_deck_of_cards_leaves_no_interpreter_to_free() -> None:
@@ -16455,7 +16475,11 @@ def test_review_settings_are_in_the_real_config_and_checked_at_load() -> None:
     try:
         path = tmp / "config.toml"
         base = (here / "config.toml").read_text("utf-8")
-        assert base.count('corner = "right"') == 1, "the [review] corner"
+        # Two since 2026-09-03: [review] and [notify] both start on the
+        # right edge. The replace below turns BOTH into "middle"; review's
+        # check runs first in config.load, so the error still names it.
+        assert base.count('corner = "right"') == 2, \
+            "the [review] and [notify] corners"
         path.write_text(base.replace('corner = "right"',
                                      'corner = "middle"'), "utf-8")
         try:
