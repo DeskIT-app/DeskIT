@@ -1813,26 +1813,30 @@ route from a photo to a model is the editor's **Ask** button, which obeys
 7. **Press Ask.** The ask card must open on the photo, with whatever you
    drew on it.
 
-## Night mode (`ctrl+alt+n`)
+## Awake, and the screens off (`ctrl+alt+n`)
 
-The screen goes dark and the computer stays awake, so it can be driven
-from the phone through Claude until morning. Tap `ctrl+alt+n`, or press
-**Night mode on** on the dashboard's Night screen, and within a second the
-monitor is off; tap or press again and everything is back to normal.
-Nothing is locked — the session stays open, which is what lets Claude
-take a screenshot or open a program from the phone.
+Two separate things, and the separation is the point. **The computer never
+sleeps** while this app runs: the hold goes up the moment the app starts
+and comes down when it exits, whatever the screens are doing, day or night,
+at home or from school. **The screens go off on a key** — tap `ctrl+alt+n`,
+or press **Screens off** on the dashboard's Awake screen, and within a
+second the monitors are dark and *stay* dark; tap or press again and they
+come back. Nothing is locked — the session stays open, which is what lets
+Claude take a screenshot or open a program from the phone.
 
 **What it does, and what it deliberately does not.** The hold is one API
 call, `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`, kept
 alive by a thread of its own in the running app: no admin, no fake mouse
 wiggling, no registry, and Windows drops it by itself if the app dies.
-`ES_DISPLAY_REQUIRED` is left out on purpose — the screen is supposed to go
-off, and the monitor timer is what puts it out again after a stray nudge
-lights it. The screen is put out directly as well (`SC_MONITORPOWER`,
-broadcast with a timeout so a hung window cannot hang the app), twice: at
-once, and again three seconds later, because the mouse movement that
-follows a click lights it straight back up. **Screen off again** on the
-Night screen does the same on demand.
+`ES_DISPLAY_REQUIRED` is left out on purpose — with the key untouched the
+screens still go dark on the monitor's own timer; only sleep is prevented.
+`[awake] hold = false` turns the hold off. The screens are put out directly
+(`SC_MONITORPOWER`, broadcast with a timeout so a hung window cannot hang
+the app), twice: at once, and again three seconds later, because the mouse
+movement that follows a click lights them straight back up. **Screens off
+again** on the Awake screen does the same on demand. A belt to the braces,
+once and without admin, is `powercfg /change standby-timeout-ac 0`: Windows
+itself then never sleeps on mains, app or no app.
 
 **Why this machine turned off at night — measured before a line was
 written (2026-09-02).** `powercfg /a`: classic S3 sleep, no Modern
@@ -1854,24 +1858,25 @@ the sleep timer, the standby type, the network card's power-saving flag,
 the update window and whether Claude is running. It runs by itself when
 the screen opens and again after every switch.
 
-**If the app dies with night mode on.** The hold dies with the process and
-needs no cleanup. The optional `[night] pin_timeouts` (off by default) also
-sets the sleep and hibernate timers to never while it is on; those outlive
-the process, so `night_state.json` is written on entry and, if it is still
-there at the next start, the saved numbers are put back and the file
-removed. `night.log` records every entry and exit with a timestamp and
-what the check found. `[night] enabled = false` unregisters the key; the
-dashboard's button keeps working.
+**If the app dies holding.** The hold dies with the process and needs no
+cleanup. The optional `[awake] pin_timeouts` (off by default) also sets the
+sleep and hibernate timers to never for as long as the app runs; those
+outlive the process, so `awake_state.json` is written when the hold goes up
+and, if it is still there at the next start, the saved numbers are put back
+and the file removed. `awake.log` records every hold and release and every
+screens-off and screens-on with a timestamp and what the check found.
+`[awake] enabled = false` unregisters the key; the dashboard's button keeps
+working.
 
-**Keeping it dark.** Any input lights the screen — a key, the mouse, the
-click Claude sends from the phone — and Windows only puts it out again on
-the monitor's own timer, five minutes here. So while night mode is on a
-thread reads `GetLastInputInfo` and puts the screen out again
-`[night] keep_screen_off_s` seconds (default 10) after the last touch,
-every time, with a line in `night.log` each time it does. The detector is
-the tick that lit the screen, so an untouched machine gets no broadcast at
-all — and the owner at the keyboard is not exempt, on purpose: night mode
-means the screen is dark, and `ctrl+alt+n` is how to keep it lit. `0`
+**Keeping them dark.** Any input lights the screens — a key, the mouse,
+the click Claude sends from the phone — and Windows only puts them out
+again on the monitor's own timer, five minutes here. So while the screens
+are off a thread reads `GetLastInputInfo` and puts them out again
+`[awake] keep_screens_off_s` seconds (default 10) after the last touch,
+every time, with a line in `awake.log` each time it does. The detector is
+the tick that lit them, so an untouched machine gets no broadcast at all —
+and the owner at the keyboard is not exempt, on purpose: the key means
+the screens are dark, and the same key is how to bring them back. `0`
 turns it off.
 
 **The vitals, and the morning that made them.** Two mornings running
@@ -1908,17 +1913,17 @@ explains the history: 28- and 50-hour runs had been fine, because
 before 09-01 nothing was eating the pool and the app's footprint never
 reached the cliff.
 
-**What that bought.** While night mode is on, `night.py` writes a
-`vitals` line to `night.log` every `[night] vitals_minutes` (default 10)
-and one more the moment night mode goes off — the state the owner walks
-in on, recorded *before* the stop that cures it. Each line carries free
+**What that bought.** While the screens are off, `awake.py` writes a
+`vitals` line to `awake.log` every `[awake] vitals_minutes` (default 10)
+and one more the moment they come back — the state the owner walks in
+on, recorded *before* the stop that cures it. Each line carries free
 RAM, commit against its limit, non-paged pool, GPU memory
 (`nvidia-smi`), this process, the five heaviest programs by working set,
 and the machine's handle count **with the name of the process holding
 most of them**. Win32 through ctypes, ~300 ms a read; the GPU number is
 the one subprocess.
 
-That last name is load-bearing, and it is why `night.processes()` reads
+That last name is load-bearing, and it is why `awake.processes()` reads
 the process list from `NtQuerySystemInformation` instead of the obvious
 `EnumProcesses` + `OpenProcess`: this app does not run elevated, a
 non-elevated `OpenProcess` is refused for a service running as SYSTEM,

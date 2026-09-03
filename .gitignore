@@ -49,8 +49,12 @@ android/local.properties
 # The first-run wizard has run on this copy (firstrun.py).
 .setup-done
 
-# Night mode (night.py): the marker that says it is on and what to put
-# back if the app dies with it on, and the timestamped record of every
-# entry and exit with what the probe found.
+# awake.py: the marker that says the machine is being held awake and what
+# to put back if the app dies holding it, and the timestamped record of
+# every hold, release, screens-off and screens-on with what the probe found.
+awake_state.json
+awake.log
+# ...and the names the same files had before 2026-09-03 (night.py),
+# which an app started before the rename still writes.
 night_state.json
 night.log

@@ -512,40 +512,41 @@ class CameraConfig:
 
 
 @dataclass(frozen=True)
-class NightConfig:
-    """Night mode — see night.py: the screen off, the machine awake, so
-    the phone can drive it through Claude until morning.
+class AwakeConfig:
+    """The machine held awake, and the screens off — see awake.py.
 
-    One key and a dashboard screen. The key toggles; the screen has the
-    same switch, "screen off again" for after the mouse lit it, and a
-    check that says whether the machine will still be there at seven.
+    Two separate things. `hold` keeps the machine awake for as long as
+    the app runs, whatever the screens are doing; it goes up in
+    App.start() and comes down in stop(). The key (and the dashboard's
+    button) is about the SCREENS only: off and kept off, or back.
     `enabled = false` unregisters the key; the dashboard's button keeps
     working, because the engine is built either way.
     """
+    # Hold the machine awake the whole time the app runs. False: it
+    # sleeps on its own timer, as if this section did not exist.
+    hold: bool = True
     enabled: bool = True
     hotkey: str = "ctrl+alt+n"
-    # Also pin the sleep/hibernate idle timers to "never" while night
-    # mode is on and put the old numbers back on the way out — or at
-    # the next start, from night_state.json, if the app died with it on.
-    # Off: SetThreadExecutionState already covers classic S3 sleep (what
-    # this machine does), and a pinned timer is a second thing to
-    # restore.
+    # Also pin the sleep/hibernate idle timers to "never" while the app
+    # runs and put the old numbers back on the way out — or at the next
+    # start, from awake_state.json, if the app died holding. Off:
+    # SetThreadExecutionState already covers classic S3 sleep (what this
+    # machine does), and a pinned timer is a second thing to restore.
     pin_timeouts: bool = False
-    # The screen is put out again this many seconds after the first
-    # time, because the mouse movement that follows the click lights it
-    # straight back up. 0 = once only.
-    screen_off_again_s: int = 3
-    # While night mode is on, a line in night.log every this many
+    # The screens are put out again this many seconds after the first
+    # time, because the mouse movement that follows the click lights
+    # them straight back up. 0 = once only.
+    screens_off_again_s: int = 3
+    # While the screens are off, anything that lights them — a key, the
+    # mouse, a click sent from the phone — is undone this many seconds
+    # after the last touch. 0 = they stay lit until the monitor's own
+    # idle timer. See awake.Engine._keep_off_worker.
+    keep_screens_off_s: int = 10
+    # While the screens are off, a line in awake.log every this many
     # minutes with what the machine is carrying (free RAM, commit, GPU,
-    # this app, the heaviest programs), and one more the moment it goes
-    # off. 0 = none. See night.vitals().
+    # this app, the heaviest programs), and one more the moment they
+    # come back. 0 = none. See awake.vitals().
     vitals_minutes: int = 10
-    # While night mode is on, anything that lights the screen — a key,
-    # the mouse, a click sent from the phone — is undone this many
-    # seconds after the last touch, for as long as night mode lasts.
-    # 0 = the screen stays lit until the monitor's own idle timer. See
-    # night.Engine._keep_off_worker.
-    keep_screen_off_s: int = 10
 
 
 @dataclass(frozen=True)
@@ -837,7 +838,7 @@ class Config:
     visual_qa: VisualQAConfig = field(default_factory=VisualQAConfig)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
-    night: NightConfig = field(default_factory=NightConfig)
+    awake: AwakeConfig = field(default_factory=AwakeConfig)
 
     @property
     def capture_hotkey(self) -> str:
@@ -860,9 +861,9 @@ class Config:
         return self.camera.hotkey
 
     @property
-    def night_hotkey(self) -> str:
-        """The night-mode toggle, read out of [night]."""
-        return self.night.hotkey
+    def screens_hotkey(self) -> str:
+        """The screens-off toggle, read out of [awake]."""
+        return self.awake.hotkey
 
     @property
     def visual_qa_hotkey(self) -> str:
@@ -906,7 +907,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
     ("record_hotkey", "Record the screen (tap)"),
     ("camera_hotkey", "Photo from the camera (tap)"),
     ("pause_hotkey", "Pause / resume"),
-    ("night_hotkey", "Night mode (tap)"),
+    ("screens_hotkey", "Screens off (tap)"),
 )
 
 
@@ -920,7 +921,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
 CHORD_FIELDS: frozenset[str] = frozenset((
     "translate_hotkey", "punctuate_hotkey", "correct_hotkey",
     "lookup_hotkey", "visual_qa_hotkey", "capture_hotkey", "record_hotkey",
-    "camera_hotkey", "night_hotkey",
+    "camera_hotkey", "screens_hotkey",
 ))
 
 
@@ -943,9 +944,9 @@ def with_field(cfg: "Config", name: str, value) -> "Config":
     if name == "camera_hotkey":
         return dataclasses.replace(
             cfg, camera=dataclasses.replace(cfg.camera, hotkey=str(value)))
-    if name == "night_hotkey":
+    if name == "screens_hotkey":
         return dataclasses.replace(
-            cfg, night=dataclasses.replace(cfg.night, hotkey=str(value)))
+            cfg, awake=dataclasses.replace(cfg.awake, hotkey=str(value)))
     if name == "visual_qa_hotkey":
         return dataclasses.replace(
             cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
@@ -1063,7 +1064,7 @@ def load(path: Path) -> Config:
     review = data.get("review", {})
     capture = data.get("capture", {})
     camera = data.get("camera", {})
-    night = data.get("night", {})
+    awake = data.get("awake", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -1372,18 +1373,19 @@ def load(path: Path) -> Config:
             edit_after_shot=bool(camera.get(
                 "edit_after_shot", CameraConfig.edit_after_shot)),
         ),
-        night=NightConfig(
-            enabled=bool(night.get("enabled", NightConfig.enabled)),
-            hotkey=str(night.get(
-                "night_hotkey", NightConfig.hotkey)).strip().lower(),
-            pin_timeouts=bool(night.get("pin_timeouts",
-                                        NightConfig.pin_timeouts)),
-            screen_off_again_s=int(night.get(
-                "screen_off_again_s", NightConfig.screen_off_again_s)),
-            vitals_minutes=int(night.get(
-                "vitals_minutes", NightConfig.vitals_minutes)),
-            keep_screen_off_s=int(night.get(
-                "keep_screen_off_s", NightConfig.keep_screen_off_s)),
+        awake=AwakeConfig(
+            hold=bool(awake.get("hold", AwakeConfig.hold)),
+            enabled=bool(awake.get("enabled", AwakeConfig.enabled)),
+            hotkey=str(awake.get(
+                "screens_hotkey", AwakeConfig.hotkey)).strip().lower(),
+            pin_timeouts=bool(awake.get("pin_timeouts",
+                                        AwakeConfig.pin_timeouts)),
+            screens_off_again_s=int(awake.get(
+                "screens_off_again_s", AwakeConfig.screens_off_again_s)),
+            keep_screens_off_s=int(awake.get(
+                "keep_screens_off_s", AwakeConfig.keep_screens_off_s)),
+            vitals_minutes=int(awake.get(
+                "vitals_minutes", AwakeConfig.vitals_minutes)),
         ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
@@ -1394,13 +1396,13 @@ def load(path: Path) -> Config:
     if cfg.backend not in VALID_BACKENDS:
         raise ConfigError(f"backend must be one of {VALID_BACKENDS}, got {cfg.backend!r}")
     check_hotkeys(cfg)
-    if not 0 <= cfg.night.screen_off_again_s <= 60:
-        raise ConfigError("night.screen_off_again_s must be 0-60 "
+    if not 0 <= cfg.awake.screens_off_again_s <= 60:
+        raise ConfigError("awake.screens_off_again_s must be 0-60 "
                           "seconds")
-    if not 0 <= cfg.night.vitals_minutes <= 1440:
-        raise ConfigError("night.vitals_minutes must be 0-1440 (a day)")
-    if not 0 <= cfg.night.keep_screen_off_s <= 600:
-        raise ConfigError("night.keep_screen_off_s must be 0-600 seconds")
+    if not 0 <= cfg.awake.keep_screens_off_s <= 600:
+        raise ConfigError("awake.keep_screens_off_s must be 0-600 seconds")
+    if not 0 <= cfg.awake.vitals_minutes <= 1440:
+        raise ConfigError("awake.vitals_minutes must be 0-1440 (a day)")
     if cfg.translate_hotkey:
         if cfg.translate.max_chars <= 0:
             raise ConfigError("translate.max_chars must be positive")

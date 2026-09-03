@@ -1,13 +1,20 @@
-"""Night mode: the screen goes dark, the machine stays awake.
+"""The machine held awake, and the screens off: two separate things.
 
-The reason it exists: the owner drives this computer from his phone at
-night, through Claude, and every morning found it asleep. Diagnosed on
+THE HOLD. The owner drives this computer from his phone — through Claude,
+at night and from school — and kept finding it asleep. Diagnosed on
 2026-09-02 with `powercfg /a` and the System event log before a line of
 this was written: the machine does classic S3 standby (no Modern
 Standby), `Sleep after` on AC is 30 minutes, hibernate is off, and the
 restarts in the log are all the owner's own or Windows Update at ten in
 the morning. So "it turned off" is the idle timer, and an idle timer is
-exactly what one API call holds back.
+exactly what one API call holds back. The hold goes up when the app
+starts and comes down when it exits ([awake] hold), whatever the screens
+are doing; there is no button for it, because the requirement is "never".
+
+THE SCREENS. A key ([awake] screens_hotkey) puts the monitors out and
+keeps them out until the same key brings them back. It never touches the
+hold. Nothing is locked: the session stays open, so Claude can see the
+screen and open programs from the phone.
 
 THE MECHANISM, and what it deliberately is not:
 
@@ -18,40 +25,41 @@ THE MECHANISM, and what it deliberately is not:
   `Hold` is a thread that makes the call and then waits on an event; a
   call-and-return would hold nothing. It is released with a second call
   carrying `ES_CONTINUOUS` alone.
-- Without `ES_DISPLAY_REQUIRED`. The screen is supposed to go off — that
-  is half the point — and the monitor timer is what turns it off again
-  after a stray mouse nudge lights it.
-- The screen is put out directly as well, so the owner does not sit
-  through the five-minute monitor timer: `WM_SYSCOMMAND / SC_MONITORPOWER`
+- Without `ES_DISPLAY_REQUIRED`. Only sleep is prevented: with the key
+  untouched the screens still go dark on the monitor's own timer.
+- The screens are put out directly, so the owner does not sit through
+  the five-minute monitor timer: `WM_SYSCOMMAND / SC_MONITORPOWER`
   broadcast to every top-level window. Broadcast through
   `SendMessageTimeoutW` with `SMTO_ABORTIFHUNG`, on its own thread —
   plain `SendMessage` to HWND_BROADCAST waits on every window in turn,
   and one hung window would hang whoever asked. The mouse turns the
-  screen back on the instant it moves, and the click that pressed the
+  screens back on the instant it moves, and the click that pressed the
   button is followed by exactly that, so the command goes out twice: at
-  once, and again a few seconds later ([night] screen_off_again_s).
-- And KEPT out for as long as night mode lasts ([night]
-  keep_screen_off_s). Any input lights the screen — a key, the mouse,
-  the click Claude sends from the phone — and Windows only puts it out
-  again on the monitor's own timer, five minutes here. A thread reads
-  `GetLastInputInfo` and puts the screen out again that many seconds
-  after the LAST touch, every time. The detector is the very tick that
-  lit the screen, so an untouched machine gets no broadcast at all;
-  and it includes the owner at the keyboard on purpose — night mode
-  means the screen is dark, and the key is how to keep it lit.
+  once, and again a few seconds later ([awake] screens_off_again_s).
+- And KEPT out for as long as the key says ([awake] keep_screens_off_s).
+  Any input lights the screens — a key, the mouse, the click Claude
+  sends from the phone — and Windows only puts them out again on the
+  monitor's own timer. A thread reads `GetLastInputInfo` and puts them
+  out again that many seconds after the LAST touch, every time. The
+  detector is the very tick that lit them, so an untouched machine gets
+  no broadcast at all; and it includes the owner at the keyboard on
+  purpose — the key means the screens are dark, and the same key is how
+  to bring them back.
 - OPTIONALLY the sleep timers are pinned to "never" through `powercfg
-  /change` (works unelevated, measured) and put back on the way out —
-  [night] pin_timeouts, OFF by default because the hold above already
-  covers S3 and a belt-and-braces setting is a second thing to restore.
+  /change` (works unelevated, measured) for as long as the app runs, and
+  put back on the way out — [awake] pin_timeouts, OFF by default because
+  the hold above already covers S3 and a belt-and-braces setting is a
+  second thing to restore.
 
-WHAT SURVIVES A CRASH. `night_state.json` is written beside the app the
-moment night mode goes on and removed when it goes off. Its one job is
+WHAT SURVIVES A CRASH. `awake_state.json` is written beside the app the
+moment the hold goes up and removed when it comes down. Its one job is
 the pinned timers: the execution state dies with the process and needs
 no cleanup, but a `powercfg /change` outlives everything, so a leftover
 file at the next start means "put those numbers back" (`recover`). The
-file also records when and by whom, which is what the dashboard shows.
-Every entry and exit is a line in `night.log` with a timestamp, followed
-by what the probe found — so a morning that went wrong can be read.
+file also records when the hold went up, which is what the dashboard
+shows. Every hold, release, screens-off and screens-on is a line in
+`awake.log` with a timestamp, followed by what the probe found — so a
+morning that went wrong can be read.
 
 THE TRUTH CHECK. `powercfg /requests` is the spec's way to see the hold,
 and it needs an elevated prompt; this app does not run elevated. What
@@ -59,17 +67,18 @@ does work unelevated is `CallNtPowerInformation(SystemExecutionState)`,
 which returns the ES_* flags currently in force system-wide — the same
 fact `/requests` lists per process, without the names. `probe()` reads
 both (the second only when it can) and everything else the spec lists
-as a way to lose the machine overnight even though it is awake: the
-network adapter's "let the computer turn this off" flag (WMI, read
-only), Windows Update's active hours (registry), and whether Claude is
-running (tasklist). Reading is all it does; the fixes are the owner's,
-and the dashboard says which.
+as a way to lose the machine even though it is awake: the network
+adapter's "let the computer turn this off" flag (WMI, read only),
+Windows Update's active hours (registry), and whether Claude is running
+(tasklist). Reading is all it does; the fixes are the owner's, and the
+dashboard says which.
 
 Windows-only by construction, like the rest of the app. Every Win32
 handle here is a PRIVATE `ctypes.WinDLL` — declaring argtypes on
 `ctypes.windll.user32` would change them for the other five modules
 that share that cached object (see AGENTS.md, capture.py).
 """
+
 from __future__ import annotations
 
 import atexit
@@ -104,8 +113,8 @@ SEND_TIMEOUT_MS = 2000
 SYSTEM_EXECUTION_STATE = 16
 
 CREATE_NO_WINDOW = 0x08000000     # every spawn under pythonw needs it
-STATE_NAME = "night_state.json"
-LOG_NAME = "night.log"
+STATE_NAME = "awake_state.json"
+LOG_NAME = "awake.log"
 
 _kernel32 = None
 _user32 = None
@@ -192,7 +201,7 @@ class Hold:
 
     def start(self) -> bool:
         self._thread = threading.Thread(target=self._run, daemon=True,
-                                        name="night-hold")
+                                        name="awake-hold")
         self._thread.start()
         self._ready.wait(timeout=3)
         return bool(self.previous)
@@ -436,8 +445,8 @@ def process_count(image: str = "claude.exe") -> int | None:
 # something had grown, or Windows had paged the world out on the ~2 GB
 # of RAM this machine keeps free with everything loaded (measured: 15.9
 # GB, 12.3 GB in working sets, 2.4 GB of non-paged kernel pool). This is
-# the log that was missing: a line every [night] vitals_minutes while
-# night mode is on, and one more at the moment it goes off — the state
+# the log that was missing: a line every [awake] vitals_minutes while
+# the screens are off, and one more when they come back — the state
 # the owner walked in on, before the stop that cures it.
 #
 # All of it is Win32 through ctypes (~30 ms, no subprocess) except the
@@ -712,7 +721,7 @@ def _gb(n) -> str:
 
 
 def vitals_line(v: dict) -> str:
-    """One line of night.log from vitals(): the numbers that decide
+    """One line of awake.log from vitals(): the numbers that decide
     whether the machine is still usable, then the programs holding them."""
     parts = []
     if "ram_total" in v:
@@ -755,7 +764,7 @@ def probe(run=None) -> dict:
     reachable in the morning. Slow — two or three seconds, most of it
     PowerShell — so never on the control thread or the hook; the
     dashboard runs it on a worker and the engine on a background thread
-    after entering night mode."""
+    when the screens go off."""
     run = run or _run_powercfg
     out: dict = {"at": time.time(), "elevated": is_elevated()}
     flags = system_execution_state()
@@ -791,28 +800,28 @@ def verdict(state: dict, probe_result: dict | None) -> list[tuple[str, str, str]
     good | warn | bad | dim. Pure, so it can be tested without a machine
     to probe."""
     rows: list[tuple[str, str, str]] = []
-    active = bool(state.get("active"))
+    holding = bool(state.get("holding"))
     held = bool(state.get("held"))
     p = probe_result or {}
 
     sys_req = p.get("system_required")
-    if active and held and sys_req:
+    if holding and held and sys_req:
         rows.append(("Sleep hold", "held — this app is keeping the machine "
                      "awake (SYSTEM_REQUIRED is set)", "good"))
-    elif active and held and sys_req is False:
+    elif holding and held and sys_req is False:
         rows.append(("Sleep hold", "this app asked, but Windows reports no "
-                     "hold — do not trust tonight to it", "bad"))
-    elif active and not held:
-        rows.append(("Sleep hold", "night mode is on but the hold is not "
-                     "standing — turn it off and on again", "bad"))
+                     "hold — do not trust the machine to stay up", "bad"))
+    elif holding and not held:
+        rows.append(("Sleep hold", "the hold is not standing — stop and "
+                     "start the app", "bad"))
     elif sys_req:
         rows.append(("Sleep hold", "another program is holding the machine "
-                     "awake right now; night mode is off", "dim"))
+                     "awake right now; this app is not", "dim"))
     elif sys_req is None:
         rows.append(("Sleep hold", "could not be read", "dim"))
     else:
-        rows.append(("Sleep hold", "nothing is holding the machine awake",
-                     "dim" if not active else "bad"))
+        rows.append(("Sleep hold", "nothing is holding the machine awake — "
+                     "it will sleep on its own timer", "warn"))
 
     requests = p.get("requests")
     if requests:
@@ -829,12 +838,12 @@ def verdict(state: dict, probe_result: dict | None) -> list[tuple[str, str, str]
         rows.append(("Sleep after (plugged in)", "unknown", "dim"))
     elif standby == 0:
         rows.append(("Sleep after (plugged in)",
-                     "never" + (" — pinned by night mode"
+                     "never" + (" — pinned by this app"
                                 if state.get("pinned") else ""), "good"))
     else:
-        tone = "good" if (active and held) else "warn"
+        tone = "good" if (holding and held) else "warn"
         rows.append(("Sleep after (plugged in)",
-                     f"{standby} min — the timer night mode holds back",
+                     f"{standby} min — the timer the hold holds back",
                      tone))
     kind = p.get("standby")
     if kind == "S0":
@@ -897,12 +906,12 @@ def _stamp() -> str:
 
 
 class Engine:
-    """Night mode for one process: on, off, the screen, and the truth.
+    """The hold and the screens for one process, and the truth.
 
     All entry points are cheap and thread-safe. Anything slow — the
-    broadcast, the probe — is handed to a thread, because the two
-    callers are the keyboard hook (300 ms before Windows drops it) and
-    the control thread (the dashboard's status poll waits on it).
+    broadcasts, the probe — is handed to a thread, because the callers
+    are the keyboard hook (300 ms before Windows drops it), the control
+    thread (the dashboard's status poll waits on it) and App.start().
     """
 
     def __init__(self, app_dir: Path, cfg=None, *,
@@ -914,10 +923,11 @@ class Engine:
         self.app_dir = Path(app_dir)
         self.state_path = self.app_dir / STATE_NAME
         self.log_path = self.app_dir / LOG_NAME
+        self.hold_wanted = bool(getattr(cfg, "hold", True))
         self.pin_timeouts = bool(getattr(cfg, "pin_timeouts", False))
-        self.again_s = int(getattr(cfg, "screen_off_again_s", 3))
+        self.again_s = int(getattr(cfg, "screens_off_again_s", 3))
         self.vitals_minutes = int(getattr(cfg, "vitals_minutes", 10))
-        self.keep_off_s = int(getattr(cfg, "keep_screen_off_s", 10))
+        self.keep_off_s = int(getattr(cfg, "keep_screens_off_s", 10))
         self._hold_factory = hold_factory
         self._sender = sender or send_monitor_power
         self._run = run or _run_powercfg
@@ -928,21 +938,27 @@ class Engine:
         self._keep_stop = threading.Event()
         self._lock = threading.RLock()
         self._hold: Hold | None = None
-        self._since: float | None = None
-        self._by = ""
+        self._hold_since: float | None = None
         self._saved: dict | None = None
+        self._dark_since: float | None = None
+        self._by = ""
         self._screen_at: float | None = None
+        self._blank_id = 0
         self._last_probe: dict | None = None
         # The process leaving is covered twice: main()'s finally calls
-        # off() through App.stop(), and this catches the exits that never
-        # reach it. release() is a no-op when there is nothing to do.
+        # release() through App.stop(), and this catches the exits that
+        # never reach it. release() is a no-op when there is nothing to do.
         atexit.register(self.release)
 
     # -- state --
 
     @property
-    def active(self) -> bool:
+    def holding(self) -> bool:
         return self._hold is not None
+
+    @property
+    def dark(self) -> bool:
+        return self._dark_since is not None
 
     @property
     def last_probe(self) -> dict | None:
@@ -952,32 +968,37 @@ class Engine:
         """What the dashboard draws. Cheap: no I/O."""
         with self._lock:
             hold = self._hold
-            since = self._since
+            now = self._clock()
             return {
-                "active": hold is not None,
+                "holding": hold is not None,
                 "held": bool(hold is not None and hold.alive),
-                "since": since,
-                "seconds": (round(self._clock() - since) if since else 0),
+                "hold_since": self._hold_since,
+                "hold_seconds": (round(now - self._hold_since)
+                                 if self._hold_since else 0),
+                "dark": self._dark_since is not None,
+                "since": self._dark_since,
+                "seconds": (round(now - self._dark_since)
+                            if self._dark_since else 0),
                 "by": self._by,
                 "pinned": self._saved is not None,
                 "screen_off_at": self._screen_at,
-                "keep_screen_off_s": self.keep_off_s,
+                "keep_screens_off_s": self.keep_off_s,
             }
 
-    # -- switches --
+    # -- the hold --
 
-    def on(self, *, by: str = "dashboard") -> dict:
-        """Enter night mode. Idempotent: a second press puts the screen
-        out again, which is what a second press means at 2 a.m."""
+    def hold(self, *, by: str = "start") -> dict:
+        """Hold the machine awake until release(). Idempotent. Never
+        touches the screens."""
         with self._lock:
             if self._hold is not None:
-                self.screen_off()
                 return self.state()
             hold = self._hold_factory()
             if not hold.start():
-                self._log(f"ON refused by {by}: SetThreadExecutionState "
+                self._log(f"HOLD refused ({by}): SetThreadExecutionState "
                           "returned 0")
-                log.warning("night mode: Windows refused the wake hold")
+                log.warning("Windows refused the wake hold — the machine "
+                            "will sleep on its own timer")
                 return {"ok": False, "error": "Windows refused the wake "
                         "hold (SetThreadExecutionState returned 0)",
                         **self.state()}
@@ -986,107 +1007,145 @@ class Engine:
                 saved = read_timeouts(self._run)
                 failed = write_timeouts({k: 0 for k in saved}, self._run)
                 if failed:
-                    log.warning("night mode: could not pin the sleep "
-                                "timers (%s)", "; ".join(failed))
+                    log.warning("could not pin the sleep timers (%s)",
+                                "; ".join(failed))
             self._hold = hold
-            self._since = self._clock()
-            self._by = by
+            self._hold_since = self._clock()
             self._saved = saved
-            self._write_state()
-            self._log(f"ON by {by} | previous execution state "
+            self._write_state(by)
+            self._log(f"HOLD by {by} | previous execution state "
                       f"0x{hold.previous:08x}"
                       + (f" | timers saved {saved}, pinned to never"
                          if saved else ""))
-            log.info("night mode ON (%s) — the machine stays awake, the "
-                     "screen goes off; ctrl+alt+n or the dashboard turns "
-                     "it off", by)
-            self.screen_off()
+            log.info("holding the machine awake (%s) — it will not sleep "
+                     "while this runs; the screens go dark on their own "
+                     "timer", by)
+            return self.state()
+
+    def release(self) -> None:
+        """atexit / App.stop(): the screens back if they were off, the
+        hold down, the timers restored — and never an exception."""
+        try:
+            with self._lock:
+                if self.dark:
+                    self.lighten(by="exit")
+                hold = self._hold
+                if hold is None:
+                    return
+                hold.stop()
+                restored = ""
+                if self._saved:
+                    failed = write_timeouts(self._saved, self._run)
+                    restored = (f" | timers restored {self._saved}"
+                                + (f" (FAILED: {'; '.join(failed)})"
+                                   if failed else ""))
+                seconds = round(self._clock()
+                                - (self._hold_since or self._clock()))
+                self._hold = None
+                self._hold_since = None
+                self._saved = None
+                self._clear_state()
+                self._log(f"RELEASE | after {seconds} s{restored}")
+                log.info("wake hold released after %d s", seconds)
+        except Exception:             # noqa: BLE001
+            pass
+
+    # -- the screens --
+
+    def darken(self, *, by: str = "dashboard") -> dict:
+        """The screens off, and kept off. Idempotent: a second call puts
+        them out again, which is what a second press means at 2 a.m.
+        Does not touch the hold."""
+        with self._lock:
+            if self._dark_since is not None:
+                self.blank()
+                return self.state()
+            self._dark_since = self._clock()
+            self._by = by
+            self._log(f"SCREENS OFF by {by}"
+                      + ("" if self.holding else " | NOT holding"))
+            log.info("screens off (%s) — they stay off until the key or "
+                     "the dashboard brings them back", by)
+            self.blank()
             threading.Thread(target=self._probe_to_log, daemon=True,
-                             name="night-probe").start()
+                             name="awake-probe").start()
             if self.vitals_minutes > 0:
                 self._vitals_stop = threading.Event()
                 threading.Thread(target=self._vitals_worker,
                                  args=(self._vitals_stop,), daemon=True,
-                                 name="night-vitals").start()
+                                 name="awake-vitals").start()
             if self.keep_off_s > 0:
                 self._keep_stop = threading.Event()
                 threading.Thread(target=self._keep_off_worker,
                                  args=(self._keep_stop,), daemon=True,
-                                 name="night-keep-off").start()
+                                 name="awake-keep-off").start()
             return self.state()
 
-    def off(self, *, by: str = "dashboard") -> dict:
+    def lighten(self, *, by: str = "dashboard") -> dict:
+        """The screens back. Does not touch the hold."""
         with self._lock:
-            hold = self._hold
-            if hold is None:
+            if self._dark_since is None:
                 return self.state()
-            hold.stop()
-            restored = ""
-            if self._saved:
-                failed = write_timeouts(self._saved, self._run)
-                restored = (f" | timers restored {self._saved}"
-                            + (f" (FAILED: {'; '.join(failed)})"
-                               if failed else ""))
-            seconds = round(self._clock() - (self._since or self._clock()))
-            self._hold = None
-            self._since = None
-            self._saved = None
+            seconds = round(self._clock() - self._dark_since)
+            self._dark_since = None
             self._screen_at = None
             self._by = ""
-            self._clear_state()
-            self._log(f"OFF by {by} | after {seconds} s{restored}")
-            log.info("night mode OFF (%s) after %d s", by, seconds)
-            # The state the owner walked in on — before the stop that
-            # cures it. On a thread: off() runs on the keyboard hook.
-            self._vitals_stop.set()
+            self._blank_id += 1          # a pending second MONITOR_OFF stays home
             self._keep_stop.set()
+            self._vitals_stop.set()
+            self._log(f"SCREENS ON by {by} | after {seconds} s")
+            log.info("screens on (%s) after %d s", by, seconds)
+            # The state the owner walked in on — before the stop that
+            # cures it. On a thread: this runs on the keyboard hook.
             if self.vitals_minutes > 0:
-                threading.Thread(target=self._vitals_to_log, args=("at OFF",),
-                                 daemon=True, name="night-vitals").start()
+                threading.Thread(target=self._vitals_to_log,
+                                 args=("screens on",), daemon=True,
+                                 name="awake-vitals").start()
+            # From the phone there is no mouse to light them: say so.
+            threading.Thread(target=self._send, args=(MONITOR_ON,),
+                             daemon=True, name="awake-screen").start()
             return self.state()
 
     def toggle(self, *, by: str = "key") -> dict:
         with self._lock:
-            return self.off(by=by) if self.active else self.on(by=by)
+            return self.lighten(by=by) if self.dark else self.darken(by=by)
 
-    def release(self) -> None:
-        """atexit / finally: off(), and never an exception."""
+    def blank(self) -> None:
+        """Put the screens out now, and again a few seconds later — the
+        mouse movement that follows a click lights them straight back
+        up. Returns at once; the broadcast runs on its own thread."""
+        with self._lock:
+            self._screen_at = self._clock()
+            self._blank_id += 1
+            token = self._blank_id
+        threading.Thread(target=self._blank_worker, args=(token,),
+                         daemon=True, name="awake-screen").start()
+
+    def _send(self, state: int) -> bool:
         try:
-            if self.active:
-                self.off(by="exit")
-        except Exception:             # noqa: BLE001
-            pass
-
-    # -- the screen --
-
-    def screen_off(self) -> None:
-        """Put the screen out now, and again a few seconds later — the
-        mouse movement that follows a click lights it straight back up.
-        Returns at once; the broadcast runs on its own thread."""
-        self._screen_at = self._clock()
-        threading.Thread(target=self._screen_off_worker, daemon=True,
-                         name="night-screen").start()
-
-    def _screen_off_worker(self) -> None:
-        try:
-            ok = self._sender(MONITOR_OFF)
-            if not ok:
-                log.info("night mode: a window sat on the screen-off "
-                         "broadcast past %d ms", SEND_TIMEOUT_MS)
-            if self.again_s > 0:
-                time.sleep(self.again_s)
-                if self.active:
-                    self._sender(MONITOR_OFF)
+            ok = self._sender(state)
         except Exception as e:        # noqa: BLE001
-            log.info("night mode: screen-off broadcast failed (%s)", e)
+            log.info("screen broadcast failed (%s)", e)
+            return False
+        if not ok:
+            log.info("a window sat on the screen broadcast past %d ms",
+                     SEND_TIMEOUT_MS)
+        return bool(ok)
+
+    def _blank_worker(self, token: int) -> None:
+        self._send(MONITOR_OFF)
+        if self.again_s > 0:
+            time.sleep(self.again_s)
+            if self._blank_id == token:  # nobody brought them back since
+                self._send(MONITOR_OFF)
 
     def _keep_off_worker(self, stop: threading.Event) -> None:
-        """Put the screen out again [night] keep_screen_off_s seconds
-        after the last input, every time something lights it, until
-        off() sets `stop`. GetLastInputInfo is the whole detector: the
-        tick that lit the screen is the tick this reads, so an untouched
-        machine gets no broadcast at all — and the owner at the keyboard
-        is not exempt, on purpose."""
+        """Put the screens out again [awake] keep_screens_off_s seconds
+        after the last input, every time something lights them, until
+        lighten() sets `stop`. GetLastInputInfo is the whole detector:
+        the tick that lit the screens is the tick this reads, so an
+        untouched machine gets no broadcast at all — and the owner at
+        the keyboard is not exempt, on purpose."""
         seen = self._last_input()        # the key or click that turned it on
         wait = float(self.keep_off_s)
         while not stop.wait(wait):
@@ -1100,27 +1159,23 @@ class Engine:
                 continue
             seen = latest
             with self._lock:
-                if stop.is_set() or not self.active:
+                if stop.is_set() or not self.dark:
                     return
                 self._screen_at = self._clock()
-            try:
-                self._sender(MONITOR_OFF)
-            except Exception as e:    # noqa: BLE001
-                log.info("night mode: keep-off broadcast failed (%s)", e)
-            self._log(f"screen lit by input, put out again after "
+            self._send(MONITOR_OFF)
+            self._log(f"screens lit by input, put out again after "
                       f"{quiet:.0f} s quiet")
             wait = self.keep_off_s
 
     # -- the record --
 
-    def _write_state(self) -> None:
-        data = {"since": self._since, "since_text": _stamp(),
-                "pid": os.getpid(), "by": self._by, "saved": self._saved}
+    def _write_state(self, by: str) -> None:
+        data = {"since": self._hold_since, "since_text": _stamp(),
+                "pid": os.getpid(), "by": by, "saved": self._saved}
         try:
             self.state_path.write_text(json.dumps(data, indent=1), "utf-8")
         except OSError as e:
-            log.warning("night mode: could not write %s (%s)",
-                        self.state_path.name, e)
+            log.warning("could not write %s (%s)", self.state_path.name, e)
 
     def _clear_state(self) -> None:
         try:
@@ -1128,8 +1183,7 @@ class Engine:
         except FileNotFoundError:
             pass
         except OSError as e:
-            log.warning("night mode: could not remove %s (%s)",
-                        self.state_path.name, e)
+            log.warning("could not remove %s (%s)", self.state_path.name, e)
 
     def _log(self, line: str) -> None:
         try:
@@ -1139,9 +1193,10 @@ class Engine:
             pass
 
     def _probe_to_log(self) -> None:
-        """The spec's `powercfg /requests` in the log at every entry —
-        and the rest of the probe with it, because the requests list is
-        the one line that needs admin and the others do not."""
+        """The spec's `powercfg /requests` in the log every time the
+        screens go off — and the rest of the probe with it, because the
+        requests list is the one line that needs admin and the others do
+        not."""
         try:
             result = probe(self._run)
         except Exception as e:        # noqa: BLE001
@@ -1159,16 +1214,17 @@ class Engine:
         self._log(f"  vitals | {tag + ': ' if tag else ''}{line}")
 
     def _vitals_worker(self, stop: threading.Event) -> None:
-        """A vitals line now and every [night] vitals_minutes until off()
-        sets `stop` — the record of the night, read the morning after."""
-        self._vitals_to_log("at ON")
+        """A vitals line now and every [awake] vitals_minutes until
+        lighten() sets `stop` — the record of the time away, read on
+        coming back."""
+        self._vitals_to_log("screens off")
         while not stop.wait(self.vitals_minutes * 60):
             self._vitals_to_log()
 
 
 def recover(app_dir: Path, run=None) -> str | None:
-    """At start-up: a night_state.json left by a session that died with
-    night mode on. The hold died with it; the pinned timers did not.
+    """At start-up: an awake_state.json left by a session that died
+    holding. The hold died with it; the pinned timers did not.
     Puts them back, removes the file, and returns one sentence for the
     log — or None when there was nothing to do."""
     path = Path(app_dir) / STATE_NAME
@@ -1180,8 +1236,8 @@ def recover(app_dir: Path, run=None) -> str | None:
     except (OSError, ValueError):
         data = {}
     saved = data.get("saved") if isinstance(data, dict) else None
-    message = (f"night mode was still on when the last session ended "
-               f"(since {data.get('since_text', '?')})")
+    message = (f"the machine was still being held awake when the last "
+               f"session ended (since {data.get('since_text', '?')})")
     if saved:
         failed = write_timeouts(saved, run)
         message += (f" — sleep timers restored to {saved}"

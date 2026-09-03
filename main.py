@@ -38,7 +38,7 @@ import cues
 import firstrun
 import hint as hint_mod
 import injector
-import night as night_mod
+import awake as awake_mod
 import popup as popup_mod
 import server as server_mod
 import singleton
@@ -76,7 +76,7 @@ NESTED_HOTKEYS = {
     "capture_hotkey": "capture.capture_hotkey",
     "record_hotkey": "capture.record_hotkey",
     "camera_hotkey": "camera.camera_hotkey",
-    "night_hotkey": "night.night_hotkey",
+    "screens_hotkey": "awake.screens_hotkey",
 }
 
 # What the dashboard may change while the app runs and have it FELT
@@ -103,10 +103,10 @@ AUTO_PUNCTUATE_MIN_WORDS = 3
 # here (translate, punctuate, correct, lookup) are the ones that read or
 # rewrite the text at the cursor, and the cursor is a shared resource
 # during a dictation.
-# Night mode rides with them: it touches the power state and the monitor,
-# never the cursor, so it is as true mid-sentence as a screenshot is.
+# The screens key rides with them: it touches the monitor and never the
+# cursor, so it is as true mid-sentence as a screenshot is.
 _SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo",
-                             "night"})
+                             "screens"})
 
 # What the dot should say for a machine state, when a worker has finished
 # with something and is deciding what to put back. Only two states are
@@ -296,10 +296,11 @@ class App:
             on_ask_start=self._on_ask_start,
             on_ask_stop=self._on_ask_stop)
         self.hook = HookThread(self.machine)
-        # Night mode (night.py): the screen off, the machine awake. Built
+        # awake.py: the machine held awake for as long as this runs (the
+        # hold goes up in start()), and the screens off on a key. Built
         # whether or not the key is bound — the dashboard's button goes
         # through the control channel and needs the engine either way.
-        self.night = night_mod.Engine(APP_DIR, getattr(cfg, "night", None))
+        self.awake = awake_mod.Engine(APP_DIR, getattr(cfg, "awake", None))
         # What the dot is showing, kept here so the dashboard can report the
         # same thing in words. Every set_state goes through _set_state.
         self._activity = "ready"
@@ -548,11 +549,11 @@ class App:
         cam = getattr(cfg, "camera", None)
         if cam is not None and cam.enabled and cam.hotkey:
             taps[parse_binding(cam.hotkey)] = "photo"
-        # Night mode's toggle, on the same terms: [night] enabled = false
-        # unregisters the key, and the dashboard's button still works.
-        night = getattr(cfg, "night", None)
-        if night is not None and night.enabled and night.hotkey:
-            taps[parse_binding(night.hotkey)] = "night"
+        # The screens key, on the same terms: [awake] enabled = false
+        # unregisters it, and the dashboard's button still works.
+        awake = getattr(cfg, "awake", None)
+        if awake is not None and awake.enabled and awake.hotkey:
+            taps[parse_binding(awake.hotkey)] = "screens"
         return (hotkeys, taps,
                 vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
                 vk_for(cfg.pause_hotkey) if cfg.pause_hotkey else None)
@@ -1192,9 +1193,9 @@ class App:
             "pending": len(self.spool.pending()),
             "phone": (self.phone.url or "") if self.phone else "",
             # getattr: the test suite builds half-initialised Apps.
-            "night": (self.night.state()
-                      if getattr(self, "night", None) is not None
-                      else {"active": False}),
+            "awake": (self.awake.state()
+                      if getattr(self, "awake", None) is not None
+                      else {"holding": False, "dark": False}),
         }
 
     # ---- pause ----
@@ -1392,6 +1393,13 @@ class App:
 
     def start(self) -> None:
         self.recorder.start_stream()
+        # The hold first: [awake] hold = true means the machine never
+        # sleeps while this app runs, whatever the screens are doing. A
+        # refusal is logged and shown on the Awake screen, never fatal.
+        if getattr(self, "awake", None) is not None and self.awake.hold_wanted:
+            held = self.awake.hold(by="start")
+            if held.get("ok") is False:
+                log.warning("%s", held.get("error"))
         self.worker.start()
         self.text_worker.start()
         self.correct_worker.start()
@@ -1486,11 +1494,11 @@ class App:
 
     def stop(self) -> None:
         self._stopping.set()      # ends the fullscreen watcher's wait()
-        # Night mode first: it is the one thing here that changed the
-        # MACHINE (a pinned sleep timer), and the rest of this method
-        # cannot fail in a way that should leave that in place.
-        if getattr(self, "night", None) is not None:
-            self.night.release()
+        # The hold first: it is the one thing here that changed the
+        # MACHINE (the wake hold, a pinned sleep timer), and the rest of
+        # this method cannot fail in a way that should leave that in place.
+        if getattr(self, "awake", None) is not None:
+            self.awake.release()
         if getattr(self, "_study", None) is not None:
             self._study.stop()
         if getattr(self, "_review", None) is not None:
@@ -1565,33 +1573,30 @@ class App:
                 threading.Thread(target=engine.absorb_decisions, daemon=True,
                                  name="review-absorb").start()
                 return {"ok": True}
-            if command == "night":
-                # on | off | toggle | screen. The engine's switches are a
-                # thread start, a small file and a log line — the screen
-                # broadcast and the probe go to threads of their own —
-                # so this answers within the poll's patience. (With
-                # [night] pin_timeouts it also runs powercfg, ~0.3 s.)
+            if command == "screens":
+                # off | on | toggle | again. The engine's switches are a
+                # thread start and a log line — the broadcasts and the
+                # probe go to threads of their own — so this answers
+                # within the poll's patience. The hold is not touched:
+                # it stands for as long as the app runs.
                 do = str(args.get("do", "toggle")).strip().lower()
-                if do == "screen":
-                    self.night.screen_off()
-                    return {"ok": True, "message": "screen off again",
-                            "night": self.night.state()}
-                if do == "on":
-                    state = self.night.on(by="dashboard")
-                elif do == "off":
-                    state = self.night.off(by="dashboard")
+                if do == "again":
+                    self.awake.blank()
+                    return {"ok": True, "message": "screens off again",
+                            "awake": self.awake.state()}
+                if do == "off":
+                    state = self.awake.darken(by="dashboard")
+                elif do == "on":
+                    state = self.awake.lighten(by="dashboard")
                 elif do == "toggle":
-                    state = self.night.toggle(by="dashboard")
+                    state = self.awake.toggle(by="dashboard")
                 else:
-                    return {"ok": False, "error": f"unknown night action "
+                    return {"ok": False, "error": f"unknown screens action "
                                                   f"{do!r}"}
-                if state.get("ok") is False:
-                    return {"ok": False, "error": state.get("error", ""),
-                            "night": state}
-                self._say("night mode on — the screen goes off, the "
-                          "machine stays awake" if state.get("active")
-                          else "night mode off — back to normal")
-                return {"ok": True, "night": state}
+                self._say("screens off — the machine stays awake; tap "
+                          "again to bring them back" if state.get("dark")
+                          else "screens on")
+                return {"ok": True, "awake": state}
             if command == "quit":
                 singleton.request_quit()
                 return {"ok": True}
@@ -1904,8 +1909,8 @@ class App:
         if action == "photo":
             self._tap_photo()
             return
-        if action == "night":
-            self._tap_night()
+        if action == "screens":
+            self._tap_screens()
             return
         if action not in ("translate", "punctuate"):
             return
@@ -2061,21 +2066,18 @@ class App:
             log.info("opening the camera - space or the shutter takes the "
                      "picture, t sets a timer, m mirrors it, esc closes")
 
-    def _tap_night(self) -> None:
-        """Toggle night mode from the key. On a thread, like every tap:
-        the engine's own work is small, but with [night] pin_timeouts it
-        runs powercfg, and nothing that spawns a process may run inside
-        the keyboard hook's 300 ms."""
+    def _tap_screens(self) -> None:
+        """The screens off, or back, from the key. On a thread, like every
+        tap: the engine's own work is small, but nothing that may spawn a
+        process runs inside the keyboard hook's 300 ms."""
         def work() -> None:
-            state = self.night.toggle(by="key")
-            if state.get("ok") is False:
-                self._say(state.get("error", "night mode failed"))
-            elif state.get("active"):
-                self._say("night mode on — the screen goes off, the "
-                          "machine stays awake")
+            state = self.awake.toggle(by="key")
+            if state.get("dark"):
+                self._say("screens off — the machine stays awake; tap "
+                          "again to bring them back")
             else:
-                self._say("night mode off — back to normal")
-        threading.Thread(target=work, daemon=True, name="night-key").start()
+                self._say("screens on")
+        threading.Thread(target=work, daemon=True, name="screens-key").start()
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
@@ -3832,11 +3834,11 @@ def main() -> int:
         report_fatal(message)
         return 1
 
-    # A night_state.json from a session that died with night mode on
-    # (Task Manager, a crash, a power cut): the hold went with the
-    # process, but a pinned sleep timer did not. Put it back before
-    # anything else, so a bad night cannot become a permanent setting.
-    leftover = night_mod.recover(APP_DIR)
+    # An awake_state.json from a session that died holding (Task Manager,
+    # a crash, a power cut): the hold went with the process, but a pinned
+    # sleep timer did not. Put it back before anything else, so a bad
+    # exit cannot become a permanent setting.
+    leftover = awake_mod.recover(APP_DIR)
     if leftover:
         log.warning("%s", leftover)
     try:
@@ -3968,12 +3970,16 @@ def main() -> int:
                  cfg.pause_hotkey,
                  "; fullscreen apps pause it automatically"
                  if cfg.auto_pause_fullscreen else "")
-    night_cfg = getattr(cfg, "night", None)
-    if night_cfg is not None and night_cfg.enabled and night_cfg.hotkey:
-        log.info("tap %r for NIGHT MODE - the screen goes off and the "
-                 "machine stays awake for the phone; tap again to end it. "
-                 "The dashboard's Night screen has the same switch and a "
-                 "check that says whether it is holding", night_cfg.hotkey)
+    awake_cfg = getattr(cfg, "awake", None)
+    if awake_cfg is not None and awake_cfg.hold:
+        log.info("the machine is held awake for as long as this runs "
+                 "([awake] hold); the screens go dark on their own timer")
+    if awake_cfg is not None and awake_cfg.enabled and awake_cfg.hotkey:
+        log.info("tap %r for SCREENS OFF - they go dark and stay dark while "
+                 "the machine stays awake for the phone; tap again to bring "
+                 "them back. The dashboard's Awake screen has the same "
+                 "switch and a check that says whether the hold is "
+                 "standing", awake_cfg.hotkey)
     log.info("mic: %s | backend: %s | transcripts: %s",
              app.recorder.device_label(), cfg.backend,
              APP_DIR / "transcripts.log")

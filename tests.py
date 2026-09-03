@@ -11602,7 +11602,7 @@ def test_both_capture_keys_are_registered_everywhere_a_key_must_be() -> None:
         "capture_hotkey": "capture.capture_hotkey",
         "record_hotkey": "capture.record_hotkey",
         "camera_hotkey": "camera.camera_hotkey",
-        "night_hotkey": "night.night_hotkey",
+        "screens_hotkey": "awake.screens_hotkey",
     }, dash_mod.NESTED_HOTKEYS
 
 
@@ -16010,81 +16010,84 @@ def test_the_review_screen_lists_what_waits_and_decides_it() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-# ------------------------------------------------------------ night mode
+# ----------------------------------------------------------------- awake
 
-def test_the_night_key_is_registered_everywhere_a_key_must_be() -> None:
+def test_the_screens_key_is_registered_everywhere_a_key_must_be() -> None:
     """Same five places as the camera key: HOTKEY_FIELDS, CHORD_FIELDS
     (ctrl+alt+n is a chord), KEY_GROUPS, and both NESTED_HOTKEYS."""
     import dashboard as dash_mod
     import main as main_mod
 
     registered = dict(config_mod.HOTKEY_FIELDS)
-    assert "night_hotkey" in registered
-    assert registered["night_hotkey"].endswith("(tap)"), \
-        registered["night_hotkey"]
-    assert "night_hotkey" in config_mod.CHORD_FIELDS
+    assert "screens_hotkey" in registered
+    assert registered["screens_hotkey"].endswith("(tap)"), \
+        registered["screens_hotkey"]
+    assert "screens_hotkey" in config_mod.CHORD_FIELDS
     named = {f for _title, fields in dash_mod.KEY_GROUPS for f in fields}
-    assert "night_hotkey" in named, "no group on the Keys screen"
-    assert main_mod.NESTED_HOTKEYS["night_hotkey"] == "night.night_hotkey"
-    assert dash_mod.NESTED_HOTKEYS["night_hotkey"] == "night.night_hotkey"
+    assert "screens_hotkey" in named, "no group on the Keys screen"
+    assert main_mod.NESTED_HOTKEYS["screens_hotkey"] == "awake.screens_hotkey"
+    assert dash_mod.NESTED_HOTKEYS["screens_hotkey"] == "awake.screens_hotkey"
 
     cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
-    assert cfg.night.hotkey == "ctrl+alt+n", cfg.night
-    assert cfg.night_hotkey == cfg.night.hotkey
-    moved = config_mod.with_field(cfg, "night_hotkey", "ctrl+f5")
-    assert moved.night.hotkey == "ctrl+f5" and moved.night_hotkey == "ctrl+f5"
+    assert cfg.awake.hotkey == "ctrl+alt+n", cfg.awake
+    assert cfg.screens_hotkey == cfg.awake.hotkey
+    moved = config_mod.with_field(cfg, "screens_hotkey", "ctrl+f5")
+    assert moved.awake.hotkey == "ctrl+f5" and moved.screens_hotkey == "ctrl+f5"
     assert moved.camera.hotkey == cfg.camera.hotkey, \
         "moving one key must not move another"
     config_mod.check_hotkeys(moved)
-    clash = config_mod.with_field(cfg, "night_hotkey", cfg.capture_hotkey)
+    clash = config_mod.with_field(cfg, "screens_hotkey", cfg.capture_hotkey)
     try:
         config_mod.check_hotkeys(clash)
     except config_mod.ConfigError as e:
-        assert "night_hotkey" in str(e) or "capture_hotkey" in str(e), e
+        assert "screens_hotkey" in str(e) or "capture_hotkey" in str(e), e
     else:
         raise AssertionError("two keys on one binding were accepted")
 
 
-def test_the_night_key_binds_and_the_kill_switch_unbinds_it() -> None:
+def test_the_screens_key_binds_and_the_kill_switch_unbinds_it() -> None:
     import dataclasses
 
     import main as main_mod
 
     cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
     _hotkeys, taps, _latch, _pause = main_mod.App.bindings(cfg)
-    assert taps[parse_binding(cfg.night_hotkey)] == "night", taps
-    off = dataclasses.replace(cfg, night=dataclasses.replace(
-        cfg.night, enabled=False))
+    assert taps[parse_binding(cfg.screens_hotkey)] == "screens", taps
+    off = dataclasses.replace(cfg, awake=dataclasses.replace(
+        cfg.awake, enabled=False))
     _h, taps_off, _l, _p = main_mod.App.bindings(off)
-    assert all(name != "night" for name in taps_off.values()), taps_off
+    assert all(name != "screens" for name in taps_off.values()), taps_off
 
 
-def test_the_night_section_is_in_the_real_config_and_bounded() -> None:
+def test_the_awake_section_is_in_the_real_config_and_bounded() -> None:
     """The file is the Settings screen's list, so the section has to be
-    IN the file, not only in the dataclass defaults."""
+    IN the file, not only in the dataclass defaults — and the hold is on
+    by default, because the requirement is "never"."""
     import settings as settings_mod
 
     here = Path(__file__).resolve().parent
     cfg = config_mod.load(here / "config.toml")
-    assert cfg.night.enabled is True
-    assert cfg.night.pin_timeouts is False, "off by default, on purpose"
-    assert cfg.night.screen_off_again_s == 3
+    assert cfg.awake.hold is True, "the machine must never sleep"
+    assert cfg.awake.enabled is True
+    assert cfg.awake.pin_timeouts is False, "off by default, on purpose"
+    assert cfg.awake.screens_off_again_s == 3
+    assert cfg.awake.keep_screens_off_s == 10
+    assert cfg.awake.vitals_minutes == 10
     sections = {s.name: s for s in settings_mod.read(here / "config.toml")}
-    assert "night" in sections, sorted(sections)
-    keys = {s.key for s in sections["night"].settings}
-    assert keys == {"enabled", "night_hotkey", "pin_timeouts",
-                    "screen_off_again_s", "vitals_minutes",
-                    "keep_screen_off_s"}, keys
-    assert cfg.night.vitals_minutes == 10
-    assert cfg.night.keep_screen_off_s == 10
-    assert sections["night"].help, "the section has no help text"
+    assert "awake" in sections, sorted(sections)
+    assert "night" not in sections, "the old section is still in the file"
+    keys = {s.key for s in sections["awake"].settings}
+    assert keys == {"hold", "enabled", "screens_hotkey", "pin_timeouts",
+                    "screens_off_again_s", "keep_screens_off_s",
+                    "vitals_minutes"}, keys
+    assert sections["awake"].help, "the section has no help text"
     with tempfile.TemporaryDirectory() as d:
         p = Path(d) / "config.toml"
-        p.write_text('[night]\nscreen_off_again_s = 999\n', "utf-8")
+        p.write_text('[awake]\nscreens_off_again_s = 999\n', "utf-8")
         try:
             config_mod.load(p)
         except config_mod.ConfigError as e:
-            assert "screen_off_again_s" in str(e), e
+            assert "screens_off_again_s" in str(e), e
         else:
             raise AssertionError("a 999 s repeat was accepted")
 
@@ -16118,13 +16121,21 @@ class _FakePowercfg:
         return 1, "unknown"
 
 
-def test_night_mode_holds_through_a_thread_and_lets_go_on_off() -> None:
+def _awake_until(cond, timeout: float = 2.0) -> None:
+    """The engine hands its broadcasts to threads; wait for one, briefly."""
+    deadline = time.monotonic() + timeout
+    while not cond() and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+
+def test_the_hold_goes_up_on_a_thread_and_comes_down_on_release() -> None:
     """The execution state is per thread and dies with it (the spec's
-    warning), so the hold is a thread that makes the call and waits. On
-    asks for CONTINUOUS|SYSTEM_REQUIRED and leaves the thread standing;
-    off releases with CONTINUOUS alone and the thread ends. And the
-    marker file exists exactly while it is on."""
-    import night as night_mod
+    warning), so the hold is a thread that makes the call and waits.
+    hold() asks for CONTINUOUS|SYSTEM_REQUIRED and leaves the thread
+    standing; release() lets go with CONTINUOUS alone and the thread
+    ends. The marker file exists exactly while it is up — and the
+    screens are not touched by either."""
+    import awake as awake_mod
 
     calls: list[tuple[int, str]] = []
     def setter(flags: int) -> int:
@@ -16132,40 +16143,88 @@ def test_night_mode_holds_through_a_thread_and_lets_go_on_off() -> None:
         return 0x80000000            # "previously: continuous only"
     sent: list[int] = []
     with tempfile.TemporaryDirectory() as d:
-        eng = night_mod.Engine(Path(d), None,
-                               hold_factory=lambda: night_mod.Hold(setter=setter),
+        eng = awake_mod.Engine(Path(d), None,
+                               hold_factory=lambda: awake_mod.Hold(setter=setter),
+                               sender=lambda s: sent.append(s) or True,
+                               run=_FakePowercfg())
+        assert eng.hold_wanted, "the hold is on by default"
+        assert not eng.holding and eng.state()["holding"] is False
+        state = eng.hold(by="test")
+        assert state["holding"] and state["held"], state
+        assert not state["dark"], "the hold does not touch the screens"
+        assert calls == [(awake_mod.ES_CONTINUOUS
+                          | awake_mod.ES_SYSTEM_REQUIRED, "awake-hold")], calls
+        assert awake_mod.ES_DISPLAY_REQUIRED & calls[0][0] == 0, \
+            "the screens must be allowed to go off"
+        assert (Path(d) / awake_mod.STATE_NAME).exists(), "no marker file"
+        marker = json.loads((Path(d) / awake_mod.STATE_NAME).read_text("utf-8"))
+        assert marker["by"] == "test" and marker["pid"] == os.getpid()
+        assert marker["saved"] is None, "timers are not pinned by default"
+        time.sleep(0.2)
+        assert sent == [], "hold() must not broadcast to the screens"
+        eng.hold(by="test")                       # a second hold does not stack
+        assert len(calls) == 1
+        eng.release()
+        assert not eng.holding and eng.state()["holding"] is False
+        assert calls[-1][0] == awake_mod.ES_CONTINUOUS, calls
+        assert calls[-1][1] == "awake-hold", "released on the holding thread"
+        assert not (Path(d) / awake_mod.STATE_NAME).exists(), "marker left"
+        record = (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
+        assert "| HOLD by test" in record and "| RELEASE |" in record, record
+        eng.release()                             # twice is fine
+        assert sent == []
+
+
+def test_the_screens_go_off_and_come_back_without_touching_the_hold() -> None:
+    """darken() broadcasts MONITOR_OFF, lighten() MONITOR_ON, toggle()
+    alternates, a second darken() puts them out again — and none of it
+    starts or stops the hold. The delayed second MONITOR_OFF (for the
+    click's mouse movement) stays home if the screens were brought back
+    in the meantime."""
+    import awake as awake_mod
+
+    calls: list[int] = []
+    sent: list[int] = []
+    with tempfile.TemporaryDirectory() as d:
+        eng = awake_mod.Engine(Path(d), None,
+                               hold_factory=lambda: awake_mod.Hold(
+                                   setter=lambda f: calls.append(f) or 0x80000000),
                                sender=lambda s: sent.append(s) or True,
                                run=_FakePowercfg())
         eng.again_s = 0
-        assert not eng.active and eng.state()["active"] is False
-        state = eng.on(by="test")
-        assert state["active"] and state["held"], state
-        assert calls == [(night_mod.ES_CONTINUOUS
-                          | night_mod.ES_SYSTEM_REQUIRED, "night-hold")], calls
-        assert night_mod.ES_DISPLAY_REQUIRED & calls[0][0] == 0, \
-            "the screen must be allowed to go off"
-        assert (Path(d) / night_mod.STATE_NAME).exists(), "no marker file"
-        marker = json.loads((Path(d) / night_mod.STATE_NAME).read_text("utf-8"))
-        assert marker["by"] == "test" and marker["pid"] == os.getpid()
-        assert marker["saved"] is None, "timers are not pinned by default"
-        deadline = time.monotonic() + 2
-        while not sent and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert sent == [night_mod.MONITOR_OFF], sent
-        # A second ON does not stack a second hold; it puts the screen out.
-        eng.on(by="test")
-        deadline = time.monotonic() + 2
-        while len(sent) < 2 and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert len(calls) == 1 and sent == [night_mod.MONITOR_OFF] * 2
-        state = eng.off(by="test")
-        assert not state["active"] and not eng.active
-        assert calls[-1][0] == night_mod.ES_CONTINUOUS, calls
-        assert calls[-1][1] == "night-hold", "released on the holding thread"
-        assert not (Path(d) / night_mod.STATE_NAME).exists(), "marker left"
-        record = (Path(d) / night_mod.LOG_NAME).read_text("utf-8")
-        assert "| ON by test" in record and "| OFF by test" in record, record
-        assert eng.off(by="test")["active"] is False, "off twice is fine"
+        eng.vitals_minutes = 0
+        eng.keep_off_s = 0
+        eng.hold(by="start")
+        state = eng.darken(by="test")
+        assert state["dark"] and state["holding"] and state["by"] == "test", state
+        _awake_until(lambda: len(sent) == 1)
+        assert sent == [awake_mod.MONITOR_OFF], sent
+        eng.darken(by="test")                     # again: out again, not back
+        _awake_until(lambda: len(sent) == 2)
+        assert sent == [awake_mod.MONITOR_OFF] * 2 and eng.dark
+        state = eng.toggle(by="key")
+        assert not state["dark"] and state["holding"], state
+        _awake_until(lambda: len(sent) == 3)
+        assert sent[-1] == awake_mod.MONITOR_ON, sent
+        assert len(calls) == 1, "the screens must not touch the hold"
+        assert eng.toggle(by="key")["dark"]
+        eng.lighten(by="test")
+        assert eng.lighten(by="test")["dark"] is False, "lighten twice is fine"
+        record = (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
+        assert "| SCREENS OFF by test" in record, record
+        assert "| SCREENS ON by key" in record, record
+        assert eng.holding, "still held"
+        # The delayed repeat, and the race it must lose.
+        sent.clear()
+        eng.again_s = 1
+        eng.darken(by="test")
+        _awake_until(lambda: len(sent) == 1)
+        eng.lighten(by="test")
+        time.sleep(1.4)
+        assert sent.count(awake_mod.MONITOR_OFF) == 1, \
+            f"the second broadcast fired after the screens came back: {sent}"
+        eng.release()
+        assert not eng.holding and not eng.dark
 
 
 def test_the_process_list_sees_the_processes_it_cannot_open() -> None:
@@ -16179,16 +16238,16 @@ def test_the_process_list_sees_the_processes_it_cannot_open() -> None:
     a hard-coded name: the sum of the per-process handles has to land
     near GetPerformanceInfo's total, which is computed by the kernel by
     a different route. Windows itself is the fixture."""
-    import night as night_mod
+    import awake as awake_mod
 
-    procs = night_mod.processes()
+    procs = awake_mod.processes()
     assert len(procs) > 50, f"only {len(procs)} processes"
     assert all(name and ws >= 0 and commit >= 0 and handles >= 0
                for name, ws, commit, handles in procs), procs[:5]
     # The kernel counted the same handles a different way; a few hundred
     # of drift between the two reads is ordinary on a live machine.
     total = sum(handles for _n, _w, _c, handles in procs)
-    v = night_mod.vitals(gpu=False)
+    v = awake_mod.vitals(gpu=False)
     assert abs(total - v["handles"]) < max(2000, v["handles"] // 50), \
         f"per-process sum {total} vs machine total {v['handles']}"
     # And the biggest holder is what the line names.
@@ -16204,10 +16263,10 @@ def test_the_vitals_read_this_machine_without_a_subprocess() -> None:
     """vitals() is Win32 through ctypes: RAM, commit, the non-paged pool,
     this process, the heaviest programs by image. The GPU number is the
     one subprocess and is skipped here; the line renders without it."""
-    import night as night_mod
+    import awake as awake_mod
 
     t0 = time.perf_counter()
-    v = night_mod.vitals(top=3, gpu=False)
+    v = awake_mod.vitals(top=3, gpu=False)
     took = time.perf_counter() - t0
     assert 0 < v["ram_free"] <= v["ram_total"], v
     assert 0 < v["commit"] <= v["commit_limit"], v
@@ -16220,72 +16279,71 @@ def test_the_vitals_read_this_machine_without_a_subprocess() -> None:
     name, count = v["handles_top"]
     assert name and 0 < count <= v["handles"], v["handles_top"]
     assert took < 2.0, f"vitals took {took:.2f} s"
-    line = night_mod.vitals_line(v)
+    line = awake_mod.vitals_line(v)
     assert "RAM free" in line and "commit" in line and "heaviest" in line, line
     assert f"{name} holds {count}" in line, line
     assert "GPU" not in line, line
-    assert "GPU 5.8 of 15.9 GB" in night_mod.vitals_line(
+    assert "GPU 5.8 of 15.9 GB" in awake_mod.vitals_line(
         {"gpu": (5903 << 20, 16311 << 20)}), "GiB, like nvidia-smi"
-    assert "this app 0.05 GB in RAM" in night_mod.vitals_line(
+    assert "this app 0.05 GB in RAM" in awake_mod.vitals_line(
         {"self_ws": 50 << 20, "self_private": 3 << 30}), \
         "two decimals under a gigabyte, or a 50 MB process reads as 0.0"
 
 
-def test_night_mode_writes_the_vitals_on_the_way_in_and_out() -> None:
-    """One line at ON, one every vitals_minutes, one at OFF — the record
-    of a night the morning can read. The reader is injected: the test
-    is about the log, not the machine."""
-    import night as night_mod
+def test_the_screens_off_write_the_vitals_on_the_way_in_and_out() -> None:
+    """One line when the screens go off, one every vitals_minutes, one
+    when they come back — the record of the time away. The reader is
+    injected: the test is about the log, not the machine."""
+    import awake as awake_mod
 
     reads: list[float] = []
     def fake_vitals() -> str:
         reads.append(time.monotonic())
         return f"fake vitals {len(reads)}"
     with tempfile.TemporaryDirectory() as d:
-        eng = night_mod.Engine(Path(d), None,
-                               hold_factory=lambda: night_mod.Hold(
+        eng = awake_mod.Engine(Path(d), None,
+                               hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 0x80000000),
                                sender=lambda s: True, run=_FakePowercfg(),
                                vitals_fn=fake_vitals)
         eng.again_s = 0
+        eng.keep_off_s = 0
         eng.vitals_minutes = 0
-        eng.on(by="test")
+        eng.hold(by="start")
+        eng.darken(by="test")
         time.sleep(0.3)
-        eng.off(by="test")
+        eng.lighten(by="test")
         time.sleep(0.3)
         assert not reads, "vitals_minutes = 0 must mean no reads at all"
-        record = (Path(d) / night_mod.LOG_NAME).read_text("utf-8")
+        record = (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
         assert "vitals" not in record, record
 
         eng.vitals_minutes = 1
-        eng.on(by="test")
-        deadline = time.monotonic() + 2
-        while len(reads) < 1 and time.monotonic() < deadline:
-            time.sleep(0.02)
-        eng.off(by="test")
-        deadline = time.monotonic() + 2
-        while len(reads) < 2 and time.monotonic() < deadline:
-            time.sleep(0.02)
+        eng.darken(by="test")
+        _awake_until(lambda: len(reads) >= 1)
+        eng.lighten(by="test")
+        _awake_until(lambda: len(reads) >= 2)
         time.sleep(0.1)
-        record = (Path(d) / night_mod.LOG_NAME).read_text("utf-8")
-        assert "|   vitals | at ON: fake vitals 1" in record, record
-        assert "|   vitals | at OFF: fake vitals 2" in record, record
-        on_at = record.index("at ON:")
-        off_line = record.rindex("| OFF by test")   # the second cycle's
-        assert on_at < off_line < record.index("at OFF:"), \
-            "the OFF snapshot must follow the OFF line"
-        assert len(reads) == 2, "off() must stop the periodic reader"
+        record = (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
+        assert "|   vitals | screens off: fake vitals 1" in record, record
+        assert "|   vitals | screens on: fake vitals 2" in record, record
+        on_at = record.index("screens off: fake")
+        off_line = record.rindex("| SCREENS ON by test")   # the second cycle's
+        assert on_at < off_line < record.index("screens on: fake"), \
+            "the coming-back snapshot must follow the SCREENS ON line"
+        assert len(reads) == 2, "lighten() must stop the periodic reader"
+        eng.release()
 
 
-def test_night_mode_keeps_the_screen_off_after_input_lights_it() -> None:
-    """[night] keep_screen_off_s: anything that touches the machine
-    lights the screen, and that many seconds after the LAST touch it is
-    put out again — for as long as night mode is on, the owner at the
+def test_the_screens_stay_off_after_input_lights_them() -> None:
+    """[awake] keep_screens_off_s: anything that touches the machine
+    lights the screens, and that many seconds after the LAST touch they
+    are put out again — for as long as the key says, the owner at the
     keyboard included. The input clock is injected: nothing here moves
     the real mouse, and an untouched machine gets no broadcast at all."""
-    import night as night_mod
+    import awake as awake_mod
 
-    real = night_mod.last_input()
+    real = awake_mod.last_input()
     assert 0 < real <= time.monotonic(), real
     touched = [0.0]                       # monotonic time of the last input
     sent: list[tuple[int, float]] = []
@@ -16293,162 +16351,194 @@ def test_night_mode_keeps_the_screen_off_after_input_lights_it() -> None:
         sent.append((state, time.monotonic()))
         return True
     with tempfile.TemporaryDirectory() as d:
-        eng = night_mod.Engine(Path(d), None,
-                               hold_factory=lambda: night_mod.Hold(
+        eng = awake_mod.Engine(Path(d), None,
+                               hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 0x80000000),
                                sender=sender, run=_FakePowercfg(),
                                input_fn=lambda: touched[0])
         eng.again_s = 0
         eng.vitals_minutes = 0
         eng.keep_off_s = 0
-        eng.on(by="test")
+        eng.hold(by="start")
+        eng.darken(by="test")
         time.sleep(0.4)
-        assert [s for s, _t in sent] == [night_mod.MONITOR_OFF], \
-            "0 must mean the ON broadcast only"
-        eng.off(by="test")
+        assert [s for s, _t in sent] == [awake_mod.MONITOR_OFF], \
+            "0 must mean the one broadcast only"
+        eng.lighten(by="test")
+        _awake_until(lambda: len(sent) == 2)      # the MONITOR_ON
 
         sent.clear()
         eng.keep_off_s = 0.2
-        touched[0] = time.monotonic()     # the key that turned it on
-        eng.on(by="test")
-        assert eng.state()["keep_screen_off_s"] == 0.2
-        deadline = time.monotonic() + 2
-        while not sent and time.monotonic() < deadline:
-            time.sleep(0.02)
+        touched[0] = time.monotonic()     # the key that put them out
+        eng.darken(by="test")
+        assert eng.state()["keep_screens_off_s"] == 0.2
+        _awake_until(lambda: bool(sent))
         time.sleep(0.6)
-        assert [s for s, _t in sent] == [night_mod.MONITOR_OFF], \
+        assert [s for s, _t in sent] == [awake_mod.MONITOR_OFF], \
             "an untouched machine gets no second broadcast"
         touched[0] = time.monotonic()     # the mouse, or a click from the phone
-        deadline = time.monotonic() + 2
-        while len(sent) < 2 and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert [s for s, _t in sent] == [night_mod.MONITOR_OFF] * 2, sent
+        _awake_until(lambda: len(sent) >= 2)
+        assert [s for s, _t in sent] == [awake_mod.MONITOR_OFF] * 2, sent
         assert sent[1][1] - touched[0] >= 0.2, "put out before it was still"
-        record = (Path(d) / night_mod.LOG_NAME).read_text("utf-8")
-        assert "screen lit by input, put out again" in record, record
-        eng.off(by="test")
-        touched[0] = time.monotonic()     # the key that turned it off
+        record = (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
+        assert "screens lit by input, put out again" in record, record
+        eng.lighten(by="test")
+        touched[0] = time.monotonic()     # the key that brought them back
         time.sleep(0.6)
-        assert len(sent) == 2, "off() must stop the watchdog"
+        assert [s for s, _t in sent].count(awake_mod.MONITOR_OFF) == 2, \
+            "lighten() must stop the watchdog"
+        eng.release()
 
 
-def test_night_mode_refused_by_windows_is_reported_not_pretended() -> None:
-    import night as night_mod
+def test_a_hold_refused_by_windows_is_reported_not_pretended() -> None:
+    import dataclasses
+
+    import awake as awake_mod
 
     with tempfile.TemporaryDirectory() as d:
-        eng = night_mod.Engine(Path(d), None,
-                               hold_factory=lambda: night_mod.Hold(
+        eng = awake_mod.Engine(Path(d), None,
+                               hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 0),
                                sender=lambda s: True, run=_FakePowercfg())
-        state = eng.on(by="test")
+        state = eng.hold(by="test")
         assert state.get("ok") is False and "refused" in state["error"], state
-        assert not eng.active
-        assert not (Path(d) / night_mod.STATE_NAME).exists()
+        assert not eng.holding
+        assert not (Path(d) / awake_mod.STATE_NAME).exists()
+        # The screens still work without a hold, and the log says so.
+        eng.again_s = 0
+        eng.vitals_minutes = 0
+        eng.keep_off_s = 0
+        assert eng.darken(by="test")["dark"]
+        assert "NOT holding" in (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
+        eng.lighten(by="test")
+    quiet = awake_mod.Engine(Path(d), dataclasses.replace(
+        config_mod.AwakeConfig(), hold=False))
+    assert quiet.hold_wanted is False, "[awake] hold = false must be honoured"
 
 
-def test_night_mode_pins_the_timers_and_puts_them_back() -> None:
-    """[night] pin_timeouts: read, save, set to never, restore — and the
+def test_the_hold_pins_the_timers_and_puts_them_back() -> None:
+    """[awake] pin_timeouts: read, save, set to never, restore — and the
     saved numbers are in the marker file, which is what recover() reads
     when the app did not live to restore them itself."""
     import dataclasses
 
-    import night as night_mod
+    import awake as awake_mod
 
-    cfg = dataclasses.replace(config_mod.NightConfig(), pin_timeouts=True,
-                              screen_off_again_s=0)
+    cfg = dataclasses.replace(config_mod.AwakeConfig(), pin_timeouts=True,
+                              screens_off_again_s=0)
     fake = _FakePowercfg(standby=30, hibernate=0)
     with tempfile.TemporaryDirectory() as d:
-        eng = night_mod.Engine(Path(d), cfg,
-                               hold_factory=lambda: night_mod.Hold(
+        eng = awake_mod.Engine(Path(d), cfg,
+                               hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 1),
                                sender=lambda s: True, run=fake)
-        eng.on(by="test")
+        eng.hold(by="test")
         assert fake.values == {"STANDBYIDLE": 0, "HIBERNATEIDLE": 0}, fake.values
-        marker = json.loads((Path(d) / night_mod.STATE_NAME).read_text("utf-8"))
+        marker = json.loads((Path(d) / awake_mod.STATE_NAME).read_text("utf-8"))
         assert marker["saved"] == {"standby_ac": 30, "hibernate_ac": 0}, marker
         assert eng.state()["pinned"] is True
-        eng.off(by="test")
+        eng.release()
         assert fake.values == {"STANDBYIDLE": 1800, "HIBERNATEIDLE": 0}, \
             fake.values
+        assert eng.state()["pinned"] is False
+        assert not (Path(d) / awake_mod.STATE_NAME).exists(), "marker left"
+        record = (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
+        assert "pinned to never" in record and "timers restored" in record, record
 
 
-def test_a_leftover_night_marker_is_recovered_at_the_next_start() -> None:
-    """Task Manager, a crash, a power cut: the hold died with the
-    process and needs nothing; a pinned timer did not. Acceptance
-    criterion 5 in the spec."""
-    import night as night_mod
+def test_a_leftover_awake_marker_is_recovered_at_the_next_start() -> None:
+    """A session that died holding with the timers pinned: the hold went
+    with it, the pinned timers did not. recover() puts them back from
+    the marker, removes it, and writes what it did."""
+    import awake as awake_mod
 
     with tempfile.TemporaryDirectory() as d:
-        assert night_mod.recover(Path(d), run=_FakePowercfg()) is None
+        assert awake_mod.recover(Path(d)) is None, "nothing to recover"
         fake = _FakePowercfg(standby=0, hibernate=0)      # as it was left
-        (Path(d) / night_mod.STATE_NAME).write_text(json.dumps(
+        (Path(d) / awake_mod.STATE_NAME).write_text(json.dumps(
             {"since": 1.0, "since_text": "2026-09-02 23:00:00", "pid": 1,
-             "by": "key", "saved": {"standby_ac": 30, "hibernate_ac": 0}}),
+             "by": "start", "saved": {"standby_ac": 30, "hibernate_ac": 0}}),
             "utf-8")
-        message = night_mod.recover(Path(d), run=fake)
+        message = awake_mod.recover(Path(d), run=fake)
         assert message and "restored" in message, message
         assert fake.values == {"STANDBYIDLE": 1800, "HIBERNATEIDLE": 0}, \
             fake.values
-        assert not (Path(d) / night_mod.STATE_NAME).exists(), "marker left"
-        assert "RECOVERED" in (Path(d) / night_mod.LOG_NAME).read_text("utf-8")
+        assert not (Path(d) / awake_mod.STATE_NAME).exists(), "marker left"
+        assert "RECOVERED" in (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
         # A marker with nothing saved is cleaned up and says so.
-        (Path(d) / night_mod.STATE_NAME).write_text('{"saved": null}', "utf-8")
+        (Path(d) / awake_mod.STATE_NAME).write_text('{"saved": null}', "utf-8")
         fake.calls.clear()
-        message = night_mod.recover(Path(d), run=fake)
+        message = awake_mod.recover(Path(d), run=fake)
         assert "nothing to restore" in message, message
         assert fake.calls == [], fake.calls
 
 
-def test_the_night_command_goes_through_the_control_channel() -> None:
+def test_the_screens_command_goes_through_the_control_channel() -> None:
     """The dashboard's button is one pipe message; the reply carries the
-    state so the button can repaint without waiting for a poll."""
-    import main as main_mod
-    import night as night_mod
+    state so the button can repaint without waiting for a poll. And the
+    hold is wired to the app's own start and stop, not to any command."""
+    import inspect
 
+    import main as main_mod
+    import awake as awake_mod
+
+    assert 'self.awake.hold(by="start")' in inspect.getsource(main_mod.App.start)
+    assert "self.awake.release()" in inspect.getsource(main_mod.App.stop)
     with tempfile.TemporaryDirectory() as d:
         app = main_mod.App.__new__(main_mod.App)
         app._note = ""
         sent: list[int] = []
-        app.night = night_mod.Engine(
+        app.awake = awake_mod.Engine(
             Path(d), None,
-            hold_factory=lambda: night_mod.Hold(setter=lambda f: 1),
+            hold_factory=lambda: awake_mod.Hold(setter=lambda f: 1),
             sender=lambda s: sent.append(s) or True, run=_FakePowercfg())
-        app.night.again_s = 0
-        reply = app.control_command("night", {"do": "on"})
-        assert reply["ok"] and reply["night"]["active"], reply
-        assert "night mode on" in app._note, app._note
-        reply = app.control_command("night", {"do": "screen"})
-        assert reply["ok"] and "screen" in reply["message"], reply
-        reply = app.control_command("night", {"do": "toggle"})
-        assert reply["ok"] and not reply["night"]["active"], reply
-        reply = app.control_command("night", {"do": "sideways"})
+        app.awake.again_s = 0
+        app.awake.vitals_minutes = 0
+        app.awake.keep_off_s = 0
+        app.awake.hold(by="start")
+        reply = app.control_command("screens", {"do": "off"})
+        assert reply["ok"] and reply["awake"]["dark"], reply
+        assert reply["awake"]["holding"], "the command must not touch the hold"
+        assert "screens off" in app._note, app._note
+        reply = app.control_command("screens", {"do": "again"})
+        assert reply["ok"] and "screens off again" in reply["message"], reply
+        reply = app.control_command("screens", {"do": "toggle"})
+        assert reply["ok"] and not reply["awake"]["dark"], reply
+        assert "screens on" in app._note, app._note
+        reply = app.control_command("screens", {"do": "on"})
+        assert reply["ok"] and not reply["awake"]["dark"], "on when on is fine"
+        reply = app.control_command("screens", {"do": "sideways"})
         assert not reply["ok"] and "sideways" in reply["error"], reply
-        assert not app.night.active
+        assert not app.awake.dark and app.awake.holding
+        app.awake.release()
 
 
 def test_hours_cover_night_reads_a_window_that_wraps_midnight() -> None:
-    import night as night_mod
+    import awake as awake_mod
 
-    assert night_mod.hours_cover_night((9, 2)) is False       # this machine
-    assert night_mod.hours_cover_night((16, 10)) is True
-    assert night_mod.hours_cover_night((22, 8)) is True
-    assert night_mod.hours_cover_night((23, 7)) is True
-    assert night_mod.hours_cover_night((0, 0)) is False
-    assert night_mod.hours_cover_night(None) is None
+    assert awake_mod.hours_cover_night((9, 2)) is False       # this machine
+    assert awake_mod.hours_cover_night((16, 10)) is True
+    assert awake_mod.hours_cover_night((22, 8)) is True
+    assert awake_mod.hours_cover_night((23, 7)) is True
+    assert awake_mod.hours_cover_night((0, 0)) is False
+    assert awake_mod.hours_cover_night(None) is None
 
 
-def test_the_verdict_names_what_can_lose_the_machine_overnight() -> None:
+def test_the_verdict_names_what_can_lose_the_machine_while_away() -> None:
     """Every row the spec lists as a way to be awake and unreachable, in
-    words that say what to do, with a tone the screen can colour."""
-    import night as night_mod
+    words that say what to do, with a tone the screen can colour. The
+    hold row reads the HOLD, not the screens: a machine with its screens
+    on and the hold standing is fine, one with nothing holding is not."""
+    import awake as awake_mod
 
     probe = {"system_required": True, "display_required": False,
              "requests": None, "standby": "S3",
              "timeouts": {"standby_ac": 30, "hibernate_ac": 0},
              "adapters": [{"name": "Ethernet", "up": True, "saving": True}],
              "active_hours": (9, 2), "claude": 0}
+    held = {"holding": True, "held": True, "dark": False}
     rows = {label: (text, tone) for label, text, tone in
-            night_mod.verdict({"active": True, "held": True}, probe)}
+            awake_mod.verdict(held, probe)}
     assert rows["Sleep hold"][1] == "good", rows["Sleep hold"]
     assert "administrator" in rows["powercfg /requests"][0]
     assert rows["Sleep after (plugged in)"][1] == "good"
@@ -16459,83 +16549,107 @@ def test_the_verdict_names_what_can_lose_the_machine_overnight() -> None:
     assert rows["Update active hours"][1] == "warn"
     assert "09:00–02:00" in rows["Update active hours"][0]
     assert rows["Claude"][1] == "warn"
-    # Off, and the kernel says nothing holds: the timer row turns amber.
+    # Nothing holding, and the kernel agrees: the hold row and the timer
+    # row both turn amber — this machine WILL sleep.
     probe["system_required"] = False
     rows = {label: tone for label, _text, tone in
-            night_mod.verdict({"active": False, "held": False}, probe)}
+            awake_mod.verdict({"holding": False, "held": False}, probe)}
     assert rows["Sleep after (plugged in)"] == "warn", rows
-    assert rows["Sleep hold"] == "dim"
-    # On, but the hold is not standing: red, in words.
+    assert rows["Sleep hold"] == "warn", rows
+    # Nothing holding here, but another program is: dim, not amber.
+    probe["system_required"] = True
     rows = {label: (text, tone) for label, text, tone in
-            night_mod.verdict({"active": True, "held": False}, probe)}
+            awake_mod.verdict({}, probe)}
+    assert rows["Sleep hold"][1] == "dim" and "another program" in \
+        rows["Sleep hold"][0], rows["Sleep hold"]
+    # Asked, but the hold is not standing: red, in words.
+    rows = {label: (text, tone) for label, text, tone in
+            awake_mod.verdict({"holding": True, "held": False}, probe)}
     assert rows["Sleep hold"][1] == "bad", rows["Sleep hold"]
-    # Everything right.
+    # Everything right — with the screens off or on, it makes no difference.
     probe.update(system_required=True, adapters=[{"name": "Ethernet",
                                                    "up": True,
                                                    "saving": False}],
                  active_hours=(16, 10), claude=3)
-    tones = {tone for _l, _t, tone in
-             night_mod.verdict({"active": True, "held": True}, probe)}
-    assert "warn" not in tones and "bad" not in tones, tones
+    for dark in (False, True):
+        tones = {tone for _l, _t, tone in
+                 awake_mod.verdict({**held, "dark": dark}, probe)}
+        assert "warn" not in tones and "bad" not in tones, (dark, tones)
 
 
 def test_the_screen_broadcast_returns_and_reads_the_kernel_state() -> None:
     """The real APIs, harmlessly: MONITOR_ON is a no-op on a lit screen,
     and the timeout is what stops a hung window from hanging us."""
-    import night as night_mod
+    import awake as awake_mod
 
     t0 = time.perf_counter()
-    ok = night_mod.send_monitor_power(night_mod.MONITOR_ON, timeout_ms=1500)
+    ok = awake_mod.send_monitor_power(awake_mod.MONITOR_ON, timeout_ms=1500)
     took = time.perf_counter() - t0
     assert isinstance(ok, bool)
     assert took < 20, f"the broadcast took {took:.1f} s"
-    flags = night_mod.system_execution_state()
+    flags = awake_mod.system_execution_state()
     assert flags is None or isinstance(flags, int), flags
-    assert night_mod.read_timeouts().get("standby_ac") is not None, \
+    assert awake_mod.read_timeouts().get("standby_ac") is not None, \
         "powercfg /query could not be read on this machine"
 
 
-def test_the_dashboard_has_a_night_screen_that_waits_for_the_app() -> None:
+def test_the_dashboard_has_an_awake_screen_that_waits_for_the_app() -> None:
     """With nothing running the switch is disabled and the hint says why;
-    the check works regardless, and its rows land on the screen."""
+    the check works regardless, and its rows land on the screen. With
+    the app running the hero reads the HOLD, and the switch the SCREENS."""
     import dashboard as dash
-    import night as night_mod
+    import awake as awake_mod
 
-    saved = dash.NIGHT_AUTO_CHECK
-    dash.NIGHT_AUTO_CHECK = False
+    saved = dash.AWAKE_AUTO_CHECK
+    dash.AWAKE_AUTO_CHECK = False
     try:
         with _window() as board:
             if board is None:
                 return
-            board._show("Night")
+            board._show("Awake")
             p = board.parts
-            for name in ("night_toggle", "night_screen", "night_check",
-                         "night_rows", "night_state"):
+            for name in ("awake_toggle", "awake_screen", "awake_check",
+                         "awake_rows", "awake_state"):
                 assert name in p, name
-            assert not p["night_toggle"]._enabled, "on with nothing running"
-            assert not p["night_screen"]._enabled
-            assert p["night_check"]._enabled, "the check needs no app"
-            assert "OFF" in p["night_state"].cget("text")
-            assert "start dictation" in p["night_hint"].cget("text")
-            board._night_checked({
+            assert not p["awake_toggle"]._enabled, "on with nothing running"
+            assert not p["awake_screen"]._enabled
+            assert p["awake_check"]._enabled, "the check needs no app"
+            assert "NOT RUNNING" in p["awake_state"].cget("text")
+            assert "start dictation" in p["awake_hint"].cget("text")
+            board._awake_checked({
                 "system_required": False, "requests": None, "standby": "S3",
                 "timeouts": {"standby_ac": 30}, "adapters": [],
                 "active_hours": (9, 2), "claude": 2})
-            rows = p["night_rows"].winfo_children()
-            assert len(rows) == len(night_mod.verdict({}, board._night_probe)), \
+            rows = p["awake_rows"].winfo_children()
+            assert len(rows) == len(awake_mod.verdict({}, board._awake_probe)), \
                 len(rows)
-            assert "checked" in p["night_checked"].cget("text")
-            # A running app with night mode on: the switch reads "off".
+            assert "checked" in p["awake_checked"].cget("text")
+            # A running app, holding, screens on: AWAKE, and the switch
+            # offers to put the screens off.
             board.running = True
-            board.status = {"stage": "running", "night": {
-                "active": True, "held": True, "since": time.time() - 65,
-                "seconds": 65, "pinned": False}}
-            board._paint_night()
-            assert "ON" in p["night_state"].cget("text")
-            assert p["night_toggle"]._enabled
-            assert "holding" in p["night_meta"].cget("text")
+            now = time.time()
+            board.status = {"stage": "running", "awake": {
+                "holding": True, "held": True, "hold_since": now - 3600,
+                "hold_seconds": 3600, "dark": False, "since": None,
+                "seconds": 0, "pinned": False, "keep_screens_off_s": 10}}
+            board._paint_awake()
+            assert p["awake_state"].cget("text") == "AWAKE"
+            assert p["awake_toggle"]._enabled
+            assert "held since" in p["awake_meta"].cget("text")
+            # Screens off: the hero says so and the meta keeps the hold.
+            board.status["awake"].update(dark=True, since=now - 65,
+                                         seconds=65, by="key")
+            board._paint_awake()
+            assert p["awake_state"].cget("text") == "SCREENS OFF"
+            meta = p["awake_meta"].cget("text")
+            assert "held since" in meta and "screens off for" in meta, meta
+            assert "10 s after the last touch" in p["awake_hint"].cget("text")
+            # Asked and refused: red, in words.
+            board.status["awake"].update(held=False, dark=False)
+            board._paint_awake()
+            assert p["awake_state"].cget("text") == "NOT HOLDING"
     finally:
-        dash.NIGHT_AUTO_CHECK = saved
+        dash.AWAKE_AUTO_CHECK = saved
 
 
 if __name__ == "__main__":

@@ -73,7 +73,7 @@ import control
 import history
 import hotkey as hotkey_mod
 import launch
-import night as night_mod
+import awake as awake_mod
 import settings as settings_mod
 import singleton
 import ui
@@ -115,13 +115,13 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
            "faint": ui.FAINT}
 
 NAV = (("overview", "Overview"), ("history", "History"),
-       ("review", "Review"), ("night", "Night"), ("keys", "Keys"),
+       ("review", "Review"), ("awake", "Awake"), ("keys", "Keys"),
        ("version", "Version"), ("settings", "Settings"))
 
-# The Night screen probes the machine (powercfg, PowerShell — a few
+# The Awake screen probes the machine (powercfg, PowerShell — a few
 # seconds) the moment it opens. Off for the tests, which open every
 # screen and have no morning to worry about.
-NIGHT_AUTO_CHECK = True
+AWAKE_AUTO_CHECK = True
 
 # Which keys belong together on the Keys screen. HOTKEY_FIELDS is still
 # the one place a new key has to be added: anything not named here lands
@@ -133,7 +133,7 @@ KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
                                   "visual_qa_hotkey")),
     ("What to do with the screen", ("capture_hotkey", "record_hotkey",
                                     "camera_hotkey")),
-    ("The app itself", ("pause_hotkey", "night_hotkey")),
+    ("The app itself", ("pause_hotkey", "screens_hotkey")),
 )
 
 # Keys that live INSIDE a config section, and the dotted path set_values
@@ -146,7 +146,7 @@ NESTED_HOTKEYS = {
     "capture_hotkey": "capture.capture_hotkey",
     "record_hotkey": "capture.record_hotkey",
     "camera_hotkey": "camera.camera_hotkey",
-    "night_hotkey": "night.night_hotkey",
+    "screens_hotkey": "awake.screens_hotkey",
 }
 
 # The right-hand column of a settings row: a switch, a menu, or a field.
@@ -579,7 +579,7 @@ class Dashboard:
         {"Overview": self._screen_overview,
          "History": self._screen_history,
          "Review": self._screen_review,
-         "Night": self._screen_night,
+         "Awake": self._screen_awake,
          "Keys": self._screen_keys,
          "Version": self._screen_version,
          "Settings": self._screen_settings}[name]()
@@ -1263,145 +1263,161 @@ class Dashboard:
 
     # --------------------------------------------------------------- keys
 
-    # -------------------------------------------------------------- night
+    # -------------------------------------------------------------- awake
 
-    def _screen_night(self) -> None:
-        """The screen off and the machine awake, for the phone — night.py.
+    def _screen_awake(self) -> None:
+        """The machine held awake, and the screens off on a key — awake.py.
 
-        Three cards. The hero says whether it is on and holds the one
-        switch; a strip under it has "screen off again" (the mouse lights
-        the screen; this puts it out without touching the hold) and the
-        check; and the check's answer fills the rest — every reason the
-        spec lists for a machine that is awake and still unreachable in
-        the morning, as a row each, with what to do about it.
+        Three cards. The hero says whether the hold is standing — it goes
+        up when the app starts and stays until it exits, whatever the
+        screens are doing — and carries the one switch, which is about
+        the SCREENS: off and kept off, or back. A strip under it has
+        "screens off again" (for after something lit them) and the check;
+        and the check's answer fills the rest — every reason the spec
+        lists for a machine that is awake and still unreachable, as a row
+        each, with what to do about it.
 
         The switch lives in the RUNNING APP: the hold is per process, and
-        the process that has to stay awake all night is the one with the
-        hotkey in it, not this window, which is usually closed. So with
-        nothing running the switch is disabled and the hint says why. The
-        check does not need the app — it reads the machine — so it works
-        either way, and runs by itself when the screen opens.
+        the process that has to stay awake is the one with the hotkey in
+        it, not this window, which is usually closed. So with nothing
+        running the switch is disabled and the hint says why. The check
+        does not need the app — it reads the machine — so it works either
+        way, and runs by itself when the screen opens.
         """
-        self._title("Night", "the screen off, the computer awake, all night")
+        self._title("Awake", "the computer never sleeps; the screens can")
         p = self.parts
         hero = ui.Card(self.sheet, CW, 148, pad=18)
         hero.place(x=PAD, y=68)
         body, inner = hero.body, CW - 36
-        p["night_bar"] = tk.Label(body, bg=ui.CARD)
-        p["night_bar"].place(x=-4, y=0)
-        p["night_glyph"] = tk.Label(body, text=ui.ICON["night"], bg=ui.CARD,
-                                    fg=ui.FAINT, font=(ui.ICONS, 22))
-        p["night_glyph"].place(x=6, y=2)
-        p["night_state"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FG,
+        p["awake_bar"] = tk.Label(body, bg=ui.CARD)
+        p["awake_bar"].place(x=-4, y=0)
+        p["awake_glyph"] = tk.Label(body, text=ui.ICON["awake"],
+                                    bg=ui.CARD, fg=ui.FAINT,
+                                    font=(ui.ICONS, 22))
+        p["awake_glyph"].place(x=6, y=2)
+        p["awake_state"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FG,
                                     font=(ui.DISPLAY, 19, "bold"))
-        p["night_state"].place(x=56, y=1)
-        p["night_meta"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.DIM,
+        p["awake_state"].place(x=56, y=1)
+        p["awake_meta"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.DIM,
                                    font=(ui.UI, 9), anchor="w")
-        p["night_meta"].place(x=57, y=44)
-        p["night_hint"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FAINT,
+        p["awake_meta"].place(x=57, y=44)
+        p["awake_hint"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FAINT,
                                    font=(ui.UI, 8), justify="left",
                                    anchor="w")
-        p["night_hint"].place(x=57, y=68)
-        p["night_toggle"] = ui.Button(body, "Night mode on",
-                                      lambda: self._night("toggle"), w=164,
-                                      primary=True, icon=ui.ICON["night"])
-        p["night_toggle"].place(x=inner, y=0, anchor="ne")
+        p["awake_hint"].place(x=57, y=68)
+        p["awake_toggle"] = ui.Button(body, "Screens off",
+                                      lambda: self._screens("toggle"), w=164,
+                                      primary=True, icon=ui.ICON["awake"])
+        p["awake_toggle"].place(x=inner, y=0, anchor="ne")
 
         strip = ui.Card(self.sheet, CW, 76, pad=18)
         strip.place(x=PAD, y=228)
-        p["night_screen"] = ui.Button(strip.body, "Screen off again",
-                                      lambda: self._night("screen"), w=156,
+        p["awake_screen"] = ui.Button(strip.body, "Screens off again",
+                                      lambda: self._screens("again"), w=156,
                                       icon=ui.ICON["power"])
-        p["night_screen"].place(x=0, y=2)
-        p["night_check"] = ui.Button(strip.body, "Check status",
-                                     self._night_check, w=132, quiet=True,
+        p["awake_screen"].place(x=0, y=2)
+        p["awake_check"] = ui.Button(strip.body, "Check status",
+                                     self._awake_check, w=132, quiet=True,
                                      icon=ui.ICON["check"])
-        p["night_check"].place(x=168, y=2)
-        p["night_checked"] = tk.Label(strip.body, text="", bg=ui.CARD,
+        p["awake_check"].place(x=168, y=2)
+        p["awake_checked"] = tk.Label(strip.body, text="", bg=ui.CARD,
                                       fg=ui.FAINT, font=(ui.UI, 8),
                                       anchor="e")
-        p["night_checked"].place(x=CW - 36, y=12, anchor="ne")
+        p["awake_checked"].place(x=CW - 36, y=12, anchor="ne")
 
         card = ui.Card(self.sheet, CW, 310, pad=18)
         card.place(x=PAD, y=316)
-        tk.Label(card.body, text="WILL IT STILL BE THERE IN THE MORNING",
+        tk.Label(card.body, text="WILL IT STILL BE THERE WHEN YOU ARE AWAY",
                  bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8)).place(x=0, y=0)
-        p["night_rows"] = tk.Frame(card.body, bg=ui.CARD, width=CW - 36,
+        p["awake_rows"] = tk.Frame(card.body, bg=ui.CARD, width=CW - 36,
                                    height=254)
-        p["night_rows"].place(x=0, y=22)
-        p["night_rows"].pack_propagate(False)
-        self._night_shape = None
-        self._paint_night_rows()
-        if NIGHT_AUTO_CHECK and getattr(self, "_night_probe", None) is None:
-            self.root.after(150, self._night_check)
+        p["awake_rows"].place(x=0, y=22)
+        p["awake_rows"].pack_propagate(False)
+        self._awake_shape = None
+        self._paint_awake_rows()
+        if AWAKE_AUTO_CHECK and getattr(self, "_awake_probe", None) is None:
+            self.root.after(150, self._awake_check)
 
-    def _paint_night(self) -> None:
+    def _paint_awake(self) -> None:
         p = self.parts
-        if "night_state" not in p:
+        if "awake_state" not in p:
             return
-        night = (self.status.get("night") or {}) if self.running else {}
-        active = bool(night.get("active"))
-        held = bool(night.get("held"))
-        colour = (ui.VIOLET if active and held else
-                  ui.RED if active else
+        awake = (self.status.get("awake") or {}) if self.running else {}
+        holding = bool(awake.get("holding"))
+        held = bool(awake.get("held"))
+        dark = bool(awake.get("dark"))
+        colour = (ui.VIOLET if dark and held else
+                  ui.GREEN if held else
+                  ui.RED if holding else
                   ui.DIM if self.running else ui.FAINT)
-        p["night_bar"].config(image=ui.rounded(4, 112, 2, colour, ui.CARD))
-        p["night_glyph"].config(fg=ui.VIOLET if active else ui.FAINT)
-        p["night_state"].config(text="NIGHT MODE ON" if active
-                                else "NIGHT MODE OFF")
-        if active:
-            since = night.get("since")
+        p["awake_bar"].config(image=ui.rounded(4, 112, 2, colour, ui.CARD))
+        p["awake_glyph"].config(fg=ui.VIOLET if dark else ui.FAINT)
+        if not self.running:
+            state = "NOT RUNNING"
+            meta = "the machine sleeps on its own timer"
+            hint = ("The hold lives in the running app — the process that "
+                    "keeps the machine awake is the one with the hotkey in "
+                    "it — so start dictation first.")
+        elif holding and not held:
+            state = "NOT HOLDING"
+            meta = "the app asked and Windows refused"
+            hint = ("The app asked Windows to stay awake and the hold is "
+                    "not standing. Stop and start the app, and check.")
+        elif not holding:
+            state = "NOT HELD"
+            meta = "[awake] hold = false — it sleeps on its own timer"
+            hint = ("Turn hold on in Settings and restart the app, and the "
+                    "machine stays awake for as long as it runs.")
+        else:
+            since = awake.get("hold_since")
             when = (time.strftime("%H:%M", time.localtime(since))
                     if since else "?")
-            bits = [f"since {when}", human_time(night.get("seconds", 0)),
-                    "holding" if held else "NOT HOLDING"]
-            if night.get("pinned"):
+            bits = [f"held since {when}",
+                    human_time(awake.get("hold_seconds", 0))]
+            if awake.get("pinned"):
                 bits.append("sleep timers pinned")
-            meta = "   ·   ".join(bits)
-            keep = night.get("keep_screen_off_s") or 0
-            if keep:
-                hint = ("The machine is awake and the screen is off. "
-                        "Anything that lights the screen is put out again "
-                        f"{keep:g} s after the last touch; Screen off again "
-                        "does it now. Off returns everything to normal.")
+            if dark:
+                state = "SCREENS OFF"
+                bits.append("screens off for "
+                            + human_time(awake.get("seconds", 0)))
+                keep = awake.get("keep_screens_off_s") or 0
+                if keep:
+                    hint = ("The machine is awake and the screens are off. "
+                            "Anything that lights them is put out again "
+                            f"{keep:g} s after the last touch; Screens off "
+                            "again does it now. Screens on brings them back.")
+                else:
+                    hint = ("The machine is awake and the screens are off. "
+                            "The mouse lights them — Screens off again puts "
+                            "them out. Screens on brings them back.")
             else:
-                hint = ("The machine is awake and the screen is off. The "
-                        "mouse lights the screen — Screen off again puts "
-                        "it out. Off returns everything to normal.")
-            if not held:
-                hint = ("The app asked Windows to stay awake and the hold "
-                        "is not standing. Turn it off and on again, and "
-                        "check.")
-        elif self.running:
-            meta = "the machine sleeps on its own timer"
-            hint = ("One press: the machine stays awake with the screen "
-                    "off, nothing is locked, and the phone can drive it "
-                    "through Claude until morning.")
-        else:
-            meta = "not running"
-            hint = ("Night mode lives in the running app — the process "
-                    "that holds the machine awake is the one with the "
-                    "hotkey in it — so start dictation first.")
-        p["night_meta"].config(text=ui.clamp(meta, ui.UI, 9,
+                state = "AWAKE"
+                hint = ("The machine will not sleep while this app runs, "
+                        "whatever the screens do. One press: the screens go "
+                        "dark and stay dark, nothing is locked, and the "
+                        "phone can drive it through Claude.")
+            meta = "   ·   ".join(bits)
+        p["awake_state"].config(text=state)
+        p["awake_meta"].config(text=ui.clamp(meta, ui.UI, 9,
                                              CW - 36 - 57 - 172, 1)[0])
-        p["night_hint"].config(text=ui.clamp(hint, ui.UI, 8,
+        p["awake_hint"].config(text=ui.clamp(hint, ui.UI, 8,
                                              CW - 36 - 57, 2)[0])
-        p["night_toggle"].configure_text("Night mode off" if active
-                                         else "Night mode on")
-        p["night_toggle"].enable(self.running)
-        p["night_screen"].enable(self.running)
-        shape = (active, held, night.get("pinned"))
-        if shape != getattr(self, "_night_shape", None):
-            self._night_shape = shape
-            self._paint_night_rows()
+        p["awake_toggle"].configure_text("Screens on" if dark
+                                         else "Screens off")
+        p["awake_toggle"].enable(self.running)
+        p["awake_screen"].enable(self.running)
+        shape = (holding, held, awake.get("pinned"))
+        if shape != getattr(self, "_awake_shape", None):
+            self._awake_shape = shape
+            self._paint_awake_rows()
 
-    def _paint_night_rows(self) -> None:
-        frame = self.parts.get("night_rows")
+    def _paint_awake_rows(self) -> None:
+        frame = self.parts.get("awake_rows")
         if frame is None or not frame.winfo_exists():
             return
         for child in frame.winfo_children():
             child.destroy()
-        result = getattr(self, "_night_probe", None)
+        result = getattr(self, "_awake_probe", None)
         width = CW - 36
         if result is None:
             tk.Label(frame, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9),
@@ -1410,14 +1426,14 @@ class Dashboard:
                           "awake, the sleep timer, whether Windows may "
                           "power the network card down, Windows Update's "
                           "active hours and whether Claude is running — "
-                          "so that a night that would not have worked is "
-                          "found out now rather than in the morning."
+                          "so that a machine that would not have stayed "
+                          "reachable is found out now, not from the phone."
                      ).pack(anchor="w")
             return
-        night = (self.status.get("night") or {}) if self.running else {}
+        awake = (self.status.get("awake") or {}) if self.running else {}
         tones = {"good": ui.GREEN, "warn": ui.AMBER, "bad": ui.RED,
                  "dim": ui.FAINT}
-        for label, sentence, tone in night_mod.verdict(night, result):
+        for label, sentence, tone in awake_mod.verdict(awake, result):
             row = tk.Frame(frame, bg=ui.CARD)
             row.pack(anchor="w", fill="x", pady=(0, 5))
             dot = tk.Label(row, bg=ui.CARD,
@@ -1433,50 +1449,46 @@ class Dashboard:
                      justify="left", anchor="w").pack(side="left",
                                                       anchor="n", fill="x")
 
-    def _night(self, do: str) -> None:
-        """on / off / toggle / screen, through the running app."""
+    def _screens(self, do: str) -> None:
+        """off / on / toggle / again, through the running app."""
         self._busy_until = time.monotonic() + 1
-        self._ask("night", then=lambda r: self._night_answered(r, do), do=do)
+        self._ask("screens", then=lambda r: self._screens_answered(r, do),
+                  do=do)
 
-    def _night_answered(self, reply: dict | None, do: str) -> None:
-        if do == "screen":
-            self._announce(reply, "screen off")
+    def _screens_answered(self, reply: dict | None, do: str) -> None:
+        if do == "again":
+            self._announce(reply, "screens off again")
             return
-        state = (reply or {}).get("night") or {}
-        self._announce(reply, "night mode is on — the screen goes off in "
-                              "a moment" if state.get("active")
-                       else "night mode is off — back to normal")
-        if reply and reply.get("ok"):
-            # The hold has just gone up or come down; read the machine
-            # again so the rows say what is true NOW, not what was true
-            # when the screen opened.
-            self.root.after(700, self._night_check)
+        state = (reply or {}).get("awake") or {}
+        self._announce(reply, "screens off — they stay off until you tap "
+                              "again" if state.get("dark")
+                       else "screens on")
 
-    def _night_check(self) -> None:
+    def _awake_check(self) -> None:
         """The probe, on a worker: two or three seconds of powercfg and
         PowerShell that must not stall the window."""
-        if getattr(self, "_night_probing", False) or self.closing:
+        if getattr(self, "_awake_probing", False) or self.closing:
             return
-        self._night_probing = True
-        label = self.parts.get("night_checked")
+        self._awake_probing = True
+        label = self.parts.get("awake_checked")
         if label is not None and label.winfo_exists():
             label.config(text="checking…")
 
         def work() -> None:
             try:
-                result = night_mod.probe()
+                result = awake_mod.probe()
             except Exception as e:            # noqa: BLE001
                 result = {"error": str(e)}
-            self._events.put(lambda: self._night_checked(result))
-        threading.Thread(target=work, daemon=True, name="night-probe").start()
+            self._events.put(lambda: self._awake_checked(result))
+        threading.Thread(target=work, daemon=True, name="awake-probe").start()
 
-    def _night_checked(self, result: dict) -> None:
-        self._night_probing = False
-        self._night_probe = result
-        label = self.parts.get("night_checked")
+    def _awake_checked(self, result: dict) -> None:
+        self._awake_probing = False
+        self._awake_probe = result
+        label = self.parts.get("awake_checked")
         if label is not None and label.winfo_exists():
             label.config(text=f"checked {time.strftime('%H:%M:%S')}")
-        self._paint_night_rows()
+        self._paint_awake_rows()
 
     def _screen_keys(self) -> None:
         """Every bindable key, in a column that scrolls.
@@ -2619,10 +2631,9 @@ class Dashboard:
         if status.get("paused"):
             return ("Keys are inert — the models are still loaded, so "
                     "resuming is instant.")
-        if (status.get("night") or {}).get("active"):
-            return ("Night mode is on — the machine stays awake with the "
-                    "screen off. The Night screen, or the night key, turns "
-                    "it off.")
+        if (status.get("awake") or {}).get("dark"):
+            return ("The screens are off and the machine stays awake. The "
+                    "Awake screen, or the screens key, brings them back.")
         if status.get("note"):
             return status["note"]
         keys = status.get("keys") or self._read_keys()
@@ -2657,7 +2668,7 @@ class Dashboard:
 
         {"Overview": self._paint_overview, "History": lambda: None,
          "Review": self._poll_review,
-         "Night": self._paint_night,
+         "Awake": self._paint_awake,
          "Keys": self._paint_keys,
          "Version": lambda: None,
          "Settings": self._paint_settings}[self.screen]()
