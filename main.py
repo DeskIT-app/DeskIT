@@ -3935,8 +3935,12 @@ def main() -> int:
             "toast": "A small card then appears in the %s for a few "
                      "seconds - click it to crop, draw, blur out anything "
                      "private or hand it to the ask key, ignore it and it "
-                     "goes away" % getattr(cap_cfg, "toast_corner",
-                                           "corner"),
+                     "goes away. The key is NOT dead while it is up: press "
+                     "it again and a second card joins the first, oldest at "
+                     "the top and newest at the bottom, %s of them at a "
+                     "time, each on its own clock"
+                     % (getattr(cap_cfg, "toast_corner", "corner"),
+                        getattr(cap_cfg, "toast_stack", 4)),
             "editor": "A toolbar then opens on it for cropping, drawing, "
                       "blurring out anything private, or handing it to "
                       "the ask key",
