@@ -28,6 +28,46 @@ probe toast raised at 17:21:49.356 was row 958683 with an ArrivalTime of
 17:21:49.371 — 15 ms — so `poll_s` below is the whole of the delay
 between the toast and the card.
 
+WHERE THE REST OF THE WAIT GOES, AND WHY THE POLL IS A QUARTER SECOND
+(measured 2026-09-04, after the owner asked whether the card could come
+sooner). It can, by about a second and a half, and by nothing more.
+
+He reported "two minutes" between Cowork's answer and the card. That is
+not what happened. Two sessions were rebuilt from their own server event
+streams out of the app's HTTP cache, one of them end to end: sandbox
+allocated 17:48:07.322, his message 17:48:13.049, the last words of the
+answer 17:48:18.508, the turn's result and Stop hook 17:48:19.700 — and
+the Windows toast at 17:48:28.818. Nine seconds, not two minutes; that
+whole session lived 12.4 s. Across eight idle toasts on three days the
+gap from the server's turn-end event to the toast is 6.3, 6.3, 6.4, 6.4,
+8.9, 8.9, 9.1, 9.4 s. The "two minutes" was time since an EARLIER pane's
+answer, on a screen holding three Claude Code sessions and a
+create-test-delete loop of throwaway Cowork ones.
+
+Those nine seconds are a DELIBERATE HOLD, and not the desktop app's. The
+toast is built by the claude.ai WEB page — `cowork-${trigger}-${id}` is
+where the tag comes from, which is why it is not in the app's bundle
+anywhere — and the page holds it on a timer (10,000 ms on the fast path
+in force here; 35,000 ms if a server-side flag flips, with no local
+warning) before calling the app's IPC; the app forwards it with no
+debounce and no queue. So the app is not late, it is waiting on purpose,
+and nothing here is told sooner: a sweep of 21,827 files under both of
+the app's data folders found ZERO writes between the turn ending and the
+toast, no Claude process holds a listening port, the VM service pipe
+refuses callers outside the app's own package, and the window's
+accessibility tree is DOWNSTREAM — on the one turn end caught by three
+clocks at once the toast beat the window by 0.5 to 1.3 s. Those nine
+seconds are reachable only by holding claude.ai's private session stream
+with the app's OAuth token: the owner's conversations and borrowed
+credentials, for nine seconds. Not a trade this app makes.
+
+What was left was ours: the poll. At 0.25 s, 240 checks over 60 s cost
+159 ms of CPU altogether — 0.26% of one core — because `changed()` is
+three stat calls and only a real write pays the 33 ms copy (one poll in
+240 over that minute). The card now trails the toast by ~0.1 s on
+average instead of up to 2 s, and the honest total is about ten seconds,
+nine of which belong to somebody else.
+
 THE FILE'S OWN mtime IS A LIE. It read 14:59 while rows were arriving at
 17:21, because the writes are in the write-ahead log beside it. So
 `changed()` stats all three parts, and `read()` copies all three (2 MB,
@@ -88,7 +128,8 @@ DB = (Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Windows"
       / "Notifications" / "wpndatabase.db")
 PARTS = ("", "-wal", "-shm")   # the database, its write-ahead log, its index
 WORK = "hd-notify-watch.db"    # the copy we read, in the temp folder
-POLL_S = 2.0
+POLL_S = 0.25                  # a quarter second, and it costs nothing —
+                               # see WHERE THE REST OF THE WAIT GOES, below
 BATCH = 20                     # rows handed on per pass; a flood of toasts is
                                # the app's problem, not a reason to fill the
                                # column with fifty cards at once
