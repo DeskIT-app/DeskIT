@@ -4226,8 +4226,12 @@ def main() -> int:
     if ncfg is not None and ncfg.enabled:
         log.info("notifications: POST /notify on the phone endpoint (token "
                  "from server_token.txt) plays a cue and puts a card up%s; "
-                 "Claude Code is wired through notify_hook.py",
-                 f"; tap {ncfg.hotkey!r} to dismiss" if ncfg.hotkey else "")
+                 "Claude Code is wired through notify_hook.py%s",
+                 f"; tap {ncfg.hotkey!r} to dismiss" if ncfg.hotkey else "",
+                 ", and Cowork through the desktop app's own Windows "
+                 "notifications ([notify] watch = "
+                 f"{getattr(ncfg, 'watch', 'cowork')!r}, notify_watch.py)"
+                 if getattr(ncfg, "watch", "off") != "off" else "")
     log.info("mic: %s | backend: %s | transcripts: %s",
              app.recorder.device_label(), cfg.backend,
              APP_DIR / "transcripts.log")
