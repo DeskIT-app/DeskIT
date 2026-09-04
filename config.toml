@@ -1068,8 +1068,8 @@ anchor = "bottom"              # bottom | top. Which edge of the stack stays
                                # so a card kept in the bottom-right corner
                                # never runs off the screen; "top" pins the
                                # top edge and grows downward, as it used to
-x = 2195                    # the top-left of the CARD where you last
-y = 1373                    # dragged it, in screen pixels — but `y` is the
+x = 2196                    # the top-left of the CARD where you last
+y = 1440                    # dragged it, in screen pixels — but `y` is the
                                # edge `anchor` names, so with the default
                                # "bottom" it is the BOTTOM of the stack and
                                # a taller card grows up away from it.
@@ -1449,8 +1449,8 @@ card_seconds = 20             # how long the card stays on screen before it
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
-x = -479                   # the top-left of the CARD where you last
-y = 778                   # dragged it, in screen pixels. -100000 = never
+x = -872                   # the top-left of the CARD where you last
+y = 879                   # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a
                               # monitor to the left of the primary
 scale = 1.0                   # how big it is drawn (0.6 .. 1.4)
