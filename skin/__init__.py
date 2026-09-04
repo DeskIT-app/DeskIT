@@ -170,16 +170,40 @@ def review_run(card) -> bool:
 
 
 def notify_run(card) -> bool:
-    """The notification card (notify.py's arrivals) — no glass presenter
-    yet, so this always declines and overlay.NotifyCard paints its flat
-    card, which IS the card: the same notify_card image on a solid face.
-    The hook exists now so that main.py, tests and a future skin\\notify
-    presenter all meet the same seam. Named notify_run rather than notify
-    for the reason paint_wave gives below — a hook that shares its name
-    with a skin\\notify.py would overwrite itself on its first call, and
-    this name is one no file in this folder can take.
+    """The notification card (notify.py's arrivals), on glass.
+
+    This used to `return False` unconditionally, and that made the notify
+    card the only one in the app with no glass presenter: it fell back to
+    overlay.NotifyCard's Tk window, whose background is an OPAQUE
+    rectangle, and notify_card.flat() drew a rounded outline inside that
+    rectangle. The corner was curved and the thing behind it was square,
+    which is exactly what the owner saw. Tk cannot fix that — it has no
+    per-pixel alpha, and -transparentcolor is a chroma key that fringes an
+    antialiased corner rather than cutting it. skin\\notify.py cuts it with
+    UpdateLayeredWindow, like every other card here.
+
+    The same trade as the hint and review cards: the queue, the clock and
+    the dismissal stay in overlay.NotifyCard and this only paints. Falling
+    back is still a downgrade in looks and nothing else — delete the folder
+    and the square-cornered Tk card comes back, working.
+
+    STILL NAMED notify_run RATHER THAN notify, and now for real: as of
+    this change skin\\notify.py EXISTS, which is precisely the case the
+    rule below anticipated. A hook named `notify` whose body says
+    `from .notify import run` would rebind skin.notify from this function
+    to that module on its first call and raise "'module' object is not
+    callable" on its second — see paint_wave for the four tracebacks that
+    bought the rule. review_run/.review is the same pairing.
     """
-    return False
+    if not on():
+        return False
+    try:
+        from .notify import run
+        run(card)
+        return True
+    except Exception:
+        _log.info("skin notify card failed, falling back", exc_info=True)
+        return False
 
 
 def paint_wave(card) -> bool:

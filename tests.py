@@ -18132,7 +18132,24 @@ def test_the_notify_card_gives_the_foreground_back_and_hides_from_capture(
         "import notify as" not in source
 
 
-def test_skin_notify_run_declines_and_shadows_nothing() -> None:
+def test_skin_notify_run_presents_on_glass_and_never_shadows_itself() -> None:
+    """The hook declines with the skin off and PRESENTS with it on, and
+    skin\\notify.py existing is fine because the hook is `notify_run`.
+
+    Both halves of this test used to assert the opposite. The card shipped
+    with no glass presenter, so the hook returned False unconditionally and
+    the test asserted that no file in skin\\ was named `notify` — which was
+    a proxy for "the hook is safe", not the rule itself. The rule is the
+    one paint_wave paid for: a hook may not share its NAME with a module in
+    the folder, because importing the module rebinds the attribute. A file
+    called notify.py is exactly the case `notify_run` was named to survive,
+    and review_run/.review is the same pairing, shipped and working.
+
+    Presenting is checked with a real NotifyCard whose `_closing` is
+    already set, so run() takes its own exit on the first pass of the loop:
+    it proves the hook reaches skin\\notify.run and reports True without
+    standing up a layered window on the test machine's desktop.
+    """
     skin = _skin_or_skip()
     if skin is None:
         return
@@ -18141,22 +18158,157 @@ def test_skin_notify_run_declines_and_shadows_nothing() -> None:
         os.environ["HD_SKIN"] = "0"
         skin.reset()
         assert skin.on() is False
-        assert skin.notify_run(None) is False
+        assert skin.notify_run(None) is False, \
+            "the hook painted something with the skin switched off"
     finally:
         if was is None:
             os.environ.pop("HD_SKIN", None)
         else:
             os.environ["HD_SKIN"] = was
         skin.reset()
-    assert skin.notify_run(None) is False, "no glass presenter yet"
+
     folder = Path(skin.__file__).resolve().parent
-    assert "notify" not in {p.stem for p in folder.glob("*.py")}, \
-        "skin\\notify.py would shadow a hook named notify — hence *_run"
+    assert "notify" in {p.stem for p in folder.glob("*.py")}, \
+        "skin\\notify.py is gone — the notify card has no glass presenter"
     import ast
     tree = ast.parse((folder / "__init__.py").read_text("utf-8"))
     hooks = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
-    assert "notify_run" in hooks and not (hooks & {p.stem for p in
-                                                   folder.glob("*.py")})
+    modules = {p.stem for p in folder.glob("*.py")} - {"__init__"}
+    assert "notify_run" in hooks and "notify" not in hooks
+    assert not (hooks & modules), (
+        f"a hook now shares a name with a module: {sorted(hooks & modules)}")
+
+    if not skin.on():
+        return
+    card = overlay_mod.NotifyCard()
+    card._closing.set()                  # run() exits on its first pass
+    assert skin.notify_run(card) is True, \
+        "the hook declined with the skin on — the flat Tk card is back"
+    assert card._alive.is_set(), "run() never reported itself alive"
+    assert card.rect is None, "run() left a stale rect behind"
+
+
+def test_the_skin_notify_face_actually_rounds_the_corner() -> None:
+    """THE DEFECT, asserted in pixels: outside the curve there is nothing.
+
+    The owner's report was "the corner is curved but there is something in
+    the background that makes them sharp" — the Tk fallback fills an opaque
+    CARD_BG rectangle and notify_card.flat() draws a rounded OUTLINE inside
+    it, so the curve is a drawing and the card is a square. A layered
+    window has real per-pixel alpha, so the fix is checkable: render the
+    glass face and read the alpha channel.
+
+    Measured on this machine at scale 1.0, diagonally in from the card's
+    top-left corner (SHADOW, SHADOW): 0, 0, 14, 25, 29, 61, 210, 210. Zero
+    where the corner is cut, a feathered ramp, then the face. The face
+    begins at d = 6 because a radius-20 arc meets the diagonal at
+    20*(1 - 1/sqrt(2)) = 5.86 px, which is the arithmetic the picture is
+    supposed to obey.
+
+    THE BOTTOM TWO CORNERS ARE 35, NOT 0, and that is the drop shadow
+    doing its job: face() offsets its six shadow rects DOWNWARD (top
+    -grow*0.35 + 5, height +grow*1.5), the way a thing lit from above
+    casts, so there is nothing above the card and a soft wash below it.
+    35/255 is 14% black over the live desktop against the face's 221 —
+    a shadow, not a surface. The window's own four corners are 0 flat.
+    """
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    import skia
+    from skin import notify as skin_notify
+    import notify_card as nc
+
+    w, h = 200, 120
+    pad = skin_notify.SHADOW
+    surface = skia.Surface(w + pad * 2, h + pad * 2)
+    canvas = surface.getCanvas()
+    canvas.clear(0x00000000)             # what run() does before every frame
+    skin_notify.face(canvas, w, h, 1.0, None)
+    alpha = surface.makeImageSnapshot().toarray(
+        colorType=skia.kRGBA_8888_ColorType)[:, :, 3]
+
+    for cy, cx in ((0, 0), (0, -1), (-1, 0), (-1, -1)):
+        assert alpha[cy, cx] == 0, (
+            f"the window's own corner is not empty ({alpha[cy, cx]}) — the "
+            f"layer is a rectangle again")
+    for d in (0, 1):
+        for cy, cx in ((pad + d, pad + d), (pad + d, pad + w - 1 - d)):
+            assert alpha[cy, cx] == 0, (
+                f"the card's top corner pixel is {alpha[cy, cx]}, not 0 — "
+                f"something square is showing through the curve")
+        for cy, cx in ((pad + h - 1 - d, pad + d),
+                       (pad + h - 1 - d, pad + w - 1 - d)):
+            assert alpha[cy, cx] <= 40, (
+                f"the card's bottom corner pixel is {alpha[cy, cx]}: that "
+                f"is the face, not the drop shadow — the corner is square")
+    # Just inside the arc it is the face, at full face weight, and so is
+    # the middle. If these were transparent the corner would be "round"
+    # only because the whole card had vanished.
+    for cy, cx in ((pad + 6, pad + 6), (pad + 6, pad + w - 7),
+                   (pad + h - 7, pad + 6), (pad + h - 7, pad + w - 7)):
+        assert alpha[cy, cx] >= 200, (cy, cx, alpha[cy, cx])
+    assert alpha[pad + h // 2, pad + w // 2] >= 200, "the face is not there"
+    # ...and the ramp between them is a ramp, not a step: an antialiased
+    # corner has intermediate shades, a chroma key never does (that is the
+    # measurement in skin\\glass.py's header, and the reason Tk cannot do
+    # this at all).
+    ramp = [int(alpha[pad + d, pad + d]) for d in range(2, 6)]
+    assert all(0 < v < 200 for v in ramp), (
+        f"no feather on the corner, just an edge: {ramp}")
+
+    # The flat face, for contrast: the Tk fallback's corner is OPAQUE, and
+    # that is the square the owner could see behind the curve.
+    flat = nc.flat({"title": "x", "body": "", "seconds": 0,
+                    "colour": nc.KIND_COLOUR["done"]}, 1.0)
+    assert flat.getchannel("A").getpixel((0, 0)) == 255, (
+        "notify_card.flat() no longer paints an opaque corner — the "
+        "fallback changed, and this test's premise with it")
+
+
+def test_the_skin_notify_card_dismisses_drags_and_hit_tests_like_the_flat_one(
+        ) -> None:
+    """Same card, same manners, whichever presenter is up.
+
+    Checked at the source level because every one of these is a mouse
+    event on a layered window: standing one up in the suite would put a
+    real card on the owner's screen mid-run. What the glass path must do,
+    all of it already true of overlay.NotifyCard._build_and_loop:
+
+    * the shadow margin stays click-through (notify_card.hit_test, whose
+      HTTRANSPARENT is what keeps the close button of a maximised window
+      underneath reachable — the trap the status dot paid for once);
+    * a click is `pressed("dismiss")`, never `dismissed()`, which is the
+      hint card's "never show this again" and writes config.toml;
+    * a press that TRAVELLED is `placed(...)` instead, +SHADOW because the
+      window's corner is not the card's;
+    * the clock waits under the pointer and running out is `timed_out()`,
+      which leaves the notification unread on purpose;
+    * and the content comes from compose(), never flat() — flat() is the
+      opaque face, and drawing it here would paint the square back on.
+    """
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    src = (Path(skin.__file__).resolve().parent / "notify.py").read_text(
+        "utf-8")
+    for needle in ("nc.hit_test(", 'card.pressed("dismiss")', "card.placed(",
+                   "card.timed_out()", "card.hovering()", "nc.compose(",
+                   "hit=on_hit", "moved=on_move", "clicked=on_click"):
+        assert needle in src, f"skin\\notify.py never reaches {needle}"
+    assert "nc.flat(" not in src and "notify_card.flat(card" not in src, \
+        "the glass path draws the fallback's OPAQUE face"
+    assert "card.dismissed(" not in src, \
+        "dismissed() is 'never again' and writes enabled=false to config"
+    assert "x + SHADOW, y + SHADOW" in src, \
+        "a drag saves the window's corner, not the card's — it will snap back"
+    assert "CLICK_PX" in src, \
+        "no click-versus-drag threshold: every drag would dismiss the card"
+    assert src.count('card.pressed("dismiss")') >= 1
+    # The clock pauses under the pointer and only THEN is compared, exactly
+    # as review.py does it; the other order takes the card down under a
+    # reader's nose on the tick they hovered.
+    assert src.index("deadline += dt") < src.index("left = deadline - now")
 
 
 def test_notify_is_in_the_nav_the_icon_table_and_both_dispatch_tables():
