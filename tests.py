@@ -2892,6 +2892,98 @@ def test_splash_off_is_inert_and_nothing_ever_raises() -> None:
     never_started.status("x"); never_started.finish()   # must not raise
 
 
+def test_the_ready_cue_lands_with_the_light_and_not_before_it() -> None:
+    """The sound and the picture are one event, or they are two mistakes.
+
+    `beep("ready")` used to sit one line above `splash.finish(...)`, and
+    finish() only SCHEDULES the release: 1100 ms of linger, then GATHER_MS
+    of wind-up, then the reveal's own second and a bit before its light
+    reaches the corner dot. Measured, the cue arrived 3.5 s ahead of the
+    thing it is the sound of — you heard the app become ready, and then
+    watched it happen. It is handed to finish() as `on_land` now and
+    fired from the draw loop on the landing frame.
+
+    Three assertions, because this can come back three ways: the wrong
+    instant, the wrong number of times, or main() playing it again itself.
+    """
+    import re
+    import overlay as overlay_mod
+    import skin.boot as boot_mod
+    import skin.burst as burst_mod
+    import skin.reveal as reveal_mod
+
+    # WHEN. reveal.py converges on the dot and its arrival pulse is drawn
+    # from T_LAND[1] - 320, which is the first frame of the arrival and
+    # the one the cue is tied to. burst.py (the CPU fallback) does not
+    # converge on anything, so its only honest sync point is its flash.
+    reveal = reveal_mod.Reveal(1920, 1080, origin=(1600.0, 900.0), seed=7)
+    assert boot_mod._land_ms(reveal) == reveal_mod.T_LAND[1] - 320
+    assert boot_mod._land_ms(object()) == burst_mod.T_FLASH[0]
+    # ...and it is the status dot's own corner the light arrives at, which
+    # is what makes the cue land ON something. skin/dot.py: (pw-27, 23).
+    assert reveal.landing == (1920 - 27.0, 23.0), reveal.landing
+
+    # ONCE, AND NEVER LOST. Three separate backstops call land() — the
+    # draw loop, boot.run's finally and Splash._run's — so it has to be
+    # idempotent; and a splash with no thread has no release coming, so
+    # it must fire immediately rather than wait for a landing that cannot
+    # happen (that is `splash = false`, and any machine without Tk).
+    fired = []
+    never_ran = overlay_mod.Splash()
+    never_ran.finish("ready", on_land=lambda: fired.append(1))
+    assert fired == [1], f"the cue was lost when there was no splash: {fired}"
+    never_ran.land(); never_ran.land()
+    assert fired == [1], f"the cue fired more than once: {fired}"
+
+    # THE WINDOW THAT ACTUALLY LOST IT, and the reason the handoff is
+    # decided by a flag and not by Thread.is_alive(): the splash thread
+    # runs its final land() and only THEN dies, so for a moment it is
+    # alive with no landing left in it. A cue armed there was handed to a
+    # queue nobody would ever read again, and the boot went silent.
+    import threading
+    import time
+
+    def _dying_splash() -> "overlay_mod.Splash":
+        splash = overlay_mod.Splash()
+        splash._thread = threading.Thread(target=lambda: time.sleep(2),
+                                          daemon=True)
+        splash._thread.start()
+        return splash
+
+    late = []
+    stopping = _dying_splash()
+    stopping._landings_over = True          # its last land() has been and gone
+    stopping.finish("ready", on_land=lambda: late.append(1))
+    assert stopping._thread.is_alive(), "the fixture stopped being the race"
+    assert late == [1], (
+        "the cue was lost to a splash thread that was still alive but had "
+        "already run its last land()")
+
+    # ...while a splash that still HAS a landing coming must not fire at
+    # finish() time — that is the 3.5 s-early bug this whole test is about.
+    early = []
+    _dying_splash().finish("ready", on_land=lambda: early.append(1))
+    assert early == [], "the cue fired at finish() instead of at the landing"
+
+    # A cue that throws may not take the boot down with it: land() is
+    # called from the splash thread, where an escape is a dead animation.
+    def boom() -> None:
+        raise RuntimeError("the cue blew up")
+
+    overlay_mod.Splash().finish("ready", on_land=boom)   # must not raise
+
+    # NOT IN MAIN ANY MORE. The regression is one line moving back up.
+    source = (Path(__file__).resolve().parent / "main.py").read_text("utf-8")
+    code = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
+    stray = [line.strip() for line in code.splitlines()
+             if re.search(r"""beep\(\s*["']ready["']\s*\)""", line)
+             and "on_land" not in line]
+    assert not stray, (
+        f"main.py plays the ready cue itself again: {stray}. It belongs to "
+        f"the landing frame — pass it to splash.finish(on_land=...) so the "
+        f"sound and the light are the same event.")
+
+
 def test_splash_log_forwards_app_messages_and_trims_long_ones() -> None:
     """The phone URL carries a token long enough to reflow the window."""
     import logging

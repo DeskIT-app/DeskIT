@@ -38,7 +38,7 @@ import time
 
 from . import clock as clock_mod
 from . import ease
-from .burst import Burst, T_DIP, T_END
+from .burst import Burst, T_DIP, T_END, T_FLASH
 from .glass import Glass, primary_screen, wants_motion, work_area
 from .palette import (ACCENT_TEXT, BG, CARD, FAINT, FG, LIGHT_ACCENT,
                       LIGHT_CORE, LIGHT_HOT, LIGHT_MID, LINE, argb, rgb)
@@ -619,6 +619,8 @@ def run(splash) -> None:
     burst = None
     burst_glass = None
     card_closed = False
+    landed = False               # the cue fires once, at land_at
+    land_at = 0.0                # set when the release is armed
     motion = wants_motion()
 
     try:
@@ -691,6 +693,7 @@ def run(splash) -> None:
                         motion = False
                 if motion and burst_glass is not None:
                     burst = _arm_burst(card, burst_glass)
+                    land_at = _land_ms(burst)
 
             # THE CARD IS ONLY DRAWN WHILE IT STILL HAS A WINDOW.
             #
@@ -727,8 +730,18 @@ def run(splash) -> None:
                 # t=0 for the release is the end of the card's
                 # wind-up, so the release's own dip overlaps the
                 # gather and the two read as one gesture
-                if not burst.draw(burst_glass.canvas,
-                                  card.released_ms() - GATHER_MS):
+                shot_ms = card.released_ms() - GATHER_MS
+                # THE SOUND IS FIRED FROM THE DRAW LOOP, from the same
+                # clock the picture is drawn against, because that is the
+                # only way the two can agree. Anything scheduled off a
+                # timer drifts against a loop that absorbs stalls (see
+                # clock_mod.absorb above) — and absorbing a stall is
+                # exactly the case where a fixed delay would land the cue
+                # on the wrong frame.
+                if not landed and shot_ms >= land_at:
+                    landed = True
+                    splash.land()
+                if not burst.draw(burst_glass.canvas, shot_ms):
                     burst_glass.close()
                     burst = burst_glass = None
                 else:
@@ -752,6 +765,12 @@ def run(splash) -> None:
             pass
         if not card_closed:
             glass.close()
+        # BACKSTOP. Everything above can decline to happen — reduced
+        # motion, no GPU layer, an exception mid-release, a stop during
+        # the wind-up — and none of those are a reason for the app to go
+        # ready in silence. land() has already been called on the normal
+        # path and clears itself, so this is a no-op there.
+        splash.land()
         splash._closing.set()
 
 
@@ -800,6 +819,36 @@ def _burst_box():
     across three monitors has no centre to detonate at."""
     pw, ph = primary_screen()
     return 0, 0, pw, ph
+
+
+def _land_ms(shot) -> float:
+    """When the release's light ARRIVES in the status dot, on the same
+    clock `shot.draw()` is given (t=0 is the impact).
+
+    This is the frame the "ready" cue is fired on, so that the sound and
+    the picture are one event. Before this existed the cue was played by
+    main() next to splash.finish(), which is 1100 ms of linger plus
+    GATHER_MS of wind-up plus the whole release ahead of the landing —
+    measured at 3.63 s early.
+
+    reveal.py CONVERGES on the dot: its arrival pulse is drawn from
+    T_LAND[1] - 320 and peaks 160 ms later. The cue is fired at the START
+    of that pulse, not its peak, for two reasons — PlaySound has to open
+    the mixer before a sample leaves it, and "ready" is a rising PAIR
+    (587 Hz for 90 ms, then 880), so firing at the pulse's first frame is
+    what puts the resolving note on the pulse's brightest one.
+
+    burst.py, the CPU fallback, has no landing at all: it disperses. The
+    honest sync point there is its flash, and saying so is better than
+    pretending a convergence happens.
+    """
+    try:
+        from .reveal import Reveal, T_LAND
+        if isinstance(shot, Reveal):
+            return float(T_LAND[1] - 320)
+    except Exception:                 # no skia, no reveal: fall through
+        _log.debug("skin: no reveal timing", exc_info=True)
+    return float(T_FLASH[0])
 
 
 def _arm_burst(card, glass):

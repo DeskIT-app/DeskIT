@@ -4133,9 +4133,23 @@ def main() -> int:
         log.warning("%d recording(s) from earlier could not be transcribed "
                     "and are waiting in pending\\ — run "
                     'main.py --drain to turn them into text', len(waiting))
-    beep("ready")
     log.removeHandler(splash_log)
-    splash.finish(f"ready — hold {cfg.hotkey.title()} and speak")
+    # THE CUE BELONGS TO THE PICTURE, NOT TO THIS LINE. `beep("ready")`
+    # used to be called here, one statement earlier — and finish() only
+    # SCHEDULES the release, so the sound arrived 3.63 s before the light
+    # it is the sound of: you heard "ready", waited, and then watched the
+    # star fire and gather into the corner dot. Handing the cue to
+    # finish() lets the skin fire it on the frame the light actually
+    # reaches the dot. See overlay.Splash.land and skin.boot._land_ms.
+    # ...and the WAVs are made HERE, not there. cues.play() calls
+    # ensure_files() on the first cue of the process, which is this one —
+    # a mkdir and a stat per cue normally, but a per-sample Python loop
+    # synthesising every file when cues\ has been wiped. That is hundreds
+    # of milliseconds, and it would be spent on the single frame the skin
+    # goes to some length not to stall (skin/boot.py, clock.absorb).
+    cues.ensure_files()
+    splash.finish(f"ready — hold {cfg.hotkey.title()} and speak",
+                  on_land=lambda: beep("ready"))
     try:
         quit_signal.wait()   # released by --stop; Ctrl+C also lands here
         log.info("stop requested")

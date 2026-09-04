@@ -117,6 +117,9 @@ class Splash:
         self._alive = threading.Event()
         self._closing = threading.Event()
         self._enabled = True
+        self._on_land = None          # set by finish(), fired once by land()
+        self._land_lock = threading.Lock()
+        self._landings_over = False   # the splash thread's last land() ran
 
     @classmethod
     def off(cls) -> "Splash":
@@ -143,15 +146,73 @@ class Splash:
         if self._thread is not None:
             self._q.put(str(text))
 
-    def finish(self, text: str | None = None, linger_ms: int = 1100) -> None:
+    def finish(self, text: str | None = None, linger_ms: int = 1100,
+               on_land=None) -> None:
         """Show a last line, then close. Non-blocking: the caller is about
         to go and wait for the quit signal, and the lingering happens on
-        the splash thread."""
-        if self._thread is None:
+        the splash thread.
+
+        `on_land` fires ONCE, on the splash thread, at the instant the
+        release's light arrives in the status dot — about 3.5 s after this
+        call returns. It exists because the "ready" cue used to be played
+        by the caller on the line above this one, which put the sound
+        three and a half seconds ahead of the picture it belongs to: you
+        heard the app become ready, and only then watched it happen.
+
+        It is a parameter of finish() and not of __init__ on purpose. The
+        two early-exit paths in main() (a fatal error, and stop pressed
+        during the load) also call finish(), and neither of them is a
+        boot that succeeded — passing the cue here means they cannot
+        accidentally announce a readiness that never arrived.
+        """
+        # ARMING AND THE HANDOFF DECISION ARE ONE CRITICAL SECTION, and
+        # the flag is `_landings_over` rather than `thread.is_alive()`.
+        # is_alive() was wrong by a hair, in the way that loses the cue
+        # altogether: the splash thread runs its final land() and only
+        # THEN dies, so there is a window where the thread is still alive
+        # (handoff looks safe) but its last land() has already been and
+        # gone. Arm inside that window and nobody ever reads the queue.
+        # Setting the flag under this same lock before that final land()
+        # closes it — whichever side gets the lock first, exactly one of
+        # them ends up firing.
+        with self._land_lock:
+            self._on_land = on_land
+            handoff = self._thread is not None and not self._landings_over
+        if not handoff:
+            # No thread, or no landing left to wait for. The cue still has
+            # to happen, or `splash = false` (and any machine without Tk,
+            # and any boot whose splash thread died on the way) goes
+            # silent — which is worse than it being early.
+            self.land()
             return
         if text:
             self._q.put(text)
         self._q.put((_DONE, linger_ms))
+
+    def land(self) -> None:
+        """Fire the landing callback, at most once, and never raise.
+
+        Called from the skin's boot loop at the landing frame, again from
+        its `finally`, and again from _run()'s — so a release that was
+        never armed (reduced motion, no GPU layer, a stop during the
+        wind-up, a thread that died on the way) still gets its sound.
+        TAKING the slot under the lock, rather than reading it and then
+        clearing it, is what makes every call after the first a no-op.
+        See finish() for the other half: the lock also orders the arming
+        against this thread's last call, so the cue cannot be installed
+        into a splash that has already stopped listening for it.
+
+        The callback runs OUTSIDE the lock. It plays a sound, and nothing
+        that holds a lock should wait on the audio device.
+        """
+        with self._land_lock:
+            callback, self._on_land = self._on_land, None
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            _log.debug("splash: landing cue failed", exc_info=True)
 
     # -- splash thread --
 
@@ -168,6 +229,20 @@ class Splash:
             _log.info("splash unavailable: %r", e)   # ...but say so
         finally:
             self._alive.set()
+            # LAST BACKSTOP. Whatever happened above — the skin took over
+            # and finished, the skin threw, Tk threw, this thread never
+            # got a picture on screen at all — this thread is now over and
+            # nothing else will ever fire the cue. A no-op on the normal
+            # path, where the landing frame fired it seconds ago.
+            #
+            # The flag goes up FIRST, under the lock, and it is what makes
+            # the land() below the genuinely last one: a finish() racing
+            # this line either gets the lock first (and is handed off to
+            # us, and we fire it) or second (and sees the flag, and fires
+            # it itself). Never both, and never neither.
+            with self._land_lock:
+                self._landings_over = True
+            self.land()
 
     def _build_and_loop(self) -> None:
         import tkinter as tk
@@ -209,6 +284,13 @@ class Splash:
 
         state = {"x": -chip_w}
 
+        def _land_and_close() -> None:
+            """This splash has no release: it is a box that goes away. So
+            the going-away IS the landing, and the cue goes with it rather
+            than being lost on the path that has no skin."""
+            self.land()
+            self._closing.set()
+
         def animate() -> None:
             state["x"] += 9
             if state["x"] > bar_w:
@@ -225,7 +307,7 @@ class Splash:
                         # teardown runs on THIS thread (see finally). Never
                         # root.quit() — that flag is shared with every other
                         # Tk in the process and the dot would eat it.
-                        root.after(max(0, item[1]), self._closing.set)
+                        root.after(max(0, item[1]), _land_and_close)
                     else:
                         label.config(text=item)
             except queue.Empty:

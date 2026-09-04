@@ -36,12 +36,25 @@ import json
 import logging
 import secrets
 import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 
 log = logging.getLogger("app")
+
+# tailscale.exe is a CONSOLE program and this app runs under pythonw,
+# which has no console: without this flag every spawn ALLOCATES ONE, and
+# on Windows 11 that is a WINDOWS TERMINAL window (class
+# CASCADIA_HOSTING_WINDOW_CLASS), not the conhost the older comments in
+# this repo describe — which is why it reads as a terminal flashing open
+# and shut rather than a flicker. This one ran during boot, between
+# "phone endpoint on ..." and "open this on the phone: ...": measured at
+# 0.7-2.1 s in app.log, so it was on screen for whole frames. Same reason
+# and same constant as versions._CREATE_NO_WINDOW and
+# awake.CREATE_NO_WINDOW; the rule is in AGENTS.md.
+_CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 APP_DIR = Path(__file__).resolve().parent
 TOKEN_FILE = APP_DIR / "server_token.txt"
@@ -114,10 +127,13 @@ def run_utf8(cmd: list[str], timeout: float = 10) -> str | None:
     is a ValueError, so a broad `except` swallows it and the caller
     concludes the tool is missing or the service is down. Cost real
     debugging time: the app reported Tailscale as offline while it was up.
+
+    `creationflags` is the second point: see _CREATE_NO_WINDOW above.
     """
     try:
         out = subprocess.run(cmd, capture_output=True, encoding="utf-8",
-                             errors="replace", timeout=timeout, check=False)
+                             errors="replace", timeout=timeout, check=False,
+                             creationflags=_CREATE_NO_WINDOW)
     except (OSError, subprocess.SubprocessError) as e:
         log.debug("command %r failed: %r", cmd[:1], e)
         return None
