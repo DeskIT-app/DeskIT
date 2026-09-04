@@ -2144,10 +2144,32 @@ the Action Center — the exact miss this whole feature exists to fix. So
 `notify_watch.py` reads the toasts instead. Windows writes every one of
 them into `%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db`
 (measured 2026-09-04: a toast raised at 17:21:49.356 was in the table at
-17:21:49.371 — 15 ms), and the watcher polls a copy of it every two
-seconds, turns Claude's rows into the same payload a `POST /notify`
+17:21:49.371 — 15 ms), and the watcher polls a copy of it four times a
+second, turns Claude's rows into the same payload a `POST /notify`
 carries, and hands them to the same engine: same cue, same column, same
 reminders, same `ctrl+alt+m`.
+
+**Why four times a second, and where the rest of the wait goes.** The
+card trails the toast by about a tenth of a second. The toast itself
+trails the Cowork turn by about **nine**, and those nine are not this
+machine's to give back: measured 2026-09-04 across eight idle toasts on
+three days the gap from the server's own turn-end event to the toast is
+6.3 to 9.4 s, because the claude.ai *web page* — which is what builds
+these toasts, tag and all — holds the notification on a deliberate timer
+(10,000 ms on the fast path in force here, 35,000 ms if a server-side
+flag flips) before it asks the desktop app to raise it. Nothing local is
+told sooner: a sweep of 21,827 files under the app's two data folders
+found no write at all between the turn ending and the toast, no Claude
+process holds a listening port, its VM service pipe refuses callers
+outside its own package, and the window's accessibility tree is
+*downstream* — on the one turn end caught by three clocks at once, the
+toast beat the window by 0.5–1.3 s. The nine seconds are reachable only
+by holding claude.ai's private session stream with the app's own OAuth
+token, which is the owner's conversations and borrowed credentials for
+nine seconds, so this app does not go there. What was left was the poll,
+and it costs nothing to run fast: 240 checks over 60 s spend 159 ms of
+CPU altogether (0.26% of one core), because a check is three `stat` calls
+and only a real write pays the 33 ms copy.
 
 `[notify] watch` says how much of it to take:
 

@@ -411,7 +411,7 @@ class Store:
 
         The watermark that comes back is the WHOLE table's, not Claude's:
         it moves past everybody else's notifications too, so a quiet
-        evening of Teams messages is not re-read every two seconds.
+        evening of Teams messages is not re-read four times a second.
 
         There is no LIMIT in the query and there must not be: the
         watermark jumps to the end of the table, so a row left unread by
