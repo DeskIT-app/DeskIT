@@ -133,16 +133,17 @@ def _hide_from_capture(hwnd) -> bool:
 
 
 def face(canvas, width: int, height: int, scale: float, backdrop=None) -> None:
-    """The glass under the words: shadow, frost, face, rim, hairline.
+    """The glass under the words: frost, face, rim, hairline — no shadow.
 
     skin\\review.py's recipe at the same offsets and the same alphas, on
     purpose — the review card and the notify card are the same object to
     the eye, one asked for and one arriving, and a second glass recipe
-    would make them read as two apps.
+    would make them read as two apps. The one deliberate difference is
+    the drop shadow, which this card does not have: see below.
 
     `width`/`height` are the CARD's, not the window's: the window is
-    SHADOW bigger on every side, and everything below is drawn at
-    (SHADOW, SHADOW) so the shadow has somewhere to fall. Every corner is
+    SHADOW bigger on every side and everything below is drawn at
+    (SHADOW, SHADOW), a margin that is now empty. Every corner is
     an antialiased RRect on a canvas the caller cleared to 0x00000000, so
     the pixels outside the curve keep alpha 0 all the way to
     UpdateLayeredWindow — which is the entire fix. Nothing here ever draws
@@ -154,23 +155,21 @@ def face(canvas, width: int, height: int, scale: float, backdrop=None) -> None:
     rect = skia.Rect.MakeXYWH(x0, y0, width, height)
     radius = RADIUS * s
     rrect = skia.RRect.MakeRectXY(rect, radius, radius)
-    # Six offset round-rects with geometrically decaying alpha rather than
-    # one MaskFilter blur — boot.py's recipe and its reasoning: a blur is a
-    # separate rasterise-and-convolve, and stacked hard shapes are
-    # indistinguishable from one at this radius. They are drawn OUTSIDE the
-    # face, in the SHADOW margin, which is why the window is bigger than
-    # the card and why the hit test hands that margin back to the desktop.
-    for i in range(6, 0, -1):
-        grow = i * 3.4
-        a = 17 * (0.62 ** (6 - i))
-        canvas.drawRRect(
-            skia.RRect.MakeRectXY(
-                skia.Rect.MakeXYWH(rect.left() - grow,
-                                   rect.top() - grow * 0.35 + 5,
-                                   rect.width() + grow * 2,
-                                   rect.height() + grow * 1.5),
-                radius + grow, radius + grow),
-            skia.Paint(AntiAlias=True, Color=argb(a, (0, 0, 0))))
+    # NO DROP SHADOW, BY REQUEST (2026-09-04). This used to be six offset
+    # round-rects with geometrically decaying alpha — boot.py's recipe,
+    # drawn outside the face in the SHADOW margin — and the owner asked for
+    # it gone: "I want without, only like the box, the message. Without the
+    # shadow that it's outside the box." So the only thing this window
+    # paints outside the curve now is nothing at all.
+    #
+    # The SHADOW margin itself STAYS, empty. It is transparent, the hit
+    # test already hands it back to the desktop, and it is load-bearing
+    # arithmetic everywhere else: notify_card.measure() sizes the window by
+    # it, regions()/hit_test() are expressed in it, origin() subtracts it so
+    # a dragged card is saved by the CARD's top-left rather than the
+    # window's, and the position in [notify] x/y was written under that
+    # rule. Reclaiming the 26 px would move a card the owner has already
+    # placed, to buy back pixels nobody can see.
     # The frost, clipped to the rounded face with doAntiAlias=True. Without
     # that flag the clip is a hard 1-bit mask and the blurred desktop would
     # stair-case out to the corner of the image — a square edge again, made

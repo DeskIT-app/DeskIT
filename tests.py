@@ -18205,12 +18205,13 @@ def test_the_skin_notify_face_actually_rounds_the_corner() -> None:
     20*(1 - 1/sqrt(2)) = 5.86 px, which is the arithmetic the picture is
     supposed to obey.
 
-    THE BOTTOM TWO CORNERS ARE 35, NOT 0, and that is the drop shadow
-    doing its job: face() offsets its six shadow rects DOWNWARD (top
-    -grow*0.35 + 5, height +grow*1.5), the way a thing lit from above
-    casts, so there is nothing above the card and a soft wash below it.
-    35/255 is 14% black over the live desktop against the face's 221 —
-    a shadow, not a surface. The window's own four corners are 0 flat.
+    ALL FOUR CORNERS ARE 0, and the bottom two are the ones that say so.
+    They read 35 while the card had a drop shadow — 14% black washing
+    below it, a shadow rather than a surface. The owner asked for the
+    shadow gone on 2026-09-04 ("only like the box, the message"), so the
+    only thing outside the curve now is nothing, and a bottom corner that
+    is not 0 means the shadow came back rather than that the corner is
+    square. The window's own four corners are 0 either way.
     """
     skin = _skin_or_skip()
     if skin is None or not skin.on():
@@ -18239,9 +18240,10 @@ def test_the_skin_notify_face_actually_rounds_the_corner() -> None:
                 f"something square is showing through the curve")
         for cy, cx in ((pad + h - 1 - d, pad + d),
                        (pad + h - 1 - d, pad + w - 1 - d)):
-            assert alpha[cy, cx] <= 40, (
-                f"the card's bottom corner pixel is {alpha[cy, cx]}: that "
-                f"is the face, not the drop shadow — the corner is square")
+            assert alpha[cy, cx] == 0, (
+                f"the card's bottom corner pixel is {alpha[cy, cx]}, not "
+                f"0 — either the corner is square or the drop shadow the "
+                f"owner asked us to remove is back")
     # Just inside the arc it is the face, at full face weight, and so is
     # the middle. If these were transparent the corner would be "round"
     # only because the whole card had vanished.
@@ -18253,9 +18255,19 @@ def test_the_skin_notify_face_actually_rounds_the_corner() -> None:
     # corner has intermediate shades, a chroma key never does (that is the
     # measurement in skin\\glass.py's header, and the reason Tk cannot do
     # this at all).
-    ramp = [int(alpha[pad + d, pad + d]) for d in range(2, 6)]
-    assert all(0 < v < 200 for v in ramp), (
+    #
+    # Read along the whole diagonal rather than at fixed offsets. With the
+    # drop shadow gone (2026-09-04) the pixels short of the arc are 0
+    # rather than 14/25/29 — nothing is outside the card now — so the
+    # feather is only as wide as the arc itself: measured 0, 0, 0, 0, 0,
+    # 33, 203, 203 at d = 0..7, one intermediate shade where the curve
+    # crosses at 20*(1 - 1/sqrt(2)) = 5.86 px. Asserting a fixed window
+    # would be asserting the shadow.
+    ramp = [int(alpha[pad + d, pad + d]) for d in range(11)]
+    assert any(0 < v < 200 for v in ramp), (
         f"no feather on the corner, just an edge: {ramp}")
+    assert ramp == sorted(ramp), (
+        f"the corner does not open outward monotonically: {ramp}")
 
     # The flat face, for contrast: the Tk fallback's corner is OPAQUE, and
     # that is the square the owner could see behind the curve.
