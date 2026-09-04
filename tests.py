@@ -13498,6 +13498,51 @@ def test_whether_the_card_is_in_the_next_screenshot_is_the_owners_call() -> None
         "begin_shot hushes the deck before _shot_flow can freeze it"
 
 
+def test_the_clip_bar_still_hides_itself_from_the_recording() -> None:
+    """THE ONE EXEMPTION, AND THE LINE IS STILL VERSUS MOVING.
+
+    Every other window of ours dropped WDA_EXCLUDEFROMCAPTURE on
+    2026-09-04 — the dot, the hint, the review card, both paths of the
+    notification card — because the flag is absolute and hid them from
+    the OWNER's screenshots too. The clip bar keeps it, and this test
+    exists because the case where the rule is strongest was the one with
+    no coverage at all: nothing anywhere asserted these two calls.
+
+    Why the bar is different, and it is not "ours versus theirs":
+
+    - A SCREENSHOT HAS AN INSTANT TO FREEZE; a recording does not. The
+      shot flow grabs the desktop once and hushes the cards on the next
+      line, so a still window can be in the picture and out of the drag.
+      There is no such moment in a video — the bar would be in every one
+      of the frames.
+    - THE BAR SITS INSIDE THE REGION BEING RECORDED. That is the whole
+      reason it may sit in a corner of a full-screen capture instead of
+      beside it, and it is why it cannot be cropped out afterwards.
+    - The recorder's own BitBlt uses `SRCCOPY | CAPTUREBLT`, whose
+      express purpose is to INCLUDE layered windows. Measured 2026-08-25:
+      a magenta window filling 60000/60000 pixels of a grab filled 0 with
+      the flag set, with and without CAPTUREBLT and through ImageGrab.
+
+    Both windows are checked. The pill and the region frame are separate
+    HWNDs built in separate methods, and the frame is the one easiest to
+    forget — it is click-through and empty, so losing its exclusion shows
+    up only as a blue rectangle burned into a finished mp4.
+    """
+    source = (Path(__file__).resolve().parent / "capture.py").read_text(
+        "utf-8")
+    bar = source[source.index("class ClipBar:"):]
+    bar = bar[:bar.index("\nclass ")] if "\nclass " in bar else bar
+    code = "\n".join(line for line in bar.splitlines()
+                     if line.strip() and not line.strip().startswith("#"))
+    pill = code[code.index("    def _build(self)"):
+                code.index("    def _build_frame(self)")]
+    assert "hide_from_capture(root)" in pill, \
+        "the clip bar pill would now be in every frame of the recording"
+    frame = code[code.index("    def _build_frame(self)"):]
+    assert "hide_from_capture(frame)" in frame, \
+        "the region frame would now be burned into the recording"
+
+
 def test_a_closed_deck_of_cards_leaves_no_interpreter_to_free() -> None:
     """The abort AGENTS.md documents, on the one window nothing watches.
 
@@ -18413,11 +18458,89 @@ def test_the_off_notify_card_is_inert() -> None:
     card.stop()
 
 
-def test_the_notify_card_gives_the_foreground_back_and_hides_from_capture(
-        ) -> None:
+def _code_only(text: str) -> str:
+    """`text` with its whole-line comments dropped.
+
+    Every assertion about a call that must NOT be there needs this. The
+    removals of 2026-09-04 left long comments behind saying what went and
+    why — comments that necessarily quote the very call they are about —
+    so a bare `"_hide_from_capture(root)" not in src` reads the epitaph
+    and concludes the body is still warm.
+    """
+    return "\n".join(line for line in text.splitlines()
+                     if line.strip() and not line.strip().startswith("#"))
+
+
+def test_the_notify_card_does_not_hide_itself_from_capture() -> None:
+    """THE CARD MUST BE PHOTOGRAPHABLE, on both of its paths.
+
+    The owner's ask, 2026-09-04: "Win+Shift+S should just freeze the
+    screen and take a picture of it as it is, without anything
+    disappearing." The card that says Claude has finished was the one
+    thing that could not be photographed — `SetWindowDisplayAffinity`
+    with WDA_EXCLUDEFROMCAPTURE is absolute, so the compositor left it
+    out of the freeze the selector paints itself with and it appeared to
+    blink out the instant he reached for the key.
+
+    THIS TEST USED TO ASSERT THE OPPOSITE. It was
+    `test_the_notify_card_gives_the_foreground_back_and_hides_from_capture`
+    and it required `_hide_from_capture(root)` to be present. Both paths
+    are checked because either one alone is a hole: `skin.notify_run` is
+    live, so the glass path is what actually runs, and deleting skin\\
+    drops the app onto the Tk fallback in overlay.py.
+
+    What keeps the card out of the way now is ORDER, not invisibility —
+    see test_the_notify_card_stands_down_for_a_selection.
+    """
+    import ast
+    import inspect
+    tk_path = _code_only(
+        inspect.getsource(overlay_mod.NotifyCard._build_and_loop))
+    assert "_hide_from_capture" not in tk_path, \
+        "the Tk notify card excludes itself from capture again"
+
+    def flag_users(path: str) -> list[str]:
+        """Names actually USED as code, never prose.
+
+        Read through the parser rather than by substring, because both
+        files now carry paragraphs explaining why the flag went — and
+        those paragraphs have to name it to be worth reading. A grep
+        cannot tell the corpse from the headstone; an AST can.
+        """
+        tree = ast.parse((REPO / path).read_text("utf-8"))
+        found = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id in (
+                    "WDA_EXCLUDEFROMCAPTURE", "_hide_from_capture"):
+                found.append(f"{path}:{node.lineno} {node.id}")
+            elif isinstance(node, ast.Attribute) and \
+                    node.attr == "SetWindowDisplayAffinity":
+                found.append(f"{path}:{node.lineno} {node.attr}")
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                    and node.name == "_hide_from_capture":
+                found.append(f"{path}:{node.lineno} def {node.name}")
+        return found
+
+    assert not flag_users("overlay.py"), \
+        f"overlay.py sets the display-affinity flag again: " \
+        f"{flag_users('overlay.py')}"
+    assert not flag_users("skin/notify.py"), \
+        f"skin/notify.py sets the display-affinity flag again: " \
+        f"{flag_users('skin/notify.py')}"
+    # The reason has to survive too, or the next reader re-adds the flag
+    # to fix a screenshot with a card in the corner of it.
+    for path in ("overlay.py", "skin/notify.py"):
+        assert "2026-09-04" in (REPO / path).read_text("utf-8"), path
+
+
+def test_the_notify_card_gives_the_foreground_back() -> None:
     """The window is a notification: it hands the keyboard back the
-    moment Tk takes it, stays out of screenshots, is no-activate but
-    click-taking, and the skin hook keeps the deletable form."""
+    moment Tk takes it, is no-activate but click-taking, and the skin
+    hook keeps the deletable form.
+
+    Split out of the capture-exclusion test on 2026-09-04 when that one
+    was inverted; giving the foreground back is a separate promise and it
+    did not change."""
     import inspect
     src = inspect.getsource(overlay_mod.NotifyCard._build_and_loop)
     i_fg = src.index("_foreground()")
@@ -18425,7 +18548,6 @@ def test_the_notify_card_gives_the_foreground_back_and_hides_from_capture(
     assert i_fg < i_de, "read the foreground BEFORE the window is shown"
     assert "_give_focus_back(" in src
     assert src.index("_give_focus_back(") > src.index("update_idletasks")
-    assert "_hide_from_capture(root)" in src
     assert "_no_activate(root)" in src
     assert "click_through=True" not in src, "a click is the dismissal"
     assert "ImageTk.PhotoImage(img, master=root)" in src
@@ -18455,6 +18577,95 @@ def test_the_notify_card_gives_the_foreground_back_and_hides_from_capture(
         "overlay.py must not import notify.py at module level"
     assert "import notify\n" not in source and \
         "import notify as" not in source
+
+
+def test_the_notify_card_stands_down_for_a_selection() -> None:
+    """THE HALF THAT KEEPS THE REMOVED FLAG FROM BECOMING A BUG.
+
+    The cards are `-topmost`. The screenshot selector maps after the ones
+    already up, so it is above them — but a card that ARRIVES or re-shows
+    mid-drag maps above the SELECTOR and eats the drag, and a
+    notification landing while the owner is dragging is exactly when that
+    happens. So capture asks them to stand down for the length of the
+    selection, one line after the desktop freeze, which is what puts them
+    IN the picture and OUT of the drag at the same time.
+
+    The rules this has to keep, all of them load-bearing:
+
+    - `hush()`/`unhush()` only set an Event. They are called from
+      `begin_shot`, which main.py runs inside the OS keyboard hook, where
+      hotkey.py's budget is 300 ms and overrunning it makes Windows
+      unhook with nothing logged. They must not touch Tk, wait, or
+      enqueue: each card owns its own interpreter on its own thread.
+    - capture.py must not import overlay.py, so the callable is injected
+      by main.py the way `ask_provider` already is.
+    - A Controller nobody wired must still work.
+    """
+    import ast
+    import inspect
+    import textwrap
+    import capture as cap
+    for cls in (overlay_mod.HintCard, overlay_mod.ReviewCard,
+                overlay_mod.NotifyCard):
+        card = cls.off()
+        card.hush()
+        assert card._hushed.is_set(), cls.__name__
+        card.unhush()
+        assert not card._hushed.is_set(), cls.__name__
+    body = _code_only(inspect.getsource(overlay_mod.HintCard.hush) +
+                      inspect.getsource(overlay_mod.HintCard.unhush))
+    for forbidden in ("root", "self._q", "deiconify", "withdraw", ".wait("):
+        assert forbidden not in body, \
+            f"hush() touched {forbidden!r} — that is the caller's thread"
+    # The loops honour it on their own thread, and hold a card that
+    # arrives while it is set rather than mapping it over the selector.
+    #
+    # THROUGH THE PARSER, not by substring, and that is not fussiness:
+    # `"set_hushed(" in src` is satisfied by the DEFINITION `def
+    # set_hushed(`, and both needles survive being commented out.
+    # Measured 2026-09-04 by mutation — `pass  # set_hushed(...)` in all
+    # three loops and this test still passed, which would have shipped a
+    # card that ignores the hush and eats the owner's drag. A call is an
+    # `ast.Call`; a comment is not.
+    for label, text in (
+            ("overlay.NotifyCard",
+             inspect.getsource(overlay_mod.NotifyCard._build_and_loop)),
+            ("overlay.ReviewCard",
+             inspect.getsource(overlay_mod.ReviewCard._build_and_loop)),
+            ("skin/notify.py",
+             (REPO / "skin" / "notify.py").read_text("utf-8"))):
+        tree = ast.parse(textwrap.dedent(text))
+        called = {node.func.id for node in ast.walk(tree)
+                  if isinstance(node, ast.Call)
+                  and isinstance(node.func, ast.Name)}
+        reads = [node for node in ast.walk(tree)
+                 if isinstance(node, ast.Attribute) and node.attr == "_hushed"]
+        assert "set_hushed" in called, \
+            f"{label} never calls set_hushed — the hush is not honoured"
+        assert reads, f"{label} never reads _hushed"
+        assert "map_card" in called, \
+            f"{label}: put_up must not be the only thing that maps a card"
+        assert "set_hushed(" in text and "_hushed.is_set()" in text
+    # Injected, not imported: capture.py stays free of overlay.py.
+    seen = []
+    ctrl = cap.Controller(lambda: None,
+                          hush_overlays=lambda on: seen.append(on))
+    ctrl._hush_cards()
+    ctrl._unhush_cards()
+    assert seen == [True, False], seen
+
+    def boom(_on):
+        raise RuntimeError("a card that cannot be hushed is not a hotkey")
+    hurt = cap.Controller(lambda: None, hush_overlays=boom)
+    hurt._hush_cards()                    # must not escape to the hook
+    hurt._unhush_cards()
+    cap.Controller(lambda: None)._hush_cards()      # nobody wired it: fine
+    wiring = _code_only((REPO / "capture.py").read_text("utf-8"))
+    assert "import overlay" not in wiring, \
+        "capture.py must not depend on overlay.py"
+    main_src = (REPO / "main.py").read_text("utf-8")
+    assert "hush_overlays=self._hush_overlays" in main_src, \
+        "main.py is the only thing holding both ends of this wire"
 
 
 def test_skin_notify_run_presents_on_glass_and_never_shadows_itself() -> None:

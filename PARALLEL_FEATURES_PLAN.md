@@ -90,6 +90,17 @@ claimed, not swallowed.
 exists and the dot does not use it. It would land in every screenshot the new
 feature makes possible.
 
+> **R8 WAS REVERSED ON 2026-09-04 — do not implement it as written.** The
+> owner's ask: the screenshot key should freeze the screen and photograph it
+> *as it is*, without anything disappearing. The flag is absolute, so it hid
+> our windows from HIS grabs too and the notification card could not be
+> photographed at all. The dot, the hint card, the review card and both paths
+> of the notification card no longer set it. What keeps them out of the way is
+> the ORDER in `capture.Controller._shot_flow` — freeze, then hush, then map
+> the selector — not invisibility. The clip bar keeps the flag, because a
+> recording has no single instant to freeze. See AGENTS.md, "our own windows
+> and the owner's screenshots".
+
 **R9 — the activity state is a scalar and must not be stomped.**
 `main.py._set_state` writes one string, read by the dot, the dashboard and the
 study engine's `_learning_quiet`. A parallel feature ending must not write
@@ -136,7 +147,9 @@ study engine's `_learning_quiet`. A parallel feature ending must not write
     gets more likely. TODO: decide whether to pre-warm.
 
 ### overlay.py
-15. `StatusDot._build_and_loop` applies WDA_EXCLUDEFROMCAPTURE (R8).
+15. ~~`StatusDot._build_and_loop` applies WDA_EXCLUDEFROMCAPTURE (R8).~~
+    **Undone 2026-09-04** — see the note under R8. The dot is meant to be
+    photographable; it stands down for a selection instead.
 
 ### tests.py
 16. Rewrite `test_left_ctrl_is_not_the_hotkey` for R2.

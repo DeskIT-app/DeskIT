@@ -598,11 +598,52 @@ back.
   formats when the clipboard holds something it cannot describe as text —
   otherwise the transcript pastes over the screenshot just taken, which is
   the headline gesture undoing itself.
-- **Our own windows must not appear in the user's screenshots.**
-  `capture.hide_from_capture` (WDA_EXCLUDEFROMCAPTURE) is the flag;
-  `overlay.StatusDot` now applies it too, because the screenshot key can
-  be pressed while the dot is pulsing red. Re-measured on the dot's own
-  window: 3600/3600 magenta pixels before, 0/3600 after.
+- **Our own windows and the owner's screenshots: keep them out of the
+  DRAG, not out of the PICTURE.** This rule used to read "our own windows
+  must not appear in the user's screenshots" and it was wrong, which cost
+  the owner the one card he most wanted to send somebody. The flag is
+  `capture.hide_from_capture` (WDA_EXCLUDEFROMCAPTURE) and it works —
+  re-measured on the status dot's own window, 3600/3600 magenta pixels
+  before, 0/3600 after — but it is ABSOLUTE: a window carrying it is
+  invisible to every grab on the machine, the owner's own included. The
+  notification card that says Claude has finished wore it, so pressing
+  `Win+Shift+S` appeared to make it vanish; it never did, the compositor
+  was simply leaving it out of the freeze the selector paints itself
+  with. Removed 2026-09-04 from the dot, the hint card, the review card
+  and both paths of the notification card (`overlay.py` and
+  `skin\notify.py` — the glass path is the live one).
+  **What replaces it is ORDERING.** `capture.Controller._shot_flow`
+  freezes the desktop with one `ImageGrab`, hushes the cards on the very
+  next line, and only then maps the selector: they are in the picture and
+  off the live screen for the drag. `hush()`/`unhush()` on the overlay
+  cards only set a `threading.Event` — they are called from the keyboard
+  hook, where the budget is 300 ms — and each card's own loop does the Tk.
+  A card that ARRIVES mid-drag is the real race, and a hushed card
+  refuses to map at all. `capture.py` gets the callable injected by
+  `main.py`; it must not import `overlay.py`.
+  **THE HUSH IS ONLY HALF WIRED, AND THIS IS THE HONEST STATE OF IT.**
+  `main.py::_hush_overlays` calls `hush()` on the notification card, the
+  review card and the hint card, but only the NOTIFICATION card obeys on
+  the path that actually runs. `skin.on()` is true on this machine, so
+  all three take their glass loops, and only `skin\notify.py` reads the
+  flag; `skin\hint.py` and `skin\review.py` do not, and the hint card's
+  Tk loop does not either. Both of those cards take clicks on glass
+  (`HTCLIENT`/`HTCAPTION`), so one arriving mid-drag still maps over the
+  selector and eats the drag. That is NOT a regression — the affinity
+  flag never touched z-order or hit-testing, so they could always do it —
+  but it is an unfinished mitigation, and one artefact is new: those two
+  are now in the frozen backdrop AND can still map live, so the owner can
+  briefly see the same card twice. Finishing it means reading `_hushed`
+  in `skin\hint.py` and `skin\review.py`. Do not write it up as done
+  until it is.
+  **The one exemption is the clip bar** (`ClipBar._build` and
+  `_build_frame`), and the line is STILL versus MOVING, not ours versus
+  theirs. A screenshot has an instant to freeze; a recording does not, so
+  the bar would be in every frame of the mp4 and cannot be cropped out —
+  it sits *inside* the region being recorded, and the recorder's
+  `BitBlt ... SRCCOPY | CAPTUREBLT` exists precisely to include layered
+  windows. Measured 2026-08-25: 60000/60000 pixels before the flag, 0
+  after. Leave those two calls alone.
 
 ## Where things live
 

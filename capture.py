@@ -5556,12 +5556,27 @@ class Controller:
     never dies.
     """
 
-    def __init__(self, cfg_provider, ask_provider=None):
+    def __init__(self, cfg_provider, ask_provider=None, hush_overlays=None):
         self._cfg_of = cfg_provider       # () -> Config, read fresh: keys move
         # A CALLABLE, not the controller: the ask card is built lazily and
         # may be switched off entirely, and holding the object here would
         # build it the first time somebody took a screenshot.
         self._ask_of = ask_provider
+        # ALSO A CALLABLE, `(bool) -> None`, and for a harder reason than
+        # laziness. The overlay cards — the notification, the reading, the
+        # hint — used to keep themselves out of the way with
+        # WDA_EXCLUDEFROMCAPTURE; that flag went on 2026-09-04 because it
+        # hid them from the OWNER's screenshots too, and what replaces it
+        # is this: they are asked to come off the live screen for the
+        # length of a selection, AFTER the desktop has been frozen, so
+        # they are in the picture and out of the drag.
+        #
+        # Injected by main.py rather than imported, because capture.py
+        # must not depend on overlay.py — this module is dragged in by a
+        # keypress and overlay.py is on the startup path, and a test greps
+        # for exactly that import. None when nobody wired it, which is
+        # every test that builds a bare Controller.
+        self._hush_overlays = hush_overlays
         self._busy = threading.Event()
         self._stop_clip = threading.Event()
         self._cancel = threading.Event()
@@ -5643,11 +5658,36 @@ class Controller:
         deck = self._cards
         if deck is not None:
             deck.hush()
+        self._hush_them(True)
 
     def _unhush_cards(self) -> None:
         deck = self._cards
         if deck is not None:
             deck.unhush()
+        self._hush_them(False)
+
+    def _hush_them(self, on: bool) -> None:
+        """Ask main.py's overlay cards to get off the live screen, or to
+        come back.
+
+        SWALLOWS EVERYTHING, and that is deliberate. This runs on the
+        keyboard hook by way of `begin_shot`, where hotkey.py's budget is
+        300 ms and the failure mode of overrunning it is that Windows
+        silently unhooks — "my hotkey stopped working", nothing logged.
+        A card that cannot be hushed is a card in the corner of one
+        screenshot; a raised exception here is the screenshot key itself.
+        The callable only sets an Event, so there is nothing here to be
+        slow, but the guard costs nothing and the alternative is a class
+        of bug that takes a day to find.
+        """
+        hush = self._hush_overlays
+        if hush is None:
+            return
+        try:
+            hush(on)
+        except Exception:
+            log.debug("could not %s the overlay cards",
+                      "hush" if on else "unhush", exc_info=True)
 
     def _deck(self) -> "ShotCards | None":
         """The corner-card deck, built on the FIRST card and never before.

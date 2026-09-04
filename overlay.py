@@ -419,41 +419,31 @@ def _no_activate(root, click_through: bool = False) -> bool:
         return False
 
 
-def _hide_from_capture(root) -> bool:
-    """Make an overlay invisible to every screen capture on this machine.
-
-    The dot sits in the top-right corner of the screen and pulses red for
-    as long as a recording is locked on — and the screenshot key can now
-    be pressed while one is. Without this, every screenshot taken while
-    dictating comes back with our own indicator burned into the corner of
-    it, which is a strange thing to hand somebody and an actively bad one
-    to paste into a bug report.
-
-    WDA_EXCLUDEFROMCAPTURE, the same flag capture.py's clip bar uses.
-    Re-measured here on this window rather than trusted: a 60x60
-    borderless magenta Tk window at +50+50, grabbed through PIL's
-    ImageGrab, gave 3600/3600 magenta pixels before the call and
-    0/3600 after it (2026-08-30). The desktop behind it lands in the
-    frame, not a hole.
-
-    Not imported from capture.py: this module is on the startup path and
-    capture.py drags in Pillow, Tk canvases and a video encoder. Eleven
-    lines is cheaper than that import, and the flag is one constant.
-    """
-    WDA_EXCLUDEFROMCAPTURE = 0x00000011
-    try:
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        hwnd = int(root.winfo_id())
-        target = user32.GetParent(hwnd) or hwnd
-        user32.SetWindowDisplayAffinity.argtypes = [ctypes.c_void_p,
-                                                    ctypes.c_uint]
-        return bool(user32.SetWindowDisplayAffinity(
-            ctypes.c_void_p(target), WDA_EXCLUDEFROMCAPTURE))
-    except Exception as e:
-        # Not fatal and not worth a warning: a dot in the corner of a
-        # screenshot is a blemish, and the alternative to it is no dot.
-        _log.debug("could not exclude an overlay from capture: %r", e)
-        return False
+# NO `_hide_from_capture` IN THIS MODULE ANY MORE. It was eleven lines
+# that set WDA_EXCLUDEFROMCAPTURE on an overlay window, all four of our
+# windows called it, and it was deleted on 2026-09-04 at the owner's
+# request. The reasoning it carried was sound as far as it went — the dot
+# pulses in the corner for as long as a recording is locked on, the
+# screenshot key can be pressed while one is, and nobody wants our
+# indicator burned into a screenshot they are about to paste into a bug
+# report.
+#
+# What it missed is that the flag is ABSOLUTE. A window carrying it is
+# invisible to every grab on the machine, the owner's own included, so
+# the notification card announcing that Claude had finished was the one
+# thing on his desk he could not photograph. He pressed Win+Shift+S and
+# it appeared to vanish. His ask, verbatim in spirit: the screenshot key
+# should freeze the screen and take a picture of it AS IT IS, without
+# anything disappearing.
+#
+# ORDERING REPLACES THE FLAG. capture.Controller._shot_flow grabs the
+# desktop first, hushes the cards off the LIVE screen on the very next
+# line, then maps the selector over the frozen image — so our windows are
+# in the picture and out of the drag. The only exception left in the repo
+# is capture.py's clip bar, which floats over a MOVING picture it is
+# describing: a recording has no single instant to freeze, the bar would
+# be in every frame of the mp4, and it cannot be cropped out afterwards.
+# Still versus moving is the line, not ours versus theirs. See AGENTS.md.
 
 
 def _foreground() -> int:
@@ -606,10 +596,15 @@ class StatusDot:
         # window silently does nothing and still reports success.
         root.update_idletasks()
         _no_activate(root, click_through=True)
-        # After the realise, for the same reason _no_activate needs it: the
-        # write lands on nothing and reports success on an unrealised Tk
-        # window.
-        _hide_from_capture(root)
+        # THE DOT USED TO EXCLUDE ITSELF FROM CAPTURE HERE. Removed
+        # 2026-09-04 at the owner's request: he wants the screenshot key
+        # to freeze the screen and photograph it AS IT IS, and a window
+        # carrying WDA_EXCLUDEFROMCAPTURE is invisible to every grab on
+        # the machine — his own included — so it appears to vanish the
+        # instant he reaches for the key. The dot is small and it is in
+        # the corner; being in a picture of the corner is not a bug.
+        # What keeps it out of the way now is the ORDER in
+        # capture.Controller._shot_flow, not a flag.
         self._alive.set()
 
         state = {"name": "ready", "phase": 0.0}
@@ -686,11 +681,14 @@ class HintCard:
     two-second dictation never puts a window on screen at all. The card is
     for the press someone hesitated on.
 
-    IT MUST BE INVISIBLE TO SCREENSHOTS, and that is not tidiness. Its
-    whole reason to exist is that Win+Shift+S now works mid-dictation, so
-    the one moment it is on screen is the moment a screenshot is most
-    likely to be taken. `_hide_from_capture` is the same call the dot
-    makes, for a weaker version of the same reason.
+    IT USED TO BE INVISIBLE TO SCREENSHOTS, and that was the wrong
+    reading of the problem. The argument was that Win+Shift+S now works
+    mid-dictation, so the one moment this card is on screen is the moment
+    a screenshot is most likely to be taken — true, but the fix was a
+    flag that hid the card from the OWNER's grabs as well as from
+    everyone else's. Removed 2026-09-04. What the card actually has to do
+    is stay out of the DRAG, and it does that by being hushed off the
+    live screen after the freeze, not by being absent from the picture.
 
     Click-through, like the dot, and for the identical hard-won reason:
     `top-right` is the close button of every maximised window. The "don't
@@ -719,6 +717,11 @@ class HintCard:
         self._alive = threading.Event()
         self._closing = threading.Event()
         self._enabled = True
+        # SET WHILE A SELECTION IS ON SCREEN, by whoever is taking the
+        # screen. An Event and not a flag because it is written from the
+        # keyboard hook and read from the card's own loop, and because
+        # setting one touches no Tk at all — see hush().
+        self._hushed = threading.Event()
 
     @classmethod
     def off(cls) -> "HintCard":
@@ -739,6 +742,36 @@ class HintCard:
                                         name="hint-card")
         self._thread.start()
         self._alive.wait(timeout=3)
+
+    def hush(self) -> None:
+        """Stay off the live screen until unhush(), and stop the clock.
+
+        THIS IS WHAT REPLACED WDA_EXCLUDEFROMCAPTURE, and it is the whole
+        reason dropping that flag on 2026-09-04 did not trade one bug for
+        another. Our cards are `-topmost`. The screenshot selector maps
+        AFTER them, so it is above the ones already up — but a card that
+        arrives or re-shows in the middle of a drag maps above the
+        SELECTOR and eats the drag, and a notification landing while the
+        owner is dragging is precisely when that happens. Hushed, the
+        loop takes the window down and refuses to map a new one; the item
+        is not lost and its seconds are not spent, because the clock
+        waits exactly the way it waits under the pointer.
+
+        SETS AN EVENT AND RETURNS — no Tk, no queue, no wait. It is
+        called from `capture.Controller.begin_shot`, which main.py runs
+        inside the OS keyboard hook, and hotkey.py's budget there is
+        300 ms: overrun it and Windows unhooks with nothing logged. There
+        is deliberately no settle-wait like `capture.ShotCards.hush()`'s,
+        because none is needed here: whatever is up when the selector
+        maps is already underneath it, and the only window that could get
+        ON TOP is one mapped later, which is the case this refuses.
+        """
+        self._hushed.set()
+
+    def unhush(self) -> None:
+        """The screen is the owner's again. Put the card back if it still
+        has something to say, with the seconds it had when it went down."""
+        self._hushed.clear()
 
     def show(self, card: dict | None) -> None:
         """Put a card up, or take it down with None.
@@ -914,11 +947,15 @@ class HintCard:
             root.deiconify()
             root.update_idletasks()
             if not shown["up"]:
-                # Both need a realised window, and both silently succeed
-                # on an unrealised one — the bug that put the dot on the
-                # close button. After deiconify, every time.
+                # Needs a realised window and silently succeeds on an
+                # unrealised one — the bug that put the dot on the close
+                # button. After deiconify, every time.
                 _no_activate(root, click_through=True)
-                _hide_from_capture(root)
+                # The `_hide_from_capture(root)` that stood here went on
+                # 2026-09-04, at the owner's request: this card is not
+                # allowed to disappear from his own screenshots. The
+                # ordering in capture.Controller._shot_flow keeps it off
+                # the live screen for the drag; see the class docstring.
             shown["up"] = True
 
         def pump() -> None:
@@ -1336,7 +1373,7 @@ class ReviewCard(HintCard):
 
         st = {"card": None, "up": False, "deadline": None, "hover": None,
               "drag": None, "photo": None, "last": 0.0,
-              "tick": time.monotonic()}
+              "tick": time.monotonic(), "hushed": False}
         cache: dict = {}
 
         def progress() -> float:
@@ -1371,12 +1408,26 @@ class ReviewCard(HintCard):
         def put_up(card: dict) -> None:
             st["card"], st["hover"] = card, None
             cache.clear()
-            w, h = rc.measure(card, self.scale)
-            x, y = self.origin(w, h, (root.winfo_screenwidth(),
-                                      root.winfo_screenheight()))
             seconds = float(card.get("seconds") or 0)
             st["deadline"] = ((time.monotonic() + seconds)
                               if seconds > 0 else None)
+            if st["hushed"]:
+                # A reading landed while a selection is on screen. Hold
+                # it: the proposal is not lost and its clock is waiting,
+                # but a topmost window mapped now would cover the
+                # selector and eat the drag. The card below has the long
+                # version of this argument.
+                return
+            map_card()
+
+        def map_card() -> None:
+            """Draw the held proposal and bring the window up."""
+            card = st["card"]
+            if card is None:
+                return
+            w, h = rc.measure(card, self.scale)
+            x, y = self.origin(w, h, (root.winfo_screenwidth(),
+                                      root.winfo_screenheight()))
             paint()
             root.geometry(f"{w}x{h}+{x}+{y}")
             self.rect = (x, y, x + w, y + h)
@@ -1384,8 +1435,26 @@ class ReviewCard(HintCard):
             root.update_idletasks()
             if not st["up"]:
                 _no_activate(root)
-                _hide_from_capture(root)
+                # No `_hide_from_capture(root)` any more — removed
+                # 2026-09-04. A proposal the owner is being asked to
+                # judge is exactly the kind of thing he wants to be able
+                # to photograph and show somebody; the flag made that
+                # impossible. Ordering in capture._shot_flow, not flags.
             st["up"] = True
+
+        def set_hushed(on: bool) -> None:
+            """Obey `self._hushed`, on this card's own thread. The caller
+            only set an Event; every Tk call is here."""
+            if on == st["hushed"]:
+                return
+            st["hushed"] = on
+            if on:
+                if st["up"]:
+                    root.withdraw()
+                    st["up"] = False
+                self.rect = None
+            else:
+                map_card()
 
         def hit(event):
             if st["card"] is None:
@@ -1446,19 +1515,32 @@ class ReviewCard(HintCard):
                         put_up(item)
             except queue.Empty:
                 pass
+            # Read once a tick, AFTER the queue, so a card that arrived in
+            # this same frame is already in `st` and gets held rather than
+            # mapped. Thirty milliseconds is well inside the time the
+            # desktop freeze takes, so the window is off the live screen
+            # before the selector maps over it.
+            set_hushed(self._hushed.is_set())
             now = time.monotonic()
             dt, st["tick"] = now - st["tick"], now
-            if st["card"] is not None and st["up"]:
-                if st["deadline"] is not None:
-                    if self.hovering():
-                        st["deadline"] += dt      # reading: the clock waits
-                    if st["deadline"] - now <= 0:
+            if st["card"] is not None:
+                if st["deadline"] is not None and (self.hovering()
+                                                   or st["hushed"]):
+                    # Reading it, or hushed for somebody's selection —
+                    # either way the clock waits. Seconds spent while the
+                    # card is off the screen are not seconds the owner
+                    # had it, which is the promise capture.ShotCards
+                    # already makes for the screenshot deck.
+                    st["deadline"] += dt
+                if st["up"]:
+                    if (st["deadline"] is not None
+                            and st["deadline"] - now <= 0):
                         self.timed_out()
                         hide()
                         root.after(30, pump)
                         return
-                if now - st["last"] >= 0.1:
-                    paint()
+                    if now - st["last"] >= 0.1:
+                        paint()
             root.after(30, pump)
 
         pump()
@@ -1829,24 +1911,34 @@ class NotifyCard(HintCard):
         canvas.pack()
         self._alive.set()
 
-        st = {"card": None, "up": False, "deadline": None, "hover": None,
-              "drag": None, "from": None, "moved": 0, "photo": None,
-              "last": 0.0, "tick": time.monotonic()}
+        st = {"cards": [], "up": False, "deadline": None, "hover": None,
+              "drag": None, "from": None, "moved": 0, "press": None,
+              "photo": None, "last": 0.0, "tick": time.monotonic(),
+              "hushed": False}
         cache: dict = {}
         CLICK_PX = 4          # a release that travelled less is a click
 
         def progress() -> float:
-            deadline, card = st["deadline"], st["card"]
-            if deadline is None or card is None:
+            deadline, cards = st["deadline"], st["cards"]
+            if deadline is None or not cards:
                 return 1.0
-            seconds = float(card.get("seconds") or 0)
+            seconds = float(cards[0].get("seconds") or 0)
             if seconds <= 0:
                 return 1.0
             return max(0.0, (deadline - time.monotonic()) / seconds)
 
+        def ident(index):
+            """The id of the card at `index`, or None if there is no such
+            card — `pressed` reads None as "all"/"the newest", which is
+            the safe answer to a click we could not attribute."""
+            cards = st["cards"]
+            if index is None or not 0 <= index < len(cards):
+                return None
+            return cards[index].get("id")
+
         def hide() -> None:
-            st["card"], st["deadline"], st["hover"] = None, None, None
-            st["drag"] = None
+            st["cards"], st["deadline"], st["hover"] = [], None, None
+            st["drag"], st["press"] = None, None
             self.rect = None
             cache.clear()
             if st["up"]:
@@ -1868,15 +1960,40 @@ class NotifyCard(HintCard):
             st["photo"] = photo               # Tk keeps no reference
             st["last"] = time.monotonic()
 
-        def put_up(card: dict) -> None:
-            st["card"], st["hover"] = card, None
+        def put_up(cards: list) -> None:
+            st["cards"], st["hover"] = list(cards), None
+            st["press"] = None
             cache.clear()
-            w, h = nc.measure(card, self.scale)
-            x, y = self.origin(w, h, (root.winfo_screenwidth(),
-                                      root.winfo_screenheight()))
-            seconds = float(card.get("seconds") or 0)
+            seconds = float(cards[0].get("seconds") or 0) if cards else 0
             st["deadline"] = ((time.monotonic() + seconds)
                               if seconds > 0 else None)
+            if st["hushed"]:
+                # ARRIVED MID-SELECTION, which is the exact case the hush
+                # exists for: a notification landing while the owner is
+                # dragging a crop. The item is accepted and its clock is
+                # already waiting (see pump), but nothing is mapped —
+                # this window is `-topmost` and would go straight over
+                # the selector and swallow the drag. `map_card` puts it
+                # up the moment the screen is his again.
+                return
+            map_card()
+
+        def map_card() -> None:
+            """Draw the held column and bring the window up where it goes.
+
+            `origin` is asked for the CARDS' rectangle with no inset,
+            because that is exactly what this window is — the shadow
+            margin was cropped off in paint(). The glass path asks the
+            same question with `inset=SHADOW` and gets the same visible
+            edge, which is the whole point of that parameter.
+            """
+            if not st["cards"]:
+                return
+            pad = nc.SHADOW
+            win_w, win_h = nc.stack_measure(st["cards"], self.scale)
+            w, h = win_w - 2 * pad, win_h - 2 * pad
+            x, y = self.origin(w, h, (root.winfo_screenwidth(),
+                                      root.winfo_screenheight()))
             paint()
             root.geometry(f"{w}x{h}+{x}+{y}")
             self.rect = (x, y, x + w, y + h)
@@ -1891,25 +2008,63 @@ class NotifyCard(HintCard):
                 # on an unrealised one. Click-taking, not click-through:
                 # the click IS the dismissal.
                 _no_activate(root)
-                _hide_from_capture(root)
+                # THIS IS THE ONE THE OWNER COMPLAINED ABOUT. There was a
+                # `_hide_from_capture(root)` on this line; it went on
+                # 2026-09-04. The card that says Claude has finished is
+                # the single most screenshot-worthy thing this app puts
+                # on screen, and WDA_EXCLUDEFROMCAPTURE meant it was the
+                # one thing that could not be photographed — press
+                # Win+Shift+S and it appeared to blink out. It never did:
+                # the HWND was untouched and the compositor was simply
+                # leaving it out of the grab the selector paints itself
+                # with. Ordering, not flags — see the class docstring.
                 _give_focus_back(had)
             st["up"] = True
 
+        def set_hushed(on: bool) -> None:
+            """Obey `self._hushed`, on this card's own thread and nowhere
+            else. The caller only set an Event; every Tk call is here."""
+            if on == st["hushed"]:
+                return
+            st["hushed"] = on
+            if on:
+                if st["up"]:
+                    root.withdraw()
+                    st["up"] = False
+                # No rect means `hovering()` says no and the Esc-over-the
+                # card key finds nothing, which is right: a window that is
+                # not on screen cannot be under the pointer.
+                self.rect = None
+            else:
+                map_card()
+
         def hit(event):
-            if st["card"] is None:
+            """(code, (index, what)) for a mouse event.
+
+            The window is the cards; the picture is the cards plus the
+            shadow margin. SHADOW is added back so the point is in the
+            coordinates stack_hit_test and the painter share — the same
+            correction the single card has always made here.
+            """
+            if not st["cards"]:
                 return None, None
-            return nc.hit_test(st["card"], self.scale,
-                               event.x + nc.SHADOW, event.y + nc.SHADOW)
+            return nc.stack_hit_test(st["cards"], self.scale,
+                                     event.x + nc.SHADOW,
+                                     event.y + nc.SHADOW)
 
         def on_press(event) -> None:
-            code, what = hit(event)
-            if code == nc.HTCLIENT and what == "dismiss":
-                self.pressed("dismiss")
+            code, where = hit(event)
+            what = where[1] if where else None
+            if code == nc.HTCLIENT and what == nc.DISMISS:
+                # The × of ONE card, named by its own id: everything else
+                # in the column stays unread.
+                self.pressed("dismiss", ident(where[0]))
             elif code == nc.HTCAPTION:
                 st["drag"] = (event.x_root - root.winfo_x(),
                               event.y_root - root.winfo_y())
                 st["from"] = (event.x_root, event.y_root)
                 st["moved"] = 0
+                st["press"] = where[0] if where else None
 
         def on_motion(event) -> None:
             if st["drag"] is not None:
@@ -1971,19 +2126,36 @@ class NotifyCard(HintCard):
                         put_up(item)
             except queue.Empty:
                 pass
+            # Read once a tick, AFTER the queue, so a card that arrived in
+            # this same frame is already in `st` and gets held rather than
+            # mapped. Thirty milliseconds is well inside the time the
+            # desktop freeze takes, so the window is off the live screen
+            # before the selector maps over it.
+            set_hushed(self._hushed.is_set())
             now = time.monotonic()
             dt, st["tick"] = now - st["tick"], now
-            if st["card"] is not None and st["up"]:
-                if st["deadline"] is not None:
-                    if self.hovering():
-                        st["deadline"] += dt      # reading: the clock waits
-                    if st["deadline"] - now <= 0:
+            if st["cards"]:
+                if st["deadline"] is not None and (self.hovering()
+                                                   or st["hushed"]):
+                    # Reading it, or hushed for somebody's selection —
+                    # either way the clock waits. Seconds spent while the
+                    # card is off the screen are not seconds the owner
+                    # had it, which is the promise capture.ShotCards
+                    # already makes for the screenshot deck.
+                    st["deadline"] += dt
+                if st["up"]:
+                    if (st["deadline"] is not None
+                            and st["deadline"] - now <= 0):
                         self.timed_out()
                         hide()
                         root.after(30, pump)
                         return
-                if now - st["last"] >= 0.1:
-                    paint()
+                    # The repaint is the CLOCK'S. With `seconds` at 0 —
+                    # the default since 2026-09-04 — nothing on the column
+                    # changes between mouse events, so painting ten times
+                    # a second would be ten copies of the same picture.
+                    if st["deadline"] is not None and now - st["last"] >= 0.1:
+                        paint()
             root.after(30, pump)
 
         pump()

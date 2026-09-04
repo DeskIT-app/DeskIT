@@ -689,9 +689,19 @@ Things that follow from it, all of them deliberate:
   card in the middle of dictating an email and the email still lands in
   the email — the card gets the *next* thing you say. Start talking with
   the card already up and it is a question, as always.
-- **Your screenshots do not have our dot in them.** The status indicator
-  is excluded from every screen capture on the machine, so a shot taken
-  mid-dictation is your screen and nothing else.
+- **Your screenshots have your whole screen in them, ours included.** The
+  status dot used to be excluded from every capture on the machine. That
+  hid it from *your* grabs too, which is how a card you wanted to send
+  somebody became a card that vanished the moment you reached for the
+  key — so as of 2026-09-04 nothing of ours hides from a screenshot
+  except the recording bar. What our windows do instead is step off the
+  screen once the picture has been frozen, so they are in the shot without
+  standing in the way of the drag. That last part is finished for the
+  **notification card** and not yet for the hint and review cards: those
+  two are in your screenshots now, but one that arrives while you are
+  mid-drag can still land on top of the selection and take the click. They
+  always could — hiding them from captures never changed where they sat —
+  so this is a corner left to tidy, not something the change broke.
 - **The card will not read an answer out loud while the microphone is
   live** — it would be recorded and transcribed as if you had said it.
   The Speak button is there when you have finished.
@@ -1506,10 +1516,13 @@ dead while one is up:
   worse than no card
 - it **never takes the keyboard**: a capture taken mid-sentence does not
   eat the next keystroke
-- and it is **not in the next screenshot**. The card carries the same
-  don't-photograph-me flag the recording pill and the status dot carry, so
-  pressing the key again while one is up gives you the screen and not our
-  own furniture sitting in the corner of it
+- and it is **in the next screenshot, on purpose** — see below. It used to
+  carry the same don't-photograph-me flag the recording pill carries, and
+  that flag is absolute: it hid the card from *your* grab as much as
+  anyone else's, so a card you wanted to show somebody was the one thing
+  you could not. Press the key again while one is up and the card is in
+  the picture and out of your way, because the screen is frozen first and
+  the cards step off it a moment later
 
 **And the key is never dead.** It used to be. For as long as a card sat in
 that corner the screenshot key did nothing at all — press it again inside

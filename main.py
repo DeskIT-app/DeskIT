@@ -516,14 +516,49 @@ class App:
         The editor's Ask button needs it, [visual_qa] may be switched off
         entirely, and building one here would drag Tk and a vision chain
         into a press that only wanted a png.
+
+        `hush_overlays` is handed in for a different reason: capture.py
+        must not import overlay.py. main.py is the only thing that holds
+        both, so main.py is where the wire goes. See _hush_overlays.
         """
         controller = getattr(self, "_capture", None)
         if controller is None:
             import capture as capture_mod
-            controller = capture_mod.Controller(lambda: self.cfg,
-                                                ask_provider=self._ask_card)
+            controller = capture_mod.Controller(
+                lambda: self.cfg, ask_provider=self._ask_card,
+                hush_overlays=self._hush_overlays)
             self._capture = controller
         return controller
+
+    def _hush_overlays(self, on: bool) -> None:
+        """Take our topmost cards off the live screen for the length of a
+        screenshot selection, and put them back.
+
+        THIS IS THE HALF THAT KEEPS DROPPING WDA_EXCLUDEFROMCAPTURE FROM
+        BECOMING A BUG. Those cards used to carry the flag, so they were
+        absent from the frozen desktop the selector paints itself with and
+        could never be in the way. Since 2026-09-04 they are in the
+        picture — which is what the owner asked for — and the thing that
+        keeps them out of the DRAG is the order: capture's `_shot_flow`
+        freezes the desktop, calls this one line later, and only then maps
+        the selector. A card already up is underneath the selector because
+        the selector mapped last; a card that ARRIVES mid-drag is the real
+        race, and hushed cards refuse to map at all.
+
+        Each card owns its own Tk interpreter on its own thread, so
+        `hush()`/`unhush()` do nothing but set an Event — no Tk object is
+        touched from here, which is the rule in AGENTS.md that costs a
+        day every time it is broken. Cheap enough for the keyboard hook.
+        """
+        for name in ("notify_card", "review_card", "hint"):
+            card = getattr(self, name, None)
+            if card is None:
+                continue
+            try:
+                card.hush() if on else card.unhush()
+            except Exception:
+                log.debug("could not %s %s", "hush" if on else "unhush",
+                          name, exc_info=True)
 
     def _ask_card(self):
         """The ask-the-screen controller, or None when it is switched off."""
