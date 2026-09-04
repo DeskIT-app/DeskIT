@@ -49,10 +49,19 @@ log = logging.getLogger("app")
 # on Windows 11 that is a WINDOWS TERMINAL window (class
 # CASCADIA_HOSTING_WINDOW_CLASS), not the conhost the older comments in
 # this repo describe — which is why it reads as a terminal flashing open
-# and shut rather than a flicker. This one ran during boot, between
-# "phone endpoint on ..." and "open this on the phone: ...": measured at
-# 0.7-2.1 s in app.log, so it was on screen for whole frames. Same reason
-# and same constant as versions._CREATE_NO_WINDOW and
+# and shut rather than a flicker. Probed under a parent with no console
+# anywhere in its chain: seven top-level windows created without this
+# flag, none with it, and tailscale still answers.
+#
+# HOW LONG IT WAS UP is the command's own runtime, about 110 ms warm —
+# which is exactly the "it appears for a split second" this was reported
+# as. An earlier note here said 0.7-2.1 s, read off the gap in app.log
+# between "phone endpoint on ..." and the URL line. That gap is
+# tailscale's cold start, NOT the window: it fell to ~110 ms on its own,
+# on boots that still predate this flag. The window is the finding; the
+# gap never measured it.
+#
+# Same reason and same constant as versions._CREATE_NO_WINDOW and
 # awake.CREATE_NO_WINDOW; the rule is in AGENTS.md.
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
