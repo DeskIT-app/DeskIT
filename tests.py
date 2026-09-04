@@ -17945,15 +17945,20 @@ def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
     assert cfg.notify.corner == "right"
     assert cfg.notify.scale == 1.0
     assert cfg.notify.hotkey == "ctrl+alt+m"
+    # Cowork's only road in (notify_watch.py), and Claude Code's turns
+    # left to the hook that already cards them.
+    assert cfg.notify.watch == "cowork"
     sections = {s.name: s for s in settings_mod.read(here / "config.toml")}
     assert "notify" in sections, sorted(sections)
     keys = {s.key for s in sections["notify"].settings}
     assert keys == {"enabled", "cue", "card_seconds", "stack_max",
-                    "remind_every_s", "remind_times", "coalesce_s",
+                    "remind_every_s", "remind_times", "coalesce_s", "watch",
                     "corner", "anchor", "x", "y",
                     "scale", "dismiss_hotkey"}, keys
     anchor = {s.key: s for s in sections["notify"].settings}["anchor"]
     assert anchor.choices == ("bottom", "top"), anchor.choices
+    watch = {s.key: s for s in sections["notify"].settings}["watch"]
+    assert watch.choices == ("off", "cowork", "all"), watch.choices
     assert sections["notify"].help, "the section has no help text"
     corner = {s.key: s for s in sections["notify"].settings}["corner"]
     assert "right" in corner.choices and "bottom-left" in corner.choices, \
@@ -17973,6 +17978,15 @@ def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
             assert False, "corner = middle must be refused"
         except config_mod.ConfigError as e:
             assert "notify.corner" in str(e), e
+        p.write_text('[notify]\nwatch = "chat"\n', "utf-8")
+        try:
+            config_mod.load(p)
+            assert False, "watch = chat must be refused — there is nothing " \
+                          "on this machine that announces a chat reply"
+        except config_mod.ConfigError as e:
+            assert "notify.watch" in str(e), e
+        p.write_text('[notify]\nwatch = "ALL"\n', "utf-8")
+        assert config_mod.load(p).notify.watch == "all", "a word, any case"
         p.write_text('[notify]\ncard_seconds = 0\nremind_every_s = 0\n',
                      "utf-8")
         assert config_mod.load(p).notify.card_seconds == 0, "0 is allowed"
@@ -18300,6 +18314,221 @@ def test_the_hook_names_the_session_the_notification_came_from() -> None:
                    "code entry deep link gated off",
                    "already imported as local_"):
         assert needle in module, needle
+
+
+def _toast(title: str, body: str = "") -> bytes:
+    """One toast's payload, the shape Windows stores: the app's own XML
+    with the title and the body as <text> nodes, as bytes."""
+    said = f"<text>{title}</text>"
+    if body:
+        said += f"<text>{body}</text>"
+    return ('<toast><visual><binding template="ToastGeneric">'
+            f"{said}</binding></visual></toast>").encode("utf-8")
+
+
+def _wpn(path, rows) -> None:
+    """A stand-in for %LOCALAPPDATA%\\...\\wpndatabase.db: the two tables
+    this reads and one handler per app named in `rows`, each row
+    (Id, app, tag, group, payload)."""
+    import sqlite3
+
+    con = sqlite3.connect(path)
+    try:
+        con.execute("create table NotificationHandler "
+                    "(RecordId integer primary key, PrimaryId text)")
+        con.execute("create table Notification (Id integer primary key, "
+                    'HandlerId integer, Tag text, "Group" text, '
+                    "Payload blob, ArrivalTime integer)")
+        con.commit()
+    finally:
+        con.close()
+    _wpn_add(path, rows)
+
+
+def _wpn_add(path, rows) -> None:
+    """Notifications into a database _wpn built, reusing its handlers or
+    adding one for an app it has not seen."""
+    import sqlite3
+
+    con = sqlite3.connect(path)
+    try:
+        handlers = {app: rid for rid, app in con.execute(
+            "select RecordId, PrimaryId from NotificationHandler")}
+        for ident, app, tag, group, payload in rows:
+            if app not in handlers:
+                handlers[app] = len(handlers) + 1
+                con.execute("insert into NotificationHandler values (?, ?)",
+                            (handlers[app], app))
+            con.execute("insert into Notification values (?, ?, ?, ?, ?, ?)",
+                        (ident, handlers[app], tag, group, payload, 0))
+        con.commit()
+    finally:
+        con.close()
+
+
+CLAUDE_APP = "Claude_pzs8sxrjxfjjc!Claude"
+
+
+def _watcher(d, rows, mode="all", sink=None):
+    """A watcher over a database built for the test, its window answered
+    instead of found, and its first pass already spent on the watermark —
+    which is what a real one does with everything that arrived before the
+    app started."""
+    import notify_watch
+
+    db = Path(d) / "wpn.db"
+    _wpn(db, rows)
+    seen: list = []
+    store = notify_watch.Store(db, Path(d) / "copy.db")
+    w = notify_watch.Watcher(sink or seen.append, mode, store=store,
+                             window=(4321, "Claude"))
+    assert w.once() == 0, "the first pass only takes the watermark"
+    return w, seen, db
+
+
+def test_the_watcher_turns_the_apps_own_toasts_into_notifications() -> None:
+    """Cowork cannot knock — its sessions are in the cloud and there is
+    no hook to install — so the app's Windows toasts are read instead.
+    Title, body, kind and session come off the toast; the Code ones carry
+    the link the app's own store had to be dug through for; nobody
+    else's notifications are anybody's business."""
+    import notify
+    import notify_watch
+
+    assert notify_watch.MODES == ("off", "cowork", "all")
+    assert notify.SOURCES["cowork"] == "Cowork", "the label has to exist"
+    with tempfile.TemporaryDirectory() as d:
+        w, seen, db = _watcher(d, [(10, CLAUDE_APP, "cowork-idle-cse_old",
+                                    "Notifications", _toast("old", "gone"))])
+        _wpn_add(db, [
+            (11, CLAUDE_APP, "cowork-idle-cse_01Wn5A", "Notifications",
+             _toast("חולצות כדורגל מעוצבות",
+                    "Claude is waiting for your input")),
+            (12, CLAUDE_APP, "idle-local_6abc45c7-8df5-460d-a90f-cbadbbbd4cb2",
+             "session-local_6abc45c7-8df5-460d-a90f-cbadbbbd4cb2",
+             _toast("Night mode", 'run: wscript "Stop.vbs" &amp;&amp; go')),
+            (13, "5319275A.WhatsAppDesktop_cv1g1gvanyjgm!App", "", "",
+             _toast("Someone", "not for this door")),
+        ])
+        assert w.once() == 2, seen
+        cowork, code = seen
+        assert cowork["source"] == "cowork" and cowork["kind"] == "input"
+        assert cowork["title"] == "חולצות כדורגל מעוצבות"
+        assert cowork["body"] == "Claude is waiting for your input"
+        assert cowork["session"] == "cse_01Wn5A"
+        # No link for a cloud session: both doors the app advertises for
+        # one are gated off (the measurements are in notify_hook.py), so
+        # the card raises the window and stops there.
+        assert cowork["link"] == ""
+        assert cowork["hwnd"] == 4321 and cowork["app"] == "Claude"
+        assert code["source"] == "claude-code" and code["kind"] == "done"
+        assert code["link"] == ("claude://resume?session="
+                                "6abc45c7-8df5-460d-a90f-cbadbbbd4cb2")
+        # The payload is XML: the entities come back as characters, and
+        # what comes out still has to survive the door it is going in.
+        assert '&&' in code["body"] and "&amp;" not in code["body"]
+        for item in seen:
+            assert notify.clean(item)["title"] == item["title"]
+            assert notify._link(item["link"]) == item["link"]
+        # Nothing new, no second look — and nothing read twice.
+        assert w.once() == 0 and len(seen) == 2
+
+
+def test_the_watcher_leaves_claude_codes_own_turns_to_the_hook() -> None:
+    """`watch = "cowork"` is the default because notify_hook.py has
+    already carded every finished Claude Code turn: two cards for one
+    turn is worse than none. "all" is for a machine with no hook, "off"
+    never opens the file at all."""
+    rows = [
+        (21, CLAUDE_APP, "cowork-awaiting-cse_x", "Notifications",
+         _toast("A cowork session", "Claude needs your input to continue")),
+        (22, CLAUDE_APP, "idle-local_11111111-2222-3333-4444-555555555555",
+         "session-local_11111111-2222-3333-4444-555555555555",
+         _toast("A code session", "done")),
+        (23, CLAUDE_APP, "ask-question-99999999-2222-3333-4444-555555555555",
+         "session-local_11111111-2222-3333-4444-555555555555",
+         _toast("A code session", "which one?")),
+        (24, CLAUDE_APP, "cu-lock-cse_x", "Notifications",
+         _toast("Cowork", "Claude is done using your computer.")),
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        w, seen, db = _watcher(d, [(1, CLAUDE_APP, "cowork-idle-cse_a",
+                                    "Notifications", _toast("first"))],
+                               mode="cowork")
+        _wpn_add(db, rows)
+        assert w.once() == 2, seen
+        assert [i["source"] for i in seen] == ["cowork", "cowork"]
+        assert [i["kind"] for i in seen] == ["input", "info"]
+    with tempfile.TemporaryDirectory() as d:
+        w, seen, db = _watcher(d, [(1, CLAUDE_APP, "cowork-idle-cse_a",
+                                    "Notifications", _toast("first"))],
+                               mode="all")
+        _wpn_add(db, rows)
+        assert w.once() == 4, seen
+    with tempfile.TemporaryDirectory() as d:
+        import notify_watch
+        db = Path(d) / "wpn.db"
+        _wpn(db, rows)
+        seen = []
+        off = notify_watch.Watcher(seen.append, "off",
+                                   store=notify_watch.Store(db,
+                                                            Path(d) / "c.db"))
+        assert off.once() == 0 and off._after is None, "off never looks"
+        off.start()
+        assert off._thread is None, "and never starts a thread"
+
+
+def test_a_toast_the_watcher_cannot_read_is_not_a_card() -> None:
+    """It is reading another program's file, so every answer it might
+    get has to be an answer: torn XML, a toast with no words, a missing
+    database, a sink that throws. None of them may raise, and none of
+    them may cost the notification that comes next."""
+    import notify_watch
+
+    assert notify_watch.texts(b"<toast><visual>") == []
+    assert notify_watch.texts(None) == [] and notify_watch.texts("") == []
+    assert notify_watch.payload_from_toast(
+        "cowork-idle-cse_x", "Notifications",
+        b"<toast><visual><binding/></visual></toast>", (0, "")) is None
+    # An unknown tag is still shown: when the app grows a notification
+    # this module has never heard of, the owner hears about it anyway.
+    unknown = notify_watch.payload_from_toast("whatever-new", "Notifications",
+                                              _toast("New", "thing"), (0, ""))
+    assert unknown["source"] == "claude" and unknown["kind"] == "info"
+    with tempfile.TemporaryDirectory() as d:
+        store = notify_watch.Store(Path(d) / "gone.db", Path(d) / "c.db")
+        assert store.latest() == 0 and store.read(0) == ([], 0)
+
+        def angry(_payload):
+            raise RuntimeError("the engine is having a day")
+
+        w, _seen, db = _watcher(d, [(1, CLAUDE_APP, "cowork-idle-cse_a",
+                                     "Notifications", _toast("first"))],
+                                sink=angry)
+        _wpn_add(db, [(2, CLAUDE_APP, "cowork-idle-cse_b", "Notifications",
+                       _toast("second", "body")),
+                      (3, CLAUDE_APP, "cowork-idle-cse_c", "Notifications",
+                       b"<toast")])
+        assert w.once() == 0, "a sink that throws is not a crash"
+        assert w._after == 3, "and the watermark still moved past both"
+    # The real store, on the real machine: it may be read, and the
+    # window a card would raise is either the app's or nothing.
+    hwnd, title = notify_watch.claude_window()
+    assert isinstance(hwnd, int) and isinstance(title, str)
+    assert (hwnd > 0) == bool(title), (hwnd, title)
+
+
+def test_the_watcher_is_built_started_and_stopped_with_the_door() -> None:
+    """Wired in main.py beside the engine, fed by the /notify route's own
+    callable, and stopped BEFORE the engine it feeds."""
+    source = (REPO / "main.py").read_text(encoding="utf-8")
+    assert "import notify_watch as notify_watch_mod" in source
+    assert "notify_watch_mod.Watcher(" in source
+    assert "self._notify_from_outside," in source
+    assert "self.notify_watch.start()" in source
+    i = source.index("self.notify_watch.stop()")
+    assert i < source.index("self.notify.stop()"), \
+        "the watcher feeds the engine, so it stops first"
 
 
 def test_the_notify_cue_exists_and_has_its_own_shape() -> None:
@@ -19159,17 +19388,20 @@ def test_the_readme_and_agents_document_notify():
     assert i < readme.index("## Dictating from the phone")
     table = readme[readme.index("## Config reference"):]
     for key in ("enabled", "cue", "card_seconds", "stack_max",
-                "remind_every_s", "remind_times", "coalesce_s", "corner",
-                "anchor", "x", "y", "scale", "dismiss_hotkey"):
+                "remind_every_s", "remind_times", "coalesce_s", "watch",
+                "corner", "anchor", "x", "y", "scale", "dismiss_hotkey"):
         assert f"| `[notify] {key}` |" in table, key
     assert "--install-hook" in readme
     assert "irm 'http://127.0.0.1:8756/notify'" in readme
+    # And the one thing the README must say out loud, because it is the
+    # question anybody reading it will ask next: Chat is not in this.
+    assert "Cowork" in readme and "Chat" in readme
     agents = (REPO / "AGENTS.md").read_text(encoding="utf-8")
     what = agents[agents.index("## What this is"):agents.index("## House rules")]
     assert "notify" in what
     where = agents[agents.index("## Where things live"):]
     for name in ("notify.py", "notify_card.py", "notify_hook.py",
-                 "server.py", "control.py"):
+                 "notify_watch.py", "server.py", "control.py"):
         assert f"| `{name}` |" in where, name
 
 

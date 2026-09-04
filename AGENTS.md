@@ -20,7 +20,9 @@ door (notify.py, `POST /notify`, a cue and a STACK of cards that waits —
 newest on top, anchored by its bottom edge so a long message grows
 upward, nothing times out — with reminders, `ctrl+alt+m` to dismiss them
 all, a × per card and a click on a card to go to whoever sent it — how
-Claude Code says it is done; the dashboard's Notify screen), and a
+Claude Code says it is done, and, through the Windows toasts the desktop
+app raises, how Cowork does too: notify_watch.py, `[notify] watch`; the
+dashboard's Notify screen), and a
 dashboard. Everything is documented,
 with measurements, in `README.md` and `config.toml`.
 
@@ -663,6 +665,7 @@ back.
 | `capture.py` | screenshots (select, edit, clipboard, save), screen recording (BitBlt + PyAV), and the webcam photo key (dshow through the same PyAV, into the same editor) |
 | `notify.py` | the notify door's engine: cleans what arrived (truncate, never interpret), the store (`notify.json`, last 100), the log (`notify.log`), the cue, the reminders, the live column (`live()` — the unread ones, newest first, capped by `[notify] stack_max`) and the dismiss/open of one card or of all of them — `open()` goes to the sender's session (`open_link`, a whitelisted `claude://…` URL, `_link` is the whole of the policy) and then raises its window |
 | `notify_card.py` | the card's words and picture, and the column's arithmetic (`stack_layout` / `stack_measure` / `stack_hit_test`, copied from capture.py's toast stack rather than imported — this module is on the startup path) — a pure painter, one `text_pil` image per string, no Tk |
+| `notify_watch.py` | the other road in, for the half of Claude that cannot knock: Cowork runs in the cloud and has no hook to install, so this polls Windows' own notification store (`wpndatabase.db`, the toasts every app raises) and hands the desktop app's to the same engine — `[notify] watch` (`off \| cowork \| all`; "cowork" leaves the app's Claude Code sessions to the Stop hook, which has already carded them). Claude Chat is in none of it: the app raises notifications for `ccd` and `cowork` only, so a finished chat reply is announced to nothing on this machine |
 | `notify_hook.py` | the Claude Code hook (Stop + Notification, `--install-hook` writes them into `~/.claude/settings.json`) and the generic CLI (`--title ... --body ...`) — stdlib only, always exits 0; `owner_window()` walks up the parent processes so the payload can name the window a click on the card raises, and `session_link()` reads the desktop app's own session store so it can name the SESSION inside that window (`claude://resume?session=<the app's uuid>` — the two links the app advertises for this are gated off, its log says so, and the long comment there has the measurements) |
 | `server.py` | the loopback HTTP door on the `[server]` port: phone dictation, translate, punctuate, notify — every POST route bearer-token gated |
 | `control.py` | the named pipe between the dashboard and the app: status, commands, replies; handlers must never block |

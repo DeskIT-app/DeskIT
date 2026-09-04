@@ -2135,6 +2135,49 @@ on stderr whether the file changed. The hook is registered with
 happens and prints nothing on stdout, because a hook that fails would
 stop Claude, and a notification is never worth that.
 
+**How Cowork is wired — and why Chat cannot be.** Cowork has nothing to
+install: its sessions run in Anthropic's cloud, so there is no hook file
+on this machine to write. What the desktop app *does* do is raise a
+**Windows toast** ("IDF selection test prep — Claude is waiting for your
+input"), which lives four seconds in the corner and after that only in
+the Action Center — the exact miss this whole feature exists to fix. So
+`notify_watch.py` reads the toasts instead. Windows writes every one of
+them into `%LOCALAPPDATA%\Microsoft\Windows\Notifications\wpndatabase.db`
+(measured 2026-09-04: a toast raised at 17:21:49.356 was in the table at
+17:21:49.371 — 15 ms), and the watcher polls a copy of it every two
+seconds, turns Claude's rows into the same payload a `POST /notify`
+carries, and hands them to the same engine: same cue, same column, same
+reminders, same `ctrl+alt+m`.
+
+`[notify] watch` says how much of it to take:
+
+| | |
+|---|---|
+| `cowork` (default) | Cowork's — `cowork-idle-…`, `cowork-awaiting-…`, "done using your computer" — and anything new the app raises. Claude Code's own sessions are skipped: the `Stop` hook above has already carded every one of their turns, and two cards for one turn is worse than none |
+| `all` | those too, for a machine with no hook installed |
+| `off` | never opens the file |
+
+A Cowork card raises the Claude window and stops there. It cannot land
+on the session: a Cowork id is a `cse_…`, and both deep links the app
+advertises for one are refused by a flag on Anthropic's side (the log
+lines are in `notify_hook.py`). A **Claude Code** card from this route
+*can* — the toast's `Group` is `session-local_<uuid>`, which is the very
+id `claude://resume?session=` wants and which `notify_hook.session_link`
+otherwise has to dig out of the app's own store.
+
+**Claude Chat raises nothing, and no setting changes that.** The desktop
+app's notification service knows two products, `ccd` and `cowork`, and
+three kinds — idle, permission request, ask-user-question (its own
+bundle, read 2026-09-04; four days of that database agree). A chat reply
+that finishes is not announced to Windows, to a hook, or to anything else
+on this machine, so there is nothing here — or in any other program — to
+hear. If that ever changes, it needs no code: an unrecognised Claude
+toast is still shown, as `claude` / `info`.
+
+Note also that the app only toasts a session you are **not** looking at,
+so these cards arrive exactly when you are elsewhere, which is when you
+wanted one.
+
 **Sending one by hand.** From PowerShell, against the running app:
 
     $t=(gc 'C:\Users\shimr\Desktop\Organized\Projects\HebrewDictation\server_token.txt' -Raw).Trim(); irm 'http://127.0.0.1:8756/notify' -Method Post -Headers @{Authorization="Bearer $t"} -ContentType 'application/json; charset=utf-8' -Body '{"title":"Claude finished"}'
@@ -3203,6 +3246,7 @@ for `מבשרים`, all of which the local model got right.
 | `[notify] remind_every_s` | `120` | while something is unread, play the cue and show the card again this many seconds after the last time. `0` = never remind |
 | `[notify] remind_times` | `2` | ...at most this many times per arrival, then it waits quietly on the dashboard's Notify screen. `0` = never remind |
 | `[notify] coalesce_s` | `5` | a second notification from the **same** source within this many seconds updates the card instead of playing a second cue — Claude fires `Stop` and `Notification` a moment apart. The item is still stored |
+| `[notify] watch` | `cowork` | `off` \| `cowork` \| `all`. Which of the **desktop app's own** Windows notifications get a card here too — the only road in for Cowork, which runs in the cloud and has no hook to install. `cowork` leaves the app's Claude Code sessions to the `Stop` hook that already cards them; `all` takes those too; `off` never looks. Claude Chat is in none of them: a finished chat reply is announced to nothing on this machine |
 | `[notify] corner` | `right` | `right` \| `left` \| `top-right` \| `top-left` \| `bottom-right` \| `bottom-left`. Where the card appears before you have dragged it; `right` is mid-height on the right edge, like the second reading's card |
 | `[notify] anchor` | `bottom` | `bottom` \| `top`. Which edge of the column stays put as it grows. `bottom` grows a long message **upward**, so a column kept in the bottom-right corner never runs off the screen; `top` pins the top edge and grows downward, as it used to |
 | `[notify] x` | `-100000` | the top-left of the card where you last dragged it, in screen pixels. `-100000` = never moved: use `corner`. Negative is real on a monitor to the left of the primary |

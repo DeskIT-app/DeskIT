@@ -611,6 +611,13 @@ class NotifyConfig:
     # updates the card and skips the cue — Claude fires Stop and
     # Notification a moment apart. 0 = every arrival plays.
     coalesce_s: int = 5
+    # Which of the desktop app's OWN Windows notifications become cards
+    # here — the only way Cowork can reach this door, since a cloud
+    # session has no hook to install. See notify_watch.py. "off" never
+    # looks; "cowork" takes Cowork's and leaves the app's Claude Code
+    # sessions to the Stop hook, which has already carded them; "all"
+    # takes those too.
+    watch: str = "cowork"
     # Where the card appears before it has been dragged, and where it
     # was dragged to — the review card's sentinels, the review card's
     # reasons.
@@ -824,6 +831,10 @@ REVIEW_CORNERS = HINT_CORNERS + ("right", "left")
 # and the column is not.
 NOTIFY_ANCHORS = ("bottom", "top")
 NOTIFY_STACK_MAX = 8
+# What [notify] watch may say. Spelled out here rather than imported from
+# notify_watch.MODES: config.py is read before anything else and must not
+# drag a module full of ctypes onto the startup path to check a word.
+NOTIFY_WATCH = ("off", "cowork", "all")
 
 
 @dataclass(frozen=True)
@@ -1500,6 +1511,7 @@ def load(path: Path) -> Config:
             remind_times=int(notify.get("remind_times",
                                         NotifyConfig.remind_times)),
             coalesce_s=int(notify.get("coalesce_s", NotifyConfig.coalesce_s)),
+            watch=str(notify.get("watch", NotifyConfig.watch)).strip().lower(),
             corner=str(notify.get("corner",
                                   NotifyConfig.corner)).strip().lower(),
             anchor=str(notify.get("anchor",
@@ -1781,6 +1793,11 @@ def load(path: Path) -> Config:
     if cfg.notify.anchor not in NOTIFY_ANCHORS:
         raise ConfigError(f"notify.anchor must be one of {NOTIFY_ANCHORS}, "
                           f"got {cfg.notify.anchor!r}")
+    if cfg.notify.watch not in NOTIFY_WATCH:
+        raise ConfigError(f"notify.watch must be one of {NOTIFY_WATCH} "
+                          "(which of the desktop app's own notifications "
+                          "become cards here), "
+                          f"got {cfg.notify.watch!r}")
     if not (HINT_SCALE_MIN <= cfg.notify.scale <= HINT_SCALE_MAX):
         raise ConfigError(
             f"notify.scale must be between {HINT_SCALE_MIN} and "

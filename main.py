@@ -40,6 +40,7 @@ import hint as hint_mod
 import injector
 import awake as awake_mod
 import notify as notify_mod
+import notify_watch as notify_watch_mod
 import popup as popup_mod
 import server as server_mod
 import singleton
@@ -470,6 +471,17 @@ class App:
             self.notify_card = notify_mod.NullCard()
         self.notify = notify_mod.Engine(APP_DIR, ncfg, cue=beep,
                                         card=self.notify_card)
+        # The half of Claude that cannot knock (notify_watch.py). A Cowork
+        # session runs in Anthropic's cloud, so there is no hook on this
+        # machine to install for it — but the desktop app raises a Windows
+        # toast when one wants him, and Windows writes every toast down.
+        # The sink is the /notify route's own callable, so a toast and a
+        # POST reach the engine by the same road and are stored, cued and
+        # reminded about identically. Off with the whole door.
+        self.notify_watch = notify_watch_mod.Watcher(
+            self._notify_from_outside,
+            getattr(ncfg, "watch", "cowork")
+            if ncfg is not None and ncfg.enabled else "off")
         # The pencil's box: one line, takes the keyboard, on purpose.
         self._word_prompt = overlay_mod.WordPrompt()
         self._review = None
@@ -1558,6 +1570,7 @@ class App:
         self.review_card.start()
         self.notify_card.start()
         self.notify.start()
+        self.notify_watch.start()
         if self.cfg.auto_pause_fullscreen:
             self._watcher = threading.Thread(target=self._watch_fullscreen,
                                              daemon=True, name="fullscreen")
@@ -1656,7 +1669,11 @@ class App:
         self.dot.stop()
         self.hint.stop()
         self.review_card.stop()
-        # The reminder thread first, then the card it would have shown.
+        # The watcher first — it feeds the engine, and an arrival during
+        # the shutdown would arm reminders nobody is left to answer.
+        if getattr(self, "notify_watch", None) is not None:
+            self.notify_watch.stop()
+        # The reminder thread next, then the card it would have shown.
         if getattr(self, "notify", None) is not None:
             self.notify.stop()
         if getattr(self, "notify_card", None) is not None:

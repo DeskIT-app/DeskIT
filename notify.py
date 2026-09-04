@@ -59,6 +59,16 @@ notification without a link, or a shell that will not take it, is the
 old behaviour and not an error: the window still comes forward and
 notify.log says what happened.
 
+AND THE ROAD IN THAT IS NOT A KNOCK (2026-09-04). Cowork has no hook to
+install: its sessions run in Anthropic's cloud and there is no file on
+this machine to write one into. But the desktop app already raises a
+Windows toast for them, so notify_watch.py reads those off Windows' own
+notification store and calls `receive` with the fields a POST would have
+carried — same store, same cue, same reminders, same column. `[notify]
+watch` is the switch; that module's docstring holds the measurements and
+the reason Claude Chat is not on the list: it announces nothing, to
+anything, anywhere on this machine.
+
 WHY COALESCING. Claude fires Stop and then Notification a moment apart
 for the same turn, and two cues 400 ms apart sound like an error pair.
 A second arrival from the SAME source inside `coalesce_s` updates the
@@ -99,7 +109,8 @@ KEEP = 100
 STACK_MAX = 5                  # cards on screen at once when the config
                                # says nothing; [notify] stack_max is the
                                # real number and config.py bounds it
-SOURCES = {"claude-code": "Claude Code", "claude": "Claude", "phone": "Phone",
+SOURCES = {"claude-code": "Claude Code", "cowork": "Cowork",
+           "claude": "Claude", "phone": "Phone",
            "dashboard": "Dashboard", "test": "Test", "cli": "Command line"}
 DEFAULT_TITLE = {"done": "Finished", "input": "Needs your input",
                  "error": "Something went wrong", "info": "Notification"}

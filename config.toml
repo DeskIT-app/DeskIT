@@ -1058,6 +1058,20 @@ coalesce_s = 5                 # a second notification from the SAME source
                                # within this many seconds updates the card
                                # instead of playing a second cue - Claude
                                # fires Stop and Notification a moment apart
+watch = "cowork"               # off | cowork | all. Which of the Claude
+                               # desktop app's OWN Windows notifications get
+                               # a card here too. This is the only way Cowork
+                               # can reach this door: a Cowork session runs in
+                               # the cloud, so there is no hook to install for
+                               # it, but the app still raises a Windows toast
+                               # you have four seconds to catch. "cowork"
+                               # takes those and leaves the app's Claude Code
+                               # sessions alone, because the Stop hook has
+                               # already carded every one of their turns;
+                               # "all" takes those too (for a machine with no
+                               # hook installed); "off" never looks. Claude
+                               # Chat is in none of them - a finished chat
+                               # reply is announced to nothing on this machine
 corner = "right"               # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                                # appears before you have dragged it: "right"
                                # is mid-height on the right edge, like the
@@ -1449,8 +1463,8 @@ card_seconds = 20             # how long the card stays on screen before it
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
-x = -497                   # the top-left of the CARD where you last
-y = 879                   # dragged it, in screen pixels. -100000 = never
+x = 1312                   # the top-left of the CARD where you last
+y = 237                   # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a
                               # monitor to the left of the primary
 scale = 1.0                   # how big it is drawn (0.6 .. 1.4)
