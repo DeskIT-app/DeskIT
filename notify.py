@@ -48,6 +48,17 @@ notify_hook.owner_window — and then dismisses exactly as before, because
 arriving at the work is having read the notice. The × keeps the old
 meaning, and so does Esc: close it, stay where you are.
 
+AND WHY THE WINDOW IS ONLY HALF OF IT (2026-09-04). One Claude window
+holds every session, so raising it arrives at whichever one the app was
+last showing — not the one that finished. A sender may therefore also
+name the SESSION, as a `claude://…` link (notify_hook.session_link
+works out what to send and, in a long comment, why that particular
+link); `open()` hands it to the shell before it raises the window,
+which is the app's own front door and needs nothing of this app. A
+notification without a link, or a shell that will not take it, is the
+old behaviour and not an error: the window still comes forward and
+notify.log says what happened.
+
 WHY COALESCING. Claude fires Stop and then Notification a moment apart
 for the same turn, and two cues 400 ms apart sound like an error pair.
 A second arrival from the SAME source inside `coalesce_s` updates the
@@ -101,6 +112,14 @@ _MAX = {"source": SOURCE_MAX, "title": TITLE_MAX, "body": BODY_MAX,
 # terminal's idea of formatting and at worst a way to talk to one.
 _CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
+# THE ONE THING IN A NOTIFICATION THAT IS NOT DRAWN. `link` is handed to
+# the SHELL when the card is clicked, so it is not cleaned, it is
+# ADMITTED: one scheme, one alphabet, one length. `claude://…` opens
+# whatever Windows has registered for it — the desktop app — and
+# everything else is not a link here and reads as none: no file:, no
+# http:, no path, no space, no quote, no backslash, no percent escape.
+_LINK = re.compile(r"^claude://[A-Za-z0-9_\-./?=&:]{1,180}$")
+
 
 def label_for(source: str) -> str:
     """What the card and the dashboard call a source. Unknown ones are
@@ -133,6 +152,19 @@ def _window(value) -> int:
     return hwnd if hwnd > 0 else 0
 
 
+def _link(value) -> str:
+    """A sender's `claude://…` link, or "". Anything that is not a
+    string, or that the whitelist above does not recognise, is "" —
+    which reads downstream as "no session to go to" and costs the click
+    nothing but the window it was always going to raise."""
+    text = (value if isinstance(value, str) else "").strip()
+    # Stripped at the ends and nowhere else. Whitespace INSIDE a link is
+    # not tidied the way a title's is: a link that arrived with a space
+    # in it is not a link this app can vouch for, and closing the gap
+    # would be repairing a stranger's string into something executable.
+    return text if _LINK.match(text) else ""
+
+
 def _ident(value) -> int | None:
     """One notification's id, or None meaning "all" / "the newest".
 
@@ -156,7 +188,9 @@ def clean(payload) -> dict:
     one-line fields; only runs of blank lines for the body), and each is
     cut to its maximum with a trailing ellipsis. Nothing here is parsed
     or formatted — the output is seven strings that will be DRAWN, plus
-    one integer (`hwnd`) that is only ever handed back to Windows.
+    one integer (`hwnd`) that is only ever handed back to Windows and
+    one string (`link`) that is only ever handed back to the shell, and
+    only when the whitelist above recognises it.
     """
     if not isinstance(payload, dict):
         raise ValueError("expected a JSON object")
@@ -179,6 +213,7 @@ def clean(payload) -> dict:
     if not out["title"]:
         out["title"] = DEFAULT_TITLE[out["kind"]]
     out["hwnd"] = _window(payload.get("hwnd"))
+    out["link"] = _link(payload.get("link"))
     return out
 
 
@@ -236,12 +271,15 @@ class Store:
             item = {"id": next_id,
                     "at": datetime.now().isoformat(timespec="seconds")}
             item.update({k: str(fields.get(k, "")) for k in _FIELDS})
-            # The one field that is not a string: the sender's window, so
-            # a click on the card can raise it. Put through _window again
-            # rather than trusted — this method takes a plain dict from
-            # whoever calls it, and an int is the only thing json.dump
-            # and Engine.open will accept without asking questions.
+            # The two fields that are not drawn: the sender's window, so
+            # a click on the card can raise it, and its session link, so
+            # the click can land in the right place inside it. Both put
+            # through their gate again rather than trusted — this method
+            # takes a plain dict from whoever calls it, and an int and a
+            # whitelisted link are the only things json.dump and
+            # Engine.open will accept without asking questions.
             item["hwnd"] = _window(fields.get("hwnd"))
+            item["link"] = _link(fields.get("link"))
             item["seen"] = False
             items.append(item)
             if len(items) > self.keep:
@@ -295,6 +333,34 @@ class Store:
         except OSError:
             return None
         return (st.st_size, st.st_mtime_ns)
+
+
+# ---------------------------------------------------------------------------
+# going to the session the notification came from
+# ---------------------------------------------------------------------------
+
+def open_link(link) -> bool:
+    """Hand one `claude://…` link to the shell. True if the shell took it.
+
+    `os.startfile` is the shell's own double-click — launch.open_path
+    uses it for the log buttons — and for a URL it runs whatever is
+    registered for the scheme. What comes back is whether the SHELL
+    accepted it, not whether the app went anywhere: the handler runs in
+    the other process and answers nobody here. A link the whitelist does
+    not recognise never reaches the shell at all; it is put through
+    `_link` again here rather than trusted, because this function is
+    reachable from the store and the whitelist is the whole of the
+    safety.
+    """
+    link = _link(link)
+    if not link:
+        return False
+    try:
+        os.startfile(link)            # noqa: S606 (Windows-only by design)
+        return True
+    except OSError:
+        log.info("notify: could not open %s", link, exc_info=True)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -593,11 +659,19 @@ class Engine:
 
         This is what a click anywhere on a card except its × means
         (asked for 2026-09-04): the owner is not saying "seen", he is
-        saying "take me there". So the item's `hwnd` is raised — for a
-        Claude Code notification that is the Claude window, named by
+        saying "take me there". So the item's `link` is handed to the
+        shell — for a Claude Code notification that is the session's own
+        `claude://` link, worked out by notify_hook.session_link — and
+        then the item's `hwnd` is raised — the Claude window, named by
         notify_hook.owner_window's walk up the parent processes — and
         then everything dismiss() does happens anyway, because arriving
         at the work IS having read the notification.
+
+        THE LINK GOES FIRST because it is the slow half: it spawns a
+        process, which talks to the app, which navigates. The raise is
+        instant, so starting the journey and then bringing the window
+        forward puts the two together; the other order would show the
+        window still on the last session for as long as the trip takes.
 
         With an id it is one card of the column: that item's window,
         that item marked seen, the rest of the column still up. Without
@@ -605,27 +679,37 @@ class Engine:
         dismissal, which is what the dashboard's Open button and a card
         that is alone on screen both mean.
 
-        A window that has since closed, or one Windows will not bring
-        forward, is not an error and does not cost the dismissal: it is
-        logged as what it was and the card still goes down.
+        A window that has since closed, one Windows will not bring
+        forward, a notification that named no session, or a shell that
+        would not take the link, is not an error and does not cost the
+        dismissal: it is logged as what it was and the card still goes
+        down.
         """
         with self._lock:
             ident = _ident(item_id)
             target = self._item(ident)
             hwnd = _window((target or {}).get("hwnd"))
+            link = _link((target or {}).get("link"))
             app = str((target or {}).get("app", "") or "")
             name = f"#{target['id']}" if target else "#-"
+            if link:
+                went = bool(open_link(link))
+                to = " | to the session" if went else \
+                    " | but the session would not open"
+            else:
+                went, to = False, ""
             if hwnd:
                 raised = bool(raise_window(hwnd))
                 note = "" if raised else " | but it would not come forward"
                 self._log(f"OPENED {name} -> {app or 'a window'} "
-                          f"({hwnd}){note}")
-                log.info("notify: opened %s by %s -> %r (%d)%s", name, by,
-                         app, hwnd, "" if raised else " — not raised")
+                          f"({hwnd}){note}{to}")
+                log.info("notify: opened %s by %s -> %r (%d)%s%s", name, by,
+                         app, hwnd, "" if raised else " — not raised",
+                         f" — {link}" if went else "")
             else:
-                self._log(f"OPENED {name} | no window to raise")
-                log.info("notify: opened %s by %s | no window to raise",
-                         name, by)
+                self._log(f"OPENED {name} | no window to raise{to}")
+                log.info("notify: opened %s by %s | no window to raise%s",
+                         name, by, f" — {link}" if went else "")
             return self.dismiss(ident, by=by)
 
     def _item(self, item_id=None) -> dict | None:

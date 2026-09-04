@@ -2063,11 +2063,48 @@ from `1126367970` to `658500`; and the real Claude window, `True` in
 one that has since closed, or a raise Windows refuses costs the raise and
 nothing else — the card still goes down, and `notify.log` says which.
 
+**And the window is only half of it (2026-09-04).** One Claude window
+holds every session — every notification ever sent from this machine
+carries the same handle, `43779834` — so raising it arrives at whichever
+session the app was last showing, which was the complaint. So a
+notification may also name the SESSION, and a click goes there first:
+`notify_hook.session_link` puts a `claude://…` URL in the payload and
+`open()` hands it to the shell (`os.startfile`, the same "double-click
+this" the log buttons use) before it raises the window, because the
+link spawns a process and travels while the raise is instant. The URL
+is `claude://resume?session=<uuid>`, and both halves of that were
+measured that day. The two links the app advertises for this —
+`claude://code/<cse_…>` and `claude://code/continue?session=local_…` —
+reach it and are refused by a feature flag, in its own log
+(`%LOCALAPPDATA%\Claude\logs\main.log`): `claudeURLHandler: code session
+deep link gated off`, `claudeURLHandler: code entry deep link gated
+off`. `resume` is not gated: it exists to adopt a CLI session the app
+has never seen, and it looks the id up as `local_<uuid>` before it
+imports anything, so handing it the uuid of a session the app already
+owns imports nothing and simply goes there — `CLI session 6abc45c7-…
+already imported as local_6abc45c7-…`, `LocalSessions.setFocusedSession:
+local_6abc45c7-…`, and the window on screen changed from the chat it was
+showing to that session. The uuid in the link is NOT the `session_id` a
+hook is handed (that names the current CLI transcript, and a resume
+starts a new one); it is the desktop app's own id, joined to ours
+through the app's own store —
+`%APPDATA%\Claude\claude-code-sessions\<account>\<org>\local_<id>.json`,
+which names `sessionId`, `cliSessionId` and every `priorCliSessionIds`,
+so a notification from the fourth episode of a session still opens that
+session. Nothing is written there and nothing is asked of the app. A
+notification that named no session, a store that has moved or will not
+parse, and a shell that will not take the link all cost the trip and
+nothing else: the window still comes forward, and `notify.log` says `| to
+the session` or `| but the session would not open`.
+
 **What happens.** The body is `{"source", "kind", "title", "body",
-"project", "session", "hwnd", "app"}`, every field optional — `hwnd` is
-the window a click should raise (an integer; anything unparsable or
-negative reads as "no window") and `app` is its title, kept as a label
-only. `kind` is one of `done`,
+"project", "session", "hwnd", "app", "link"}`, every field optional —
+`hwnd` is the window a click should raise (an integer; anything
+unparsable or negative reads as "no window"), `app` is its title, kept
+as a label only, and `link` is the session inside that window (a
+`claude://…` URL and nothing else: one scheme, one alphabet, 180
+characters, no space, no quote, no backslash, no percent escape —
+anything else reads as "no session"). `kind` is one of `done`,
 `input`, `error`, `info` (anything else reads as `info`) and colours the
 card's bar and the row's dot; an empty `title` gets the kind's own words
 ("Finished", "Needs your input", "Something went wrong", "Notification").

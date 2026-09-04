@@ -21,7 +21,11 @@ never make Claude wait on a card.
 
 Every payload also names the window the notification CAME FROM (`hwnd`
 and `app`), because a click on the card now raises it — see
-`owner_window` below for how that is resolved and why.
+`owner_window` below for how that is resolved and why — and the SESSION
+it came from (`link`), because that window holds every session at once
+and raising it lands wherever the app happened to be; see
+`session_link` for the one door into the desktop app that is not
+bolted.
 
 `--install-hook` writes the two entries into ~/.claude/settings.json,
 replacing any earlier entry that names this script and leaving every
@@ -37,6 +41,7 @@ import copy
 import ctypes
 import json
 import os
+import re
 import sys
 import tomllib
 import urllib.error
@@ -214,13 +219,120 @@ def owner_window(depth: int = WALK_DEPTH) -> tuple[int, str]:
     return 0, ""
 
 
-def payload_from_hook(event: dict, window=None) -> dict | None:
+# ---------------------------------------------------------------------------
+# which SESSION is this? — the desktop app's own store, and the one door
+# into it that is not bolted
+# ---------------------------------------------------------------------------
+# ONE WINDOW HOLDS EVERY SESSION, so raising it is only half an answer.
+# Every notification this hook has ever sent carries the same handle
+# (43779834): the desktop app keeps all of its Claude Code sessions in a
+# single window and switches between them INSIDE it, so a click that
+# raises the window lands wherever the app happened to be — the owner's
+# report on 2026-09-04, and not something a better window search can fix.
+#
+# The app does have doors for this: `claude://code/<cse_…>` and
+# `claude://code/continue?session=local_…`. Both were fired at it that
+# day and both were refused, by a feature flag on its side, in its own
+# log (%LOCALAPPDATA%\Claude\logs\main.log):
+#
+#   16:44:49 claudeURLHandler: code session deep link gated off
+#   16:45:48 claudeURLHandler: code entry deep link gated off
+#
+# `claude://resume?session=<uuid>` is not gated. It exists to ADOPT a CLI
+# session the app has never seen, and it looks the id up as
+# `local_<uuid>` before importing anything — so handing it the uuid of a
+# session the app already owns imports nothing and simply goes there:
+#
+#   16:54:41 Resume deep link: importing CLI session 6abc45c7-…
+#   16:54:41 CLI session 6abc45c7-… already imported as local_6abc45c7-…
+#   16:54:41 [CCD] LocalSessions.setFocusedSession: local_6abc45c7-…
+#
+# THAT UUID IS NOT THE ONE A HOOK IS GIVEN. `session_id` names the CLI
+# transcript of the CURRENT episode and a resume starts a new one; the
+# app's id was minted when the session was created and never moves. The
+# map between them is the app's own store, one JSON per session, which
+# names both:
+#
+#   %APPDATA%\Claude\claude-code-sessions\<account>\<org>\local_<id>.json
+#       {"sessionId": "local_6abc45c7-…",
+#        "cliSessionId": "add068f2-…",
+#        "priorCliSessionIds": ["ec9cf336-…", …], …}
+#
+# so the walk is: our `session_id`, found as `cliSessionId` or among
+# `priorCliSessionIds`, gives `sessionId`, gives the link. Nothing is
+# written and nothing is asked of the app. A store that has moved, that
+# will not parse, or that has never heard of this session is no link at
+# all — and no link is the behaviour this hook had before: raise the
+# window and let the owner find the tab.
+
+SESSIONS = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude-code-sessions"
+LOCAL = "local_"
+STORE_MAX = 40                    # session files opened before giving up
+UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}"
+                  r"-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def session_link(session_id, root=None) -> str:
+    """`claude://resume?session=<uuid>` for one CLI session, or "".
+
+    `root` is the store's folder, a parameter only so a test can hand
+    over one it built; left None it is the app's own. The files are read
+    newest first — a live session's file is written constantly — and the
+    id is looked for as text before anything is parsed, because these
+    are 400 KB documents and the id is a 36-character needle. A text hit
+    is not the answer, though: the id can appear anywhere in the file,
+    so the two fields that MEAN it are checked after the parse. The
+    comparison is exact, case included — both sides of it are written by
+    Claude Code, which mints these ids in one shape.
+
+    "" on anything unexpected. This is a hook: it may not raise, and a
+    machine that answers none of these questions simply sends a
+    notification that opens no session.
+    """
+    ident = str(session_id or "").strip()
+    if not UUID.match(ident):
+        return ""
+    try:
+        root = Path(root) if root is not None else SESSIONS
+        files = sorted(root.glob(f"*/*/{LOCAL}*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+        for path in files[:STORE_MAX]:
+            try:
+                text = path.read_text("utf-8")
+            except OSError:
+                continue
+            if ident not in text:
+                continue
+            try:
+                data = json.loads(text)
+            except ValueError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            prior = data.get("priorCliSessionIds")
+            prior = prior if isinstance(prior, list) else []
+            if data.get("cliSessionId") != ident and ident not in prior:
+                continue              # the id was IN the file, but not as
+                                      # one of this session's own episodes
+            local = str(data.get("sessionId") or "")
+            uuid = local[len(LOCAL):] if local.startswith(LOCAL) else ""
+            if not UUID.match(uuid):
+                continue              # `local_ditto_…` — a cloud session,
+                                      # whose id resume will not take
+            return f"claude://resume?session={uuid}"
+    except Exception:                 # noqa: BLE001
+        return ""
+    return ""
+
+
+def payload_from_hook(event: dict, window=None, link=None) -> dict | None:
     """The /notify body for one hook event, or None when it is nobody's
     business (a subagent, a continued turn, an unknown notification).
 
     `window` is the (hwnd, title) the card will raise; left None it is
     resolved by `owner_window()` — a parameter only so a test can say
     what the answer is instead of taking whatever is on the desktop.
+    `link` is the same arrangement for `session_link()`.
     """
     if not isinstance(event, dict):
         return None
@@ -241,9 +353,12 @@ def payload_from_hook(event: dict, window=None) -> dict | None:
     cwd = event.get("cwd")
     project = Path(str(cwd)).name if isinstance(cwd, str) and cwd else ""
     hwnd, app = owner_window() if window is None else window
+    session = str(event.get("session_id") or "")
+    if link is None:
+        link = session_link(session)
     return {"source": SOURCE, "kind": kind, "title": title, "body": body,
-            "project": project, "session": str(event.get("session_id") or ""),
-            "hwnd": int(hwnd), "app": str(app)}
+            "project": project, "session": session,
+            "hwnd": int(hwnd), "app": str(app), "link": str(link or "")}
 
 
 def server_url() -> str:
@@ -372,6 +487,11 @@ def _parser() -> argparse.ArgumentParser:
     # HWND should say so rather than let a walk find its console's.
     p.add_argument("--hwnd", default=None)
     p.add_argument("--app", default=None)
+    # The session a click on the card goes to. Left unsaid it is looked
+    # up from --session the way the hook looks it up from the event, so
+    # a caller that already knows the CLI session id gets the link for
+    # free; --link "" is how a caller says "no session, just the window".
+    p.add_argument("--link", default=None)
     p.add_argument("--install-hook", action="store_true")
     p.add_argument("--settings", default=None)
     p.add_argument("--url", default=None)
@@ -397,10 +517,12 @@ def _main(argv) -> None:
             app = args.app or ""
         if args.app is not None:
             app = args.app
+        link = args.link if args.link is not None \
+            else session_link(args.session)
         payload = {"source": args.source, "kind": args.kind,
                    "title": args.title, "body": args.body,
                    "project": args.project, "session": args.session,
-                   "hwnd": int(hwnd), "app": str(app)}
+                   "hwnd": int(hwnd), "app": str(app), "link": str(link)}
     else:
         event = _read_stdin_json()
         payload = payload_from_hook(event) if event is not None else None

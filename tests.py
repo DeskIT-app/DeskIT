@@ -17476,7 +17476,7 @@ def test_a_notification_is_cleaned_truncated_and_never_interpreted() -> None:
         assert "JSON object" in str(e), e
     out = notify.clean({"title": "x", "evil": "y", "body": "b"})
     assert set(out) == {"source", "kind", "title", "body", "project",
-                        "session", "app", "hwnd"}, sorted(out)
+                        "session", "app", "hwnd", "link"}, sorted(out)
     assert "evil" not in out
     out = notify.clean({"title": "a" * 81})
     assert len(out["title"]) == 80 and out["title"].endswith("…"), out["title"]
@@ -17614,6 +17614,86 @@ def test_opening_a_notification_raises_its_window_and_dismisses_it() -> None:
     t0 = time.monotonic()
     assert notify._is_front(notify._handles()[0], 7, 0.05) is False
     assert 0.04 <= time.monotonic() - t0 < 1.0, "it waits, and it stops"
+
+
+def test_opening_a_notification_goes_to_its_session_before_its_window() -> None:
+    """One Claude window holds every session, so the handle alone lands
+    wherever the app was last showing. A sender may also name the
+    session as a `claude://…` link; open() hands that to the shell FIRST
+    (it spawns a process and travels; the raise is instant) and then
+    raises the window exactly as before. A link nobody sent, one the
+    whitelist refuses, or a shell that will not take it costs the trip
+    and nothing else — the window still comes forward, the card still
+    goes down, and notify.log says which of the two happened."""
+    import notify
+
+    link = "claude://resume?session=6abc45c7-8df5-460d-a90f-cbadbbbd4cb2"
+    # WHAT MAY BE HANDED TO THE SHELL. This is the only field in a
+    # notification that is not drawn, so it is admitted by a whitelist
+    # rather than cleaned: one scheme, one alphabet, one length.
+    assert notify._link(link) == link
+    assert notify._link(f"  {link}\n") == link, "the ends are trimmed"
+    for bad in ("claude://a b", "claude://a\tb", "file:///c:/x", "http://x",
+                "CLAUDE://x", "claude://", "claude://x%20y", "claude://x\\y",
+                'claude://x"&calc', "claude:" + "/" * 3 + "a" * 200,
+                5, None, ["claude://x"], {"x": 1}):
+        assert notify._link(bad) == "", bad
+    assert notify.clean({"link": "javascript:alert(1)"})["link"] == ""
+    assert notify.clean({"link": link})["link"] == link
+
+    calls: list = []
+    real_open, real_raise = notify.open_link, notify.raise_window
+    with tempfile.TemporaryDirectory() as d:
+        card = _FakeNotifyCard()
+        eng = notify.Engine(Path(d), _notify_cfg(remind_every_s=30,
+                                                 remind_times=3),
+                            cue=lambda k: None, card=card)
+        try:
+            notify.open_link = lambda u: calls.append(("link", u)) or True
+            notify.raise_window = lambda h: calls.append(("raise", h)) or True
+            eng.receive({"source": "claude-code", "title": "Claude finished",
+                         "hwnd": 43779834, "app": "Claude", "link": link})
+            assert eng.store.last()["link"] == link, "the store keeps it"
+            state = eng.open(by="card")
+            assert calls == [("link", link), ("raise", 43779834)], calls
+            assert state["unread"] == 0 and card.hidden == 1
+            log_text = (Path(d) / "notify.log").read_text("utf-8")
+            assert "OPENED #1 -> Claude (43779834) | to the session" \
+                in log_text, log_text
+
+            calls.clear()
+            notify.open_link = lambda u: calls.append(("link", u)) or False
+            eng.receive({"source": "claude-code", "title": "finished",
+                         "hwnd": 43779834, "app": "Claude", "link": link})
+            eng.open(by="card")
+            assert calls == [("link", link), ("raise", 43779834)], calls
+            log_text = (Path(d) / "notify.log").read_text("utf-8")
+            assert "OPENED #2 -> Claude (43779834) | but the session would " \
+                "not open" in log_text, log_text
+
+            calls.clear()
+            eng.receive({"source": "claude-code", "title": "no link",
+                         "hwnd": 43779834, "app": "Claude",
+                         "link": "file:///c:/windows/system32/calc.exe"})
+            assert eng.store.last()["link"] == "", "refused on the way in"
+            eng.open(by="card")
+            assert calls == [("raise", 43779834)], \
+                "a link that is not one is never handed to the shell"
+            log_text = (Path(d) / "notify.log").read_text("utf-8")
+            assert "OPENED #3 -> Claude (43779834)\n" in log_text, log_text
+        finally:
+            notify.open_link, notify.raise_window = real_open, real_raise
+            eng.stop()
+
+    # The real opener, with nothing it would launch. It answers False
+    # rather than raising, and it puts the link through the whitelist
+    # again rather than trusting the store it came from.
+    assert notify.open_link("") is False
+    assert notify.open_link(None) is False
+    assert notify.open_link("file:///c:/windows/system32/calc.exe") is False
+    opener = inspect.getsource(notify.open_link)
+    assert "_link(link)" in opener and "os.startfile" in opener, opener
+    assert "subprocess" not in opener and "shell=True" not in opener
 
 
 def test_the_notify_store_keeps_a_hundred_and_survives_a_broken_file() -> None:
@@ -18134,6 +18214,92 @@ def test_the_hook_names_the_window_the_notification_came_from() -> None:
                 "with no override it resolves the same window as the hook"
     finally:
         hook.post = real_post
+
+
+def test_the_hook_names_the_session_the_notification_came_from() -> None:
+    """The window is not enough — one Claude window holds every session —
+    so the payload also carries a `claude://resume?session=<uuid>` link,
+    and the uuid in it is the DESKTOP app's id for the session, not the
+    hook's. The two are different (a resume starts a new CLI transcript;
+    the app's id never moves) and the app's own store is what joins them:
+    one JSON per session naming `sessionId`, `cliSessionId` and every
+    `priorCliSessionIds`. A store that cannot answer is no link at all,
+    which is the behaviour the card had before there were links."""
+    import notify_hook as hook
+
+    def _store(root: Path, name: str, body: dict) -> Path:
+        folder = root / "acct" / "org"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{name}.json"
+        path.write_text(json.dumps(body, ensure_ascii=False), "utf-8")
+        return path
+
+    live = "add068f2-9cd4-4904-b19c-d73859fad53e"
+    past = "ec9cf336-aa2d-43b8-9e97-b30d779d8d0e"
+    desk = "6abc45c7-8df5-460d-a90f-cbadbbbd4cb2"
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d)
+        assert hook.session_link(live, root=root) == "", "an empty store"
+        _store(root, f"local_{desk}",
+               {"sessionId": f"local_{desk}", "cliSessionId": live,
+                "priorCliSessionIds": [past], "title": "Night mode"})
+        want = f"claude://resume?session={desk}"
+        assert hook.session_link(live, root=root) == want, "the live episode"
+        assert hook.session_link(past, root=root) == want, "an older episode"
+        assert hook.session_link(live.upper(), root=root) == "", \
+            "ids are matched as they were written, by both sides"
+        # The id can appear ANYWHERE in a 400 KB session file — these
+        # documents quote the work. A text hit is why the file is opened;
+        # the two fields that MEAN it are why the answer is given.
+        other = "e571c05f-4c3d-4099-ae25-45311dfce70b"
+        _store(root, "local_ae7aac5f-afaf-4a53-b7d9-fb776655faab",
+               {"sessionId": "local_ae7aac5f-afaf-4a53-b7d9-fb776655faab",
+                "cliSessionId": other, "priorCliSessionIds": [],
+                "note": f"we talked about {live} in here"})
+        assert hook.session_link(live, root=root) == want, \
+            "a mention is not an episode"
+        assert hook.session_link(other, root=root) == \
+            "claude://resume?session=ae7aac5f-afaf-4a53-b7d9-fb776655faab"
+
+        for junk in ("", None, "abc", "not-a-uuid", 7, ["x"], desk):
+            assert hook.session_link(junk, root=root) == "", junk
+        assert hook.session_link(f"  {live}  ", root=root) == want, \
+            "the ends are trimmed, the id is not"
+        assert hook.session_link(live, root=root / "gone") == ""
+        # A cloud session's id is `local_ditto_<uuid>`, which the resume
+        # door will not take (it wants a bare uuid), and a file that will
+        # not parse is not a crash. Neither is a link.
+        with tempfile.TemporaryDirectory() as d2:
+            root2 = Path(d2)
+            _store(root2, f"local_ditto_{desk}",
+                   {"sessionId": f"local_ditto_{desk}", "cliSessionId": live})
+            assert hook.session_link(live, root=root2) == ""
+            (root2 / "acct" / "org" / "local_broken.json").write_text(
+                "{not json", "utf-8")
+            assert hook.session_link(live, root=root2) == ""
+
+        p = hook.payload_from_hook({"hook_event_name": "Stop",
+                                    "session_id": live},
+                                   window=(43779834, "Claude"),
+                                   link=f"claude://resume?session={desk}")
+        assert p["link"] == f"claude://resume?session={desk}", p
+        p = hook.payload_from_hook({"hook_event_name": "Stop",
+                                    "session_id": "nobody"},
+                                   window=(0, ""))
+        assert p["link"] == "", "an id no store knows is no link"
+
+    src = inspect.getsource(hook.session_link)
+    assert "claude://resume?session=" in src
+    assert "priorCliSessionIds" in src and "cliSessionId" in src
+    assert "except Exception" in src, "a hook may not raise"
+    # The measured reason this door was chosen over the two the app
+    # advertises: they are gated off, and the module says so with the
+    # app's own log lines.
+    module = inspect.getsource(hook)
+    for needle in ("code session deep link gated off",
+                   "code entry deep link gated off",
+                   "already imported as local_"):
+        assert needle in module, needle
 
 
 def test_the_notify_cue_exists_and_has_its_own_shape() -> None:
