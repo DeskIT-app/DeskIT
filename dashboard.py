@@ -1542,7 +1542,8 @@ class Dashboard:
         Three cards, the Awake screen's shape. The hero is the count that
         matters (UNREAD in amber, ALL SEEN in green) with the newest one's
         source, title and age, and the one button that changes anything:
-        Dismiss all, which marks everything seen and takes the card down.
+        Dismiss all, which marks everything seen and takes the whole
+        column down — the × on a card answers only the card it is on.
         A strip under it sends a test notification through the running
         app and opens notify.log; the list below is the last thirty from
         notify.json, unseen ones edged brighter.
@@ -1648,12 +1649,14 @@ class Dashboard:
             left = info.get("reminders_left") or 0
             if info.get("reminding"):
                 hint = (f"Reminding: {left} more. Dismiss all marks "
-                        "everything seen and takes the card down; so does a "
-                        "click on the card, Esc over it, or the dismiss key.")
+                        "everything seen and takes the column down; so does "
+                        "Esc over it or the dismiss key. The x on one card "
+                        "answers just that one.")
             else:
                 hint = ("Waiting quietly. Dismiss all marks everything seen "
-                        "and takes the card down; so does a click on the "
-                        "card, Esc over it, or the dismiss key.")
+                        "and takes the column down; so does Esc over it or "
+                        "the dismiss key. The x on one card answers just "
+                        "that one.")
         else:
             colour, word = ui.GREEN, ui.FG
             state = "ALL SEEN"
@@ -1661,7 +1664,7 @@ class Dashboard:
             hint = ("Anything that POSTs to /notify on the phone endpoint "
                     "lands here — Claude Code through its hooks, or a "
                     "program of your own. Send a test to hear the cue and "
-                    "see the card.")
+                    "see the card; unread ones stack, newest on top.")
         p["notify_bar"].config(image=ui.rounded(4, 112, 2, colour, ui.CARD))
         p["notify_glyph"].config(fg=colour if unread and self.running
                                  else ui.FAINT)

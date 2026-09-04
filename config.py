@@ -595,9 +595,13 @@ class NotifyConfig:
     # Play the "notify" cue on arrival and on every reminder. False:
     # the card alone.
     cue: bool = True
-    # How long the card stays up before it takes itself down; the
-    # reminders bring it back. 0 = until dismissed.
-    card_seconds: int = 30
+    # How long a card stays up before it takes itself down. 0 (the
+    # default since 2026-09-04) = it stays until it is dismissed; a
+    # number puts the countdown back and the reminders bring it back.
+    card_seconds: int = 0
+    # How many unread cards may be on screen at once, newest at the top;
+    # the rest wait in the dashboard, counted on the last card.
+    stack_max: int = 5
     # While anything is unread, cue and card again every this many
     # seconds, at most `remind_times` times per arrival. 0 for either =
     # never remind.
@@ -611,6 +615,11 @@ class NotifyConfig:
     # was dragged to — the review card's sentinels, the review card's
     # reasons.
     corner: str = "right"
+    # Which edge of the column stays put when a card is taller than
+    # usual. "bottom" — the default, and what the owner needs with the
+    # card in the bottom-right corner — grows a long message UPWARD
+    # instead of off the bottom of the screen; "top" is the old way.
+    anchor: str = "bottom"
     x: int = -100000
     y: int = -100000
     scale: float = 1.0
@@ -807,6 +816,14 @@ class ReviewConfig:
 
 
 REVIEW_CORNERS = HINT_CORNERS + ("right", "left")
+# Which edge of the notification column stays put as it grows, and how
+# tall the column may get. The ceiling is a number, not notify_card's
+# own STACK_MAX, because config.py must load on a checkout that has no
+# card module at all — and because five cards is already most of a
+# screen edge; eight is the point past which the arithmetic is honest
+# and the column is not.
+NOTIFY_ANCHORS = ("bottom", "top")
+NOTIFY_STACK_MAX = 8
 
 
 @dataclass(frozen=True)
@@ -1477,6 +1494,7 @@ def load(path: Path) -> Config:
             cue=bool(notify.get("cue", NotifyConfig.cue)),
             card_seconds=int(notify.get("card_seconds",
                                         NotifyConfig.card_seconds)),
+            stack_max=int(notify.get("stack_max", NotifyConfig.stack_max)),
             remind_every_s=int(notify.get("remind_every_s",
                                           NotifyConfig.remind_every_s)),
             remind_times=int(notify.get("remind_times",
@@ -1484,6 +1502,8 @@ def load(path: Path) -> Config:
             coalesce_s=int(notify.get("coalesce_s", NotifyConfig.coalesce_s)),
             corner=str(notify.get("corner",
                                   NotifyConfig.corner)).strip().lower(),
+            anchor=str(notify.get("anchor",
+                                  NotifyConfig.anchor)).strip().lower(),
             x=int(notify.get("x", NotifyConfig.x)),
             y=int(notify.get("y", NotifyConfig.y)),
             scale=float(notify.get("scale", NotifyConfig.scale)),
@@ -1751,9 +1771,16 @@ def load(path: Path) -> Config:
     if not (0 <= cfg.notify.coalesce_s <= 60):
         raise ConfigError("notify.coalesce_s must be 0-60, "
                           f"got {cfg.notify.coalesce_s!r}")
+    if not (1 <= cfg.notify.stack_max <= NOTIFY_STACK_MAX):
+        raise ConfigError(f"notify.stack_max must be 1-{NOTIFY_STACK_MAX} "
+                          "(how many cards may be on screen at once), "
+                          f"got {cfg.notify.stack_max!r}")
     if cfg.notify.corner not in REVIEW_CORNERS:
         raise ConfigError(f"notify.corner must be one of {REVIEW_CORNERS}, "
                           f"got {cfg.notify.corner!r}")
+    if cfg.notify.anchor not in NOTIFY_ANCHORS:
+        raise ConfigError(f"notify.anchor must be one of {NOTIFY_ANCHORS}, "
+                          f"got {cfg.notify.anchor!r}")
     if not (HINT_SCALE_MIN <= cfg.notify.scale <= HINT_SCALE_MAX):
         raise ConfigError(
             f"notify.scale must be between {HINT_SCALE_MIN} and "

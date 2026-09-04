@@ -12,7 +12,11 @@ WHAT IT SAYS. A 4 px bar in the colour of the KIND (done, input, error,
 info) across the top; a head row with who sent it (the source's label)
 and how long ago; the title; the body, wrapped; the project it came
 from, behind a folder glyph; a thin clock that empties while the card
-waits to take itself down; a footer saying how to dismiss it; and, when
+waits to take itself down, drawn ONLY when the card carries a non-zero
+`seconds` (since 2026-09-04 it usually does not — a notification stays
+until it is dismissed); a footer saying how to dismiss it; a faint
+"+N earlier" line when the card carries `more`, which the engine puts on
+the last card of a column it had to cut; and, when
 more than one is unread, a badge with the count. Nothing in a
 notification is interpreted: title and body arrive already cut to
 length by notify.clean and are DRAWN, never parsed.
@@ -34,6 +38,16 @@ body is wrapped to the card's inner width first and then cropped to
 BODY_LINES lines, with an ellipsis painted onto the last one, which
 keeps the card the same height whatever language it arrived in and
 never splits a word in the middle.
+
+THEY STACK, AND THE COLUMN IS ONE WINDOW (2026-09-04). Every unread
+notification is on screen at once, newest at the top, oldest at the
+bottom — the owner's ask, and capture.py's toast deck is the reference
+for how it should behave. `stack_layout` / `stack_measure` /
+`stack_hit_test` / `stack_flat` are the column's versions of the four
+single-card functions below them, and each of them is written in terms of
+the single-card one, so a card in a column measures, draws and takes a
+click exactly as it does alone. `measure`, `regions`, `hit_test`,
+`compose` and `flat` are untouched and still mean one card.
 
 Everything geometric is a function of the card dict and the scale, so
 tests check the layout without a screen; `regions()` is what both the
@@ -71,8 +85,26 @@ HEAD_H = 26               # the ×, the label and the time share this row
 TITLE_H = 22
 PROJECT_H = 16
 FOOTER_H = 14
-GAP = 8
+MORE_H = 14               # the "+N earlier" line, only on the last card
+ROW = 8                   # between rows INSIDE one card. This was called
+                          # GAP until 2026-09-04, when GAP became the air
+                          # BETWEEN cards (below) — the two are different
+                          # numbers and sharing a name was an accident
+                          # waiting for a stack
 CROSS = 26                # the dismiss box, PAD in from the top-left
+
+# THE COLUMN. Copied from capture.py's toast stack (TOAST_GAP,
+# TOAST_STACK_MAX, stack_fits/stack_at/stack_layout, capture.py:306-560),
+# which is the owner's own reference for how a stack behaves — deliberately
+# COPIED and not imported, the way NESTED_HOTKEYS is duplicated between
+# main.py and dashboard.py: capture.py drags in Pillow, Tk canvases and a
+# video encoder, and overlay.py is on the startup path. The arithmetic is
+# eight lines; the import would be the whole editor.
+GAP = 10                  # between stacked cards — capture.TOAST_GAP's value
+STACK_MAX = 8             # the ceiling [notify] stack_max is validated
+                          # against — capture.TOAST_STACK_MAX's value, and
+                          # the same shape of number: the preference
+                          # defaults well under it
 
 # skin\palette.py's values, spelled out: this module is reached with the
 # skin folder deleted. Tuples, because Pillow wants them.
@@ -143,7 +175,11 @@ def card_for(item: dict, *, seconds: float, unread: int = 1,
         kind = "info"
     at = str(item.get("at") or "")
     n = int(unread)
-    return {"id": item.get("id"),
+    try:
+        more = max(0, int(item.get("more") or 0))
+    except (TypeError, ValueError):
+        more = 0                       # chrome on a card is never a reason
+    return {"id": item.get("id"),      # not to show it — see ago()
             "source": str(item.get("source") or ""),
             "label": str(item.get("label") or item.get("source") or ""),
             "kind": kind, "colour": KIND_COLOUR[kind],
@@ -152,7 +188,11 @@ def card_for(item: dict, *, seconds: float, unread: int = 1,
             "project": str(item.get("project") or ""),
             "at": at, "when": ago(at), "unread": n,
             "seconds": float(seconds), "footer": FOOTER,
-            "badge": f"{n}" if n > 1 else ""}
+            "badge": f"{n}" if n > 1 else "",
+            # Carried through, never computed here: the engine is the only
+            # thing that knows how many unread items the column left in the
+            # store, and it puts the number on the LAST card it hands over.
+            "more": more}
 
 
 # ---------------------------------------------------------------------------
@@ -277,15 +317,18 @@ def measure(card: dict, scale: float = 1.0) -> tuple[int, int]:
     s = clamp_scale(scale)
     width = int(round(CARD_W * s))
     inner = int(width - 2 * PAD * s)
-    h = PAD * s + HEAD_H * s + GAP * s + TITLE_H * s
+    h = PAD * s + HEAD_H * s + ROW * s + TITLE_H * s
     body = card.get("body") or ""
     if body:
         h += 4 * s + _body_height(body, 10.0 * s, inner)
     if card.get("project"):
-        h += GAP * s + PROJECT_H * s
+        h += ROW * s + PROJECT_H * s
     if float(card.get("seconds") or 0) > 0:
-        h += GAP * s + BAR_H * s
-    h += GAP * s + FOOTER_H * s + PAD * s
+        h += ROW * s + BAR_H * s
+    h += ROW * s + FOOTER_H * s
+    if int(card.get("more") or 0) > 0:
+        h += 2 * s + MORE_H * s
+    h += PAD * s
     return width, int(round(h))
 
 
@@ -315,6 +358,76 @@ def hit_test(card: dict, scale: float, x: int, y: int):
         return HTCLIENT, DISMISS
     if _in(boxes[DRAG], x, y):
         return HTCAPTION, DRAG
+    return HTTRANSPARENT, None
+
+
+# ---------------------------------------------------------------------------
+# the geometry of a COLUMN
+#
+# capture.py's stack arithmetic, copied (see GAP above for why it is copied
+# and not imported) and turned inside out in one place: capture stacks
+# cards of ONE size into a corner of the screen, so it can answer with an
+# (x, y) per card; here the cards are different heights and they live in
+# ONE window, so the answer is (x, y, w, h) per card, window-relative, and
+# the window's own placement is overlay.NotifyCard.origin's business.
+#
+# NEWEST FIRST — index 0 is the top of the column, which is the opposite of
+# capture.stack_at's "oldest at the top". Asked for on 2026-09-04: "the
+# first one will be at the upper side and the oldest one will be on the
+# down side". The bottom edge is what the window keeps still, so the pile
+# grows away from the newest card and the one you just read never moves.
+# ---------------------------------------------------------------------------
+
+def stack_layout(cards, scale: float = 1.0) -> list:
+    """One (x, y, w, h) per card, WINDOW-relative, in the order given.
+
+    `x` is SHADOW for every card and `y` accumulates the previous card's
+    own height plus GAP, so a column of cards that measure differently
+    still has exactly one gap between each pair. The widths are equal in
+    practice — every card is CARD_W at the same scale — and nothing here
+    assumes it: `stack_measure` takes the widest.
+    """
+    s = clamp_scale(scale)
+    gap = int(round(GAP * s))
+    places = []
+    y = SHADOW
+    for card in cards:
+        width, height = measure(card, s)
+        places.append((SHADOW, int(y), int(width), int(height)))
+        y += height + gap
+    return places
+
+
+def stack_measure(cards, scale: float = 1.0) -> tuple[int, int]:
+    """The WINDOW the column needs: the layout's bounding box with SHADOW
+    on every side, which is the same margin one card's window has."""
+    places = stack_layout(cards, scale)
+    if not places:
+        return 2 * SHADOW, 2 * SHADOW
+    width = max(w for _x, _y, w, _h in places)
+    bottom = max(y + h for _x, y, _w, h in places)
+    return int(width + 2 * SHADOW), int(bottom + SHADOW)
+
+
+def stack_hit_test(cards, scale: float, x: int, y: int):
+    """(HT code, (index, what) or None) for a point in window coordinates.
+
+    A GAP IS DESKTOP. Between two cards there is nothing of ours — the
+    pixels are transparent, the click belongs to whatever is underneath,
+    and answering HTCAPTION there would let a 10 px stripe of air drag the
+    whole column. Same for the shadow margin, for the same reason the
+    single card has always handed it back: this thing sits over the right
+    edge of the screen, where the close button of a maximised window is.
+    """
+    s = clamp_scale(scale)
+    pad = PAD * s
+    box = CROSS * s
+    for index, (cx, cy, width, height) in enumerate(stack_layout(cards, s)):
+        if not (cx <= x <= cx + width and cy <= y <= cy + height):
+            continue
+        if _in((cx + pad, cy + pad, cx + pad + box, cy + pad + box), x, y):
+            return HTCLIENT, (index, DISMISS)
+        return HTCAPTION, (index, DRAG)
     return HTTRANSPARENT, None
 
 
@@ -443,7 +556,7 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
                                 weight=700), x_right - lx, _is_rtl(label))
         img.alpha_composite(l_img, (int(lx), int(y + (box - l_img.height)
                                                  / 2)))
-    y += HEAD_H * s + GAP * s
+    y += HEAD_H * s + ROW * s
 
     # -- title
     title = card.get("title") or ""
@@ -466,7 +579,7 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     # -- project, behind a folder
     project = card.get("project") or ""
     if project:
-        y += GAP * s
+        y += ROW * s
         glyph = _folder(cache, PROJECT_H * s * 0.9, INK_FAINT)
         rtl_p = _is_rtl(project)
         p_img = _fit_line(_text(cache, project, 8.5 * s, colour=INK_FAINT),
@@ -484,7 +597,7 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
 
     # -- the clock: a bar that empties towards the left
     if float(card.get("seconds") or 0) > 0:
-        y += GAP * s
+        y += ROW * s
         track = _rr((inner, bar_h), bar_h / 2, fill=LINE + (140,))
         img.alpha_composite(track, (int(pad), int(y)))
         left_w = int(round(inner * max(0.0, min(1.0, float(progress)))))
@@ -494,11 +607,27 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
         y += BAR_H * s
 
     # -- footer
-    y += GAP * s
+    y += ROW * s
     f_img = _text(cache, card.get("footer") or FOOTER, 8.0 * s,
                   colour=INK_FAINT)
     img.alpha_composite(f_img, (int(pad), int(y + (FOOTER_H * s
                                                    - f_img.height) / 2)))
+    y += FOOTER_H * s
+
+    # -- "+N earlier": what the column could not fit.
+    #
+    # The engine puts `more` on the LAST card of the column and on no
+    # other, because that is the end of the pile and the only place a
+    # count of what is underneath means anything. This module does not
+    # decide it — it draws whatever the card carries — which is what lets
+    # a test hand a "more" to the wrong card and see it drawn there.
+    more = int(card.get("more") or 0)
+    if more > 0:
+        y += 2 * s
+        m_img = _text(cache, f"+{more} earlier", 8.0 * s, colour=INK_FAINT,
+                      rtl=False)
+        img.alpha_composite(m_img, (int(pad), int(y + (MORE_H * s
+                                                       - m_img.height) / 2)))
     return img
 
 
@@ -524,8 +653,36 @@ def flat(card: dict, scale: float = 1.0, progress: float = 1.0,
     return face
 
 
+def stack_flat(cards, scale: float = 1.0, hover=None,
+               cache: dict | None = None, progress: float = 1.0):
+    """The whole column on solid faces — what the Tk fallback shows.
+
+    stack_measure()'s size, with each card painted by flat() at the offset
+    stack_layout gives it, and TRANSPARENT everywhere else: the gaps and
+    the shadow margin are holes in the picture, which is the same answer
+    stack_hit_test gives the mouse. Tk cannot show a hole, so the fallback
+    window's own CARD_BG shows through there and the column looks like one
+    slab with seams — that is the fallback being ugly and working, which
+    is the deal the whole skin folder is built on (skin\\notify.py paints
+    the same layout on real per-pixel alpha).
+
+    `hover` is `(index, what)` or None, so brightening the × on the card
+    under the pointer touches only that card.
+    """
+    cache = cache if cache is not None else {}
+    s = clamp_scale(scale)
+    width, height = stack_measure(cards, s)
+    img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    for index, (x, y, _w, _h) in enumerate(stack_layout(cards, s)):
+        what = hover[1] if (hover and hover[0] == index) else None
+        img.alpha_composite(flat(cards[index], s, progress, what, cache),
+                            (int(x), int(y)))
+    return img
+
+
 __all__ = ["ago", "card_for", "measure", "regions", "hit_test", "compose",
-           "flat", "clamp_scale", "CARD_W", "SHADOW", "PAD", "RADIUS",
+           "flat", "stack_layout", "stack_measure", "stack_hit_test",
+           "stack_flat", "clamp_scale", "CARD_W", "SHADOW", "PAD", "RADIUS",
            "BODY_LINES", "SCALE_MIN", "SCALE_MAX", "HTTRANSPARENT",
            "HTCLIENT", "HTCAPTION", "DISMISS", "DRAG", "KIND_COLOUR",
-           "FOOTER"]
+           "FOOTER", "GAP", "ROW", "STACK_MAX", "MORE_H"]

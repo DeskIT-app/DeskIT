@@ -1487,21 +1487,56 @@ class NotifyCard(HintCard):
     the fallback path — with the review card's manners for a card that
     sits mid-height on the right edge and takes the mouse:
 
-    - IT TAKES CLICKS, and a click anywhere on it dismisses it; the same
-      press held and moved is the drag that puts it where the owner
-      wants it (saved through `on_change`, like the hint card's).
+    - IT IS A COLUMN, NOT A CARD (2026-09-04). `show()` takes the whole
+      unread list, newest first, and the window holds all of them at
+      once — "so each notice card will stack on top of each others and
+      the first one will be at the upper side and the oldest one will be
+      on the down side". ONE window, not N: one thread, one hit test, one
+      placement, gaps that cannot drift. Each card in it still has its own
+      × and its own click target (notify_card.stack_hit_test answers with
+      an index), so a press names one specific notification.
+    - IT GROWS UPWARD. The window's BOTTOM edge is the anchor, so a long
+      message pushes the top of the column up instead of running off the
+      bottom of the screen, and the corner the owner lined it up against
+      stays where it is. See `origin`.
+    - IT TAKES CLICKS, and a click has TWO meanings (2026-09-04). On the
+      × it dismisses, as it always did. Anywhere else on the card it
+      OPENS: `on_open` raises the window the notification came from and
+      dismisses in the same breath — the owner clicking the card that
+      says Claude has finished wants Claude, not an acknowledgement. The
+      same press held and moved is neither; it is the drag that puts the
+      card where he wants it (saved through `on_change`, like the hint
+      card's). Both callbacks take the pressed card's id, or None for
+      "all" (Esc, the dismiss key) — see `pressed`.
     - IT TAKES ESC, but only while the mouse is over it. The hook offers
-      every key-down to `on_key`; Esc over the card dismisses it and is
-      an ordinary Esc everywhere else.
-    - IT KEEPS TIME, and running out is NOT a dismissal. The card takes
-      itself down after `seconds` (the clock waits while the pointer is
-      on it), the item stays unread, and the engine's reminders bring
-      it back. Only a click, Esc over it or the dismiss key mark things
-      seen — that is `on_dismiss`, fired on whichever thread pressed,
-      so the callback must only hand the work to another thread.
+      every key-down to `on_key`; Esc over the card dismisses it — a
+      plain dismissal, never an open, because a key pressed over a card
+      is not a request to go anywhere — and is an ordinary Esc
+      everywhere else.
+    - IT NO LONGER KEEPS TIME, by default. `seconds` is 0 now — "the card
+      will not disappear" — so there is no clock bar and nothing takes
+      itself down; it waits to be dismissed. The clock is not gone, it is
+      unset: a non-zero `[notify] card_seconds` still runs one, it still
+      waits while the pointer is on the card, and running out is still NOT
+      a dismissal (`timed_out` leaves the item unread and the engine's
+      reminders bring it back). Only a click, Esc over it or the dismiss
+      key mark things seen — that is `on_dismiss`, fired on whichever
+      thread pressed, so the callback must only hand the work to another
+      thread.
     - IT IS A NOTIFICATION, not a window the owner asked for, so it
       gives the keyboard back the instant Tk takes it (`_foreground` /
-      `_give_focus_back`) and it stays out of every screenshot.
+      `_give_focus_back`).
+    - IT CAN BE PHOTOGRAPHED, and that is a promise, not an oversight.
+      This docstring used to end the line above with "and it stays out of
+      every screenshot"; it did that with WDA_EXCLUDEFROMCAPTURE, and
+      that flag is absolute — it hid the card from the owner's own
+      screenshots too, so the card telling him Claude had finished was
+      the one thing he could not send anybody. Both paths dropped the
+      flag on 2026-09-04 (here and in skin\\notify.py). What keeps the
+      card from eating a selection drag is ORDER, not invisibility:
+      capture.Controller._shot_flow freezes the desktop and hushes the
+      cards one line later, so the card is in the frozen picture and off
+      the live screen before the selector maps.
 
     NEVER `dismissed()`: that is the hint card's "don't show this again"
     and writes `enabled = false` into config.toml. Dismissing a
@@ -1513,14 +1548,22 @@ class NotifyCard(HintCard):
 
     def __init__(self, corner: str = "right", margin: int = 14,
                  x: int = HINT_UNSET, y: int = HINT_UNSET, scale: float = 1.0,
-                 on_change=None, on_dismiss=None,
-                 seconds: float = 30.0) -> None:
+                 on_change=None, on_dismiss=None, on_open=None,
+                 seconds: float = 0.0, anchor: str = "bottom") -> None:
         super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
                          scale=scale, on_change=on_change)
         self._on_dismiss = on_dismiss
+        self._on_open = on_open
+        # ZERO BY DEFAULT SINCE 2026-09-04: "I want you to remove the time
+        # of each card, the card will not disappear". Nothing here was
+        # deleted for it — a non-zero `seconds` still runs a clock, still
+        # pauses under the pointer and still ends in timed_out(), because
+        # config.toml can still ask for one — but a fresh card gets none.
         self.seconds = float(seconds)
-        self.rect = None          # screen rect of the visible card, or None
-        self._current = None      # the item id on screen
+        self._anchor = "top" if str(anchor) == "top" else "bottom"
+        self.rect = None          # screen rect of the visible column, or None
+        self._current = None      # the NEWEST item id on screen
+        self._cards: list = []    # the column as drawn, newest first
         self._state_lock = threading.Lock()
 
     def start(self) -> None:
@@ -1537,28 +1580,52 @@ class NotifyCard(HintCard):
 
     # -- caller's threads --
 
-    def show(self, item: dict) -> None:
-        """Put a notification up. Only enqueues, so safe from the HTTP
-        thread the engine receives on. A new one replaces the one on
-        screen; the count of what is waiting rides in `item["unread"]`
-        and the sender's name in `item["label"]` (notify.Engine fills
-        both), so this module never imports notify.py."""
+    def show(self, items) -> None:
+        """Put the whole unread COLUMN up, newest first.
+
+        Only enqueues, so it is safe from the HTTP thread the engine
+        receives on. `items` is a list of item dicts (notify.Engine.live())
+        — newest at index 0, which is the top of the column. A bare dict is
+        wrapped, because that is what one notification looked like before
+        2026-09-04 and every caller that only ever has one should keep
+        reading like it; None or an empty list takes the column down.
+
+        What is waiting rides in each `item["unread"]` and the sender's
+        name in `item["label"]` (notify.Engine fills both), so this module
+        never imports notify.py. `item["more"]` is the engine's count of
+        what would not fit, and it belongs on the last item.
+        """
         if self._thread is None or not self._enabled:
             return
+        if items is None:
+            self.hide()
+            return
+        if isinstance(items, dict):
+            items = [items]
         import notify_card as nc
-        try:
-            unread = int(item.get("unread", 1) or 1)
-        except (TypeError, ValueError):
-            unread = 1
-        card = nc.card_for(item, seconds=self.seconds, unread=unread,
-                           scale=self.scale)
+        cards = []
+        for item in items:
+            try:
+                unread = int(item.get("unread", 1) or 1)
+            except (TypeError, ValueError):
+                unread = 1
+            cards.append(nc.card_for(item, seconds=self.seconds,
+                                     unread=unread, scale=self.scale))
+        if not cards:
+            self.hide()
+            return
         with self._state_lock:
-            self._current = card["id"]
-        self._q.put(card)
+            # The NEWEST id: `current()` is what the dashboard and the
+            # dismiss key mean by "the one on screen", and the newest is
+            # the one at the top of the pile.
+            self._current = cards[0]["id"]
+            self._cards = cards
+        self._q.put(cards)
 
     def hide(self) -> None:
         with self._state_lock:
             self._current = None
+            self._cards = []
         if self._thread is not None:
             self._q.put(None)
 
@@ -1590,44 +1657,133 @@ class NotifyCard(HintCard):
         self.pressed("dismiss")
         return True
 
-    def pressed(self, name: str) -> None:
-        """The one button, by click or key: take the card down and say
-        so, once. Not HintCard.dismissed() — that writes enabled=false
-        into config.toml, and this is "seen", not "never again"."""
-        if name != "dismiss":
+    def pressed(self, name: str, item_id=None) -> None:
+        """The card's two answers, by click or key: take the column down
+        and say which card it was, once.
+
+        `"dismiss"` is the × and Esc — seen, stay here. `"open"` is a
+        click anywhere else — go to whoever sent it, which the callback
+        does by raising their window, and which counts as seen too. Both
+        take the column down first and report afterwards, so a callback
+        that is slow or throws cannot leave a dead card on screen, and
+        what was on screen is the latch that makes one press one report.
+
+        `item_id` IS PASSED THROUGH UNTOUCHED, None included, because the
+        two mean different things to the engine and only the presser knows
+        which happened: a click names the card it landed on, while Esc and
+        the dismiss key name nobody — and `on_dismiss(None)` is "all of
+        them", `on_open(None)` is "the newest". Substituting the newest id
+        for a missing one here would quietly turn the dismiss key into a
+        one-card dismissal.
+
+        The whole column comes down on any press, whichever card was hit.
+        The engine answers with `show(live())` — or `hide()` when nothing
+        is left — so what goes back up is the truth about the store rather
+        than this thread's guess at it.
+
+        Neither is HintCard.dismissed() — that writes enabled=false into
+        config.toml, and this is "seen", not "never again".
+        """
+        if name not in ("dismiss", "open"):
             return
         with self._state_lock:
-            sid, self._current = self._current, None
+            was, self._current, self._cards = self._current, None, []
         if self._thread is not None:
             self._q.put(None)
-        if sid is None or self._on_dismiss is None:
+        callback = self._on_open if name == "open" else self._on_dismiss
+        if was is None or callback is None:
             return
         try:
-            self._on_dismiss()
+            callback(item_id)
         except Exception:
-            _log.info("notify card: could not report a dismissal",
+            _log.info("notify card: could not report a %s", name,
                       exc_info=True)
 
     def timed_out(self) -> None:
         """The clock ran out: the painter takes it down and nothing is
-        marked seen — the reminders exist for exactly this."""
+        marked seen — the reminders exist for exactly this.
+
+        Only reachable with a non-zero `[notify] card_seconds`; the
+        default has been 0 since 2026-09-04 and a card with no clock never
+        runs out of one."""
         with self._state_lock:
             self._current = None
+            self._cards = []
 
     # -- placement --
 
+    def column(self, cards=None) -> tuple:
+        """The size of the WINDOW the column needs, shadow included."""
+        import notify_card as nc
+        if cards is None:
+            with self._state_lock:
+                cards = list(self._cards)
+        return nc.stack_measure(cards, self.scale)
+
+    def placed(self, x: int, y: int) -> None:
+        """A drag ended. Save the edge this column is ANCHORED by.
+
+        Callers hand over the visible card's top-left, as they always have
+        (skin\\notify.py adds SHADOW to the window's corner before it calls
+        here). Under `anchor="bottom"` the number that has to survive a
+        restart is the BOTTOM edge, because that is the one origin() holds
+        still — save a top edge and the next launch would put a column of a
+        different height somewhere the owner never dropped it, which is the
+        whole bug this anchor exists to fix.
+        """
+        import notify_card as nc
+        if self._anchor == "bottom":
+            y = int(y) + max(0, self.column()[1] - 2 * nc.SHADOW)
+        super().placed(x, y)
+
     def origin(self, width: int, height: int, screen: tuple,
                inset: int = 0, bounds=None) -> tuple:
-        """Mid-height on the right (or left) edge by default; the four
-        corners and a saved position exactly as the hint card does them."""
-        if self.moved() or self._corner not in ("right", "left"):
-            return super().origin(width, height, screen, inset, bounds)
+        """Where the window's top-left goes — worked out in CARD
+        coordinates, because every rule here is about an edge somebody can
+        actually see, and turned into the window's at the last line.
+
+        THE BOTTOM EDGE IS WHAT STAYS PUT (`anchor="bottom"`, the default
+        since 2026-09-04). The owner keeps this card in the bottom-right of
+        his screen, and a card that grew downward went off the bottom of
+        it: "sometimes when there is a lot of text the card goes under the
+        screen". So a taller column grows UPWARD — `top = anchor - height`
+        — and the edge he lined the card up against never moves. With
+        `anchor="top"` the old arithmetic is kept exactly, which is what a
+        position saved under the old rule needs.
+
+        A saved y IS the anchor edge under the current mode (see `placed`);
+        a bottom-* corner anchors the bottom at the screen's own margin, a
+        top-* corner anchors the top, and "right"/"left" stay mid-height,
+        where a taller column grows both ways at once.
+
+        AND IT NEVER RUNS OFF THE TOP. capture.stack_fits does this job by
+        refusing to put up more cards than the work area can hold; here the
+        column is ONE window whose card count `[notify] stack_max` already
+        bounds, so what is left is the clamp: the card's top edge stays
+        inside `bounds`. A card above the top of the screen is neither
+        readable nor clickable, which is worse than one never offered.
+
+        Pure arithmetic, so a test can check every corner, every anchor and
+        every saved position without a screen.
+        """
         sw, sh = screen
         m = self._margin
-        x = (m - inset) if self._corner == "left" \
-            else (sw - m - width + inset)
-        y = (sh - height) // 2
-        return int(x), int(y)
+        vx, vy, vw, vh = bounds if bounds else (0, 0, sw, sh)
+        card_w, card_h = width - inset * 2, height - inset * 2
+        if self.moved():
+            keep = 60                      # this much must stay reachable
+            x = max(vx + keep - card_w, min(self.x, vx + vw - keep))
+            y = (self.y - card_h) if self._anchor == "bottom" else self.y
+            y = max(vy + keep - card_h, min(y, vy + vh - keep))
+        else:
+            x = m if self._corner.endswith("left") else sw - m - card_w
+            if self._corner in ("right", "left"):
+                y = (sh - card_h) // 2
+            elif self._corner.startswith("top"):
+                y = m
+            else:
+                y = sh - m - card_h
+        return int(x - inset), int(max(y, vy) - inset)
 
     # -- overlay thread --
 
@@ -1642,14 +1798,23 @@ class NotifyCard(HintCard):
             self._alive.set()
 
     def _build_and_loop(self) -> None:
-        """The card on a flat face, in Tk — and, until a glass presenter
-        exists, the only face it has.
+        """The COLUMN on flat faces, in Tk — the fallback when skin\\ is
+        gone.
 
-        notify_card.flat paints the whole thing as one image; this window
-        only shows it, moves it, keeps its clock, and turns a click, a
-        drag or Esc into `pressed` or `placed`. Same teardown as the
-        review card's: destroyed on the thread that built it, then
-        collected there.
+        notify_card.stack_flat paints the whole column as one image; this
+        window only shows it, moves it, keeps whatever clock the cards
+        asked for, and turns a click, a drag or Esc into `pressed` or
+        `placed`. Same teardown as the review card's: destroyed on the
+        thread that built it, then collected there.
+
+        THE WINDOW IS THE CARDS, NOT THE PICTURE. stack_flat's image
+        carries the SHADOW margin a layered window needs, and Tk has no
+        per-pixel alpha to spend on it, so the margin is cropped off here
+        and every mouse coordinate is put back into picture space by
+        adding it again. The gaps between cards show the window's own
+        CARD_BG rather than the desktop, which is this fallback being
+        honest about what Tk can do — skin\\notify.py paints the same
+        layout where the gaps really are holes.
         """
         import tkinter as tk
         import notify_card as nc
@@ -1689,10 +1854,13 @@ class NotifyCard(HintCard):
                 st["up"] = False
 
         def paint() -> None:
-            if st["card"] is None:
+            if not st["cards"]:
                 return
-            img = nc.flat(st["card"], self.scale, progress(), st["hover"],
-                          cache)
+            pad = nc.SHADOW
+            whole = nc.stack_flat(st["cards"], self.scale, st["hover"],
+                                  cache, progress())
+            img = whole.crop((pad, pad, whole.width - pad,
+                              whole.height - pad))
             photo = ImageTk.PhotoImage(img, master=root)
             canvas.delete("all")
             canvas.configure(width=img.width, height=img.height)
@@ -1753,8 +1921,8 @@ class NotifyCard(HintCard):
                 dx, dy = st["drag"]
                 root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
                 return
-            code, what = hit(event)
-            want = what if code == nc.HTCLIENT else None
+            code, where = hit(event)
+            want = where if code == nc.HTCLIENT else None
             if want != st["hover"]:
                 st["hover"] = want
                 paint()
@@ -1769,14 +1937,19 @@ class NotifyCard(HintCard):
                 return
             st["drag"] = None
             if st["moved"] < CLICK_PX:
-                # Pressed and let go where it was: a click on the card,
-                # which is the dismissal — the × is only the hint.
-                self.pressed("dismiss")
+                # Pressed and let go where it was: a click on the card
+                # away from the ×, which is "take me there" — and it is
+                # the card the press LANDED on that we go to. The × got
+                # its own pressed("dismiss") on the way down, in
+                # on_press, and never reaches here — it is HTCLIENT, not
+                # the HTCAPTION area that starts a drag.
+                self.pressed("open", ident(st["press"]))
                 return
             x, y = root.winfo_x(), root.winfo_y()
-            if st["card"] is not None:
-                w, h = nc.measure(st["card"], self.scale)
-                self.rect = (x, y, x + w, y + h)
+            if st["cards"]:
+                win_w, win_h = nc.stack_measure(st["cards"], self.scale)
+                pad = nc.SHADOW
+                self.rect = (x, y, x + win_w - 2 * pad, y + win_h - 2 * pad)
             self.placed(x, y)
 
         canvas.bind("<ButtonPress-1>", on_press)

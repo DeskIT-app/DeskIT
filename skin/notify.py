@@ -33,8 +33,11 @@ here (splash, dot, hint, review) already uses.
 WHAT THIS FILE IS. skin\\review.py with the notify card's geometry: the
 same Glass window with a hit test, the same shadow/frost/face/rim/hairline
 recipe at the same offsets so the cards read as one family, and the same
-ten-frames-a-second repaint because this card, like the review card, has a
-clock bar that has to move. The CONTENT is not redrawn here at all —
+ten-frames-a-second repaint — but only while there IS a clock bar to move,
+which since 2026-09-04 is the exception rather than the rule: a
+notification stays up until it is dismissed, so a column with no clock is
+painted when the hover changes and not once more. The CONTENT is not
+redrawn here at all —
 `notify_card.compose()` already returns the whole card on a TRANSPARENT
 ground, sized `notify_card.measure()`, precisely so a presenter can
 composite it over a face of its own. `notify_card.flat()` is deliberately
@@ -47,10 +50,11 @@ Tk fallback in overlay.NotifyCard runs untouched, and the card is uglier
 and completely functional. Nothing in overlay.py or notify_card.py was
 changed to make this work.
 
-Nothing here decides anything. A click becomes `card.pressed("dismiss")`,
-a drag becomes `card.placed(x, y)`, the clock running out becomes
-`card.timed_out()` — what those MEAN is overlay.NotifyCard's business and
-notify.py's.
+Nothing here decides anything. A click on the × becomes
+`card.pressed("dismiss")`, a click anywhere else becomes
+`card.pressed("open")`, a drag becomes `card.placed(x, y)`, the clock
+running out becomes `card.timed_out()` — what those MEAN is
+overlay.NotifyCard's business and notify.py's.
 """
 from __future__ import annotations
 
@@ -100,39 +104,32 @@ def _frost(x: int, y: int, width: int, height: int):
         return None
 
 
-def _hide_from_capture(hwnd) -> bool:
-    """Keep this one window out of every screen capture on this machine.
-
-    overlay.NotifyCard promises it ("it stays out of every screenshot")
-    and its Tk path keeps the promise with `_hide_from_capture(root)`; the
-    glass path has to keep it too, or turning the skin on would quietly
-    start burning notifications into the owner's screenshots. This is the
-    only skin window that asks for it — the others are decoration the
-    owner chose to look at, this one arrives uninvited.
-
-    WDA_EXCLUDEFROMCAPTURE, the same flag overlay.py and capture.py use,
-    measured there at 3600/3600 magenta pixels before the call and 0/3600
-    after it. A PRIVATE ctypes.WinDLL, like every handle in skin\\glass.py:
-    `ctypes.windll.user32` is one process-wide cached object and a restype
-    set on it changes it for every other file in the repo.
-    """
-    WDA_EXCLUDEFROMCAPTURE = 0x00000011
-    try:
-        import ctypes
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        user32.SetWindowDisplayAffinity.argtypes = [ctypes.c_void_p,
-                                                    ctypes.c_uint]
-        return bool(user32.SetWindowDisplayAffinity(
-            ctypes.c_void_p(int(hwnd)), WDA_EXCLUDEFROMCAPTURE))
-    except Exception:
-        # Not fatal and not worth a warning: a card in the corner of a
-        # screenshot is a blemish, and the alternative to it is no card.
-        _log.debug("skin: notify card not excluded from capture",
-                   exc_info=True)
-        return False
+# THERE USED TO BE A `_hide_from_capture` HERE, and it was deleted on
+# 2026-09-04 at the owner's request, along with its one call site in
+# `put_up`. What it did was set WDA_EXCLUDEFROMCAPTURE on the glass
+# window, and the argument for it read well: overlay.NotifyCard promised
+# to stay out of every screenshot, so the glass path had to keep the
+# promise too or turning the skin on would quietly start burning
+# notifications into the owner's pictures.
+#
+# The promise itself was the mistake. That flag is absolute — a window
+# carrying it is invisible to EVERY grab on the machine, including the
+# owner's own — so the card that says Claude has finished could not be
+# photographed by the person it was for. He pressed Win+Shift+S and
+# watched it vanish. "Screenshot" was never the thing to hide from;
+# being in the way of the DRAG was.
+#
+# What replaces it is ordering, not a flag: capture.Controller._shot_flow
+# freezes the desktop with one ImageGrab and hushes the cards on the very
+# next line, so this card is in the frozen picture the selector paints
+# and off the live screen before the selector maps. See the comment on
+# that line in capture.py, and AGENTS.md's "our own windows and the
+# owner's screenshots". The clip bar keeps the flag, because a recording
+# has no single instant to freeze.
 
 
-def face(canvas, width: int, height: int, scale: float, backdrop=None) -> None:
+def face(canvas, width: int, height: int, scale: float, backdrop=None,
+         x0: int = SHADOW, y0: int = SHADOW) -> None:
     """The glass under the words: frost, face, rim, hairline — no shadow.
 
     skin\\review.py's recipe at the same offsets and the same alphas, on
@@ -141,17 +138,24 @@ def face(canvas, width: int, height: int, scale: float, backdrop=None) -> None:
     would make them read as two apps. The one deliberate difference is
     the drop shadow, which this card does not have: see below.
 
-    `width`/`height` are the CARD's, not the window's: the window is
-    SHADOW bigger on every side and everything below is drawn at
-    (SHADOW, SHADOW), a margin that is now empty. Every corner is
-    an antialiased RRect on a canvas the caller cleared to 0x00000000, so
-    the pixels outside the curve keep alpha 0 all the way to
-    UpdateLayeredWindow — which is the entire fix. Nothing here ever draws
-    a plain Rect; one would put the square straight back.
+    `width`/`height` are ONE CARD's, not the window's. `x0`/`y0` are where
+    that card's top-left sits in the window and default to (SHADOW,
+    SHADOW), which is the single-card case this file was written for; the
+    column calls it once per card at the offsets notify_card.stack_layout
+    hands out (2026-09-04), so every card in the pile is its own piece of
+    glass with its own four rounded corners and the gaps between them stay
+    holes. Every corner is an antialiased RRect on a canvas the caller
+    cleared to 0x00000000, so the pixels outside the curve keep alpha 0 all
+    the way to UpdateLayeredWindow — which is the entire fix. Nothing here
+    ever draws a plain Rect; one would put the square straight back.
+
+    The frost is drawn at the window's own origin under EVERY card's clip,
+    on purpose: it is one grab of the whole window, so each card shows the
+    part of the desktop that is actually behind it rather than a repeat of
+    the top of the picture.
     """
     import skia
     s = nc.clamp_scale(scale)
-    x0 = y0 = SHADOW
     rect = skia.Rect.MakeXYWH(x0, y0, width, height)
     radius = RADIUS * s
     rrect = skia.RRect.MakeRectXY(rect, radius, radius)
@@ -214,6 +218,15 @@ def run(card) -> None:
     when a card arrives and destroyed when it goes, like the review card's,
     because its height depends on how many lines the body wrapped to.
 
+    IT IS A COLUMN NOW (2026-09-04). What arrives on the queue is a LIST
+    of card dicts, newest first, and ONE window holds all of them: one
+    face per card at the offset notify_card.stack_layout gives it, one
+    compose() composited on top of each, one frost grab for the whole
+    window, and one hit test that answers with the index of the card the
+    pointer is on. The alternative — a window per card — would have meant
+    N threads, N placements and gaps that drift apart the moment two of
+    them repaint out of step.
+
     THE FOREGROUND. overlay.NotifyCard's Tk path reads `_foreground()`
     before it shows the window and hands the keyboard back with
     `_give_focus_back()` afterwards, because "Tk takes the foreground the
@@ -228,9 +241,10 @@ def run(card) -> None:
     import overlay
 
     glass = None
-    shown = None                   # the card dict on screen
+    shown = None                   # the LIST of card dicts on screen
     frost = None
-    hover = None
+    hover = None                   # (index, what) or None
+    caption = None                 # index of the card a drag started on
     cache: dict = {}
     deadline = None
     placed_at = (0, 0)             # where we last KNOW the window was put
@@ -238,16 +252,29 @@ def run(card) -> None:
     last_tick = time.monotonic()
     last_paint = 0.0
     dirty = False
+    hushed = False                 # this loop's copy of card._hushed
     card._alive.set()
 
+    def ident(index):
+        """The id of the card at `index`, or None.
+
+        None is what overlay.NotifyCard.pressed reads as "all" / "the
+        newest", which is the honest answer to a click we could not pin on
+        one card.
+        """
+        if shown is None or index is None or not 0 <= index < len(shown):
+            return None
+        return shown[index].get("id")
+
     def take_down():
-        nonlocal glass, shown, frost, hover, deadline, dismissing
+        nonlocal glass, shown, frost, hover, deadline, dismissing, caption
         if glass is not None:
             glass.close()
             glass = None
         shown = None
         frost = None
         hover = None
+        caption = None
         deadline = None
         dismissing = False
         card.rect = None           # hovering() reads this; None means gone
@@ -256,23 +283,29 @@ def run(card) -> None:
     def on_hit(x, y):
         """Every pixel of the window, in window coordinates.
 
-        notify_card.hit_test answers HTCLIENT for the × box, HTCAPTION for
-        the rest of the card (so Windows itself does the drag) and
-        HTTRANSPARENT for the SHADOW margin — which is what keeps a click
-        aimed at the close button of a maximised window underneath landing
-        on that close button. The card sits mid-height on the right edge,
-        which is where scrollbars live, so this is not a hypothetical.
+        notify_card.stack_hit_test answers HTCLIENT for a card's × box,
+        HTCAPTION for the rest of that card (so Windows itself does the
+        drag) and HTTRANSPARENT for the SHADOW margin AND FOR THE GAPS
+        BETWEEN CARDS — which is what keeps a click aimed at the close
+        button of a maximised window underneath landing on that close
+        button. The column sits over the right edge of the screen, where
+        scrollbars live, so this is not a hypothetical.
 
-        It doubles as the hover tracker: WM_NCHITTEST arrives on every
-        mouse move over the window, so brightening the × costs nothing
-        extra. Leaving the card always crosses the shadow margin, so hover
-        is cleared without needing a WM_MOUSELEAVE.
+        It doubles as the hover tracker and as the record of WHICH card a
+        drag is about to start on: WM_NCHITTEST arrives on every mouse move
+        over the window, and it is the last message before DefWindowProc
+        enters its modal move loop, so `caption` is still the card under
+        the pointer when on_move runs. Leaving the column always crosses
+        the shadow margin, so hover is cleared without needing a
+        WM_MOUSELEAVE.
         """
-        nonlocal hover, dirty
+        nonlocal hover, dirty, caption
         if shown is None:
             return nc.HTTRANSPARENT
-        code, what = nc.hit_test(shown, card.scale, x, y)
-        want = what if code == nc.HTCLIENT else None
+        code, where = nc.stack_hit_test(shown, card.scale, x, y)
+        want = where if code == nc.HTCLIENT else None
+        if code == nc.HTCAPTION and where is not None:
+            caption = where[0]
         if want != hover:
             hover = want
             dirty = True
@@ -285,8 +318,11 @@ def run(card) -> None:
         moved, because DefWindowProc enters its modal move loop on the
         first WM_NCLBUTTONDOWN either way — so this one callback has to
         tell the two apart, exactly as the Tk path's on_release does:
-        travelled less than CLICK_PX, it is the dismissal; travelled more,
-        it is where the owner wants the card from now on.
+        travelled less than CLICK_PX, it is the OPEN — the whole card
+        except the × means "take me to whoever sent this" (2026-09-04),
+        and it is the card the press LANDED on that we name, which on_hit
+        remembered on the way past; travelled more, it is where the owner
+        wants the column from now on.
 
         The position is read back off the handle rather than remembered,
         because a drag by HTCAPTION is Windows moving the window and not
@@ -296,8 +332,8 @@ def run(card) -> None:
         snap back.
 
         `dismissing` is the latch. WM_EXITSIZEMOVE and WM_NCLBUTTONUP can
-        both arrive for one release, and firing `pressed("dismiss")` twice
-        would mark a second, unseen notification as read.
+        both arrive for one release, and firing a press twice would mark a
+        second, unseen notification as read — or raise a window twice.
         """
         nonlocal placed_at, dismissing
         if glass is None or shown is None:
@@ -307,7 +343,7 @@ def run(card) -> None:
             if dismissing:
                 return
             dismissing = True
-            card.pressed("dismiss")
+            card.pressed("open", ident(caption))
             return
         placed_at = (x, y)
         card.placed(x + SHADOW, y + SHADOW)
@@ -318,49 +354,88 @@ def run(card) -> None:
         """A left click on an HTCLIENT pixel — which is only ever the ×.
 
         The rest of the card is HTCAPTION and never reaches WM_LBUTTONDOWN
-        at all; its click arrives through on_move above. Both roads lead to
-        `pressed("dismiss")`, because a click anywhere on this card is the
-        dismissal and the × is only the hint.
+        at all; its click arrives through on_move above, and means the
+        opposite thing. This road is the close button and only the close
+        button: `pressed("dismiss")`, no window raised, nothing moved.
         """
         nonlocal dismissing
         if shown is None or dismissing:
             return
-        code, what = nc.hit_test(shown, card.scale, x, y)
-        if code == nc.HTCLIENT and what:
+        code, where = nc.stack_hit_test(shown, card.scale, x, y)
+        what = where[1] if where else None
+        if code == nc.HTCLIENT and what == nc.DISMISS:
             dismissing = True
-            card.pressed(what)
+            card.pressed("dismiss", ident(where[0]))
 
     def paint(progress: float):
-        """One frame: the face painted fresh, the content composited on it.
+        """One frame: a face per card, painted fresh, each with its own
+        content composited on it.
 
         `canvas.clear(0x00000000)` is what makes the corners a hole rather
         than black — the DIB behind a layered window is premultiplied BGRA
         and UpdateLayeredWindow reads its alpha per pixel, so anything the
-        face's RRect does not cover simply is not there.
+        faces' RRects do not cover simply is not there. That is also what
+        makes the GAPS between the cards real holes: nothing is drawn in
+        them, so the desktop shows through and the column reads as a pile
+        of separate cards rather than one long slab.
         """
         nonlocal last_paint, dirty
         if glass is None or shown is None:
             return
         canvas = glass.canvas
         canvas.clear(0x00000000)
-        w, h = nc.measure(shown, card.scale)
-        face(canvas, w, h, card.scale, frost)
-        # compose(), never flat(): flat() is the Tk fallback's OPAQUE face
-        # with the same content on top, and drawing it here would paint a
-        # solid CARD rectangle over the rounded glass — the exact defect
-        # this module exists to remove.
-        content = nc.compose(shown, card.scale, progress, hover, cache)
-        canvas.drawImage(_to_skia(content), SHADOW, SHADOW)
+        for index, (x, y, w, h) in enumerate(
+                nc.stack_layout(shown, card.scale)):
+            face(canvas, w, h, card.scale, frost, x, y)
+            # compose(), never flat(): flat() is the Tk fallback's OPAQUE
+            # face with the same content on top, and drawing it here would
+            # paint a solid CARD rectangle over the rounded glass — the
+            # exact defect this module exists to remove.
+            what = hover[1] if (hover and hover[0] == index) else None
+            content = nc.compose(shown[index], card.scale, progress, what,
+                                 cache)
+            canvas.drawImage(_to_skia(content), x, y)
         glass.flush()
         last_paint = time.monotonic()
         dirty = False
 
-    def put_up(item):
-        nonlocal glass, shown, frost, deadline, hover, placed_at, dismissing
+    def put_up(items):
+        nonlocal shown, deadline, hover, dismissing, caption
         take_down()
+        shown = list(items)
+        hover = None
+        caption = None
+        dismissing = False
+        # ONE clock for the column, read off the newest card. Every card in
+        # a column carries the same `seconds` (NotifyCard.show builds them
+        # all with its own), and the default has been 0 since 2026-09-04,
+        # which means no clock at all.
+        seconds = float(shown[0].get("seconds") or 0) if shown else 0.0
+        deadline = (time.monotonic() + seconds) if seconds > 0 else None
+        if hushed:
+            # A NOTIFICATION LANDING MID-SELECTION, which is the case the
+            # hush exists for. The item is accepted and its clock is
+            # already waiting (see the loop), but no window is built: this
+            # one is topmost and would map straight over the screenshot
+            # selector and swallow the owner's drag. `map_card` builds it
+            # the moment the screen is his again.
+            return
+        map_card()
+
+    def map_card():
+        """Build the glass for the whole column and put it on screen.
+
+        Split out of `put_up` on 2026-09-04 so a hush can hold a card
+        without losing it: `put_up` decides WHAT is on screen, this
+        decides WHEN, and the two are no longer the same moment.
+        """
+        nonlocal glass, frost, placed_at
+        item = shown
+        if not item or glass is not None:
+            return
         s = nc.clamp_scale(card.scale)
-        width, height = nc.measure(item, s)
-        win_w, win_h = width + SHADOW * 2, height + SHADOW * 2
+        win_w, win_h = nc.stack_measure(item, s)
+        width, height = win_w - SHADOW * 2, win_h - SHADOW * 2
         # primary for the corners, the whole desktop for a saved position:
         # a card left on a second screen belongs on that second screen.
         # `inset=SHADOW` is how NotifyCard.origin knows the window is
@@ -371,20 +446,51 @@ def run(card) -> None:
         frost = _frost(x, y, win_w, win_h)
         glass = Glass(x, y, win_w, win_h, hit=on_hit, moved=on_move,
                       clicked=on_click)
-        _hide_from_capture(glass.hwnd)
-        shown = item
-        hover = None
+        # NO `_hide_from_capture(glass.hwnd)` HERE ANY MORE — removed
+        # 2026-09-04, at the owner's request, because the card announcing
+        # that Claude had finished could not be photographed by the person
+        # it was announcing to. See the block where that helper used to
+        # live, above `face`, for the whole argument.
         placed_at = (x, y)
-        dismissing = False
         # Painted BEFORE it is shown, so the card is never on screen for
-        # even one frame as an empty layer.
-        paint(1.0)
+        # even one frame as an empty layer. The progress is computed
+        # rather than assumed to be 1.0: coming back from a hush, the card
+        # resumes with the seconds it went down with.
+        seconds = float(item[0].get("seconds") or 0)
+        progress = 1.0
+        if deadline is not None and seconds > 0:
+            progress = max(0.0, min(1.0,
+                                    (deadline - time.monotonic()) / seconds))
+        paint(progress)
         glass.show()
         glass.raise_()
         card.rect = (x + SHADOW, y + SHADOW, x + width + SHADOW,
                      y + height + SHADOW)
-        seconds = float(item.get("seconds") or 0)
-        deadline = (time.monotonic() + seconds) if seconds > 0 else None
+
+    def set_hushed(on: bool):
+        """Obey `card._hushed`, on this thread and nowhere else.
+
+        The caller — capture's screenshot flow, from the keyboard hook —
+        only set an Event. Every window call is here, because Glass is as
+        thread-bound as Tk is.
+        """
+        nonlocal hushed, glass, frost, hover, dismissing
+        if on == hushed:
+            return
+        hushed = on
+        if on:
+            if glass is not None:
+                glass.close()
+                glass = None
+            frost = None
+            hover = None
+            dismissing = False
+            # hovering() reads this; None means the card is not under the
+            # pointer, which is true — it is not on screen at all.
+            card.rect = None
+            cache.clear()
+        else:
+            map_card()
 
     try:
         while not card._closing.is_set():
@@ -402,10 +508,18 @@ def run(card) -> None:
                 pass
             if card._closing.is_set():
                 break
+            # AFTER the queue, so a card that arrived in this same tick is
+            # already in `shown` and gets held rather than built.
+            set_hushed(card._hushed.is_set())
             now = time.monotonic()
             dt, last_tick = now - last_tick, now
+            if shown is not None and hushed and deadline is not None:
+                # Down for somebody's selection: the clock waits, exactly
+                # as it waits under the pointer below. Seconds spent off
+                # the screen are not seconds the owner had the card.
+                deadline += dt
             if shown is not None and glass is not None:
-                seconds = float(shown.get("seconds") or 0)
+                seconds = float(shown[0].get("seconds") or 0) if shown else 0.0
                 progress = 1.0
                 if deadline is not None:
                     # The clock stops under the pointer, so a card somebody
@@ -425,7 +539,11 @@ def run(card) -> None:
                         time.sleep(TICK_S)
                         continue
                     progress = left / seconds if seconds > 0 else 1.0
-                if dirty or now - last_paint >= REPAINT_S:
+                # A clockless column (the default since 2026-09-04) has
+                # nothing that changes on its own, so it is painted when
+                # the hit test says the hover moved and never otherwise.
+                if dirty or (deadline is not None
+                             and now - last_paint >= REPAINT_S):
                     paint(progress)
                 glass.pump()
             time.sleep(TICK_S)

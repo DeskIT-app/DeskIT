@@ -18,14 +18,35 @@ exit 0. The named pipe (control.py) was the alternative and it does not
 reach the phone.
 
 WHY REMINDERS. A single cue is missed as often as it is heard — the
-owner is in another room, or on the phone, or the mixer is quiet — and
-a card that takes itself down after thirty seconds is gone before he
-turns round. So while anything is unread the engine plays the cue and
-puts the card back up every `remind_every_s`, `remind_times` times, and
-then waits quietly in the dashboard's Notify screen. Dismissal (a click,
-Esc over the card, or the dismiss key) marks everything seen and stops
-the reminders; the card timing out on its own does NOT — that is what
-the reminders are for.
+owner is in another room, or on the phone, or the mixer is quiet. So
+while anything is unread the engine plays the cue and puts the card
+back up every `remind_every_s`, `remind_times` times, and then waits
+quietly in the dashboard's Notify screen. Dismissal (the ×, Esc over
+the card, or the dismiss key) marks everything seen and stops the
+reminders; a card timing out on its own does NOT — that is what the
+reminders are for, and since 2026-09-04 it does not happen at all
+unless `card_seconds` is put back above 0.
+
+WHY A STACK, AND WHY NOTHING TIMES OUT (2026-09-04). The card used to
+show the newest notification and a badge counting the rest, and take
+itself down after thirty seconds. Both were wrong for the way the owner
+works: the ones behind the badge were unreachable until he opened the
+dashboard, and the one on screen was gone before he turned round. So
+`live()` is now the whole unread column — newest first, capped at
+`stack_max`, the last one carrying `"more": N` when there are more
+behind it — and every entry point ends by showing that column rather
+than one item. `dismiss(id)` and `open(id)` name one card of it; with no
+id they still mean everything, which is what the key, the dashboard and
+Esc have always meant. The column goes down only when nothing is left
+unread.
+
+WHY A CLICK GOES THERE INSTEAD (2026-09-04). Being told Claude has
+finished is not the point; getting back to Claude is. So a click
+anywhere on the card except the × is `open()`: it raises the window the
+notification came from — which the sender names in `hwnd`/`app`, see
+notify_hook.owner_window — and then dismisses exactly as before, because
+arriving at the work is having read the notice. The × keeps the old
+meaning, and so does Esc: close it, stay where you are.
 
 WHY COALESCING. Claude fires Stop and then Notification a moment apart
 for the same turn, and two cues 400 ms apart sound like an error pair.
@@ -46,6 +67,7 @@ reminder and dismissal, awake.log's shape) and notify.json (the last
 """
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -61,15 +83,19 @@ LOG_NAME = "notify.log"        # beside the app, awake.log's shape
 STORE_NAME = "notify.json"     # beside the app, review.json's shape
 KINDS = ("done", "input", "error", "info")
 TITLE_MAX, BODY_MAX, SOURCE_MAX, PROJECT_MAX, SESSION_MAX = 80, 400, 40, 60, 64
+APP_MAX = 80                   # the sender's window title, as a label only
 KEEP = 100
+STACK_MAX = 5                  # cards on screen at once when the config
+                               # says nothing; [notify] stack_max is the
+                               # real number and config.py bounds it
 SOURCES = {"claude-code": "Claude Code", "claude": "Claude", "phone": "Phone",
            "dashboard": "Dashboard", "test": "Test", "cli": "Command line"}
 DEFAULT_TITLE = {"done": "Finished", "input": "Needs your input",
                  "error": "Something went wrong", "info": "Notification"}
 
-_FIELDS = ("source", "kind", "title", "body", "project", "session")
+_FIELDS = ("source", "kind", "title", "body", "project", "session", "app")
 _MAX = {"source": SOURCE_MAX, "title": TITLE_MAX, "body": BODY_MAX,
-        "project": PROJECT_MAX, "session": SESSION_MAX}
+        "project": PROJECT_MAX, "session": SESSION_MAX, "app": APP_MAX}
 # C0 controls minus tab and newline (carriage returns are folded into
 # newlines first). A bell or an escape sequence in a title is at best a
 # terminal's idea of formatting and at worst a way to talk to one.
@@ -94,6 +120,34 @@ def _cut(text: str, limit: int) -> str:
     return text[:limit - 1] + "…"
 
 
+def _window(value) -> int:
+    """A sender's HWND, or 0. Anything that will not survive `int()` — a
+    string, a dict, None — and anything negative is 0, which reads
+    downstream as "there is no window to raise" rather than as an error.
+    A handle is never dereferenced here; raise_window asks Windows
+    whether it is still a window before it does anything with it."""
+    try:
+        hwnd = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0
+    return hwnd if hwnd > 0 else 0
+
+
+def _ident(value) -> int | None:
+    """One notification's id, or None meaning "all" / "the newest".
+
+    Ids start at 1, so anything that will not survive `int()` — and
+    anything at or below zero — reads as None rather than as an error.
+    A press that arrives without a usable id means the whole column,
+    which is what the dismiss key and Esc have always meant.
+    """
+    try:
+        ident = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return ident if ident > 0 else None
+
+
 def clean(payload) -> dict:
     """The one gate every notification passes through, whoever sent it.
 
@@ -101,11 +155,12 @@ def clean(payload) -> dict:
     characters go, whitespace is tidied (collapsed outright for the
     one-line fields; only runs of blank lines for the body), and each is
     cut to its maximum with a trailing ellipsis. Nothing here is parsed
-    or formatted — the output is six strings that will be DRAWN.
+    or formatted — the output is seven strings that will be DRAWN, plus
+    one integer (`hwnd`) that is only ever handed back to Windows.
     """
     if not isinstance(payload, dict):
         raise ValueError("expected a JSON object")
-    out: dict[str, str] = {}
+    out: dict = {}
     for name in _FIELDS:
         text = _text(payload.get(name))
         text = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -119,10 +174,11 @@ def clean(payload) -> dict:
     out["source"] = _cut(out["source"].lower(), SOURCE_MAX) or "unknown"
     kind = out["kind"].lower()
     out["kind"] = kind if kind in KINDS else "info"
-    for name in ("title", "body", "project", "session"):
+    for name in ("title", "body", "project", "session", "app"):
         out[name] = _cut(out[name], _MAX[name])
     if not out["title"]:
         out["title"] = DEFAULT_TITLE[out["kind"]]
+    out["hwnd"] = _window(payload.get("hwnd"))
     return out
 
 
@@ -180,6 +236,12 @@ class Store:
             item = {"id": next_id,
                     "at": datetime.now().isoformat(timespec="seconds")}
             item.update({k: str(fields.get(k, "")) for k in _FIELDS})
+            # The one field that is not a string: the sender's window, so
+            # a click on the card can raise it. Put through _window again
+            # rather than trusted — this method takes a plain dict from
+            # whoever calls it, and an int is the only thing json.dump
+            # and Engine.open will accept without asking questions.
+            item["hwnd"] = _window(fields.get("hwnd"))
             item["seen"] = False
             items.append(item)
             if len(items) > self.keep:
@@ -236,6 +298,126 @@ class Store:
 
 
 # ---------------------------------------------------------------------------
+# raising the window the notification came from
+# ---------------------------------------------------------------------------
+
+SW_RESTORE = 9
+# THE FOREGROUND HANDOVER IS ASYNCHRONOUS, AND READING IT BACK ON THE NEXT
+# LINE READS A LIE. Measured 2026-09-04 from a plain background python
+# process, target the Claude window, Chrome in front:
+#   SetForegroundWindow -> 1
+#   GetForegroundWindow immediately -> 0 ('')        <- in flight, nobody
+#   GetForegroundWindow +500 ms      -> 43779834 ('Claude')
+# So the first version of this function declared failure on a raise that
+# had worked, and then ran the AttachThreadInput dance over the top of it.
+# The check waits instead: poll until the target IS the foreground, or
+# until SETTLE_S has gone. A 0 in between is the transition, not a no.
+SETTLE_S = 0.5
+POLL_S = 0.02
+_HANDLES = None
+
+
+def _handles():
+    """PRIVATE user32/kernel32 wrappers, built once and cached.
+
+    `ctypes.windll.user32` is a process-global cached object shared by
+    five files here, and declaring argtypes on it changes them FOR EVERY
+    MODULE — that is the OverflowError capture.py paid for (AGENTS.md).
+    `ctypes.WinDLL(...)` builds a new wrapper with its own function
+    cache, so the restypes below are ours alone. A HWND is c_void_p
+    because a 64-bit handle does not fit the c_int ctypes assumes.
+    """
+    global _HANDLES
+    if _HANDLES is None:
+        import ctypes
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        for name in ("IsWindow", "IsIconic", "SetForegroundWindow"):
+            fn = getattr(u32, name)
+            fn.argtypes = [ctypes.c_void_p]
+            fn.restype = ctypes.c_int
+        u32.ShowWindow.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        u32.ShowWindow.restype = ctypes.c_int
+        u32.GetForegroundWindow.argtypes = []
+        u32.GetForegroundWindow.restype = ctypes.c_void_p
+        u32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p,
+                                                 ctypes.c_void_p]
+        u32.GetWindowThreadProcessId.restype = ctypes.c_ulong
+        u32.AttachThreadInput.argtypes = [ctypes.c_ulong, ctypes.c_ulong,
+                                          ctypes.c_int]
+        u32.AttachThreadInput.restype = ctypes.c_int
+        k32.GetCurrentThreadId.argtypes = []
+        k32.GetCurrentThreadId.restype = ctypes.c_ulong
+        _HANDLES = (u32, k32)
+    return _HANDLES
+
+
+def _is_front(u32, hwnd: int, seconds: float) -> bool:
+    """Is `hwnd` the foreground window, allowing `seconds` for it to
+    become so? See SETTLE_S: the handover takes a few frames and reads 0
+    while it is in flight, so one immediate read is not an answer."""
+    end = time.monotonic() + max(0.0, float(seconds))
+    while True:
+        if int(u32.GetForegroundWindow() or 0) == hwnd:
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(POLL_S)
+
+
+def raise_window(hwnd) -> bool:
+    """Bring one window to the front. True only if it actually got there.
+
+    Restore it if it was minimised, ask for the foreground, and then
+    WATCH the foreground until it is the window or SETTLE_S has passed —
+    because SetForegroundWindow is allowed to decline. Windows grants it
+    to a process that already owns the foreground, was started by the one
+    that does, or is answering input; a background thread of this app is
+    none of those on paper. When the wait runs out, it falls back once to
+    the AttachThreadInput dance — attach to the thread that currently
+    owns the foreground, which makes our input queue theirs for a moment,
+    ask again, detach — and watches once more. What comes back is the
+    honest answer; nothing here reports success it has not seen.
+
+    A handle that is no longer a window is False and not an error: the
+    program that sent the notification is allowed to have exited, and
+    Engine.open treats that as "nothing to raise", not as a failure.
+
+    Costs nothing when it works (the poll exits on the first frame the
+    handover lands) and at most SETTLE_S twice when it does not — which
+    is why it runs on main.py's "notify-open" thread and never on the
+    card's pump.
+    """
+    hwnd = _window(hwnd)
+    if not hwnd:
+        return False
+    try:
+        u32, k32 = _handles()
+    except Exception:                     # noqa: BLE001
+        return False
+    try:
+        if not u32.IsWindow(hwnd):
+            return False
+        if u32.IsIconic(hwnd):
+            u32.ShowWindow(hwnd, SW_RESTORE)
+        u32.SetForegroundWindow(hwnd)
+        if _is_front(u32, hwnd, SETTLE_S):
+            return True
+        front = int(u32.GetForegroundWindow() or 0)
+        mine = int(k32.GetCurrentThreadId())
+        theirs = int(u32.GetWindowThreadProcessId(front, None)) if front else 0
+        if theirs and theirs != mine and u32.AttachThreadInput(mine, theirs, 1):
+            try:
+                u32.SetForegroundWindow(hwnd)
+            finally:
+                u32.AttachThreadInput(mine, theirs, 0)
+        return _is_front(u32, hwnd, SETTLE_S)
+    except Exception:                     # noqa: BLE001
+        log.info("notify: could not raise window %d", hwnd, exc_info=True)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # the card's surface, and the inert card
 # ---------------------------------------------------------------------------
 
@@ -250,7 +432,7 @@ class NullCard:
     def stop(self) -> None:
         pass
 
-    def show(self, item: dict) -> None:
+    def show(self, items) -> None:
         pass
 
     def hide(self) -> None:
@@ -292,7 +474,8 @@ class Engine:
         self.app_dir = Path(app_dir)
         self.enabled = bool(getattr(cfg, "enabled", True))
         self.cue_on = bool(getattr(cfg, "cue", True))
-        self.card_seconds = int(getattr(cfg, "card_seconds", 30))
+        self.card_seconds = int(getattr(cfg, "card_seconds", 0))
+        self.stack_max = max(1, int(getattr(cfg, "stack_max", STACK_MAX)))
         self.remind_every_s = float(getattr(cfg, "remind_every_s", 120))
         self.remind_times = int(getattr(cfg, "remind_times", 2))
         self.coalesce_s = float(getattr(cfg, "coalesce_s", 5))
@@ -338,9 +521,9 @@ class Engine:
             if self.cue_on and not coalesced:
                 self._cue("notify")
                 self._cue_at[source] = now
-            # The card always follows the newest, coalesced or not: the
-            # badge says how many are waiting behind it.
-            self.card.show(dict(item, unread=unread, label=label_for(source)))
+            # The column always follows the newest, coalesced or not: the
+            # new card goes on TOP of the ones still unread behind it.
+            self._present()
             self._arm()
         return {"ok": True, "id": item["id"], "unread": unread,
                 "coalesced": coalesced}
@@ -352,21 +535,109 @@ class Engine:
                     "it, press Esc over it, or tap the dismiss key.",
             "project": "dashboard"})
 
+    # -- the column --
+
+    def live(self) -> list[dict]:
+        """What belongs on screen right now: every unread notification,
+        NEWEST FIRST, at most `stack_max` of them.
+
+        Each entry is the stored item plus the two things the painter
+        cannot work out for itself — `label` (who sent it, in words) and
+        `unread` (how many there are altogether). When the store holds
+        more unread than the column shows, the LAST entry also carries
+        `"more": N`, and the painter puts one faint "+N earlier" line
+        under it: the column has a ceiling, and the owner should be able
+        to see that it does.
+
+        An empty list means nothing is unread, which is the one thing
+        that takes the card down.
+        """
+        with self._lock:
+            items = [i for i in self.store.items() if not i.get("seen")]
+        items.reverse()
+        unread = len(items)
+        shown = [dict(i, unread=unread, label=label_for(i.get("source", "")))
+                 for i in items[:self.stack_max]]
+        if shown and unread > len(shown):
+            shown[-1] = dict(shown[-1], more=unread - len(shown))
+        return shown
+
     # -- out --
 
-    def dismiss(self, *, by: str = "key") -> dict:
-        """Everything seen, the reminders cancelled, the card down."""
+    def dismiss(self, item_id=None, *, by: str = "key") -> dict:
+        """Seen. One card with an id, everything without one.
+
+        No id is what the dismiss key, Esc over the card and the
+        dashboard's Dismiss all have always meant, and it keeps meaning
+        it: everything seen, the reminders cancelled, the column down.
+        An id is the × on ONE card of the column (2026-09-04): only that
+        item is marked seen and the rest of the column is shown again,
+        so the others do not blink out with it.
+        """
         with self._lock:
-            n = self.store.mark_seen()
-            self._gen += 1
-            self._stop.set()
-            try:
-                self.card.hide()
-            except Exception:             # noqa: BLE001
-                pass
-            self._log(f"DISMISSED by {by} | {n} marked seen")
-            log.info("notify: dismissed by %s | %d marked seen", by, n)
+            ident = _ident(item_id)
+            n = self.store.mark_seen(None if ident is None else [ident])
+            left = self._present()
+            if not left:
+                # Nothing unread: the reminders have nothing to remind
+                # about, whether this was one card or all of them.
+                self._gen += 1
+                self._stop.set()
+            named = "" if ident is None else f" #{ident}"
+            self._log(f"DISMISSED{named} by {by} | {n} marked seen")
+            log.info("notify: dismissed%s by %s | %d marked seen", named, by, n)
             return self.state()
+
+    def open(self, item_id=None, *, by: str = "card") -> dict:
+        """Go to whoever sent a notification, and dismiss it.
+
+        This is what a click anywhere on a card except its × means
+        (asked for 2026-09-04): the owner is not saying "seen", he is
+        saying "take me there". So the item's `hwnd` is raised — for a
+        Claude Code notification that is the Claude window, named by
+        notify_hook.owner_window's walk up the parent processes — and
+        then everything dismiss() does happens anyway, because arriving
+        at the work IS having read the notification.
+
+        With an id it is one card of the column: that item's window,
+        that item marked seen, the rest of the column still up. Without
+        one it is the newest item's window and the old whole-hearted
+        dismissal, which is what the dashboard's Open button and a card
+        that is alone on screen both mean.
+
+        A window that has since closed, or one Windows will not bring
+        forward, is not an error and does not cost the dismissal: it is
+        logged as what it was and the card still goes down.
+        """
+        with self._lock:
+            ident = _ident(item_id)
+            target = self._item(ident)
+            hwnd = _window((target or {}).get("hwnd"))
+            app = str((target or {}).get("app", "") or "")
+            name = f"#{target['id']}" if target else "#-"
+            if hwnd:
+                raised = bool(raise_window(hwnd))
+                note = "" if raised else " | but it would not come forward"
+                self._log(f"OPENED {name} -> {app or 'a window'} "
+                          f"({hwnd}){note}")
+                log.info("notify: opened %s by %s -> %r (%d)%s", name, by,
+                         app, hwnd, "" if raised else " — not raised")
+            else:
+                self._log(f"OPENED {name} | no window to raise")
+                log.info("notify: opened %s by %s | no window to raise",
+                         name, by)
+            return self.dismiss(ident, by=by)
+
+    def _item(self, item_id=None) -> dict | None:
+        """The item with this id, or the newest when there is no id. An
+        id nothing answers to is None — a card the store no longer holds
+        is not an error, it is a click that arrived late."""
+        if item_id is None:
+            return self.store.last()
+        for item in self.store.items():
+            if int(item.get("id", 0)) == int(item_id):
+                return item
+        return None
 
     def state(self) -> dict:
         """What the dashboard draws and status() carries down the pipe:
@@ -448,14 +719,10 @@ class Engine:
                 if gen != self._gen or stop.is_set() \
                         or self.store.unread() == 0:
                     return
-                last = self.store.last()
                 unread = self.store.unread()
                 if self.cue_on:
                     self._cue("notify")
-                if last is not None:
-                    self.card.show(dict(
-                        last, unread=unread,
-                        label=label_for(last.get("source", ""))))
+                self._present()
                 self._fired = i + 1
                 self._log(f"REMINDED {i + 1}/{self.remind_times} | "
                           f"unread {unread}")
@@ -463,6 +730,46 @@ class Engine:
                          self.remind_times, unread)
 
     # -- plumbing --
+
+    def _present(self) -> list[dict]:
+        """Put the live column on screen, or take the card down when
+        there is nothing left in it. Returns what it showed, so a caller
+        can ask "is anything still unread?" without a second read of the
+        store. Never raises: a card that cannot paint must not cost the
+        dismissal, the HTTP reply or the reminder that called this."""
+        items = self.live()
+        try:
+            if items:
+                self._show(items)
+            else:
+                self.card.hide()
+        except Exception:                 # noqa: BLE001
+            log.info("notify: the card would not take the column",
+                     exc_info=True)
+        return items
+
+    def _show(self, items: list[dict]) -> None:
+        """`card.show(items)` — the whole column, newest first.
+
+        TOLERANCE, AND IT IS MEANT TO GO. The card that takes a LIST
+        lands with the card package (overlay.NotifyCard, 2026-09-04);
+        until it does, and on any branch without it, `show` still takes
+        one item dict. Rather than guess from an exception raised deep
+        inside a painter, ask the method what it calls its first
+        argument: the old one names it `item`, the new one `items`. A
+        single-item card is shown the NEWEST of the column, which is
+        exactly what it did before there was a column. Delete this
+        method's fork — not the method — once both halves have landed.
+        """
+        show = self.card.show
+        try:
+            first = next(iter(inspect.signature(show).parameters), "")
+        except (TypeError, ValueError):   # a builtin, a C callable, a mock
+            first = ""
+        if first == "item":
+            show(dict(items[0]))
+        else:
+            show(items)
 
     def _card_up(self) -> bool:
         try:

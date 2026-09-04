@@ -19,6 +19,10 @@ bearer token from server_token.txt beside this file. If the app is not
 running, the post fails and the script exits 0 in silence — a hook must
 never make Claude wait on a card.
 
+Every payload also names the window the notification CAME FROM (`hwnd`
+and `app`), because a click on the card now raises it — see
+`owner_window` below for how that is resolved and why.
+
 `--install-hook` writes the two entries into ~/.claude/settings.json,
 replacing any earlier entry that names this script and leaving every
 other key and every foreign hook alone, so it can be run again after a
@@ -30,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import ctypes
 import json
 import os
 import sys
@@ -60,9 +65,163 @@ def _collapse(value) -> str:
     return " ".join(value.split())
 
 
-def payload_from_hook(event: dict) -> dict | None:
+# ---------------------------------------------------------------------------
+# whose window is this? — the parent-process walk
+# ---------------------------------------------------------------------------
+# WHY THE PARENT CHAIN AND NOT A SEARCH FOR A WINDOW CALLED "Claude".
+# A click on the notification card now raises the window that sent it, so
+# the sender has to NAME that window. Matching on a title would be a
+# guess: a title is the app's to change without telling anybody, several
+# windows can carry the same one, and with two projects open the guess is
+# wrong exactly when it matters. This script does not have to guess,
+# because it is a CHILD of the process that owns the window — Claude Code
+# runs its hooks — so walking up the parent chain and asking each ancestor
+# what visible top-level windows it owns is STRUCTURAL: the answer is the
+# process that actually sent the notification, whatever it calls itself.
+#
+# Measured 2026-09-04, from a process spawned inside Claude Code (a
+# stdlib ctypes probe: CreateToolhelp32Snapshot for the chain, EnumWindows
+# + GetWindowThreadProcessId for each ancestor's windows):
+#
+#      pid  exe            windows
+#   522112  python.exe     []
+#   529080  python.exe     []
+#   167784  bash.exe       []
+#   524732  bash.exe       []
+#   495256  bash.exe       []
+#   231024  claude.exe     []
+#  1613168  claude.exe     [(43779834, 'Claude')]
+#
+# Six ancestors owning nothing and the seventh owning exactly one window.
+# Hence the depth cap: the chain is long, and a walk that never ends is a
+# hook that hangs a turn.
+
+TH32CS_SNAPPROCESS = 0x00000002
+WALK_DEPTH = 12
+
+
+class _PROCESSENTRY32(ctypes.Structure):
+    """kernel32's process record. Only the two pids are read, but every
+    field has to be declared: dwSize is validated against the whole."""
+
+    _fields_ = [("dwSize", ctypes.c_ulong),
+                ("cntUsage", ctypes.c_ulong),
+                ("th32ProcessID", ctypes.c_ulong),
+                ("th32DefaultHeapID", ctypes.POINTER(ctypes.c_ulong)),
+                ("th32ModuleID", ctypes.c_ulong),
+                ("cntThreads", ctypes.c_ulong),
+                ("th32ParentProcessID", ctypes.c_ulong),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", ctypes.c_ulong),
+                ("szExeFile", ctypes.c_char * 260)]
+
+
+def _parents() -> dict:
+    """pid -> parent pid, from one snapshot of every process. {} on any
+    failure. The handles get restypes because a 64-bit HANDLE does not
+    fit the c_int ctypes assumes — and they are set on a PRIVATE
+    ctypes.WinDLL, never on ctypes.windll, which is process-global and
+    shared with every other module here (AGENTS.md)."""
+    out: dict = {}
+    try:
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CreateToolhelp32Snapshot.argtypes = [ctypes.c_ulong,
+                                                 ctypes.c_ulong]
+        k32.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+        k32.Process32First.argtypes = [ctypes.c_void_p,
+                                       ctypes.POINTER(_PROCESSENTRY32)]
+        k32.Process32Next.argtypes = [ctypes.c_void_p,
+                                      ctypes.POINTER(_PROCESSENTRY32)]
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        snap = k32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snap:
+            return out
+        try:
+            entry = _PROCESSENTRY32()
+            entry.dwSize = ctypes.sizeof(_PROCESSENTRY32)
+            if k32.Process32First(snap, ctypes.byref(entry)):
+                while True:
+                    out[int(entry.th32ProcessID)] = \
+                        int(entry.th32ParentProcessID)
+                    if not k32.Process32Next(snap, ctypes.byref(entry)):
+                        break
+        finally:
+            k32.CloseHandle(snap)
+    except Exception:                     # noqa: BLE001
+        return {}
+    return out
+
+
+def _windows_of(u32, pid: int) -> list:
+    """Every visible, titled, top-level window owned by `pid`. EnumWindows
+    walks only top-level windows, so nothing here has to filter children;
+    a window with a blank caption is skipped because a card cannot name
+    it and the owner would not recognise it."""
+    found: list = []
+    proto = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p,
+                               ctypes.c_void_p)
+    u32.EnumWindows.argtypes = [proto, ctypes.c_void_p]
+    u32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p,
+                                             ctypes.POINTER(ctypes.c_ulong)]
+    u32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+    u32.GetWindowTextLengthW.argtypes = [ctypes.c_void_p]
+    u32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p,
+                                   ctypes.c_int]
+
+    @proto
+    def collect(hwnd, _param):
+        try:
+            owner = ctypes.c_ulong()
+            u32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+            if owner.value == pid and u32.IsWindowVisible(hwnd):
+                n = int(u32.GetWindowTextLengthW(hwnd))
+                buf = ctypes.create_unicode_buffer(n + 1)
+                u32.GetWindowTextW(hwnd, buf, n + 1)
+                if buf.value.strip():
+                    found.append((int(hwnd), buf.value.strip()))
+        except Exception:                 # noqa: BLE001
+            pass
+        return 1
+
+    u32.EnumWindows(collect, None)
+    return found
+
+
+def owner_window(depth: int = WALK_DEPTH) -> tuple[int, str]:
+    """(hwnd, title) of the window this notification is coming FROM.
+
+    The first visible, titled, top-level window owned by this process or
+    by any of its `depth` nearest ancestors — see the block above for why
+    the chain and not the title. (0, "") when nothing in the chain owns a
+    window, and (0, "") on ANY error: this script never fails and always
+    exits 0, so a machine that answers none of these questions simply
+    sends a notification that cannot be clicked open.
+    """
+    try:
+        u32 = ctypes.WinDLL("user32", use_last_error=True)
+        parents = _parents()
+        pid = os.getpid()
+        for _ in range(max(1, int(depth))):
+            found = _windows_of(u32, pid)
+            if found:
+                return found[0]
+            parent = parents.get(pid, 0)
+            if not parent or parent == pid or parent not in parents:
+                break
+            pid = parent
+    except Exception:                     # noqa: BLE001
+        return 0, ""
+    return 0, ""
+
+
+def payload_from_hook(event: dict, window=None) -> dict | None:
     """The /notify body for one hook event, or None when it is nobody's
-    business (a subagent, a continued turn, an unknown notification)."""
+    business (a subagent, a continued turn, an unknown notification).
+
+    `window` is the (hwnd, title) the card will raise; left None it is
+    resolved by `owner_window()` — a parameter only so a test can say
+    what the answer is instead of taking whatever is on the desktop.
+    """
     if not isinstance(event, dict):
         return None
     if event.get("stop_hook_active") is True:
@@ -81,8 +240,10 @@ def payload_from_hook(event: dict) -> dict | None:
             or _collapse(event.get("message")) or "")[:BODY_MAX]
     cwd = event.get("cwd")
     project = Path(str(cwd)).name if isinstance(cwd, str) and cwd else ""
+    hwnd, app = owner_window() if window is None else window
     return {"source": SOURCE, "kind": kind, "title": title, "body": body,
-            "project": project, "session": str(event.get("session_id") or "")}
+            "project": project, "session": str(event.get("session_id") or ""),
+            "hwnd": int(hwnd), "app": str(app)}
 
 
 def server_url() -> str:
@@ -206,6 +367,11 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--kind", default="info")
     p.add_argument("--project", default="")
     p.add_argument("--session", default="")
+    # The window a click on the card raises. Resolved the same way as in
+    # hook mode unless a caller names its own — a program that knows its
+    # HWND should say so rather than let a walk find its console's.
+    p.add_argument("--hwnd", default=None)
+    p.add_argument("--app", default=None)
     p.add_argument("--install-hook", action="store_true")
     p.add_argument("--settings", default=None)
     p.add_argument("--url", default=None)
@@ -222,9 +388,19 @@ def _main(argv) -> None:
                          f" {path}\n")
         return
     if args.title is not None:
+        hwnd, app = owner_window()
+        if args.hwnd is not None:
+            try:
+                hwnd = max(0, int(str(args.hwnd), 0))
+            except (TypeError, ValueError):
+                hwnd = 0
+            app = args.app or ""
+        if args.app is not None:
+            app = args.app
         payload = {"source": args.source, "kind": args.kind,
                    "title": args.title, "body": args.body,
-                   "project": args.project, "session": args.session}
+                   "project": args.project, "session": args.session,
+                   "hwnd": int(hwnd), "app": str(app)}
     else:
         event = _read_stdin_json()
         payload = payload_from_hook(event) if event is not None else None

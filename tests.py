@@ -17387,8 +17387,14 @@ class _FakeNotifyCard:
     def stop(self) -> None:
         pass
 
-    def show(self, item: dict) -> None:
-        self.shown.append(item)
+    def show(self, items) -> None:
+        """Records the NEWEST of what it was given. Since 2026-09-04 the
+        engine hands the whole live column (notify.Engine.live), newest
+        first; a bare dict is what a card from before the stack got, and
+        is still accepted so the tolerance can be exercised."""
+        if isinstance(items, dict):
+            items = [items]
+        self.shown.append(dict(items[0]))
         self.up = True
 
     def hide(self) -> None:
@@ -17425,7 +17431,7 @@ def test_a_notification_is_cleaned_truncated_and_never_interpreted() -> None:
         assert "JSON object" in str(e), e
     out = notify.clean({"title": "x", "evil": "y", "body": "b"})
     assert set(out) == {"source", "kind", "title", "body", "project",
-                        "session"}, sorted(out)
+                        "session", "app", "hwnd"}, sorted(out)
     assert "evil" not in out
     out = notify.clean({"title": "a" * 81})
     assert len(out["title"]) == 80 and out["title"].endswith("…"), out["title"]
@@ -17446,6 +17452,123 @@ def test_a_notification_is_cleaned_truncated_and_never_interpreted() -> None:
     assert notify.SOURCES["claude-code"] == "Claude Code"
     assert notify.label_for("claude-code") == "Claude Code"
     assert notify.label_for("x") == "x"
+
+
+def test_a_notification_can_name_the_window_it_came_from() -> None:
+    """A sender may add `hwnd` and `app` so a click on the card can go
+    back to it. The title is text like every other field — truncated,
+    tidied, never interpreted — and the handle is an int or nothing:
+    anything that will not survive int(), and anything negative, is 0,
+    which reads downstream as "no window", never as an error."""
+    import notify
+
+    out = notify.clean({"title": "t", "hwnd": 43779834, "app": "Claude"})
+    assert out["hwnd"] == 43779834 and out["app"] == "Claude", out
+    assert notify.clean({"hwnd": "43779834"})["hwnd"] == 43779834, \
+        "a decimal string is still a handle"
+    for bad in ("Claude", -5, 0, None, {"h": 1}, [1], 1.5e400):
+        assert notify.clean({"hwnd": bad})["hwnd"] == 0, bad
+    assert notify.clean({})["hwnd"] == 0 and notify.clean({})["app"] == ""
+    assert notify.clean({"app": {"a": 1}})["app"] == ""
+    long_app = notify.clean({"app": "w" * (notify.APP_MAX + 40)})["app"]
+    assert len(long_app) == notify.APP_MAX and long_app.endswith("…")
+    assert notify.clean({"app": "  a\x07  b  "})["app"] == "a b"
+
+    with tempfile.TemporaryDirectory() as d:
+        store = notify.Store(Path(d) / "notify.json")
+        item = store.add(notify.clean({"title": "t", "hwnd": 99,
+                                       "app": "Claude"}))
+        assert item["hwnd"] == 99 and item["app"] == "Claude", item
+        assert store.last()["hwnd"] == 99, "the handle survives the file"
+        assert isinstance(store.last()["hwnd"], int), "an int, not a string"
+        assert store.add({"title": "t", "hwnd": "junk"})["hwnd"] == 0, \
+            "the store cleans a handle it is handed directly"
+
+
+def test_opening_a_notification_raises_its_window_and_dismisses_it() -> None:
+    """A click on the card away from the × is `open()`: raise the newest
+    item's window, then do everything dismiss() does. A missing window, a
+    closed one, or a raise Windows refuses costs the raise and nothing
+    else — the card still goes down and everything is still marked seen,
+    because a notification the owner clicked is a notification he read."""
+    import notify
+
+    calls: list = []
+    real = notify.raise_window
+    with tempfile.TemporaryDirectory() as d:
+        card = _FakeNotifyCard()
+        eng = notify.Engine(Path(d), _notify_cfg(remind_every_s=30,
+                                                 remind_times=3),
+                            cue=lambda k: None, card=card)
+        try:
+            notify.raise_window = lambda h: calls.append(h) or True
+            eng.receive({"source": "claude-code", "title": "Claude finished",
+                         "hwnd": 43779834, "app": "Claude"})
+            assert eng.state()["unread"] == 1 and card.up
+            assert eng.state()["reminding"] is True, "armed before the click"
+            state = eng.open(by="card")
+            assert calls == [43779834], calls
+            assert state["unread"] == 0 and state["reminding"] is False
+            assert card.hidden == 1 and card.up is False
+            log_text = (Path(d) / "notify.log").read_text("utf-8")
+            assert "OPENED #1 -> Claude (43779834)" in log_text, log_text
+            assert "would not come forward" not in log_text
+            assert "DISMISSED by card | 1 marked seen" in log_text, log_text
+            assert eng.store.last()["seen"] is True
+
+            calls.clear()
+            eng.receive({"source": "claude-code", "title": "no window"})
+            state = eng.open(by="dashboard")
+            assert calls == [], "nothing to raise, so nothing was tried"
+            assert state["unread"] == 0 and card.hidden == 2
+            log_text = (Path(d) / "notify.log").read_text("utf-8")
+            assert "OPENED #2 | no window to raise" in log_text, log_text
+
+            notify.raise_window = lambda h: calls.append(h) or False
+            eng.receive({"source": "claude-code", "title": "gone",
+                         "hwnd": 7, "app": "Claude"})
+            state = eng.open()
+            assert calls == [7] and state["unread"] == 0, (calls, state)
+            assert card.hidden == 3, "a window that will not come is not an error"
+            log_text = (Path(d) / "notify.log").read_text("utf-8")
+            assert "OPENED #3 -> Claude (7) | but it would not come forward" \
+                in log_text, log_text
+        finally:
+            notify.raise_window = real
+            eng.stop()
+
+    # The real one, with handles that are not windows. It must answer
+    # False rather than raise: a sender is allowed to have exited.
+    assert notify.raise_window(0) is False
+    assert notify.raise_window(-1) is False
+    assert notify.raise_window("Claude") is False
+    assert notify.raise_window(None) is False
+    assert notify.raise_window(7) is False, "7 is not a window"
+    code = "\n".join(
+        l for l in inspect.getsource(notify._handles).splitlines()
+        if l.strip() and not l.strip().startswith("#"))
+    # The USES, not the name: this function's docstring explains the trap
+    # and has to name it to do that, and a bare "the string is absent"
+    # check reads the warning as the crime. Same form as the hint card's
+    # version of this assertion further down the file.
+    assert 'ctypes.WinDLL("user32"' in code and \
+        "ctypes.windll.user32." not in code and "= ctypes.windll" not in code, \
+        "private handles only: a restype on ctypes.windll leaks everywhere"
+    raiser = inspect.getsource(notify.raise_window) + \
+        inspect.getsource(notify._is_front)
+    for needle in ("IsWindow", "IsIconic", "ShowWindow", "SetForegroundWindow",
+                   "GetForegroundWindow", "AttachThreadInput"):
+        assert needle in raiser, needle
+    assert raiser.index("SetForegroundWindow") < \
+        raiser.index("AttachThreadInput"), "the dance is the FALLBACK"
+    # The handover is asynchronous — one immediate read of the foreground
+    # answered 0 on a raise that worked — so the check is a bounded WAIT,
+    # not a read. See SETTLE_S.
+    assert notify.SETTLE_S > 0 and notify.POLL_S > 0
+    assert "SETTLE_S" in raiser and "time.sleep" in raiser
+    t0 = time.monotonic()
+    assert notify._is_front(notify._handles()[0], 7, 0.05) is False
+    assert 0.04 <= time.monotonic() - t0 < 1.0, "it waits, and it stops"
 
 
 def test_the_notify_store_keeps_a_hundred_and_survives_a_broken_file() -> None:
@@ -17686,7 +17809,11 @@ def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
     cfg = config_mod.load(here / "config.toml")
     assert cfg.notify.enabled is True
     assert cfg.notify.cue is True
-    assert cfg.notify.card_seconds == 30
+    # 0 since 2026-09-04: a card stays until it is dismissed, and the
+    # column is what takes it down. A number puts the countdown back.
+    assert cfg.notify.card_seconds == 0
+    assert cfg.notify.stack_max == 5
+    assert cfg.notify.anchor == "bottom"
     assert cfg.notify.remind_every_s == 120
     assert cfg.notify.remind_times == 2
     assert cfg.notify.coalesce_s == 5
@@ -17696,9 +17823,12 @@ def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
     sections = {s.name: s for s in settings_mod.read(here / "config.toml")}
     assert "notify" in sections, sorted(sections)
     keys = {s.key for s in sections["notify"].settings}
-    assert keys == {"enabled", "cue", "card_seconds", "remind_every_s",
-                    "remind_times", "coalesce_s", "corner", "x", "y",
+    assert keys == {"enabled", "cue", "card_seconds", "stack_max",
+                    "remind_every_s", "remind_times", "coalesce_s",
+                    "corner", "anchor", "x", "y",
                     "scale", "dismiss_hotkey"}, keys
+    anchor = {s.key: s for s in sections["notify"].settings}["anchor"]
+    assert anchor.choices == ("bottom", "top"), anchor.choices
     assert sections["notify"].help, "the section has no help text"
     corner = {s.key: s for s in sections["notify"].settings}["corner"]
     assert "right" in corner.choices and "bottom-left" in corner.choices, \
@@ -17773,6 +17903,14 @@ def test_the_notify_command_goes_through_the_control_channel() -> None:
     assert "self.notify.stop()" in inspect.getsource(main_mod.App.stop)
     assert "self.notify_card.start()" in inspect.getsource(main_mod.App.start)
     assert "self.notify.start()" in inspect.getsource(main_mod.App.start)
+    built = inspect.getsource(main_mod.App.__init__)
+    assert "on_open=self._notify_opened" in built and \
+        "on_dismiss=self._notify_dismissed" in built, "both callbacks wired"
+    opened = inspect.getsource(main_mod.App._notify_opened)
+    assert 'engine.open(item_id, by="card")' in opened and \
+        "threading.Thread" in opened
+    assert 'name="notify-open"' in opened, \
+        "the callback arrives on the card's thread; open() writes a file"
     with tempfile.TemporaryDirectory() as d:
         app = main_mod.App.__new__(main_mod.App)
         app._note = ""
@@ -17793,6 +17931,18 @@ def test_the_notify_command_goes_through_the_control_channel() -> None:
             assert reply["ok"] and reply["notify"]["unread"] == 0, reply
             assert "dismissed" in app._note, app._note
             assert fake.hidden == 1
+            # `open` is the card's click from the dashboard: raise the
+            # sender's window, then everything dismiss does. The test
+            # notification names no window, so nothing is raised and the
+            # dismissal is the whole of it.
+            app.control_command("notify", {"do": "test"})
+            reply = app.control_command("notify", {"do": "open"})
+            assert reply["ok"] and reply["notify"]["unread"] == 0, reply
+            assert set(reply) == {"ok", "notify"}, reply
+            assert "opening" in app._note, app._note
+            assert fake.hidden == 2
+            assert "OPENED #2 | no window to raise" in \
+                (Path(d) / "notify.log").read_text("utf-8")
             reply = app.control_command("notify", {"do": "sideways"})
             assert not reply["ok"] and "sideways" in reply["error"], reply
         finally:
@@ -17876,6 +18026,69 @@ def test_the_hook_script_maps_events_and_never_fails() -> None:
     assert time.monotonic() - t0 < 2.0
     assert hook.main(["--title", "x", "--url", "http://127.0.0.1:1/notify"]) == 0
     assert hook.main(["--no-such-flag"]) == 0, "argparse errors must not leak"
+
+
+def test_the_hook_names_the_window_the_notification_came_from() -> None:
+    """owner_window walks UP THE PARENT PROCESSES, because this script is
+    a child of whatever owns the window and a title search would be a
+    guess. It answers a (hwnd, title) pair, it never raises whatever the
+    machine says, and what it finds rides in the payload as `hwnd`/`app`
+    so notify.Engine.open has something to raise. `--hwnd`/`--app` let a
+    program that knows its own window say so instead."""
+    import notify_hook as hook
+
+    found = hook.owner_window()
+    assert isinstance(found, tuple) and len(found) == 2, found
+    hwnd, app = found
+    assert isinstance(hwnd, int) and isinstance(app, str), found
+    assert hwnd >= 0 and (hwnd == 0) == (app == ""), found
+    for depth in (0, -1, 1, "junk"):
+        assert isinstance(hook.owner_window(depth), tuple), depth
+    assert isinstance(hook._parents(), dict)
+    if hook._parents():
+        assert os.getpid() in hook._parents(), "our own pid is in the snapshot"
+
+    p = hook.payload_from_hook({"hook_event_name": "Stop"},
+                               window=(43779834, "Claude"))
+    assert p["hwnd"] == 43779834 and p["app"] == "Claude", p
+    p = hook.payload_from_hook({"hook_event_name": "Stop"}, window=(0, ""))
+    assert p["hwnd"] == 0 and p["app"] == "", p
+    live = hook.payload_from_hook({"hook_event_name": "Stop"})
+    assert set(live) >= {"hwnd", "app"} and isinstance(live["hwnd"], int)
+
+    src = inspect.getsource(hook)
+    assert "CreateToolhelp32Snapshot" in src and "th32ParentProcessID" in src
+    assert 'ctypes.WinDLL("kernel32"' in src and 'ctypes.WinDLL("user32"' in src
+    # The USES, not the name — the module's own comment names the trap it
+    # is avoiding, and a bare "the string is absent" check cannot tell a
+    # warning from the thing it warns about.
+    assert "ctypes.windll.user32." not in src and \
+        "ctypes.windll.kernel32." not in src and "= ctypes.windll" not in src, \
+        "private handles only: a restype on ctypes.windll leaks everywhere"
+    assert hook.WALK_DEPTH >= 7, "the measured chain was seven processes deep"
+
+    sent: list = []
+    real_post = hook.post
+    hook.post = lambda payload, url, token, timeout=3.0: sent.append(payload)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            token = Path(d) / "t.txt"
+            token.write_text("secret", "utf-8")
+            assert hook.main(["--title", "x", "--hwnd", "1234", "--app", "Q",
+                              "--token-file", str(token)]) == 0
+            assert sent[-1]["hwnd"] == 1234 and sent[-1]["app"] == "Q", sent
+            assert hook.main(["--title", "x", "--hwnd", "-3",
+                              "--token-file", str(token)]) == 0
+            assert sent[-1]["hwnd"] == 0, sent[-1]
+            assert hook.main(["--title", "x", "--hwnd", "nonsense",
+                              "--token-file", str(token)]) == 0
+            assert sent[-1]["hwnd"] == 0, sent[-1]
+            assert hook.main(["--title", "x", "--token-file",
+                              str(token)]) == 0
+            assert sent[-1]["hwnd"] == hook.owner_window()[0], \
+                "with no override it resolves the same window as the hook"
+    finally:
+        hook.post = real_post
 
 
 def test_the_notify_cue_exists_and_has_its_own_shape() -> None:
@@ -18018,15 +18231,27 @@ def test_relative_time_reads_naturally() -> None:
 
 def test_the_notify_card_sits_mid_height_and_keeps_a_saved_position(
         ) -> None:
+    """...and since 2026-09-04 a saved y is the edge the card is ANCHORED
+    by, which under the default `anchor="bottom"` is its BOTTOM. Every
+    corner is unchanged; only the meaning of the stored number moved, and
+    it moved so a column that grew taller could not walk off the bottom of
+    the screen. The old reading is still reachable with anchor="top",
+    which is what the assertion below pins."""
     card = overlay_mod.NotifyCard(corner="right", margin=14)
     x, y = card.origin(360, 200, (2560, 1440), 26, (-1920, 0, 4480, 1440))
     assert (x, y) == (2560 - 14 - 360 + 26, (1440 - 200) // 2), (x, y)
     left = overlay_mod.NotifyCard(corner="left", margin=14)
     assert left.origin(360, 200, (2560, 1440), 26)[0] == 14 - 26
-    moved = overlay_mod.NotifyCard(corner="right", x=-1500, y=300)
+    moved = overlay_mod.NotifyCard(corner="right", x=-1500, y=300,
+                                   anchor="top")
     assert moved.origin(360, 200, (2560, 1440), 26,
                         (-1920, 0, 4480, 1440)) == (-1526, 274), \
         "a saved position on the left monitor is kept"
+    bottom = overlay_mod.NotifyCard(corner="right", x=-1500, y=300,
+                                    anchor="bottom")
+    assert bottom.origin(360, 200, (2560, 1440), 26,
+                         (-1920, 0, 4480, 1440)) == (-1526, 274 - 148), \
+        "under anchor=bottom the saved y is the card's bottom edge"
     top = overlay_mod.NotifyCard(corner="top-right", margin=14)
     assert top.origin(360, 200, (2560, 1440), 26)[1] == 14 - 26
     assert overlay_mod.NotifyCard.CORNERS == overlay_mod.ReviewCard.CORNERS
@@ -18039,12 +18264,17 @@ def test_the_notify_card_dismisses_by_esc_only_under_the_pointer_and_reports_onc
     ever goes near HintCard.dismissed(), which writes enabled=false."""
     rec: list = []
     changed: list = []
-    card = overlay_mod.NotifyCard(on_dismiss=lambda: rec.append(1),
-                                  on_change=lambda f: changed.append(f))
+    # The callbacks take the pressed card's id since 2026-09-04 (None
+    # meaning "all"), and the queue carries the whole COLUMN rather than
+    # one card — a bare dict is still accepted and still means a column of
+    # one, which is what this test hands it.
+    card = overlay_mod.NotifyCard(on_dismiss=lambda i: rec.append(1),
+                                  on_change=lambda f: changed.append(f),
+                                  seconds=30)
     card._thread = threading.Thread(target=lambda: None)   # never started
     card.show(_item(id=7, unread=3))
     assert card.visible() and card.current() == 7
-    queued = card._q.get_nowait()
+    queued = card._q.get_nowait()[0]
     assert queued["badge"] == "3" and queued["label"] == "Claude Code"
     assert queued["seconds"] == 30.0
     card.rect = (0, 0, 100, 100)
@@ -18073,6 +18303,101 @@ def test_the_notify_card_dismisses_by_esc_only_under_the_pointer_and_reports_onc
     assert "self.dismissed(" not in src and "super().dismissed(" not in src \
         and "_changed(enabled" not in src, \
         "NotifyCard must never call HintCard.dismissed() (enabled=false)"
+
+
+def test_the_notify_card_opens_on_a_click_and_dismisses_on_the_cross(
+        ) -> None:
+    """The card's two answers (2026-09-04). `pressed("open")` calls
+    on_open exactly once per card and never on_dismiss; both take the
+    card down; neither goes anywhere near HintCard.dismissed(), which is
+    the trap that would write enabled=false into config.toml. Esc stays a
+    plain dismissal — a key over a card is not a request to go
+    anywhere — and a name that is neither is ignored."""
+    opened: list = []
+    dismissed: list = []
+    changed: list = []
+    # One argument since 2026-09-04: the id of the card that was pressed,
+    # or None for "all" / "the newest". Esc and the dismiss key name
+    # nobody, which is what these presses do.
+    card = overlay_mod.NotifyCard(on_dismiss=lambda i: dismissed.append(1),
+                                  on_open=lambda i: opened.append(1),
+                                  on_change=lambda f: changed.append(f))
+    card._thread = threading.Thread(target=lambda: None)   # never started
+    card.show(_item(id=11))
+    card.pressed("open")
+    assert opened == [1] and dismissed == [], (opened, dismissed)
+    assert not card.visible(), "the card comes down on an open too"
+    assert card._q.get_nowait()[0]["id"] == 11
+    assert card._q.get_nowait() is None, "the painter is told to take it down"
+    card.pressed("open")
+    assert opened == [1], "one press, one report"
+    card.show(_item(id=12))
+    card.pressed("sideways")
+    assert card.visible() and opened == [1] and dismissed == [], \
+        "a name that is neither is not a press"
+    card.hovering = lambda: True
+    assert card.on_key(0x1B) is True
+    assert dismissed == [1] and opened == [1], "Esc dismisses, never opens"
+    assert card._enabled is True and changed == [], \
+        "an open must never write enabled=false or anything else"
+    # A card built without an on_open still comes down on a click; the
+    # engine simply never hears about it.
+    bare = overlay_mod.NotifyCard()
+    bare._thread = threading.Thread(target=lambda: None)
+    bare.show(_item(id=13))
+    bare.pressed("open")
+    assert not bare.visible()
+
+
+def test_both_notify_presenters_open_on_a_click_and_dismiss_on_the_cross(
+        ) -> None:
+    """Same two meanings whichever presenter is up, checked at the source
+    level because every one of these is a mouse event on a real window.
+
+    The × is the only HTCLIENT region notify_card.hit_test answers, and
+    on both paths it is the one that reaches `pressed("dismiss")`: in Tk
+    on the way DOWN (on_press), on glass through WM_LBUTTONDOWN
+    (on_click). Everything else on the card is HTCAPTION, and its
+    release — travelled less than CLICK_PX, so a click and not a drag —
+    is `pressed("open")`.
+    """
+    # The needles lost their closing paren on 2026-09-04: a press now
+    # names the card it landed on, so the calls read
+    # `pressed("dismiss", ident(...))`. What is being asserted is which
+    # of the two answers each road takes, and that has not changed.
+    tk_src = inspect.getsource(overlay_mod.NotifyCard._build_and_loop)
+    assert 'self.pressed("open"' in tk_src
+    assert 'self.pressed("dismiss"' in tk_src
+    press = tk_src[tk_src.index("def on_press"):tk_src.index("def on_motion")]
+    assert 'self.pressed("dismiss"' in press and \
+        'self.pressed("open"' not in press, \
+        "the × dismisses; on_press must not open"
+    assert "nc.HTCLIENT and what == nc.DISMISS" in press or \
+        'code == nc.HTCLIENT and what == "dismiss"' in press, press
+    release = tk_src[tk_src.index("def on_release"):]
+    assert 'self.pressed("open"' in release and \
+        'self.pressed("dismiss"' not in release, \
+        "a click on the body opens; only a drag past CLICK_PX does not"
+    assert "CLICK_PX" in release, "no threshold: every drag would open"
+
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    src = (Path(skin.__file__).resolve().parent / "notify.py").read_text(
+        "utf-8")
+    body = src[src.index("def run("):]
+    assert 'card.pressed("open"' in body and 'card.pressed("dismiss"' in body
+    click = body[body.index("def on_click"):body.index("def paint")]
+    assert 'card.pressed("dismiss"' in click and \
+        'card.pressed("open"' not in click, \
+        "on_click is the × and only the ×"
+    assert "nc.HTCLIENT and what == nc.DISMISS" in click, click
+    move = body[body.index("def on_move"):body.index("def on_click")]
+    assert 'card.pressed("open"' in move and \
+        'card.pressed("dismiss"' not in move, \
+        "a click on the card's HTCAPTION area opens"
+    assert "CLICK_PX" in move and "dismissing" in move, \
+        "the latch and the threshold both still stand"
 
 
 def test_the_off_notify_card_is_inert() -> None:
@@ -18304,8 +18629,12 @@ def test_the_skin_notify_card_dismisses_drags_and_hit_tests_like_the_flat_one(
         return
     src = (Path(skin.__file__).resolve().parent / "notify.py").read_text(
         "utf-8")
-    for needle in ("nc.hit_test(", 'card.pressed("dismiss")', "card.placed(",
-                   "card.timed_out()", "card.hovering()", "nc.compose(",
+    # `nc.hit_test` became `nc.stack_hit_test` on 2026-09-04: the window
+    # holds the whole unread column, so the answer has to name WHICH card
+    # the pointer is on. Same function, one more question answered.
+    for needle in ("nc.stack_hit_test(", 'card.pressed("dismiss"',
+                   "card.placed(", "card.timed_out()", "card.hovering()",
+                   "nc.compose(", "nc.stack_layout(", "nc.stack_measure(",
                    "hit=on_hit", "moved=on_move", "clicked=on_click"):
         assert needle in src, f"skin\\notify.py never reaches {needle}"
     assert "nc.flat(" not in src and "notify_card.flat(card" not in src, \
@@ -18316,7 +18645,7 @@ def test_the_skin_notify_card_dismisses_drags_and_hit_tests_like_the_flat_one(
         "a drag saves the window's corner, not the card's — it will snap back"
     assert "CLICK_PX" in src, \
         "no click-versus-drag threshold: every drag would dismiss the card"
-    assert src.count('card.pressed("dismiss")') >= 1
+    assert src.count('card.pressed("dismiss"') >= 1
     # The clock pauses under the pointer and only THEN is compared, exactly
     # as review.py does it; the other order takes the card down under a
     # reader's nose on the tick they hovered.
@@ -18452,9 +18781,9 @@ def test_the_readme_and_agents_document_notify():
     assert readme.index("## Awake, and the screens off") < i
     assert i < readme.index("## Dictating from the phone")
     table = readme[readme.index("## Config reference"):]
-    for key in ("enabled", "cue", "card_seconds", "remind_every_s",
-                "remind_times", "coalesce_s", "corner", "x", "y", "scale",
-                "dismiss_hotkey"):
+    for key in ("enabled", "cue", "card_seconds", "stack_max",
+                "remind_every_s", "remind_times", "coalesce_s", "corner",
+                "anchor", "x", "y", "scale", "dismiss_hotkey"):
         assert f"| `[notify] {key}` |" in table, key
     assert "--install-hook" in readme
     assert "irm 'http://127.0.0.1:8756/notify'" in readme

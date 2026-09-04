@@ -1992,19 +1992,77 @@ takes the job. Any program on this machine, or the phone over the same
 Tailscale link the dictation endpoint uses, POSTs a small JSON body to
 `/notify` on the `[server]` port with the bearer token from
 `server_token.txt`, and the app plays a three-note cue, puts a card up at
-the screen edge and keeps reminding you until the card is dismissed — a
-click on it, `Esc` with the mouse over it, a tap of `ctrl+alt+m`, or
-**Dismiss all** on the dashboard's Notify screen.
+the screen edge and keeps reminding you until the card is answered —
+`Esc` with the mouse over it, a tap of `ctrl+alt+m`, or **Dismiss all**
+on the dashboard's Notify screen.
+
+**They stack, they grow upward, and they wait (2026-09-04).** Three
+things asked for in one breath, all of them about the same corner of the
+screen. The owner keeps the card in the **bottom-right**, and a long
+message used to grow downward and run off the bottom of the screen — so
+the column is anchored by its BOTTOM edge (`[notify] anchor = "bottom"`)
+and a taller card grows *upward* from where it sits; `"top"` pins the top
+edge and is the old behaviour. Nothing times out any more: `[notify]
+card_seconds` is `0` by default and a card stays until it is answered,
+because a notice that had gone before he turned round was the whole
+problem this feature exists for. And every unread notification is on
+screen at once, as a column, **newest at the top** and oldest at the
+bottom, each with its own × and its own click target: `[notify]
+stack_max` (default `5`) is how many fit, and the bottom card carries a
+faint `+3 earlier` for the rest, which wait on the dashboard's Notify
+screen. The whole column is drawn into ONE window, not one window per
+card — one thread, one hit test, one placement, and gaps that cannot
+drift — and the stacking arithmetic is the capture toast's (`TOAST_GAP`,
+`stack_fits`, `stack_at`, `stack_layout`), copied rather than imported,
+because `overlay.py` is on the startup path and `capture.py` drags in
+Pillow, Tk canvases and a video encoder behind it.
+
+**A click on a card takes you there (2026-09-04).** Pressing anywhere
+on one except its × raises the window that sent it — for a Claude Code
+notification, the Claude window — and marks that one seen in the same
+motion, because arriving at the work is having read the notice. The ×
+is the other answer and keeps the old meaning for the card it is on:
+down, seen, stay where you are. `Esc` over the column, the dismiss key
+and the dashboard's **Dismiss all** are still the whole-hearted version
+— everything seen, the column down. A press that travels more than
+four pixels is none of them — it is still the drag that moves the
+column. How
+the sender is identified: `notify_hook.py` walks UP ITS OWN PARENT
+PROCESSES and takes the first visible titled window an ancestor owns,
+because the hook is a child of the process that owns the window, so the
+answer is structural rather than a guess at a title. Measured on this
+machine that day, from a process spawned inside Claude Code: six
+ancestors (`python.exe`, `python.exe`, three `bash.exe`, `claude.exe`)
+owning no window at all, and the seventh, `claude.exe`, owning exactly
+one — `(43779834, 'Claude')`. It rides in the payload as `hwnd` and
+`app`; `raise_window` restores the window if it was minimised, asks for
+the foreground, WATCHES `GetForegroundWindow` until it is the window (up
+to half a second) and falls back once to the `AttachThreadInput` dance if
+it never becomes it. The watching is not belt-and-braces: the handover is
+asynchronous, and measured that day from a plain background process the
+immediate read after a `SetForegroundWindow` that returned 1 was `0`
+(nobody), with the target in front 500 ms later — so the first version of
+this reported failure on a raise that had worked. What it does now, both
+measured from a background python with Chrome in front: a minimised probe
+window, `raise_window -> True` in 15 ms and `GetForegroundWindow` changed
+from `1126367970` to `658500`; and the real Claude window, `True` in
+16 ms, `1126367970` → `43779834 'Claude'`. A sender that named no window,
+one that has since closed, or a raise Windows refuses costs the raise and
+nothing else — the card still goes down, and `notify.log` says which.
 
 **What happens.** The body is `{"source", "kind", "title", "body",
-"project", "session"}`, every field optional. `kind` is one of `done`,
+"project", "session", "hwnd", "app"}`, every field optional — `hwnd` is
+the window a click should raise (an integer; anything unparsable or
+negative reads as "no window") and `app` is its title, kept as a label
+only. `kind` is one of `done`,
 `input`, `error`, `info` (anything else reads as `info`) and colours the
 card's bar and the row's dot; an empty `title` gets the kind's own words
 ("Finished", "Needs your input", "Something went wrong", "Notification").
-The card says who sent it, the title, the first four lines of the body,
-the project, and how long ago; it takes itself down after
-`[notify] card_seconds` (default 30, the clock paused while the mouse is
-on it; `0` = until dismissed) and the reminders bring it back. It never
+Each card says who sent it, the title, the first four lines of the body,
+the project, and how long ago; it stays until it is answered, because
+`[notify] card_seconds` is `0` by default. Any other number is the old
+countdown, in seconds, paused while the mouse is on the card and with
+the reminders bringing the column back. It never
 takes the foreground: the window that had the keyboard keeps it — the
 same recipe the capture toast uses — so a card arriving mid-sentence
 costs no keystroke.
@@ -2039,7 +2097,9 @@ Claude uses:
     notify_hook.py --title "Build done" --body "17 tests, 0 failed" --source myapp --kind done
 
 `--project` and `--session` are optional; `--url` and `--token-file`
-override where it posts. The reply is `{"ok": true, "id": 12, "unread":
+override where it posts; `--hwnd` and `--app` name the window a click on
+the card should raise, for a program that knows its own handle and would
+rather not have the parent walk find its console's. The reply is `{"ok": true, "id": 12, "unread":
 3, "coalesced": false}`; `401` for a bad token, `400` for a body that is
 not a JSON object (an *empty* body is a 400 too — always send at least
 `{}`), `503` when `[notify] enabled = false`. `/notify` is POST-only and
@@ -2058,17 +2118,18 @@ with the title or body. The dashboard's rows do the same through
 say anything; it cannot make the app *do* anything.
 
 **Reminders and coalescing.** While anything is unread the cue replays and
-the card comes back every `[notify] remind_every_s` (default 120)
+the column comes back every `[notify] remind_every_s` (default 120)
 seconds, at most `[notify] remind_times` (default 2) times per arrival;
-then it waits quietly on the Notify screen, unread count intact. Dismiss
-marks *everything* seen at once — from the card, the key, or the
-dashboard — because "seen" means you looked, not that you clicked each
-one. Claude fires `Stop` and `Notification` a moment apart, so a second
-arrival from the SAME source within `[notify] coalesce_s` (default 5)
-seconds updates the card and skips the second cue; the item is still
-stored, the card shows the newest with an unread badge, and the reply
-says `coalesced: true`. Reminders are never coalesced. `[notify] cue =
-false` keeps the card and drops the sound.
+then it waits quietly on the Notify screen, unread count intact. The
+dismiss key, `Esc` over the column and **Dismiss all** mark *everything*
+seen at once, because "seen" means you looked, not that you clicked each
+one; the × on one card, and a click that opens one card, mark only that
+one and leave the rest of the column standing. Claude fires `Stop` and
+`Notification` a moment apart, so a second arrival from the SAME source
+within `[notify] coalesce_s` (default 5) seconds skips the second cue;
+the item is still stored, its card still goes on top of the column, and
+the reply says `coalesced: true`. Reminders are never coalesced.
+`[notify] cue = false` keeps the cards and drops the sound.
 
 **Where it goes.** Every arrival, reminder and dismissal is one line in
 `notify.log` (`RECEIVED #12 from claude-code (done) | project
@@ -2082,9 +2143,12 @@ all** go through the running app, because the cue, the card and the
 reminders live in the process with the hotkey in it. `app.log` gets one
 `notify: received` line per arrival and a `rejected an unauthorised
 /notify` line per bad token. Both files are gitignored; titles and
-bodies are other programs' words and stay on this machine. The card's
+bodies are other programs' words and stay on this machine. The column's
 position is remembered in `[notify] x` / `y` when you drag it (`corner`
-says where it starts before you have), and `scale` sizes it.
+says where it starts before you have), and `scale` sizes it. Under
+`anchor = "bottom"` that `y` is the column's BOTTOM edge, not its top —
+which is the point: the pile grows away from the screen edge you put it
+against, however tall it gets.
 
 **Check it by hand.**
 1. Dashboard → Notify → **Send a test**: the cue, the card mid-height on
@@ -2092,13 +2156,18 @@ says where it starts before you have), and `scale` sizes it.
    card), the hero says `1 UNREAD`, a row appears.
 2. Type a letter into whatever window you were in — it lands there, not
    on the card.
-3. Leave the card alone: it goes at 30 s; at +120 s and +240 s the cue
-   replays and the card returns; `notify.log` shows `REMINDED 1/2`, `2/2`.
-4. Tap `ctrl+alt+m`: the card goes, the hero says `ALL SEEN`, `notify.log`
-   says `DISMISSED by key`.
-5. The PowerShell one-liner above twice within five seconds: one cue,
+3. Leave the card alone: it stays, however long you leave it. At +120 s
+   and +240 s the cue replays and the column comes back up; `notify.log`
+   shows `REMINDED 1/2`, `2/2`.
+4. **Send a test** twice more: three cards in a column, newest at the
+   top, the whole pile growing upward from where the first one sat. Press
+   the × on the middle one — it goes, the other two stay, and
+   `notify.log` says `DISMISSED #2 by card | 1 marked seen`.
+5. Tap `ctrl+alt+m`: the whole column goes, the hero says `ALL SEEN`,
+   `notify.log` says `DISMISSED by key`.
+6. The PowerShell one-liner above twice within five seconds: one cue,
    two rows, `coalesced: true` in the second reply.
-6. The same one-liner with the wrong token: `401`, and `app.log` gains
+7. The same one-liner with the wrong token: `401`, and `app.log` gains
    `rejected an unauthorised /notify`.
 
 **Rejected, 2026-09-03.** *The desktop app's own notification*: it does
@@ -3079,11 +3148,13 @@ for `מבשרים`, all of which the local model got right.
 | `[server] port` | `8756` | the port `tailscale serve` should front |
 | `[notify] enabled` | `true` | the notify door (see [Notify](#notify--when-claude-or-anything-finishes-ctrlaltm)). `false` = `/notify` answers 503 and nothing is shown, stored or played |
 | `[notify] cue` | `true` | play the three-note `notify` cue when one arrives and on every reminder. `false` = the card only |
-| `[notify] card_seconds` | `30` | how long the card stays up before it takes itself down; the reminders bring it back. The clock **pauses** while the mouse is on it. `0` = until dismissed |
+| `[notify] card_seconds` | `0` | `0` = a card stays until you dismiss it, which is what a stack of them wants. Any other number is the old countdown, in seconds, **paused** while the mouse is on the card, with the reminders bringing the column back |
+| `[notify] stack_max` | `5` | how many unread cards may be on screen at once, newest at the top. The rest wait on the Notify screen and are counted on the bottom card as `+3 earlier`. `1` to `8` |
 | `[notify] remind_every_s` | `120` | while something is unread, play the cue and show the card again this many seconds after the last time. `0` = never remind |
 | `[notify] remind_times` | `2` | ...at most this many times per arrival, then it waits quietly on the dashboard's Notify screen. `0` = never remind |
 | `[notify] coalesce_s` | `5` | a second notification from the **same** source within this many seconds updates the card instead of playing a second cue — Claude fires `Stop` and `Notification` a moment apart. The item is still stored |
 | `[notify] corner` | `right` | `right` \| `left` \| `top-right` \| `top-left` \| `bottom-right` \| `bottom-left`. Where the card appears before you have dragged it; `right` is mid-height on the right edge, like the second reading's card |
+| `[notify] anchor` | `bottom` | `bottom` \| `top`. Which edge of the column stays put as it grows. `bottom` grows a long message **upward**, so a column kept in the bottom-right corner never runs off the screen; `top` pins the top edge and grows downward, as it used to |
 | `[notify] x` | `-100000` | the top-left of the card where you last dragged it, in screen pixels. `-100000` = never moved: use `corner`. Negative is real on a monitor to the left of the primary |
 | `[notify] y` | `-100000` | same, vertically |
 | `[notify] scale` | `1.0` | how big the card is drawn, `0.6` to `1.4` |

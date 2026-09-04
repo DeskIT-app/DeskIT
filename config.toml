@@ -226,8 +226,8 @@ corner = "top-right"          # top-right | top-left | bottom-right | bottom-lef
                               # Where it starts before you have moved it. On the
                               # right it is placed BESIDE the status dot, never
                               # over it: the dot does not move for this
-x = -1691                      # the top-left of the CARD where you last dragged
-y = 473                       # it, in screen pixels — what you can SEE, not the
+x = -1788                      # the top-left of the CARD where you last dragged
+y = 371                       # it, in screen pixels — what you can SEE, not the
                               # window, which starts 26 px further up and left to
                               # leave room for its own shadow. -100000 = never
                               # moved: use `corner`. It has to be a number no
@@ -235,7 +235,7 @@ y = 473                       # it, in screen pixels — what you can SEE, not t
                               # of the primary has real negative coordinates
                               # (this one starts at x = -1920) and the -1 this
                               # used to mean threw every card dragged there away
-scale = 0.9                   # how big you last made it (0.6 .. 1.4). The − and
+scale = 0.8                   # how big you last made it (0.6 .. 1.4). The − and
                               # + on the card step this by 10% and save it
 
 [setup]
@@ -1039,10 +1039,15 @@ enabled = true                 # false = the route answers 503 and nothing
                                # is shown, stored or played
 cue = true                     # play the "notify" cue when one arrives and
                                # on every reminder. false = the card only
-card_seconds = 30              # how long the card stays up before it takes
-                               # itself down (the reminders bring it back).
-                               # The clock pauses while the mouse is on it.
-                               # 0 = it stays until dismissed
+card_seconds = 0               # 0 = a card stays until you dismiss it, which
+                               # is what a stack of them wants: it waits for
+                               # the x or a click, however long that takes.
+                               # Any other number is the old countdown, in
+                               # seconds, paused while the mouse is on it
+stack_max = 5                  # how many unread cards may be on screen at
+                               # once, the newest at the top. The rest wait
+                               # in the dashboard, counted on the bottom
+                               # card as "+3 earlier" (1 .. 8)
 remind_every_s = 120           # while something is unread, play the cue and
                                # show the card again this many seconds
                                # after the last time. 0 = never remind
@@ -1057,10 +1062,20 @@ corner = "right"               # right | left | top-right | top-left | bottom-ri
                                # appears before you have dragged it: "right"
                                # is mid-height on the right edge, like the
                                # second reading's card
-x = -100000                    # the top-left of the CARD where you last
-y = -100000                    # dragged it, in screen pixels. -100000 = never
-                               # moved: use `corner`. Negative is real on a
-                               # monitor to the left of the primary
+anchor = "bottom"              # bottom | top. Which edge of the stack stays
+                               # put when a card is taller than the last
+                               # one. "bottom" grows a long message UPWARD,
+                               # so a card kept in the bottom-right corner
+                               # never runs off the screen; "top" pins the
+                               # top edge and grows downward, as it used to
+x = 2195                    # the top-left of the CARD where you last
+y = 1373                    # dragged it, in screen pixels — but `y` is the
+                               # edge `anchor` names, so with the default
+                               # "bottom" it is the BOTTOM of the stack and
+                               # a taller card grows up away from it.
+                               # -100000 = never moved: use `corner`.
+                               # Negative is real on a monitor to the left
+                               # of the primary
 scale = 1.0                    # how big it is drawn (0.6 .. 1.4)
 dismiss_hotkey = "ctrl+alt+m"  # tap: the card goes away and everything is
                                # marked seen, wherever the mouse is. Rebind
@@ -1434,8 +1449,8 @@ card_seconds = 20             # how long the card stays on screen before it
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
-x = -980                   # the top-left of the CARD where you last
-y = 916                   # dragged it, in screen pixels. -100000 = never
+x = -479                   # the top-left of the CARD where you last
+y = 778                   # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a
                               # monitor to the left of the primary
 scale = 1.0                   # how big it is drawn (0.6 .. 1.4)

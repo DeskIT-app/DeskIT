@@ -444,13 +444,30 @@ class App:
         # inert card and everything else (route, store, log, key) works.
         ncfg = getattr(cfg, "notify", None)
         card_cls = getattr(overlay_mod, "NotifyCard", None)
-        self.notify_card = (card_cls(
-            ncfg.corner, x=ncfg.x, y=ncfg.y, scale=ncfg.scale,
-            on_change=self._save_notify_card,
-            on_dismiss=self._notify_dismissed,
-            seconds=ncfg.card_seconds)
-            if card_cls is not None and ncfg is not None and ncfg.enabled
-            else notify_mod.NullCard())
+        if card_cls is not None and ncfg is not None and ncfg.enabled:
+            fields = dict(
+                x=ncfg.x, y=ncfg.y, scale=ncfg.scale,
+                on_change=self._save_notify_card,
+                on_dismiss=self._notify_dismissed,
+                on_open=self._notify_opened,
+                seconds=ncfg.card_seconds,
+                anchor=getattr(ncfg, "anchor", "bottom"))
+            # `anchor` lands with the card package (2026-09-04) — which
+            # edge stays put as the column grows. A card class from
+            # before it takes no such argument, so it is OFFERED and
+            # withdrawn if the signature has no room for it, rather than
+            # assumed the way `seconds` can be.
+            try:
+                takes = inspect.signature(card_cls).parameters
+            except (TypeError, ValueError):
+                takes = {}
+            if takes and "anchor" not in takes:
+                fields.pop("anchor")
+                log.info("notify card: this overlay takes no anchor — the "
+                         "column will grow downward")
+            self.notify_card = card_cls(ncfg.corner, **fields)
+        else:
+            self.notify_card = notify_mod.NullCard()
         self.notify = notify_mod.Engine(APP_DIR, ncfg, cue=beep,
                                         card=self.notify_card)
         # The pencil's box: one line, takes the keyboard, on purpose.
@@ -1030,18 +1047,38 @@ class App:
         log.info("notify card: %s",
                  ", ".join(f"{k}={v}" for k, v in fields.items()))
 
-    def _notify_dismissed(self) -> None:
-        """A click on the card, or Esc over it. The callback arrives on
-        the card's Tk thread, and the engine's dismiss is a JSON write —
-        so it goes to a thread of its own, and the card's pump is never
-        made to wait on the disk."""
+    def _notify_dismissed(self, item_id=None) -> None:
+        """The × on a card, or Esc over the column. The callback arrives
+        on the card's Tk thread, and the engine's dismiss is a JSON write
+        — so it goes to a thread of its own, and the card's pump is never
+        made to wait on the disk.
+
+        `item_id` is the card that was pressed, or None for the whole
+        column (Esc, and every caller that predates the stack). It rides
+        straight through to the engine, which decides what one id and no
+        id each mean."""
         def work() -> None:
             engine = getattr(self, "notify", None)
             if engine is not None:
-                engine.dismiss(by="card")
-                self._say("notifications dismissed")
+                engine.dismiss(item_id, by="card")
+                self._say("notification dismissed" if item_id is not None
+                          else "notifications dismissed")
         threading.Thread(target=work, daemon=True,
                          name="notify-dismiss").start()
+
+    def _notify_opened(self, item_id=None) -> None:
+        """A click anywhere on a card except its × (2026-09-04): go to
+        whoever sent that one. Same thread rule as the dismissal above
+        and for the same two reasons — the callback arrives on the
+        card's own thread, and open() both writes notify.json and calls
+        into user32; neither belongs in the painter's pump."""
+        def work() -> None:
+            engine = getattr(self, "notify", None)
+            if engine is not None:
+                engine.open(item_id, by="card")
+                self._say("opening what sent it")
+        threading.Thread(target=work, daemon=True,
+                         name="notify-open").start()
 
     def _notify_from_outside(self, payload) -> dict:
         """The /notify route's callable: from an HTTP request thread,
@@ -1681,18 +1718,38 @@ class App:
                           else "screens on")
                 return {"ok": True, "awake": state}
             if command == "notify":
-                # dismiss | test | recent. dismiss is one JSON write and
-                # a queue put; test is receive() on this thread (the same
-                # write, an async cue); recent reads the file once. All
-                # inside the poll's patience, and the reply carries the
-                # fresh state so the Notify screen repaints at once.
+                # dismiss | open | test | recent. dismiss is one JSON
+                # write and a queue put; open is that plus one
+                # SetForegroundWindow; test is receive() on this thread
+                # (the same write, an async cue); recent reads the file
+                # once. All inside the poll's patience, and the reply
+                # carries the fresh state so the Notify screen repaints
+                # at once.
                 engine = getattr(self, "notify", None)
                 if engine is None:
                     return {"ok": False, "error": "notifications are off"}
                 do = str(args.get("do", "")).strip().lower()
+                # An optional "id" names ONE card of the column; without
+                # it both actions still mean the whole of it, which is
+                # what Dismiss all has always meant. Anything that will
+                # not survive int() is no id rather than an error — the
+                # engine reads it the same way.
+                try:
+                    ident = int(args["id"]) if args.get("id") is not None \
+                        else None
+                except (TypeError, ValueError):
+                    ident = None
                 if do == "dismiss":
-                    state = engine.dismiss(by="dashboard")
-                    self._say("notifications dismissed")
+                    state = engine.dismiss(ident, by="dashboard")
+                    self._say("notification dismissed" if ident is not None
+                              else "notifications dismissed")
+                    return {"ok": True, "notify": state}
+                if do == "open":
+                    # What a click on a card does, from the dashboard:
+                    # raise whoever sent it (the newest, with no id) and
+                    # mark it seen.
+                    state = engine.open(ident, by="dashboard")
+                    self._say("opening what sent it")
                     return {"ok": True, "notify": state}
                 if do == "test":
                     reply = engine.test(source="test")
