@@ -152,7 +152,15 @@ CHARACTERS: dict[str, str] = {
     # three rising notes already give it a shape no other cue has.
     "notify": "glass",
     # The screen keys. Not a tone at all: a burst of air, like a shutter.
-    "shot": "air",
+    # A shutter envelope on the shortest, highest pair in the table came
+    # out rough — his word, and he heard it every screenshot for an hour
+    # on 2026-09-05. `air` gives a 12% attack and a 55% release, which on
+    # a 55 ms note at 1047 Hz leaves almost no steady tone at all: what
+    # reaches the ear is the shape, not the pitch. The plain envelope has
+    # the note back. The capture cue is still unmistakable without a
+    # character of its own — it is the only rising pair up at C6/F6, and
+    # nothing else in the table goes near it.
+    "shot": "sine",
     # Failure keeps the plain falling tone. It is the one cue that was
     # already unlike everything else (the only -4 semitone move in the
     # table) and the one you least want redesigned into something clever.
