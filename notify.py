@@ -362,6 +362,121 @@ class Store:
 
 
 # ---------------------------------------------------------------------------
+# knowing he has ARRIVED at the session a card came from
+# ---------------------------------------------------------------------------
+#
+# The third way to clear a card, in his words (answered 2026-09-05):
+# "I want the card to disappear if only his card when I'm entering only
+# his session, not if I enter to Claude so all the Claude disappear —
+# when I'm entering the same specific session the same specific card
+# will disappear." Session resolution, not window resolution, and never
+# the stack.
+#
+# HOW HE IS SEEN TO ARRIVE, and why it is not UI Automation. The first
+# attempt at this (2026-09-04) went at the window: UIA exposes Claude's
+# sessions as panes carrying a TITLE, the card carries an ID, and no key
+# joined them — and a session that is not tiled has no pane at all. Both
+# halves dissolve one level down. The desktop app writes a file per
+# session under
+#   %APPDATA%\Claude\claude-code-sessions\<account>\<org>\local_<uuid>.json
+# — the same store notify_hook.session_link already walks for the link —
+# and each one carries `cliSessionId` (what a hook's card stores in
+# `session`), `sessionId` (`local_…`, what a watch's card stores), and
+# `lastFocusedAt`, milliseconds, which is the app saying WHICH SESSION HE
+# IS LOOKING AT. No window is consulted, so a session with no pane is
+# answered as easily as one with.
+#
+# Measured against the live store 2026-09-05, 96 cards naming a session:
+# 74 joined, by either id. The 22 that did not are 18 sessions old enough
+# to have aged out of the app's store and 4 Cowork `cse_…` ones, which
+# live in the cloud and have no local file at all — Cowork cards can
+# never dismiss themselves this way, the same limitation that stops them
+# being opened.
+#
+# WHY IT CANNOT EAT A CARD HE NEVER SAW. Two guards. The focus stamp must
+# be LATER than the card's own `at`, so being in a session already does
+# nothing — only arriving after it spoke counts. And the app only toasts
+# a session he is not looking at (`isUserViewingSession`, quoted in
+# notify_watch.py), so a card does not arrive for the session on screen
+# in the first place.
+
+SESSIONS = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude-code-sessions"
+ARRIVAL_POLL_S = 2.0           # how often the store is asked, while cards
+                               # with a session are on screen and only then
+ARRIVAL_SCAN_MAX = 60          # session files read in one pass; the store
+                               # grows for ever and the newest are the ones
+                               # a live card can belong to
+
+
+def focus_times(root=None) -> dict[str, float]:
+    """Every session the desktop app knows: id -> `lastFocusedAt`, ms.
+
+    Keyed under BOTH names a card can carry — the CLI id a Stop hook is
+    given (`cliSessionId`, and the `priorCliSessionIds` of a session that
+    has been resumed) and the app's own `local_…` id a watched toast
+    carries — so a caller matches on the one it has without knowing which
+    kind it is.
+
+    Newest file first, and it stops at ARRIVAL_SCAN_MAX: this runs on a
+    timer and the store is unbounded. Never raises. A store that is not
+    there, a file being rewritten under us, a machine where APPDATA says
+    nothing — all of them are "no opinion", which reads downstream as
+    "he has not arrived" and costs a card nothing.
+    """
+    base = Path(root) if root else SESSIONS
+    try:
+        files = sorted(base.glob("*/*/local_*.json"),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return {}
+    out: dict[str, float] = {}
+    for path in files[:ARRIVAL_SCAN_MAX]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue                      # mid-write, or not ours to read
+        if not isinstance(data, dict):
+            continue
+        try:
+            when = float(data.get("lastFocusedAt") or 0)
+        except (TypeError, ValueError):
+            continue
+        if when <= 0:
+            continue
+        names = [data.get("cliSessionId"), data.get("sessionId")]
+        prior = data.get("priorCliSessionIds")
+        if isinstance(prior, list):
+            names.extend(prior)
+        for name in names:
+            key = str(name or "")
+            # The newest file wins a shared id: a resumed session names
+            # its predecessor, and the live one is the one he is in.
+            if key and key not in out:
+                out[key] = when
+    return out
+
+
+def arrived(item, focus) -> bool:
+    """Has he gone to the session this card came from, since it arrived?
+
+    `focus` is focus_times()'s map. False for a card with no session, a
+    session the store has never heard of, and an unreadable timestamp —
+    every uncertainty answers "no", because the cost of a wrong yes is a
+    notification he never saw and the cost of a wrong no is a card he
+    dismisses by hand, as he does today.
+    """
+    session = str((item or {}).get("session", "") or "")
+    when = focus.get(session)
+    if not session or not when:
+        return False
+    try:
+        at = datetime.fromisoformat(str(item.get("at", ""))).timestamp()
+    except (TypeError, ValueError):
+        return False
+    return (when / 1000.0) > at
+
+
+# ---------------------------------------------------------------------------
 # going to the session the notification came from
 # ---------------------------------------------------------------------------
 
@@ -593,6 +708,13 @@ class Engine:
         self._thread: threading.Thread | None = None
         self._thread_gen = -1
         self._fired = 0
+        # The third way a card goes down: he arrives at its session. On
+        # unless [notify] dismiss_on_arrival says otherwise, and one
+        # thread for the whole column, not one per card — it ends by
+        # itself the moment nothing unread names a session.
+        self.arrive_on = bool(getattr(cfg, "dismiss_on_arrival", True))
+        self._watch_stop: threading.Event | None = None
+        self._watch_thread: threading.Thread | None = None
 
     # -- in --
 
@@ -624,6 +746,11 @@ class Engine:
             # again, so its older finish is describing a moment that has
             # passed and is retired here rather than shown.
             self._supersede(item)
+            # A card that names a session can now be taken down by him
+            # walking into that session, so the watcher runs from here
+            # until nothing unread names one. Armed before the hold, not
+            # after: a held finish is still a card that will be shown.
+            self._watch_arm()
             if not urgent and self._hold(item):
                 # A finish waits for its session to go quiet. Nothing is
                 # played and nothing is armed; the column is redrawn
@@ -970,6 +1097,8 @@ class Engine:
             self._held.clear()
             self._gen += 1
             self._stop.set()
+            if self._watch_stop is not None:
+                self._watch_stop.set()
             thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(1.0)
@@ -1015,6 +1144,54 @@ class Engine:
                           f"unread {unread}")
                 log.info("notify: reminded %d/%d | unread %d", i + 1,
                          self.remind_times, unread)
+
+    # -- he arrived --
+
+    def _watch_arm(self) -> None:
+        """Make sure the arrival watcher is running. One thread for the
+        whole column: it asks about every unread card that names a
+        session, so a second one would only ask the same question
+        twice."""
+        if not self.arrive_on:
+            return
+        thread = self._watch_thread
+        if thread is not None and thread.is_alive():
+            return
+        stop = threading.Event()
+        self._watch_stop = stop
+        self._watch_thread = threading.Thread(
+            target=self._watch, args=(stop,), daemon=True,
+            name="notify-arrival")
+        self._watch_thread.start()
+
+    def _watch(self, stop: threading.Event) -> None:
+        """Take down each card whose session he has walked into.
+
+        One card at a time, by id, through the same dismiss() the × goes
+        through — so the rest of the column stays up, which is the whole
+        of what he asked for. `by="arrival"` rather than "card" so
+        notify.log can be counted: a dismissal he never touched is a
+        different event from one he did, and if this ever eats something
+        it should be visible in the log without a debugger.
+
+        The store is read OUTSIDE the lock: it is file IO on a timer and
+        the engine's lock is held by arrivals and by the card. Ends by
+        itself when nothing unread names a session, so an idle machine
+        pays nothing.
+        """
+        while not stop.wait(ARRIVAL_POLL_S):
+            with self._lock:
+                waiting = [dict(i) for i in self.store.items()
+                           if not i.get("seen")
+                           and str(i.get("session", "") or "")]
+            if not waiting:
+                return
+            focus = focus_times()
+            for item in waiting:
+                if stop.is_set():
+                    return
+                if arrived(item, focus):
+                    self.dismiss(int(item.get("id", 0)), by="arrival")
 
     # -- plumbing --
 
