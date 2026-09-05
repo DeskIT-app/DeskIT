@@ -326,10 +326,24 @@ class App:
         # worse than no feature — it leaves the routine waiting forever on
         # an answer he was never asked for. An explicit `enabled = false`
         # still turns the whole thing off and leaves the file alone.
+        # OFF unless a [questions] section explicitly turns it on, which is
+        # the opposite of what the comment above argues -- and the argument
+        # died with the design it was written for. The weekly review is a
+        # Claude Code local scheduled task now, and every run is a real
+        # session with a live composer in the sidebar, so it asks him there
+        # with AskUserQuestion and reads his answer in the same breath. It
+        # still writes each question into the store, but only as a record
+        # that survives him closing the session -- not as a queue anything
+        # serves. A card offering a question he has already answered in the
+        # session would be the worse half of both designs, and an item that
+        # stays PENDING because he answered somewhere else would sit in the
+        # dashboard forever. So the card stays built, tested and 83 ms of
+        # import (measured), and does not run. `[questions] enabled = true`
+        # brings it back whole if the asking ever moves back into the app.
         qcfg = getattr(cfg, "questions", None)
         self.questions = (
             questions_mod.Store(APP_DIR / questions_mod.STORE_NAME)
-            if qcfg is None or getattr(qcfg, "enabled", True) else None)
+            if qcfg is not None and getattr(qcfg, "enabled", False) else None)
         # (size, mtime_ns) as of the last look. questions.Store.stamp()
         # exists for exactly this — notice a headless write without reading
         # the file — and the empty tuple means "never looked", so the FIRST

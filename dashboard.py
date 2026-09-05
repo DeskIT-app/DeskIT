@@ -1964,12 +1964,33 @@ class Dashboard:
         return questions_mod
 
     def _questions_store(self):
-        """questions.json, read off the disk. THREE processes write it —
-        the app's card, this window and the headless routine — which is
-        why the store carries a lock file and lands every write by
-        rename; nothing here has to arbitrate."""
+        """questions.json, read off the disk — but only when `[questions]
+        enabled = true` says the app is the place he answers.
+
+        It is off by default, and the reason is not caution. The weekly
+        review is a Claude Code local scheduled task now: every run is a
+        real session with a composer in the sidebar, so it asks him there
+        and reads the answer in the same breath. The store still gets each
+        question, as a record that outlives the session — but a record is
+        not a queue. Drawing an answer surface over it would offer him a
+        question he may already have answered in the session, and the item
+        would stay PENDING here forever because the answer landed
+        somewhere else. So this screen shows the reports and the branch
+        rows, and the answering lives where the asking does.
+
+        THREE processes can still write this file when it is on — the
+        app's card, this window and the routine — which is why the store
+        carries a lock file and lands every write by rename; nothing here
+        has to arbitrate.
+        """
         module = self._questions()
         if module is None:
+            return None
+        try:
+            qcfg = getattr(config_mod.load(CONFIG_PATH), "questions", None)
+        except Exception:                 # noqa: BLE001 — unreadable config
+            qcfg = None                   # off, like an absent section
+        if qcfg is None or not getattr(qcfg, "enabled", False):
             return None
         try:
             return module.Store(APP_DIR / module.STORE_NAME)

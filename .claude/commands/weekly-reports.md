@@ -1,14 +1,27 @@
 ---
-description: Build the one report he has already answered, ask one multiple-choice question with as many real options as it has about the ones he has not, write the summary, the plan and the archive, and never answer your own question.
-allowed-tools: Bash, Read, Write, Edit, Glob, Grep
+description: Give every open report its turn — build every one whose answer is already on disk, set aside a tagged multiple-choice question for every one that is blocked, then ask them all at once with AskUserQuestion, write the summary, the plan and the archive, and never answer your own question.
+allowed-tools: Bash, Read, Write, Edit, Glob, Grep, AskUserQuestion
 ---
 
 # Weekly review of the problem reports
 
-You are running unattended. Nobody is at the keyboard, there is no terminal to
-print to and no question you can ask interactively. Everything you need is
-below or on disk. Working directory is the repo root; every path below is
-relative to it.
+It is Saturday at four in the morning and nobody is at the keyboard. But this
+is not a batch job printing into a void: it runs as a **Claude Code scheduled
+task**, so it is a **real session with a live composer**. The session stays
+there after the run ends. He wakes up, reads it, and can type into it.
+
+Two consequences, and they shape the whole file:
+
+- **You can ask a real question** — `AskUserQuestion` puts clickable options in
+  front of him (§2). You are not restricted to prose he has to answer somewhere
+  else.
+- **He is asleep while you work.** So nothing may *wait* on him mid-run. Every
+  build, every document, every close happens first; the asking is the last
+  thing the run does (§8b), and by then there is nothing left undone that his
+  silence could hold up.
+
+Everything else you need is below or on disk. Working directory is the repo
+root; every path below is relative to it.
 
 ## What this run is
 
@@ -31,13 +44,63 @@ one fact: **whether his answer to it is already on disk.**
   There is no second gate, no "confirm before starting", no waiting for a chat.
   A recorded answer that sits unbuilt for a week is the failure this change was
   made to remove.
-- **He has not answered it → investigate it, then ask.** One question, as many
-  real options as the question actually has, and no code. It stays open.
+- **He has not answered it → investigate it, then write the question aside and
+  go on to the next report.** One question, as many real options as the
+  question actually has, and no code. It stays open.
 
 Everything else here — the evidence work, the verdicts, the three documents,
 the archive — is unchanged, because the reason the routine could be trusted to
 write documents is the same reason it can now be trusted to write code: it
 never claims more than the evidence shows.
+
+## The shape of the run: every report gets its turn
+
+The obvious way to write this routine is to take the reports in order, and
+stop at the first one you cannot settle so you can ask about it. That is the
+shape he rejected, in these words:
+
+> "If she stops at the first report, asks me a question and waits for me to
+> finish, she wastes a huge amount of time — and if all the other reports
+> could have been done without asking me anything, then it is just a nightmare
+> to wait and it takes forever."
+
+He is right, and the arithmetic is why: he is asleep at 04:04. A run that
+blocks on report one has not asked a question early, it has **thrown the whole
+Saturday away** — four reports that needed nothing from him sit untouched
+until next week because the first one had a gap in its evidence. The waiting
+buys nothing either, because a question asked at 04:04 and a question asked at
+04:40 are both answered at the same moment: when he wakes up.
+
+So the run is a **loop over every open report**, and each report is carried to
+its own dead end before the next one starts:
+
+1. **Gather its evidence and rule on it** (§1).
+2. Then exactly one of three ends:
+   - **His answer to it is already on disk → build it** (§3), test it, commit
+     it, and move on.
+   - **It is settled and needs nothing from him and nothing built** — the cause
+     is established and an existing commit already covers it, or it is
+     `understood, cause not yet established` with the measurement written into
+     the plan → **close it** (§7b) and move on.
+   - **It is blocked on something only he can decide → write the question into
+     the store, set it aside, and move on** (§2). No code for this report, and
+     **no waiting.**
+3. Only when every report has had its turn: the documents, the closes, the
+   card, and then **all the collected questions asked together** (§8b).
+
+Three rules fall out of that, and they are not negotiable:
+
+- **A blocked report never ends the run.** It ends its own turn. If you find
+  yourself about to write the summary because report two had no answer, you
+  have made exactly the mistake this section exists to prevent.
+- **Start each report fresh.** The next report is not a continuation of the
+  one you just failed to settle. Read its own evidence; a theory carried over
+  from the report before it is the commonest way two unrelated reports get the
+  same wrong cause.
+- **Build everything that can be built, not one thing.** Each build is its own
+  commit on the same `weekly/<DATE>` branch, with the tests gate run *before*
+  each commit (§3d), so one report's failure cannot discard another report's
+  work.
 
 ---
 
@@ -66,6 +129,19 @@ record what you inferred, not to fill in an obvious blank, not to save him a
 keystroke on a question whose answer you are certain of, not "provisionally so
 the build can proceed". `PENDING` is a wall, and the only hand that moves a
 question past it is his, from inside DeskIT.
+
+**`AskUserQuestion` does not open a side door in that wall, and the store makes
+sure of it.** `Store.mark_built` refuses any question that is not `ANSWERED`
+(read it — the check is explicit, and its comment is *"so nothing can be
+recorded as built off a question he never answered"*). So even if he is awake
+and clicks an option in the session while the run is still alive, that click
+cannot become a build in this run: the only route from a click to `ANSWERED` is
+`answer(...)`, and `answer(...)` is his. A live answer is real and it is his, so
+**quote it verbatim in your output** — but the question stays `PENDING`, his
+DeskIT card still carries it, and next Saturday builds it from the store with
+the audit trail whole. That is one week of latency bought for the guarantee
+that every line this routine commits traces to a row he wrote. It is a good
+trade and it is not yours to renegotiate at 4 AM.
 
 If you are ever about to reason *"he would obviously pick option 2"* — stop.
 That sentence is the entire failure mode this design exists to prevent. Picking
@@ -114,10 +190,21 @@ option count, `OPTIONS_MIN` and `OPTIONS_MAX`.
 store is the authority on how many options a question may have, the print in
 the next block hands you both, and the range is there so a question can be the
 size it actually is. Every entry in `options` is a real, pickable choice —
-**there is no open option and no "something else" slot.** The card he answers
-on always carries a free-text box under the buttons, so a slot never has to be
-spent on an escape hatch. That is also why the floor is above one: two genuine
-choices are a choice, and one is not.
+**there is no open option and no "something else" slot.** Both places he
+answers add the escape hatch themselves: the DeskIT card carries a free-text
+box under the buttons, and `AskUserQuestion` appends its own "Other" choice. So
+a slot never has to be spent on one, and it must not be. That is also why the
+floor is above one: two genuine choices are a choice, and one is not.
+
+`clean()` enforces the range by **refusing**, never by adjusting, and its
+docstring says why: *"Refusing, rather than padding the short list or trimming
+the long one, is the honest move… inventing a filler or dropping the tail
+changes the question he is being asked."* Carry that principle out of the store
+and into every place a question is rendered. It is what settles the one seam
+between the store and the tool: `AskUserQuestion` takes at most **four**
+options per question while `OPTIONS_MAX` is five, and a five-option question is
+therefore **not trimmed to fit the tool** — it goes to him on the card, which
+has no such ceiling (§8b).
 
 An answered item carries two fields, `choice` and `text`, and it is normal for
 both to be filled. §3 says what to do with that; the short version is that the
@@ -136,7 +223,7 @@ that cannot import it must do nothing at all rather than half of something:
 ```
 
 If that fails, **write no file, close nothing, build nothing.** Send one card
-with `--kind error` naming the missing module (§8), print why, and stop. A
+with `--kind error` naming the missing module (§8a), print why, and stop. A
 Saturday that does nothing costs him nothing; a Saturday that asks questions
 into a store that does not exist loses them silently.
 
@@ -176,10 +263,16 @@ Set `DATE` to today's local date as `YYYY-MM-DD`.
   → write only the summary**, as a short standing-questions note (§5, questions
   block plus the carry-over lines, nothing else). No new plan, no new archive —
   there is nothing new to plan or archive. The card says answers are wanted. Do
-  not manufacture a document to look busy.
+  not manufacture a document to look busy. **Still put the carry-overs to him
+  with `AskUserQuestion` (§8b)** — a chip he can click is the one thing this
+  week can add to a question he has been ignoring on a card, and it costs him
+  nothing to see it.
 
-**A question that is already `PENDING` is never asked again.** The store's
-status does the job the old `asked.json` bookkeeping did: the summary says
+**A question that is already `PENDING` is never asked again — into the store.**
+Putting a standing question to him again as a chip is not asking it again; it
+is the same question reaching him on a surface he is looking at. What must
+never happen twice is the *row*. The store's status does the job the old
+`asked.json` bookkeeping did: the summary says
 *still waiting on your answer from `<date>`* and repeats the question and its
 options **verbatim** from the store. Do not re-derive it, do not reword it, do
 not "improve" the options. It is his question to answer, not yours to rephrase,
@@ -289,7 +382,106 @@ it holds what still needs him.
 
 ---
 
-## 2. The question: as many real choices as it has, over a text box
+## 2. The question: a real multiple choice he clicks
+
+# ASK WITH `AskUserQuestion`. IT IS THE PRIMARY WAY THIS RUN ASKS HIM ANYTHING.
+
+Not prose he has to answer elsewhere. Not a line in a document. A real
+multiple-choice prompt with buttons he clicks, because that is what he asked
+for, in these words:
+
+> "ממש שאלה אמריקאית כזאת שהיא מבחירה"
+
+The tool is available in these runs — the scheduled task's environment sets
+`CLAUDE_CODE_ENABLE_ASK_USER_QUESTION_TOOL` — and it is listed in this
+command's `allowed-tools`. It is the answer to "how do I ask him?" every time
+that question comes up in this file.
+
+**One call, at the very end of the run** (§8b), never mid-report. Everything
+below is how to *write* the questions; §8b is where you ask them.
+
+### The tool's shape
+
+One call carries **1 to 4 questions**. Each question is:
+
+- **`header`** — the chip label he sees. **Maximum 12 characters.** This is the
+  report tag; see below.
+- **`question`** — the question text, opening with the three-word tag.
+- **`options`** — **2 to 4** of them, each with a `label` (the short pickable
+  line) and a `description` (one line saying what picking it means).
+
+Two things the tool does for you, and doing them yourself is a bug:
+
+1. **It appends its own "Other" free-text choice.** So do **not** write an
+   escape-hatch option, do not append "או תכתוב לי" to the last one, and do not
+   mention a text box anywhere. Every word about it is a word he reads instead
+   of the choice, and it is exactly the line he had removed.
+2. **It does not want the list padded.** Two real options is a finished
+   question. Everything under *The options are the hard part* below applies to
+   the tool's `options` exactly as it applies to the store's.
+
+### Every question carries a three-word tag naming its report
+
+He answers four chips in a row with the reports themselves out of sight. His
+requirement:
+
+> "תרשום כזה בשלושה מילים על השאלה לאיזה דיווח היא תקפה — נגיד הדיווח על בעיות
+> בתמלול, הדיווח על הבעיות בכרטיסיות התראה"
+
+`header` is what the tool has for exactly this, but 12 characters will not hold
+a three-word Hebrew phrase. So the tag lives in **two places at once**:
+
+- **`header`** — the **shortest true form** of the tag, within the cap. A chip,
+  not a sentence.
+- **the first words of `question`** — the **full three-word phrase**, then an
+  em-dash, then the question itself. This is where the naming actually happens;
+  `header` is only the pointer.
+
+**Worked example — a transcription report:**
+
+```
+header:   בעיות תמלול
+question: הדיווח על בעיות בתמלול — ההקלטה 2.4 שניות של שקט. הכתבת לחלון אחר, או שהמקש לא נתפס?
+options:  [ "הכתבתי לחלון אחר", "המקש לא נתפס" ]
+```
+
+`בעיות תמלול` is 11 characters, so it fits as it stands.
+
+**Worked example — a notify-card report:**
+
+```
+header:   כרטיסיות
+question: הדיווח על הבעיות בכרטיסיות התראה — הכרטיסייה נשארת על המסך אחרי שלחצת עליה. מה לעשות?
+options:  [ "לסגור אותה מיד בלחיצה", "להשאיר אותה עד שתיגמר לבד" ]
+```
+
+Here the full tag `כרטיסיות התראה` is 14 characters and will not fit, which is
+the ordinary case, not the exception.
+
+**When the tag exceeds the cap:** keep the full phrase at the head of
+`question` and shrink `header` to **the one noun that identifies the report** —
+`כרטיסיות`, `תמלול`, `הדבקה`, `צלילים`. Never an abbreviation he would have to
+decode, and never a word that is not actually in the phrase. If even the single
+noun is over 12 characters, choose a shorter true synonym; do not cut a word
+mid-letter.
+
+**Headers must be distinct within a call.** Two transcription reports in one
+call both want `בעיות תמלול`, and then he has two identical chips and no way to
+tell which he is answering. Distinguish by the surface or by the second noun
+(`תמלול קצר` / `תמלול ארוך`, `תמלול Recordings`), and keep the full phrases in
+the `question` text different too.
+
+**The same tag goes on the question in the store and on its line in the
+summary,** so the three places he might read it agree.
+
+The tag is spent out of the question's own length budget, `questions.QUESTION_MAX`
+— read the constant, do not carry the number — and `_line` **cuts** an
+over-long question rather than refusing it, so a bloated tag silently eats the
+end of the question. Both examples above land under a quarter of it, which is
+where a tagged question should sit. If you are anywhere near the limit, the
+question is too long, not the tag too generous.
+
+### Also write every question into the store, and into the documents
 
 Every open report he has not answered gets **exactly one** question in the
 store. One question per report; if you have three, you have not finished the
@@ -301,6 +493,48 @@ evidence work.
 
 Pass it through a small JSON file rather than a command line: the questions and
 the options are Hebrew, and a console codepage must not be what mangles them.
+
+**The store write is not where the answer is collected — the tool and the card
+are. It is there so the question survives.** He can close the session without
+answering, and a session he closed is a question that was never asked at all:
+no card, no badge, nothing next Saturday can find. A row in `questions.json` is
+what makes his silence recoverable instead of final. Same reason it goes into
+the summary (§5) and the plan's `## 5` (§4): three durable copies of a question
+whose asking may have evaporated.
+
+Write the store row **during the report's turn**, not at the end. The tool call
+comes last, and a run that dies before it must still leave the questions
+behind.
+
+**Two consequences of `ask()`'s de-duplication, which matches on the question
+text word for word** (read it: same `report_id`, same text, still `PENDING`
+returns the standing item instead of a second card):
+
+- **A report's tag must be stable.** Reword the tag next Saturday and the store
+  sees a new question and gives him a second card for the same report.
+- **Never add a tag to a carry-over question already in the store.** §0d says
+  repeat it verbatim and that outranks this section. The tag for a carry-over
+  goes in `header` and in the summary line only; the stored text stays exactly
+  as it is.
+
+### If the tool is genuinely unavailable — second choice, and say so
+
+It should not happen. If it does — the call errors, or the tool is not there —
+**ask in the run's final message instead, with the options numbered**, one
+question per block, each opening with its three-word tag:
+
+```
+הדיווח על בעיות בתמלול — ההקלטה 2.4 שניות של שקט. הכתבת לחלון אחר, או שהמקש לא נתפס?
+  1. הכתבתי לחלון אחר.
+  2. המקש לא נתפס.
+```
+
+**This is worse and it is a fallback, not an alternative.** He gets no buttons,
+he answers by typing a number into the composer, and the whole point of the
+multiple choice is gone. Use it only when the tool failed, say in your output
+that it failed and why — and never let the tool being awkward become the reason
+a run ends up **silently not asking**. Not asking is the one outcome this
+section exists to make impossible.
 
 ### The question itself
 
@@ -319,12 +553,13 @@ That good example is the standard. Hold every question you write against it.
 ### The options are the hard part
 
 **Every entry in `options` is a real choice he could pick and you would carry
-out. There is no open option.** The card he answers on always carries a
-free-text box under the buttons — it is there whatever the options are, and it
-is there when there are no options at all — so the run never has to spend a
-slot on an escape hatch, and it must not. An option that reads "something else,
-I'll write it" spends a line of a small card telling him about a box he is
-already looking at.
+out. There is no open option.** Both surfaces supply one already: the DeskIT
+card always carries a free-text box under the buttons — it is there whatever
+the options are, and it is there when there are no options at all — and
+`AskUserQuestion` appends its own "Other". So the run never has to spend a slot
+on an escape hatch, and it must not. An option that reads "something else, I'll
+write it" spends a line of a small card telling him about a box he is already
+looking at.
 
 **No option may point at the box either.** Do not append "או תכתוב לי" to the
 last one, do not close the question with an invitation to type, and do not
@@ -427,13 +662,28 @@ happens to come out at three most of the time because those three are genuinely
 distinct amounts of work — but if "build it small" and "build it fully" are the
 same build for a one-line feature, ask two.
 
-In all four cases the free-text box is under them and no option refers to it.
+In all four cases the free-text escape — the card's box, the tool's "Other" —
+is already under them and no option refers to it.
 
 ---
 
-## 3. Build the one report he has already answered
+## 3. Build every report he has already answered
 
-An `ANSWERED` question is an approval. Build it — **at most one per run.**
+An `ANSWERED` question is an approval. **Build all of them** — this section
+runs once per answered report, inside the loop of §*The shape of the run*, and
+there is no cap on how many.
+
+There used to be a cap of one per run, and it was the wrong instrument for the
+right worry. The worry is unreviewed work piling up where he cannot see it, and
+the thing that hides work from him is **an unreviewed branch**, not a second
+commit on a branch he is already going to read. Three answers he wrote a week
+ago, all buildable, all sitting unbuilt because the run stopped after the
+first, is the same waste as stopping at the first question — and it is worse,
+because those three he had already decided.
+
+So: **one branch per run (§3a, §3b), one commit per report (§3d, §3e), the
+tests gate before every commit.** He opens one branch and reads a commit per
+report, each with the answer it came from in its message.
 
 ### Read the whole answer — the choice AND the text
 
@@ -467,9 +717,11 @@ So, in this order:
    instruction. Where they agree, build the option. Where the sentence narrows
    it, reverses it, or adds a condition, **build what the sentence says.**
 4. **If the two cannot be reconciled — the sentence contradicts the pick and
-   you cannot tell which thing he wants — build nothing and ask again.** One
-   new question in the store, quoting both halves of what he said and asking
-   which he meant. That costs him one line on Sunday. A branch built on the
+   you cannot tell which thing he wants — build nothing for this report, ask
+   again, and go on to the next one.** One new question in the store, quoting
+   both halves of what he said and asking which he meant; it joins the
+   collected questions for §8b like any other. That is this report's dead end,
+   not the run's. That costs him one line on Sunday. A branch built on the
    wrong reading of a sentence he took the trouble to type costs him the
    feature's credibility, and you cannot tell from here which way he meant it.
 5. `choice` is `null` and `text` is all there is: the sentence is the entire
@@ -491,28 +743,41 @@ with no upstream is a build he has not yet dealt with, and that is the signal:
 git for-each-ref --format="%(refname:short) [%(upstream)]" refs/heads/weekly
 ```
 
-If any line comes back with an empty `[]`, **build nothing this run.** Say in
-the summary and in your output which branch is waiting and which report it
-belongs to, ask this week's questions as normal, write the documents, and stop.
-One report per run, and no second build until he has seen the first: two
-unreviewed branches is how he loses track of what the routine has done to his
-repo, and the whole arrangement rests on him being able to see all of it at
-once.
+If any line comes back with an empty `[]`, **build nothing this run** — not one
+report, not any of them. Say in the summary and in your output which branch is
+waiting and which report it belongs to, then carry on with the rest of the run
+exactly as normal: every report still gets its turn, every blocked one still
+gets its question, and the questions are still asked at the end. A waiting
+branch stops the *building*; it does not stop the run.
 
-If nothing is waiting, take the `ANSWERED` question with the **oldest answer
-date** whose report is still `OPEN`. First answered, first built.
+**This gate survives the removal of the one-report cap, and it is the reason
+the cap was safe to remove.** One unreviewed branch at a time is the real
+constraint: two of them is how he loses track of what the routine has done to
+his repo, and the whole arrangement rests on him being able to see all of it at
+once. Many commits on one branch he is going to read anyway costs him nothing;
+a second branch behind one he has not opened costs him the thread.
+
+If nothing is waiting, build the answered reports in order of **oldest answer
+date** first, among those whose report is still `OPEN`. First answered, first
+built — so a slow week cannot bury an answer he wrote a fortnight ago.
 
 ### 3b. The branch, before you touch a file
+
+Once per run, not once per build:
 
 ```
 git rev-parse --abbrev-ref HEAD
 git checkout -b weekly/<DATE>
 ```
 
-Record the starting branch name — you will return to it. The name matters:
-`git branch --list 'weekly/*'` finds every branch this routine has ever made,
-which is what keeps its work from being confused with the other unpushed
-branches in this repo.
+Record the starting branch name — you will return to it when every build is
+done. The name matters: `git branch --list 'weekly/*'` finds every branch this
+routine has ever made, which is what keeps its work from being confused with
+the other unpushed branches in this repo.
+
+**Stay on the branch for the whole build phase.** Do not check out and back
+between reports; there is nothing to gain and a checkout is the one git command
+here that can touch another session's files.
 
 ### 3c. The precondition that makes reverting safe
 
@@ -526,11 +791,20 @@ Empty means clean. **If a file you need is already dirty, do not touch it.**
 The tree in this repo routinely carries other sessions' half-finished work, and
 an edit on top of it cannot be reverted without destroying theirs. Leave the
 report open, write down which file was dirty and which session's change it
-looked like, and let next Saturday have it.
+looked like, and let next Saturday have it — **and go on to the next report.**
+One dirty file blocks one build, not the run.
 
-### 3d. Build it
+**Run this check per build, not once for the run**, and note what it means once
+several builds share a branch: your own committed work does not show up here.
+A file you edited and committed for report one is clean again when report three
+needs it, and that is correct — the precondition is *"no uncommitted work that
+is not mine"*, and yours is no longer uncommitted. What it still catches, which
+is the whole point, is another session's edits arriving mid-run.
 
-Write the code the answer authorises, and only that. Then the gate:
+### 3d. Build it — and gate it before you commit it
+
+Write the code this one answer authorises, and only that. Then, **before the
+commit for this report**:
 
 ```
 .venv\Scripts\python.exe tests_quiet.py
@@ -539,22 +813,34 @@ Write the code the answer authorises, and only that. Then the gate:
 **The green state is one failure**, the known machine-flaky
 `test_the_process_list_sees_the_processes_it_cannot_open` — the suite prints
 `1 FAILED` and exits non-zero and that is still green. **Any other failing test
-means the build is reverted**, however plausible the failure looks. You cannot
+means this build is reverted**, however plausible the failure looks. You cannot
 tell a pre-existing break from one you caused at 4 AM with nobody to ask.
+
+**The gate runs before every commit, and that ordering is what makes several
+builds per run safe.** Uncommitted work is what a revert can reach; a commit is
+what it cannot. So each report's changes are proved green *while they are still
+the only uncommitted thing on the branch*, and then sealed. Run the suite once
+at the end instead and a single bad build would put every other report's work
+in question with no way to tell which one broke it.
 
 ### 3e. Commit only your own files, by path
 
+One commit per report:
+
 ```
-git add -- <exactly the files you edited>
+git add -- <exactly the files you edited for this report>
 git commit -m "<one line in the repo's voice, then the report id and the answer it came from>"
 ```
 
 **Never `git add -A`, never `git add .`, never `git commit -a`.** His rule, and
 the reason for it is on the branch you are standing on: the tree carries other
 sessions' changes, and a sweep would commit their unfinished work under your
-message. Stage by path or do not stage.
+message. Stage by path or do not stage. With several builds in a run this rule
+does double duty — a sweep on report three's commit would also swallow anything
+report four has half-written.
 
-Then go back where you came from:
+Then go on to the next report. **Only when the whole loop is finished** do you
+go back where you came from:
 
 ```
 git checkout <the starting branch>
@@ -564,23 +850,37 @@ If that checkout fails, **stop touching git.** Say so in the summary and in
 your output, leave the tree exactly as it is, and let him sort it out — a
 forced checkout would take another session's work with it.
 
-### 3f. Reverting, when the tests say no
+### 3f. Reverting one build, when the tests say no
 
-The branch is disposable; that is the point of it. Nothing was committed yet,
-so:
+**Only the build that failed is reverted. Every commit already on the branch
+stands.** This is the case the design is for, so take it concretely: four
+answered reports, the third one's build turns the suite red. Reports one and
+two are already committed and green and **they stay**; report three's
+uncommitted changes go; report four then gets its turn as if nothing happened,
+on the same branch, with its own gate and its own commit. He ends the week with
+three good commits and one report marked blocked — not with nothing.
+
+The failed build's changes are not committed yet, so:
 
 ```
-git checkout -- <the files you edited>
-git checkout <the starting branch>
-git branch -D weekly/<DATE>
+git checkout -- <the files you edited for this report>
 ```
 
 That is safe precisely because §3c proved those files were clean before you
-started, so restoring them restores the branch state and nothing of anyone
-else's. Then leave the report `OPEN`, leave its question `ANSWERED` so next
-Saturday tries again, and write down in the plan **what broke, which test, and
-the exact failure line.** A build that failed with the reason recorded is a
-good week's work; a build that failed silently is worse than none.
+started this build, so restoring them restores the branch as report two left it
+and nothing of anyone else's. **Do not delete the branch and do not check out
+the starting branch here** — earlier commits live on that branch and later
+reports still need it. `git branch -D weekly/<DATE>` is right only in the one
+case where **nothing was committed at all**: every build in the run failed or
+was skipped, so the branch holds no work and an empty `weekly/*` branch with no
+upstream would trip §3a's gate next Saturday for nothing.
+
+Then leave that report `OPEN`, leave its question `ANSWERED` so next Saturday
+tries again, and write down in the plan **what broke, which test, and the exact
+failure line.** Report it in the summary and in your output as **blocked, with
+what broke** — beside the builds that succeeded, not instead of them. A build
+that failed with the reason recorded is a good week's work; a build that failed
+silently is worse than none.
 
 ### 3g. What you never touch
 
@@ -627,7 +927,8 @@ Required sections:
 Goal, in the owner's words: **"<quote from his report>"**
 
 Verdicts: <n> cause established · <n> cause open · <n> waiting on his answer.
-Built this run: <report id> on weekly/<DATE> — or "nothing, and why".
+Built this run: <b> on weekly/<DATE> — <report id>, <report id>, … — or
+"nothing, and why". Blocked builds: <report id> — <which test broke>.
 
 ## 0. What the evidence says (per problem)
 ## 1. The rules this lands on
@@ -639,13 +940,20 @@ Built this run: <report id> on weekly/<DATE> — or "nothing, and why".
 ## 7. Done means
 ```
 
-§2 is new and it is the accountability section. For the one report you built:
-the answer you built against, **quoted from the store — the option he picked
-and the words he typed, both, even when one of them is empty**; the branch;
-every file and function you changed; the `tests_quiet.py` result verbatim,
-including the one known failure by name; and what a reader should look at first
-when he opens the diff. If you reverted, say that here too, with the failure
-line.
+§2 is the accountability section, and it has **one subsection per build, in the
+order the commits were made**, so the section reads down the branch. For each
+one: the answer you built against, **quoted from the store — the option he
+picked and the words he typed, both, even when one of them is empty**; its
+commit subject; every file and function you changed; the `tests_quiet.py`
+result verbatim for *that* build, including the one known failure by name; and
+what a reader should look at first when he opens the diff. The branch is named
+once at the top of §2, since every build shares it.
+
+A build you reverted gets its own subsection in the same place, marked
+**blocked**, with the failing test and the exact failure line — and it says
+plainly that the commits before it stand. Do not move it to the end or fold it
+into §4; a reader walking the branch needs to know that the report between
+commit two and commit three exists and why it is not there.
 
 If his typed words changed what the picked option said, **say so in one line
 and say what you built instead** — that sentence is the whole audit trail for
@@ -666,16 +974,22 @@ For each problem with verdict `understood, *` that was not built, four things:
    `cause not yet established` entry for a settled one.
 
 **§5 is where the honesty rule lands.** One entry per report waiting on him,
-and each entry has exactly these four parts and no fifth:
+and each entry has exactly these five parts and no sixth:
 
 - **What he reported** — quoted in full.
 - **What was checked, and what it ruled out** — the wav, the sidecar, the
   screenshot, the review join, the greps, each with what it showed. This is the
   part that proves the question is not laziness.
-- **The question**, in one sentence, identical to the store's.
+- **The question**, in one sentence, identical to the store's — **including its
+  three-word tag at the front** (§2), and the `header` you gave it beside it in
+  brackets, so a reader can match the entry to the chip he clicked.
 - **The options**, identical to the store's, in order and complete — however
   many the question has. Do not renumber them, do not add a closing line about
   writing a sentence instead, and do not note that a text box exists.
+- **How it was asked** — in the `AskUserQuestion` call, or not asked with the
+  tool this run (§8b) and why: it was past the fourth chip, it has five
+  options, or the tool failed. That line is what tells next Saturday whether
+  his silence means he declined or never saw it.
 
 No root cause. No candidate fix. No "probably". **No option marked as the one
 you would choose.** If you have a theory you could not test, it belongs in §4
@@ -716,15 +1030,18 @@ Shape:
 
 ## ❓ צריך תשובה ממך (<q>)
 
-- **<id>** · "<what he reported, 6-8 words>" — ההקלטה 2.4 שניות של שקט. הכתבת לחלון אחר, או שהמקש לא נתפס?
+- **<id>** · **הדיווח על בעיות בתמלול** · "<what he reported, 6-8 words>" — ההקלטה 2.4 שניות של שקט. הכתבת לחלון אחר, או שהמקש לא נתפס?
   1. הכתבתי לחלון אחר.  2. המקש לא נתפס.  3. דיברתי והמיקרופון לא קלט.
-- **<id>** · "<what he reported>" — <a two-option question, and two lines is a finished entry>
+- **<id>** · **הדיווח על הבעיות בכרטיסיות התראה** · "<what he reported>" — <a two-option question, and two lines is a finished entry>
   1. <option>.  2. <option>.
-- **<id>** · (נשאל ב-12 Sep, עוד ממתין) "<the same question and options, verbatim>"
+- **<id>** · **<tag>** · (נשאל ב-12 Sep, עוד ממתין) "<the same question and options, verbatim>"
+- <a question not asked with the tool this run — say so in half a line: "לא הוצגה כשאלה בסשן (חמישית בתור) — מחכה לך בכרטיסייה">
 
-## 🔨 נבנה השבוע — צריך שתסתכל ותדחוף
+## 🔨 נבנה השבוע — צריך שתסתכל ותדחוף  (הכל על weekly/<DATE>)
 
-- **<id>** · "<what he reported>" → <branch weekly/<DATE>> · <n> קבצים · הטסטים עברו (חוץ מהכשל המוכר של process list)
+- **<id>** · "<what he reported>" → <n> קבצים · הטסטים עברו (חוץ מהכשל המוכר של process list)
+- **<id>** · "<what he reported>" → <n> קבצים · הטסטים עברו (חוץ מהכשל המוכר של process list)
+- **<id>** · "<what he reported>" → נחסם: <test name> נכשל, השינוי הוחזר. שאר ה-commits עומדים.
 - להפעלה: `Stop DeskIT.vbs` ואז `DeskIT.vbs`   ← רק אם השינוי דורש הפעלה מחדש
 
 ## הדיווחים
@@ -742,19 +1059,28 @@ Shape:
 Markers: `✅` cause established, `🔍` understood but cause open, `❓` waiting on
 his answer, `💡` an idea that needs his decision, `🔨` built this run.
 
+**Every question line opens with its three-word tag** (§2), bolded, before his
+quoted words — the same tag that was in the `question` text and the same idea
+`header` carried on the chip. He reads this document after clicking the chips,
+so the tag is how the two line up in his head.
+
 Each question's options go in exactly as the store has them, however many there
 are — and **nothing is added to tell him he can type instead.** He answers from
-the card, which always has the box; the summary is the copy he skims, and a
-line about a field he cannot see from here is noise. Two options is a normal
-entry, not a truncated one.
+the chip or the card, and both supply their own free-text escape; the summary is
+the copy he skims, and a line about a field he cannot see from here is noise.
+Two options is a normal entry, not a truncated one.
 
 A carry-over question is marked with the date it was first asked and repeated
 **verbatim** from the store, options included, even if its wording predates
-this shape.
+this shape. Its tag goes on the summary line only — never edited into the
+stored text (§2).
 
-If the build was skipped because an earlier branch is still waiting, say that
-in one line where the `🔨` block would have been, naming the branch. If a build
-was reverted, say that in one line, naming the test that failed.
+If **all** building was skipped because an earlier branch is still waiting, say
+that in one line where the `🔨` block would have been, naming the branch. The
+`🔨` block otherwise lists every build, one line each, **including the ones that
+were reverted** — a reverted build is a line in the block naming the test that
+failed, not a missing line. He must be able to count the reports in this
+document and get the same number he filed.
 
 ---
 
@@ -793,9 +1119,14 @@ The test of this file: **could someone reconstruct the report from it with
 ### 7a. The questions store
 
 - A new question → `ask(report_id, question, options)`. It lands `PENDING`.
-- The one you built → `mark_built(ident, branch, note)`, where `branch` is
+  Call it during the report's turn, not at the end (§2).
+- **Each one you built** → `mark_built(ident, branch, note)`, where `branch` is
   `weekly/<DATE>` and `note` says in one line what was changed and that the
-  tests passed. It moves to `BUILT`.
+  tests passed. It moves to `BUILT`. One call per build; a run with three
+  builds makes three calls, all naming the same branch.
+- A build you reverted → **leave it `ANSWERED`.** `mark_built` would be a lie
+  and the store would take it, because it only checks the status, not the
+  truth. `ANSWERED` is what makes next Saturday try again.
 - A question whose report is no longer open, or which the week made
   meaningless → `drop`. Say in your output which and why.
 - **`answer(...)` is never called by this run.** See rule 2 at the top of this
@@ -846,7 +1177,16 @@ Problems tab show it as open.
 
 ---
 
-## 8. Tell him it is ready — and what he owes
+## 8. Tell him — the card first, then the questions
+
+Two things happen here and **the order is not arbitrary.** The card goes out
+first, because it is what reaches him when he is nowhere near this machine, and
+it must not be held up behind a dialog nobody is awake to answer. The
+`AskUserQuestion` call is the last act of the run, because it is the one thing
+that may sit there until he wakes up — and by then everything is built, tested,
+committed, written and closed, so his silence holds up nothing at all.
+
+### 8a. The card
 
 The repo already has the door. Do not invent a new mechanism, do not write to
 `notify.json`, do not start a server. `notify_hook.py` is a stdlib-only CLI that
@@ -885,6 +1225,55 @@ And the one failure worth a card of its own, from §0b:
 after the documents are written and the closes are done — a card that arrives
 before the document exists sends him to an empty folder.
 
+### 8b. Then ask him — all of it, in one call
+
+Every report has had its turn. Every build is committed, every document is on
+disk, every close is done, the card is sent. **Now** put the collected
+questions to him, with `AskUserQuestion`, in **one call** (§2 has the shape,
+the 12-character `header`, and the three-word tag).
+
+**One call, not one per question.** Four separate dialogs is the queue he
+objected to, arriving four times over; one call is four chips he answers in a
+row.
+
+Order the questions **by how much work is blocked behind each** — most blocked
+first. That is the only ordering that matters, because it decides which ones
+get asked when there are more than fit.
+
+**When there are more than four questions:** the tool takes at most four per
+call, and the answer is **not** a second call stacked behind the first. Ask the
+top four. The rest are **already** in the store, in the summary, and covered by
+the card — which is exactly where they would have been anyway, and the DeskIT
+card gives him the same buttons plus the same text box, with no ceiling of four
+and no ceiling of `OPTIONS_MAX` either. Nothing is lost by not chipping them;
+something is lost by making him clear one dialog to discover another. Same
+answer for a question with five options (§0b): it goes to the card intact
+rather than being trimmed to the tool's four, because trimming changes the
+question he is being asked.
+
+**One standing rule covers every mismatch between the store's shape and the
+tool's: the card wins and nothing is edited.** The other case you will meet is
+a migrated carry-over that still ends in an old `משהו אחר` line (§0d). You may
+not remove it — verbatim outranks everything for a question already in the
+store — and chipping it would put that line next to the tool's own "Other" and
+make the run look confused about its own question. So that one goes to the card
+too, and your output says why.
+
+Say in the summary and in your output **which questions were asked with the
+tool and which were not, and why** — past the fourth chip, five options, or the
+tool failed. A question he never saw as a chip and a question he saw and
+skipped look identical next Saturday unless this run wrote down which it was.
+
+**If he answers here and then:** his answers are his, so quote them verbatim in
+your output — and **build nothing from them.** Rule 2 and `mark_built`'s
+`ANSWERED` check say why; the questions stay `PENDING` and his card carries
+them.
+
+**If the tool is unavailable**, fall back to the numbered form in the run's
+final message (§2, last block). Second choice, and say in your output that it
+was used and why. The one unacceptable ending is a run that had questions and
+asked none.
+
 ---
 
 ## 9. What you print
@@ -894,31 +1283,42 @@ his and they stay on this machine. So `problems/weekly/run.log` is the only
 trace of the run, and your final output is what goes into it. It has to answer,
 without the documents open, what this routine did to his repo:
 
-- **What it built** — the report id, the answer it was built against with
-  **both halves quoted, the option he picked and the words he typed**, the
-  files it edited, and the one-line commit subject. If the typed words changed
-  what the option said, say what you built instead of the option. Or, if
-  nothing was built, which of the reasons: no answered question, an earlier
-  `weekly/*` branch still waiting (name it), a file already dirty from another
-  session (name it), an answer whose pick and typed words could not be
-  reconciled (quote both and name the new question you asked), or a reverted
-  build.
-- **Which branch** — `weekly/<DATE>`, that it was NOT pushed, and the branch
-  you returned to.
-- **Which tests ran** — the `tests_quiet.py` result, the count, and the known
-  `test_the_process_list_sees_the_processes_it_cannot_open` failure named
-  explicitly, so a reader does not mistake green for red.
-- **What it asked** — every id left open with a question, the question in one
-  line, its options as stored with their count, and whether it is new or a
-  carry-over from which date.
+- **Every report's turn and how it ended** — one line each, in the order you
+  took them, and **every open report appears**. Built, closed, or blocked on a
+  question. This list is the proof the loop actually ran; a report missing from
+  it is a report the run silently skipped.
+- **What it built** — **one entry per build**, each with the report id, the
+  answer it was built against with **both halves quoted, the option he picked
+  and the words he typed**, the files it edited, and the one-line commit
+  subject. If the typed words changed what the option said, say what you built
+  instead of the option. For each build **not** made, which of the reasons: no
+  answered question, an earlier `weekly/*` branch still waiting (name it), a
+  file already dirty from another session (name it), an answer whose pick and
+  typed words could not be reconciled (quote both and name the new question you
+  asked), or a revert (name the test).
+- **Which branch** — `weekly/<DATE>`, how many commits are on it, that it was
+  NOT pushed, and the branch you returned to.
+- **Which tests ran** — the `tests_quiet.py` result **per build**, with the
+  known `test_the_process_list_sees_the_processes_it_cannot_open` failure named
+  explicitly each time, so a reader does not mistake green for red. If a run
+  went red, say which build and which test, and say explicitly that the
+  earlier commits stand.
+- **What it asked** — every id left open with a question; its **three-word tag
+  and the `header` you gave it**; the question in one line; its options as
+  stored with their count; whether it is new or a carry-over from which date;
+  and **whether it went into the `AskUserQuestion` call or not, and why not**
+  (past the fourth chip, five options, or the tool failed and you fell back to
+  the numbered form). If he answered any of them live, **quote his answers
+  verbatim** and say that nothing was built from them.
 - **What it deliberately left alone** — the reports it did not build and why,
   and the standing list: no push, no `config.toml`, no deletions, no
-  `problems.json` edits beyond `resolve`, no `git add -A`, no restart of the
-  running app.
+  `problems.json` edits beyond `resolve`, no `git add -A`, no `answer(...)`, no
+  restart of the running app.
 - **Counts and paths** — how many reports, how many groups, how many of each
-  verdict, and the three document paths.
+  verdict, how many built, how many blocked, and the three document paths.
 - **Anything it could not gather evidence for**, named. This is the part a
   future reader needs, because it is what next week has to capture.
 
 Then stop. Do not begin any of the work you planned but were not answered
-about, do not build a second report, and **do not answer your own questions.**
+about, do not act on an answer that arrived during §8b, and **do not answer
+your own questions.**
