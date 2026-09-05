@@ -1,4 +1,4 @@
-# The Saturday 08:00 weekly review, as the scheduled task invokes it.
+﻿# The Saturday 08:00 weekly review, as the scheduled task invokes it.
 #
 # Runs `/weekly-reports` headless in this repo and appends everything it said
 # to problems\weekly\run.log. It produces documents and stops -- it fixes
@@ -17,7 +17,14 @@ $ErrorActionPreference = 'Continue'
 $ProgressPreference    = 'SilentlyContinue'
 
 # --- the three absolute paths, because a task's working directory is not ours
-$Repo   = 'C:\Users\shimr\Desktop\Organized\Projects\HebrewDictation'
+# The repo is wherever THIS FILE lives -- not a typed path. Measured
+# 2026-09-05 10:20: a concurrent rename session had already set this to
+# ...\Projects\DeskIT while the folder was still ...\Projects\HebrewDictation,
+# which would have made the next Saturday hit "repo path is gone" and exit 0
+# in silence. $PSScriptRoot follows the folder through a rename without anyone
+# remembering to edit a string; the typed path stays only as a fallback for a
+# host that runs the script by content rather than by file.
+$Repo   = if ($PSScriptRoot) { $PSScriptRoot } else { 'C:\Users\shimr\Desktop\Organized\Projects\HebrewDictation' }
 $LogDir = Join-Path $Repo 'problems\weekly'
 $Log    = Join-Path $LogDir 'run.log'
 
@@ -228,6 +235,7 @@ try {
 # against it later.
 $rateLimited = $false
 $resetNote   = ''
+$firstOut    = ''       # the first thing claude said -- usually the reason it stopped
 
 foreach ($pair in @(@($outFile, 'out'), @($errFile, 'err'))) {
     $path  = $pair[0]
@@ -237,7 +245,10 @@ foreach ($pair in @(@($outFile, 'out'), @($errFile, 'err'))) {
             $text = Get-Content -Path $path -Raw -Encoding UTF8
             if ($text -and $text.Trim().Length -gt 0) {
                 foreach ($line in ($text -split "`r?`n")) {
-                    if ($line.Trim().Length -gt 0) { Write-Log "[$label] $line" }
+                    if ($line.Trim().Length -gt 0) {
+                        Write-Log "[$label] $line"
+                        if (-not $firstOut) { $firstOut = $line.Trim() }
+                    }
                     if ($line -match "hit your \w+ limit|rate_limit|usage limit") {
                         $rateLimited = $true
                         if ($line -match "resets?\s+[^\r\n]*") { $resetNote = $Matches[0] }
@@ -277,6 +288,40 @@ if ($exitCode -eq 0) {
     }
 } else {
     Write-Log ("---- weekly review FAILED (exit {0}) -- the reports were left open, nothing was closed ----" -f $exitCode)
+
+    # A failure that will not fix itself gets a card on his screen, through
+    # the door the repo already has (notify_hook.py -> POST /notify; exits 0
+    # in silence if the app is not up). Measured 2026-09-05: the first three
+    # real runs all died on "Not logged in" and the only reason anyone knew
+    # was that someone happened to be reading run.log at 4 AM. The log is not
+    # a channel he opens; the card stack is. Once per day, not once per hourly
+    # repetition -- a marker beside the .done stamp keeps the twelve retries
+    # from posting twelve copies. A rate-limited run never reaches here: it
+    # exits 3 above, because that failure DOES fix itself and a card he cannot
+    # act on is noise.
+    $failMark = Join-Path $LogDir ((Get-Date).ToString('yyyy-MM-dd') + '.failed')
+    if (-not (Test-Path -PathType Leaf $failMark)) {
+        try {
+            $why = if ($firstOut) { $firstOut } else { "exit $exitCode, nothing printed" }
+            if ($why.Length -gt 200) { $why = $why.Substring(0, 200) }
+            # The one failure with a known cure gets the cure on the card, in
+            # his language, not the client's English one-liner: he said the
+            # bare "Not logged in" would not have told him what to do.
+            if ($firstOut -match 'Not logged in') {
+                $why = 'ה-CLI לא מחובר. פתח PowerShell, הרץ claude.exe מ-.local\bin, הקלד /login ואשר בדפדפן. הריצה הבאה תמשיך לבד.'
+            }
+            $py = Join-Path $Repo '.venv\Scripts\python.exe'
+            & $py (Join-Path $Repo 'notify_hook.py') --source weekly --kind error `
+                --title 'הסקירה השבועית נכשלה' `
+                --body ("{0} · problems/weekly/run.log" -f $why) | Out-Null
+            Set-Content -Path $failMark -Value ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) -Encoding ASCII
+            Write-Log "failure card sent: $why"
+        } catch {
+            Write-Log ("could not send the failure card: " + $_.Exception.Message)
+        }
+    } else {
+        Write-Log "failure card already sent today ($failMark) -- not repeating it"
+    }
 }
 
 # 0 for everything that is not a spent allowance, including hard failures: the
