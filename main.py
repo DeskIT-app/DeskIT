@@ -25,6 +25,7 @@ import logging
 import logging.handlers
 import math
 import queue
+import subprocess
 import sys
 import threading
 import time
@@ -43,6 +44,7 @@ import notify as notify_mod
 import notify_watch as notify_watch_mod
 import popup as popup_mod
 import problems as problems_mod
+import questions as questions_mod
 import server as server_mod
 import singleton
 import overlay as overlay_mod
@@ -95,6 +97,42 @@ LIVE_SECTIONS = {"punctuate": "_punctuator", "translate": "_translator",
                  "polish": "_polisher", "feedback": None, "vocab": None,
                  "hint": None, "review": None}
 LIVE_TOP_LEVEL = ("auto_pause_fullscreen", "paste_chord", "restore_delay_ms")
+
+# THE WEEKLY ROUTINE'S QUESTION, and the three numbers that decide when it
+# gets on his screen (questions.py + overlay.AnswerCard).
+#
+# Nobody presses a key for this card. The question is written by a headless
+# process — the Saturday review, which fires at 04:00 and retries hourly —
+# so the app has to NOTICE one rather than be told about one, and it has to
+# notice it without being a cost: questions.Store.stamp() is one os.stat of
+# a small json and no read at all, which is why 20 s is affordable. It is
+# also the right number from the other end. The question can be minutes old
+# before it matters, so nothing is lost by waiting; but a Saturday can ask
+# three questions, and after he answers one the next has to follow while he
+# is still in the mood to answer it. Twenty seconds is "the app noticed";
+# five minutes would be "the app forgot".
+QUESTION_POLL_S = 20.0
+
+# How still the machine has to have been before a card takes the
+# foreground. The card is a WordPrompt underneath — it TAKES THE KEYBOARD —
+# and this is an unsolicited window, so the bar is higher than for anything
+# else in this file: see _questions_quiet for the whole gate. Twenty seconds
+# of no key-down anywhere on the machine is a real pause in what he was
+# doing, and it is short enough that the card still feels like an answer to
+# the question rather than a letter that arrived next week.
+QUESTION_SETTLE_S = 20.0
+
+# Escape records nothing and the question stays pending, so it comes back —
+# but not in twenty seconds. A card that reappears while he is still moving
+# his hand away from it is a card he cannot get rid of, and the point of
+# Escape is "not now".
+QUESTION_REASK_S = 300.0
+
+# The flag that runs a console program with its console never shown —
+# awake.py and visual_qa.py both spawn powershell with it. NOT combined
+# with DETACHED_PROCESS: the two decide the same thing and are documented
+# as incompatible (see launch.py, which needs the other one).
+CREATE_NO_WINDOW = 0x08000000
 
 # Fewer words than this and the auto punctuation pass stands down. A one-
 # or two-word dictation is an answer — "כן", "ארבע" — the decoder already
@@ -274,6 +312,42 @@ class App:
         pcfg = getattr(cfg, "problems", None)
         self.problems = (problems_mod.Store(APP_DIR / problems_mod.STORE_NAME)
                          if pcfg is not None and pcfg.enabled else None)
+        # The OTHER direction of the same conversation (questions.py). The
+        # bug list is what he tells the app; this is what the weekly
+        # routine asks him back when a report cannot be explained from the
+        # evidence it has — three concrete options and a fourth he types
+        # into, put on his screen here and answered here, never in a chat.
+        #
+        # getattr for the section, like every optional one. What is
+        # different is the DEFAULT when there is no [questions] section at
+        # all: on, which is the opposite of the line above it. The routine
+        # writes questions.json whether or not this Config has grown a
+        # section for it, and a pending question nobody is ever shown is
+        # worse than no feature — it leaves the routine waiting forever on
+        # an answer he was never asked for. An explicit `enabled = false`
+        # still turns the whole thing off and leaves the file alone.
+        qcfg = getattr(cfg, "questions", None)
+        self.questions = (
+            questions_mod.Store(APP_DIR / questions_mod.STORE_NAME)
+            if qcfg is None or getattr(qcfg, "enabled", True) else None)
+        # (size, mtime_ns) as of the last look. questions.Store.stamp()
+        # exists for exactly this — notice a headless write without reading
+        # the file — and the empty tuple means "never looked", so the FIRST
+        # poll always reads: a question written while the app was down is
+        # still a question waiting on him.
+        self._q_stamp: tuple = ()
+        self._q_pending: list[dict] = []
+        # id -> the monotonic time before which it must not be offered
+        # again. Escape puts a question in here; nothing else does.
+        self._q_hushed: dict[str, float] = {}
+        # The last real key-down anywhere on this machine, written by the
+        # keyboard hook (see _popup_key) and read by _questions_quiet. It
+        # is seeded to NOW rather than to zero because the app is launched
+        # by hand: a card must not open in the first twenty seconds because
+        # the process happened to start with the field empty.
+        self._q_last_key = time.monotonic()
+        self._answer_card = None     # built on the first question
+        self._q_no_card = False      # ...unless the overlay has no class
         self._local = None       # lazily built local fallback, if enabled
         self.recorder = Recorder(cfg.audio.sample_rate, cfg.audio.device,
                                  cfg.max_seconds, self._on_overflow)
@@ -988,6 +1062,18 @@ class App:
         bind lookup to C and popup.py never sees the Ctrl+C it would
         otherwise take, because this returns first.
         """
+        # HIS HANDS, in one assignment, before anything else can go wrong.
+        # This is the only place in the process that sees a real key-down
+        # (see above: the boxes never take focus, so the hook is the only
+        # witness), and it is therefore the only way the unsolicited
+        # question card can know he is at the keyboard at all — the app can
+        # sit perfectly idle while he writes an email in another window,
+        # and that is exactly the moment not to jump in front of it. One
+        # monotonic() and one store: no lock, no call that can raise, and
+        # nothing that can be slow. This is the keyboard hook, where an
+        # exception is a dropped hook and a frozen keyboard, and where 300
+        # ms of work unhooks the app silently.
+        self._q_last_key = time.monotonic()
         # The second reading's card first: its three keys are claimed only
         # while a card is up AND the pointer is on it (overlay.ReviewCard),
         # so this is a rect test and never eats a letter being typed.
@@ -1656,6 +1742,21 @@ class App:
         self.notify_card.start()
         self.notify.start()
         self.notify_watch.start()
+        # The weekly routine's question, WATCHED FOR rather than pushed:
+        # it is written by a headless process, possibly overnight, so
+        # there is nothing on this machine to tell the app about it. Off
+        # with the store, and after the hotkey is live either way — the
+        # first look happens a whole poll from now, so this can never be
+        # what delays dictation coming up.
+        if getattr(self, "questions", None) is not None:
+            self._q_watcher = threading.Thread(
+                target=self._watch_questions, daemon=True, name="questions")
+            self._q_watcher.start()
+            log.info("questions: watching %s every %.0f s; a card goes up "
+                     "after %.0f s of stillness and waits %.0f min if he "
+                     "escapes it", questions_mod.STORE_NAME,
+                     QUESTION_POLL_S, QUESTION_SETTLE_S,
+                     QUESTION_REASK_S / 60.0)
         if self.cfg.auto_pause_fullscreen:
             self._watcher = threading.Thread(target=self._watch_fullscreen,
                                              daemon=True, name="fullscreen")
@@ -1741,7 +1842,7 @@ class App:
                 log.info("study engine unavailable (%s)", e)
 
     def stop(self) -> None:
-        self._stopping.set()      # ends the fullscreen watcher's wait()
+        self._stopping.set()      # ends the fullscreen and question waits
         # The hold first: it is the one thing here that changed the
         # MACHINE (the wake hold, a pinned sleep timer), and the rest of
         # this method cannot fail in a way that should leave that in place.
@@ -2622,6 +2723,336 @@ class App:
         log.info("problems: %s filed from the key, %s%s", item["id"],
                  "with the last dictation" if last else "with no dictation",
                  ", with a screenshot" if item.get("shot") else "")
+
+    # ---- the weekly routine's question (questions.py) ----
+    #
+    # The report key's mirror image, and every difference between the two
+    # comes from one fact: NOBODY PRESSES A KEY FOR THIS ONE. The report
+    # card opens because he asked for it, at a moment he chose, with his
+    # hands already on the keyboard. This card opens because a headless
+    # process wrote a question into questions.json — on a Saturday at
+    # 04:00, quite possibly while he was asleep — and the app has to both
+    # notice it and pick the moment. So there are two mechanisms here that
+    # the report side has no need of at all: a poll (questions.Store.stamp,
+    # which is why it exists) and a gate (_questions_quiet, which is the
+    # strictest in this file).
+    #
+    # Nothing below may raise into anything that matters. The watch is its
+    # own daemon thread, the store write and the wake are a thread of their
+    # own off the card's pump, and the one line that runs inside the
+    # keyboard hook is an assignment (see _popup_key). A broken question
+    # card must cost the card and never the dictation.
+
+    def _save_answer_card(self, fields: dict) -> None:
+        """The question card's twin of _save_problem_card: where it was
+        dragged to, written into [questions] through the same
+        comment-keeping line edit.
+
+        Guarded the same way and for the same reason, only more so — this
+        section may not exist AT ALL yet, not merely be missing two
+        fields, so a `dataclasses.replace` would raise on the section
+        before it raised on the field. What is lost while that is true is
+        the restart and never the drag: the card's own instance keeps the
+        position for the rest of the run either way.
+        """
+        qcfg = getattr(self.cfg, "questions", None)
+        if qcfg is None or not dataclasses.is_dataclass(qcfg):
+            log.info("question card: there is no [questions] section to "
+                     "save a drag in yet — it stays put for this run only")
+            return
+        known = {f.name for f in dataclasses.fields(qcfg)}
+        missing = sorted(set(fields) - known)
+        if missing:
+            log.info("question card: [questions] has no %s to save a drag "
+                     "in yet — it stays put for this run only",
+                     ", ".join(missing))
+            return
+        self.cfg = dataclasses.replace(
+            self.cfg, questions=dataclasses.replace(qcfg, **fields))
+        config_mod.set_values(self.config_path,
+                              {f"questions.{k}": v for k, v in fields.items()})
+        log.info("question card: %s",
+                 ", ".join(f"{k}={v}" for k, v in fields.items()))
+
+    def _questions_quiet(self, now: float) -> bool:
+        """May a question card take the foreground RIGHT NOW?
+
+        `_learning_quiet` is most of the answer already and is reused
+        rather than re-derived: ready and idle, not recording, not
+        transcribing, not paused, nothing queued, no text key in flight
+        and neither screen feature busy. Paused matters more here than it
+        does there — paused usually means a game or a presentation owns
+        the screen, and a window that takes the foreground over one costs
+        him the thing he was doing, not just some GPU time.
+
+        Two things are added to it.
+
+        The first is the other windows in this process that TAKE THE
+        KEYBOARD: the pencil's word box, the report card, the ask card and
+        a question card already up. The AnswerCard comes down the
+        WordPrompt side of overlay's tree exactly as ProblemCard does, so
+        a second one opening over the first would pull the caret out of a
+        box he is in the middle of typing into.
+
+        The second is HIS HANDS, and it is the one signal that is not
+        about this app at all. `_q_last_key` is written by the keyboard
+        hook on every real key-down anywhere on the machine, so a still
+        app with a busy keyboard — he is answering mail, the app has
+        nothing to do — reads as busy here, which is right. It also covers
+        the gap between two polls twenty seconds apart: a whole dictation
+        can start and finish in there, and its hotkey press went through
+        the hook like every other key.
+
+        What it cannot see is the mouse, and that is accepted rather than
+        fixed: a mouse hook is a second low-level hook on the machine for
+        a card that can afford to arrive five minutes late.
+        """
+        if now - self._q_last_key < QUESTION_SETTLE_S:
+            return False
+        for name in ("_word_prompt", "_problem_card", "_answer_card"):
+            box = getattr(self, name, None)
+            if box is None:
+                continue
+            try:
+                if box.open():
+                    return False
+            except Exception:            # noqa: BLE001
+                return False             # a box we cannot ask about is a no
+        if self._ask_card_open():
+            return False
+        return self._learning_quiet()
+
+    def _answer_box(self):
+        """The question card, built on first need, or None.
+
+        Looked up rather than named — `getattr(overlay_mod, "AnswerCard")`
+        — for the reason the report card is looked up: the class lands with
+        answer_card.py's other half, and until it does this feature has to
+        say so once and leave the questions in the dashboard, not take the
+        app down at startup.
+
+        Built HERE and not in __init__ so that a class whose signature has
+        moved costs one log line on the watch thread instead of a process
+        that will not start. Never on the hook thread either way: building
+        it imports Tk.
+        """
+        card = getattr(self, "_answer_card", None)
+        if card is not None or self._q_no_card:
+            return card
+        card_cls = getattr(overlay_mod, "AnswerCard", None)
+        if card_cls is None:
+            self._q_no_card = True
+            log.info("questions: this overlay has no question card — the "
+                     "%d question(s) wait in the dashboard until it lands",
+                     len(self._q_pending))
+            return None
+        qcfg = getattr(self.cfg, "questions", None)
+        unset = getattr(config_mod, "HINT_UNSET", -100000)
+        try:
+            # Where it was last dragged to and where to write the next
+            # drag, which is the hint/review/notify/report shape and the
+            # one this card's own `placed` asks for by name. x and y
+            # through getattr because they land with the config half of
+            # this feature: HINT_UNSET is the "never moved" sentinel, a
+            # number no desktop can reach, because a monitor left of the
+            # primary has genuinely negative coordinates and -1 would
+            # throw a real position away.
+            card = card_cls(
+                x=int(getattr(qcfg, "x", unset) if qcfg is not None
+                      else unset),
+                y=int(getattr(qcfg, "y", unset) if qcfg is not None
+                      else unset),
+                on_change=self._save_answer_card)
+        except Exception:                # noqa: BLE001
+            self._q_no_card = True
+            log.exception("questions: the question card would not build — "
+                          "the questions wait in the dashboard")
+            return None
+        self._answer_card = card
+        return card
+
+    def _watch_questions(self) -> None:
+        """Notice a new pending question, and put it up when it is safe.
+
+        Its own daemon thread, ended by the same `_stopping` event the
+        fullscreen watcher waits on. Everything inside is wrapped: this
+        thread may log a bad week, and may not end one.
+        """
+        while not self._stopping.wait(QUESTION_POLL_S):
+            try:
+                self._questions_tick()
+            except Exception:            # noqa: BLE001
+                log.exception("questions: the question watch stumbled — "
+                              "dictation is unaffected")
+
+    def _questions_tick(self) -> None:
+        """One look at the store, and at most one card."""
+        store = getattr(self, "questions", None)
+        if store is None:
+            return
+        stamp = store.stamp()
+        if stamp != self._q_stamp:
+            # The file changed (or this is the first look): re-read it
+            # once. OLDEST FIRST — `items` hands them back newest first,
+            # and a question that has been waiting since last Saturday
+            # goes before one written this morning.
+            self._q_stamp = stamp
+            self._q_pending = list(
+                reversed(store.items(questions_mod.PENDING)))
+            log.info("questions: %d waiting on him", len(self._q_pending))
+        if not self._q_pending:
+            return
+        now = time.monotonic()
+        item = next((row for row in self._q_pending
+                     if self._q_hushed.get(str(row.get("id") or ""), 0.0)
+                     <= now), None)
+        if item is None or not self._questions_quiet(now):
+            return
+        card = self._answer_box()
+        if card is None:
+            return
+        self._question_show(card, item)
+
+    def _question_show(self, card, item: dict) -> None:
+        """Open the card on one question. From the watch thread.
+
+        Nothing is taken off `_q_pending` here. What keeps the next poll
+        from opening a second card is `_questions_quiet` asking the card
+        whether it is up (and `ask` itself refusing a second one), and
+        what takes the question off the list afterwards is the store: an
+        answer changes the stamp, the next tick re-reads, and an answered
+        question is no longer PENDING. An ESCAPED one has to stay on the
+        list, because it is still pending and still his to answer.
+        """
+        ident = str(item.get("id") or "")
+
+        def done(choice=None, text="") -> None:
+            """The card's answer, on the card's own Tk thread.
+
+            (None, "") is Escape, and it records NOTHING — the store is
+            not touched, the question stays PENDING and it comes back.
+            Hushed for QUESTION_REASK_S first: "not now" that returns in
+            twenty seconds is not "not now".
+
+            Anything real goes to a thread of its own, which is
+            _notify_dismissed's rule and for the same two reasons — the
+            store takes a cross-process lock and the wake starts a
+            process, and neither belongs in a painter's pump.
+            """
+            try:
+                if choice is None and not str(text or "").strip():
+                    self._q_hushed[ident] = (time.monotonic()
+                                             + QUESTION_REASK_S)
+                    log.info("questions: %s waved away — back in about "
+                             "%.0f min", ident, QUESTION_REASK_S / 60.0)
+                    return
+                threading.Thread(
+                    target=self._question_answered,
+                    args=(ident, choice, str(text or "")), daemon=True,
+                    name="question-answer").start()
+            except Exception:            # noqa: BLE001
+                log.exception("questions: the answer to %s could not be "
+                              "handed on", ident)
+
+        try:
+            opened = bool(card.ask(item, done, focus=True))
+        except Exception:                # noqa: BLE001
+            # A signature that has moved under us, or a card that will not
+            # draw. One question is worth one log line and no more: the
+            # class is marked absent so the watch stops trying every
+            # twenty seconds, and the dashboard still has the question.
+            self._q_no_card = True
+            self._answer_card = None
+            log.exception("questions: the question card would not open — "
+                          "the questions wait in the dashboard")
+            return
+        if not opened:
+            log.info("questions: a card is already up — %s waits", ident)
+            return
+        log.info("questions: asked him %s on screen (%d option(s), about "
+                 "%s)", ident, len(item.get("options") or ()),
+                 item.get("report_id") or "nothing in particular")
+        self._say("a question from the weekly review is on screen")
+
+    def _question_answered(self, ident: str, choice, text: str) -> None:
+        """His answer: written down, then the routine woken. Own thread.
+
+        The order is not negotiable. The routine reads the store to find
+        out what it may build, so waking it before the answer is on disk
+        would wake it to nothing — and it would then write today's `.done`
+        stamp over a run that did no work.
+        """
+        store = getattr(self, "questions", None)
+        if store is None:
+            return
+        try:
+            ok = store.answer(ident, choice=choice, text=text, by="card")
+        except Exception:                # noqa: BLE001
+            # questions.answer swallows its own OSErrors, so this is the
+            # unexpected kind. Never fatal: a lost answer is a question he
+            # gets asked again.
+            log.exception("questions: could not record the answer to %s",
+                          ident)
+            return
+        if not ok:
+            # False is a real outcome and has three causes, and the one
+            # that matters is the third: the dashboard may have answered
+            # this same question in the other window while this card was
+            # up. A decision he has already made must not be overwritten,
+            # and must not fire a second build.
+            log.info("questions: %s was not recorded — nothing answered, or "
+                     "it was already answered elsewhere", ident)
+            self._say("that question was already answered elsewhere")
+            self._q_hushed[ident] = time.monotonic() + QUESTION_REASK_S
+            return
+        log.info("questions: %s answered from the card (option %s%s)",
+                 ident, "none" if choice is None else choice,
+                 ", with text" if text.strip() else "")
+        self._say("answer saved — the weekly review is starting on it")
+        self._q_hushed.pop(ident, None)
+        self._wake_review(ident)
+
+    def _wake_review(self, ident: str) -> None:
+        """THE MOMENT HE ANSWERS, THE ROUTINE WAKES AND WRITES THE CODE.
+
+        `weekly_review.ps1 -Answered`: the same script the Saturday task
+        runs, with the switch that ignores today's `.done` stamp, because
+        a new answer is new work even though this morning's scan finished.
+        The script's own lock is what keeps this from starting a second
+        review on top of a running one — that is its job, not ours, and it
+        is why this can be fire-and-forget.
+
+        And fire-and-forget it is: a review is minutes of work, and this
+        is a thread inside a dictation app. Nothing waits on it, nothing
+        reads its output (it has a log), and its console never appears —
+        CREATE_NO_WINDOW, the flag awake.py and visual_qa.py already spawn
+        powershell with, because a window flashing on his screen every
+        time he answers a question is its own bug report.
+        """
+        script = APP_DIR / "weekly_review.ps1"
+        if not script.is_file():
+            log.warning("questions: %s is missing — %s is answered and "
+                        "waiting, and the next Saturday run will build it",
+                        script.name, ident)
+            return
+        args = ["powershell", "-NoProfile", "-NonInteractive",
+                "-ExecutionPolicy", "Bypass", "-File", str(script),
+                "-Answered"]
+        try:
+            subprocess.Popen(args, cwd=str(APP_DIR),
+                             creationflags=CREATE_NO_WINDOW, close_fds=True,
+                             stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except Exception:                # noqa: BLE001
+            # The answer is safely on disk either way, which is the half
+            # that cannot be redone. A wake that failed costs him a wait,
+            # not a decision.
+            log.exception("questions: could not wake the weekly review for "
+                          "%s — it will be built on the next run", ident)
+            return
+        log.info("questions: woke the weekly review for %s "
+                 "(weekly_review.ps1 -Answered)", ident)
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")

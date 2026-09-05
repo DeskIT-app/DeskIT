@@ -13,6 +13,21 @@
 # missing claude.exe or a moved repo is still logged loudly, because those are
 # the two failures that make every future run a no-op.
 
+# -Answered: HE JUST ANSWERED A QUESTION, SO THERE IS NEW WORK NOW.
+#
+# The routine asks a multiple-choice question when a report cannot be settled
+# from its own evidence, and then it stops. He answers inside the app -- the
+# question card in main.py, or the dashboard's answer surface -- and the store
+# write is followed immediately by this script with this switch, which is a
+# CONTRACT: it is spelled exactly '-Answered', because two other files call it.
+#
+# All the switch does is ignore today's .done stamp. Everything else about the
+# run is identical, because the command is already the right one: it reads the
+# questions store, builds what he has answered, and asks about what it still
+# cannot decide. What it must NOT do is claim the day -- see the stamp block
+# below.
+param([switch]$Answered)
+
 $ErrorActionPreference = 'Continue'
 $ProgressPreference    = 'SilentlyContinue'
 
@@ -161,6 +176,41 @@ if (-not $?) {
     exit 0
 }
 
+# --- one review at a time, and the lock is a FILE HANDLE
+# The scheduled task is registered MultipleInstances=IgnoreNew, and that was
+# protection enough while the task was the only caller. It is not any more:
+# -Answered is invoked directly by the app the moment he answers a question,
+# and a direct invocation is not the task, so nothing in the scheduler stops it
+# landing on top of a running Saturday scan -- two clients writing the same
+# three documents under problems\weekly and both closing reports off the same
+# problems.json.
+#
+# An EXCLUSIVE FILE HANDLE (FileShare::None), which is the honest PowerShell
+# 5.1 equivalent of the msvcrt.locking that problems.py and review.py use. NOT
+# a pid file: that has to be written, read back and checked against a live
+# process, and Windows reuses pids, so the check is a guess. The handle needs
+# none of it -- and, the reason it was chosen, IT CANNOT WEDGE THE FEATURE.
+# Windows closes a handle when the process ends however it ended: cleanly, on
+# an exception, on a kill, on a power cut. There is no such thing as a stale
+# lock here, so no timeout and no override are needed. The file is left behind
+# on purpose; the lock is the handle, never the file's existence.
+$LockPath = Join-Path $LogDir 'review.lock'
+$Lock = $null
+try {
+    if (-not (Test-Path $LogDir)) {
+        New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+    }
+    $Lock = [System.IO.File]::Open($LockPath,
+        [System.IO.FileMode]::OpenOrCreate,
+        [System.IO.FileAccess]::ReadWrite,
+        [System.IO.FileShare]::None)
+} catch {
+    $waiting = 'nothing to do; the next hourly fire will try again'
+    if ($Answered) { $waiting = 'the review already running will read his answer, and next Saturday will build it if it did not' }
+    Write-Log ("another review holds the lock ($LockPath) -- {0}" -f $waiting)
+    exit 0
+}
+
 # One review per Saturday, however many times the trigger fires. The task
 # repeats hourly until mid-afternoon so a spent usage window does not cost him
 # the week -- and the retry is the trigger's own repetition, not
@@ -170,13 +220,25 @@ if (-not $?) {
 # launched and returned non-zero). What stops the repetition is this stamp,
 # written only after a clean finish. A rate-limited or crashed run leaves no
 # stamp, and the next hour tries again.
+#
+# -Answered is the one thing allowed past it, and only past the CHECK. A new
+# answer is new work even though today's scan already finished, which is the
+# whole reason the switch exists -- he answers at nine on a Saturday morning
+# and the code is written at nine, not next week. The stamp itself is not
+# touched here or below: see the finish.
 $Stamp = Join-Path $LogDir ((Get-Date).ToString('yyyy-MM-dd') + '.done')
-if (Test-Path -PathType Leaf $Stamp) {
+$reviewed = Test-Path -PathType Leaf $Stamp
+if ($reviewed -and (-not $Answered)) {
     Write-Log "already reviewed today ($Stamp) -- nothing to do"
     exit 0
 }
+if ($reviewed) {
+    Write-Log "today is already reviewed ($Stamp), but an answer arrived since -- running anyway; the stamp stays as it is"
+}
 
-Write-Log "---- weekly review starting (repo $Repo) ----"
+$Reason = 'the Saturday scan'
+if ($Answered) { $Reason = 'he answered a question (-Answered)' }
+Write-Log ("---- weekly review starting: {0} (repo {1}) ----" -f $Reason, $Repo)
 Write-Log "client: $ClaudeWhy"
 
 # stdout and stderr go to their own temp files and are appended afterwards.
@@ -276,15 +338,26 @@ if ($rateLimited) {
     # mid-way left everything open and the retry starts clean.
     $note = if ($resetNote) { " ($resetNote)" } else { '' }
     Write-Log ("---- weekly review hit the usage limit{0} -- exit 3 so the task retries in an hour; the reports were left open ----" -f $note)
+    if ($Lock) { $Lock.Dispose() }
     exit 3
 }
 
 if ($exitCode -eq 0) {
     Write-Log "---- weekly review finished ok ----"
-    try {
-        Set-Content -Path $Stamp -Value ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) -Encoding ASCII
-    } catch {
-        Write-Log "could not write $Stamp -- the next hourly fire will run the review again"
+    if ($Answered) {
+        # NOT OURS TO WRITE, and not ours to rewrite either. The stamp means
+        # "the day's scan is done", and an -Answered run is one build off one
+        # answer, not the day's scan. Writing it on a weekday would tell the
+        # next Saturday fire that Saturday was reviewed when it was not; and
+        # rewriting one already there would move a timestamp nobody asked to
+        # move. The switch bypasses the CHECK and nothing else.
+        Write-Log "answer run -- today's .done stamp is left exactly as it was"
+    } else {
+        try {
+            Set-Content -Path $Stamp -Value ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) -Encoding ASCII
+        } catch {
+            Write-Log "could not write $Stamp -- the next hourly fire will run the review again"
+        }
     }
 } else {
     Write-Log ("---- weekly review FAILED (exit {0}) -- the reports were left open, nothing was closed ----" -f $exitCode)
@@ -299,7 +372,17 @@ if ($exitCode -eq 0) {
     # from posting twelve copies. A rate-limited run never reaches here: it
     # exits 3 above, because that failure DOES fix itself and a card he cannot
     # act on is noise.
-    $failMark = Join-Path $LogDir ((Get-Date).ToString('yyyy-MM-dd') + '.failed')
+    #
+    # An -Answered run gets its OWN marker, and that is not a detail. The two
+    # failures are different news: "the Saturday scan did not run" is a week he
+    # can wait for, while "you answered a question twenty minutes ago and
+    # nothing was built" is the promise this feature makes being broken. With
+    # one shared marker, a scan that failed at 04:00 would swallow the card for
+    # every answer he gave that day, in silence. Still once per day per kind,
+    # which is what the twelve retries needed.
+    $failSuffix = '.failed'
+    if ($Answered) { $failSuffix = '.answered-failed' }
+    $failMark = Join-Path $LogDir ((Get-Date).ToString('yyyy-MM-dd') + $failSuffix)
     if (-not (Test-Path -PathType Leaf $failMark)) {
         try {
             $why = if ($firstOut) { $firstOut } else { "exit $exitCode, nothing printed" }
@@ -310,9 +393,15 @@ if ($exitCode -eq 0) {
             if ($firstOut -match 'Not logged in') {
                 $why = 'ה-CLI לא מחובר. פתח PowerShell, הרץ claude.exe מ-.local\bin, הקלד /login ואשר בדפדפן. הריצה הבאה תמשיך לבד.'
             }
+            # And the title says WHICH run failed, for the same reason the
+            # marker is separate: he is standing there having just answered,
+            # and "the weekly review failed" would not tell him that it was
+            # HIS answer that went nowhere.
+            $failTitle = 'הסקירה השבועית נכשלה'
+            if ($Answered) { $failTitle = 'התשובה נשמרה אבל הבנייה נכשלה' }
             $py = Join-Path $Repo '.venv\Scripts\python.exe'
             & $py (Join-Path $Repo 'notify_hook.py') --source weekly --kind error `
-                --title 'הסקירה השבועית נכשלה' `
+                --title $failTitle `
                 --body ("{0} · problems/weekly/run.log" -f $why) | Out-Null
             Set-Content -Path $failMark -Value ((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) -Encoding ASCII
             Write-Log "failure card sent: $why"
@@ -323,6 +412,12 @@ if ($exitCode -eq 0) {
         Write-Log "failure card already sent today ($failMark) -- not repeating it"
     }
 }
+
+# The lock, let go explicitly. Windows would do it a millisecond later anyway
+# -- that is the property the whole choice rests on -- but an -Answered run can
+# be followed within seconds by another answer, and a handle released here
+# rather than at teardown is one less race to think about.
+if ($Lock) { $Lock.Dispose() }
 
 # 0 for everything that is not a spent allowance, including hard failures: the
 # log is the channel for those, and a retry would only fail the same way.
