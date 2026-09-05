@@ -1001,8 +1001,14 @@ class Engine:
             return
         if result.get("llm"):
             self._spent["llm"] += 1
+        # `variants` too, which read_one has always returned and this used
+        # to drop. Without the three readings themselves, a transcript
+        # that came out wrong cannot be diagnosed after the fact: on
+        # 2026-09-05 all that survived the worst clip of the day was
+        # "agree 0.232, changes 0", and what the decodes actually SAID —
+        # the thing that would have named the bug — was gone.
         stamp = {k: result[k] for k in ("engine", "when", "agree", "llm",
-                                        "decodes")}
+                                        "decodes", "variants")}
         stamp["changes"] = len(result["changes"])
         self._recent.update(item, review=stamp)
         meta = item.meta

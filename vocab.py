@@ -415,10 +415,19 @@ class Vocab:
         # context confusion belongs. study.py drew this line for machine
         # pairs a week earlier (glossary_only); this closes it for human
         # ones.
+        # The gate asks about the MEANT form, not family(). family() is
+        # the A/B split for whether a pair may be SUBSTITUTED, and it says
+        # "term" when EITHER side carries Latin — right for that question,
+        # wrong for this one. What lands in the prompt is `meant` and only
+        # `meant`, so a pair whose meant form is ordinary Hebrew is
+        # ordinary Hebrew in the prompt no matter what was heard. Found
+        # 2026-09-05: 'Shush' -> 'שש' and '80 90 000' -> '80 אלף' had both
+        # walked in at one hit and were sitting in the live string, which
+        # is precisely the ingredient of the 2026-09-02 incident this gate
+        # was built to keep out.
         human = sorted((c for c in self.corrections
                         if int(c.get("hits", 1)) > 0
-                        and (family(c.get("heard", ""), c.get("meant", ""))
-                             == "term"
+                        and (_LATIN.search(str(c.get("meant", "")))
                              or int(c.get("hits", 1))
                              >= self.hebrew_after_hits)),
                        key=lambda c: (int(c.get("hits", 1)),

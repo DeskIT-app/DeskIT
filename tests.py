@@ -3828,6 +3828,30 @@ def test_hits_rank_above_recency_in_the_hotword_list() -> None:
     assert v.hotwords().split()[0] == "Often", v.hotwords()
 
 
+def test_a_hebrew_meaning_waits_its_hits_whatever_was_heard() -> None:
+    """family() answers "term" when EITHER side carries Latin. That is the
+    right answer for whether a pair may be SUBSTITUTED and the wrong one
+    for what may enter the decoder prompt: what lands in the prompt is the
+    MEANT form and only that. Found live 2026-09-05 — 'Shush' -> 'שש' had
+    walked in at one hit, an ordinary Hebrew word in the prompt, which is
+    the exact ingredient of the 2026-09-02 invented-tail incident this
+    gate was built to keep out."""
+    v = _tmp_vocab(hebrew_after_hits=3)
+    v.learn("Shush", "שש")
+    assert v.terms() == [], f"one hit put a Hebrew word in the prompt: {v.terms()}"
+    v.learn("Shush", "שש")
+    assert v.terms() == [], v.terms()
+    v.learn("Shush", "שש")
+    assert v.terms() == ["שש"], "three corrections is a name, not a word"
+
+    # A meant form carrying Latin or digits is a name, and still enters at
+    # the first correction — that is what the fast lane is for.
+    v = _tmp_vocab(hebrew_after_hits=3)
+    v.learn("קלוד קוד", "Claude Code")
+    v.learn("שמונים אלף", "80 אלף")
+    assert set(v.terms()) == {"Claude Code", "80 אלף"}, v.terms()
+
+
 def test_a_corrupt_vocab_file_does_not_stop_dictation() -> None:
     """Accuracy is allowed to degrade; dictation is not allowed to stop."""
     import tempfile
@@ -16650,6 +16674,43 @@ class _ReviewReader:
 class _NoCorpus:
     def admit(self, *a, **k):
         return False
+
+
+def test_the_sidecar_keeps_what_the_three_readings_actually_said() -> None:
+    """A reading that proposes nothing is exactly when the evidence
+    matters. On 2026-09-05 the worst clip of the day — an English
+    dictation shipped as invented Hebrew — left behind only "agree 0.232,
+    changes 0": the readings themselves were dropped, so what they SAID,
+    which would have named the bug, could not be looked at afterwards."""
+    import shutil
+    import review as review_mod
+    text = "אז האם אתם עשרים"
+    tmp = Path(tempfile.mkdtemp(prefix="review-variants-"))
+    try:
+        item = _StudyItem(tmp / "clip.wav",
+                          {"text": text, "raw": text, "seconds": 3.0},
+                          seconds=3.0)
+        engine = review_mod.Engine(
+            _hint_cfg(),
+            _StudyTranscriber(wide="so have you finished",
+                              general="so have you finished",
+                              loose="so have you finished"),
+            vocab_mod.Vocab(tmp / "vocab.json"),
+            _ReviewRecent([item], tmp),
+            review_mod.Store(tmp / "review.json"),
+            model_lock=None, quiet=lambda: True, app_dir=tmp,
+            on_suggest=lambda s: None, on_accept=lambda s: None,
+            reader=_ReviewReader([]), corpus=_NoCorpus())
+        engine._read(item, 0, True, 0)
+
+        stamped = item.meta["review"]
+        assert stamped["variants"], "the readings were dropped again"
+        assert len(stamped["variants"]) == len(stamped["decodes"]), stamped
+        assert "so have you finished" in stamped["variants"], stamped
+        # And the number that was all anyone had, still there beside them.
+        assert stamped["agree"] < 0.5, stamped
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_the_engine_proposes_on_a_card_and_learns_only_what_was_accepted(
