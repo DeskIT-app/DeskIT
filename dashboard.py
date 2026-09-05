@@ -429,6 +429,65 @@ REPORT_HINT = getattr(_pc, "HINT",
 REPORT_KEYS = getattr(_pc, "KEYS", "Enter sends  ·  Shift+Enter for a "
                                    "new line  ·  Esc cancels")
 
+# The question row's words, numbers and one RULE, and answer_card owns
+# every one of them. The card the app pops up and the row on this screen
+# are TWO SURFACES ON ONE QUESTION — he may answer either — so the moment
+# they disagree about how many options there can be, what the button
+# says, how tall the box is or when it is allowed to send, one of them is
+# lying about the other. Read off that module rather than typed again
+# here, which is the same trade the FIELD_* block above makes with
+# problem_card and answer_card itself makes with both.
+#
+# ITS KEYS LINE IS DELIBERATELY NOT BORROWED, and that is answer_card's
+# own reasoning about problem_card.KEYS applied one step further: half
+# that line is about a modal — digits bound to a card that holds the
+# keyboard, Esc taking that card down — and this is a row in a list with
+# five other rows and no keyboard of its own. A line naming keys that do
+# nothing here is how a shortcut stops being trusted. The clauses the two
+# surfaces DO share are spelled out below, and tests.py is the place to
+# assert they still match.
+try:
+    import answer_card as _ac
+except Exception:                         # noqa: BLE001 — feature absent
+    _ac = None
+
+Q_OPTIONS_MAX = getattr(_ac, "OPTIONS_MAX", 5)
+Q_SEND_LABEL = getattr(_ac, "SEND_LABEL", "Send")
+# Two lines where the report box takes three, because answer_card lowered
+# its own floor for a reason that holds here too: this box is usually one
+# clause he is adding to an answer he already pressed, not a paragraph he
+# is composing from nothing.
+Q_FIELD_LINES_MIN = getattr(_ac, "FIELD_LINES_MIN", 2)
+# THE PERMISSION SLIP, in the card's words. A box under a list of choices
+# reads as the alternative to them — press a row OR write, one of the
+# two — which is exactly the shape he threw out. This is the one faint
+# line that says the geometry's quiet part out loud.
+Q_FIELD_CAP = getattr(_ac, "FIELD_CAP",
+                      "In your own words — add to a choice, or answer "
+                      "instead.")
+
+
+def _answerable(choice, typed: str) -> bool:
+    """Whether the store would take this as an answer, which is the only
+    thing that may light the Send button.
+
+    THE RULE ITSELF IS IMPORTED, not just the numbers around it: a choice
+    or words or both, and only both-empty refuses. answer_card.answerable
+    is that rule and questions.Store.answer is what enforces it, so a
+    button that armed where the store refuses would teach him to press
+    something that does nothing, and one that stayed dark where the store
+    accepts would hide an answer he had already given. The fallback is
+    the same sentence in Python, for the tree where the card's module is
+    not here at all.
+    """
+    card = {"choice": choice, "typed": typed or ""}
+    if _ac is not None:
+        try:
+            return bool(_ac.answerable(card))
+        except Exception:                 # noqa: BLE001
+            pass
+    return choice is not None or bool(str(typed or "").strip())
+
 
 def _display_lines(widget) -> int:
     """How many lines a tk.Text is actually SHOWING.
@@ -467,6 +526,370 @@ def _problems_enabled() -> bool:
     except Exception:                     # noqa: BLE001 — never fatal here
         return True
     return bool(getattr(pcfg, "enabled", True))
+
+
+# The question card's own numbers. The FIELD in it is the report box's
+# field — the block above owns those metrics and problem_card owns that
+# block — because it is the same field doing the same job: he types or
+# dictates a sentence into it and reads the echo back underneath. Only
+# the room around it is this card's.
+Q_INDENT = 18            # how far a question sits in under its report
+Q_PAD = 14               # the card's own margin
+Q_MARK = 26              # the room the pick dot takes at the left of a band
+Q_BAND_MIN = 34          # an option band is at least this tall
+Q_ECHO_LINES = 2         # how much of the echo stays on screen
+Q_POLL_MS = 80           # how often the field is read (the card uses 60)
+# The Text sits this far inside its painted well. At FIELD_RADIUS 9 the
+# arc passes 2.6 px from the corner, so 3 px in is inside the curve and
+# no square nub of the field pokes out of the rounding — measured for the
+# report box, and the same well is painted here.
+Q_WELL_INSET = 3
+
+# ---------------------------------------------------------------------------
+# git, for the branches the weekly routine leaves behind
+# ---------------------------------------------------------------------------
+#
+# The routine builds what he has already answered, commits it to
+# weekly/<YYYY-MM-DD> and NEVER pushes: pushing is his button, and it is
+# the only thing standing between an autonomous routine and a public
+# mistake. This is that button's plumbing.
+#
+# CREATE_NO_WINDOW on every call, for the reason versions.py measured:
+# git is a console program, this window runs under pythonw, and a spawn
+# without the flag ALLOCATES A CONSOLE — visible flicker and hundreds of
+# milliseconds, on whichever thread asked. capture.py:1683 says the same
+# where it opens explorer.
+TRUNK = "fast"                 # where the routine's work goes home to
+WEEKLY = "weekly/"             # ...from branches named weekly/<DATE>
+GIT_READ_S = 20                # a local read
+GIT_NET_S = 180                # a push, over his connection
+_CREATE_NO_WINDOW = 0x08000000
+# Beside the routine's own run.log, and not beside app.log, for a reason
+# that is not tidiness: problems\ is gitignored and the repo root is not,
+# so a log file up there would show as an untracked path in every other
+# session's `git status` — and versions._assert_switchable refuses a
+# whole-app switch on exactly that.
+PUSH_LOG = APP_DIR / "problems" / "weekly" / "push.log"
+PUSH_LOG_MAX = 200_000
+
+
+def _push_log(text: str) -> None:
+    """Every git call this window makes, on the disk.
+
+    A refusal has to be readable an hour later — a toast is gone in nine
+    seconds — and the "app" logger reaches nothing in this process: the
+    dashboard never calls main.setup_logging, so it has no handlers. So
+    the file is the record and the logger is the bonus for whoever gives
+    this process handlers later. A log that cannot be written is not a
+    failure of the push.
+    """
+    import logging
+
+    logging.getLogger("app").info("push: %s", text)
+    try:
+        PUSH_LOG.parent.mkdir(parents=True, exist_ok=True)
+        if PUSH_LOG.exists() and PUSH_LOG.stat().st_size > PUSH_LOG_MAX:
+            # The tail kept rather than a rotation: nothing reads this
+            # file but him, and a push.log.1 in a folder he opens by hand
+            # is one more thing to explain.
+            kept = PUSH_LOG.read_text("utf-8", errors="replace")
+            PUSH_LOG.write_text(kept[-PUSH_LOG_MAX // 2:], "utf-8")
+        with PUSH_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {text}\n")
+    except OSError:
+        pass
+
+
+def _git(*args: str, cwd=None,
+         timeout: int = GIT_READ_S) -> tuple[int, str, str]:
+    """One git command: (exit code, stdout, stderr).
+
+    It never raises and it never shows a window, and BOTH STREAMS ARE
+    LOGGED whatever happened — the whole point of this surface is that a
+    push he cannot explain is a push he cannot trust. A missing git, a
+    timeout and an OSError all come back as a code and a sentence,
+    because every caller here is a button.
+    """
+    import subprocess
+
+    where = str(cwd or APP_DIR)
+    try:
+        proc = subprocess.run(["git", *args], cwd=where, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout,
+                              creationflags=_CREATE_NO_WINDOW)
+        code, out, err = proc.returncode, proc.stdout or "", proc.stderr or ""
+    except FileNotFoundError:
+        code, out, err = 127, "", "git is not on PATH"
+    except subprocess.TimeoutExpired:
+        code, out, err = 124, "", f"git gave no answer in {timeout} s"
+    except OSError as e:
+        code, out, err = 126, "", str(e)
+    _push_log(f"git {' '.join(args)}"
+              + ("" if where == str(APP_DIR) else f"  [in {where}]")
+              + f" -> {code}"
+              + (f"\n    out: {out.strip()}" if out.strip() else "")
+              + (f"\n    err: {err.strip()}" if err.strip() else ""))
+    return code, out, err
+
+
+def _first_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _trunk_ref() -> str:
+    """`fast` if this repo has it, `origin/fast` if only the remote does,
+    "" for a repo with neither — a one-branch clone, or no git at all.
+    Everything a weekly branch is measured against is measured against
+    this, and "" means the row says so instead of guessing."""
+    for ref in (TRUNK, f"origin/{TRUNK}"):
+        code, out, _err = _git("rev-parse", "--verify", "--quiet",
+                               f"{ref}^{{commit}}")
+        if code == 0 and out.strip():
+            return ref
+    return ""
+
+
+def weekly_branches() -> list[dict]:
+    """Every weekly/* branch and what is on it, newest name first.
+
+    EVERY one of them, not the newest. A Saturday he never got round to
+    reviewing leaves its branch behind, and a list showing only this
+    week's would quietly bury it — the routine's own gate reads the same
+    list to decide whether it may build at all.
+
+    [] for a repo with no weekly branch, no git and no repository: each
+    of those is a block with nothing in it, never an error.
+    """
+    code, out, _err = _git("for-each-ref", "--format=%(refname:short)",
+                           f"refs/heads/{WEEKLY}")
+    names = [ln.strip() for ln in out.splitlines() if ln.strip()] \
+        if code == 0 else []
+    if not names:
+        return []
+    trunk = _trunk_ref()
+    rows: list[dict] = []
+    for name in sorted(names, reverse=True):
+        row = {"branch": name, "commits": 0, "files": [], "trunk": trunk,
+               "on_origin": False, "subject": ""}
+        if trunk:
+            code, out, _err = _git("rev-list", "--count", f"{trunk}..{name}")
+            if code == 0 and out.strip().isdigit():
+                row["commits"] = int(out.strip())
+            # Three dots: what the branch changed since it left the
+            # trunk, not what the trunk has done since. He is being
+            # shown what HE is about to push.
+            code, out, _err = _git("diff", "--name-only", f"{trunk}...{name}")
+            if code == 0:
+                row["files"] = [ln.strip() for ln in out.splitlines()
+                                if ln.strip()]
+        code, out, _err = _git("log", "-1", "--format=%s", name)
+        if code == 0:
+            row["subject"] = _first_line(out)
+        code, out, _err = _git("rev-parse", "--verify", "--quiet",
+                               f"refs/remotes/origin/{name}")
+        row["on_origin"] = code == 0 and bool(out.strip())
+        rows.append(row)
+    return rows
+
+
+def _foreign_on_trunk() -> tuple[bool, list[str]]:
+    """(could git tell us, what is on `fast` that is not the routine's).
+
+    `origin/fast..fast` — and every commit in it is somebody else's.
+    That is not a guess and not a heuristic: THE ROUTINE NEVER COMMITS
+    TO `fast`. It cuts weekly/<DATE>, commits there, goes back to the
+    branch it started on and pushes nothing, by its own rule; and the
+    only way one of its commits can reach the local `fast` at all is the
+    fast-forward at the end of this file, which happens after origin has
+    already taken the same commit — so it is never unpushed. A commit
+    sitting on `fast` that GitHub has not seen was made by one of the
+    other sessions that share this branch.
+
+    Why that matters here: a weekly branch is cut FROM `fast`, so it
+    carries whatever was unpushed on it, and publishing the branch onto
+    `fast` would take that half-finished commit up under the routine's
+    name. His rule after dbf9b55 is that a session pushes its own work
+    and nothing else — this is that rule, mechanised.
+
+    And identity cannot be the test, however much it looks like it
+    should be: every commit in this repo is authored by him with a Claude
+    trailer, so author, committer and trailer are identical across all of
+    them. Where a commit LIVES is the only thing that separates one
+    session's from another's.
+
+    A False first value means git could not answer, and that refuses the
+    merge as well: not knowing is not the same as clean.
+    """
+    code, out, _err = _git("log", "--format=%H%x09%s",
+                           f"origin/{TRUNK}..{TRUNK}")
+    if code != 0:
+        return False, []
+    foreign: list[str] = []
+    for line in out.splitlines():
+        sha, _tab, subject = line.partition("\t")
+        if sha.strip():
+            foreign.append(f"{sha.strip()[:7]} {subject.strip()}"[:120])
+    return True, foreign
+
+
+def _merge_elsewhere(branch: str) -> dict:
+    """The merge `fast` needs once it has moved on, done where this
+    folder cannot be hurt by it.
+
+    `git worktree add --detach` gives the merge its own tree and its own
+    index in a temp folder: this repo's working tree — which carries
+    three other sessions' unfinished work most hours of the day — is
+    neither read nor written. That is why there is no `git stash`, no
+    `git checkout` and no `git reset` anywhere on this path, and why a
+    merge that would need one of them is a merge this button refuses.
+
+    A conflict is ABORTED and handed back. His repo, his conflict; a
+    resolution invented by a button at 4 AM is the one thing worse than
+    a branch that waits.
+    """
+    import shutil
+    import tempfile
+
+    # A worktree left behind by a process that died mid-merge would
+    # refuse the next one by name; pruning first costs nothing.
+    _git("worktree", "prune")
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-merge-"))
+    work = tmp / "tree"
+    code, _out, err = _git("worktree", "add", "--detach", str(work),
+                           f"origin/{TRUNK}", timeout=GIT_NET_S)
+    if code != 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return {"pushed": True, "merged": False,
+                "said": f"{branch} is on GitHub. {TRUNK} has moved on, so "
+                        f"the merge needs a scratch worktree, and one could "
+                        f"not be made — {_first_line(err) or 'git refused'}."}
+    try:
+        code, out, err = _git("merge", "--no-edit", branch, cwd=work,
+                              timeout=GIT_NET_S)
+        if code != 0:
+            # The names BEFORE the abort: aborting is what makes them
+            # unreadable, and the names are the whole message.
+            _c, clashes, _e = _git("diff", "--name-only", "--diff-filter=U",
+                                   cwd=work)
+            names = [ln.strip() for ln in clashes.splitlines() if ln.strip()]
+            _git("merge", "--abort", cwd=work)
+            return {"pushed": True, "merged": False,
+                    "said": f"{branch} is on GitHub. The merge into {TRUNK} "
+                            f"CONFLICTS and was aborted, not resolved"
+                            + (f" — {', '.join(names[:4])}" if names
+                               else f" — {_first_line(out + err)}")
+                            + ". That one is yours to look at."}
+        sha = _git("rev-parse", "HEAD", cwd=work)[1].strip()
+        code, out, err = _git("push", "origin", f"{sha}:refs/heads/{TRUNK}",
+                              timeout=GIT_NET_S)
+        if code != 0:
+            return {"pushed": True, "merged": False,
+                    "said": f"{branch} is on GitHub. The merge into {TRUNK} "
+                            f"came out clean but origin refused it — "
+                            f"{_first_line(err or out)}. Nothing was forced."}
+        _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
+        return {"pushed": True, "merged": True,
+                "said": f"{branch} is on GitHub, and {TRUNK} has it as a "
+                        f"merge commit ({sha[:7]}) — {TRUNK} had moved on, "
+                        f"so it took a real merge. Your local {TRUNK} is "
+                        f"behind origin now; pull it when the tree is yours."}
+    finally:
+        # The one --force in this file, and it is on a TEMP FOLDER, not
+        # on a ref: `worktree remove` refuses a tree with anything in it,
+        # and a half-merged scratch tree always has. Nothing about this
+        # reaches a branch, a remote or this repo's working tree.
+        _git("worktree", "remove", "--force", str(work))
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def push_weekly(branch: str) -> dict:
+    """His Push button, in order, with the reason for each step.
+
+    1. `git push origin <branch>` FIRST, before anything is checked. The
+       routine's work has been on one disk since Saturday, and getting it
+       off the machine is the half of this that must not wait for a merge
+       to be safe. If the merge is then refused, the work is still on
+       GitHub — which is the whole reason the branch goes first.
+    2. Then `fast`: anything on it that origin has not got and the
+       routine did not write is another session's work, and publishing
+       the branch onto `fast` would take that with it. Refuse, and name
+       the commit.
+    3. A fast-forward is published as one — `git push origin
+       <branch>:fast`, which touches no local branch and no file in this
+       folder. Anything else is a real merge, and a real merge happens in
+       a throwaway worktree (see _merge_elsewhere).
+
+    Never --force, never -f, no conflict resolved here, and the working
+    tree is never touched. ONE BUTTON: he asked whether two would be
+    safer and the honest answer was no — the safety is the check, not a
+    second thing for him to choose between.
+
+    Returns {"pushed": bool, "merged": bool, "said": str}. `said` is the
+    sentence the row shows him, and it says which of the three happened.
+    """
+    code, out, err = _git("push", "origin", branch, timeout=GIT_NET_S)
+    if code != 0:
+        return {"pushed": False, "merged": False,
+                "said": f"{branch} did NOT go up — "
+                        f"{_first_line(err or out) or 'git refused'}"}
+    # origin/fast as it is NOW, not as it was last week: every check
+    # below is about what is on GitHub at this moment.
+    code, _out, err = _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
+    if code != 0:
+        return {"pushed": True, "merged": False,
+                "said": f"{branch} is on GitHub. {TRUNK} was left alone: "
+                        f"origin/{TRUNK} could not be read "
+                        f"({_first_line(err) or 'the fetch failed'}), and a "
+                        f"merge nobody can check is not one to make."}
+    told, foreign = _foreign_on_trunk()
+    if not told:
+        return {"pushed": True, "merged": False,
+                "said": f"{branch} is on GitHub. {TRUNK} was left alone: git "
+                        f"could not say what is on it that origin has not, "
+                        f"and not knowing is not the same as clean."}
+    if foreign:
+        return {"pushed": True, "merged": False,
+                "said": f"{branch} is on GitHub. {TRUNK} was NOT merged: it "
+                        f"carries {len(foreign)} commit(s) GitHub has not "
+                        f"seen, and the routine never commits to {TRUNK} — "
+                        f"so they are another session's: "
+                        f"{'; '.join(foreign[:3])}. That work goes up with "
+                        f"the session that wrote it, never with this "
+                        f"button."}
+    if _git("merge-base", "--is-ancestor", f"origin/{TRUNK}", branch)[0] != 0:
+        return _merge_elsewhere(branch)
+    code, out, err = _git("push", "origin", f"{branch}:{TRUNK}",
+                          timeout=GIT_NET_S)
+    if code != 0:
+        return {"pushed": True, "merged": False,
+                "said": f"{branch} is on GitHub. {TRUNK} was refused by "
+                        f"origin — {_first_line(err or out)}. Nothing was "
+                        f"forced."}
+    # And the local branch, IF git will let us: a fetch into a ref is
+    # fast-forward-only without a +, and it refuses outright to write the
+    # branch a working tree is standing on. That refusal is the guard we
+    # want rather than an obstacle — moving `fast` out from under this
+    # tree would leave every file the routine wrote looking like an
+    # uncommitted revert to whichever session next ran `git status`.
+    moved = _git("fetch", ".", f"{branch}:{TRUNK}")[0] == 0
+    head = _git("rev-parse", "--abbrev-ref", "HEAD")[1].strip()
+    trailer = ""
+    if not moved:
+        trailer = (f" Your local {TRUNK} still points at the old tip: "
+                   + (f"git will not move the branch this working tree is "
+                      f"standing on, and the tree is not ours to touch. "
+                      if head == TRUNK else
+                      f"the local fast-forward was refused (push.log says "
+                      f"why). ")
+                   + "`git pull` when it suits you.")
+    _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
+    return {"pushed": True, "merged": True,
+            "said": f"{branch} is on GitHub, and {TRUNK} carries it — a "
+                    f"fast-forward, no merge commit." + trailer}
 
 
 def _wrap(widths, limit: int, gap: int = 6,
@@ -608,6 +1031,26 @@ class Dashboard:
         # this window closes: remembering across restarts is a line in
         # config.toml, which is another file.
         self._report_at = None
+        # ANSWERING A QUESTION, held on the window and not in the widgets.
+        # The Problems list is rebuilt from scratch whenever either store
+        # moves — and it moves BECAUSE he answered, or because the routine
+        # wrote a question while he was reading one — so the half of an
+        # answer he has already given has to survive its own row being
+        # destroyed. What he typed and what he picked live here, keyed by
+        # question id, and the row is drawn from them.
+        self._q_typed: dict = {}
+        self._q_choice: dict = {}
+        self._q_fields: dict = {}   # id -> the live widgets, per redraw
+        self._q_focus = None        # whose field had the caret last
+        self._q_after = None        # the echo poll
+        self._questions_stamp = None
+        # The routine's branches, as git last answered. None is "nobody
+        # has asked yet", which is not the same as "there are none".
+        self._weekly = None
+        self._weekly_scanning = False
+        self._push_buttons: dict = {}
+        self._push_said: dict = {}  # what the last press did, per branch
+        self._pushing = None        # the branch a push is in flight for
 
         self._build()
         # After _build: LoadImage/WM_SETICON need a realised window, and on
@@ -1503,6 +1946,61 @@ class Dashboard:
         except Exception:                 # noqa: BLE001
             return ()
 
+    # --------------------------------------------------- and the questions
+
+    def _questions(self):
+        """questions.py, or None if it is not here.
+
+        Guarded exactly like problems.py above, and for a sharper reason:
+        this module arrived with the weekly routine, so a checkout that
+        predates it has no such file — and the Problems screen still has
+        to open on that checkout, with the reports and without the
+        questions.
+        """
+        try:
+            import questions as questions_mod
+        except Exception:                 # noqa: BLE001 — feature absent
+            return None
+        return questions_mod
+
+    def _questions_store(self):
+        """questions.json, read off the disk. THREE processes write it —
+        the app's card, this window and the headless routine — which is
+        why the store carries a lock file and lands every write by
+        rename; nothing here has to arbitrate."""
+        module = self._questions()
+        if module is None:
+            return None
+        try:
+            return module.Store(APP_DIR / module.STORE_NAME)
+        except Exception:                 # noqa: BLE001
+            return None
+
+    def _questions_stat(self):
+        store = self._questions_store()
+        if store is None:
+            return ()
+        try:
+            return store.stamp()
+        except Exception:                 # noqa: BLE001
+            return ()
+
+    def _pending_questions(self) -> list[dict]:
+        """The questions waiting on him, newest first.
+
+        [] for no questions.py, no questions.json, and a questions.json
+        that will not parse — the store already reads a broken file as
+        empty, because a bad store must cost him questions and never
+        dictation.
+        """
+        module, store = self._questions(), self._questions_store()
+        if module is None or store is None:
+            return []
+        try:
+            return store.items(module.PENDING)
+        except Exception:                 # noqa: BLE001 — a broken file
+            return []
+
     def _write_digest(self) -> None:
         """Regenerate problems.md.
 
@@ -1534,6 +2032,15 @@ class Dashboard:
         a json store, two buttons each — and the only difference is who
         asked the question. Review is the app disagreeing with itself;
         this is him disagreeing with the app.
+
+        AND IT IS WHERE THE ROUTINE ANSWERS BACK. The weekly run reads
+        these reports, builds what he has already approved and — for what
+        it cannot decide — asks him a question with as many real answers
+        as it honestly has, two to five, and a box that is always under
+        them. A question belongs WITH THE
+        REPORT IT IS ABOUT, so it is drawn under it; the branch the
+        routine committed its work to gets a row of its own, with the one
+        button that publishes it.
         """
         self._title("Problems", "what you reported — you decide when it is "
                                 "done")
@@ -1541,6 +2048,13 @@ class Dashboard:
         p["problems_head"] = tk.Label(self.sheet, text="", bg=ui.PANE,
                                       fg=ui.DIM, font=(ui.UI, 10))
         p["problems_head"].place(x=PAD, y=66)
+        # WHAT NEEDS HIM LEADS THE TAB. The report counts are a state of
+        # the world; a pending question is the routine standing still
+        # until he answers, so when there is one it takes the left of
+        # this line and the counts move over. _fill_problems places both.
+        p["questions_head"] = tk.Label(self.sheet, text="", bg=ui.PANE,
+                                       fg=ui.ACCENT_TEXT,
+                                       font=(ui.MEDIUM, 10))
         p["problems_list"] = ui.Scroller(self.sheet, CW + 10, 496)
         p["problems_list"].place(x=PAD, y=100)
         p["problems_empty"] = tk.Label(self.sheet, text="", bg=ui.PANE,
@@ -1556,23 +2070,34 @@ class Dashboard:
                   h=30, quiet=True, bg=ui.PANE,
                   icon=ui.ICON["page"]).place(x=PAD + CW - 170, y=608)
         self._problems_stamp = None
+        self._questions_stamp = None
         # Opening the tab is the cue: the weekly read wants problems.md
         # current, and this is the moment it is known to be looked at.
         self._write_digest()
+        # The branches are git, and git is a process spawn per question —
+        # so they are asked for off this thread when the tab opens, and
+        # again after a push. Never on the poll: five spawns a second for
+        # a list that changes once a week.
+        self._scan_weekly()
         self._fill_problems()
 
     def _poll_problems(self) -> None:
-        """Once a second from _refresh: redraw only when the file moved —
-        a report filed from the running app, or one answered here."""
+        """Once a second from _refresh: redraw only when one of the two
+        files moved — a report filed from the running app or answered
+        here, a question the routine asked, or an answer given on the
+        card in the other window."""
         if "problems_list" not in self.parts:
             return
-        if self._problems_stat() != getattr(self, "_problems_stamp", None):
+        if (self._problems_stat() != getattr(self, "_problems_stamp", None)
+                or self._questions_stat()
+                != getattr(self, "_questions_stamp", None)):
             self._fill_problems()
 
     def _fill_problems(self) -> None:
         if "problems_list" not in self.parts:
             return
         self._problems_stamp = self._problems_stat()
+        self._questions_stamp = self._questions_stat()
         module, store = self._problems(), self._problems_store()
         waiting, done, summary = [], [], {}
         if module is not None and store is not None:
@@ -1583,32 +2108,87 @@ class Dashboard:
                 summary = store.summary()
             except Exception:             # noqa: BLE001 — a broken file
                 waiting, done, summary = [], [], {}
-        self.parts["problems_head"].config(
-            text=f"{summary.get('open', 0)} open   ·   "
-                 f"{summary.get('fixed', 0)} fixed   ·   "
-                 f"{summary.get('closed', 0)} closed")
+        qmodule = self._questions()
+        asked = self._pending_questions()
+        weekly = self._weekly or []
+        head = self.parts["problems_head"]
+        asking = self.parts["questions_head"]
+        head.config(text=f"{summary.get('open', 0)} open   ·   "
+                         f"{summary.get('fixed', 0)} fixed   ·   "
+                         f"{summary.get('closed', 0)} closed")
+        head.place_forget()
+        asking.place_forget()
+        if asked:
+            asking.config(text=f"{len(asked)} question"
+                               f"{'' if len(asked) == 1 else 's'} waiting "
+                               f"on you")
+            asking.place(x=PAD, y=66)
+            head.place(x=PAD + CW, y=68, anchor="ne")
+        else:
+            head.place(x=PAD, y=66)
         scroller = self.parts["problems_list"]
         scroller.clear()
+        self._q_fields = {}
+        self._push_buttons = {}
         empty = self.parts["problems_empty"]
         empty.place_forget()
         if module is None:
             empty.config(text="problems.py is not here, so nothing can be "
                               "reported or read back.")
             empty.place(x=PAD + CW / 2, y=300, anchor="center")
-        elif not waiting and not done:
+        elif not waiting and not done and not asked and not weekly:
             empty.config(text="Nothing reported yet — when something is "
                               "wrong, say so from the sidebar and the app "
                               "attaches the rest.")
             empty.place(x=PAD + CW / 2, y=300, anchor="center")
+        # A QUESTION BELONGS WITH ITS REPORT, and these are the reports
+        # that are about to be drawn. Anything asked about a report that
+        # is not one of them — a question with no report_id at all, or
+        # one about a report old enough to have fallen off the bottom of
+        # the resolved list — goes in a block of its own at the TOP,
+        # because a question is the routine waiting on him and there is
+        # no such thing as one with nowhere to answer it.
+        shown = {str(i.get("id", "")) for i in waiting + done}
+        homed: dict = {}
+        loose: list = []
+        for item in asked:
+            report_id = str(item.get("report_id") or "")
+            if report_id and report_id in shown:
+                homed.setdefault(report_id, []).append(item)
+            else:
+                loose.append(item)
+        if loose:
+            self._question_block(scroller, qmodule, loose,
+                                 "A QUESTION, NOT ABOUT ONE REPORT")
+        if weekly:
+            self._weekly_block(scroller, weekly)
         for item in waiting:
             self._problem_row(scroller, module, item, open_=True)
+            self._question_block(scroller, qmodule,
+                                 homed.get(str(item.get("id", "")), []), "")
         if done:
             tk.Label(scroller.inner, text="ANSWERED", bg=ui.PANE,
                      fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
                 anchor="w", pady=(8 if waiting else 0, 6))
         for item in done:
             self._problem_row(scroller, module, item, open_=False)
+            self._question_block(scroller, qmodule,
+                                 homed.get(str(item.get("id", "")), []), "")
         scroller.to_top()
+        # The echo poll runs only while there is a field to read, and it
+        # stops itself the moment the screen goes.
+        if self._q_fields and self._q_after is None and not self.closing:
+            self._q_after = self.root.after(Q_POLL_MS, self._q_pump)
+        # And the caret goes back where it was. This redraw is usually
+        # triggered by ANOTHER PROCESS writing the store, and it must not
+        # cost him the field in the middle of dictating an answer into it.
+        spec = self._q_fields.get(self._q_focus or "")
+        if spec is not None:
+            try:
+                spec["field"].focus_set()
+                spec["field"].mark_set("insert", "end-1c")
+            except Exception:             # noqa: BLE001
+                pass
 
     @staticmethod
     def _problem_evidence(got: dict) -> str:
@@ -1774,6 +2354,789 @@ class Dashboard:
                    else "that one is not in the list any more")
         self._write_digest()
         self._fill_problems()
+
+    # ------------------------------------------- answering the routine back
+
+    def _question_block(self, scroller: ui.Scroller, module,
+                        items: list[dict], header: str) -> None:
+        """The questions that belong here, in a frame of their own.
+
+        A FRAME rather than rows packed straight into the list, for two
+        reasons. A question and the report above it read as one thing
+        when they are one widget — which is the point of putting it
+        there — and the list's own children stay countable: everything
+        that walks `problems_list` is counting REPORTS, and a question
+        is not one.
+        """
+        if module is None or not items:
+            return
+        block = tk.Frame(scroller.inner, bg=ui.PANE)
+        block.pack(anchor="w", fill="x", pady=(0, 0))
+        if header:
+            tk.Label(block, text=header, bg=ui.PANE, fg=ui.ACCENT_TEXT,
+                     font=(ui.MEDIUM, 8)).pack(anchor="w", pady=(0, 6))
+        for item in items:
+            self._question_row(block, scroller, module, item)
+
+    def _question_row(self, parent, scroller: ui.Scroller, module,
+                      item: dict) -> None:
+        """One question the routine could not answer for itself: what it
+        asked, EVERY answer it offered as a band to press, and a box he
+        can type or dictate into that is always there.
+
+        NO OPTION IS SPECIAL AND THE BOX IS NOT AN OPTION. There used to
+        be a split right here — the last option was drawn as the box's
+        label instead of as a band, because questions.py named an "open"
+        option by position — and it went with the design it came from.
+        Every entry in `options` is a real answer he can press, two to
+        five of them, however many the question honestly has; the box
+        under them belongs to no band, and no band can take it away,
+        dim it or make him press something first to reach it. An item
+        with no options at all is not a special case either — it is the
+        box on its own, which is what the imported prose questions are.
+
+        A PICK AND A TYPED LINE ARE ONE ANSWER. His own case for it: he
+        presses "run before the backup" and then writes "actually after
+        the backup, so that it doesn't fight the disk" — the band is the
+        decision and the line is the condition on it. So a press does not
+        clear the box, a word does not clear the band, and both go to the
+        store together. answer_card.py's docstring is where that decision
+        is written down and overlay.AnswerCard keeps it on the card; this
+        row is the second surface keeping the same one.
+
+        PRESSING THE LIT BAND AGAIN UN-PICKS IT, which is the card's
+        gesture exactly (overlay.AnswerCard.pick — "the same gesture
+        un-picks") and for the card's reason: the band that shows the
+        pick is the obvious place to undo it, and a separate Clear is one
+        more control on a row that already has five bands, a box and a
+        button. The line under the button says so out loud, because an
+        undo nobody can see is an undo nobody uses.
+
+        EVERY SENTENCE HERE GOES THROUGH ui.draw_text, and no option is a
+        ui.Chip. The options are the routine's, they will be Hebrew, and
+        a MIXED Hebrew/English line laid out by Tk comes back with its
+        runs in the wrong order (this file's docstring, layer 2). On a
+        transcript that is ugly; on a multiple-choice answer it is him
+        pressing the wrong one.
+        """
+        ident = str(item.get("id", ""))
+        # Blanks dropped and NOTHING INVENTED to replace them, with the
+        # card's own ceiling — answer_card.card_for does exactly this, and
+        # for the store's reason: every band is an answer he might press,
+        # so padding a short list would put a sentence on this row that
+        # nothing ever said, and this window is not allowed to write
+        # answers.
+        options = [text for text in (str(o or "").strip()
+                                     for o in (item.get("options") or ()))
+                   if text][:Q_OPTIONS_MAX]
+        # A pick that no longer points at an option: the store moved under
+        # us, or the file was hand-edited. Forget it rather than draw a
+        # dot beside nothing.
+        picked = self._q_choice.get(ident)
+        if picked is not None and not 0 <= picked < len(options):
+            self._q_choice.pop(ident, None)
+        width = CW - Q_INDENT
+        inner = width - 2 * Q_PAD
+        text_w = inner - Q_MARK - Q_PAD
+
+        # MEASURED FIRST, all of it, because the card is exactly as tall
+        # as what is in it and a canvas is sized once. Every draw_text
+        # here is cached on its arguments, so the second call for the
+        # same bitmap — one to measure, one to place — is free.
+        question, q_h, _l = ui.draw_text(str(item.get("question") or ""),
+                                         pt=11, width=inner, max_lines=3,
+                                         colour=ui.FG, bg=ui.CARD)
+        # EVERY option gets a band, and each band is as tall as its own
+        # sentence needs — the loop is the whole point, the way
+        # answer_card.layout's is: a fixed height either clips the long
+        # one or leaves the short ones swimming, and the count is the
+        # question's business.
+        bands: list[dict] = []
+        for index, option in enumerate(options):
+            on, on_h, _l = ui.draw_text(option, pt=10, width=text_w,
+                                        max_lines=2, colour=ui.FG,
+                                        bg=ui.ACCENT_SOFT)
+            off, off_h, _l = ui.draw_text(option, pt=10, width=text_w,
+                                          max_lines=2, colour=ui.DIM,
+                                          bg=ui.CARD_HI)
+            band_h = max(Q_BAND_MIN, max(on_h, off_h) + 14)
+            bands.append({"index": index, "on": on, "off": off,
+                          "text_h": max(on_h, off_h), "h": band_h})
+        # THE CAPTION IS THE CARD'S LINE NOW, not one of the options. It
+        # used to be the last option's own Hebrew, because that option WAS
+        # the box; with the open row gone nothing named the box, and a box
+        # under a list of choices that says nothing about itself reads as
+        # the choice of last resort. Skipped when there are no bands —
+        # "add to a choice" with nothing above it to add to would be a
+        # line about controls that are not on this row.
+        caption, capt_h = None, 0
+        if options:
+            caption, capt_h, _l = ui.draw_text(Q_FIELD_CAP, pt=8,
+                                               width=inner, max_lines=1,
+                                               colour=ui.FAINT, bg=ui.CARD)
+        field_h = Q_FIELD_LINES_MIN * FIELD_LINE_H + 2 * FIELD_PAD_Y
+        # One line of the echo, asked of the renderer that will draw it.
+        _probe, line_h, _l = ui.draw_text("Ag", pt=10, width=inner,
+                                          max_lines=1, colour=ui.DIM,
+                                          bg=ui.CARD)
+        echo_h = line_h * Q_ECHO_LINES
+
+        y = 32
+        y_question = y
+        y += q_h + 12
+        for band in bands:
+            band["y"] = y
+            y += band["h"] + 6
+        if bands:
+            # The gap that separates TWO THINGS, not the six pixels that
+            # join one band to the next: the box is a peer of the bands
+            # now, not the last one's body. answer_card.FIELD_GAP is the
+            # same 15 for the same reason.
+            y += 9
+        y_caption = y
+        y += capt_h + (6 if caption is not None else 0)
+        y_field = y
+        y += field_h + 6
+        y_echo = y
+        y += echo_h + 10
+        y_actions = y
+        height = y_actions + 30 + 12
+
+        row = tk.Canvas(parent, width=width, height=height, bg=ui.PANE,
+                        highlightthickness=0, bd=0)
+        row.pack(anchor="w", padx=(Q_INDENT, 0), pady=(0, 8))
+        # The accent edge is what says this card is not another report:
+        # the reports around it are hairlined, and this one is the app
+        # asking rather than him telling.
+        row.create_image(0, 0, anchor="nw", image=ui.rounded(
+            width, height, 12, ui.CARD, ui.PANE, ui.ACCENT_EDGE))
+        # The canvas is the only reference Python holds to these: a
+        # PhotoImage nothing keeps is collected, and the row then draws
+        # blank boxes where the sentences were.
+        row.keep = [question, caption] + [b["on"] for b in bands] \
+            + [b["off"] for b in bands]
+        at = str(item.get("at", ""))
+        try:
+            day = time.strftime("%d %b", time.strptime(at[:10], "%Y-%m-%d"))
+        except ValueError:
+            day = ""
+        row.create_text(Q_PAD, 12, anchor="nw", font=(ui.MEDIUM, 8),
+                        fill=ui.ACCENT_TEXT,
+                        text="  ·  ".join(p for p in
+                                          ("A QUESTION FOR YOU",
+                                           f"ASKED {at[11:16]} {day}".strip()
+                                           if at else "") if p))
+        row.create_image(Q_PAD, y_question, anchor="nw", image=question)
+
+        field = tk.Text(row, bg=ui.EDGE, fg=ui.FG,
+                        insertbackground=ui.ACCENT,
+                        selectbackground=ui.ACCENT_SOFT,
+                        selectforeground=ui.FG, bd=0, highlightthickness=0,
+                        wrap="word", undo=True, font=FIELD_FONT,
+                        spacing3=max(0, FIELD_LINE_H - FIELD_FONT_LINE),
+                        insertwidth=2, padx=FIELD_PAD_X - Q_WELL_INSET,
+                        pady=FIELD_PAD_Y - Q_WELL_INSET)
+        field.tag_configure("rtl", justify="right")
+
+        def paint() -> None:
+            """The dots and the faces, from the one place the pick is
+            kept. Called by a press and by the redraw, and by NOTHING
+            ELSE any more: the poll used to repaint because typing into
+            the box lit the open option's dot, and a word in the box is
+            not a vote for anything now.
+            """
+            chosen = self._q_choice.get(ident)
+            for band in bands:
+                lit_up = band["index"] == chosen
+                row.itemconfig(band["face"], image=band["faces"][
+                    "on" if lit_up else "off"])
+                row.itemconfig(band["photo"],
+                               image=band["on"] if lit_up else band["off"])
+                row.itemconfig(band["dot"],
+                               fill=ui.ACCENT if lit_up else ui.CARD_HI,
+                               outline=ui.ACCENT if lit_up else ui.STROKE)
+
+        def arm() -> None:
+            """The button lights when there is something to send, and the
+            store's own rule decides that (see _answerable): a choice, or
+            words, or both. Called on a press and on the poll, because
+            either half can arrive first — and a dictated half arrives
+            with no key event at all.
+            """
+            try:
+                answer.enable(_answerable(self._q_choice.get(ident),
+                                          self._q_typed.get(ident, "")))
+            except Exception:             # noqa: BLE001 — the row went
+                pass
+
+        def pick(index: int) -> None:
+            """Press a band to answer with it — and press the lit one
+            again to take it back.
+
+            IT DOES NOT SEND. The store takes an answer once and refuses
+            a second one, so a mis-aimed click has to be something he can
+            undo; he presses the button when he means it.
+
+            AND IT DOES NOT TOUCH THE BOX. Whatever he has typed stays
+            exactly where it is, caret and all, and goes to the store
+            beside the pick — that is the whole shape of an answer here,
+            and the card's `pick` says the same thing in the same words.
+            """
+            if not 0 <= index < len(options):
+                return
+            if self._q_choice.get(ident) == index:
+                self._q_choice.pop(ident, None)
+            else:
+                self._q_choice[ident] = index
+            paint()
+            # The pointer is still ON the band he just un-picked — this
+            # only ever arrives as a click, so it cannot be anywhere
+            # else — and paint() knows nothing about the mouse. Without
+            # this the band drops straight to flat under the cursor,
+            # which reads as the row going dead rather than as the pick
+            # coming off.
+            if self._q_choice.get(ident) is None and index < len(bands):
+                row.itemconfig(bands[index]["face"],
+                               image=bands[index]["faces"]["over"])
+            arm()
+
+        def hover(index: int, over: bool):
+            def handler(_event=None) -> None:
+                band = bands[index]
+                if self._q_choice.get(ident) != index:
+                    row.itemconfig(band["face"], image=band["faces"][
+                        "over" if over else "off"])
+                row.config(cursor="hand2" if over else "")
+            return handler
+
+        for index, band in enumerate(bands):
+            band["faces"] = {
+                "on": ui.rounded(inner, band["h"], 10, ui.ACCENT_SOFT,
+                                 ui.CARD, ui.ACCENT_EDGE),
+                "off": ui.rounded(inner, band["h"], 10, ui.CARD_HI, ui.CARD,
+                                  ui.LINE),
+                "over": ui.rounded(inner, band["h"], 10, ui.CARD_HI, ui.CARD,
+                                   ui.TILE_EDGE)}
+            tag = f"opt{index}"
+            band["face"] = row.create_image(Q_PAD, band["y"], anchor="nw",
+                                            image=band["faces"]["off"],
+                                            tags=tag)
+            # THE DOT GOES WHERE THE LINE STARTS. ui.is_rtl decides that
+            # the way the renderer will: a Hebrew option is read from the
+            # right, so its dot is on the right and the words run back
+            # towards the middle. A dot pinned to the left of a
+            # right-aligned Hebrew line sits at the END of it, with the
+            # gap between them reading as a missing word.
+            rtl = ui.is_rtl(options[index])
+            band["photo"] = row.create_image(
+                Q_PAD + (Q_PAD if rtl else Q_MARK),
+                band["y"] + (band["h"] - band["text_h"]) // 2, anchor="nw",
+                image=band["off"], tags=tag)
+            cx = Q_PAD + (inner - 15 if rtl else 15)
+            cy = band["y"] + band["h"] // 2
+            band["dot"] = row.create_oval(cx - 6, cy - 6, cx + 6, cy + 6,
+                                          fill=ui.CARD_HI, outline=ui.STROKE,
+                                          tags=tag)
+            row.tag_bind(tag, "<Button-1>", lambda _e, i=index: pick(i))
+            row.tag_bind(tag, "<Enter>", hover(index, True))
+            row.tag_bind(tag, "<Leave>", hover(index, False))
+
+        # THE CAPTION IS A LINE, NOT A CONTROL — no dot beside it and
+        # nothing bound to it. The dot it used to carry said the box was
+        # one of the choices and had to be chosen; the box is simply
+        # there, so the caption's only job is to say that a sentence in it
+        # may ADD to a band rather than replace one. It sits hard left
+        # with the English frame, unindented, because it is this window
+        # talking and not the routine.
+        if caption is not None:
+            row.create_image(Q_PAD, y_caption, anchor="nw", image=caption)
+
+        # The well is a PICTURE and the widget sits inside it: a
+        # hard-cornered box among rounded bands is half of the "very slop
+        # and strict" he objected to on the report field, and this is
+        # that field.
+        well = row.create_image(Q_PAD, y_field, anchor="nw",
+                                image=ui.rounded(inner, field_h,
+                                                 FIELD_RADIUS, ui.EDGE,
+                                                 ui.CARD, ui.STROKE))
+        row.create_window(Q_PAD + Q_WELL_INSET, y_field + Q_WELL_INSET,
+                          anchor="nw", window=field,
+                          width=inner - 2 * Q_WELL_INSET,
+                          height=field_h - 2 * Q_WELL_INSET)
+        field.configure(cursor="xterm")
+        typed = str(self._q_typed.get(ident, ""))
+        if typed:
+            field.insert("1.0", typed)
+        field.tag_add("rtl", "1.0", "end")
+        echo = row.create_image(Q_PAD, y_echo, anchor="nw")
+
+        # The word on it is the CARD'S word (answer_card.SEND_LABEL), not
+        # this file's: he answers the same question on whichever surface
+        # is in front of him, and two buttons with two names for one act
+        # is the first place a pair of surfaces starts feeling like two
+        # features.
+        answer = ui.Button(row, Q_SEND_LABEL,
+                           lambda i=ident: self._answer_question(i),
+                           w=104, h=30, primary=True, bg=ui.CARD,
+                           icon=ui.ICON["check"])
+        row.create_window(Q_PAD, y_actions, anchor="nw", window=answer)
+        # THE UN-PICK CLAUSE IS ON THE LINE because the gesture is
+        # otherwise invisible — pressing the lit band is the only way back
+        # to no choice at all, and a row whose only undo is undocumented
+        # is one he answers wrong once and then stops trusting. It is
+        # named only when there is a band to press, the way
+        # answer_card.keys_of names no digits on a question that arrived
+        # with no options.
+        #
+        # TWO LINES, SPLIT WHERE THE CLAUSES SPLIT. Measured at 8 pt
+        # beside the 104 px button: four of them do not fit across the
+        # room that is left, and letting Tk wrap where the width runs out
+        # put "dictation" alone on the second line, which reads as a
+        # mistake rather than as a list.
+        said = [c for c in ("press an answer again to un-pick" if bands
+                            else "", "Enter sends") if c]
+        row.create_text(Q_PAD + 116, y_actions + 15, anchor="w",
+                        font=(ui.UI, 8), fill=ui.FAINT, justify="left",
+                        text="  ·  ".join(said) + "\n"
+                             "Shift+Enter for a new line  ·  "
+                             "the box takes dictation")
+
+        def send(_event=None) -> str:
+            self._answer_question(ident)
+            return "break"
+
+        def newline(_event=None) -> str:
+            """Enter sends, so the new line has to be the shifted one —
+            the same split the report box made once its field was more
+            than one line tall, and the line under the button says so."""
+            field.insert("insert", "\n")
+            return "break"
+
+        def select_all(_event=None) -> str:
+            """Ctrl+A, which a tk.Text does not do on its own — its own
+            Ctrl+A is Tk's emacs inheritance, beginning-of-line."""
+            field.tag_add("sel", "1.0", "end-1c")
+            field.mark_set("insert", "end-1c")
+            return "break"
+
+        def lit(on: bool):
+            """The edge follows the caret. Wired rather than painted,
+            because the answer may arrive by dictation while he is
+            looking at another window, and a field glowing as if it had
+            the keys when it has not is the one lie that would cost him
+            a sentence."""
+            def handler(_event=None) -> None:
+                if on:
+                    self._q_focus = ident
+                try:
+                    row.itemconfig(well, image=ui.rounded(
+                        inner, field_h, FIELD_RADIUS, ui.EDGE, ui.CARD,
+                        ui.ACCENT if on else ui.STROKE))
+                except Exception:         # noqa: BLE001 — the row went
+                    pass
+            return handler
+
+        field.bind("<FocusIn>", lit(True))
+        field.bind("<FocusOut>", lit(False))
+        field.bind("<Return>", send)
+        field.bind("<KP_Enter>", send)
+        field.bind("<Shift-Return>", newline)
+        field.bind("<Shift-KP_Enter>", newline)
+        field.bind("<Control-a>", select_all)
+        field.bind("<Control-A>", select_all)
+
+        self._q_fields[ident] = {"field": field, "row": row, "echo": echo,
+                                 "paint": paint, "arm": arm,
+                                 "width": inner}
+        paint()
+        # The button's state is drawn from the same two halves the row was
+        # drawn from, so a redraw that arrived while he had a pick or half
+        # a sentence in hand does not come back with a dead button over a
+        # live answer.
+        arm()
+        # The echo is drawn NOW as well as on the poll: after a redraw the
+        # text is already in the field, so the poll sees no change and
+        # would leave the band blank under a line he has typed.
+        self._q_echo(self._q_fields[ident], typed)
+        scroller.bind_wheel(row)
+
+    def _q_echo(self, spec: dict, typed: str) -> None:
+        """His line, drawn under the field by the renderer that gets it
+        right.
+
+        MANDATORY, NOT DECORATION. Measured on the report box with this
+        exact widget: a tk.Text lays a mixed Hebrew/English line out with
+        its runs in the wrong order — "הכפתור של Settings לא עובד" draws
+        as something he never said — so the only place he can read back
+        what the store is about to be given is this band.
+        """
+        row = spec["row"]
+        stripped = " ".join(typed.split())
+        try:
+            if not stripped:
+                row.itemconfig(spec["echo"], image="")
+                row.echo_photo = None
+                return
+            photo, _h, _l = ui.draw_text(stripped, pt=10, width=spec["width"],
+                                         max_lines=Q_ECHO_LINES,
+                                         colour=ui.DIM, bg=ui.CARD)
+            row.itemconfig(spec["echo"], image=photo)
+            row.echo_photo = photo        # the canvas keeps no reference
+        except Exception:                 # noqa: BLE001
+            pass                          # the row went out from under it
+
+    def _q_pump(self) -> None:
+        """Read every answer field on a timer, not on a key.
+
+        A DICTATED ANSWER ARRIVES WITH NO KEY EVENT. This window is a
+        separate process, so injector.is_our_window does not refuse it
+        and the paste lands in whichever field holds the caret — which is
+        the whole reason he can answer here instead of in a chat. A key
+        binding would see none of that, and neither would a write trace
+        on a tk.Text; one poll catches typing, dictation, paste and undo
+        alike, which is what the report card does with the same field for
+        the same reason.
+        """
+        self._q_after = None
+        if self.closing or "problems_list" not in self.parts:
+            return                        # the screen went; so does the poll
+        if not self._q_fields:
+            return       # every question answered: _fill_problems will
+                         # start this again when there is a field to read
+        limit = int(getattr(self._questions(), "ANSWER_MAX", 600) or 600)
+        for ident, spec in list(self._q_fields.items()):
+            field = spec["field"]
+            try:
+                typed = field.get("1.0", "end-1c")
+                if len(typed) > limit:
+                    # The store would cut it silently on the way to disk;
+                    # better he watches the field stop taking words than
+                    # find the tail missing in an answer he cannot edit.
+                    field.delete("1.0+%dc" % limit, "end")
+                    typed = field.get("1.0", "end-1c")
+                # Re-applied every pass: a tag does not extend itself over
+                # text inserted after it, so a right-aligned field would
+                # start going left again at the next dictated word.
+                field.tag_add("rtl", "1.0", "end")
+            except Exception:             # noqa: BLE001
+                continue                  # that row has been destroyed
+            if typed == str(self._q_typed.get(ident, "")):
+                continue
+            self._q_typed[ident] = typed
+            # TYPING DOES NOT TOUCH THE PICK, and that is the whole change
+            # from what stood here. The last option used to be the "open"
+            # one, so a word in the box lit its dot and a cleared box put
+            # it out — a widget voting on his behalf. Every band is a real
+            # answer now: a line he types is either an answer of its own
+            # or a condition on the band he pressed, and neither of those
+            # is a vote for one of the bands. Nothing in the row moves
+            # except the button, which arms on the first character and
+            # disarms on the last backspace.
+            try:
+                spec["arm"]()
+            except Exception:             # noqa: BLE001 — the row went
+                pass
+            self._q_echo(spec, typed)
+        if not self.closing:
+            self._q_after = self.root.after(Q_POLL_MS, self._q_pump)
+
+    def _answer_question(self, ident: str) -> None:
+        """Record HIS answer, then wake the routine.
+
+        answer() is the only door into that store from this window and it
+        hands back False rather than raising — no such question, a
+        question that is no longer PENDING because the card in the other
+        window answered it first, or a write that failed. All three mean
+        the same thing here: the row he is looking at is stale, so it is
+        redrawn rather than argued with. A decision he has already made is
+        never overwritten by an older window, and the False is SAID —
+        a store that refused an answer he thinks he gave must never be
+        swallowed into a silent redraw.
+
+        BOTH HALVES GO, ALWAYS. The choice and the box are read
+        unconditionally and handed over together: `answer()` takes either
+        or both and stores both, so an `if` in front of the text here
+        would be the one bug that loses him a whole sentence without a
+        trace — he presses "before the backup", writes "actually after
+        it", and the second half never existed. Only both-empty is
+        refused, which is why the button is dark until one of them has
+        something in it.
+        """
+        store = self._questions_store()
+        if store is None:
+            self._note("questions.py is not here, so there is nothing to "
+                       "answer")
+            return
+        text = str(self._q_typed.get(ident, ""))
+        choice = self._q_choice.get(ident)
+        # The button is already dark in this state, so this is the
+        # keyboard's way in — Enter on an empty box with nothing pressed —
+        # and it asks the same rule the button asked rather than spelling
+        # the rule out a second time.
+        if not _answerable(choice, text):
+            self._note("press one of the answers, or say it in your own "
+                       "words in the box")
+            return
+        try:
+            saved = store.answer(ident, choice=choice, text=text,
+                                 by="dashboard")
+        except Exception as e:            # noqa: BLE001
+            self._note(f"could not save that: {e}")
+            return
+        if not saved:
+            self._note("that question is not waiting any more — it may have "
+                       "been answered in the app while this was open")
+            # AND HIS TWO HALVES ARE KEPT. The store refused this write,
+            # so what he pressed and what he wrote are still the only copy
+            # of them — clearing the row on the way to telling him it did
+            # not save would be the refusal costing him the answer twice.
+            # A question that really is answered elsewhere is not drawn by
+            # the redraw below, so nothing is left on screen either way.
+            self._fill_problems()
+            return
+        self._q_typed.pop(ident, None)
+        self._q_choice.pop(ident, None)
+        self._q_focus = None
+        # THE ANSWER IS RECORDED BEFORE THE WAKE, and the wake cannot
+        # unrecord it: the answer is the thing that matters, and a routine
+        # that has to wait until Saturday to read it is a delay, not a
+        # loss.
+        woke = self._wake_review()
+        self._note("answered — the review is starting now to build it"
+                   if woke else
+                   "answered — the review will pick it up on its next run")
+        self._fill_problems()
+
+    def _wake_review(self) -> bool:
+        """The moment he answers, the routine goes and builds it.
+
+        weekly_review.ps1 -Answered runs the review immediately, whatever
+        the day's .done stamp says — that switch is the other half of
+        this feature and it belongs to another file, so it is CHECKED FOR
+        rather than assumed: a script without it is logged and skipped,
+        and the answer still stands in the store for Saturday to find.
+
+        AND NOT WITH launch's FLAGS, WHICH IS THE ONE SURPRISE HERE.
+        launch.spawn cannot carry a .ps1 in the first place — it prepends
+        pythonw.exe — so the flags were the only thing to borrow, and
+        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP DOES NOT WORK for
+        this child. Measured under pythonw on 2026-09-05, four variants
+        against a script whose only job was to write one file:
+
+            detached | new group   -> exit 0, script never ran
+            no window | new group  -> exit 0, script ran
+            no window              -> exit 0, script ran
+            no flags               -> exit 0, script ran
+
+        powershell.exe is a CONSOLE binary, and with DETACHED_PROCESS it
+        has no console to host itself in: it returns 0 and does nothing,
+        which is the worst failure shape there is — it looks exactly like
+        success. launch.py's own comment says why it does not carry
+        CREATE_NO_WINDOW ("pythonw.exe is a GUI-subsystem binary and
+        never gets a console to hide"), and that is precisely the
+        difference: this child does. So it is CREATE_NO_WINDOW — the
+        house flag for a console program under this window, the same one
+        every git call above uses — plus CREATE_NEW_PROCESS_GROUP, so a
+        Ctrl+C in a console-run dashboard is not delivered to the review.
+        The child still outlives this window either way: a Windows
+        process is not tied to its parent, and this one must not be —
+        the dashboard is closed constantly.
+        """
+        import subprocess
+
+        script = APP_DIR / "weekly_review.ps1"
+        if not script.exists():
+            _push_log("wake: no weekly_review.ps1 beside the app — the "
+                      "answer is saved and Saturday will find it")
+            return False
+        try:
+            source = script.read_text("utf-8-sig", errors="replace")
+        except OSError as e:
+            _push_log(f"wake: could not read weekly_review.ps1 ({e})")
+            return False
+        if not re.search(r"\$Answered", source, re.IGNORECASE):
+            _push_log("wake: weekly_review.ps1 has no -Answered switch yet "
+                      "— the answer is saved, and the next scheduled run "
+                      "will read it")
+            return False
+        shell = Path(os.environ.get("SystemRoot", r"C:\Windows")) \
+            / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        args = [str(shell) if shell.exists() else "powershell.exe",
+                "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", str(script), "-Answered"]
+        flags = _CREATE_NO_WINDOW | 0x00000200      # ...| NEW_PROCESS_GROUP
+        try:
+            subprocess.Popen(args, cwd=str(APP_DIR), creationflags=flags,
+                             close_fds=True, stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except OSError as e:
+            _push_log(f"wake: could not start the review ({e})")
+            return False
+        _push_log("wake: started weekly_review.ps1 -Answered")
+        return True
+
+    # ------------------------------------------- the routine's own branches
+
+    def _scan_weekly(self) -> None:
+        """Ask git what the routine has left behind, off the Tk thread.
+
+        Five spawns a branch, and a spawn is milliseconds this window may
+        not spend: the Version screen froze solid asking git the same
+        kind of question on the UI thread, which is the measurement in
+        versions.py. The answer arrives through _events like every other
+        off-thread reply.
+        """
+        if self._weekly_scanning:
+            return
+        self._weekly_scanning = True
+
+        def work() -> None:
+            try:
+                rows = weekly_branches()
+            except Exception:             # noqa: BLE001 — never a traceback
+                rows = []                 #                out of a thread
+            self._events.put(lambda r=rows: self._weekly_arrived(r))
+
+        threading.Thread(target=work, daemon=True,
+                         name="weekly-scan").start()
+
+    def _weekly_arrived(self, rows: list[dict]) -> None:
+        self._weekly_scanning = False
+        self._weekly = rows
+        if self.screen == "Problems":
+            self._fill_problems()
+
+    def _weekly_block(self, scroller: ui.Scroller,
+                      rows: list[dict]) -> None:
+        """The branches the routine committed to and never pushed.
+
+        Above the reports, because a branch sitting here is work that is
+        already DONE and that nobody has looked at — and in a frame, for
+        the reason the questions are in one.
+        """
+        block = tk.Frame(scroller.inner, bg=ui.PANE)
+        block.pack(anchor="w", fill="x", pady=(0, 2))
+        tk.Label(block, text="THE ROUTINE'S WORK — READ IT, THEN PUSH",
+                 bg=ui.PANE, fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
+            anchor="w", pady=(0, 6))
+        for info in rows:
+            self._weekly_row(block, scroller, info)
+
+    def _weekly_row(self, parent, scroller: ui.Scroller,
+                    info: dict) -> None:
+        """One branch, and everything he needs to decide before he
+        presses: which branch, how many commits, which files, what the
+        last one said, and what the last press did.
+
+        A button that pushes an unknown quantity is not reviewable, which
+        is why the file list is on the card and not in a log.
+        """
+        branch = str(info.get("branch", ""))
+        commits = int(info.get("commits") or 0)
+        files = [str(f) for f in (info.get("files") or [])]
+        inner = CW - 2 * Q_PAD
+        subject, sub_h = None, 0
+        if info.get("subject"):
+            subject, sub_h, _l = ui.draw_text(str(info["subject"]), pt=9,
+                                              width=inner - 118, max_lines=2,
+                                              colour=ui.DIM, bg=ui.CARD)
+        listed, name_lines = "", 0
+        if files:
+            shown = "   ·   ".join(files[:8])
+            if len(files) > 8:
+                shown += f"   ·   +{len(files) - 8} more"
+            listed, name_lines = ui.clamp(shown, ui.UI, 8, inner, 2)
+        said = str(self._push_said.get(branch, ""))
+        note, note_h = None, 0
+        if said:
+            note, note_h, _l = ui.draw_text(said, pt=8, width=inner,
+                                            max_lines=3, colour=ui.AMBER,
+                                            bg=ui.CARD)
+        # 50, not 38: the facts line is drawn at 31 in an 8 pt face, and
+        # a subject starting at 38 lay straight across it.
+        y = 50
+        y_subject = y
+        y += sub_h + (6 if subject is not None else 0)
+        y_files = y
+        y += name_lines * 14 + (6 if name_lines else 0)
+        y_note = y
+        y += note_h + (6 if note is not None else 0)
+        height = max(74, y + 8)
+
+        row = tk.Canvas(parent, width=CW, height=height, bg=ui.PANE,
+                        highlightthickness=0, bd=0)
+        row.pack(anchor="w", pady=(0, 8))
+        row.create_image(0, 0, anchor="nw", image=ui.rounded(
+            CW, height, 12, ui.CARD, ui.PANE, ui.TILE_EDGE))
+        row.keep = [subject, note]
+        row.create_text(Q_PAD, 13, anchor="nw", font=(ui.MEDIUM, 10),
+                        fill=ui.FG, text=branch)
+        facts = [f"{commits} commit" + ("" if commits == 1 else "s"),
+                 f"{len(files)} file" + ("" if len(files) == 1 else "s"),
+                 f"on GitHub as origin/{branch}" if info.get("on_origin")
+                 else "not on GitHub yet"]
+        if not info.get("trunk"):
+            # Nothing to compare against, so the counts above are zeros
+            # and saying so beats letting him read them as "empty".
+            facts.append(f"no {TRUNK} in this repo to measure against")
+        row.create_text(Q_PAD, 31, anchor="nw", font=(ui.UI, 8),
+                        fill=ui.FAINT, text="   ·   ".join(facts))
+        if subject is not None:
+            row.create_image(Q_PAD, y_subject, anchor="nw", image=subject)
+        if name_lines:
+            row.create_text(Q_PAD, y_files, anchor="nw", font=(ui.UI, 8),
+                            fill=ui.FAINT, justify="left", text=listed)
+        if note is not None:
+            row.create_image(Q_PAD, y_note, anchor="nw", image=note)
+        push = ui.Button(row, "Push", lambda b=branch: self._push_branch(b),
+                         w=96, h=30, primary=True, bg=ui.CARD,
+                         icon=ui.ICON["link"])
+        row.create_window(CW - Q_PAD, 13, anchor="ne", window=push)
+        self._push_buttons[branch] = push
+        if self._pushing is not None:
+            # One push at a time: the second press would be racing the
+            # first for the same two refs.
+            push.enable(False)
+        scroller.bind_wheel(row)
+
+    def _push_branch(self, branch: str) -> None:
+        """His button, entirely off the Tk thread.
+
+        A push is his connection and a fetch is somebody's server — tens
+        of seconds in the worst case, none of it allowed near the event
+        loop, exactly like the version switch. What it does and why it
+        may refuse is in push_weekly.
+        """
+        if self._pushing is not None:
+            return
+        self._pushing = branch
+        self._push_said[branch] = (f"pushing {branch} — the branch first, so "
+                                   f"the work is safe off this machine, then "
+                                   f"{TRUNK} if it is clean…")
+        self._note(f"pushing {branch}…")
+
+        def work() -> None:
+            try:
+                result = push_weekly(branch)
+            except Exception as e:        # noqa: BLE001 — a failure is a
+                result = {"pushed": False, "merged": False,    # sentence,
+                          "said": f"could not push {branch}: {e}"}
+            self._events.put(lambda r=result: self._push_done(branch, r))
+
+        threading.Thread(target=work, daemon=True,
+                         name="weekly-push").start()
+        self._fill_problems()             # the row says it is going
+
+    def _push_done(self, branch: str, result: dict) -> None:
+        self._pushing = None
+        self._push_said[branch] = str(result.get("said") or "")
+        self._note(self._push_said[branch])
+        # The facts moved — the branch is on origin now, and `fast` may
+        # have it — so they are asked for again rather than patched.
+        self._scan_weekly()
+        if self.screen == "Problems":
+            self._fill_problems()
 
     # ------------------------------------------------- reporting one back
 
@@ -4259,7 +5622,8 @@ class Dashboard:
         self._resume_after_capture()
         for pending in (self._pump_after, self._toast_after,
                         self._search_after, self._rows_after,
-                        self._slide_after, self._breath_after):
+                        self._slide_after, self._breath_after,
+                        self._q_after):
             try:
                 if pending is not None:
                     self.root.after_cancel(pending)

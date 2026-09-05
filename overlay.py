@@ -1816,6 +1816,679 @@ class ProblemCard(WordPrompt):
 
 
 
+def _desktop_bounds(screen) -> tuple[int, int, int, int]:
+    """The WHOLE virtual desktop as (x, y, w, h), not the primary monitor.
+
+    ProblemCard._run works this out inline and says why at length; the
+    short version is that measured on this machine the virtual desktop
+    starts at x = -1920, so a card he dragged onto the left monitor has a
+    genuinely negative x and clamping it to the primary would walk it
+    back every single time. Falls back to the primary if the metrics are
+    not there, which is the answer every card in this module has always
+    given.
+
+    Factored out here for the SECOND modal card rather than reached into
+    the first: moving ProblemCard onto it is a behaviour-preserving
+    change with its own tests, and this one is not the change to make it
+    in.
+    """
+    try:
+        metric = ctypes.windll.user32.GetSystemMetrics
+        bounds = (metric(76), metric(77), metric(78), metric(79))
+        if bounds[2] <= 0 or bounds[3] <= 0:
+            raise ValueError(bounds)          # SM_*VIRTUALSCREEN
+        return bounds
+    except Exception:                         # noqa: BLE001
+        return (0, 0, int(screen[0]), int(screen[1]))
+
+
+def _open_origin(bounds, screen, saved, size, near, keep: int = 60):
+    """Where a frameless modal card opens, top-left, in screen pixels.
+
+    Three answers in priority order, and ProblemCard._run's comments are
+    the long form of all three. WHERE HE PUT IT LAST WINS, clamped so a
+    card saved on a monitor that is no longer plugged in does not come
+    back somewhere nobody can reach it — `keep` is how much of it has to
+    stay on the desktop to be grabbable. Then `near`, for a card opened
+    off a widget. Then the middle of the PRIMARY screen, which is where
+    he is looking.
+    """
+    width, height = int(size[0]), int(size[1])
+    x, y, moved = int(saved[0]), int(saved[1]), bool(saved[2])
+    if moved:
+        bx, by, bw, bh = bounds
+        return (max(bx + keep - width, min(x, bx + bw - keep)),
+                max(by + keep - height, min(y, by + bh - keep)))
+    if near:
+        return (int(near[0]), int(near[3]) + 8)
+    return ((int(screen[0]) - width) // 2,
+            max(0, (int(screen[1]) - height) // 2))
+
+
+class AnswerCard(ProblemCard):
+    """The one question the weekly read could not answer itself.
+
+    THE REPORT CARD IN REVERSE, and a subclass of it for exactly the
+    reasons ProblemCard is a subclass of WordPrompt. Everything else in
+    this module is WS_EX_NOACTIVATE or WS_EX_TRANSPARENT on purpose
+    (_no_activate says why: you may well be typing when one appears), and
+    a card with a text field in it has to come down the one branch of
+    this tree that TAKES THE KEYBOARD. What it inherits is the four
+    things that were hard — `_take_focus`'s SetForegroundWindow-then-Alt
+    recipe, `open()`, `fill()`, which puts a dictated line in the field
+    WITHOUT sending it — plus the report card's `x`/`y`/`placed` drag
+    memory, which is the same gesture saving the same pair of numbers
+    under a section of its own.
+
+    Only `ask`, `answer` and `_run` are overridden, and all three had to
+    be: inheriting `_run` would leave an AnswerCard able to open a
+    REPORT card, which is a trap rather than a feature — the same
+    sentence ProblemCard._run has about the plain word box.
+
+    THE FACE IS A PICTURE. answer_card paints the whole card — the
+    eyebrow, the title, the two grey lines, the Hebrew question in its
+    panel, the option rows, the field's well, the bidi echo and the two
+    buttons — as one Pillow image, and this window shows it, positions a
+    real tk.Text over the painted well, and turns a click or a key into
+    an answer. Nothing here computes a coordinate: answer_card.regions is
+    read by both the painter and the hit test, which is what keeps an
+    option pressed where it is drawn.
+
+    THE OPTIONS ARE THE PRIMARY CONTROL, so the keyboard opens ON THE
+    CARD and not in the field: 1..N pick a row, where N is however many
+    rows the question actually carries, Enter sends, Escape leaves. The
+    digits are bound to the CANVAS and deliberately not to the toplevel —
+    a Text's own class binding for "3" inserts a 3 and does not stop
+    there, so a digit bound on the window would type into the field AND
+    pick option three every time he wrote a number. Which is also why a
+    digit does nothing while he is writing: the caret is in the field, the
+    field is what got the key, and a 3 in the middle of "מתחת ל-30 אחוז"
+    must be a 3.
+
+    A PICK AND A TYPED LINE ARE ONE ANSWER, and answer_card's docstring
+    is where the decision is written down. What this half owes it is that
+    NOTHING IS TAKEN BACK BY SOMETHING ELSE. Typing does not clear the
+    pick; picking does not clear, dim, disable or empty the field; a line
+    arriving through `fill()` picks nothing at all. There is no state in
+    which the field is out of play, so there is nothing here that puts it
+    there and nothing that has to take it back out — the whole
+    dim-and-restore mechanism this card used to carry is gone, along with
+    the `dress()` that repainted the widget's own ground to match it.
+
+    THE CARET IS NOT PART OF THE ANSWER, so a pick does not move it.
+    That is his flow made cheap: pick "before the backup", keep typing
+    "but only if the CPU is idle" into the field the caret never left. It
+    costs the digits while he is writing, which is the right trade — one
+    click on the card's background hands the keyboard back to the canvas.
+
+    UN-PICKING IS THE SAME GESTURE AGAIN — click the lit row, or press
+    its digit — and the card goes back to no choice with the field
+    untouched. A separate "clear" control was the alternative and it is
+    one more thing on a card that already has five rows, two buttons and
+    a field; the row that shows the pick is the obvious place to undo it,
+    and the keys line says so out loud because an undo nobody can see is
+    an undo nobody uses.
+
+    ESCAPE IS NOT AN ANSWER. `on_done(None, "")` is what a dismissed card
+    reports, and it is what `_result` is born holding, so every path out
+    of here that is not a deliberate Send says the same thing: the
+    question is still pending and the routine is still waiting on it. A
+    card he waves away must never turn into a recorded decision.
+
+    THE CONTRACT. The answer goes out through `on_done(choice, text)` on
+    this thread, after the window is down:
+
+    * `choice` is the index of the lit row, or None if no row is lit.
+    * `text` is whatever is in the field, stripped — ALWAYS, including
+      when a row is lit. A canned pick used to report `text=""` and that
+      was right when the field belonged to a row; it is now a way to
+      silently drop half of what he said.
+    * Both together is the ordinary case, not an edge one: `(0, "אבל רק
+      אחרי הגיבוי")` is a decision with a condition on it and the
+      routine is built to read both.
+    * `(None, "")` is Escape and Cancel, and nothing else can produce it
+      — Send refuses to fire unless `answer_card.answerable` says there
+      is something to send, which is the store's own rule.
+    """
+
+    def ask(self, item, on_done, *, near=None, focus: bool = True) -> bool:
+        """Open the card on `item`, a questions.py item dict. One at a
+        time, like every card on this branch: a second question while one
+        is open is dropped, because two modals fighting for the keyboard
+        is worse than a question that waits another minute.
+
+        `focus` is the keyboard grab; a test passes False and answers
+        through `answer` instead of typing, because a synthetic Enter
+        aimed at a box that did not get the foreground lands in whatever
+        window did.
+        """
+        if self._thread is not None and self._thread.is_alive():
+            return False
+        self._result = {"choice": None, "text": ""}
+        self._closing = threading.Event()
+        self._q = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._run, args=(item, on_done, near, focus),
+            daemon=True, name="answer-card")
+        self._thread.start()
+        return True
+
+    def answer(self, choice=None, text: str = "") -> None:
+        """Close the card with an answer, from any thread — what Send
+        does, reachable without a keyboard. No arguments is what Escape
+        does, which is the default for the same reason `_result` is born
+        that way: the safe answer to "did he answer?" is no.
+
+        The base's `answer(text)` is deliberately not what this is: an
+        answer here is a CHOICE AND WORDS, either or both, and a
+        one-argument door could not say the pair — which is the whole
+        shape of an answer on this card.
+        """
+        self._result["choice"] = choice
+        self._result["text"] = text or ""
+        self._closing.set()
+
+    def _run(self, item, on_done=None, near=None, focus=True) -> None:
+        """The card, on its own thread and its own Tk interpreter."""
+        import gc
+        import tkinter as tk
+
+        import answer_card as ac
+        from PIL import ImageTk
+
+        result = self._result
+        closing = self._closing
+        # Declared before the try so the burial in `finally` can name them
+        # whichever line failed — HintCard's `draw = pump = hide = None`,
+        # for the same reason and with more to bury.
+        root = field = canvas = paint = refresh = pump = None
+        st: dict = {}
+        cache: dict = {}
+        try:
+            card = ac.card_for(item)
+            root = tk.Tk()
+            root.withdraw()
+            root.overrideredirect(True)
+            root.attributes("-topmost", True)
+            root.configure(bg=ac.hex_of("CARD"))
+            # takefocus, and it is load-bearing: the digits are bound
+            # here (see the class docstring), so the canvas is what has
+            # to be holding the keyboard when the card opens.
+            canvas = tk.Canvas(root, bg=ac.hex_of("CARD"),
+                               highlightthickness=0, bd=0, takefocus=1)
+            canvas.place(x=0, y=0)
+
+            # THE CARD GROWS DOWNWARD AND DOES NOT WANDER — the report
+            # card's rule, and its comments are the long form. Centred
+            # ONCE for the height it opens at, grown down from that top,
+            # and moved only if growing down would take the buttons off
+            # the bottom of the screen.
+            screen = (root.winfo_screenwidth(), root.winfo_screenheight())
+            bounds = _desktop_bounds(screen)
+            _w0, h0 = ac.measure(card, cache)
+            at_x, at_y = _open_origin(bounds, screen,
+                                      (self.x, self.y, self.moved()),
+                                      (ac.CARD_W, h0), near)
+
+            # The same widget the report card's field is, with the same
+            # metrics read out of the same module: no border and no
+            # highlight (the well around it is painted, and a Tk border
+            # inside a painted one is two edges of different curvature),
+            # wrapping, and spacing3 set so the widget's own line height
+            # agrees to the pixel with the painter's FIELD_LINE_H — which
+            # it must, since the painter draws the well from a line count
+            # this widget reports.
+            field = tk.Text(root, bg=ac.hex_of("EDGE"), fg=ac.hex_of("FG"),
+                            insertbackground=ac.hex_of("ACCENT"),
+                            selectbackground=ac.hex_of("ACCENT_SOFT"),
+                            selectforeground=ac.hex_of("FG"),
+                            bd=0, highlightthickness=0, relief="flat",
+                            wrap="word", undo=True, font=ac.FIELD_FONT,
+                            spacing3=max(0, ac.FIELD_LINE_H
+                                         - ac.FIELD_FONT_LINE),
+                            insertwidth=2, padx=0, pady=0)
+            field.tag_configure("rtl", justify="right")
+
+            st.update({"typed": None, "lines": 0, "hover": None,
+                       "photo": None, "size": (0, 0),
+                       "x": at_x, "y": at_y,
+                       "drag": None, "from": None, "travel": 0})
+
+            def wrapped() -> int:
+                """How many lines the widget is actually showing.
+
+                Asked of the widget rather than guessed from the string
+                length: it is the widget that wrapped it, and the well is
+                drawn to this number. `count` returns a one-tuple in some
+                Tk builds and a bare int in others, so both are
+                unwrapped; answer_card.field_lines is the estimate for a
+                build that has neither, and for the headless render where
+                there is no widget at all.
+                """
+                try:
+                    got = field.count("1.0", "end", "displaylines")
+                except Exception:                     # noqa: BLE001
+                    return ac.field_lines(st["typed"] or "")
+                if isinstance(got, (tuple, list)):
+                    got = got[0] if got else 1
+                return max(1, int(got or 1))
+
+            def place_field(box) -> None:
+                field.place(x=ac.PAD + box[0] + ac.FIELD_PAD_X,
+                            y=ac.PAD + box[1] + ac.FIELD_PAD_Y,
+                            width=ac.INNER - 2 * ac.FIELD_PAD_X,
+                            height=box[3] - box[1] - 2 * ac.FIELD_PAD_Y)
+
+            def paint() -> None:
+                img = ac.compose(card, cache)
+                photo = ImageTk.PhotoImage(img, master=root)
+                canvas.delete("all")
+                canvas.configure(width=img.width, height=img.height)
+                canvas.create_image(0, 0, anchor="nw", image=photo)
+                st["photo"] = photo          # Tk keeps no reference
+                if st["size"] != (img.width, img.height):
+                    st["size"] = (img.width, img.height)
+                    # Growing DOWN must not put the buttons under the
+                    # bottom edge of the desktop he is on. Against
+                    # `bounds` because the card may well be on the second
+                    # monitor.
+                    floor = bounds[1] + bounds[3] - 8
+                    if st["y"] + img.height > floor:
+                        st["y"] = max(bounds[1], floor - img.height)
+                    root.geometry("%dx%d+%d+%d" % (img.width, img.height,
+                                                   st["x"], st["y"]))
+                place_field(ac.layout(card, cache)["field"])
+
+            # THERE IS NO `dress()` ANY MORE, and its absence is the
+            # change. It re-coloured this widget on every pick — flat
+            # ground, faint ink, and a caret painted the colour of the
+            # thing behind it so that a still-clickable field could look
+            # like it had no caret — because the field belonged to the
+            # last option and stopped being the answer when another row
+            # was picked. The field belongs to nobody now, so its colours
+            # are set once in the constructor above and never touched:
+            # EDGE ground, FG ink, an ACCENT caret. One face, always, is
+            # what "always live" means at the widget level, and a
+            # function that could repaint it is a function that could
+            # take it away again.
+
+            def refresh() -> None:
+                """Repaint if anything the picture shows has changed.
+
+                Driven from the pump below rather than from a key
+                binding, and that is the point: the line does not always
+                arrive from the keyboard. THE CARD CAN BE DICTATED INTO —
+                `fill` puts a transcript in the field with no <KeyRelease>
+                behind it at all — and it can be pasted into and undone.
+                Reading the widget on a timer catches every one of them,
+                which is the only way the echo underneath can be trusted
+                to be showing what is really in the field.
+                """
+                typed = field.get("1.0", "end-1c")
+                if len(typed) > _TEXT_MAX:
+                    # Cut here, where he can see it stop, rather than
+                    # silently on the way to disk.
+                    field.delete("1.0+%dc" % _TEXT_MAX, "end")
+                    typed = field.get("1.0", "end-1c")
+                field.tag_add("rtl", "1.0", "end")
+                lines = min(ac.FIELD_LINES_MAX,
+                            max(ac.FIELD_LINES_MIN, wrapped()))
+                # TYPING TAKES NOTHING BACK. This is where the old card
+                # dragged the pick onto its open row the moment a word
+                # appeared, because words meant "none of your rows". A
+                # word now means a word: the lit row stays lit, and Send
+                # goes out with the pair. What still happens here is the
+                # only thing that has to — `card["typed"]` is what
+                # `answer_card.answerable` reads, so the button arms on
+                # the first character and disarms on the last backspace
+                # with no extra wiring at all.
+                if (typed, lines) == (st["typed"], st["lines"]):
+                    return
+                st["typed"], st["lines"] = typed, lines
+                card["typed"], card["lines"] = typed, lines
+                paint()
+
+            def pick(index: int) -> None:
+                """Light row `index`, or put it out if it is already lit.
+
+                THE SAME GESTURE UN-PICKS, which is the whole undo on
+                this card: a click on the lit row, or its digit again,
+                and the choice goes back to None. Nothing else changes —
+                the field keeps its words, the caret keeps its place.
+
+                THE CARET IS NOT MOVED, in either direction. The old
+                version dragged it into the field for the open row and
+                back out to the canvas for the others, because the field
+                was a row's body and the focus was how the card said
+                which. Now a pick is a pick: he can be halfway through a
+                sentence when he presses a row, and pulling the caret out
+                from under him would cost him the rest of it.
+                """
+                options = card.get("options") or ()
+                if not 0 <= index < len(options):
+                    return
+                card["choice"] = None if card["choice"] == index else index
+                paint()
+
+            def digit(index: int):
+                def handler(_event=None) -> str:
+                    pick(index)
+                    return "break"
+                return handler
+
+            def send(_event=None) -> str:
+                """Send, but only if there is an answer to send.
+
+                The store refuses one that is neither a valid choice nor
+                non-empty text, so an unarmed Send here would close the
+                card and report a decision nothing would accept. It
+                stays up instead, with the button visibly not ready —
+                answer_card.answerable is the same test the painter uses,
+                so the button and the key cannot disagree.
+
+                BOTH VALUES, ALWAYS. Whatever is in the field goes out
+                with whatever row is lit, and the field is read
+                unconditionally — no `if` in front of it. The old line
+                sent `text=""` whenever a canned row was picked, which
+                was the dimmed field's promise being kept and is now the
+                one bug that would lose him a whole sentence without a
+                trace: he picks "before the backup", writes "actually
+                after it", presses Send, and the second half never
+                existed.
+                """
+                if not ac.answerable(card):
+                    return "break"
+                result["choice"] = card["choice"]
+                result["text"] = field.get("1.0", "end-1c").strip()
+                closing.set()
+                return "break"
+
+            def cancel(_event=None) -> str:
+                """Escape and Cancel: the question stays pending.
+
+                Explicitly written back rather than left to whatever
+                `_result` happens to hold, because this is the one thing
+                on the card that must not be able to go wrong — a card he
+                dismissed becoming a recorded answer would put a decision
+                in the store he never made.
+                """
+                result["choice"], result["text"] = None, ""
+                closing.set()
+                return "break"
+
+            def newline(_event=None) -> str:
+                """Shift+Enter is the new line, Enter is Send. Bound
+                explicitly rather than left to Tk's class binding,
+                because the <Return> binding fires for a shifted Return
+                too unless something more specific claims it.
+
+                AND THIS CARD DOES NOT SAY SO ON ITS FACE, unlike the
+                report card, which spends a clause of its keys line on
+                it. Measured 2026-09-05 through the same renderer at
+                KEYS_PT: this line already carries the digits clause, and
+                adding "Shift+Enter for a new line" to it takes the block
+                from 10 px to 23 — it WRAPS, at two options and at five.
+                A two-line keys paragraph on a card that is already the
+                tallest thing in this module is a worse trade than an
+                undocumented shortcut, on a field that is usually one
+                clause. answer_card.keys_of builds the line and is where
+                that call belongs if it is ever revisited.
+                """
+                field.insert("insert", "\n")
+                return "break"
+
+            def select_all(_event=None) -> str:
+                """Ctrl+A selects the whole answer, which a tk.Text does
+                NOT do on its own: its Ctrl+A is Tk's emacs inheritance,
+                beginning-of-line."""
+                field.tag_add("sel", "1.0", "end-1c")
+                field.mark_set("insert", "end-1c")
+                return "break"
+
+            def entered(_event=None) -> None:
+                """The caret arrived: the field's border lights up and
+                that is ALL it does.
+
+                It used to take the open option as well — clicking into
+                the field was one of the three ways of saying "none of
+                your rows" — and that is exactly the coupling the owner
+                threw out. Putting the caret somewhere is not answering a
+                question, and a click into the field that silently
+                unpicked the row he had already chosen would be the
+                dim-and-take-back mechanism coming back in through the
+                focus handler.
+                """
+                if not card["focused"]:
+                    card["focused"] = True
+                    paint()
+
+            def departed(_event=None) -> None:
+                """The border falls back to the hairline when the keys go
+                elsewhere. Wired rather than hardcoded on, because the
+                card stays up while he goes off to another window to look
+                something up (see the Escape binding below), and a field
+                glowing as if it were taking keys while the keys are
+                going somewhere else is the one lie here that would cost
+                him a sentence."""
+                if card["focused"]:
+                    card["focused"] = False
+                    paint()
+
+            # A release that travelled less than this is a click, not a
+            # drag. NotifyCard's own number and the report card's, because
+            # it is the same judgement about the same gesture.
+            CLICK_PX = 4
+
+            def control_at(event):
+                """The control under the pointer, or None for the handle.
+
+                None is the WHOLE ANSWER to what is draggable: the
+                eyebrow, the title, the two grey lines, the question
+                panel and the margins are all card background, so the
+                painter's hit test — which knows only about the rows, the
+                field and the two buttons — says None for every one of
+                them and the press becomes a drag. THE QUESTION PANEL
+                needs no rule of its own for exactly that reason: it is
+                400 characters of text to read, not a control, and it
+                never entered `regions`.
+
+                The FIELD is named here and then never seen: a real
+                tk.Text sits ON TOP of the painted well, so its presses
+                go to the widget and this canvas binding is not called at
+                all — which is what keeps selecting a word with the mouse
+                working without a line of code. It is checked anyway,
+                because relying on a widget's stacking order to enforce a
+                rule and not saying so is how the rule gets deleted.
+                """
+                name = ac.hit_test(card, event.x, event.y, cache)
+                return name if name and name != ac.FIELD else None
+
+            def on_press(event) -> None:
+                """A press on a control acts NOW; anything else starts a
+                drag.
+
+                The report card's rule and its reason: acting on the
+                press is what makes "a drag that ends over an option must
+                not pick it" true without a line about it — a drag can
+                only have begun on the background, so its release lands
+                on nothing that is listening.
+                """
+                name = control_at(event)
+                index = ac.option_at(name)
+                if name == ac.SEND:
+                    send()
+                elif name == ac.CANCEL:
+                    cancel()
+                elif index is not None:
+                    pick(index)
+                elif name is None:
+                    # The keyboard comes back to the card, so the digits
+                    # work again after a trip through the field.
+                    canvas.focus_set()
+                    st["drag"] = (event.x_root - root.winfo_x(),
+                                  event.y_root - root.winfo_y())
+                    st["from"] = (event.x_root, event.y_root)
+                    st["travel"] = 0
+
+            def on_motion(event) -> None:
+                """One handler for both <Motion> and <B1-Motion>, because
+                Tk sends the second INSTEAD of the first while a button is
+                down — bind only <Motion> and the card never moves."""
+                if st["drag"] is not None:
+                    ox, oy = st["from"]
+                    st["travel"] = max(st["travel"],
+                                       abs(event.x_root - ox)
+                                       + abs(event.y_root - oy))
+                    if st["travel"] < CLICK_PX:
+                        return            # still a click until it is not
+                    dx, dy = st["drag"]
+                    # st, not just the window: the card GROWS from
+                    # st["x"]/st["y"] as the field fills, so the origin he
+                    # is choosing right now has to be the one growth uses.
+                    st["x"] = event.x_root - dx
+                    st["y"] = event.y_root - dy
+                    root.geometry("+%d+%d" % (st["x"], st["y"]))
+                    return
+                over = control_at(event)
+                canvas.configure(cursor="hand2" if over else "arrow")
+                if over != st["hover"]:
+                    st["hover"] = card["hover"] = over
+                    paint()
+
+            def on_release(_event=None) -> None:
+                """Save where it was left. A press that never travelled is
+                a click on the background, and this card has nothing for
+                one to mean."""
+                if st["drag"] is None:
+                    return
+                st["drag"] = None
+                if st["travel"] < CLICK_PX:
+                    return
+                self.placed(root.winfo_x(), root.winfo_y())
+
+            def left(_event=None) -> None:
+                if st["hover"] is not None:
+                    st["hover"] = card["hover"] = None
+                    paint()
+
+            canvas.bind("<ButtonPress-1>", on_press)
+            canvas.bind("<B1-Motion>", on_motion)
+            canvas.bind("<Motion>", on_motion)
+            canvas.bind("<ButtonRelease-1>", on_release)
+            canvas.bind("<Leave>", left)
+            # THE DIGITS GO ON THE CANVAS AND NOWHERE ELSE — the class
+            # docstring says why. Only as many as there are rows, so a
+            # key the card does not name never quietly does something:
+            # two options bind 1 and 2, five bind 1 to 5, and
+            # answer_card.keys_of prints the same range on the card off
+            # the same count.
+            for spot in range(len(card.get("options") or ())):
+                canvas.bind("<Key-%d>" % (spot + 1), digit(spot))
+                canvas.bind("<KP_%d>" % (spot + 1), digit(spot))
+            canvas.bind("<Return>", send)
+            canvas.bind("<KP_Enter>", send)
+            field.bind("<FocusIn>", entered)
+            field.bind("<FocusOut>", departed)
+            field.bind("<Control-a>", select_all)
+            field.bind("<Control-A>", select_all)
+            field.bind("<Return>", send)
+            field.bind("<KP_Enter>", send)
+            field.bind("<Shift-Return>", newline)
+            field.bind("<Shift-KP_Enter>", newline)
+            field.bind("<Escape>", cancel)
+            # On the window as well, for both keys: with no frame the
+            # keyboard is the only way out that is always there, and it
+            # must not depend on which of the card's widgets has the
+            # focus. NOT a cancel on losing the focus to another app,
+            # though — he may well be going off to check the thing the
+            # question is about, and coming back to a card that closed
+            # itself would mean answering it from memory next week.
+            root.bind("<Escape>", cancel)
+            root.bind("<Return>", send)
+            root.protocol("WM_DELETE_WINDOW", cancel)
+
+            def pump() -> None:
+                """Dictated text, typed in on the card's own thread — the
+                recorder's thread touching this widget would take the
+                interpreter down with it. It replaces the line (what was
+                there is a draft) and pointedly does NOT set `closing`:
+                filling is not filing. `refresh` picks the echo and the
+                field's height up behind it in the same turn, so a spoken
+                answer is drawn exactly like a typed one.
+
+                AND IT DOES NOT TOUCH THE CHOICE. A dictated line used
+                to drag the pick onto the open row; a row he picked
+                before he started talking now survives the transcript
+                landing, which is the same rule typing follows and the
+                only one that lets him say the condition out loud.
+                """
+                try:
+                    while True:
+                        text = self._q.get_nowait()
+                        field.delete("1.0", "end")
+                        field.insert("1.0", text)
+                        field.mark_set("insert", "end")
+                except queue.Empty:
+                    pass
+                except Exception:
+                    return          # card gone underneath us: nothing to do
+                try:
+                    refresh()
+                    root.after(60, pump)
+                except Exception:
+                    return
+
+            card["typed"], card["lines"] = "", ac.FIELD_LINES_MIN
+            paint()
+            root.deiconify()
+            root.update_idletasks()
+            # After the geometry and after update_idletasks: the attribute
+            # goes to a real hwnd, and DwmSetWindowAttribute on an
+            # unrealised window is a silent no-op.
+            _round_corners(root, ac.hex_of("STROKE"))
+            refresh()
+            if focus:
+                # The CANVAS, not the field: the options are the primary
+                # control and the digits are bound here.
+                self._take_focus(root, canvas)
+            pump()
+            _pump_until(root, closing)
+        except Exception as e:
+            _log.info("the answer card could not open: %r", e)
+        finally:
+            try:
+                if root is not None:
+                    _forget_window(root)
+                    root.destroy()
+            except Exception:
+                pass
+            # THE PICTURE GOES BEFORE THE FRAME DOES. `st` holds the
+            # ImageTk.PhotoImage the canvas was showing and every closure
+            # above holds `st`; leave them alive past root.destroy() and
+            # the PhotoImage is finalised later, from whichever thread the
+            # collector happens to be on, calling into a Tcl interpreter
+            # that is gone. That is the "Tcl_AsyncDelete: async handler
+            # deleted by the wrong thread" abort the report card was
+            # measured aborting on — its SECOND card, not its first —
+            # until these lines were here. Clearing the dict is what
+            # matters; the closures then hold nothing that talks to Tcl.
+            st.clear()
+            cache.clear()
+            paint = refresh = pump = None                 # noqa: F841
+            pick = digit = send = cancel = None           # noqa: F841
+            entered = departed = None                     # noqa: F841
+            on_press = on_motion = on_release = None      # noqa: F841
+            canvas = field = root = None                  # noqa: F841
+            gc.collect()
+        if on_done is None:
+            return
+        try:
+            on_done(result["choice"], result["text"])
+        except Exception:
+            _log.info("answer card: could not report the answer",
+                      exc_info=True)
+
+
 _REVIEW_BUTTONS = ("accept", "reject", "later")
 
 
