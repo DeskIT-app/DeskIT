@@ -79,21 +79,49 @@ def _register_cuda_dlls() -> None:
     log.debug("registered %d CUDA library dirs", len(found))
 
 
+DETECT_RATE = 16000        # what detect_language's mel front-end expects
+
+
 def _decode_pcm(wav_bytes: bytes):
     """WAV bytes -> mono float32 at 16 kHz, which is what detect_language
-    wants. Returns None if the clip is not the shape the recorder produces,
-    so detection is simply skipped rather than raising."""
+    wants. None only when the clip cannot be decoded at all.
+
+    THIS USED TO RETURN None FOR ANY RATE BUT 16 kHz, and that one line
+    cost a day of dictation on 2026-09-05. Switching the microphone to the
+    Arctis 7 Chat headset was enough: the driver refuses 16 kHz shared-mode
+    capture, so Recorder falls back to the device's own rate (recorder.py)
+    and every clip recorded after 15:14 was 48 kHz. This returned None for
+    all of them, transcribe() reads that as "no opinion", and the language
+    stays pinned at "he" — so the Hebrew-only ivrit fine-tune was handed
+    English speech and wrote fluent Hebrew nobody had said. Measured on the
+    real recording: 16.8 s of "So have you finished? Please write me a
+    summary in Hebrew..." shipped as "אז האם אתם עשרים? בבקשה תכניסי לי
+    להגיד משהו ביברו...". Nothing anywhere said why, because a skipped
+    detection was silent: the only trace was that "detected English" stops
+    appearing in app.log at 15:13:40 and never comes back.
+
+    So: resample rather than give up. The recorder's own 16 kHz mono keeps
+    the plain `wave` fast path; anything else goes through PyAV, which
+    ships with faster-whisper and is already what server.py does with
+    whatever shape the phone recorded in.
+    """
     try:
         import numpy as np
         with wave.open(BytesIO(wav_bytes), "rb") as w:
-            if w.getsampwidth() != 2 or w.getframerate() != 16000:
-                return None
-            data = np.frombuffer(w.readframes(w.getnframes()),
-                                 dtype=np.int16)
-            if w.getnchannels() == 2:
-                data = data.reshape(-1, 2).mean(axis=1)
-        return (data.astype("float32") / 32768.0)
+            if w.getsampwidth() == 2 and w.getframerate() == DETECT_RATE:
+                data = np.frombuffer(w.readframes(w.getnframes()),
+                                     dtype=np.int16)
+                if w.getnchannels() == 2:
+                    data = data.reshape(-1, 2).mean(axis=1)
+                return (data.astype("float32") / 32768.0)
     except Exception:
+        pass                    # not a WAV, or not one `wave` can open
+    try:
+        from faster_whisper.audio import decode_audio
+        return decode_audio(BytesIO(wav_bytes), sampling_rate=DETECT_RATE)
+    except Exception as e:
+        log.warning("cannot read this clip for language detection (%s) — "
+                    "it stays in the pinned language", e)
         return None
 
 
@@ -106,6 +134,32 @@ def _silence_wav(seconds: float = 0.4, rate: int = 16000) -> bytes:
         w.setframerate(rate)
         w.writeframes(struct.pack("<h", 0) * int(rate * seconds))
     return buf.getvalue()
+
+# A run this long is a decoder loop in either script — no word anywhere
+# has twelve of the same letter in a row. Hebrew observed 2026-08-13 (222
+# ה's); Latin on 2026-09-05, when a 73-character "Xxxxx…" came out of a
+# 57 s dictation. The Hebrew-only pattern this replaces meant that one
+# raised no warning at all, so the loss was found by reading.
+_LOOP_RUN = re.compile(r"([א-תA-Za-z])\1{11,}")
+
+
+def _looped_seconds(words) -> float:
+    """How much of the recording the loop ate, from the word timings.
+
+    A loop comes out as ONE token and the decoder does not return until it
+    stops, so the gap between the end of the last real word and the end of
+    that token is speech that was never written down. Measured 2026-09-05:
+    'ביטחון' ended at 27.26 s, the run ended at 56.26 s, and all 29 s in
+    between were gone. 0.0 when there are no timings to say.
+    """
+    for index, word in enumerate(words):
+        if index and _LOOP_RUN.search(str(word[0] or "")):
+            try:
+                return max(0.0, float(word[2]) - float(words[index - 1][2]))
+            except (TypeError, ValueError, IndexError):
+                return 0.0
+    return 0.0
+
 
 # Whisper hallucinates confident text on silence; these are the stock
 # phrases it emits for an empty clip.
@@ -384,9 +438,9 @@ class LocalWhisperTranscriber:
                      hotwords: str | None = None, temperature=None,
                      general: bool = False) -> str:
         """One EXTRA opinion about a recording, for the study pass
-        (study.py). Same Hebrew pinning, same guards, same tail-boilerplate
-        and filler cleanup as the live path — the candidates must live in
-        the same text space as the transcript they are compared against.
+        (study.py). Same guards, same tail-boilerplate and filler cleanup
+        as the live path — the candidates must live in the same text space
+        as the transcript they are compared against.
 
         Differences from transcribe(), each deliberate:
         - no hotwords unless asked: the study wants opinions UNBIASED by
@@ -394,19 +448,33 @@ class LocalWhisperTranscriber:
           unbidden cannot confirm itself;
         - `general=True` decodes on the second resident model ([local]
           english_model, a general multilingual fine-tune) with no Hebrew
-          initial_prompt — different training data, independent errors;
+          initial_prompt and with the language DETECTED rather than pinned
+          — different training data, independent errors, and an opinion
+          about which language this was at all;
         - touches NO instance state (last_removed, last_warning): those
           slots belong to the live path, which may be serving a dictation
           on another thread while this runs.
         """
         model = self._model
+        chosen = self._language
         if general:
             if self._english is None:
                 raise TranscriptionError(
                     "no general model loaded for a second opinion")
             model = self._english
+            # ...and it is allowed to disagree about the LANGUAGE, which
+            # is the whole point of asking it. Pinned to Hebrew like the
+            # other two plans, the second reading could not report "this
+            # was English" even in principle — on 2026-09-05 an English
+            # dictation shipped as invented Hebrew, all three decodes were
+            # asked in Hebrew, they agreed 23% with the transcript, and
+            # the reading proposed nothing. Same detector as the live
+            # path, so the bar it has to clear is the measured one.
+            audio = _decode_pcm(wav_bytes)
+            if audio is not None:
+                chosen = self._pick_language(audio)
         kwargs = dict(
-            language=self._language,
+            language=chosen,
             vad_filter=True,
             beam_size=(self._beam_size if beam_size is None
                        else max(1, int(beam_size))),
@@ -446,25 +514,62 @@ class LocalWhisperTranscriber:
             elif language:
                 chosen = language
 
-            segments, _info = model.transcribe(
-                BytesIO(wav_bytes),
-                language=chosen,     # never None: see _pick_language
-                vad_filter=True,
-                beam_size=self._beam_size,
-                condition_on_previous_text=False,
-                # The Hebrew prompt would only confuse the English model.
-                initial_prompt=None if chosen == "en"
-                else self._initial_prompt,
-                # Hotwords go to BOTH models, unlike initial_prompt. That
-                # one is a Hebrew sentence and means nothing to a general
-                # English model; this is a list of names ("Expo Go", "EAS"),
-                # and an English utterance is if anything the MORE likely
-                # place for them to be spoken.
-                hotwords=self._current_hotwords(),
-                **self._guards,
-            )
-            segs = list(segments)
-            text = " ".join(s.text.strip() for s in segs).strip()
+            def decode(**over):
+                kwargs = dict(
+                    language=chosen,     # never None: see _pick_language
+                    vad_filter=True,
+                    beam_size=self._beam_size,
+                    condition_on_previous_text=False,
+                    # The Hebrew prompt would only confuse the English
+                    # model.
+                    initial_prompt=None if chosen == "en"
+                    else self._initial_prompt,
+                    # Hotwords go to BOTH models, unlike initial_prompt.
+                    # That one is a Hebrew sentence and means nothing to a
+                    # general English model; this is a list of names
+                    # ("Expo Go", "EAS"), and an English utterance is if
+                    # anything the MORE likely place for them to be
+                    # spoken.
+                    hotwords=self._current_hotwords(),
+                    **self._guards,
+                )
+                kwargs.update(over)      # the retry overrides, one dict
+                segments, _info = model.transcribe(BytesIO(wav_bytes),
+                                                   **kwargs)
+                got = list(segments)
+                return got, " ".join(s.text.strip() for s in got).strip()
+
+            segs, text = decode()
+            if _LOOP_RUN.search(text):
+                # The words a loop swallows are NOT gone — this file used
+                # to say they were, and it was wrong. Measured 2026-09-05
+                # on the 57 s clip whose 73-character "Xxxxx…" ate 29 s:
+                # every re-decode came back without the loop and WITH the
+                # missing sentences (beam 1: 128 words, the ladder:
+                # 114-125, the general model: 132, against 63 for the
+                # looping one). One extra decode, only ever after a loop,
+                # buys back half a minute of speech.
+                #
+                # Greedy first, ladder second, and that order is the whole
+                # design. Beam search is what gets stuck; dropping to beam
+                # 1 takes a different path through the same pinned
+                # temperature, so it is DETERMINISTIC and it is cheaper
+                # than the decode that just failed. The ladder samples —
+                # three runs of it on that clip recovered 69, 114 and 124
+                # words — so it stays the second rung, for the loop that
+                # greedy decoding cannot shake either.
+                for rung in (dict(beam_size=1),
+                             dict(temperature=[0.0, 0.2, 0.4, 0.6, 0.8,
+                                               1.0])):
+                    retry_segs, retry = decode(**rung)
+                    if retry and not _LOOP_RUN.search(retry):
+                        log.warning("decoder loop — recovered with %s "
+                                    "(%d words for %d)",
+                                    "beam 1" if "beam_size" in rung
+                                    else "the temperature ladder",
+                                    len(retry.split()), len(text.split()))
+                        segs, text = retry_segs, retry
+                        break
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
 
@@ -481,19 +586,27 @@ class LocalWhisperTranscriber:
                            for s in segs
                            for w in (getattr(s, "words", None) or [])]
         self.last_removed = []
-        # A long letter-run means the decoder looped — and while it loops,
-        # the audio keeps advancing, so words spoken during and after it
-        # are usually GONE, not garbled. Cleanup below deletes the run;
-        # nothing can restore the words. The least bad thing is to say so
-        # immediately instead of letting the loss be discovered in reading.
+        # A long letter-run means the decoder looped, and while it loops
+        # the audio keeps advancing — so the words spoken during it are
+        # not in the text. Reaching HERE means the retry above looped too,
+        # which is the only case left where they are really unrecoverable.
+        # Say so immediately rather than let the loss be found in reading.
         self.last_warning = None
-        loop = re.search(r"([א-ת])\1{11,}", text)
+        loop = _LOOP_RUN.search(text)
         if loop:
-            self.last_warning = ("the model looped mid-recording — words "
-                                 "around it may be lost; re-dictate that part")
-            log.warning("decoder loop: %d×%s — words spoken during/after "
-                        "it are likely missing", len(loop.group(0)),
-                        loop.group(1))
+            lost = _looped_seconds(self.last_words)
+            span = f"{lost:.0f} s of " if lost else ""
+            self.last_warning = (f"the model looped mid-recording — {span}"
+                                 "words around it are lost; re-dictate that "
+                                 "part")
+            log.warning("decoder loop: %d×%r swallowed %s— and the retry "
+                        "looped too", len(loop.group(0)),
+                        loop.group(1), f"{lost:.1f} s " if lost else "")
+            # Cut the run rather than paste it. collapse_char_runs would
+            # leave a two-letter stub, and a stub sitting in the middle of
+            # a sentence reads as a word the user said; the warning above
+            # is what carries the loss, not a piece of the loop.
+            text = _LOOP_RUN.sub(" ", text)
         if text.strip(" .,!?").lower() in _HALLUCINATED_SILENCE:
             return ""        # treated as "no speech", same as Gemini
         if self._boilerplate:

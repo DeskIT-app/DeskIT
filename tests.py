@@ -202,6 +202,80 @@ def test_frames_to_wav_format() -> None:
         assert w.getnframes() == 16000, w.getnframes()
 
 
+def _refuse(rec, why="Invalid number of channels"):
+    """What a driver saying no looks like from inside a fake stream."""
+    raise rec.sd.PortAudioError(f"Error opening InputStream: {why}")
+
+
+def _fake_streams(behaviour):
+    """Run `behaviour(kwargs) -> samplerate` in place of sd.InputStream,
+    and give back the kwargs every attempt was made with. Raising from
+    `behaviour` is how a test says "this driver refuses that"."""
+    import recorder as rec
+
+    tried: list[dict] = []
+
+    class Stream:
+        device = 0
+
+        def __init__(self, **kw):
+            tried.append(kw)
+            self.samplerate = behaviour(kw)
+
+    return rec, tried, Stream
+
+
+def test_a_microphone_that_moved_does_not_stop_the_app_starting() -> None:
+    """2026-09-05: `[audio] device` held a bare INDEX, and indices shift
+    whenever any device appears or disappears — a Bluetooth headset
+    connecting is enough. Index 27 was the headset microphone at 15:14 and
+    "Speakers (Realtek HD Audio output)" (0 in, 8 out) by 15:36, so every
+    start died on "Invalid number of channels" and the app would not come
+    up at all. A third hand does not down tools because a plug moved: a
+    pinned device that cannot be opened means the system default, loudly.
+    """
+    rec, tried, Stream = _fake_streams(
+        lambda kw: 16000 if kw.get("device") is None else _refuse(rec))
+
+    real = rec.sd.InputStream
+    rec.sd.InputStream = Stream
+    try:
+        r = rec.Recorder(16000, 27, 400, lambda: None)
+    finally:
+        rec.sd.InputStream = real
+
+    assert r.sample_rate == 16000
+    assert tried[0]["device"] == 27, "the pinned microphone comes first"
+    assert tried[-1]["device"] is None, \
+        "a microphone that cannot be opened must fall back to the default"
+
+
+def test_the_rate_ladder_asks_wasapi_before_giving_up_on_16_khz() -> None:
+    """The Arctis 7 Chat refuses 16 kHz shared-mode capture and takes it
+    with WASAPI's own converter switched on — measured 2026-09-05 on the
+    live endpoint: -9997 without, 16000.0 Hz with. Dropping straight to
+    the device's own 48 kHz, which is what used to happen, triples every
+    recording and costs the language detector its fast path, so the
+    converter is tried before the rate is given up on."""
+    rec, tried, Stream = _fake_streams(
+        lambda kw: (kw["samplerate"] if kw.get("extra_settings")
+                    else (_refuse(rec, "Invalid sample rate")
+                          if kw.get("samplerate") else 48000)))
+    if rec.wasapi_auto_convert() is None:
+        return          # no WASAPI on this machine; there is no rung to ask
+
+    real = rec.sd.InputStream
+    rec.sd.InputStream = Stream
+    try:
+        r = rec.Recorder(16000, 21, 400, lambda: None)
+    finally:
+        rec.sd.InputStream = real
+
+    assert [(kw.get("samplerate"), bool(kw.get("extra_settings")))
+            for kw in tried] == [(16000, False), (16000, True)], tried
+    assert r.sample_rate == 16000, "the recording fell to the device's rate"
+
+
 def test_config_loads_and_validates() -> None:
     cfg = config_mod.load(Path(__file__).parent / "config.toml")
     assert cfg.hotkey == "right ctrl"
@@ -1719,6 +1793,218 @@ def test_an_undeclared_language_asks_the_detector() -> None:
     # Anything short of confident English stays exactly where it was.
     out = router("en", 0.5)
     assert out["model"] == "he" and out["language"] == "he", out
+
+
+def test_language_detection_survives_a_microphone_that_is_not_16_khz() -> None:
+    """The 2026-09-05 bug, at its single point of failure.
+
+    _decode_pcm used to return None for any rate but 16 kHz — and a
+    microphone that forces its own rate is an ordinary thing: the Arctis 7
+    Chat headset refuses 16 kHz shared-mode capture, so Recorder falls back
+    to the device's 48 kHz. Detection then never ran, transcribe() left the
+    language pinned at "he", and 16.8 s of English came back as fluent
+    Hebrew nobody had said.
+    """
+    from transcribers.local_whisper import DETECT_RATE, _decode_pcm
+
+    seconds = 0.5
+    for rate in (16000, 44100, 48000):
+        wav = frames_to_wav(
+            [np.zeros(int(rate * seconds), dtype=np.int16)], rate)
+        audio = _decode_pcm(wav)
+        assert audio is not None, f"{rate} Hz must still reach the detector"
+        assert abs(len(audio) - DETECT_RATE * seconds) < DETECT_RATE * 0.02, \
+            f"{rate} Hz must arrive resampled to {DETECT_RATE}, not stretched"
+
+    # Junk is still not audio. It only differs in saying so.
+    assert _decode_pcm(b"RIFF") is None
+
+
+def test_a_48_khz_clip_still_routes_to_the_english_model() -> None:
+    """test_an_undeclared_language_asks_the_detector, over the recording a
+    fallback microphone actually produces. This is the assertion that would
+    have caught the bug: with the old _decode_pcm the detector is never
+    asked at 48 kHz and every English word goes to the Hebrew model."""
+    from transcribers.local_whisper import LocalWhisperTranscriber
+
+    calls = {}
+
+    class FakeModel:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def transcribe(self, audio, **kw):
+            calls["model"] = self.tag
+            calls["language"] = kw.get("language")
+
+            class Seg:
+                text = "So have you finished?"
+            return [Seg()], None
+
+        def detect_language(self, audio=None, vad_filter=False):
+            calls["samples"] = len(audio)
+            return "en", 1.0, []
+
+    t = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    t._model, t._english = FakeModel("he"), FakeModel("en")
+    t._language, t._english_threshold = "he", 0.8
+    t._cleanup, t._fillers = False, ()
+    t._initial_prompt = "עברית"
+    t._guards, t._boilerplate = {}, ()
+    t._hotwords = None
+
+    one_second_at_48k = frames_to_wav([np.zeros(48000, dtype=np.int16)], 48000)
+    t.transcribe(one_second_at_48k, language=None)
+    assert calls.get("samples"), "the 48 kHz clip must reach the detector"
+    assert calls["samples"] == 16000, \
+        "and reach it resampled — one second is 16000 samples, not 48000"
+    assert calls["model"] == "en" and calls["language"] == "en", calls
+
+
+def test_a_latin_decoder_loop_is_cut_and_the_loss_is_reported() -> None:
+    """The real one, 2026-09-05: a 57 s dictation came back with
+    "Xxxxxxx…" — 73 characters as a single token — where 29 seconds of
+    speech had been. Both guards were Hebrew-only, so nothing collapsed
+    it, nothing warned, and the loss was found by reading. A loop is a
+    loop in any script.
+    """
+    from transcribers.local_whisper import LocalWhisperTranscriber
+
+    run = "X" + "x" * 72
+
+    class Word:
+        def __init__(self, word, start, end, p):
+            self.word, self.start, self.end, self.probability = (
+                word, start, end, p)
+
+    class Seg:
+        text = f"בלי רשת ביטחון {run} תודה."
+        words = [Word("בלי", 26.22, 26.5, 0.911),
+                 Word("רשת", 26.5, 26.7, 0.999),
+                 Word("ביטחון", 26.7, 27.26, 0.999),
+                 Word(run, 54.86, 56.26, 0.946),
+                 Word("תודה.", 56.26, 56.4, 0.575)]
+
+    class FakeModel:
+        def transcribe(self, audio, **kw):
+            return [Seg()], None
+
+    t = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    t._model, t._english = FakeModel(), None
+    t._language, t._english_threshold = "he", 0.8
+    t._cleanup, t._fillers = False, ()
+    t._initial_prompt = "עברית"
+    t._guards, t._boilerplate = {}, ()
+    t._hotwords = None
+
+    out = t.transcribe(b"RIFF", language="he")
+    assert "xxx" not in out.lower(), out
+    assert "ביטחון" in out and "תודה" in out, "real words were cut too"
+    assert t.last_warning and "29 s" in t.last_warning, t.last_warning
+
+
+def test_a_loop_is_retried_greedily_and_the_words_come_back() -> None:
+    """The words a loop swallows are NOT gone — this file said they were,
+    and it was wrong. Measured 2026-09-05 on the real 57 s clip whose
+    73-character 'Xxxxx…' ate 29 s: re-decoding it on the temperature
+    ladder gave 119 words and no loop, beam 1 gave 122, the general model
+    132, and all three contained the missing sentences. The ladder is
+    Whisper's own escape from a repetition loop, and a loop is exactly
+    when the pinned temperature has nothing left to protect."""
+    from transcribers.local_whisper import LocalWhisperTranscriber
+
+    class Looped:
+        text = "בלי רשת ביטחון " + "X" + "x" * 72 + " תודה."
+
+    class Whole:
+        text = "בלי רשת ביטחון תקן את זה אם אתה יכול תודה."
+
+    asked = []
+
+    class FakeModel:
+        def transcribe(self, audio, **kw):
+            asked.append((kw.get("beam_size"), kw.get("temperature")))
+            # Greedy is what shakes it loose here, as it did on the
+            # real clip; the ladder must therefore never be reached.
+            return [Whole() if kw.get("beam_size") == 1
+                    else Looped()], None
+
+    t = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    t._model, t._english = FakeModel(), None
+    t._language, t._english_threshold = "he", 0.8
+    t._cleanup, t._fillers = False, ()
+    t._initial_prompt = "עברית"
+    t._guards, t._boilerplate = {}, ()
+    t._hotwords = None
+
+    out = t.transcribe(b"RIFF", language="he")
+    assert "תקן את זה אם אתה יכול" in out, out
+    assert "xxx" not in out.lower(), out
+    assert t.last_warning is None, \
+        "a recovered loop must not tell the user to re-dictate"
+    assert len(asked) == 2, "greedy is the first rung, and it worked"
+    assert asked == [(5, None), (1, None)], asked
+
+    # A clean decode is never decoded twice.
+    asked.clear()
+    t._model = type("Clean", (), {
+        "transcribe": lambda self, audio, **kw: (
+            asked.append(kw.get("temperature")) or [Whole()], None)})()
+    t.transcribe(b"RIFF", language="he")
+    assert len(asked) == 1, asked
+
+
+def test_www_survives_what_a_decoder_loop_does_not() -> None:
+    """The reason Latin was excluded from the run collapser in the first
+    place. Six is the threshold that keeps a dictated URL and drops a
+    loop; no word in either script reaches it."""
+    from cleanup import collapse_char_runs
+
+    assert collapse_char_runs("www.example.com") == "www.example.com"
+    assert collapse_char_runs("brrr, קר") == "brrr, קר"
+    assert collapse_char_runs("X" + "x" * 72) == "Xxx"
+    assert collapse_char_runs("אהההההה") == "אהה"
+
+
+def test_the_second_opinion_may_disagree_about_the_language() -> None:
+    """All three re-decodes of the "second reading" were pinned to Hebrew,
+    so on 2026-09-05 — an English dictation shipped as invented Hebrew —
+    the reading structurally could not report what was wrong. It scored
+    23% agreement and proposed nothing. The general model is asked for an
+    independent opinion; the language is part of the opinion."""
+    from transcribers.local_whisper import LocalWhisperTranscriber
+
+    seen = {}
+
+    class FakeModel:
+        def __init__(self, tag):
+            self.tag = tag
+
+        def transcribe(self, audio, **kw):
+            seen[self.tag] = kw.get("language")
+
+            class Seg:
+                text = "so have you finished"
+            return [Seg()], None
+
+        def detect_language(self, audio=None, vad_filter=False):
+            return "en", 1.0, []
+
+    t = LocalWhisperTranscriber.__new__(LocalWhisperTranscriber)
+    t._model, t._english = FakeModel("he"), FakeModel("en")
+    t._language, t._english_threshold = "he", 0.8
+    t._cleanup, t._fillers = False, ()
+    t._initial_prompt = "עברית"
+    t._guards, t._boilerplate = {}, ()
+
+    wav = frames_to_wav([np.zeros(16000, dtype=np.int16)], 16000)
+    t.study_decode(wav, general=True)
+    assert seen["en"] == "en", \
+        "the general decode is still pinned to Hebrew — it cannot disagree"
+    # The Hebrew plans are unchanged: they are the fine-tune's opinion.
+    seen.clear()
+    t.study_decode(wav, general=False)
+    assert seen["he"] == "he", seen
 
 
 def test_the_detector_is_warmed_before_the_first_dictation() -> None:
@@ -15463,6 +15749,36 @@ def test_a_bluetooth_microphone_has_a_name_a_person_can_read() -> None:
         assert firstrun.clean_name(name) == name
     assert firstrun.clean_name("") == "?"
     assert "\n" not in firstrun.clean_name(raw)
+
+
+def test_the_microphone_is_written_by_name_not_by_index() -> None:
+    """2026-09-05: the mic menu wrote a bare INDEX into config.toml, and
+    indices shift whenever any device appears or disappears. Index 27 was
+    the headset microphone at 15:14 and "Speakers (Realtek HD Audio
+    output)" by 15:36, so the app stopped starting. A name plus its host
+    API is what sounddevice matches EXACTLY, so it survives a reshuffle.
+    """
+    import sounddevice as sd
+
+    import firstrun
+
+    # The raw name, not the readable one: clean_name rewrites a Bluetooth
+    # device's indirect string, and sounddevice matches against the raw.
+    raw = ("Headset (@System32\\drivers\\bthhfenum.sys,#2;"
+           "%1 Hands-Free%0\r\n;(Nothing Ear))")
+    key = firstrun.device_key(raw, "Windows WDM-KS")
+    assert key.endswith(", Windows WDM-KS"), key
+    assert "\n" not in key and "\r" not in key, "a key spanning two lines"
+    assert firstrun.clean_name(raw) not in (key,), \
+        "the key must carry the raw name, which is what is matched"
+
+    # Every key this machine offers must resolve back to the very device
+    # it was built from — that is the whole promise.
+    for entry in firstrun._devices():
+        assert len(entry) == 4, entry
+        listed_key, _name, _api, index = entry
+        assert sd._get_device_id(listed_key, "input",
+                                 raise_on_error=True) == index, listed_key
 
 
 def test_the_microphone_you_already_use_is_the_row_at_the_top() -> None:

@@ -2022,10 +2022,36 @@ class ScreenRecorder:
         try:
             import numpy as np
             import sounddevice as sd
+
+            from recorder import wasapi_auto_convert
             block = self.audio_rate // 10
-            with sd.InputStream(samplerate=self.audio_rate, channels=1,
-                                dtype="int16", device=self.audio_device,
-                                blocksize=block) as stream:
+            # The rate is NOT negotiable here the way it is for dictation:
+            # the container declared its audio stream at this rate when the
+            # first frame went in (Clip.open), so audio arriving at another
+            # rate would drift against the picture. When the driver refuses
+            # it, ask WASAPI to convert instead of giving up — the same
+            # rung recorder.py grew on 2026-09-05, against the same class
+            # of driver (the Arctis 7 Chat refuses shared-mode rates it
+            # does not natively hold). Without it, a refused rate landed in
+            # the broad except below and shipped a MUTE clip.
+            rungs = [{}]
+            wasapi = wasapi_auto_convert()
+            if wasapi is not None:
+                rungs.append({"extra_settings": wasapi})
+            stream = None
+            refused: Exception | None = None
+            for rung in rungs:
+                try:
+                    stream = sd.InputStream(
+                        samplerate=self.audio_rate, channels=1,
+                        dtype="int16", device=self.audio_device,
+                        blocksize=block, **rung)
+                    break
+                except sd.PortAudioError as e:
+                    refused = e
+            if stream is None:
+                raise refused
+            with stream:
                 self.audio_on = True
                 while not self._stop.is_set():
                     data, _overflow = stream.read(block)
@@ -2041,8 +2067,11 @@ class ScreenRecorder:
                     self._clip.add_audio(np.ascontiguousarray(data[:, 0]))
         except Exception as e:
             self.audio_on = False
-            log.info("the recording has no sound (%s) — the picture is "
-                     "unaffected", e)
+            # WARNING, not INFO. A silent recording is not a detail: the
+            # clip looks finished, plays, and is missing half of what was
+            # in the room, and the person who made it finds out later.
+            log.warning("the recording has no sound (%s) — the picture is "
+                        "unaffected, but this clip is mute", e)
 
 
 # ----------------------------------------------------------- the webcam

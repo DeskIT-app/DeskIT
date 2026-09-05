@@ -3402,8 +3402,15 @@ class Dashboard:
         scroller.bind_wheel(card)
 
     def _microphones(self) -> list:
-        """(index as the file writes it, a name) for every input device,
-        the way the first-run setup lists them. Asked once per visit."""
+        """(what the file writes, a name) for every input device, the way
+        the first-run setup lists them. Asked once per visit.
+
+        The value is firstrun.device_key — the microphone's NAME and host
+        API, never its index. The rows read exactly as they did; what
+        changed on 2026-09-05 is what lands in config.toml, after an index
+        written by this menu stopped pointing at a microphone at all and
+        the app would not start.
+        """
         p = self.parts
         if "mics" not in p:
             try:
@@ -3412,8 +3419,8 @@ class Dashboard:
             except Exception:
                 devices = []
             p["mics"] = ([("", "System default")]
-                         + [(str(index), f"{name} — {api}")
-                            for index, name, api in devices])
+                         + [(key, f"{name} — {api}")
+                            for key, name, api, _index in devices])
         return list(p["mics"])
 
     def _menu_for(self, row, setting) -> list:
@@ -3423,6 +3430,19 @@ class Dashboard:
         if setting.path == "audio.device":
             mics = self._microphones()
             if len(mics) > 1:
+                # A config still holding a bare index would match no row
+                # and the menu would show a number where a microphone
+                # belongs. Translate it once, so the row the file means is
+                # the row that reads as chosen.
+                values = self.parts.setdefault("values", {})
+                held = str(values.setdefault(setting.path,
+                                             setting.value) or "")
+                if held.isdigit():
+                    import firstrun
+                    for key, _name, _api, index in firstrun._devices():
+                        if str(index) == held:
+                            values[setting.path] = key
+                            break
                 return mics
         if row is not None and row.names:
             return list(row.names)

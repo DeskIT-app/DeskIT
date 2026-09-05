@@ -254,7 +254,18 @@ done = false
 
 [audio]
 sample_rate = 16000
-device = "1"                  # Arctis 7 headset mic (from --list-devices; "" = system default)
+device = "Headset Microphone (Arctis 7 Chat), Windows WASAPI"
+                               # the microphone BY NAME, never by index:
+                               # indices shift whenever any device appears
+                               # or disappears, and on 2026-09-05 index 27
+                               # went from being this microphone to being
+                               # "Speakers (Realtek HD Audio output)", so
+                               # the app stopped starting at all. Name +
+                               # ", " + host API is what sounddevice
+                               # matches exactly; a shorter substring that
+                               # matches several devices is ambiguous and
+                               # falls back to the default. "" = system
+                               # default input (see --list-devices)
 
 [feedback]
 enabled = true                # paste a marker at the cursor while transcribing

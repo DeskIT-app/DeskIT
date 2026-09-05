@@ -7,6 +7,7 @@ while an utterance is active; otherwise audio is discarded on arrival.
 from __future__ import annotations
 
 import io
+import logging
 import math
 import threading
 import wave
@@ -15,9 +16,23 @@ from typing import Callable
 import numpy as np
 import sounddevice as sd
 
+log = logging.getLogger("app")
+
 IDLE = "idle"
 ACTIVE = "active"
 OVERFLOWED = "overflowed"
+
+
+def wasapi_auto_convert():
+    """WASAPI's own sample-rate converter, or None where there is none.
+
+    Windows-only, and only on a WASAPI endpoint — see Recorder._open,
+    which is why this answers with None rather than raising.
+    """
+    try:
+        return sd.WasapiSettings(auto_convert=True)
+    except Exception:
+        return None
 
 
 def frames_to_wav(chunks: list[np.ndarray], sample_rate: int) -> bytes:
@@ -54,19 +69,76 @@ class Recorder:
         # rather than a decorative animation pretending to be.
         self._level = 0.0
         try:
-            self._stream = sd.InputStream(
-                samplerate=sample_rate, channels=1, dtype="int16",
-                device=device, callback=self._callback)
-        except sd.PortAudioError:
-            # Some drivers refuse 16 kHz shared-mode capture. Fall back to the
-            # device's default rate — Gemini accepts any WAV rate, the upload
-            # is just larger.
-            self._stream = sd.InputStream(
-                samplerate=None, channels=1, dtype="int16",
-                device=device, callback=self._callback)
+            self._stream = self._open(device, sample_rate)
+        except (sd.PortAudioError, ValueError) as e:
+            if device is None:
+                raise
+            # The chosen microphone cannot be opened. Usually it is not
+            # even a microphone any more: `[audio] device` may hold a bare
+            # INDEX, and indices shift whenever a device appears or
+            # disappears — a Bluetooth headset connecting is enough. On
+            # 2026-09-05 index 27 was the Arctis mic at 15:14 and
+            # "Speakers (Realtek HD Audio output), 0 in, 8 out" by 15:36,
+            # so every start failed with "Invalid number of channels" and
+            # the app would not come up at all.
+            #
+            # A third hand does not down tools because a plug moved. Take
+            # the system default input and say so — dictation into the
+            # wrong-but-working microphone is recoverable in a way that a
+            # dictation app that will not start is not.
+            log.warning("microphone %r cannot be opened (%s) — using the "
+                        "system default input instead; set [audio] device "
+                        "in config.toml (see --list-devices)",
+                        device, str(e).splitlines()[0])
+            self._stream = self._open(None, sample_rate)
         self.sample_rate = int(self._stream.samplerate)
+        if self.sample_rate != sample_rate:
+            # Said out loud, because the one time this happened quietly it
+            # cost a day: a microphone that forced its own rate used to
+            # switch language detection off without a word, and English
+            # dictation came back as invented Hebrew. See
+            # local_whisper._decode_pcm, which no longer cares — this line
+            # is so the NEXT thing that only works at 16 kHz is found in
+            # the log rather than in the transcripts.
+            log.warning("the microphone refused %d Hz — recording at its "
+                        "own %d Hz instead", sample_rate, self.sample_rate)
         self._default_max_samples = float(max_seconds * self.sample_rate)
         self._max_samples = self._default_max_samples
+
+    def _open(self, device, sample_rate: int):
+        """One input stream on `device`, at `sample_rate` if it can be had.
+
+        Three rungs, because a driver is allowed to refuse a rate:
+
+        1. plain, which almost every microphone accepts;
+        2. WASAPI's own converter. The Arctis 7 Chat headset refuses
+           16 kHz shared-mode capture and takes it with auto_convert on —
+           measured 2026-09-05 on the live endpoint, -9997 without it,
+           16000.0 Hz with. The resampling then happens inside the Windows
+           audio engine, which costs this process nothing;
+        3. whatever rate the device wants. Correct — every consumer
+           resamples — but the file is three times the size and the
+           language detector loses its fast path, so it is the last rung
+           rather than the first fallback it used to be.
+
+        Passing WasapiSettings to a non-WASAPI endpoint raises rather than
+        being ignored, which is why rung 2 is inside the ladder and not
+        folded into rung 1.
+        """
+        rungs = [dict(samplerate=sample_rate)]
+        wasapi = wasapi_auto_convert()
+        if wasapi is not None:
+            rungs.append(dict(samplerate=sample_rate, extra_settings=wasapi))
+        rungs.append(dict(samplerate=None))
+        last: Exception | None = None
+        for rung in rungs:
+            try:
+                return sd.InputStream(channels=1, dtype="int16",
+                                      device=device,
+                                      callback=self._callback, **rung)
+            except sd.PortAudioError as e:
+                last = e
+        raise last                      # never None: the list is not empty
 
     def start_stream(self) -> None:
         self._stream.start()

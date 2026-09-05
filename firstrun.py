@@ -100,13 +100,33 @@ def clean_name(name: str) -> str:
     return name or "?"
 
 
-def _devices() -> list[tuple[int, str, str]]:
-    """(index, name, host API) for every input device, best first.
+def device_key(raw_name, api: str) -> str:
+    """How a microphone is named in config.toml: its RAW name, a comma and
+    its host API — the exact string sounddevice builds and compares
+    against, so it resolves to that one device and no other.
 
-    Names come back truncated from the MME host API — that is why the
-    INDEX is what gets written to config.toml — so the host API is shown
-    beside the name: the same microphone appears three times on a normal
-    Windows box and they are not equally good.
+    The RAW name, not the readable one: clean_name() rewrites a Bluetooth
+    device's unresolved indirect string into its friendly tail, and that
+    tail is not what sounddevice is matching against.
+
+    An INDEX used to be written here, because MME truncates names — but
+    the truncation is on both sides of the comparison, so it costs
+    nothing, while an index costs everything. Indices shift whenever any
+    device appears or disappears, and on 2026-09-05 index 27 stopped being
+    this microphone and became "Speakers (Realtek HD Audio output)",
+    which stopped the app from starting at all.
+    """
+    return f'{" ".join(str(raw_name or "").split())}, {api}'
+
+
+def _devices() -> list[tuple[str, str, str, int]]:
+    """(key, readable name, host API, index) for every input device, best
+    first.
+
+    The KEY is what gets written to config.toml (see device_key). The
+    index is kept for the row's small print — the same microphone appears
+    three times on a normal Windows box, they are not equally good, and
+    the number is how a person tells two identical names apart.
     """
     try:
         import sounddevice as sd
@@ -121,14 +141,16 @@ def _devices() -> list[tuple[int, str, str]]:
                 continue
             api = apis[dev["hostapi"]]["name"] if dev.get(
                 "hostapi") is not None else ""
-            out.append((index, clean_name(dev.get("name", "")), str(api)))
+            raw = dev.get("name", "")
+            out.append((device_key(raw, api), clean_name(raw), str(api),
+                        index))
     except Exception as e:
         log.info("could not list input devices: %r", e)
         return []
     # WASAPI first: it is the one that gives 16 kHz shared-mode capture
     # without the fallback in recorder.py, and its names are not truncated.
     order = {"Windows WASAPI": 0, "Windows WDM-KS": 1, "MME": 2}
-    out.sort(key=lambda d: (order.get(d[2], 3), d[0]))
+    out.sort(key=lambda d: (order.get(d[2], 3), d[3]))
     return out
 
 
@@ -146,16 +168,24 @@ def order_for(listing, chosen: str):
 
 
 def default_device() -> str:
-    """The index the wizard starts on: whatever Windows calls the default.
+    """The device the wizard starts on: whatever Windows calls the default.
 
     "" would also work — recorder.py reads an empty string as the system
     default — but showing a row selected is what tells someone the list is
     a choice rather than a warning.
+
+    Answers with the same key the rows are keyed by, so the right row
+    lights up; "" when the default cannot be named.
     """
     try:
         import sounddevice as sd
         index = sd.default.device[0]
-        return "" if index is None or index < 0 else str(int(index))
+        if index is None or index < 0:
+            return ""
+        for key, _name, _api, listed in _devices():
+            if listed == int(index):
+                return key
+        return ""
     except Exception:
         return ""
 
@@ -401,8 +431,8 @@ class Wizard:
         # whose microphone is ninth concluding it is not supported.
         holder = ui.Scroller(self.body, w=W - PAD * 2 - 10, h=250, bg=ui.BG)
         holder.pack(fill="both", expand=True)
-        for index, name, api in order_for(listing, self.device):
-            self._device_row(holder.inner, str(index), name, api)
+        for key, name, api, index in order_for(listing, self.device):
+            self._device_row(holder.inner, key, name, api, index)
         holder.bind_wheel(holder.inner)
         bar = tk.Frame(self.body, bg=ui.BG)
         bar.pack(fill="x", pady=(16, 0))
@@ -414,8 +444,12 @@ class Wizard:
                              padx=(0, 14))
         self._listen()
 
-    def _device_row(self, parent, index: str, name: str, api: str) -> None:
-        chosen = index == self.device
+    def _device_row(self, parent, key: str, name: str, api: str,
+                    index: int) -> None:
+        # `key` is the identity (what config.toml stores, see device_key);
+        # `index` is only ever shown, because two rows can carry the same
+        # name and the number is how a person tells them apart.
+        chosen = key == self.device
         width = W - PAD * 2 - 10
         row = tk.Canvas(parent, width=width, height=40, bd=0,
                         highlightthickness=0, cursor="hand2",
@@ -425,8 +459,8 @@ class Wizard:
                         anchor="e", fill=ui.FG, font=(ui.UI, 10))
         row.create_text(width - 16, 29, text=f"{api}  ·  {index}",
                         anchor="e", fill=ui.FAINT, font=(ui.UI, 8))
-        row.bind("<Button-1>", lambda _e, i=index: self._pick(i))
-        self._rows[index] = row
+        row.bind("<Button-1>", lambda _e, k=key: self._pick(k))
+        self._rows[key] = row
 
     def _pick(self, index: str) -> None:
         if index == self.device:
@@ -584,7 +618,8 @@ class Wizard:
         self._show_step()
 
     def _save_device(self) -> None:
-        """Write the chosen index, and nothing else.
+        """Write the chosen microphone, by name (device_key), and nothing
+        else.
 
         Through config.set_values like every other writer here: a line
         edit that keeps the comments, because config.toml's comments carry
@@ -594,7 +629,8 @@ class Wizard:
             return
         try:
             config_mod.set_values(self.path, {"audio.device": self.device})
-            log.info("setup: microphone set to device %s", self.device)
+            log.info("setup: microphone set to %s", self.device or "the "
+                     "system default")
         except Exception as e:
             log.info("setup could not save the microphone: %r", e)
             self.note.configure(text=f"לא הצלחתי לשמור: {e}", fg=ui.RED)

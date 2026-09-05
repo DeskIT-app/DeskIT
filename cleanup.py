@@ -110,15 +110,22 @@ def strip_fillers(text: str, fillers: tuple[str, ...] = DEFAULT_FILLERS) -> str:
 # each ה makes the next more likely and it loops. Observed live 2026-08-13,
 # three times, runs of up to 222 ה characters. The decoder-level guards
 # don't catch it because they watch for SILENCE, and this is a sound.
-_CHAR_RUN = re.compile(r"([א-ת])\1{3,}")
+_CHAR_RUN = re.compile(r"([א-ת])\1{3,}|([A-Za-z])\2{5,}")
 
 
 def collapse_char_runs(text: str) -> str:
-    """No Hebrew word repeats one letter four times in a row, so any such
+    """No word repeats one letter this many times in a row, so any such
     run is a decoder loop. Collapsed to a double, which turns 'אהההה…' into
-    'אהה' — a filler strip_fillers() already knows how to drop. Hebrew
-    letters only: Latin runs like 'www' in a dictated URL must survive."""
-    return _CHAR_RUN.sub(r"\1\1", text)
+    'אהה' — a filler strip_fillers() already knows how to drop.
+
+    Two thresholds, because the scripts are not equally safe. Four is
+    enough for Hebrew. Latin needs six: 'www' in a dictated URL must
+    survive, and so must 'brrr'. Latin was excluded altogether until
+    2026-09-05, when a 73-character 'Xxxxx…' run walked straight through
+    into a dictation — English is not a foreign language on this
+    microphone, and the decoder loops in it too.
+    """
+    return _CHAR_RUN.sub(lambda m: (m.group(1) or m.group(2)) * 2, text)
 
 
 def collapse_repeats(text: str, max_phrase: int = 4) -> str:
