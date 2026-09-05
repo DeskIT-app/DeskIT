@@ -573,7 +573,7 @@ class Engine:
         self.coalesce_s = float(getattr(cfg, "coalesce_s", 5))
         interrupt = str(getattr(cfg, "interrupt", "input") or "").lower()
         self.interrupt = interrupt if interrupt in INTERRUPTS else "input"
-        self.quiet_s = float(getattr(cfg, "quiet_s", 60))
+        self.quiet_s = float(getattr(cfg, "quiet_s", 0))
         self._cue = cue if cue is not None else (lambda kind: None)
         self.card = card if card is not None else NullCard()
         self._clock = clock
@@ -714,8 +714,12 @@ class Engine:
         `quiet_s` puts a card up, which is as close as this door can get
         to "tell me when you are actually finished".
 
-        `quiet_s = 0` holds nothing and every finish lands at once, which
-        is how this worked before 2026-09-05. Only `done` is ever held:
+        `quiet_s = 0` holds nothing and every finish lands at once —
+        how this worked before 2026-09-05, and the shipped value again
+        since that afternoon: under 60 the day's log showed 28 finishes
+        held and 26 of them up exactly 60 s late, none earlier, and the
+        owner wants the card the moment Claude stops. The hold stays
+        here for whoever sets the key back. Only `done` is ever held:
         a permission, a question or an error is wanted NOW, and holding
         one would be the opposite of the point.
         """

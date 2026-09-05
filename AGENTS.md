@@ -19,8 +19,10 @@ Claude (awake.py, the dashboard's Awake screen, `ctrl+alt+n`), a notify
 door (notify.py, `POST /notify`, a cue and a STACK of cards that waits —
 newest on top, anchored by its bottom edge so a long message grows
 upward, nothing times out, a finish HELD until its session has been
-quiet for `[notify] quiet_s` and only the `[notify] interrupt` kinds
-ringing — with reminders, `ctrl+alt+m` to dismiss them
+quiet for `[notify] quiet_s` when that is set (it ships at 0 since the
+afternoon of 2026-09-05: the card the moment Claude stops) and only the
+`[notify] interrupt` kinds ringing — with reminders, `ctrl+alt+m` to
+dismiss them
 all, a × per card and a click on a card to go to whoever sent it — how
 Claude Code says it is done, and, through the Windows toasts the desktop
 app raises, how Cowork does too: notify_watch.py, `[notify] watch`; the
@@ -96,10 +98,15 @@ back.
    cards were per-turn finishes ("Claude finished"), 52 of them from
    ONE session, and only 5 were the permission prompts he actually
    wanted; the median gap between finishes was 170 s, the shortest 3 s.
-   The door now holds a finish until its session has been quiet for
-   `[notify] quiet_s` and lets only the `[notify] interrupt` kinds
-   ring, but no door can tell a finish from a progress note — only the
-   session can. So finish the job and report ONCE, at the true end.
+   The door can hold a finish until its session has been quiet for
+   `[notify] quiet_s` — but that ships at 0 since the afternoon of
+   2026-09-05, because the morning's 60 s hold never once released
+   early (26 of 28 held finishes were shown exactly 60 s late, 2 were
+   retired by a newer turn) and the owner wants the card the moment
+   Claude stops — and lets only the `[notify] interrupt` kinds ring.
+   No door can tell a finish from a progress note — only the session
+   can, and with the hold off every turn you end is a card on his
+   screen at once. So finish the job and report ONCE, at the true end.
    When you genuinely need an answer, ask once, at the point you need
    it, and batch the questions into that one message. A permission
    prompt and a question are the only things that should reach him
@@ -724,8 +731,10 @@ back.
   answer either — it has never fired on this machine (0 in `notify.log`),
   so nothing may lean on it. What holds is keyed on the SESSION
   (`Engine._key`: the session id, or `~source` for a sender without one):
-  a `done` is HELD for `[notify] quiet_s` on a `threading.Timer`, the
-  same session's next arrival SUPERSEDES it unseen, and only `[notify]
+  a `done` is HELD for `[notify] quiet_s` on a `threading.Timer` (the
+  key ships at 0 since 2026-09-05 afternoon — no hold, the card as
+  Claude stops — and the timer stays for whoever sets it), the same
+  session's next arrival SUPERSEDES it unseen, and only `[notify]
   interrupt` kinds cue and arm the reminders (`_may_interrupt`,
   `_loud_unread`). Keep three things true. A held `done` must never delay
   an `input` — only `done` is ever held, so write the rule as `kind ==

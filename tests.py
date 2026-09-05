@@ -18123,6 +18123,13 @@ def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
     assert cfg.notify.remind_every_s == 120
     assert cfg.notify.remind_times == 2
     assert cfg.notify.coalesce_s == 5
+    # 0 since the afternoon of 2026-09-05: the morning's 60 s hold never
+    # released early (26 of 28 held finishes shown exactly 60 s late, 2
+    # retired by a newer turn), and the owner wants the card the moment
+    # Claude stops. The hold stays in the code; the shipped number is 0,
+    # and a config.toml without the key behaves the same.
+    assert cfg.notify.quiet_s == 0
+    assert config_mod.NotifyConfig.quiet_s == 0
     assert cfg.notify.corner == "right"
     assert cfg.notify.scale == 1.0
     assert cfg.notify.hotkey == "ctrl+alt+m"

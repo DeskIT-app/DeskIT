@@ -1069,16 +1069,22 @@ interrupt = "input"            # all | input | none. Which arrivals may PULL
                                # sound. Counted 2026-09-05: 87 of the last
                                # 100 cards were "Claude finished", one per
                                # turn, each rung and reminded twice
-quiet_s = 60                   # a "finished" waits this many seconds for
-                               # the session that sent it to go quiet
-                               # before it becomes a card; if that session
-                               # speaks again first, the earlier finish is
-                               # retired unseen and the new one waits in
-                               # its place. Claude Code reports a finish at
-                               # the end of EVERY turn, and only silence
-                               # tells which turn was the last. A
-                               # permission or a question never waits.
-                               # 0 = every finish lands at once, as before
+quiet_s = 0                    # 0 = a "finished" is a card THE MOMENT it
+                               # lands. Any other number holds it that
+                               # many seconds for the session that sent
+                               # it to go quiet first; if that session
+                               # speaks again inside the window, the
+                               # earlier finish is retired unseen and the
+                               # new one waits in its place. Claude Code
+                               # reports a finish at the end of EVERY
+                               # turn, and only silence tells which turn
+                               # was the last - but the hold IS the wait:
+                               # measured 2026-09-05 off notify.log, the
+                               # morning's 60 held 28 finishes and showed
+                               # 26 of them exactly 60 s late, and the
+                               # owner asked for the card the moment
+                               # Claude stops. A permission or a question
+                               # is never held either way
 watch = "cowork"               # off | cowork | all. Which of the Claude
                                # desktop app's OWN Windows notifications get
                                # a card here too. This is the only way Cowork

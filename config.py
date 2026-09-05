@@ -622,8 +622,12 @@ class NotifyConfig:
     # sent it to go quiet before it becomes a card; another arrival from
     # the SAME session inside the window retires it unseen. Claude Code
     # fires Stop at the end of EVERY turn, and only silence says which
-    # turn was the last. 0 = every finish lands at once, as it did.
-    quiet_s: int = 60
+    # turn was the last. 0 = every finish lands at once - the shipped
+    # value since the afternoon of 2026-09-05, when the morning's 60 was
+    # read off notify.log: 28 finishes held, 26 shown exactly 60 s late,
+    # 2 retired by a newer turn, none released early, and the owner
+    # wants the card the moment Claude stops.
+    quiet_s: int = 0
     # Which of the desktop app's OWN Windows notifications become cards
     # here — the only way Cowork can reach this door, since a cloud
     # session has no hook to install. See notify_watch.py. "off" never

@@ -2148,9 +2148,10 @@ stood against 120 `RECEIVED`; the median gap between two finishes was
 keep reminding: `input` and `error` do, a `done` lands as a quiet card
 that waits at the edge of the screen and never comes back on its own
 (`"all"` is the old door; `"none"` never makes a sound). `[notify]
-quiet_s` (default 60) holds a `done` until the SESSION that sent it has
-been quiet that long: the item is stored at once and shows in the Notify
-screen's history, but it is not on the screen (`notify.log` says `HELD
+quiet_s` (seconds; it ships at `0` — see the next paragraph) holds a
+`done` until the SESSION that sent it has been quiet that long: the item
+is stored at once and shows in the Notify screen's history, but it is
+not on the screen (`notify.log` says `HELD
 #12`); if the same session speaks again inside the window the held one
 is retired unseen (`SUPERSEDED #12 by #13 | same session`) and the new
 one takes its slot, and when the timer runs out the card finally goes up
@@ -2166,6 +2167,21 @@ before. `idle_prompt` was NOT the answer: it has never once fired on this
 machine, so nothing here leans on it. And no door can tell a finish from
 a progress note — only the session can, which is why AGENTS.md now asks
 every session, cloud ones included, to report once, at the end.
+
+**The hold is off by the afternoon (2026-09-05).** Twelve hours of
+`notify.log` under `quiet_s = 60` said what the hold costs: 28 finishes
+held, 26 of them `QUIET` exactly 60 s after their `HELD`, the other 2
+retired by a newer turn, not one released early — every card came a
+minute after Claude stopped, and the owner would rather have it the
+moment Claude stops. So `quiet_s` ships at `0`: a `done` is a card the
+instant it lands (still silent — `interrupt` is what keeps it quiet),
+and the same session's next arrival still retires the older card
+unseen, so one session never stacks its turns. What is left of the wait
+is the hook itself: measured against the sessions' own transcripts, the
+last words of the answer to the `RECEIVED` line is 1.0 to 2.0 s (six
+finishes; pythonw starting up, and a log that keeps whole seconds). The
+hold, the timer and the `HELD` / `QUIET` lines stay in the code for
+whoever sets the key back; only the number changed.
 
 **How Cowork is wired — and why Chat cannot be.** Cowork has nothing to
 install: its sessions run in Anthropic's cloud, so there is no hook file
@@ -2321,13 +2337,15 @@ against, however tall it gets.
    `notify.log` says `DISMISSED by key`.
 6. The PowerShell one-liner above twice within five seconds: one cue,
    two rows, `coalesced: true` in the second reply.
-7. `notify_hook.py --kind done --session S1` (the command-line form
-   above) twice a few seconds apart, then wait `[notify] quiet_s`: no
+7. Set `[notify] quiet_s` to `20` for this one (it ships at `0`, where
+   a finish is a card the moment it lands) and restart, then
+   `notify_hook.py --kind done --session S1` (the command-line form
+   above) twice a few seconds apart, and wait the twenty seconds out: no
    cue, the hero says `1 WAITING`, both replies say `"held": true`, and
    `notify.log` runs `HELD #1`, `HELD #2`, `SUPERSEDED #1 by #2 | same
    session`, `QUIET #2` — then ONE card, silent. A `--kind input` with
    the same `--session` inside the window lands and rings at once and
-   takes the held one with it.
+   takes the held one with it. Put the `0` back after.
 8. The same one-liner with the wrong token: `401`, and `app.log` gains
    `rejected an unauthorised /notify`.
 
@@ -3680,7 +3698,7 @@ for `מבשרים`, all of which the local model got right.
 | `[notify] remind_times` | `2` | ...at most this many times per arrival, then it waits quietly on the dashboard's Notify screen. `0` = never remind |
 | `[notify] coalesce_s` | `5` | a second notification from the **same** source within this many seconds updates the card instead of playing a second cue — Claude fires `Stop` and `Notification` a moment apart. The item is still stored |
 | `[notify] interrupt` | `input` | `all` \| `input` \| `none`. Which arrivals may **pull you out** — play the cue and keep reminding. `input` is only what is waiting on you (a permission, a question, an idle session) and what went wrong; a plain finish lands as a quiet card and waits there. `all` is the door as it was; `none` never makes a sound. Counted 2026-09-05: 87 of the last 100 cards were per-turn finishes, each rung and reminded twice |
-| `[notify] quiet_s` | `60` | a finish (`done`) waits this many seconds for the **session** that sent it to go quiet before it becomes a card; a second arrival from the same session inside the window retires the first unseen and waits in its place. A permission or a question never waits. `0` = every finish lands at once, as before |
+| `[notify] quiet_s` | `0` | `0` = a finish (`done`) is a card the moment it lands — the shipped value since the afternoon of 2026-09-05, when the morning's 60 held 28 finishes and showed 26 of them exactly 60 s late. Any other number holds a finish that many seconds for the **session** that sent it to go quiet first; a second arrival from the same session inside the window retires the first unseen and waits in its place. A permission or a question never waits either way |
 | `[notify] watch` | `cowork` | `off` \| `cowork` \| `all`. Which of the **desktop app's own** Windows notifications get a card here too — the only road in for Cowork, which runs in the cloud and has no hook to install. `cowork` leaves the app's Claude Code sessions to the `Stop` hook that already cards them; `all` takes those too; `off` never looks. Claude Chat is in none of them: a finished chat reply is announced to nothing on this machine |
 | `[notify] corner` | `right` | `right` \| `left` \| `top-right` \| `top-left` \| `bottom-right` \| `bottom-left`. Where the card appears before you have dragged it; `right` is mid-height on the right edge, like the second reading's card |
 | `[notify] anchor` | `bottom` | `bottom` \| `top`. Which edge of the column stays put as it grows. `bottom` grows a long message **upward**, so a column kept in the bottom-right corner never runs off the screen; `top` pins the top edge and grows downward, as it used to |
