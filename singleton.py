@@ -22,13 +22,13 @@ EVENT_MODIFY_STATE = 0x0002
 INFINITE = 0xFFFFFFFF
 
 # "Local\" = per-login-session, which is what we want: the app is per-user.
-MUTEX_NAME = r"Local\HebrewDictation.instance"
-QUIT_EVENT_NAME = r"Local\HebrewDictation.quit"
+MUTEX_NAME = r"Local\DeskIT.instance"
+QUIT_EVENT_NAME = r"Local\DeskIT.quit"
 # The dashboard gets its own pair. It is a .vbs behind a shortcut, so
 # double-clicking it twice used to open two identical windows polling the
 # same app — nothing breaks, it just looks broken.
-DASHBOARD_MUTEX = r"Local\HebrewDictation.dashboard"
-DASHBOARD_SHOW = r"Local\HebrewDictation.dashboard.show"
+DASHBOARD_MUTEX = r"Local\DeskIT.dashboard"
+DASHBOARD_SHOW = r"Local\DeskIT.dashboard.show"
 
 kernel32.CreateMutexW.restype = w.HANDLE
 kernel32.CreateEventW.restype = w.HANDLE
@@ -121,7 +121,7 @@ class InstanceLock:
         if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
             kernel32.CloseHandle(handle)
             raise AlreadyRunning(
-                "Hebrew dictation is already running (only one instance may "
+                "DeskIT is already running (only one instance may "
                 "run — two would paste every transcript twice). Use "
                 "'Stop dictation' first if you want to restart it.")
         self._handle = handle

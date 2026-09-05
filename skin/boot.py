@@ -360,7 +360,7 @@ class Card:
         # letter-spacing. Wide tracking on a 10 px label is what makes a
         # micro-heading read as typography instead of as small text.
         x = x0 + WAVE_INSET
-        for ch in "HEBREW DICTATION":
+        for ch in "DESKIT":
             canvas.drawString(ch, x, y0 + 34, self.f_label, label)
             x += self.f_label.measureText(ch) + 1.5
 

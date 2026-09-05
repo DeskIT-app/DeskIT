@@ -372,11 +372,16 @@ LEARNED = Friendly(
     "vocab.enabled", "Use the words it has learned",
     "Corrections you taught it with the correction key are applied to "
     "new dictations.")
+REPORT = Friendly(
+    "problems.enabled", "Report a problem with one line",
+    "The report key opens a box; the app attaches the dictation, the "
+    "recording and the settings itself.")
 
 TABS: tuple[Tab, ...] = (
     Tab("Common", (
         Group("", (PUNCTUATE_AUTO, HINT_ENABLED, AUTO_PAUSE, MARKER, REPAIR,
-                   ENGINE, MICROPHONE, AUTO_LANGUAGE, DOT, LEARNED)),
+                   ENGINE, MICROPHONE, AUTO_LANGUAGE, DOT, LEARNED,
+                   REPORT)),
     )),
     Tab("Dictation", (
         Group("ENGINE", (

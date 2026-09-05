@@ -38,7 +38,7 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-DESKTOP = "HebrewDictationTests"
+DESKTOP = "DeskITTests"
 GENERIC_ALL = 0x10000000
 CREATE_NO_WINDOW = 0x08000000
 INFINITE = 0xFFFFFFFF

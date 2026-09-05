@@ -967,7 +967,7 @@ def _cursor(ident: int) -> int:
 
 # ------------------------------------------------------- window plumbing
 
-_CLASS_NAME = "HebrewDictationLookupPopup"
+_CLASS_NAME = "DeskITLookupPopup"
 _class_atom = 0
 
 # A window class is registered once per process but a Popup is an object,

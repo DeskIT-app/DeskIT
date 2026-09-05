@@ -115,6 +115,21 @@ SOURCES = {"claude-code": "Claude Code", "cowork": "Cowork",
 DEFAULT_TITLE = {"done": "Finished", "input": "Needs your input",
                  "error": "Something went wrong", "info": "Notification"}
 
+# WHICH ARRIVALS MAY PULL THE OWNER OUT OF WHAT HE IS DOING.
+# A card is cheap: it appears at the edge of the screen and waits there
+# for as long as it takes. The cue and the reminders are not — they are a
+# sound, and the same sound again two minutes later, and they are worth
+# paying only for a notification that is WAITING ON HIM.
+#
+# Counted on this machine 2026-09-05, the last hundred stored: 87 were
+# `claude-code/done`, one for every turn a session ended, and every one
+# of them rang and came back twice; 5 were `input`, all of them a
+# permission. So a finish is not news by itself. `input` and `error` keep
+# the bell, `done` and `info` land quietly, and [notify] interrupt says
+# which — "all" is how this door worked before.
+LOUD = ("input", "error")
+INTERRUPTS = ("all", "input", "none")
+
 _FIELDS = ("source", "kind", "title", "body", "project", "session", "app")
 _MAX = {"source": SOURCE_MAX, "title": TITLE_MAX, "body": BODY_MAX,
         "project": PROJECT_MAX, "session": SESSION_MAX, "app": APP_MAX}
@@ -556,6 +571,9 @@ class Engine:
         self.remind_every_s = float(getattr(cfg, "remind_every_s", 120))
         self.remind_times = int(getattr(cfg, "remind_times", 2))
         self.coalesce_s = float(getattr(cfg, "coalesce_s", 5))
+        interrupt = str(getattr(cfg, "interrupt", "input") or "").lower()
+        self.interrupt = interrupt if interrupt in INTERRUPTS else "input"
+        self.quiet_s = float(getattr(cfg, "quiet_s", 60))
         self._cue = cue if cue is not None else (lambda kind: None)
         self.card = card if card is not None else NullCard()
         self._clock = clock
@@ -566,6 +584,10 @@ class Engine:
         self._lock = threading.RLock()
         # source -> clock() of the last cue played for it (coalescing)
         self._cue_at: dict[str, float] = {}
+        # session -> {"id", "timer"} for a finish still waiting for the
+        # session that sent it to go quiet. One slot per session, so two
+        # sessions working at once never hold each other's cards back.
+        self._held: dict[str, dict] = {}
         self._gen = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -574,9 +596,14 @@ class Engine:
 
     # -- in --
 
-    def receive(self, payload) -> dict:
+    def receive(self, payload, *, urgent: bool = False) -> dict:
         """One notification in. ValueError from clean() propagates — the
-        server turns it into a 400; everything else is answered here."""
+        server turns it into a 400; everything else is answered here.
+
+        `urgent` is the dashboard's Send-a-test and nothing else: the
+        owner pressing a button to hear the cue and see the card, so it
+        is never held and always rings, whatever [notify] interrupt and
+        quiet_s say about a finish that arrives on its own."""
         fields = clean(payload)
         source, kind = fields["source"], fields["kind"]
         if not self.enabled:
@@ -593,24 +620,164 @@ class Engine:
             log.info("notify: received #%d from %s (%s): %r [%s] | unread %d",
                      item["id"], source, kind, item["title"],
                      item["project"], unread)
-            now = self._clock()
-            coalesced = now - self._cue_at.get(source, -1e9) < self.coalesce_s
-            if self.cue_on and not coalesced:
-                self._cue("notify")
-                self._cue_at[source] = now
-            # The column always follows the newest, coalesced or not: the
-            # new card goes on TOP of the ones still unread behind it.
-            self._present()
-            self._arm()
+            # Whatever this is, the session that sent it has spoken
+            # again, so its older finish is describing a moment that has
+            # passed and is retired here rather than shown.
+            self._supersede(item)
+            if not urgent and self._hold(item):
+                # A finish waits for its session to go quiet. Nothing is
+                # played and nothing is armed; the column is redrawn
+                # because the supersede above may have taken a card out
+                # of it. The timer does the rest, or the next arrival
+                # does, whichever comes first.
+                self._present()
+                return {"ok": True, "id": item["id"],
+                        "unread": self.store.unread(), "coalesced": False,
+                        "held": True}
+            coalesced = self._raise(item, urgent=urgent)
         return {"ok": True, "id": item["id"], "unread": unread,
-                "coalesced": coalesced}
+                "coalesced": coalesced, "held": False}
 
     def test(self, *, source: str = "test") -> dict:
         return self.receive({
             "source": source, "kind": "done", "title": "A test notification",
             "body": "הכרטיס עובד — Hebrew and English both render. Click "
                     "it, press Esc over it, or tap the dismiss key.",
-            "project": "dashboard"})
+            "project": "dashboard"}, urgent=True)
+
+    # -- who may pull him out, and when --
+
+    def _may_interrupt(self, kind: str) -> bool:
+        """May a notification of this kind play the cue and keep coming
+        back? [notify] interrupt decides: "all" is everything, as it was;
+        "input" is the ones waiting on him (a permission, a question, an
+        idle session) and the ones that went wrong; "none" never rings."""
+        if self.interrupt == "all":
+            return True
+        if self.interrupt == "none":
+            return False
+        return str(kind) in LOUD
+
+    def _loud_unread(self) -> int:
+        """How many unread notifications may pull him out — held ones do
+        not count, because they are not on the screen to be answered."""
+        waiting = {h["id"] for h in self._held.values()}
+        return sum(1 for i in self.store.items()
+                   if not i.get("seen")
+                   and int(i.get("id", 0)) not in waiting
+                   and self._may_interrupt(str(i.get("kind", "info"))))
+
+    def _key(self, item) -> str:
+        """Which session an item belongs to, for holding and superseding.
+
+        The session id when there is one — that is the whole point, since
+        two Claude sessions running at once must not retire each other's
+        cards. A sender that names no session falls back to its source,
+        marked so it can never collide with a real session id."""
+        return str(item.get("session", "")) or f"~{item.get('source', '')}"
+
+    def _supersede(self, item) -> None:
+        """This session's older finish is no longer news.
+
+        The session that sent this arrival has spoken again, so a "Claude
+        finished" from it that is STILL UNREAD is describing a moment
+        that has passed: it is marked seen without ever having been read.
+        One session, one finish, the newest. A held one is dropped the
+        same way, timer and all. Everything another session sent is left
+        exactly where it is."""
+        session = self._key(item)
+        held = self._held.pop(session, None)
+        if held is not None:
+            held["timer"].cancel()
+        ident = int(item.get("id", 0))
+        stale = [int(i.get("id", 0)) for i in self.store.items()
+                 if not i.get("seen") and i.get("kind") == "done"
+                 and int(i.get("id", 0)) != ident
+                 and self._key(i) == session]
+        if stale:
+            self.store.mark_seen(stale)
+            names = " ".join(f"#{s}" for s in stale)
+            self._log(f"SUPERSEDED {names} by #{ident} | same session")
+            log.info("notify: superseded %s by #%d — same session",
+                     names, ident)
+
+    def _hold(self, item) -> bool:
+        """A finish waits for its session to go quiet. Held?
+
+        THE REASON THIS EXISTS. Claude Code fires its Stop hook at the
+        end of EVERY turn, and a turn that ends "now I will do X" is not
+        a finish anybody needs to be told about — but it looks exactly
+        like one from here. So a `done` is not shown when it lands: it is
+        held for `quiet_s`, and if its session speaks again inside that
+        window the held one is retired unseen (see `_supersede`) and the
+        new one takes the slot. Only a session that has been quiet for
+        `quiet_s` puts a card up, which is as close as this door can get
+        to "tell me when you are actually finished".
+
+        `quiet_s = 0` holds nothing and every finish lands at once, which
+        is how this worked before 2026-09-05. Only `done` is ever held:
+        a permission, a question or an error is wanted NOW, and holding
+        one would be the opposite of the point.
+        """
+        if self.quiet_s <= 0 or str(item.get("kind", "")) != "done":
+            return False
+        session = self._key(item)
+        ident = int(item["id"])
+        timer = threading.Timer(self.quiet_s, self._quiet, args=(session,
+                                                                 ident))
+        timer.daemon = True
+        timer.name = "notify-quiet"
+        self._held[session] = {"id": ident, "timer": timer}
+        self._log(f"HELD #{ident} | waiting {self.quiet_s:g} s for "
+                  f"{session or 'an unnamed sender'} to go quiet")
+        log.info("notify: holding #%d for %g s — waiting for %s to go quiet",
+                 ident, self.quiet_s, session or "an unnamed sender")
+        timer.start()
+        return True
+
+    def _quiet(self, session: str, ident: int) -> None:
+        """`quiet_s` gone by with nothing more from that session: the
+        finish it was holding becomes a card after all. Runs on the
+        timer's own thread, and takes the lock like every other way in.
+
+        Four things can have happened while it slept, and all four end
+        here quietly: the slot was taken by a newer arrival, the slot was
+        emptied, the item was dismissed, the store dropped it."""
+        with self._lock:
+            held = self._held.get(session)
+            if held is None or held["id"] != ident:
+                return
+            del self._held[session]
+            item = self._item(ident)
+            if item is None or item.get("seen"):
+                return
+            self._log(f"QUIET #{ident} | {session or 'an unnamed sender'} "
+                      f"stayed quiet, the card is up")
+            log.info("notify: #%d shown — its session stayed quiet", ident)
+            self._raise(item)
+
+    def _raise(self, item, *, urgent: bool = False) -> bool:
+        """Put one arrival on the screen: the cue, the column, the
+        reminders. Returns whether the cue was coalesced away.
+
+        The cue and the reminders are only for a kind that MAY interrupt
+        (or a test the owner asked for) — everything else gets the column
+        and nothing more, which is the whole of the quiet. The column
+        always follows the newest, cued or not: the new card goes on TOP
+        of the ones still unread behind it. The lock is held by every
+        caller."""
+        kind = str(item.get("kind", "info"))
+        source = str(item.get("source", ""))
+        now = self._clock()
+        coalesced = now - self._cue_at.get(source, -1e9) < self.coalesce_s
+        loud = urgent or self._may_interrupt(kind)
+        if self.cue_on and loud and not coalesced:
+            self._cue("notify")
+            self._cue_at[source] = now
+        self._present()
+        if loud:
+            self._arm()
+        return coalesced
 
     # -- the column --
 
@@ -627,10 +794,15 @@ class Engine:
         to see that it does.
 
         An empty list means nothing is unread, which is the one thing
-        that takes the card down.
+        that takes the card down. A finish still being HELD is unread and
+        is deliberately not here: it is in the store and in the
+        dashboard's history, but it has not earned the screen yet.
         """
         with self._lock:
-            items = [i for i in self.store.items() if not i.get("seen")]
+            waiting = {h["id"] for h in self._held.values()}
+            items = [i for i in self.store.items()
+                     if not i.get("seen")
+                     and int(i.get("id", 0)) not in waiting]
         items.reverse()
         unread = len(items)
         shown = [dict(i, unread=unread, label=label_for(i.get("source", "")))
@@ -749,6 +921,11 @@ class Engine:
             return {
                 "enabled": self.enabled,
                 "unread": sum(1 for i in items if not i.get("seen")),
+                # Unread but deliberately not on screen: a finish still
+                # waiting for its session to go quiet. Counted apart so
+                # the dashboard can say so instead of showing an unread
+                # number with no card to go with it.
+                "held": len(self._held),
                 "total": len(items),
                 "reminding": reminding,
                 "reminders_left": (max(0, self.remind_times - self._fired)
@@ -769,17 +946,24 @@ class Engine:
         return self.store.recent(n)
 
     def start(self) -> None:
-        log.info("notify: %s | store %s | reminders %s",
+        log.info("notify: %s | store %s | reminders %s | interrupt %s | "
+                 "a finish waits %s",
                  "on" if self.enabled else "off ([notify] enabled = false)",
                  self.store.path.name,
                  (f"every {self.remind_every_s:g} s x {self.remind_times}"
                   if self.remind_every_s > 0 and self.remind_times > 0
-                  else "off"))
+                  else "off"),
+                 self.interrupt,
+                 (f"{self.quiet_s:g} s for its session to go quiet"
+                  if self.quiet_s > 0 else "for nothing"))
 
     def stop(self) -> None:
         """Cancel the reminder thread and wait for it, briefly. The card
         is main's to stop — it owns the window."""
         with self._lock:
+            for held in self._held.values():
+                held["timer"].cancel()
+            self._held.clear()
             self._gen += 1
             self._stop.set()
             thread = self._thread
@@ -811,8 +995,12 @@ class Engine:
             if stop.wait(self.remind_every_s):
                 return
             with self._lock:
+                # The reminders exist for what is WAITING ON HIM. A
+                # finish that landed quietly must not keep ringing on
+                # its own account, so the count that stops this thread
+                # is the loud one, not the whole unread pile.
                 if gen != self._gen or stop.is_set() \
-                        or self.store.unread() == 0:
+                        or self._loud_unread() == 0:
                     return
                 unread = self.store.unread()
                 if self.cue_on:

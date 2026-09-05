@@ -62,3 +62,27 @@ night.log
 # other programs) and the record of reminders and dismissals.
 notify.json
 notify.log
+
+# problems.py: the owner's own bug list, which is the one store here
+# that quotes him back to himself AND shows what was on his screen: a
+# report carries the line he typed, the raw and final text of the
+# dictation it is about, a pinned copy of the recording out of
+# recent\, and a screenshot of the screen as it looked a moment
+# before the box opened. That is transcripts.log and captures\ in one
+# item, so it gets their rule: it stays on this machine. problems.md is
+# regenerated from problems.json on every write — data, not a document
+# anybody edits — and problems.lock is only the file the app and the
+# dashboard take turns holding. The weekly review reads these local,
+# untracked files by design; a fresh clone has an empty bug list
+# rather than his.
+problems.json
+problems.lock
+problems.md
+problems/
+
+# .claude\ is the project's own Claude Code folder and is COMMITTED on
+# purpose: commands\weekly-reports.md IS the Saturday review routine,
+# and a routine that only exists on one disk is one nobody can read.
+# Only the per-machine leftovers are ignored — settings.local.json is
+# this copy's permission answers, not a decision about the app.
+.claude/settings.local.json

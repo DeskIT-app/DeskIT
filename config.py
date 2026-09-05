@@ -611,6 +611,19 @@ class NotifyConfig:
     # updates the card and skips the cue — Claude fires Stop and
     # Notification a moment apart. 0 = every arrival plays.
     coalesce_s: int = 5
+    # Which arrivals may PULL THE OWNER OUT — play the cue and keep
+    # reminding. "all" is every one, as it was; "input" is only what is
+    # waiting on him (a permission, a question, an idle session) and
+    # what went wrong, so a finish lands as a quiet card; "none" never
+    # rings. Counted 2026-09-05: 87 of the last 100 stored were per-turn
+    # finishes, each of them rung and reminded twice.
+    interrupt: str = "input"
+    # A finish (`done`) waits this many seconds for the session that
+    # sent it to go quiet before it becomes a card; another arrival from
+    # the SAME session inside the window retires it unseen. Claude Code
+    # fires Stop at the end of EVERY turn, and only silence says which
+    # turn was the last. 0 = every finish lands at once, as it did.
+    quiet_s: int = 60
     # Which of the desktop app's OWN Windows notifications become cards
     # here — the only way Cowork can reach this door, since a cloud
     # session has no hook to install. See notify_watch.py. "off" never
@@ -633,6 +646,67 @@ class NotifyConfig:
     # The dismiss key ("dismiss_hotkey" in the file): a tap takes the
     # card down and marks everything seen, wherever the mouse is.
     hotkey: str = "ctrl+alt+m"
+
+
+@dataclass(frozen=True)
+class ProblemsConfig:
+    """The owner's own bug list — see problems.py.
+
+    One line is all it asks for: the report key, or the Report button on
+    any dashboard tab, opens a box, and the app fills in the rest of the
+    form — the tab you were on, the dictation it is about, the wav behind
+    it, the backend and the model that decoded it, the branch. Everything
+    that would explain a problem is knowable at the moment it annoys you
+    and knowable at no other, which is the whole reason this is a key and
+    not a text file. `enabled = false` unregisters the key, takes the
+    Report button away and writes nothing; problems.json is left where it
+    is.
+    """
+    enabled: bool = True
+    # The report key ("report_hotkey" in the file): a tap opens the box
+    # over whatever is in front, wherever the mouse is. "" = no key, and
+    # the dashboard's Report button is then the only door.
+    hotkey: str = "ctrl+alt+r"
+    # Attach a screenshot of the screen as it looked when the key was
+    # pressed — the tab, the dialog, the wrong number, all of which are
+    # gone by the time the report is read. It is written into problems\
+    # beside the report and never leaves this machine. False: the typed
+    # line and the settings only.
+    shot: bool = True
+    # Copy the recording the report is about into problems\, so it
+    # outlives recent\'s ring of `vocab.keep_audio` clips. An unresolved
+    # report sits there for weeks and the audio is the only thing that
+    # can settle what was actually said (study.Corpus.admit copies for
+    # exactly this reason). False: the report keeps the wav's name and
+    # nothing else.
+    keep_audio: bool = True
+    # How many ANSWERED reports to keep, newest first. Open ones are
+    # never trimmed at any setting — a question nobody has answered is
+    # not a kilobyte worth saving, which is review.py's KEEP_DECIDED rule
+    # with the same reasoning behind it. Must agree with
+    # problems.KEEP_RESOLVED; see PROBLEMS_KEEP_RESOLVED_MAX below for
+    # why the number is spelled out here.
+    keep_resolved: int = 200
+    # Where each report window was last dragged to. TWO pairs and not
+    # one, because they are two windows: `x`/`y` is the card the report
+    # key floats on the desktop, and `card_x`/`card_y` is the dashboard's
+    # own report box, which opens centred over the dashboard window. One
+    # shared position would fling the box off its own window the first
+    # time the floating card was moved.
+    #
+    # Written by the windows themselves, which is why they are settings
+    # and not state in a side file — hint.x's reason, and the same
+    # sentinel: HINT_UNSET (-100000) = never dragged, use the default
+    # placement. Not -1, because a monitor to the LEFT of the primary has
+    # genuinely negative screen coordinates (this machine's virtual
+    # desktop starts at x = -1920), so -1's rule discarded every card
+    # dragged onto it. Nothing else is checked, and deliberately so: hint,
+    # review and notify leave their positions unvalidated because every
+    # other int IS a real coordinate somewhere on somebody's desktop.
+    x: int = -100000
+    y: int = -100000
+    card_x: int = -100000
+    card_y: int = -100000
 
 
 @dataclass(frozen=True)
@@ -835,6 +909,18 @@ NOTIFY_STACK_MAX = 8
 # notify_watch.MODES: config.py is read before anything else and must not
 # drag a module full of ctypes onto the startup path to check a word.
 NOTIFY_WATCH = ("off", "cowork", "all")
+# What [notify] interrupt may say — notify.INTERRUPTS, spelled out here
+# for the same reason.
+NOTIFY_INTERRUPTS = ("all", "input", "none")
+# The ceiling on [problems] keep_resolved. A number here and not
+# problems.KEEP_RESOLVED for the same reason as NOTIFY_WATCH above:
+# config.py is read before anything else and must not drag another module
+# onto the startup path — nor fail to load on a checkout that has no
+# problems.py at all. The default beside it (200) is the one that has to
+# AGREE with problems.KEEP_RESOLVED; this is only how far the owner may
+# raise it, and two thousand answered reports is already more history
+# than problems.md can be read as.
+PROBLEMS_KEEP_RESOLVED_MAX = 2000
 
 
 @dataclass(frozen=True)
@@ -938,6 +1024,7 @@ class Config:
     camera: CameraConfig = field(default_factory=CameraConfig)
     awake: AwakeConfig = field(default_factory=AwakeConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
+    problems: ProblemsConfig = field(default_factory=ProblemsConfig)
 
     @property
     def capture_hotkey(self) -> str:
@@ -968,6 +1055,11 @@ class Config:
     def dismiss_hotkey(self) -> str:
         """The notification-dismiss key, read out of [notify]."""
         return self.notify.hotkey
+
+    @property
+    def report_hotkey(self) -> str:
+        """The report-a-problem key, read out of [problems]."""
+        return self.problems.hotkey
 
     @property
     def visual_qa_hotkey(self) -> str:
@@ -1012,6 +1104,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
     ("camera_hotkey", "Photo from the camera (tap)"),
     ("pause_hotkey", "Pause / resume"),
     ("screens_hotkey", "Screens off (tap)"),
+    ("report_hotkey", "Report a problem (tap)"),
     ("dismiss_hotkey", "Dismiss the notification (tap)"),
 )
 
@@ -1026,7 +1119,7 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
 CHORD_FIELDS: frozenset[str] = frozenset((
     "translate_hotkey", "punctuate_hotkey", "correct_hotkey",
     "lookup_hotkey", "visual_qa_hotkey", "capture_hotkey", "record_hotkey",
-    "camera_hotkey", "screens_hotkey", "dismiss_hotkey",
+    "camera_hotkey", "screens_hotkey", "dismiss_hotkey", "report_hotkey",
 ))
 
 
@@ -1055,6 +1148,10 @@ def with_field(cfg: "Config", name: str, value) -> "Config":
     if name == "dismiss_hotkey":
         return dataclasses.replace(
             cfg, notify=dataclasses.replace(cfg.notify, hotkey=str(value)))
+    if name == "report_hotkey":
+        return dataclasses.replace(
+            cfg, problems=dataclasses.replace(cfg.problems,
+                                              hotkey=str(value)))
     if name == "visual_qa_hotkey":
         return dataclasses.replace(
             cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
@@ -1174,6 +1271,7 @@ def load(path: Path) -> Config:
     camera = data.get("camera", {})
     awake = data.get("awake", {})
     notify = data.get("notify", {})
+    problems = data.get("problems", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -1511,6 +1609,9 @@ def load(path: Path) -> Config:
             remind_times=int(notify.get("remind_times",
                                         NotifyConfig.remind_times)),
             coalesce_s=int(notify.get("coalesce_s", NotifyConfig.coalesce_s)),
+            interrupt=str(notify.get("interrupt",
+                                     NotifyConfig.interrupt)).strip().lower(),
+            quiet_s=int(notify.get("quiet_s", NotifyConfig.quiet_s)),
             watch=str(notify.get("watch", NotifyConfig.watch)).strip().lower(),
             corner=str(notify.get("corner",
                                   NotifyConfig.corner)).strip().lower(),
@@ -1521,6 +1622,20 @@ def load(path: Path) -> Config:
             scale=float(notify.get("scale", NotifyConfig.scale)),
             hotkey=str(notify.get(
                 "dismiss_hotkey", NotifyConfig.hotkey)).strip().lower(),
+        ),
+        problems=ProblemsConfig(
+            enabled=bool(problems.get("enabled", ProblemsConfig.enabled)),
+            hotkey=str(problems.get(
+                "report_hotkey", ProblemsConfig.hotkey)).strip().lower(),
+            shot=bool(problems.get("shot", ProblemsConfig.shot)),
+            keep_audio=bool(problems.get("keep_audio",
+                                         ProblemsConfig.keep_audio)),
+            keep_resolved=int(problems.get("keep_resolved",
+                                           ProblemsConfig.keep_resolved)),
+            x=int(problems.get("x", ProblemsConfig.x)),
+            y=int(problems.get("y", ProblemsConfig.y)),
+            card_x=int(problems.get("card_x", ProblemsConfig.card_x)),
+            card_y=int(problems.get("card_y", ProblemsConfig.card_y)),
         ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
@@ -1783,6 +1898,13 @@ def load(path: Path) -> Config:
     if not (0 <= cfg.notify.coalesce_s <= 60):
         raise ConfigError("notify.coalesce_s must be 0-60, "
                           f"got {cfg.notify.coalesce_s!r}")
+    if cfg.notify.interrupt not in NOTIFY_INTERRUPTS:
+        raise ConfigError(f"notify.interrupt must be one of "
+                          f"{NOTIFY_INTERRUPTS}, got "
+                          f"{cfg.notify.interrupt!r}")
+    if not (0 <= cfg.notify.quiet_s <= 600):
+        raise ConfigError("notify.quiet_s must be 0-600 (0 = every finish "
+                          f"lands at once), got {cfg.notify.quiet_s!r}")
     if not (1 <= cfg.notify.stack_max <= NOTIFY_STACK_MAX):
         raise ConfigError(f"notify.stack_max must be 1-{NOTIFY_STACK_MAX} "
                           "(how many cards may be on screen at once), "
@@ -1802,6 +1924,14 @@ def load(path: Path) -> Config:
         raise ConfigError(
             f"notify.scale must be between {HINT_SCALE_MIN} and "
             f"{HINT_SCALE_MAX}, got {cfg.notify.scale!r}")
+    # [problems]. The key itself was checked by check_hotkeys above, which
+    # reads it through report_hotkey like every other key — so "" is legal
+    # ("no key") and "esc" and a duplicate are not.
+    if not (0 <= cfg.problems.keep_resolved <= PROBLEMS_KEEP_RESOLVED_MAX):
+        raise ConfigError(
+            f"problems.keep_resolved must be 0-{PROBLEMS_KEEP_RESOLVED_MAX} "
+            "(how many ANSWERED reports to keep; open ones are never "
+            f"dropped), got {cfg.problems.keep_resolved!r}")
     if cfg.review.max_changes < 1:
         raise ConfigError("review.max_changes must be >= 1")
     if not (0 <= cfg.review.witness <= 3):

@@ -165,7 +165,7 @@ class _WNDCLASS(ctypes.Structure):
                 ("lpszMenuName", w.LPCWSTR), ("lpszClassName", w.LPCWSTR)]
 
 
-CLASS_NAME = "HebrewDictationSkinGlass"
+CLASS_NAME = "DeskITSkinGlass"
 _proc_ref = None                 # Windows calls this; it must outlive us
 _registered = False
 # hwnd -> Glass, for the one message that needs to reach the instance.

@@ -1,4 +1,4 @@
-# HebrewDictation
+# DeskIT
 
 Hold **Right Ctrl**, speak Hebrew, release — the cleaned transcript (no
 fillers, self-corrections resolved) is pasted at your cursor in whatever
@@ -268,7 +268,7 @@ starts".
 
 ```
 ┌──────────────────┬──────────────────────────────────────────────────┐
-│ ▣ Hebrew Dictation│ Overview                                        │
+│ ▣ DeskIT          │ Overview                                        │
 │   hold Right Ctrl │                                                 │
 │                   │  ● RUNNING                                      │
 │ ▸ Overview        │    fast · local · Arctis 7 @ 16000 Hz           │
@@ -2135,6 +2135,38 @@ on stderr whether the file changed. The hook is registered with
 happens and prints nothing on stdout, because a hook that fails would
 stop Claude, and a notification is never worth that.
 
+**A finish waits for its session to go quiet, and only what is waiting on
+you rings (2026-09-05).** The hook above fires at the end of EVERY turn,
+and a turn that ends "now I will do X" looks exactly like a finish from
+here — so for a day the door rang once a turn. Counted off `notify.json`
+and `notify.log` before the change: 87 of the last 100 stored were
+`claude-code` / `done`, one session alone sent 52 of them, only 5 were
+the permission prompts that were actually wanted, and 31 `REMINDED` lines
+stood against 120 `RECEIVED`; the median gap between two finishes was
+170 s, the shortest 3 s. Two keys answer it. `[notify] interrupt`
+(default `"input"`) says which kinds may PULL YOU OUT — play the cue and
+keep reminding: `input` and `error` do, a `done` lands as a quiet card
+that waits at the edge of the screen and never comes back on its own
+(`"all"` is the old door; `"none"` never makes a sound). `[notify]
+quiet_s` (default 60) holds a `done` until the SESSION that sent it has
+been quiet that long: the item is stored at once and shows in the Notify
+screen's history, but it is not on the screen (`notify.log` says `HELD
+#12`); if the same session speaks again inside the window the held one
+is retired unseen (`SUPERSEDED #12 by #13 | same session`) and the new
+one takes its slot, and when the timer runs out the card finally goes up
+(`QUIET #13`). A permission or a question is never held — it lands and
+rings at once, and takes the pending finish with it, because the
+session is plainly not finished. Two sessions running at once hold their
+finishes apart: the slot is the session id, and a sender with no session
+gets one slot per source. The hero on the Notify screen counts the held
+ones apart (`2 UNREAD`, or `1 WAITING` when nothing is on screen), the
+reply carries `"held": true`, **Send a test** always rings and shows at
+once, and `quiet_s = 0` puts every finish up the moment it lands, as
+before. `idle_prompt` was NOT the answer: it has never once fired on this
+machine, so nothing here leans on it. And no door can tell a finish from
+a progress note — only the session can, which is why AGENTS.md now asks
+every session, cloud ones included, to report once, at the end.
+
 **How Cowork is wired — and why Chat cannot be.** Cowork has nothing to
 install: its sessions run in Anthropic's cloud, so there is no hook file
 on this machine to write. What the desktop app *does* do is raise a
@@ -2215,7 +2247,8 @@ Claude uses:
 override where it posts; `--hwnd` and `--app` name the window a click on
 the card should raise, for a program that knows its own handle and would
 rather not have the parent walk find its console's. The reply is `{"ok": true, "id": 12, "unread":
-3, "coalesced": false}`; `401` for a bad token, `400` for a body that is
+3, "coalesced": false, "held": false}` (`held` is `true` for a finish
+still waiting for its session to go quiet); `401` for a bad token, `400` for a body that is
 not a JSON object (an *empty* body is a 400 too — always send at least
 `{}`), `503` when `[notify] enabled = false`. `/notify` is POST-only and
 token-gated like every other route, which matters because `tailscale
@@ -2232,19 +2265,25 @@ with the title or body. The dashboard's rows do the same through
 `ui.draw_text`. A program on the far side of the token can make the card
 say anything; it cannot make the app *do* anything.
 
-**Reminders and coalescing.** While anything is unread the cue replays and
-the column comes back every `[notify] remind_every_s` (default 120)
-seconds, at most `[notify] remind_times` (default 2) times per arrival;
-then it waits quietly on the Notify screen, unread count intact. The
-dismiss key, `Esc` over the column and **Dismiss all** mark *everything*
-seen at once, because "seen" means you looked, not that you clicked each
-one; the × on one card, and a click that opens one card, mark only that
-one and leave the rest of the column standing. Claude fires `Stop` and
-`Notification` a moment apart, so a second arrival from the SAME source
-within `[notify] coalesce_s` (default 5) seconds skips the second cue;
-the item is still stored, its card still goes on top of the column, and
-the reply says `coalesced: true`. Reminders are never coalesced.
-`[notify] cue = false` keeps the cards and drops the sound.
+**Reminders and coalescing.** While anything that may interrupt (see
+`[notify] interrupt`) is unread the cue replays and the column comes
+back every `[notify] remind_every_s` (default 120) seconds, at most
+`[notify] remind_times` (default 2) times per arrival; then it waits
+quietly on the Notify screen, unread count intact. A quiet finish never
+brings the column back on its own, and never keeps the reminders alive
+on its account. The dismiss key, `Esc` over the column and **Dismiss
+all** mark *everything* seen at once, because "seen" means you looked,
+not that you clicked each one; the × on one card, and a click that opens
+one card, mark only that one and leave the rest of the column standing.
+Claude fires `Stop` and `Notification` a moment apart, so a second
+arrival from the SAME source within `[notify] coalesce_s` (default 5)
+seconds skips the second cue; the item is still stored, its card still
+goes on top of the column, and the reply says `coalesced: true`.
+Coalescing is keyed on the SOURCE and holding on the SESSION, on
+purpose: the first is about one sender's two hooks landing together, the
+second about which of many sessions has actually gone quiet, and every
+Claude Code session sends the same source. Reminders are never
+coalesced. `[notify] cue = false` keeps the cards and drops the sound.
 
 **Where it goes.** Every arrival, reminder and dismissal is one line in
 `notify.log` (`RECEIVED #12 from claude-code (done) | project
@@ -2282,7 +2321,14 @@ against, however tall it gets.
    `notify.log` says `DISMISSED by key`.
 6. The PowerShell one-liner above twice within five seconds: one cue,
    two rows, `coalesced: true` in the second reply.
-7. The same one-liner with the wrong token: `401`, and `app.log` gains
+7. `notify_hook.py --kind done --session S1` (the command-line form
+   above) twice a few seconds apart, then wait `[notify] quiet_s`: no
+   cue, the hero says `1 WAITING`, both replies say `"held": true`, and
+   `notify.log` runs `HELD #1`, `HELD #2`, `SUPERSEDED #1 by #2 | same
+   session`, `QUIET #2` — then ONE card, silent. A `--kind input` with
+   the same `--session` inside the window lands and rings at once and
+   takes the held one with it.
+8. The same one-liner with the wrong token: `401`, and `app.log` gains
    `rejected an unauthorised /notify`.
 
 **Rejected, 2026-09-03.** *The desktop app's own notification*: it does
@@ -2295,6 +2341,371 @@ forbids. *A named-pipe door* beside the dashboard's `control.py`: local
 only, so the phone could never knock, and the phone is half the point.
 What shipped is the same `HintCard` the second reading already uses, on
 its own thread, dragged and remembered the same way.
+
+## Report a problem (`ctrl+alt+r`)
+
+The owner's own bug list, and one typed line is all it asks for.
+
+Something is wrong — the History tab shows yesterday's count, a dictation
+comes back with a tail nobody said — and by the time it is worth writing
+down, everything that would have explained it is gone. So the report key
+anywhere, or **Report a problem** in the dashboard's sidebar, opens a
+small card; you type the one line and press Enter, and the app is already
+standing there with the rest of the form filled in. That is the whole
+design, and it is the argument the correction key already won: a note you
+have to assemble by hand is a note you do not write, so the typed line is
+the only thing ever asked of you.
+
+**What it attaches, and why each piece.** *Where you were* — the tab's
+name from the dashboard, `dictation` or `anywhere` from the key — because
+the screen you are looking at answers "where" every single time, and
+asking would be asking you to type what the window already knows. *The
+last dictation*, its raw text and its final text, plus everything in its
+`recent\` sidecar: the seconds, the backend, the language and the
+per-word confidences the live pass produced. *A copy of the recording*,
+pinned into `problems\`, because `recent\` is a ring of `[vocab]
+keep_audio` clips (50 by default) and a report nobody has answered yet
+outlives it by weeks — the audio is the only thing that can still settle
+what was actually said, and `study.py`'s corpus copies for exactly this
+reason. *A screenshot* of the screen as it was a moment before the box
+opened. And *the settings that explain a bad dictation*: `backend`, the
+real `[local] model` name rather than the word "local", `beam_size`, the
+English model, `[vocab] enabled` and `replace_after_hits`, `[polish]
+when`, `[punctuate] auto`, `[review] enabled`, `max_seconds`, the branch
+that was checked out and the Python it ran on. The clip is filed under
+the stem of its wav, which is the id `review.json` already files the same
+clip under, so a problem and the second reading of one recording can be
+laid side by side later without either store knowing the other exists.
+
+**The screen is photographed before the box exists.** Both doors grab
+first and open the card second, and that order is the reason the key is
+one method rather than two: a report about the thing on the screen wants
+the screen, not a photograph of the question being asked about it. It
+costs 47–57 ms for the grab and about 60 ms for the JPEG (`visual_qa.py`
+measured both, and encodes it down the same 1344-pixel path the
+ask-the-screen key uses), which is why all of it runs on its own thread —
+nothing that slow may happen inside the keyboard hook's 300 ms, where a
+stall does not slow this feature down, it drops every keystroke on the
+machine. `[problems] shot = false` turns the picture off and leaves the
+line and the settings.
+
+**Five minutes, or the dictation is not blamed for it.** A report filed
+within `PROBLEM_LAST_MAX_S` of a dictation is filed *about* that
+dictation — which covers "that came out wrong, let me say why", the press
+that follows a bad transcript by the time it takes to read one — and past
+it the report is about the app instead, with no clip attached and
+`anywhere` where the tab name would be. A stale clip is worse than no
+clip: this morning's transcript sitting in a report filed at midnight
+still reads as evidence a week later, and it would be evidence for the
+wrong thing.
+
+**Dictate it, do not type it (2026-09-04).** Two measurements, and
+together they are the whole shape of the field. The first: Tk cannot draw
+a mixed line, and changing the widget did not change that. Typing
+`הכפתור של Settings לא עובד אחרי restart` into the card's field *draws*
+as `restart לא עובד אחרי Settings הכפתור של` — measured in a `tk.Entry`
+and, when the field grew into a wrapping `tk.Text`, measured again in the
+two side by side: **a `Text` scrambles it exactly the way an `Entry`
+does.** The bytes round-trip correctly and the report is stored right;
+only the drawing lies. So the echo line under the field, drawn through
+`DrawTextW`, is mandatory rather than decorative — it is the only place
+on either surface where you can read back what you actually said before
+you send it. It is driven by a **60 ms poll of the widget**, not by a
+write trace: a `tk.Text` has no `textvariable` to trace at all, and the
+trace the old one-line box did run caught the keys and nothing else,
+while one poll catches the typing, a dictation, a paste and an undo
+alike. The better answer is still not to type: hold the dictation key and
+say it, in whichever mix of languages the sentence wants. The second
+measurement is why saying it needs two different mechanisms. Into the
+**dashboard's** card a dictation simply pastes — the dashboard is a
+separate process, so `injector` has no reason to refuse it and a Tk grab
+does not stop a paste from outside the window either. Into the **key's**
+card it cannot: that window is one of `main.py`'s own, and
+`injector.is_our_window` (`injector.py:549`) refuses a paste into this
+process deliberately — the placeholder marker would go in and the focus
+test would then pass, so it could never be taken back out again. So the
+transcript is *diverted* instead, handed to the card's `fill()`, which
+puts the words in the field and stops there. Filled, never submitted:
+`answer()` is what Enter does, and a decoder that mishears one word must
+not turn into a bug report that says the wrong thing. The key is refused
+mid-hold, like every other text key, but for its own reason — not because
+there is no selection to act on but because there is no hand: one of the
+two is on the dictation key. Latched it is allowed, and latched is
+exactly the state in which typing a report while the microphone runs
+makes sense.
+
+**The card is the window.** It was a `Toplevel` with a title bar and a
+strip of background around the card until 2026-09-04, when the owner
+looked at it and asked for the card and nothing else — so it is
+`overrideredirect`, sized to the card exactly, with Windows rounding the
+corners, the way the correction box and the dashboard's dropdowns are.
+What the frame used to provide comes from somewhere else now: `Enter`
+sends, `Escape` cancels, and a click anywhere outside the card is "never
+mind", which is the gesture a floating card asks for. That last one works
+because of what a Tk grab does with the clicks it stops — measured
+2026-09-04, a press on the dashboard under `grab_set()` is neither
+discarded nor delivered to the dashboard, it is *reported to the grab
+window* with coordinates relative to the card, so a point outside the
+card's rectangle is a negative or over-long number and the screen
+coordinates are the whole test. Losing the focus to another app is not a
+cancel: you may well be going off to reproduce the thing you are
+reporting, and coming back to a box you have to retype would be worse
+than no box. The card carries five kind chips (`wrong`, `broken`, `slow`,
+`idea`, `other` — `wrong` is the default because a wrong transcript is
+what he will be reporting, and `other` is last, where a fallback
+belongs), the thumbnail of the screenshot that is going with it, and Send
+and Cancel. The chip he picks travels with the line: it is the `kind` the
+report is filed under, from both doors.
+
+**And the key's card is the same card, painted (2026-09-04).** The
+hotkey path was reusing the correction box — a bare utility rectangle
+with a one-line field in it — and the owner's verdict on seeing it was
+"this is how it's supposed to look? because I don't think so". It has its
+own painter now: `problem_card.py` owns the words, the geometry and the
+picture, in pure Python plus Pillow with no Tk in it at all, the way
+`hint.py` and `review_card.py` already stand behind the hint and
+second-reading cards, and `overlay.ProblemCard` owns the thread, the
+keyboard and the mouse. A painter you can render to a PNG is a card you
+can look at without pressing the hotkey, which is how this one was wrong
+for a week without anybody seeing it. Two things were rejected on the way
+here. *Growing the correction box into the card* behind a mode flag: its
+`_run` would have become a two-hundred-line body with a branch through
+the middle of it, and that box IS the review pencil, the thing he uses
+daily. `ProblemCard` is a subclass instead — it inherits the four things
+that were hard (the foreground recipe, `open`, `answer`, `fill`) and
+overrides only `ask` and `_run`, so the pencil's path is untouched and
+provably so. It also fixed a live bug: while one object served both, a
+report opening could divert a dictation meant for the pencil. *Building
+it out of the dashboard's own widgets*: those are Tk widgets in the
+dashboard's interpreter, and the hotkey path often runs with the
+dashboard never opened — a second Tk interpreter cannot borrow widgets
+from the first. What the two surfaces share instead is the copy and the
+layout: the dashboard imports the field metrics, the hint and the keys
+line out of `problem_card`, so two surfaces of one feature cannot come to
+phrase it differently.
+
+**The field, since he asked for it to be designed.** "When I'm where I
+need to write, the thing looks very slop and strict" — and it was: one
+30-pixel line with the sentence jammed against the border, for a report
+whose real limit is 600 characters. So on both surfaces it is now a
+wrapping `tk.Text` that starts three lines tall and grows to eight,
+clamped at those 600 characters (the field stops taking words where
+`problems.clean` would otherwise cut them off silently on the way to
+disk), with 12 pixels of interior room and `spacing3` set so a display
+line is exactly 22 px — which it must be, because the well behind it is
+*painted* from the line count the widget reports, and a well an inch
+short of its own text is how the old one came to look strict. The well is
+**rounded** and accent-lit only while the field has the caret: a square
+box among rounded chips and rounded buttons was half of "strict" on its
+own. The caret is the accent colour, `Ctrl+A` selects all, and the three
+keys are **printed on the card** — `Enter sends · Shift+Enter for a new
+line · Esc cancels` — because Enter changed meaning the moment the field
+grew past one line and he must not have to discover that by losing a
+sentence to it. The card grows *downward* from a fixed top-left as the
+field does, so nothing he is reading moves: measured 2026-09-04, the
+hotkey card standing 411, then 445, then 489 px tall as the field took
+its second and third line, and the dashboard's going 454 → 510 → 454 as
+a line was added and taken away again — the top-left the same pixel in
+every one of those.
+
+**Drag it by anything that is not a control (2026-09-04).** "Make it so I
+could drag the card — everything beside the buttons and the text box, so
+I can move it." So the handle is the eyebrow, the title, both hint lines,
+the echo, the thumbnail and its caption, the margins and the background;
+the five chips, Send, Cancel and the field are not, and the field keeps
+ordinary mouse text selection. On the floating card that rule needed no
+code to enforce: the painter's hit test knows only about the chips and
+the two buttons, so *`None` is the definition of draggable* — the
+thumbnail drags by never having been a region in the first place — and
+because controls act on the **press** rather than the release, a drag can
+only ever have begun on the background, which makes "a drag that ends
+over a chip must not pick it" true without a line about it. The threshold
+is four pixels, `CLICK_PX`, the notification stack's own number under its
+own name. Two things had to be learned: `<Motion>` and `<B1-Motion>` share
+one handler, because Tk sends the second *instead of* the first while a
+button is down and a card bound only to `<Motion>` never moves at all;
+and the real `tk.Text` sitting over the painted well means its presses
+never reach the canvas, which is what keeps selecting a word working and
+keeps the field from being a handle.
+
+**The dashboard's box drags on one binding, and three measurements paid
+for it.** A Tk grab funnels every press in the application to the grab
+window, so there is exactly one `<Button-1>` handler and it decides by
+**where the press landed** — outside the card's screen rectangle is the
+cancel, inside on a control is a hand-off, inside on chrome arms the drag
+(3 px of slop) — never by where the pointer ended up, which is what makes
+a drag unable to read as a cancel and a cancel unable to arm a drag.
+Measured that day: (1) `event.widget` can be the Toplevel even while the
+pointer is over a child, because the grab is what delivered the press —
+the same press on the title reported the `Label` once and the `Toplevel`
+once, depending on whether the application was already active, so the
+widget is asked of the screen through `winfo_containing` instead; (2) a
+repaint mid-drag with a stale origin snapped the card back to where the
+drag started, because the layout re-applies that origin on every change
+and anything can repaint while the button is down — so the origin follows
+the drag rather than being read at the end of it; and (3) **a saved
+position must be clamped against the whole virtual desktop, not the
+primary monitor** — this machine has a monitor at `x = -1920`, so a card
+left there has a genuinely negative x and clamping it to the primary
+would walk it home every time. That is also why "never dragged" is the
+sentinel `-100000` and not `-1`: it has to be a number no desktop can
+reach. Where each was left is remembered — `[problems] x`/`y` for the
+floating card, `card_x`/`card_y` for the dashboard's box, two pairs and
+not one, because the floating card lives on the desktop while the box
+opens centred over the dashboard window, and one shared position would
+fling the box off the window it belongs to.
+
+**Reading them back: the Problems tab.** The ninth screen in the
+dashboard's sidebar. Open reports come first, newest first, each with its
+kind, where it came from, the line you typed, the raw → final of the
+dictation drawn as a bitmap (mixed text again), and the screenshot as a
+220-pixel thumbnail in the corner — an attachment you cannot see is one
+you cannot check, and the picture is the difference between a report
+about the History tab and a report about whatever was actually on the
+screen. **Fixed** and **Close** answer one; below the open ones are the
+answered ones with who answered them. Two things about that thumbnail:
+the long side is 220 because that is what a row can give a picture
+without pushing the typed line off it and it is still enough of the
+screen to recognise the tab, and the decode is cached under (path, mtime,
+side) — **measured 2026-09-04, 35.8 ms cold against 0.170 ms warm**, a
+factor of 210 — which matters because the tab rebuilds every row on
+every scroll, and decoding the same JPEG a hundred times to draw the
+same 220 pixels is the one cost that would make the picture not worth
+having. The mtime in the key is what makes it safe:
+a shot rewritten in place gets a new key rather than a stale picture.
+
+**`problems.md`, for the weekly read.** It is regenerated from scratch
+every time — when the tab is opened and after every decision — open items
+first, grouped by where they came from, newest first, then a short list
+of what has been resolved and by whom. From scratch, and never appended
+to, because it is read once a week by the owner *and by an agent working
+through the list*, and a file that is appended to turns into a log, which
+is the thing he already had. **Open reports are never trimmed.**
+Answered ones age out at `[problems] keep_resolved` (200); an open one is
+a question nobody has answered, and dropping it to save a kilobyte would
+make the store lie about what is wrong with the app. That is
+`review.json`'s rule for decided proposals, with the same reasoning
+behind it.
+
+**And the weekly read is a routine, not a promise to himself.** A
+scheduled task runs `weekly_review.ps1` at **Saturday 08:00 local**,
+which runs the local `claude.exe` in this repo on the project command
+`/weekly-reports` (`.claude\commands\weekly-reports.md` — the same
+command he can type by hand any day of the week). It reads every open
+report through `problems.py` and writes three files into
+`problems\weekly\`: a short Hebrew summary he can read in under a
+minute, a deep plan in `PARALLEL_FEATURES_PLAN.md`'s own style, and a
+full archive with the evidence paths. Then it closes and archives the
+reports it actually understood, regenerates `problems.md`, and posts a
+card through `notify_hook.py` so he finds out the way he finds out about
+everything else. **It fixes nothing** — no code, no config, no commit. He
+reads, discusses, approves, and the work happens in a normal session
+afterwards, because a routine that both diagnoses and edits is a routine
+that changes the app while he is asleep.
+
+Two rules are the whole design, and both are his. **Archive, never
+delete**: he was asked and he chose it, and `Store._trim` only ever drops
+JSON rows — it never unlinks a pinned wav or jpg — so closing a report
+loses nothing that could still settle an argument. **Never guess**: in
+his words, if the run did not understand the bug or did not find the bug
+he was talking about, it must not guess but ask. So a report it cannot
+explain from its evidence gets a *specific* question at the top of the
+summary and is **left open**, which keeps the Problems tab showing
+exactly the ones that need him; the routine remembers what it has
+already asked and does not ask it again the following week.
+
+**Rejected: a cloud routine (`/schedule`).** It was the obvious first
+answer and it cannot work here. A cloud routine gets a fresh git
+checkout of this repo and cannot see this machine, and `problems.json` —
+with `problems\` and every wav and screenshot in it — is local and
+gitignored on purpose, so the run would open an empty bug list. The
+session-scoped alternative expires after seven days, which is shorter
+than the interval it would be scheduling. A local scheduled task calling
+a local `claude.exe` is the only shape that can read the store the
+feature is about; anyone tempted to move this off the machine has to
+solve that first.
+
+**Where it goes.** `problems.json` is the store, edited by two processes —
+the app when you press the key, the dashboard when you answer a row — so
+there is a `problems.lock` beside it (`msvcrt.locking`), a per-process
+temp name and one rename, exactly the shape `review.py` settled on: a
+reader never sees half a file, and an unparseable one reads as empty.
+`problems\` holds the pinned wavs, their sidecars and the screenshots;
+`problems.md` is the digest. Reports are ids you can quote — a timestamp,
+with a `-1` suffix if a second already has a report in it, the way
+`spool.py` names recordings. Filing one writes a line to `app.log` and
+puts a one-line note on the dashboard (`problem 20260904-201432 noted
+— …`); there is no success cue, because the box disappearing is the
+confirmation and every sound in `cues.py` already means something else.
+Nothing here may take dictation down: every filesystem error in
+`problems.py` is logged and swallowed, and the single deliberate
+exception is an empty line, which is not a report. The one way this
+feature ever did take the app down is worth knowing, because it is silent
+— an `ImageTk.PhotoImage` left alive past its own interpreter is finalised
+later, from whatever thread the collector is on, and calls into a Tcl that
+is gone: `Tcl_AsyncDelete: async handler deleted by the wrong thread`, no
+traceback, nothing in `app.log`. Measured 2026-09-04, it aborted the
+process on the **second** card opened, never the first. The hint card's
+teardown order is the fix, and it is now this card's: the picture goes
+before the frame does. **All four of them —
+store, lock, digest, folder — are gitignored**, and that is the
+deliberate tension in this feature: a
+report quotes what you actually said, pins the audio of you saying it and
+carries a picture of your screen, so it gets `transcripts.log`'s rule and
+stays on this machine — which means the weekly review reads local,
+untracked files by design, and a fresh clone of this repo has an empty
+bug list rather than his.
+
+**Check it by hand.**
+1. Press `ctrl+alt+r` over any window: the card, asking "What is wrong?",
+   with `ON DICTATION` or `ON ANYWHERE` in the corner, the chips, the
+   thumbnail and `Enter sends · Shift+Enter for a new line · Esc
+   cancels` printed under the field.
+2. Hold the dictation key and say the line, English words and all. It
+   appears **in** the field, unsent, and the echo under the field draws
+   it the right way round even though the field itself does not; the
+   report is not filed until you press Enter yourself. Fix a word first
+   if the decoder missed one, and `Shift+Enter` if it wants two lines.
+3. `app.log` gains `problems: 20260904-… filed from the key, with the
+   last dictation, with a screenshot`.
+4. Dashboard → **Problems**: the row is there with the kind, the typed
+   line, the raw → final of that dictation and a thumbnail of the screen
+   as it was before the box opened. `problems\` holds the wav, its
+   sidecar `.json` and the `.jpg`.
+5. From another tab, **Report a problem** in the sidebar: the same card,
+   saying `ON HISTORY` in the corner. Type a mixed Hebrew/English line —
+   the field draws it scrambled, the echo underneath draws it right — and
+   keep typing past the third line: the field grows, the card grows
+   downward under it, and its top-left does not move. Click the dashboard
+   behind it: gone, nothing filed, no picture left in `problems\`.
+6. **Fixed** on the open row: it moves down to the answered half,
+   `problems.md` is rewritten with `1 fixed` and the item marked
+   `fixed · dashboard`.
+7. Drag either card by its title and drop it: it moves, and the next one
+   opens where you left it. Press a chip and wander off before letting
+   go — nothing moves, because a chip is not a handle. Drag from the
+   title and release over a chip — the card moves and the chip is not
+   picked.
+8. `[problems] enabled = false`, restart: no key, no sidebar button, and
+   `problems.json` left exactly where it was.
+
+**Rejected, 2026-09-04.** *A text file* — open notes, write "the History
+tab shows yesterday's count", close notes: this is what he had, and it is
+what this key replaces, because by the time a report is worth reading the
+thing that would explain it is gone. *Asking him for the context* — which
+tab, which dictation, which backend: every one of those is knowable
+without asking, and a form is how a bug list dies. *A field for the
+report's kind in the key's box*: five chips are right on the dashboard,
+where he is already sitting and reading, and wrong at the moment he is
+annoyed — the key asks one question and files under `wrong`. *Pasting
+into the key's card* like every other text destination: impossible by
+design, see `injector.py:549` above, which is why `fill()` exists. *A
+write trace on the field* instead of the 60 ms poll: a `tk.Text` has no
+variable to trace, and the trace the one-line box ran saw the keyboard
+and nothing else — not a dictation, not a paste, not an undo. *A square
+field*, which is what it had, and which the owner called slop. *Trimming open reports to a cap* the way `notify.json` keeps its
+last hundred: there is no measurement to offer for that one, only the
+argument — a bug list that forgets is not a bug list.
 
 ## Dictating from the phone
 
@@ -3268,6 +3679,8 @@ for `מבשרים`, all of which the local model got right.
 | `[notify] remind_every_s` | `120` | while something is unread, play the cue and show the card again this many seconds after the last time. `0` = never remind |
 | `[notify] remind_times` | `2` | ...at most this many times per arrival, then it waits quietly on the dashboard's Notify screen. `0` = never remind |
 | `[notify] coalesce_s` | `5` | a second notification from the **same** source within this many seconds updates the card instead of playing a second cue — Claude fires `Stop` and `Notification` a moment apart. The item is still stored |
+| `[notify] interrupt` | `input` | `all` \| `input` \| `none`. Which arrivals may **pull you out** — play the cue and keep reminding. `input` is only what is waiting on you (a permission, a question, an idle session) and what went wrong; a plain finish lands as a quiet card and waits there. `all` is the door as it was; `none` never makes a sound. Counted 2026-09-05: 87 of the last 100 cards were per-turn finishes, each rung and reminded twice |
+| `[notify] quiet_s` | `60` | a finish (`done`) waits this many seconds for the **session** that sent it to go quiet before it becomes a card; a second arrival from the same session inside the window retires the first unseen and waits in its place. A permission or a question never waits. `0` = every finish lands at once, as before |
 | `[notify] watch` | `cowork` | `off` \| `cowork` \| `all`. Which of the **desktop app's own** Windows notifications get a card here too — the only road in for Cowork, which runs in the cloud and has no hook to install. `cowork` leaves the app's Claude Code sessions to the `Stop` hook that already cards them; `all` takes those too; `off` never looks. Claude Chat is in none of them: a finished chat reply is announced to nothing on this machine |
 | `[notify] corner` | `right` | `right` \| `left` \| `top-right` \| `top-left` \| `bottom-right` \| `bottom-left`. Where the card appears before you have dragged it; `right` is mid-height on the right edge, like the second reading's card |
 | `[notify] anchor` | `bottom` | `bottom` \| `top`. Which edge of the column stays put as it grows. `bottom` grows a long message **upward**, so a column kept in the bottom-right corner never runs off the screen; `top` pins the top edge and grows downward, as it used to |
@@ -3275,6 +3688,15 @@ for `מבשרים`, all of which the local model got right.
 | `[notify] y` | `-100000` | same, vertically |
 | `[notify] scale` | `1.0` | how big the card is drawn, `0.6` to `1.4` |
 | `[notify] dismiss_hotkey` | `ctrl+alt+m` | **tap** to take the card down and mark everything seen, wherever the mouse is. Rebind from the dashboard's Keys screen; `""` = no key |
+| `[problems] enabled` | `true` | the report key and the dashboard's **Report a problem** button — his own bug list (see [Report a problem](#report-a-problem-ctrlaltr)). `false` unregisters the key, takes the button away and writes nothing; `problems.json` is left exactly where it is |
+| `[problems] report_hotkey` | `ctrl+alt+r` | **tap** to open the report box over whatever is in front, wherever the mouse is. Rebind from the dashboard's Keys screen; `""` = no key, and the sidebar button is then the only door. Lives in `[problems]` and is read as `Config.report_hotkey` like `[notify] dismiss_hotkey` is |
+| `[problems] shot` | `true` | attach a screenshot of the screen as it looked a moment **before** the box opened — the tab, the dialog, the wrong number, all of which are gone by the time the report is read. Written into `problems\` beside the report and never leaves this machine. `false` = the typed line and the settings only |
+| `[problems] keep_audio` | `true` | copy the recording the report is about into `problems\`, so it outlives `recent\`'s ring of `[vocab] keep_audio` clips: an unresolved report sits there for weeks and the audio is the only thing that can settle what was actually said. `false` = the report keeps the wav's name and nothing else |
+| `[problems] keep_resolved` | `200` | how many **answered** reports to keep, newest first (`0` to `2000`). Open ones are never trimmed at any setting — a question nobody has answered is not a kilobyte worth saving |
+| `[problems] x` | `-100000` | the left edge of the floating report card where you last dragged it, in screen pixels. `-100000` = never dragged, so it opens where it always opens. The sentinel is a number no desktop can reach: negative coordinates are real on a monitor to the left of the primary, and this machine's starts at `x = -1920`. Unvalidated, like `[notify] x` |
+| `[problems] y` | `-100000` | the top edge of that same card |
+| `[problems] card_x` | `-100000` | the left edge of the **dashboard's** report box, which keeps its own pair: it opens centred over the dashboard window, so sharing the floating card's desktop position would fling it off the window it belongs to |
+| `[problems] card_y` | `-100000` | the top edge of the dashboard's report box |
 
 ## Design notes
 

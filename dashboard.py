@@ -116,7 +116,16 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
 
 NAV = (("overview", "Overview"), ("history", "History"),
        ("review", "Review"), ("awake", "Awake"), ("notify", "Notify"),
-       ("keys", "Keys"), ("version", "Version"), ("settings", "Settings"))
+       ("keys", "Keys"), ("version", "Version"),
+       ("problems", "Problems"), ("settings", "Settings"))
+
+# A nav row takes its glyph from ui.ICON[key], so the key of a screen and
+# the name of its glyph are normally the same word. Problems has no glyph
+# of its own — ui.py is not this wave's file — so it borrows the error
+# mark HERE, rather than the one table that names the screens having to
+# call the screen "error". A key with no glyph and no entry here is still
+# a KeyError the first time the sidebar is built, which is the point.
+NAV_GLYPH = {"problems": "error"}
 
 # The Awake screen probes the machine (powercfg, PowerShell — a few
 # seconds) the moment it opens. Off for the tests, which open every
@@ -133,7 +142,8 @@ KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
                                   "visual_qa_hotkey")),
     ("What to do with the screen", ("capture_hotkey", "record_hotkey",
                                     "camera_hotkey")),
-    ("The app itself", ("pause_hotkey", "screens_hotkey", "dismiss_hotkey")),
+    ("The app itself", ("pause_hotkey", "screens_hotkey", "dismiss_hotkey",
+                        "report_hotkey")),
 )
 
 # Keys that live INSIDE a config section, and the dotted path set_values
@@ -148,6 +158,7 @@ NESTED_HOTKEYS = {
     "camera_hotkey": "camera.camera_hotkey",
     "screens_hotkey": "awake.screens_hotkey",
     "dismiss_hotkey": "notify.dismiss_hotkey",
+    "report_hotkey": "problems.report_hotkey",
 }
 
 # The right-hand column of a settings row: a switch, a menu, or a field.
@@ -310,7 +321,7 @@ def _set_taskbar_relaunch(root) -> bool:
         values = (
             (5, APP_ID),                                        # ...ID
             (2, f'"{wscript}" "{APP_DIR / "Dashboard.vbs"}"'),  # ...Command
-            (4, "Hebrew Dictation"),                    # ...DisplayName
+            (4, "DeskIT"),                    # ...DisplayName
             (3, f"{ICON_PATH},0"),                      # ...IconResource
         )
         VT_LPWSTR = 31
@@ -346,6 +357,131 @@ def _dark_caption(root) -> None:
                 hwnd, attribute, ctypes.byref(payload), 4)
     except Exception:
         pass          # Windows 10, or an older build: the window still works
+
+
+def _round_frameless(win, border: str | None = None) -> None:
+    """Take the corners off a window that has no frame to round them.
+
+    A card on a frameless Toplevel has a problem the framed one does not:
+    ui.rounded draws the rounded face against a BACKGROUND COLOUR — there
+    is no per-pixel alpha anywhere in Tk — so with no window behind it to
+    be the background, the four corners come out as four little squares
+    of ui.BG sitting on top of whatever is really there.
+
+    Measured 2026-09-04, three ways out, 10x crops of each in the
+    scratchpad. Chroma key (`-transparentcolor`) does cut a true hole,
+    but overlay.py already says why it is not the answer: it keys one
+    exact colour and antialiases nothing, so the curve comes out as
+    stairs with a fringe of the key colour. Doing nothing leaves the
+    squares. DWM (attribute 33, DWMWA_WINDOW_CORNER_PREFERENCE = 2)
+    clips the WINDOW ITSELF and antialiases the clip against the real
+    desktop, and it does that to a WS_POPUP window, which is what
+    overrideredirect makes. So the card is painted flat to its own edges
+    and Windows rounds it. Attribute 34 is the hairline around that clip,
+    the only thing left saying where the card ends on a pale background.
+
+    The radius is Windows', ~8 px, not the 12-14 the cards inside the
+    window use — a small honest difference, and the alternative is a
+    corner that lies about what is behind it. Windows 10 has neither
+    attribute and silently keeps both: a square card, which is still the
+    card alone and not a card in a box.
+    """
+    try:
+        win.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(int(win.winfo_id())) \
+            or int(win.winfo_id())
+        pref = ctypes.c_int(2)                       # 2 = round
+        ctypes.windll.dwmapi.DwmSetWindowAttribute(
+            hwnd, 33, ctypes.byref(pref), 4)
+        if border:
+            # COLORREF, 0x00BBGGRR — the bytes reverse, same as the
+            # caption colours above.
+            r, g, b = (int(border[i:i + 2], 16) for i in (1, 3, 5))
+            colour = ctypes.c_int((b << 16) | (g << 8) | r)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, 34, ctypes.byref(colour), 4)
+    except Exception:
+        pass          # older Windows: a square card, and nothing else lost
+
+
+# The report field's shape, and problem_card owns every number in it.
+# The hotkey card paints its well from these and the box in this window
+# places a widget by them; they are ONE field on two surfaces, and two
+# copies of the numbers would disagree by the first tweak. The fallbacks
+# are that module's own values, so a tree without it still gets the field
+# the owner approved rather than the "slop and strict" one he did not.
+try:
+    import problem_card as _pc
+except Exception:                         # noqa: BLE001 — feature absent
+    _pc = None
+
+FIELD_FONT = getattr(_pc, "FIELD_FONT", ("Rubik", 12))
+FIELD_FONT_LINE = getattr(_pc, "FIELD_FONT_LINE", 18)
+FIELD_LINE_H = getattr(_pc, "FIELD_LINE_H", 22)
+FIELD_LINES_MIN = getattr(_pc, "FIELD_LINES_MIN", 3)
+FIELD_LINES_MAX = getattr(_pc, "FIELD_LINES_MAX", 8)
+FIELD_PAD_X = getattr(_pc, "FIELD_PAD_X", 12)
+FIELD_RADIUS = getattr(_pc, "FIELD_RADIUS", 9)
+FIELD_PAD_Y = getattr(_pc, "FIELD_PAD_Y", 9)
+REPORT_HINT = getattr(_pc, "HINT",
+                      "The screen you are on, the last dictation and the "
+                      "settings behind it are attached for you.")
+REPORT_KEYS = getattr(_pc, "KEYS", "Enter sends  ·  Shift+Enter for a "
+                                   "new line  ·  Esc cancels")
+
+
+def _display_lines(widget) -> int:
+    """How many lines a tk.Text is actually SHOWING.
+
+    Asked of the widget rather than guessed from the length of the
+    string: it is the widget that wrapped it, and the field is drawn to
+    this number. `count` answers with a one-tuple on some Tk builds and a
+    bare int on others, so both are unwrapped; a build with neither says
+    one line, and the field then simply does not grow — which is the
+    behaviour it had yesterday, not a traceback.
+    """
+    try:
+        got = widget.count("1.0", "end", "displaylines")
+    except Exception:                     # noqa: BLE001
+        return 1
+    if isinstance(got, (tuple, list)):
+        got = got[0] if got else 1
+    return max(1, int(got or 1))
+
+
+def _problems_enabled() -> bool:
+    """Is his own bug list switched on? [problems] enabled, read here.
+
+    config.toml promises that false "unregisters the key, takes the
+    Report button away and writes nothing", and the first two of those
+    are this window's half of the promise. Read the way the rest of the
+    startup path reads a section: getattr for the section and then for
+    the field, because a Config can be missing [problems] altogether —
+    an older config.toml, or one this branch has never written — and the
+    dashboard has to open either way. A missing section reads as what the
+    shipped file carries, which is on; a config that will not load at all
+    says nothing about what he wants, so it changes nothing here.
+    """
+    try:
+        pcfg = getattr(config_mod.load(CONFIG_PATH), "problems", None)
+    except Exception:                     # noqa: BLE001 — never fatal here
+        return True
+    return bool(getattr(pcfg, "enabled", True))
+
+
+def _wrap(widths, limit: int, gap: int = 6,
+          step: int = 36) -> list[tuple[int, int]]:
+    """Where each pill in a row of them goes, wrapping when the line is
+    full — the same arithmetic whether the strip is being measured or
+    placed, which is why it is a function and not a loop in two places.
+    """
+    spots, x, y = [], 0, 0
+    for width in widths:
+        if x and x + width > limit:
+            x, y = 0, y + step
+        spots.append((x, y))
+        x += width + gap
+    return spots
 
 
 def _keys_screen_paths() -> set[str]:
@@ -391,7 +527,7 @@ class Dashboard:
         # test suite builds more than one Dashboard in a process.
         ui.forget_images()
         self.root = tk.Tk()
-        self.root.title("Hebrew Dictation")
+        self.root.title("DeskIT")
         # `default=` so the key-capture dialog inherits it too, rather than
         # opening with the plain Tk feather next to a branded parent. It is
         # not enough on its own — see _set_window_icon below, called once
@@ -459,6 +595,19 @@ class Dashboard:
         self._activity = "stopped"  # what the breathing loop reads
         self._toast_text = ""
         self._keep: list = []      # PhotoImages Tk will not keep for us
+        # ONCE, and before _build: the sidebar is built one time and this
+        # switch decides how many rows are in it. Re-reading it later
+        # would only mean a window whose nav disagreed with its own
+        # geometry halfway down.
+        self._problems_on = _problems_enabled()
+        # Where he last dragged the report card to, or None for "it has
+        # never been dragged, put it over the middle of this window". Held
+        # on the dashboard rather than in the box, because the box is
+        # built and destroyed per report and the whole point is that the
+        # next one opens where he left the last one. It is forgotten when
+        # this window closes: remembering across restarts is a line in
+        # config.toml, which is another file.
+        self._report_at = None
 
         self._build()
         # After _build: LoadImage/WM_SETICON need a realised window, and on
@@ -528,15 +677,27 @@ class Dashboard:
         if badge is not None:
             self._keep.append(badge)
             tk.Label(bar, image=badge, bg=ui.BG).place(x=20, y=22)
-        tk.Label(bar, text="Hebrew Dictation", bg=ui.BG, fg=ui.FG,
+        tk.Label(bar, text="DeskIT", bg=ui.BG, fg=ui.FG,
                  font=(ui.UI, 10, "bold")).place(x=62, y=23)
         self.parts["hint"] = tk.Label(bar, text="", bg=ui.BG, fg=ui.FAINT,
                                       font=(ui.UI, 8))
         self.parts["hint"].place(x=62, y=42)
 
+        # Nine rows and the report button have to fit above the state
+        # card, which is why the stride is 46 rather than the 48 eight
+        # rows could afford. 86 + 46*9 = 500, the button sits at 504 and
+        # the card starts at 546.
+        #
+        # With [problems] enabled = false there are eight rows and no
+        # button, and the sidebar goes back to the 92 and 48 it had
+        # before any of this: the spacing those eight rows were designed
+        # with, rather than eight of them rattling around in nine rows'
+        # worth of room. 92 + 48*8 = 476, and the card is still at 546.
         self.nav: dict[str, tuple] = {}
-        y = 92
-        for key, name in NAV:
+        rows = [(key, name) for key, name in NAV
+                if key != "problems" or self._problems_on]
+        y, stride = (86, 46) if self._problems_on else (92, 48)
+        for key, name in rows:
             item = tk.Canvas(bar, width=188, height=42, bg=ui.BG,
                              highlightthickness=0, bd=0, cursor="hand2")
             item.place(x=12, y=y)
@@ -544,7 +705,8 @@ class Dashboard:
                      ui.rounded(188, 42, 11, ui.BG, ui.BG),
                      ui.rounded(188, 42, 11, ui.SIDE_IDLE, ui.BG))
             face = item.create_image(0, 0, anchor="nw", image=faces[1])
-            glyph = item.create_text(28, 21, text=ui.ICON[key],
+            glyph = item.create_text(28, 21,
+                                     text=ui.ICON[NAV_GLYPH.get(key, key)],
                                      font=(ui.ICONS, 13), fill=ui.DIM)
             label = item.create_text(50, 22, text=name, font=(ui.UI, 10),
                                      anchor="w", fill=ui.DIM)
@@ -552,7 +714,22 @@ class Dashboard:
             item.bind("<Button-1>", lambda _e, n=name: self._show(n))
             item.bind("<Enter>", lambda _e, n=name: self._nav_hover(n, True))
             item.bind("<Leave>", lambda _e, n=name: self._nav_hover(n, False))
-            y += 48
+            y += stride
+
+        # The report button lives in the SIDEBAR, once, rather than on
+        # each of the nine screens. Two reasons, and the second is the
+        # real one. A bug is noticed while looking at the thing that is
+        # wrong, so the way to say so has to be in the same place
+        # whichever screen that is — and the eight screens place every
+        # widget absolutely, with the top-right taken on Review and
+        # Settings and the bottom-right taken on History, so there is no
+        # one free rectangle on the sheet to put it in. The sidebar has
+        # one, it survives _show destroying the sheet, and it sits under
+        # the Problems row that reads the reports back.
+        if self._problems_on:
+            ui.Button(bar, "Report a problem", self._report, w=188, h=34,
+                      bg=ui.BG, quiet=True,
+                      icon=ui.ICON["error"]).place(x=12, y=y + 4)
 
         card = ui.Card(bar, 188, 78, bg=ui.BG, fill=ui.SIDE_CARD, radius=12,
                        pad=14)
@@ -605,6 +782,7 @@ class Dashboard:
          "Notify": self._screen_notify,
          "Keys": self._screen_keys,
          "Version": self._screen_version,
+         "Problems": self._screen_problems,
          "Settings": self._screen_settings}[name]()
         self._refresh(self.status or None)
         self._slide_in()
@@ -1284,6 +1462,1044 @@ class Dashboard:
             self._ask("review_absorb")
         self._fill_review()
 
+    # ----------------------------------------------------------- problems
+
+    def _problems(self):
+        """problems.py, or None if it is not here.
+
+        Imported on every call the way review is — sys.modules makes the
+        second one free — and guarded on top of that, because the button
+        and the screen are the only things in this window that depend on
+        the module existing and the window has to open without it.
+        """
+        try:
+            import problems as problems_mod
+        except Exception:                 # noqa: BLE001 — feature absent
+            return None
+        return problems_mod
+
+    def _problems_store(self):
+        """problems.json, read straight off the disk — the same reason
+        Review reads review.json: this window lists and answers reports
+        while nothing is running. The store is cross-process safe (a lock
+        file and one rename), so the app filing a report while this
+        writes a resolution costs neither of them anything."""
+        module = self._problems()
+        if module is None:
+            return None
+        try:
+            return module.Store(APP_DIR / module.STORE_NAME)
+        except Exception:                 # noqa: BLE001
+            return None
+
+    def _problems_stat(self):
+        """The store's own change detector. () is "no file yet", which is
+        a perfectly good state and not an error."""
+        store = self._problems_store()
+        if store is None:
+            return ()
+        try:
+            return store.stamp()
+        except Exception:                 # noqa: BLE001
+            return ()
+
+    def _write_digest(self) -> None:
+        """Regenerate problems.md.
+
+        It is written from scratch every call, and it is what the weekly
+        read-through actually reads — so the cheapest way to keep it true
+        is to write it whenever the list is opened or answered, rather
+        than remembering to.
+        """
+        module, store = self._problems(), self._problems_store()
+        if module is None or store is None:
+            return
+        try:
+            module.digest(store, APP_DIR / module.DIGEST_NAME)
+        except Exception:                 # noqa: BLE001 — a digest that
+            pass                          # did not get written is nothing
+
+    def _open_digest(self) -> None:
+        """The weekly read, in whatever opens .md files here. The name
+        comes off the module rather than out of this line, so the two
+        cannot drift; the fallback is for the module being absent, when
+        the file will not be there either and open_path says so."""
+        name = getattr(self._problems(), "DIGEST_NAME", "problems.md")
+        launch.open_path(APP_DIR / name)
+
+    def _screen_problems(self) -> None:
+        """His own bug list: what he reported, and whether it is answered.
+
+        The shape is Review's, because the job is Review's — rows out of
+        a json store, two buttons each — and the only difference is who
+        asked the question. Review is the app disagreeing with itself;
+        this is him disagreeing with the app.
+        """
+        self._title("Problems", "what you reported — you decide when it is "
+                                "done")
+        p = self.parts
+        p["problems_head"] = tk.Label(self.sheet, text="", bg=ui.PANE,
+                                      fg=ui.DIM, font=(ui.UI, 10))
+        p["problems_head"].place(x=PAD, y=66)
+        p["problems_list"] = ui.Scroller(self.sheet, CW + 10, 496)
+        p["problems_list"].place(x=PAD, y=100)
+        p["problems_empty"] = tk.Label(self.sheet, text="", bg=ui.PANE,
+                                       fg=ui.FAINT, font=(ui.UI, 10),
+                                       wraplength=CW - 80, justify="center")
+        tk.Label(self.sheet,
+                 text="Report a problem is in the sidebar, on every "
+                      "screen. Fixed and Closed both take a report off "
+                      "this list; nothing open is ever thrown away.",
+                 bg=ui.PANE, fg=ui.FAINT, font=(ui.UI, 8),
+                 wraplength=CW - 190, justify="left").place(x=PAD, y=612)
+        ui.Button(self.sheet, "Open problems.md", self._open_digest, w=170,
+                  h=30, quiet=True, bg=ui.PANE,
+                  icon=ui.ICON["page"]).place(x=PAD + CW - 170, y=608)
+        self._problems_stamp = None
+        # Opening the tab is the cue: the weekly read wants problems.md
+        # current, and this is the moment it is known to be looked at.
+        self._write_digest()
+        self._fill_problems()
+
+    def _poll_problems(self) -> None:
+        """Once a second from _refresh: redraw only when the file moved —
+        a report filed from the running app, or one answered here."""
+        if "problems_list" not in self.parts:
+            return
+        if self._problems_stat() != getattr(self, "_problems_stamp", None):
+            self._fill_problems()
+
+    def _fill_problems(self) -> None:
+        if "problems_list" not in self.parts:
+            return
+        self._problems_stamp = self._problems_stat()
+        module, store = self._problems(), self._problems_store()
+        waiting, done, summary = [], [], {}
+        if module is not None and store is not None:
+            try:
+                waiting = store.items(module.OPEN)
+                done = [i for i in store.items()
+                        if i.get("status") in module.RESOLVED][:30]
+                summary = store.summary()
+            except Exception:             # noqa: BLE001 — a broken file
+                waiting, done, summary = [], [], {}
+        self.parts["problems_head"].config(
+            text=f"{summary.get('open', 0)} open   ·   "
+                 f"{summary.get('fixed', 0)} fixed   ·   "
+                 f"{summary.get('closed', 0)} closed")
+        scroller = self.parts["problems_list"]
+        scroller.clear()
+        empty = self.parts["problems_empty"]
+        empty.place_forget()
+        if module is None:
+            empty.config(text="problems.py is not here, so nothing can be "
+                              "reported or read back.")
+            empty.place(x=PAD + CW / 2, y=300, anchor="center")
+        elif not waiting and not done:
+            empty.config(text="Nothing reported yet — when something is "
+                              "wrong, say so from the sidebar and the app "
+                              "attaches the rest.")
+            empty.place(x=PAD + CW / 2, y=300, anchor="center")
+        for item in waiting:
+            self._problem_row(scroller, module, item, open_=True)
+        if done:
+            tk.Label(scroller.inner, text="ANSWERED", bg=ui.PANE,
+                     fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
+                anchor="w", pady=(8 if waiting else 0, 6))
+        for item in done:
+            self._problem_row(scroller, module, item, open_=False)
+        scroller.to_top()
+
+    @staticmethod
+    def _problem_evidence(got: dict) -> str:
+        """The dictation a report was about, as the one line worth
+        reading: what came out, and how it was decoded. Empty when the
+        report was not about a dictation, which is most ideas."""
+        if not got:
+            return ""
+        bits = []
+        raw = str(got.get("raw") or "")
+        final = str(got.get("final") or got.get("text") or "")
+        if raw and final and raw != final:
+            bits.append(f"{raw}  →  {final}")
+        elif raw or final:
+            bits.append(raw or final)
+        facts = [str(got[k]) for k in ("backend", "language") if got.get(k)]
+        if got.get("seconds") not in (None, ""):
+            try:
+                facts.append(f"{float(got['seconds']):.1f}s")
+            except (TypeError, ValueError):
+                pass
+        if facts:
+            bits.append(" · ".join(facts))
+        return "   ·   ".join(bits)
+
+    @staticmethod
+    def _row_photo(module, item: dict):
+        """The screenshot filed with a report, small enough for a row.
+
+        None for the reports that have none, which is most of them — an
+        idea about this screen is not a photograph — and None again for a
+        shot whose file has been deleted or will not open. Neither is an
+        error: problems.thumb already decided that a missing picture is a
+        row without a picture, and a redraw must never depend on a jpeg.
+
+        problems.thumb caches by (path, mtime, side), which is what makes
+        this affordable at all: _fill_problems rebuilds every row from
+        scratch on every poll that sees a new stamp.
+        """
+        try:
+            png = module.thumb(APP_DIR, item)
+        except Exception:                 # noqa: BLE001 — never a traceback
+            return None                   #                into a redraw
+        if not png:
+            return None
+        try:
+            return tk.PhotoImage(data=png)
+        except tk.TclError:
+            return None
+
+    def _problem_row(self, scroller: ui.Scroller, module, item: dict,
+                     open_: bool) -> None:
+        """One report, one canvas: when it was filed on the left, what
+        kind it is and which screen it came from, his line, and the
+        dictation behind it when there was one. Fixed / Closed while it
+        is still open, the answer itself once it is not.
+
+        Same layout rules as a review row — time and the buttons on the
+        left, text flush right — because they are the same kind of row
+        and looking different would only say they were not.
+
+        A report that came with a screenshot shows it, small, in the
+        right-hand corner: what he wants off this list is "which of these
+        is the one I mean", and the picture of the screen answers that
+        faster than the line he typed about it. The text column gives up
+        that width and the row gets tall enough to hold the picture,
+        which is why both are measured before the canvas exists.
+        """
+        text = str(item.get("text") or "")
+        left, edge = 106, CW - 14
+        shot = self._row_photo(module, item)
+        shot_w = shot.width() + 12 if shot is not None else 0
+        width = edge - left - shot_w
+        colour = ui.FG if open_ else ui.DIM
+        photo, text_h, _lines = ui.draw_text(text, pt=11, width=width,
+                                             max_lines=3, colour=colour,
+                                             bg=ui.CARD)
+        heard, heard_h = None, 0
+        evidence = self._problem_evidence(item.get("dictation") or {})
+        if evidence:
+            heard, heard_h, _l = ui.draw_text(evidence, pt=8, width=width,
+                                              max_lines=2, colour=ui.FAINT,
+                                              bg=ui.CARD)
+        bottom = 32 + text_h + (heard_h + 8 if heard is not None else 0)
+        height = max(84, bottom + (46 if open_ else 30))
+        if shot is not None:
+            height = max(height, shot.height() + 26)
+        row = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.PANE,
+                        highlightthickness=0, bd=0)
+        row.pack(pady=(0, 8))
+        row.create_image(0, 0, anchor="nw", image=ui.rounded(
+            CW, height, 12, ui.CARD, ui.PANE,
+            ui.TILE_EDGE if open_ else ui.LINE))
+        if shot is not None:
+            row.create_image(edge, 13, anchor="ne", image=shot)
+            row.create_rectangle(edge - shot.width() - 1, 12, edge, 13
+                                 + shot.height(), outline=ui.STROKE)
+            # The canvas is the reference that keeps it: a PhotoImage
+            # nothing in Python holds is collected, and the row then
+            # draws a blank box where the picture was.
+            row.shot = shot
+        # "2026-09-04T13:22:01" — sliced rather than parsed, because a
+        # stamp this window did not write is not worth a traceback.
+        at = str(item.get("at", ""))
+        row.create_text(14, 15, text=at[11:16], anchor="nw",
+                        font=(ui.UI, 10, "bold"), fill=ui.FG)
+        try:
+            day = time.strftime("%d %b", time.strptime(at[:10], "%Y-%m-%d"))
+        except ValueError:
+            day = ""
+        row.create_text(14, 34, text=day, anchor="nw", font=(ui.UI, 8),
+                        fill=ui.FAINT)
+        kind = str(item.get("kind") or "")
+        where = str(item.get("where") or "")
+        row.create_text(left, 13, anchor="nw", font=(ui.MEDIUM, 8),
+                        fill=ui.AMBER if open_ else ui.FAINT,
+                        text="  ·  ".join(p for p in (kind.upper(),
+                                                      where.upper()) if p))
+        row.create_image(left, 30, anchor="nw", image=photo)
+        if heard is not None:
+            # Flush right of the TEXT COLUMN, not of the row: with a
+            # thumbnail in the corner those are no longer the same edge,
+            # and anchoring to the row's would lay a short report's
+            # evidence line straight across the picture.
+            row.create_image(edge - shot_w, 32 + text_h, anchor="ne",
+                             image=heard)
+        if open_:
+            ident = str(item.get("id", ""))
+            fixed = ui.Button(row, "Fixed", lambda i=ident:
+                              self._problem_decide(i, module.FIXED),
+                              w=58, h=26, quiet=True, fg=ui.GREEN)
+            shut = ui.Button(row, "Close", lambda i=ident:
+                             self._problem_decide(i, module.CLOSED),
+                             w=58, h=26, quiet=True, fg=ui.FAINT)
+            row.create_window(14, height - 38, window=fixed, anchor="nw")
+            row.create_window(76, height - 38, window=shut, anchor="nw")
+        else:
+            status = str(item.get("status") or "")
+            by = str(item.get("by") or "")
+            row.create_text(14, height - 24, anchor="nw", font=(ui.UI, 8),
+                            fill=ui.GREEN if status == module.FIXED
+                            else ui.FAINT,
+                            text=status + (f"  ·  {by}" if by else ""))
+        scroller.bind_wheel(row)
+
+    def _problem_decide(self, ident: str, status: str) -> None:
+        """Fixed or Closed on a row, written to problems.json here.
+
+        `by` is why resolve() takes the argument at all: a report can be
+        answered from this window or from wherever else the store grows a
+        surface, and the digest says which.
+        """
+        store = self._problems_store()
+        if store is None:
+            self._note("problems.py is not here")
+            return
+        try:
+            saved = store.resolve(ident, status, by="dashboard")
+        except Exception as e:            # noqa: BLE001
+            self._note(f"could not save that: {e}")
+            return
+        self._note(f"marked {status}" if saved
+                   else "that one is not in the list any more")
+        self._write_digest()
+        self._fill_problems()
+
+    # ------------------------------------------------- reporting one back
+
+    def _last_dictation(self, kind: str) -> dict | None:
+        """The recording a report is probably about, for problems.record.
+
+        The status pipe carries only when-and-how-many-characters for the
+        last dictation — main.py says why, and it is a good reason — so
+        the evidence has to come off the disk instead, and the newest wav
+        in recent\\ IS the one he just complained about.
+
+        Only for "wrong" and "slow", because record() COPIES the clip out
+        of the ring into problems\\ so it survives eviction, and an idea
+        about the layout of this screen has no business pinning a
+        megabyte of audio to itself.
+        """
+        if kind not in ("wrong", "slow"):
+            return None
+        try:
+            wavs = sorted((APP_DIR / "recent").glob("*.wav"),
+                          key=lambda p: p.stat().st_mtime)
+        except OSError:
+            return None
+        return {"wav": str(wavs[-1])} if wavs else None
+
+    @staticmethod
+    def _report_shot(pcfg) -> bytes | None:
+        """The screen as it is now, as JPEG bytes.
+
+        main._problem_shot's recipe and its reasons, on this side of the
+        pipe: BYTES rather than a file, because problems.pin_shot writes
+        what it is handed and a report he cancels should leave nothing
+        behind; PIL and visual_qa imported here, because a dashboard that
+        never files a report should never pay the seconds they cost a
+        cold process. A report with no picture is still a report, so
+        everything in here is allowed to fail quietly.
+        """
+        try:
+            import visual_qa as visual_qa_mod
+            from PIL import ImageGrab
+            image = ImageGrab.grab(all_screens=True).convert("RGB")
+            return visual_qa_mod.encode_jpeg(
+                image, int(getattr(pcfg, "max_side_px", 0) or 1344))
+        except Exception as e:            # noqa: BLE001
+            import logging
+            logging.getLogger("app").debug(
+                "could not photograph the screen for a report: %r", e)
+            return None
+
+    @staticmethod
+    def _shot_photo(module, jpeg: bytes | None):
+        """The attached screenshot as something Tk will draw, or None.
+
+        problems.thumb does the scaling — one place decides how big a
+        thumbnail is, and it is the module that owns THUMB_MAX — but it
+        takes a PATH and what the box has is bytes it has not filed yet.
+        So the bytes go to a temp file for exactly as long as the call
+        takes and are unlinked in the same breath: nothing about a report
+        he may still cancel belongs in problems\\, next to the ones he
+        sent.
+
+        tk.PhotoImage takes PNG bytes directly (measured: raw bytes,
+        no base64) which is the whole reason thumb() returns PNG.
+        """
+        if not jpeg:
+            return None
+        import tempfile
+        fd, name = tempfile.mkstemp(prefix="report-shot-", suffix=".jpg")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(jpeg)
+            png = module.thumb(APP_DIR, name)
+        except Exception:                 # noqa: BLE001 — no picture, no row
+            png = None
+        finally:
+            try:
+                os.unlink(name)
+            except OSError:
+                pass
+        if not png:
+            return None
+        try:
+            return tk.PhotoImage(data=png)
+        except tk.TclError:
+            return None
+
+    def _report(self) -> None:
+        """Say what is wrong, from wherever you are.
+
+        One line is all that is asked for; problems.record attaches the
+        rest — the settings that explain a bad dictation, the branch, the
+        recording itself. `where` is self.screen and is NOT a field he
+        fills in, because the tab he is looking at answers "where" every
+        single time and asking would be asking him to type what the
+        window already knows.
+
+        THE CARD IS THE WINDOW. It was a Toplevel with a title bar and a
+        strip of ui.BG around the card until 2026-09-04, when the owner
+        looked at it and asked for the card and nothing else — so it is
+        `overrideredirect`, the way overlay.WordPrompt and ui.Dropdown
+        are, sized to the card exactly, with Windows rounding the corners
+        (_round_frameless says how, and what that costs). What the frame
+        used to provide has to come from somewhere else now: Escape and
+        Return for the two answers, since there is no X to click, and a
+        click anywhere outside the card for "never mind", which is the
+        gesture a floating card asks for. The `done` latch still runs the
+        exit once from whichever of the six ways out fires, and the
+        centring is still manual off the main window because Tk has no
+        notion of "over the parent".
+        """
+        # The switch first, because it is what he asked for rather than
+        # what happens to be installed. With it off there is no button to
+        # press, so this is the door being tried from somewhere else, and
+        # the answer is still no.
+        if not self._problems_on:
+            self._note("[problems] enabled is false — nothing is being "
+                       "reported or written")
+            return
+        module = self._problems()
+        if module is None:
+            self._note("problems.py is not here — reporting is off")
+            return
+        kinds = tuple(getattr(module, "KINDS", ("wrong",))) or ("wrong",)
+        where = self.screen
+
+        # THE SCREEN FIRST, before there is a box to photograph. Same
+        # order and same reason as main._problem_ask: a report about what
+        # is on the screen wants the screen, not the question.
+        try:
+            pcfg = getattr(config_mod.load(CONFIG_PATH), "problems", None)
+        except Exception:                 # noqa: BLE001 — a picture is a bonus
+            pcfg = None
+        jpeg = self._report_shot(pcfg) if getattr(pcfg, "shot", True) else None
+        shot = self._shot_photo(module, jpeg)
+
+        card_w = 420
+        inner = card_w - 44
+        limit = int(getattr(module, "TEXT_MAX", 600) or 600)
+        top = tk.Toplevel(self.root)
+        top.overrideredirect(True)        # no title bar: this IS the card
+        top.title("Report a problem")     # for the taskbar, and for tests
+        top.configure(bg=ui.CARD)
+        top.resizable(False, False)
+        top.transient(self.root)
+        try:
+            # Topmost because a grabbed window nobody can see reads as an
+            # app that has hung: if he clicks another window the card has
+            # to stay where he can answer it.
+            top.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+
+        # Measured before anything is placed, because the card is exactly
+        # as tall as what is in it and these are the parts whose height is
+        # not arithmetic: the chips (ui.Chip is as wide as its own word,
+        # and KINDS — five of them since "other" — is the only list of the
+        # words, so a sixth kind wraps onto a second line instead of off
+        # the side of the card) and the two wrapped sentences at the top.
+        # A scratch frame that is thrown away: a Chip cannot be
+        # reparented, and rebuilding five of them costs nothing
+        # (ui.rounded caches every face).
+        scratch = tk.Frame(top)
+        widths = [ui.Chip(scratch, name, bg=ui.CARD).winfo_reqwidth()
+                  for name in kinds]
+        heads = [tk.Label(scratch, text=words, font=(ui.UI, 8),
+                          justify="left", wraplength=inner)
+                 for words in (REPORT_HINT, REPORT_KEYS)]
+        scratch.update_idletasks()
+        hint_h, keys_h = (label.winfo_reqheight() for label in heads)
+        scratch.destroy()
+        spots = _wrap(widths, inner)
+        chips_h = (spots[-1][1] + 30) if spots else 0
+
+        # THE BODY IS A FRAME, and the field is what made it one. The card
+        # GROWS as he types, and a ui.Card is a canvas sized once with a
+        # body window sized once inside it — growing that means rebuilding
+        # both, per keystroke. Nothing is lost by dropping it: the face
+        # has been flat since the window frame came off (fill and
+        # background the same colour, no border, because the rounding is
+        # the window's job — see _round_frameless), so all the Card was
+        # drawing here was a rectangle of ui.CARD, which is what the
+        # window itself already is. relwidth/relheight with a negative
+        # addend keeps the 22 px pad on all four sides at every height.
+        body = tk.Frame(top, bg=ui.CARD)
+        body.place(x=22, y=22, relwidth=1.0, relheight=1.0,
+                   width=-44, height=-44)
+        tk.Label(body, text=f"ON {where.upper()}", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 8)).place(x=0, y=0)
+        tk.Label(body, text="What is wrong?", bg=ui.CARD, fg=ui.FG,
+                 font=(ui.DISPLAY, 14, "bold")).place(x=0, y=16)
+        # problem_card's words rather than this file's, and it owns them
+        # for the same reason it owns the metrics: two surfaces of one
+        # feature that phrase it differently read as two features. The
+        # hint used to open with "One line." and this field is
+        # deliberately not one line any more, so the keys line under it
+        # says what replaced that clause — ON THE CARD, because Enter
+        # sends, and a box that did not say so would swallow the first
+        # report he tried to start a second paragraph in.
+        tk.Label(body, text=REPORT_HINT, bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 8), justify="left",
+                 wraplength=inner).place(x=0, y=44)
+        y_keys = 44 + hint_h + 7
+        tk.Label(body, text=REPORT_KEYS, bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 8), justify="left",
+                 wraplength=inner).place(x=0, y=y_keys)
+        y_field = y_keys + keys_h + 12
+
+        # A tk.Text, not a tk.Entry. The owner's words for the Entry were
+        # "very slop and strict", and he was right: one 30 px line with
+        # the sentence jammed against the border, for a field whose real
+        # limit is problems.TEXT_MAX — six hundred characters. So it is
+        # the field the hotkey card grew, on this surface: wrapping, three
+        # lines tall, growing to eight, FIELD_PAD_X/Y of interior room,
+        # and spacing3 so one display line is FIELD_LINE_H exactly and the
+        # two boxes have one line height between them.
+        #
+        # THE EDGE IS A PICTURE, and the widget sits inside it. Tk
+        # widgets are rectangles, and a hard-cornered box among rounded
+        # chips, rounded buttons and a rounded card is a good half of the
+        # "strict" he was objecting to — so the well is a bitmap at
+        # FIELD_RADIUS (the hotkey card's own radius, painted the same
+        # way) and the Text is inset WELL_INSET inside it, where a square
+        # corner still falls within the arc: at radius 9 the arc passes
+        # 2.6 px from the corner, so 3 px in is inside the curve and no
+        # nub of the field pokes out of it. Accent while it has the
+        # caret, hairline when it has not — what Tk's highlightcolor did
+        # for the Entry, done by hand now that the edge is painted.
+        #
+        # MEASURED, and the reason the echo below is still mandatory: a
+        # tk.Text scrambles a mixed Hebrew/English line EXACTLY the way
+        # the Entry did. Growing the field was a change of widget and a
+        # change of widget is a change of bidi, so it was checked rather
+        # than hoped for — the same finding overlay.ProblemCard reports.
+        WELL_INSET = 3
+        well = tk.Label(body, bg=ui.CARD, bd=0, highlightthickness=0)
+        field = tk.Text(body, bg=ui.EDGE, fg=ui.FG,
+                        insertbackground=ui.ACCENT,
+                        selectbackground=ui.ACCENT_SOFT,
+                        selectforeground=ui.FG, bd=0, highlightthickness=0,
+                        wrap="word", undo=True, font=FIELD_FONT,
+                        spacing3=max(0, FIELD_LINE_H - FIELD_FONT_LINE),
+                        insertwidth=2, padx=FIELD_PAD_X - WELL_INSET,
+                        pady=FIELD_PAD_Y - WELL_INSET)
+        field.tag_configure("rtl", justify="right")
+
+        # …and this is what the field cannot do, whichever widget it is.
+        # It is the only place in this window where TK lays out a sentence
+        # instead of ui.draw_text, and a MIXED line comes out of it with
+        # its runs in the wrong order — measured here 2026-09-04: typing
+        # "הכפתור של Settings לא עובד אחרי restart" DRAWS as "של הכפתור
+        # Settings אחרי עובד לא restart". Every character is right and the
+        # report is stored right; only the drawing lies, which is exactly
+        # layer 2 of this file's docstring. So the line is echoed
+        # underneath through DrawTextW, the renderer that gets it right,
+        # and he can read back what he actually typed before he sends it.
+        echo = tk.Label(body, bg=ui.CARD, anchor="e")
+
+        # Chips, not a dropdown: five values, one of them always on, and
+        # the whole set worth seeing at once — the same call the History
+        # filters and the Settings tabs make. Placed at the spots measured
+        # above rather than packed in a strip, because a wrapped line is a
+        # second row and pack has no idea where that is.
+        picked = {"kind": kinds[0]}
+        chips: dict[str, ui.Chip] = {}
+
+        def pick(name: str) -> None:
+            picked["kind"] = name
+            for key, chip in chips.items():
+                chip.set(key == name)
+
+        for name in kinds:
+            chips[name] = ui.Chip(body, name, lambda n=name: pick(n),
+                                  bg=ui.CARD, active=(name == kinds[0]))
+
+        # THE PICTURE THAT IS GOING WITH IT. He asked to see the
+        # screenshot before he sends the report, which is the only way to
+        # know it caught the thing he is reporting — and, when [problems]
+        # shot is off or the grab failed, to see that there is no picture
+        # rather than assume there is one.
+        keep: list = []
+        picture = caption = None
+        if shot is not None:
+            keep.append(shot)
+            picture = tk.Label(body, image=shot, bg=ui.CARD, bd=0,
+                               highlightthickness=1,
+                               highlightbackground=ui.STROKE)
+            caption = tk.Label(body, text="The screen as it was a moment "
+                                          "before this box opened. It goes "
+                                          "with the report.",
+                               bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                               justify="left", anchor="nw",
+                               wraplength=max(80, inner - shot.width() - 26))
+
+        actions = tk.Frame(body, bg=ui.CARD)
+        done = {"value": False}
+        state = {"typed": None, "lines": FIELD_LINES_MIN, "echo_h": 0,
+                 "focused": True}
+
+        def finish(text: str | None) -> None:
+            if done["value"]:
+                return
+            done["value"] = True
+            # THE PICTURES GO BEFORE THE WINDOW DOES. A PhotoImage
+            # finalised after its interpreter has gone calls into a dead
+            # Tcl from whichever thread the collector is on, which is the
+            # "Tcl_AsyncDelete: async handler deleted by the wrong thread"
+            # abort overlay.ProblemCard had to learn on its SECOND card.
+            # This box shares the dashboard's interpreter and its thread,
+            # so it is not the same exposure — but dropping them here
+            # costs one line and means nothing this box builds can outlive
+            # it, however many times it is opened and closed.
+            try:
+                echo.config(image="")
+                echo.image = None
+                if picture is not None:
+                    picture.image = None
+            except Exception:
+                pass
+            keep.clear()
+            try:
+                top.grab_release()
+                top.destroy()
+            except Exception:
+                pass
+            if text is not None:
+                self._file_report(module, where, picked["kind"], text, jpeg)
+
+        send_button = ui.Button(actions, "Send",
+                                lambda: finish(field.get("1.0", "end-1c")),
+                                w=104, primary=True, icon=ui.ICON["error"])
+        send_button.pack(side="left", padx=(0, 8))
+        cancel_button = ui.Button(actions, "Cancel", lambda: finish(None),
+                                  w=96, quiet=True)
+        cancel_button.pack(side="left")
+
+        # WHAT IS NOT A HANDLE. His words were "the upper side or
+        # everything beside the buttons and the text box, so I can move
+        # it", so the whole card drags except the things you press: the
+        # field (which has to keep its own mouse text selection), the five
+        # chips and the two buttons. The well is in here with the field
+        # rather than with the chrome — it is the 3 px ring around the
+        # text, and a press one pixel wide of the sentence he is aiming at
+        # should not move the card out from under him.
+        controls = {field, well, send_button, cancel_button}
+        controls.update(chips.values())
+        # The cursor says which is which before he presses anything: the
+        # move cross over everything that drags, and each control keeps
+        # the cursor it sets for itself (hand2 on the chips and the
+        # buttons, the I-beam asked for explicitly here because a Text
+        # inheriting the cross would look like a handle).
+        top.configure(cursor="fleur")
+        body.configure(cursor="fleur")
+        field.configure(cursor="xterm")
+
+        # Where the card is, once. It GROWS DOWNWARD from here: x and y
+        # are left alone by every repaint, so the corner he started
+        # reading at does not move under him while he types. Manual,
+        # because Tk has no notion of "over the parent" — and HIS if he
+        # has ever dragged one, which beats the middle of the dashboard by
+        # definition: he moved it there on purpose.
+        if self._report_at is not None:
+            at = {"x": self._report_at[0], "y": self._report_at[1]}
+        else:
+            at = {"x": max(0, self.root.winfo_rootx()
+                           + (self.root.winfo_width() - card_w) // 2),
+                  "y": max(0, self.root.winfo_rooty() + 170)}
+
+        def relayout() -> None:
+            """Place everything from the field down, and size the window.
+
+            One function for it because five things move together: the
+            field's height is a line count, and the echo, the chips, the
+            screenshot and the buttons all sit under it. The only thing
+            allowed to override the fixed origin is the bottom of the
+            screen — holding y there would mean hiding the two buttons,
+            which is worse than moving the card.
+            """
+            field_h = state["lines"] * FIELD_LINE_H + 2 * FIELD_PAD_Y
+            face = ui.rounded(inner, field_h, FIELD_RADIUS, ui.EDGE, ui.CARD,
+                              ui.ACCENT if state["focused"] else ui.STROKE)
+            well.config(image=face)
+            well.image = face          # the Label is the only reference
+            well.place(x=0, y=y_field, width=inner, height=field_h)
+            field.place(x=WELL_INSET, y=y_field + WELL_INSET,
+                        width=inner - 2 * WELL_INSET,
+                        height=field_h - 2 * WELL_INSET)
+            y = y_field + field_h + 8
+            echo_h = state["echo_h"]
+            echo.place(x=0, y=y, width=inner, height=max(1, echo_h))
+            y += echo_h + (6 if echo_h else 0) + 14
+            for name, (cx, cy) in zip(kinds, spots):
+                chips[name].place(x=cx, y=y + cy)
+            y += chips_h
+            if picture is not None:
+                y += 12
+                picture.place(x=0, y=y)
+                caption.place(x=shot.width() + 16, y=y + 2)
+                y += shot.height() + 2
+            y += 16
+            actions.place(x=inner, y=y, anchor="ne")
+            height = y + 36 + 44
+            spot_y = at["y"]
+            room = top.winfo_screenheight() - 8
+            if spot_y + height > room:
+                spot_y = max(0, room - height)
+            top.geometry(f"{card_w}x{height}+{at['x']}+{spot_y}")
+
+        def pump() -> None:
+            """Read the field on a timer, not on a key.
+
+            The line does not always arrive from the keyboard. THE BOX CAN
+            BE DICTATED INTO — the app is another process, so injector
+            pastes into it and a Tk grab does not stop that (measured) —
+            and it can be pasted into, undone and redone. A tk.Text has no
+            textvariable to trace, and the write trace this box used to
+            run caught the keys and nothing else. One poll catches every
+            route, which is what the hotkey card does with the same field
+            for the same reason.
+            """
+            if done["value"]:
+                return
+            try:
+                typed = field.get("1.0", "end-1c")
+                if len(typed) > limit:
+                    # problems.clean would cut it silently on the way to
+                    # disk; better he watches the field stop taking words
+                    # than find the tail missing in a report he can no
+                    # longer edit.
+                    field.delete("1.0+%dc" % limit, "end")
+                    typed = field.get("1.0", "end-1c")
+                # Re-applied on every pass: a tag does not extend itself
+                # over text inserted after it, so a right-aligned field
+                # would start going left again at the next word.
+                field.tag_add("rtl", "1.0", "end")
+                lines = min(FIELD_LINES_MAX,
+                            max(FIELD_LINES_MIN, _display_lines(field)))
+                if (typed, lines) != (state["typed"], state["lines"]):
+                    if typed != state["typed"]:
+                        stripped = typed.strip()
+                        if stripped:
+                            photo, echo_h, _l = ui.draw_text(
+                                stripped, pt=10, width=inner,
+                                max_lines=FIELD_LINES_MAX, colour=ui.DIM,
+                                bg=ui.CARD)
+                            echo.config(image=photo)
+                            echo.image = photo   # the Label is the only ref
+                            state["echo_h"] = echo_h
+                        else:
+                            echo.config(image="")
+                            echo.image = None
+                            state["echo_h"] = 0
+                    state["typed"], state["lines"] = typed, lines
+                    relayout()
+                top.after(60, pump)
+            except Exception:
+                return            # the box went out from under the poll
+
+        def send(_event=None) -> str:
+            finish(field.get("1.0", "end-1c"))
+            return "break"
+
+        def cancel(_event=None) -> str:
+            finish(None)
+            return "break"
+
+        def newline(_event=None) -> str:
+            """Shift+Enter is the new line and Enter is Send — which is
+            why the card says so. Once the field is more than one line the
+            two cannot both be Enter, and a report is a sentence he wants
+            sent rather than a document he is composing. Bound explicitly
+            rather than left to Tk's class binding: the <Return> binding
+            fires for a shifted Return too unless something more specific
+            claims it.
+            """
+            field.insert("insert", "\n")
+            return "break"
+
+        def select_all(_event=None) -> str:
+            """Ctrl+A selects the whole report, which a tk.Text does NOT
+            do on its own — its Ctrl+A is Tk's emacs inheritance,
+            beginning-of-line. The one-line Entry hid that by being too
+            small for it to matter; you cleared that with Backspace. A
+            field big enough to hold a paragraph is one he will want to
+            replace in a single gesture."""
+            field.tag_add("sel", "1.0", "end-1c")
+            field.mark_set("insert", "end-1c")
+            return "break"
+
+        # Three pixels of slop before a press becomes a drag. A click is
+        # a press, a small wobble and a release — without a threshold
+        # every click on the title would nudge the card a pixel or two,
+        # and the card must sit still for a click that was not a move.
+        DRAG_SLOP = 3
+        drag = {"on": False, "moved": False, "dx": 0, "dy": 0,
+                "rx": 0, "ry": 0}
+
+        def on_control(widget) -> bool:
+            """Is the press on one of the things that is not a handle?
+
+            Walked up to the card, because a press lands on the DEEPEST
+            widget under the pointer and a ui.Button or a ui.Chip is a
+            canvas with items in it, not a leaf — anything inside a
+            control is the control.
+            """
+            while widget is not None and widget is not top:
+                if widget in controls:
+                    return True
+                widget = getattr(widget, "master", None)
+            return False
+
+        def pressed(event) -> None:
+            """One handler, three answers — and it has to be one handler,
+            because a Tk grab sends every press in the application here.
+
+            Measured 2026-09-04: under grab_set() a press on the dashboard
+            is not discarded and does not reach the dashboard, it is
+            REPORTED TO THE GRAB WINDOW, with the widget set to this
+            Toplevel and coordinates relative to it, which for a point
+            outside the card is a negative or over-long number. So the
+            screen rectangle sorts outside from inside, and the widget
+            sorts out what is inside:
+
+              outside the card         cancel — this is what the X in the
+                                       title bar used to be
+              inside, on a control     hands off: the field keeps its own
+                                       text selection, the chips and the
+                                       buttons keep their own clicks
+              inside, on anything else the card is being dragged
+
+            A drag can never be read as a cancel and a cancel can never
+            start a drag, because both are decided by where the press
+            LANDED and not by where the pointer ends up: dragging the card
+            until the pointer is off it does not cancel, and a press
+            outside cannot arm the drag. The rectangle is asked of the
+            window rather than held in a variable, because the card
+            changes height as he types and moves when he drags it.
+
+            ui.Dropdown's <FocusOut> is not the mechanism for the cancel,
+            for the same reason the grab explains: a click on the
+            dashboard never takes the focus off this window, so FocusOut
+            does not fire for the case that matters. Nor is losing the
+            focus to ANOTHER APP a cancel — he may well be going to
+            reproduce the thing he is reporting, and coming back to a box
+            he has to retype would be worse than no box at all.
+            """
+            x0, y0 = top.winfo_rootx(), top.winfo_rooty()
+            if not (x0 <= event.x_root < x0 + top.winfo_width()
+                    and y0 <= event.y_root < y0 + top.winfo_height()):
+                finish(None)
+                return
+            # WHICH widget, asked of the screen rather than of the
+            # event. `event.widget` is normally the deepest widget under
+            # the pointer, but when the grab is what delivered the press
+            # it is this Toplevel and says nothing about what he pressed
+            # on — measured 2026-09-04, the same press on the title
+            # reported the Label once and the Toplevel once, depending on
+            # whether the application was already the active one.
+            # winfo_containing reads it off the coordinates, so a press
+            # on a chip while the dashboard is in the background is still
+            # a press on a chip and not a grab of the margin.
+            hit = event.widget
+            if hit is top:
+                hit = top.winfo_containing(event.x_root, event.y_root) or top
+            if on_control(hit):
+                return
+            drag.update({"on": True, "moved": False,
+                         "dx": event.x_root - x0, "dy": event.y_root - y0,
+                         "rx": event.x_root, "ry": event.y_root})
+
+        def dragging(event) -> None:
+            """Move the window under the pointer. No frame to drag by —
+            he has none because it was taken away, which is why he asked
+            for this — so it is geometry(), the way overlay.ReviewCard
+            moves its own card: the offset from the press is held and the
+            corner is put wherever that offset says."""
+            if not drag["on"]:
+                return
+            if not drag["moved"]:
+                if (abs(event.x_root - drag["rx"]) < DRAG_SLOP
+                        and abs(event.y_root - drag["ry"]) < DRAG_SLOP):
+                    return
+                drag["moved"] = True
+            x, y = event.x_root - drag["dx"], event.y_root - drag["dy"]
+            top.geometry(f"+{x}+{y}")
+            # `at` FOLLOWS THE DRAG, because relayout re-applies it and
+            # anything can call relayout while the pointer is down — the
+            # border lighting down when the focus leaves the field is one
+            # repaint, and a stale `at` in the middle of a drag would put
+            # the card back where the drag started.
+            at["x"], at["y"] = x, y
+
+        def dropped(event=None) -> None:
+            """WHERE HE PUT IT is where it grows from now.
+
+            `at` is what relayout re-applies on every change, so without
+            this line the next word he typed would snap the card back to
+            the middle of the dashboard. It is also remembered on the
+            dashboard, so the next report opens where he left this one —
+            the notify stack and the review card both remember where they
+            were dragged to, and a card that forgets is one he has to move
+            again every single time.
+            """
+            if not drag["on"]:
+                return
+            drag["on"] = False
+            if not drag["moved"]:
+                return
+            # The release carries a position of its own, and it is the
+            # last word: a quick flick ends with the button up before the
+            # final move has been reported (measured with synthetic input,
+            # where Windows coalesces the moves — the card stopped a step
+            # short of the pointer), so the drop is applied from the event
+            # that ended it rather than from wherever the last motion got
+            # to.
+            if event is not None:
+                dragging(event)
+            at["x"], at["y"] = top.winfo_rootx(), top.winfo_rooty()
+            self._report_at = (at["x"], at["y"])
+
+        def gone(event) -> None:
+            """A grab outlives the window that set it, and a stranded one
+            leaves the dashboard taking no clicks at all — so the window
+            dying by any route it did not ask for still runs the exit.
+            `is top` because <Destroy> reaches this binding for every
+            child widget too, and the latch makes finish's own destroy
+            free."""
+            if event.widget is top:
+                finish(None)
+
+        def lit(on: bool):
+            """The border follows the caret, and it is wired rather than
+            painted on: the box stays up while he goes off to another
+            window to reproduce what he is reporting (see `outside`), and
+            a field glowing as if it were taking keys while the keys are
+            going somewhere else is the one lie on this card that would
+            cost him a sentence."""
+            def handler(_event=None) -> None:
+                if state["focused"] != on and not done["value"]:
+                    state["focused"] = on
+                    relayout()
+            return handler
+
+        field.bind("<FocusIn>", lit(True))
+        field.bind("<FocusOut>", lit(False))
+        field.bind("<Return>", send)
+        field.bind("<KP_Enter>", send)
+        field.bind("<Shift-Return>", newline)
+        field.bind("<Shift-KP_Enter>", newline)
+        field.bind("<Control-a>", select_all)
+        field.bind("<Control-A>", select_all)
+        field.bind("<Escape>", cancel)
+        top.bind("<Button-1>", pressed)
+        # Motion and release on the window as well: Tk keeps sending both
+        # to whatever took the press, so a drag begun on the title goes on
+        # being reported here even when the pointer has left the card
+        # entirely. It is the same property that keeps a drag from
+        # pressing a chip it happens to end on — the release goes to the
+        # widget that took the press, so a chip the pointer merely
+        # finishes over never sees one.
+        top.bind("<B1-Motion>", dragging)
+        top.bind("<ButtonRelease-1>", dropped)
+        # On the window as well as the field: with no frame the keyboard
+        # is the only way out that is always there, and it must not
+        # depend on which of the card's widgets has the focus.
+        top.bind("<Return>", send)
+        top.bind("<Escape>", cancel)
+        top.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+        top.bind("<Destroy>", gone)
+
+        relayout()
+        top.update_idletasks()
+        # After the geometry and after update_idletasks: the attribute
+        # goes to a real hwnd, and DwmSetWindowAttribute on an unrealised
+        # window is the same silent no-op that put the status dot on the
+        # close button (overlay.py says so where it learned it).
+        _round_frameless(top, ui.STROKE)
+        # AND THEN LIFT IT, which a framed Toplevel never needed.
+        # Measured 2026-09-04: the card came up mapped, viewable,
+        # -topmost, holding the grab, and behind the dashboard — every
+        # window flag right and not one pixel of it on the screen. Tk
+        # rebuilds the wrapper window when overrideredirect is set, and
+        # the rebuilt one lands wherever the z-order happens to put it;
+        # -topmost asked for before that gets rebuilt away with it. So
+        # both are asserted again HERE, on the window that is finally
+        # going to be shown.
+        try:
+            top.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        top.lift()
+        top.grab_set()
+        top.focus_force()
+        field.focus_set()
+        pump()
+
+    def _file_report(self, module, where: str, kind: str, text: str,
+                     jpeg: bytes | None = None) -> None:
+        """Hand the line to problems.record, which collects the rest.
+
+        clean()'s ValueError is the one exception that module raises on
+        purpose — an empty line — and it is a sentence to say back, not
+        something to log. Everything else in there is already swallowed,
+        so filing a report can cost him the report and never the window.
+        """
+        try:
+            cfg = config_mod.load(CONFIG_PATH)
+        except Exception:                 # noqa: BLE001 — env is a bonus
+            cfg = None
+        try:
+            item = module.record(APP_DIR, {"where": where, "kind": kind,
+                                           "text": text},
+                                 cfg=cfg, last=self._last_dictation(kind),
+                                 jpeg=jpeg)
+        except ValueError:
+            self._note("nothing was typed — say what is wrong and send it "
+                       "again")
+            return
+        except Exception as e:            # noqa: BLE001
+            self._note(f"could not file that: {e}")
+            return
+        self._note(f"filed as {item.get('id', '')} — it is on the Problems "
+                   f"screen until you answer it")
+        self._write_digest()
+        if self.screen == "Problems":
+            self._fill_problems()
+
     # --------------------------------------------------------------- keys
 
     # -------------------------------------------------------------- awake
@@ -1614,6 +2830,14 @@ class Dashboard:
             unread = int(info.get("unread") or 0)
         except (TypeError, ValueError):
             unread = 0
+        # A finish waiting for its session to go quiet is unread and NOT
+        # on the screen (2026-09-05): counted apart, so the hero never
+        # says "1 UNREAD" over an empty corner.
+        try:
+            held = min(unread, int(info.get("held") or 0))
+        except (TypeError, ValueError):
+            held = 0
+        shown = unread - held
         last = info.get("last") or {}
         kind = str(last.get("kind") or "info")
         bits = [str(last.get("label") or last.get("source") or ""),
@@ -1641,10 +2865,10 @@ class Dashboard:
             meta = "[notify] enabled = false"
             hint = ("The route answers 503 and nothing is shown, stored or "
                     "played. Turn it on in Settings and restart the app.")
-        elif unread > 0:
+        elif shown > 0:
             colour = ui.RED if kind == "error" else ui.AMBER
             word = colour
-            state = f"{unread} UNREAD"
+            state = f"{shown} UNREAD"
             meta = newest or "something is waiting"
             left = info.get("reminders_left") or 0
             if info.get("reminding"):
@@ -1657,6 +2881,17 @@ class Dashboard:
                         "and takes the column down; so does Esc over it or "
                         "the dismiss key. The x on one card answers just "
                         "that one.")
+            if held:
+                hint = (f"{held} finish{'es' if held > 1 else ''} still "
+                        "waiting for a session to go quiet. " + hint)
+        elif held > 0:
+            colour, word = ui.DIM, ui.FG
+            state = f"{held} WAITING"
+            meta = newest or "a finish, held"
+            hint = ("A finish is held until the session that sent it has "
+                    "been quiet for [notify] quiet_s seconds; if the session "
+                    "speaks again first it is retired unseen. Nothing rings "
+                    "for it.")
         else:
             colour, word = ui.GREEN, ui.FG
             state = "ALL SEEN"
@@ -2991,6 +4226,7 @@ class Dashboard:
          "Notify": self._paint_notify,
          "Keys": self._paint_keys,
          "Version": lambda: None,
+         "Problems": self._poll_problems,
          "Settings": self._paint_settings}[self.screen]()
 
     # ------------------------------------------------------------ shutdown

@@ -226,8 +226,8 @@ corner = "top-right"          # top-right | top-left | bottom-right | bottom-lef
                               # Where it starts before you have moved it. On the
                               # right it is placed BESIDE the status dot, never
                               # over it: the dot does not move for this
-x = -1788                      # the top-left of the CARD where you last dragged
-y = 371                       # it, in screen pixels — what you can SEE, not the
+x = -291                      # the top-left of the CARD where you last dragged
+y = 235                       # it, in screen pixels — what you can SEE, not the
                               # window, which starts 26 px further up and left to
                               # leave room for its own shadow. -100000 = never
                               # moved: use `corner`. It has to be a number no
@@ -1058,6 +1058,27 @@ coalesce_s = 5                 # a second notification from the SAME source
                                # within this many seconds updates the card
                                # instead of playing a second cue - Claude
                                # fires Stop and Notification a moment apart
+interrupt = "input"            # all | input | none. Which arrivals may PULL
+                               # YOU OUT of what you are doing - play the
+                               # cue and keep reminding. "all" is every one,
+                               # as it used to be. "input" is only what is
+                               # waiting on you (a permission, a question,
+                               # an idle session) and what went wrong; a
+                               # plain "finished" lands as a quiet card and
+                               # waits for you there. "none" never makes a
+                               # sound. Counted 2026-09-05: 87 of the last
+                               # 100 cards were "Claude finished", one per
+                               # turn, each rung and reminded twice
+quiet_s = 60                   # a "finished" waits this many seconds for
+                               # the session that sent it to go quiet
+                               # before it becomes a card; if that session
+                               # speaks again first, the earlier finish is
+                               # retired unseen and the new one waits in
+                               # its place. Claude Code reports a finish at
+                               # the end of EVERY turn, and only silence
+                               # tells which turn was the last. A
+                               # permission or a question never waits.
+                               # 0 = every finish lands at once, as before
 watch = "cowork"               # off | cowork | all. Which of the Claude
                                # desktop app's OWN Windows notifications get
                                # a card here too. This is the only way Cowork
@@ -1082,8 +1103,8 @@ anchor = "bottom"              # bottom | top. Which edge of the stack stays
                                # so a card kept in the bottom-right corner
                                # never runs off the screen; "top" pins the
                                # top edge and grows downward, as it used to
-x = 2196                    # the top-left of the CARD where you last
-y = 1391                    # dragged it, in screen pixels — but `y` is the
+x = 2191                    # the top-left of the CARD where you last
+y = 1419                    # dragged it, in screen pixels — but `y` is the
                                # edge `anchor` names, so with the default
                                # "bottom" it is the BOTTOM of the stack and
                                # a taller card grows up away from it.
@@ -1094,6 +1115,75 @@ scale = 1.0                    # how big it is drawn (0.6 .. 1.4)
 dismiss_hotkey = "ctrl+alt+m"  # tap: the card goes away and everything is
                                # marked seen, wherever the mouse is. Rebind
                                # from the dashboard; "" = no key
+
+[problems]
+# THE OWNER'S OWN BUG LIST, AND ONE TYPED LINE IS ALL IT ASKS FOR.
+# Something is wrong - the recordings tab shows yesterday's count, a
+# dictation comes back with a tail nobody said - and by the time it is
+# worth writing down, everything that would explain it is gone. So the
+# report key (or the Report button on any dashboard tab) opens a box,
+# you type the one line, and the app is already standing there with the
+# rest of the form filled in: the tab you were on, the dictation it is
+# about, the wav behind it, which backend and which model decoded it,
+# whether the vocabulary was replacing yet, what branch was checked
+# out. All of that is knowable at the moment it annoys you and knowable
+# at no other, which is why this is a key and not a text file.
+#
+# Every report is an item in problems.json and a section of problems.md,
+# which is regenerated from scratch each time - open items first, newest
+# first - because it is read once a week by the owner and by an agent
+# working through the list, and a file that is appended to turns into a
+# log. ANSWERED reports age out at keep_resolved; an OPEN one is never
+# dropped. See problems.py.
+enabled = true                 # false unregisters the key, takes the
+                               # Report button away and writes nothing.
+                               # problems.json is left exactly where it is
+report_hotkey = "ctrl+alt+r"   # tap: the report box opens over whatever
+                               # is in front, wherever the mouse is.
+                               # Rebind from the dashboard; "" = no key,
+                               # and the Report button is then the only
+                               # door
+shot = true                    # attach a screenshot of the screen as it
+                               # looked when you pressed the key - the tab,
+                               # the dialog, the wrong number, all of which
+                               # are gone by the time the report is read.
+                               # It is written into problems\ beside the
+                               # report and never leaves this machine.
+                               # false = the typed line and the settings
+                               # only
+keep_audio = true              # copy the recording the report is about
+                               # into problems\, so it outlives recent\'s
+                               # ring of vocab.keep_audio clips: an
+                               # unresolved report sits there for weeks and
+                               # the audio is the only thing that can
+                               # settle what was actually said. false = the
+                               # report keeps the wav's name and nothing
+                               # else
+keep_resolved = 200            # how many ANSWERED reports to keep, newest
+                               # first (0 .. 2000, and the same 200
+                               # problems.KEEP_RESOLVED holds). Open ones
+                               # are never trimmed at any setting - a
+                               # question nobody has answered is not a
+                               # kilobyte worth saving
+x = -100000                    # the left edge of the report CARD where
+                               # you last dragged it to, in screen pixels.
+                               # -100000 = you never have, so it opens
+                               # where it always opens. The sentinel is a
+                               # number no desktop can reach, because
+                               # negative coordinates are real on a monitor
+                               # to the left of the primary (this one
+                               # starts at x = -1920)
+y = -100000                    # the top edge of that same card, in screen
+                               # pixels. -100000 = never dragged
+card_x = -100000               # the left edge of the DASHBOARD's report
+                               # box, which is a second window and keeps
+                               # its own pair: it opens centred over the
+                               # dashboard, so sharing the floating card's
+                               # position would fling it off the window it
+                               # belongs to. -100000 = never dragged
+card_y = -100000               # the top edge of the dashboard's report
+                               # box, in screen pixels. -100000 = never
+                               # dragged
 
 [server]
 # Dictate from the PHONE, transcribe on this GPU: the phone records and
@@ -1463,8 +1553,8 @@ card_seconds = 20             # how long the card stays on screen before it
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
-x = 1312                   # the top-left of the CARD where you last
-y = 237                   # dragged it, in screen pixels. -100000 = never
+x = 370                   # the top-left of the CARD where you last
+y = 910                   # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a
                               # monitor to the left of the primary
 scale = 1.0                   # how big it is drawn (0.6 .. 1.4)

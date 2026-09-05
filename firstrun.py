@@ -312,7 +312,7 @@ class Wizard:
         self._closing = False
 
         self.root = tk.Tk()
-        self.root.title("Hebrew Dictation")
+        self.root.title("DeskIT")
         self.root.configure(bg=ui.BG)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         self._centre()

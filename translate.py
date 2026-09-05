@@ -370,7 +370,7 @@ GROQ_URL = "https://api.groq.com/openai/v1"
 # Cloudflare, which answers Python's default signature (Python-urllib/3.x)
 # with 403 / error 1010 "banned based on your browser's signature" —
 # measured live with the user's own key. Any named client passes.
-USER_AGENT = "hebrew-dictation/1.0"
+USER_AGENT = "deskit/1.0"
 
 
 class CerebrasTranslator:

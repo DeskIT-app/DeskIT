@@ -302,7 +302,7 @@ def _gui() -> int:
         names = [current_branch()]
 
     root = tk.Tk()
-    root.title("Hebrew Dictation — versions")
+    root.title("DeskIT — versions")
     root.resizable(False, False)
     root.attributes("-topmost", True)
     root.configure(bg="#1e1f22")

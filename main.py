@@ -42,6 +42,7 @@ import awake as awake_mod
 import notify as notify_mod
 import notify_watch as notify_watch_mod
 import popup as popup_mod
+import problems as problems_mod
 import server as server_mod
 import singleton
 import overlay as overlay_mod
@@ -80,6 +81,7 @@ NESTED_HOTKEYS = {
     "camera_hotkey": "camera.camera_hotkey",
     "screens_hotkey": "awake.screens_hotkey",
     "dismiss_hotkey": "notify.dismiss_hotkey",
+    "report_hotkey": "problems.report_hotkey",
 }
 
 # What the dashboard may change while the app runs and have it FELT
@@ -111,8 +113,22 @@ AUTO_PUNCTUATE_MIN_WORDS = 3
 # And the notification-dismiss key: it touches no cursor and no clipboard
 # (a JSON write on a thread and a card taken down), and a card that
 # arrives mid-sentence must be dismissible mid-sentence.
+# The report key is deliberately NOT in here. Every other text key is
+# refused mid-hold because there is no selection to act on; this one is
+# refused because there is no HAND — it opens a box you type a sentence
+# into, and one of the two is on the dictation hotkey. Latched it is
+# allowed, like the rest of them, and latching is exactly the state in
+# which typing a report while the microphone runs makes sense.
 _SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo",
                              "screens", "notify_dismiss"})
+
+# How old the last dictation may be before a report stops blaming it.
+# Five minutes covers "that came out wrong, let me say why" — the press
+# that follows a bad transcript by the time it takes to read it — and
+# stops the transcript from this morning being filed as the evidence for
+# a problem with something else entirely. A stale clip in a report is
+# worse than no clip: a week later it still reads as evidence.
+PROBLEM_LAST_MAX_S = 300.0
 
 # What the dot should say for a machine state, when a worker has finished
 # with something and is deciding what to put back. Only two states are
@@ -131,7 +147,7 @@ def report_fatal(message: str) -> None:
     log.error("%s", message)
     if not HAS_CONSOLE:
         ctypes.windll.user32.MessageBoxW(
-            None, message, "Hebrew Dictation — cannot start", 0x10)
+            None, message, "DeskIT — cannot start", 0x10)
 
 
 class SplashLog(logging.Handler):
@@ -250,6 +266,14 @@ class App:
         # ever be measured, only assumed. See --benchmark.
         self.recent = (Spool(APP_DIR / "recent", keep=cfg.vocab.keep_audio)
                        if cfg.vocab.keep_audio > 0 else None)
+        # His own bug list (problems.py). Next to `recent` because that is
+        # where the evidence comes from: a report pins the clip out of the
+        # ring so the audio behind it outlives the fifty that follow.
+        # getattr, like every other optional section: a Config without
+        # [problems] leaves this None, and every use of it is guarded.
+        pcfg = getattr(cfg, "problems", None)
+        self.problems = (problems_mod.Store(APP_DIR / problems_mod.STORE_NAME)
+                         if pcfg is not None and pcfg.enabled else None)
         self._local = None       # lazily built local fallback, if enabled
         self.recorder = Recorder(cfg.audio.sample_rate, cfg.audio.device,
                                  cfg.max_seconds, self._on_overflow)
@@ -316,6 +340,7 @@ class App:
         # cannot raise inside the keyboard hook, where an exception is a
         # dropped hook and a frozen keyboard.
         self._to_card = False
+        self._to_prompt = False
         self._start_hwnd = 0
         # [visual_qa] echo_to_field. What was dictated INTO the ask card,
         # kept until the card closes and the field it belongs to is in
@@ -484,6 +509,27 @@ class App:
             if ncfg is not None and ncfg.enabled else "off")
         # The pencil's box: one line, takes the keyboard, on purpose.
         self._word_prompt = overlay_mod.WordPrompt()
+        # The report card (problem_card.py, painted; overlay.ProblemCard,
+        # shown). Its OWN object and never the pencil's: the two windows
+        # ask different questions with different signatures, and a report
+        # opening must not be able to close a word box he is in the middle
+        # of. Looked up rather than named, the way NotifyCard is — the
+        # class lands with the card package, and until then the key says
+        # so instead of raising.
+        #
+        # Built with where it was last dragged to and a callback to write
+        # the next drag down, which is the hint/review/notify shape. x and
+        # y through getattr: they land with the config half of this
+        # feature, and HINT_UNSET is the "never moved" sentinel every
+        # other card here uses — a number no desktop can reach, because a
+        # monitor left of the primary has genuinely negative coordinates
+        # and -1 would throw a real position away.
+        card_cls = getattr(overlay_mod, "ProblemCard", None)
+        unset = getattr(config_mod, "HINT_UNSET", -100000)
+        self._problem_card = None if card_cls is None else card_cls(
+            x=int(getattr(pcfg, "x", unset) if pcfg is not None else unset),
+            y=int(getattr(pcfg, "y", unset) if pcfg is not None else unset),
+            on_change=self._save_problem_card)
         self._review = None
         # The decoder's per-word confidence for the LAST live transcription,
         # read under the model lock in _transcribe and written into the
@@ -644,6 +690,14 @@ class App:
         ncfg = getattr(cfg, "notify", None)
         if ncfg is not None and ncfg.enabled and ncfg.hotkey:
             taps[parse_binding(ncfg.hotkey)] = "notify_dismiss"
+        # The report key, on the same terms: [problems] enabled = false
+        # unregisters it and the dashboard's own form still files one.
+        # `hotkey` through getattr as well, not just the section — the key
+        # is landing with the config half of this feature and a Config
+        # built before it has the section without the field.
+        pcfg = getattr(cfg, "problems", None)
+        if pcfg is not None and pcfg.enabled and getattr(pcfg, "hotkey", ""):
+            taps[parse_binding(pcfg.hotkey)] = "problem_report"
         return (hotkeys, taps,
                 vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
                 vk_for(cfg.pause_hotkey) if cfg.pause_hotkey else None)
@@ -1092,6 +1146,37 @@ class App:
         config_mod.set_values(self.config_path,
                               {f"notify.{k}": v for k, v in fields.items()})
         log.info("notify card: %s",
+                 ", ".join(f"{k}={v}" for k, v in fields.items()))
+
+    # ---- the bug list (problems.py) ----
+
+    def _save_problem_card(self, fields: dict) -> None:
+        """The report card's twin of _save_review_card: where it was
+        dragged to, written into [problems] through the same
+        comment-keeping line edit.
+
+        One line more than its siblings, and it earns it. The other three
+        sections have had x and y since before they were draggable; this
+        one is having them added, and until that lands `dataclasses.replace`
+        would raise TypeError on a field the dataclass has not got. The
+        card's own instance keeps the position for the rest of the run
+        either way, so what is lost meanwhile is the restart and not the
+        drag. Negative values are written as they come: the card clamps
+        against the whole virtual desktop, which starts at x = -1920 here.
+        """
+        pcfg = getattr(self.cfg, "problems", None)
+        known = {f.name for f in dataclasses.fields(pcfg)} if pcfg else set()
+        missing = sorted(set(fields) - known)
+        if missing:
+            log.info("report card: [problems] has no %s to save a drag in "
+                     "yet — it stays put for this run only",
+                     ", ".join(missing))
+            return
+        self.cfg = dataclasses.replace(
+            self.cfg, problems=dataclasses.replace(pcfg, **fields))
+        config_mod.set_values(self.config_path,
+                              {f"problems.{k}": v for k, v in fields.items()})
+        log.info("report card: %s",
                  ", ".join(f"{k}={v}" for k, v in fields.items()))
 
     def _notify_dismissed(self, item_id=None) -> None:
@@ -2021,6 +2106,31 @@ class App:
         # you were talking to your document, and a card opening while you
         # speak does not change who you were addressing.
         self._to_card = bool(vqa is not None and vqa.sink_active)
+        # And the report card, on exactly the same rule and for a harder
+        # reason: it is one of OUR OWN windows, so a transcript aimed at
+        # it can never be pasted. injector.is_our_window refuses a paste
+        # into this process by design (injector.py:549 — the placeholder
+        # would go in and the focus test would then pass, so it could
+        # never be taken back out), which is why the box has to be FILLED
+        # rather than pasted into, the way the ask card is.
+        #
+        # Never both: one dictation has one destination, and the card is
+        # given precedence because it is the older claim and the one
+        # `diverting` at the far end is computed from. In practice they
+        # cannot both be up — each takes the keyboard when it opens.
+        # getattr for the same reason `_vqa` is read that way three lines
+        # up: this runs inside the keyboard hook, where an AttributeError
+        # is a dropped hook and a frozen keyboard, and a half-built App
+        # (the tests build several) must still be able to start a
+        # recording. No box means nowhere to divert to, which is False.
+        # THE REPORT CARD ONLY, not the pencil's word box: both are
+        # WordPrompts and both take the keyboard, but the pencil is asking
+        # what one word should have been and a paragraph dictated at it is
+        # not an answer to that. The report card is the one window here
+        # that wants a sentence.
+        box = getattr(self, "_problem_card", None)
+        self._to_prompt = bool(not self._to_card
+                               and box is not None and box.open())
         # And for the same reason, the window is remembered NOW as well as
         # at the release. Our own overlays take the foreground, so a
         # dictation that ends over a capture overlay would otherwise be
@@ -2088,8 +2198,14 @@ class App:
         hwnd = injector.foreground_window()
         if hwnd and injector.is_our_window(hwnd):
             hwnd = self._start_hwnd
-        self.queue.put((wav, seconds, hwnd, language, self._to_card,
-                        {"pieces": pieces} if len(pieces) > 1 else {}))
+        # The report card rides in the EXTRA DICT, not as a seventh element:
+        # the worker unpacks item[:5] and splats item[5], so `sliced` and
+        # `in_stream` already travel this way and every caller and test
+        # that builds a five- or six-tuple keeps working untouched.
+        extra = {"pieces": pieces} if len(pieces) > 1 else {}
+        if self._to_prompt:
+            extra["to_prompt"] = True
+        self.queue.put((wav, seconds, hwnd, language, self._to_card, extra))
         log.info("captured %.1f s of %s -> transcribing (%s)...", seconds,
                  language_label(language),
                  self.transcriber.name)
@@ -2137,6 +2253,9 @@ class App:
             return
         if action == "notify_dismiss":
             self._tap_notify_dismiss()
+            return
+        if action == "problem_report":
+            self._tap_problem()
             return
         if action not in ("translate", "punctuate"):
             return
@@ -2316,6 +2435,193 @@ class App:
                 engine.dismiss(by="key")
                 self._say("notifications dismissed")
         threading.Thread(target=work, daemon=True, name="notify-key").start()
+
+    def _tap_problem(self) -> None:
+        """One key, one line, and the app attaches the rest of the report.
+
+        On a thread, like every tap: the grab alone is 47-57 ms and the
+        JPEG another 60 (visual_qa.py measured both), and nothing that
+        slow may run inside the keyboard hook's 300 ms — a stall there
+        does not slow this feature down, it drops every keystroke on the
+        machine.
+
+        The card is checked HERE rather than left for ask() to drop the
+        second press, because a screen grab taken for a card that will not
+        open is a tenth of a second spent on nothing.
+        """
+        # Both by getattr and both `is None`, never truthiness: this runs
+        # inside the keyboard hook, where an AttributeError is a dropped
+        # hook and a frozen keyboard, and a Store that happens to be empty
+        # must not read as "the feature is off".
+        card = getattr(self, "_problem_card", None)
+        if getattr(self, "problems", None) is None:
+            return
+        if card is None:
+            log.info("problems: this overlay has no report card — the key "
+                     "does nothing until it lands")
+            return
+        if card.open():
+            log.info("problems: the card is already up — ignoring the press")
+            return
+        threading.Thread(target=self._problem_ask, daemon=True,
+                         name="problem-key").start()
+
+    def _problem_ask(self) -> None:
+        """The screen, then the card, then the report. Own thread.
+
+        Order matters and is the reason this is one method: the grab has
+        to happen before the card exists, or the report is a photograph
+        of the question instead of the problem. The bytes go STRAIGHT to
+        the card — it shows them as its thumbnail — and the same bytes go
+        to record() if he sends, so one grab serves both and nothing
+        reaches the disk for a card he escapes.
+        """
+        pcfg = getattr(self.cfg, "problems", None)
+        jpeg = (self._problem_shot(pcfg)
+                if getattr(pcfg, "shot", True) else None)
+        last = self._problem_last()
+        # What the key can honestly say the report is ABOUT: a fresh
+        # dictation is attached and named as the place, and with none this
+        # is about the app rather than about a transcript. One value for
+        # two jobs — the card draws it as its eyebrow ("ON DICTATION")
+        # and problems.record files it as `where`.
+        where = "dictation" if last else "anywhere"
+
+        def done(text, kind="") -> None:
+            # Escape and Cancel both answer None, and an empty card
+            # answers "" — all of them mean he changed his mind, and none
+            # is worth a file on disk. Stripped again even though the card
+            # already does: this is the gate that keeps a blank line out
+            # of record()'s ValueError, and it should not depend on which
+            # window called it.
+            if (text or "").strip():
+                self._problem_file(text, where, last, jpeg, kind)
+
+        # `kinds` deliberately not passed: problem_card.card_for reads
+        # problems.KINDS itself when it is not told, so the chips on this
+        # card and the ones the dashboard offers cannot drift apart.
+        if not self._problem_card.ask(where, done, shot=jpeg):
+            log.info("problems: the card was taken between the press and "
+                     "the grab — nothing filed")
+
+    def _problem_shot(self, pcfg) -> bytes | None:
+        """The screen as it was at the press, as JPEG bytes.
+
+        Bytes, not a file: problems.pin_shot writes what it is handed, so
+        nothing here needs a temp file and a failed report leaves no
+        litter. PIL and visual_qa are imported lazily because most runs
+        of this app never photograph anything and both cost real seconds
+        on a cold process.
+        """
+        try:
+            from PIL import ImageGrab
+            import visual_qa as visual_qa_mod
+            started = time.monotonic()
+            image = ImageGrab.grab(all_screens=True).convert("RGB")
+            jpeg = visual_qa_mod.encode_jpeg(
+                image, int(getattr(pcfg, "max_side_px", 0) or 1344))
+            log.debug("problems: froze %dx%d into %d KB in %.0f ms",
+                      image.width, image.height, len(jpeg) // 1024,
+                      (time.monotonic() - started) * 1000)
+            return jpeg
+        except Exception:
+            # A report with no picture is still a report, and this is the
+            # only piece of one that needs an imaging library at all.
+            log.info("problems: could not photograph the screen",
+                     exc_info=True)
+            return None
+
+    def _problem_last(self) -> dict | None:
+        """The dictation this report should blame, or None.
+
+        Read under the lock, like every other reader of `_last` (see
+        _correct). AGE IS THE WHOLE OF THIS METHOD — see
+        PROBLEM_LAST_MAX_S for why a stale clip is worse than no clip. An
+        unreadable stamp attaches the dictation anyway: that is a bug in
+        how it was written down, not evidence that it is old.
+        """
+        with self._last_lock:
+            last = dict(self._last) if self._last else None
+        if not last:
+            return None
+        try:
+            when = time.mktime(time.strptime(last.get("when") or "",
+                                             "%Y-%m-%d %H:%M:%S"))
+        except (ValueError, OverflowError):
+            return last
+        return last if time.time() - when <= PROBLEM_LAST_MAX_S else None
+
+    def _deliver_to_prompt(self, text: str) -> bool:
+        """Put a finished transcription into the report card's field.
+
+        visual_qa.deliver_transcript's contract exactly, including the
+        return: False means the card is not there to take it any more (or
+        cannot), and the caller should treat the words as a dictation that
+        lost its destination — it is in transcripts.log either way.
+
+        FILLED, NOT SUBMITTED, and that distinction is the whole method.
+        `answer()` is what ENTER does — it sets the result and closes the
+        card — so using it here would file the report the instant the
+        transcription came back, with him never having seen the sentence.
+        The card exists so he can read what was heard (its echo line
+        draws the bidi properly, which the field cannot), fix a word and
+        press Enter himself; a decoder that mishears one word must not
+        turn into a bug report that says the wrong thing.
+        """
+        card = getattr(self, "_problem_card", None)
+        if card is None or not card.open():
+            log.info("problems: the report card closed before the "
+                     "transcription landed")
+            return False
+        # Asked of the object rather than assumed of the class, so an
+        # overlay whose card cannot be dictated into says so and the
+        # caller falls back to the clipboard instead of losing the words.
+        fill = getattr(card, "fill", None)
+        if fill is None:
+            log.warning("problems: this overlay's report card cannot be "
+                        "filled by voice — it has no fill()")
+            return False
+        try:
+            return fill(text) is not False
+        except Exception:
+            log.exception("problems: could not put the dictation into the "
+                          "report card")
+            return False
+
+    def _problem_file(self, text: str, where: str, last, jpeg,
+                      kind: str = "") -> None:
+        """Write the report. From the card's own thread, after it is gone.
+
+        No success cue: the card disappearing is the confirmation, and
+        every sound in cues.py already means something else — a new note
+        for this would be a fifth member of a family the ear has to tell
+        apart mid-sentence, bought for a key pressed twice a week.
+
+        `kind` is the chip he pressed, passed straight through rather
+        than defaulted here: problems.clean admits it against KINDS and
+        falls back to the first one, so an empty string from a card that
+        never offered chips still files as the default and a fifth kind
+        added to problems.KINDS needs no change on this side.
+
+        record() only raises ValueError, and only for an empty line that
+        `done` has already refused; the broad except is here because this
+        thread has nothing left to protect and a report lost quietly is
+        still better than a traceback out of a UI callback.
+        """
+        try:
+            item = problems_mod.record(APP_DIR,
+                                       {"text": text, "where": where,
+                                        "kind": kind},
+                                       cfg=self.cfg, last=last, jpeg=jpeg)
+        except Exception as e:
+            beep("error")
+            self._say(f"could not file that problem: {e}")
+            log.exception("problems: could not file the report")
+            return
+        self._say(f"problem {item['id']} noted — {item['text'][:60]}")
+        log.info("problems: %s filed from the key, %s%s", item["id"],
+                 "with the last dictation" if last else "with no dictation",
+                 ", with a screenshot" if item.get("shot") else "")
 
     def _on_overflow(self) -> None:  # PortAudio callback thread
         beep("error")
@@ -3282,7 +3588,8 @@ class App:
                 language: str | None = None,
                 to_card: bool | None = None,
                 sliced: bool = False, in_stream: bool = False,
-                pieces: list | None = None) -> None:
+                pieces: list | None = None,
+                to_prompt: bool = False) -> None:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
@@ -3298,7 +3605,13 @@ class App:
         diverting = (vqa_cfg is not None and vqa_cfg.enabled
                      and (self.vqa.sink_active if to_card is None
                           else to_card))
-        if fb.enabled and hwnd and not diverting:
+        # `to_prompt` joins `diverting` here: nothing will ever be pasted
+        # into the window underneath, so a marker put there is a marker
+        # nobody comes back for. It is normally moot — the box has the
+        # foreground at the press, so _on_start already filtered hwnd to
+        # 0 — but only normally, and a stray "..." left in his editor is
+        # exactly the kind of litter this branch exists to avoid.
+        if fb.enabled and hwnd and not diverting and not to_prompt:
             # BOUNDED, unlike the paste below, and the focus test is INSIDE
             # the lock rather than in front of it. A translate or punctuate
             # holds this lock across its whole model call (up to
@@ -3459,6 +3772,58 @@ class App:
                 # writing, and it must not un-send what you already said.
                 with self._echo_lock:
                     self._echo_lines.append(cleaned)
+            return
+
+        # THE REPORT-BOX DIVERSION, the ask card's rule applied to the one
+        # other window of ours that takes the keyboard: while the box from
+        # the ctrl+alt+r tap is up, a dictation is the REPORT, not a paste.
+        # It goes into that box's field and nothing leaks past it.
+        #
+        # Decided at the press like the card's (see _on_start), and for the
+        # same reason: he opens the box, then holds the dictation key and
+        # says what went wrong, and the answer to "who was I talking to"
+        # must not change while he is still talking.
+        #
+        # The vocabulary swap applies and the context pass does NOT — the
+        # same trade the question path makes. This is a note to himself
+        # about a bug; a misheard word in it costs nothing, and a model
+        # round trip to tidy a sentence he is about to read and can edit
+        # in the field would be paid for nothing.
+        #
+        # `_last` is deliberately never touched: a report is not a
+        # dictation. Letting one land there would give the correct key a
+        # bug report to learn from, and would make the NEXT report attach
+        # this one as the transcript it is complaining about.
+        if to_prompt:
+            try:
+                cleaned, _applied = self.vocab.apply(cleaned)
+            except Exception:
+                log.exception("the vocabulary repair failed on a dictated "
+                              "problem report — using the raw transcript")
+            if item:
+                item.discard()
+            if not self._deliver_to_prompt(cleaned):
+                # THE BOX IS GONE, or cannot be filled — the words still
+                # have to go somewhere he can reach, and the clipboard is
+                # where every other homeless transcript in this module
+                # goes. The same fallback the card path takes, for the
+                # same reason: dropping speech is never the answer.
+                try:
+                    with self._cursor_lock:
+                        injector.set_text(cleaned)
+                    beep("stop")
+                    self._say("the report card did not take that — it is on "
+                              "your clipboard")
+                    log.warning("problems: the report card did not take the "
+                                "dictation — it is on your clipboard, press "
+                                "%s to paste it: %s",
+                                self.cfg.paste_chord, cleaned)
+                except Exception as e:
+                    beep("error")
+                    log.warning("problems: the report card did not take the "
+                                "dictation and the clipboard would not "
+                                "either (%s) — text is in transcripts.log "
+                                "only", e)
             return
 
         # IN FRONT OF THE PASTE, on purpose, and this is the one decision
@@ -4006,7 +4371,7 @@ def main() -> int:
         # even that will not open.
         if not open_dashboard():
             report_fatal(
-                "Hebrew dictation is already running (only one instance may "
+                "DeskIT is already running (only one instance may "
                 "run — two would paste every transcript twice), and the "
                 "dashboard could not be opened.")
             return 1

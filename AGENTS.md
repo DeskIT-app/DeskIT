@@ -18,11 +18,21 @@ the screens off and keeps them off so the phone can drive it through
 Claude (awake.py, the dashboard's Awake screen, `ctrl+alt+n`), a notify
 door (notify.py, `POST /notify`, a cue and a STACK of cards that waits —
 newest on top, anchored by its bottom edge so a long message grows
-upward, nothing times out — with reminders, `ctrl+alt+m` to dismiss them
+upward, nothing times out, a finish HELD until its session has been
+quiet for `[notify] quiet_s` and only the `[notify] interrupt` kinds
+ringing — with reminders, `ctrl+alt+m` to dismiss them
 all, a × per card and a click on a card to go to whoever sent it — how
 Claude Code says it is done, and, through the Windows toasts the desktop
 app raises, how Cowork does too: notify_watch.py, `[notify] watch`; the
-dashboard's Notify screen), and a
+dashboard's Notify screen), a report key that files the owner's own
+bug list with the evidence already attached — where he was, the last
+dictation and a pinned copy of its audio, a screenshot of the screen a
+moment before he asked, the settings that explain a bad transcript —
+and is read through once a week off `problems.md` (problems.py,
+`ctrl+alt+r`, problem_card.py for the card's face, the dashboard's
+Problems screen, and a Saturday 08:00 scheduled task that reviews the
+list, writes the plan and asks about what it did not understand rather
+than guessing: weekly_review.ps1, `/weekly-reports`), and a
 dashboard. Everything is documented,
 with measurements, in `README.md` and `config.toml`.
 
@@ -77,6 +87,25 @@ back.
    as that key's menu. Write a new key's comment as a sentence someone
    will read on screen, keep the menu form for enumerations, and never
    add a settings row by hand — the file is the list.
+7. **Do not end a turn mid-task to report progress — every turn end
+   rings the owner's desk.** Claude Code fires its Stop hook at the end
+   of EVERY assistant turn, and that hook is the notify door
+   (notify_hook.py): a "now I will do X" lands as a card, a three-note
+   cue and two reminders, exactly like a real finish. Counted
+   2026-09-05 off `notify.json` / `notify.log`: 87 of the last 100
+   cards were per-turn finishes ("Claude finished"), 52 of them from
+   ONE session, and only 5 were the permission prompts he actually
+   wanted; the median gap between finishes was 170 s, the shortest 3 s.
+   The door now holds a finish until its session has been quiet for
+   `[notify] quiet_s` and lets only the `[notify] interrupt` kinds
+   ring, but no door can tell a finish from a progress note — only the
+   session can. So finish the job and report ONCE, at the true end.
+   When you genuinely need an answer, ask once, at the point you need
+   it, and batch the questions into that one message. A permission
+   prompt and a question are the only things that should reach him
+   mid-task. This binds Cowork and cloud sessions working on this repo
+   too: their toasts come in through the same door (notify_watch.py,
+   `[notify] watch`) and land on the same desk.
 
 ## The machine
 
@@ -102,13 +131,15 @@ back.
   hidden Windows desktop so none of its windows flash over the owner's
   work (asked for 2026-09-02; same tests.py, same exit code, output
   printed at the end). `.venv\Scripts\python.exe tests.py` is the
-  same suite in the open — plain asserts, **449 test
-  functions** carrying 1,691 of them as of 2026-08-28, safe to run while
+  same suite in the open — plain asserts, **hundreds** of test
+  functions carrying thousands of them, safe to run while
   dictation is live (two bugs that used to kill the app mid-suite are
-  fixed; see git log). Run them BEFORE claiming done. (This line read "367"
-  for a long time and had drifted badly; if you change the suite, either
-  re-count with `Select-String -Path tests.py -Pattern "^def test_"` or say
-  "hundreds" and stop maintaining a number nobody re-derives.)
+  fixed; see git log). Run them BEFORE claiming done. (This line read
+  "367" for a long time, then "449", and both had drifted badly by the
+  time anybody looked — 613 functions on 2026-09-04 — so it says
+  "hundreds" on purpose now. Re-count with `Select-String -Path
+  tests.py -Pattern "^def test_"` when you actually need the number,
+  and do not write it back in here.)
 - **The decoder WAS not deterministic, and every single-run measurement in
   this repo predates knowing that.** `hallucination_guards()` tightens
   three thresholds well past stock, and every window they reject goes down
@@ -266,6 +297,43 @@ back.
   that catches this is not `gc.collect() == 0` (a global sails past it) but
   "no global holds a Tk object" — see
   `test_no_global_keeps_a_card_interpreter_alive_past_its_thread`.
+- **A `PhotoImage` that outlives its interpreter aborts the process, and it
+  waits for the SECOND card to do it.** The report card keeps its image in a
+  dict every closure on the thread holds; leave that dict alive past
+  `root.destroy()` and the `ImageTk.PhotoImage` is finalised later, from
+  whichever thread the collector is on, calling into a Tcl that is gone —
+  the same "Tcl_AsyncDelete: async handler deleted by the wrong thread"
+  abort as the two bullets above, with the same silence. Measured 2026-09-04:
+  `WordPrompt`'s teardown has no images in it and exits clean, and the
+  painted card aborted on the second card it opened until the picture was
+  cleared BEFORE the frame. `HintCard`'s teardown order is the pattern —
+  clear the state dict and the sprite cache, drop the closures, then
+  destroy. A card that opens once and is never opened again will not show
+  you this.
+- **A dragged window is clamped against the VIRTUAL DESKTOP, and `event.widget`
+  is not where the press landed.** Three measurements from the report card,
+  2026-09-04, and every one of them applies to the next draggable thing in
+  here. (1) This machine has a monitor at `x = -1920`, so a card left on it
+  has a genuinely negative x: clamp a saved position to the PRIMARY monitor
+  and it walks home on every open, which is also why every "never dragged"
+  sentinel in `config.toml` is `-100000` and not `-1` — it has to be a
+  number no desktop can reach. (2) A repaint mid-drag with a stale origin
+  snapped the dashboard's card back to where the drag started, because the
+  layout re-applies that origin on every change and anything may repaint
+  while the button is down: the origin has to FOLLOW the drag, not be read
+  at the end of it. (3) Under a Tk grab, `event.widget` can be the Toplevel
+  even while the pointer is over a child — the same press on the title
+  reported the `Label` once and the `Toplevel` once, depending on whether
+  the app was already active — so ask the screen with `winfo_containing` and
+  decide by where the press LANDED, never by where the pointer ended up.
+- **Do not move the weekly review to a cloud routine.** `/schedule` was the
+  obvious answer and it cannot see this machine: a cloud run gets a fresh
+  git checkout, and `problems.json` and `problems\` are local and
+  gitignored on purpose, so it would review an empty bug list. The
+  session-scoped alternative expires after seven days, which is shorter than
+  the interval it would be scheduling. Hence a local scheduled task calling
+  the local `claude.exe` (`weekly_review.ps1`). Anything that moves this off
+  the machine has to solve reading the store first.
 - **`ImageTk.PhotoImage(img)` with no `master=` does not bind to the
   window you are drawing on — it binds to `tkinter._default_root`, which
   is somebody else's.** `_default_root` is process-wide and is whatever Tk
@@ -646,12 +714,35 @@ back.
   `BitBlt ... SRCCOPY | CAPTUREBLT` exists precisely to include layered
   windows. Measured 2026-08-25: 60000/60000 pixels before the flag, 0
   after. Leave those two calls alone.
+- **The notify door rings for what is waiting on him, not for every
+  turn — and the fix was not `coalesce_s`.** Claude Code's Stop hook
+  fires at the end of EVERY turn; counted 2026-09-05, 87 of the last 100
+  cards were per-turn finishes, 52 of them from one session, and the
+  median gap between them was 170 s. Raising `coalesce_s` would have done
+  nothing: it is keyed on SOURCE and every session sends `claude-code`,
+  so two sessions at once already shared one key. `idle_prompt` was no
+  answer either — it has never fired on this machine (0 in `notify.log`),
+  so nothing may lean on it. What holds is keyed on the SESSION
+  (`Engine._key`: the session id, or `~source` for a sender without one):
+  a `done` is HELD for `[notify] quiet_s` on a `threading.Timer`, the
+  same session's next arrival SUPERSEDES it unseen, and only `[notify]
+  interrupt` kinds cue and arm the reminders (`_may_interrupt`,
+  `_loud_unread`). Keep three things true. A held `done` must never delay
+  an `input` — only `done` is ever held, so write the rule as `kind ==
+  "done"` and never as a negation, or Cowork's `cu-lock` `info` gets held
+  too. Never sleep inside `Engine.receive()`: the hook posts with a 3 s
+  timeout, `tests.py` asserts the round trip under 2 s, and `receive()`
+  runs under the engine lock the dismiss key also takes — the wait is the
+  timer's, on its own thread. And a test that wants the old door says so:
+  `_notify_cfg()` pins `quiet_s=0, interrupt="all"`, and the quiet door's
+  tests name what they want. `Engine.test()` is `urgent` — Send-a-test
+  always rings, whatever the two keys say.
 
 ## Where things live
 
 | file | job |
 |---|---|
-| `main.py` | app wiring: hotkeys, worker, paste, phone endpoint |
+| `main.py` | app wiring: hotkeys, worker, paste, phone endpoint, and the report tap — the screen photographed BEFORE the box opens, the five-minute window (`PROBLEM_LAST_MAX_S`) past which a stale dictation is not blamed for a fresh problem, and the diversion that sends a dictation into the box instead of pasting it |
 | `config.py` / `config.toml` | settings, validation, comment-preserving writes |
 | `recorder.py` | mic stream, WAV frames |
 | `hotkey.py` | global hook, state machine, chords |
@@ -663,13 +754,18 @@ back.
 | `punctuate.py` / `lookup.py` | F2 rewrite-in-place / reading box |
 | `visual_qa.py` | ask-the-screen: region select, vision chain, answer window, TTS |
 | `capture.py` | screenshots (select, edit, clipboard, save), screen recording (BitBlt + PyAV), and the webcam photo key (dshow through the same PyAV, into the same editor) |
-| `notify.py` | the notify door's engine: cleans what arrived (truncate, never interpret), the store (`notify.json`, last 100), the log (`notify.log`), the cue, the reminders, the live column (`live()` — the unread ones, newest first, capped by `[notify] stack_max`) and the dismiss/open of one card or of all of them — `open()` goes to the sender's session (`open_link`, a whitelisted `claude://…` URL, `_link` is the whole of the policy) and then raises its window |
+| `notify.py` | the notify door's engine: cleans what arrived (truncate, never interpret), the store (`notify.json`, last 100), the log (`notify.log`), the cue, the reminders, the live column (`live()` — the unread ones, newest first, capped by `[notify] stack_max`) and the dismiss/open of one card or of all of them — `open()` goes to the sender's session (`open_link`, a whitelisted `claude://…` URL, `_link` is the whole of the policy) and then raises its window; and, since 2026-09-05, the quiet door — `_hold` / `_quiet` (a `done` waits for its SESSION to go quiet, `[notify] quiet_s`), `_supersede` (the same session's older finish retired unseen), `_may_interrupt` / `_loud_unread` (`[notify] interrupt`: who may cue and be reminded), `urgent` for Send-a-test |
 | `notify_card.py` | the card's words and picture, and the column's arithmetic (`stack_layout` / `stack_measure` / `stack_hit_test`, copied from capture.py's toast stack rather than imported — this module is on the startup path) — a pure painter, one `text_pil` image per string, no Tk |
 | `notify_watch.py` | the other road in, for the half of Claude that cannot knock: Cowork runs in the cloud and has no hook to install, so this polls Windows' own notification store (`wpndatabase.db`, the toasts every app raises) and hands the desktop app's to the same engine — `[notify] watch` (`off \| cowork \| all`; "cowork" leaves the app's Claude Code sessions to the Stop hook, which has already carded them). Claude Chat is in none of it: the app raises notifications for `ccd` and `cowork` only, so a finished chat reply is announced to nothing on this machine |
 | `notify_hook.py` | the Claude Code hook (Stop + Notification, `--install-hook` writes them into `~/.claude/settings.json`) and the generic CLI (`--title ... --body ...`) — stdlib only, always exits 0; `owner_window()` walks up the parent processes so the payload can name the window a click on the card raises, and `session_link()` reads the desktop app's own session store so it can name the SESSION inside that window (`claude://resume?session=<the app's uuid>` — the two links the app advertises for this are gated off, its log says so, and the long comment there has the measurements) |
+| `problems.py` | the owner's own bug list, which is one typed line plus everything the app can attach without being asked: the store (`problems.json`, `problems.lock` beside it so the app and the dashboard cannot write over each other, open reports NEVER trimmed and answered ones aged out at `keep_resolved`), the context collection (the last dictation and its `recent\` sidecar, a copy of the wav and the screenshot pinned into `problems\` so they outlive that ring, the settings that explain a bad transcript), the screenshot thumbnails the Problems tab redraws off (cached on path+mtime+size: 35.8 ms cold vs 0.170 ms warm, 2026-09-04) and the weekly digest (`problems.md`, regenerated from scratch on every write, open items first) |
+| `problem_card.py` | the report card's words, geometry and picture — pure Python plus Pillow, no Tk, no window, so the whole card can be rendered to a PNG and looked at without pressing the hotkey (it was wrong for a week because it could not be). Third painter-plus-window pair in here, after hint.py / `HintCard` and review_card.py / `ReviewCard`; `dashboard.py` imports its field metrics, its hint and its keys line so the two surfaces of one feature cannot drift apart |
+| `weekly_review.ps1` + `.claude/commands/weekly-reports.md` | the Saturday 08:00 review of the bug list: a scheduled task runs the wrapper, the wrapper runs the local `claude.exe` on the project command, and the command reads `problems.json`, writes the summary, the plan and the archive into `problems\weekly\`, closes only what it understood, regenerates `problems.md` and posts a card through notify_hook.py. It FIXES NOTHING by design, and it asks rather than guesses — a report it cannot explain stays open with a question against it. The command is committed (it is the routine); everything it writes is gitignored (it is his) |
 | `server.py` | the loopback HTTP door on the `[server]` port: phone dictation, translate, punctuate, notify — every POST route bearer-token gated |
 | `control.py` | the named pipe between the dashboard and the app: status, commands, replies; handlers must never block |
-| `dashboard.py` + `ui.py` | control window incl. the Version screen and the generated Settings screen |
+| `overlay.py` | every window this app paints by hand: the splash, the status dot, the hint card, the correction and report box (`WordPrompt` — `fill()` puts a dictated line IN the box without sending it, which is the only way a transcript reaches one of OUR windows, `injector` refusing by design to paste into this process), `ProblemCard(WordPrompt)` — a SUBCLASS and not a mode flag, so the review pencil's one-line box is provably untouched; it overrides only `ask` and `_run` — and the review and notify cards on top of `HintCard` |
+| `hint.py` | what the hint card says while the key is held: one row per bound key, read off the live Config under the same condition `main.App._bindings` registers it under, so a rebind moves the row and a feature switched off takes its row away. Pure Python, no Tk — the tests read every row |
+| `dashboard.py` + `ui.py` | control window incl. the Version screen, the generated Settings screen, the Problems screen that answers the bug list and the frameless **Report a problem** card the sidebar button opens |
 | `settings.py` | config.toml as data: every key, its comment as help, `a \| b \| c` as choices — what the Settings screen draws |
 | `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |
 | `versions.py` | whole-app version switching |

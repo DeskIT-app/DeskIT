@@ -40,6 +40,7 @@ LABELS: dict[str, str] = {
     "lookup": "חיפוש מילה",
     "screens": "מסכים כבויים",
     "notify_dismiss": "סגור התראה",
+    "problem_report": "דווח על תקלה",
 }
 
 # The reason a text key is greyed rather than simply missing. Short enough
@@ -109,6 +110,12 @@ def bindings(cfg) -> list[tuple[str, str]]:
     ncfg = getattr(cfg, "notify", None)
     if ncfg is not None and ncfg.enabled and ncfg.hotkey:
         out.append(("notify_dismiss", ncfg.hotkey))
+    # getattr on the FIELD too, not only the section: the report key is
+    # landing with the config half of this feature, and a Config that has
+    # [problems] without a hotkey in it must bind nothing here either.
+    pcfg = getattr(cfg, "problems", None)
+    if pcfg is not None and pcfg.enabled and getattr(pcfg, "hotkey", ""):
+        out.append(("problem_report", pcfg.hotkey))
     if cfg.punctuate_hotkey:
         out.append(("punctuate", cfg.punctuate_hotkey))
     if cfg.translate_hotkey:

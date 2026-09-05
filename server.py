@@ -75,7 +75,7 @@ APK_GRADLE = APP_DIR / "android" / "app" / "build.gradle.kts"
 def apk_version() -> str:
     """versionName from the build file, for the download filename.
 
-    Serving every build as "HebrewDictation.apk" means the new one lands
+    Serving every build as "DeskIT.apk" means the new one lands
     next to the old one in Downloads under the same name — and tapping the
     stale copy reinstalls the previous version, which looks exactly like an
     update that refused to apply. A version in the name makes the two
@@ -179,7 +179,7 @@ def to_wav(raw: bytes) -> tuple[bytes, float]:
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "HebrewDictation"
+    server_version = "DeskIT"
 
     # -- plumbing --
 
@@ -229,7 +229,7 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(APK.stat().st_size))
             self.send_header(
                 "Content-Disposition",
-                f'attachment; filename="HebrewDictation-{apk_version()}.apk"')
+                f'attachment; filename="DeskIT-{apk_version()}.apk"')
             # Without this the browser happily re-serves the previous
             # build from cache, and a rebuilt app looks like one that
             # silently refused to update.
