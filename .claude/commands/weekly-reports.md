@@ -519,22 +519,33 @@ returns the standing item instead of a second card):
 
 ### If the tool is genuinely unavailable — second choice, and say so
 
-It should not happen. If it does — the call errors, or the tool is not there —
-**ask in the run's final message instead, with the options numbered**, one
-question per block, each opening with its three-word tag:
+It happens — it was missing entirely on 2026-09-05, and no environment variable
+brought it back. When it is not there, **ask in the run's final message**, one
+question per paragraph, each opening with its three-word tag, the options as
+ordinary numbered sentences.
 
-```
-הדיווח על בעיות בתמלול — ההקלטה 2.4 שניות של שקט. הכתבת לחלון אחר, או שהמקש לא נתפס?
-  1. הכתבתי לחלון אחר.
-  2. המקש לא נתפס.
-```
+**NEVER PUT THE QUESTION OR THE OPTIONS IN A FENCED CODE BLOCK.** He showed the
+result on 2026-09-05 and it is unreadable: a fence forces left-to-right, so
+Hebrew comes out with the punctuation thrown to the wrong end, wrapped in a
+grey box with a copy button, looking like something to run rather than
+something to answer. His words: *"נראה לך שאני יכול לקרוא את זה? תרשום לי את
+זה בשפה של אנשים, לא בקוד."* Plain sentences, bold for the question, ordinary
+numbers for the options. The same rule governs the summary: no fence around
+anything he is meant to read as language. Fences are for commands he runs and
+for nothing else.
 
-**This is worse and it is a fallback, not an alternative.** He gets no buttons,
-he answers by typing a number into the composer, and the whole point of the
-multiple choice is gone. Use it only when the tool failed, say in your output
-that it failed and why — and never let the tool being awkward become the reason
-a run ends up **silently not asking**. Not asking is the one outcome this
-section exists to make impossible.
+**And the fallback message carries the questions ONLY.** Not the verdicts, not
+the branch, not the counts, not what was left alone — all of that is already in
+the summary, the plan and `run.log`, which is where §9 puts it and where it
+belongs. His words, after a run that printed the lot: *"אני לא צריך לדעת שום
+דבר מלבד השאלות."* So the final message is the questions, and one line saying
+where the rest is. If there are no questions, it is one line long.
+
+**This is worse than the tool and it is a fallback, not an alternative.** He
+gets no buttons and answers by typing. Say in `run.log` that the tool was
+missing — but never let the tool being absent become the reason a run ends up
+**silently not asking**. Not asking is the one outcome this section exists to
+make impossible.
 
 ### The question itself
 
@@ -737,13 +748,39 @@ against exactly what authorised it.
 
 Work lands on a branch named `weekly/<YYYY-MM-DD>`, and it is **never pushed**.
 He reviews it and presses Push in the dashboard himself. So a `weekly/*` branch
-with no upstream is a build he has not yet dealt with, and that is the signal:
+he has not yet dealt with is the signal to stop.
+
+**Do not test that with the upstream ref.** That was the test here until
+2026-09-05 and it is wrong on this machine: DeskIT's Push runs
+`git push origin <branch>` and `git push origin <branch>:fast` with no `-u`
+(`dashboard.py:834`, `dashboard.py:865`, and `problems/weekly/push.log` shows
+both), so a branch he HAS pushed keeps an empty `[%(upstream)]` for ever. Read
+literally it jammed the gate shut permanently — every future run declining to
+build, on a branch already published and already merged. Ask instead whether
+the work is still only local:
 
 ```
-git for-each-ref --format="%(refname:short) [%(upstream)]" refs/heads/weekly
+git for-each-ref --format="%(refname:short)" refs/heads/weekly
 ```
 
-If any line comes back with an empty `[]`, **build nothing this run** — not one
+For each branch it names, it is **dealt with** if EITHER of these says so:
+
+```
+git rev-parse --verify --quiet refs/remotes/origin/<branch>       # he pushed it
+git merge-base --is-ancestor <branch> <the branch this run started on>
+```
+
+On `origin`, or already contained in the branch this run started from, is
+finished business and stops nothing. Only a branch that is neither is still
+waiting on him.
+
+**If today's `weekly/<DATE>` already exists and is dealt with, do not force it
+anywhere and do not delete it.** Branch from where you are onto the next free
+name — `weekly/<DATE>-2`, then `-3`. A second run in a day is ordinary (the
+runner re-fires whenever an answer arrives) and the Push panel globs
+`refs/heads/weekly/`, so the new branch appears there beside the old one.
+
+If any branch is still waiting, **build nothing this run** — not one
 report, not any of them. Say in the summary and in your output which branch is
 waiting and which report it belongs to, then carry on with the rest of the run
 exactly as normal: every report still gets its turn, every blocked one still
@@ -1281,7 +1318,15 @@ asked none.
 `problems/weekly/` is inside a gitignored folder, on purpose: these reports are
 his and they stay on this machine. So `problems/weekly/run.log` is the only
 trace of the run, and your final output is what goes into it. It has to answer,
-without the documents open, what this routine did to his repo:
+without the documents open, what this routine did to his repo.
+
+**Everything in this section is written FOR `run.log`, not for him.** When the
+run is a scheduled one nobody is watching, they are the same text and that is
+fine. When he IS at the keyboard, they are not: what he sees is the questions
+and one line saying where the rest is (§2's fallback block says why). Never
+make him scroll a run report to find the one thing he has to decide.
+
+The log has to carry all of this:
 
 - **Every report's turn and how it ended** — one line each, in the order you
   took them, and **every open report appears**. Built, closed, or blocked on a
