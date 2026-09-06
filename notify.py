@@ -370,110 +370,254 @@ class Store:
 # his session, not if I enter to Claude so all the Claude disappear —
 # when I'm entering the same specific session the same specific card
 # will disappear." Session resolution, not window resolution, and never
-# the stack.
+# the stack. And from the night the first cut failed (2026-09-06): "take
+# the case that I am inside the chat and the chat has ended his answer …
+# if I press the screen one tap, or make it the main screen, then it will
+# disappear."
 #
-# HOW HE IS SEEN TO ARRIVE, and why it is not UI Automation. The first
-# attempt at this (2026-09-04) went at the window: UIA exposes Claude's
-# sessions as panes carrying a TITLE, the card carries an ID, and no key
-# joined them — and a session that is not tiled has no pane at all. Both
-# halves dissolve one level down. The desktop app writes a file per
-# session under
-#   %APPDATA%\Claude\claude-code-sessions\<account>\<org>\local_<uuid>.json
-# — the same store notify_hook.session_link already walks for the link —
-# and each one carries `cliSessionId` (what a hook's card stores in
-# `session`), `sessionId` (`local_…`, what a watch's card stores), and
-# `lastFocusedAt`, milliseconds, which is the app saying WHICH SESSION HE
-# IS LOOKING AT. No window is consulted, so a session with no pane is
-# answered as easily as one with.
+# WHERE THE ANSWER LIVES, and why it is not UI Automation. The first
+# attempt (2026-09-04) went at the window: UIA names Claude's sessions by
+# TITLE, a card carries an ID, nothing joined them, and an untiled
+# session has no pane at all — and from any process that is not the app,
+# Electron hands over fifteen elements, because it builds the tree
+# lazily. One level down both halves dissolve. The desktop app writes a
+# file per session,
+#   …\Claude\claude-code-sessions\<account>\<org>\local_<uuid>.json
+# carrying `cliSessionId` (what a hook's card stores in `session`),
+# `sessionId` (`local_…`, what a watched toast stores), `title`, and
+# `lastFocusedAt` in milliseconds — the app's own record of WHEN HE LAST
+# CLICKED INTO THAT SESSION. Measured 2026-09-06: it moves when he moves
+# between sessions and at no other time. It sat at 20:59:04.432 for
+# twelve seconds while he sat in the session, and this session's own
+# stamp held still while its lastActivityAt advanced under tool calls.
 #
-# Measured against the live store 2026-09-05, 96 cards naming a session:
-# 74 joined, by either id. The 22 that did not are 18 sessions old enough
-# to have aged out of the app's store and 4 Cowork `cse_…` ones, which
-# live in the cloud and have no local file at all — Cowork cards can
-# never dismiss themselves this way, the same limitation that stops them
-# being opened.
+# WHERE THAT FOLDER IS, which cost a night. The desktop app is an MSIX
+# package. Inside its container `%APPDATA%\Claude` is redirected to
+#   %LOCALAPPDATA%\Packages\Claude_<hash>\LocalCache\Roaming\Claude
+# and OUTSIDE it — which is where this app runs, wscript → pythonw, no
+# package identity — `%APPDATA%\Claude\claude-code-sessions` does not
+# exist at all: "The system cannot find the file specified", 0 files,
+# against 22 in the package folder, probed from an unpackaged process on
+# 2026-09-06. Every test of the first cut ran inside the container, so
+# the path worked for the tests and returned {} for the app, in silence.
+# notify_hook.session_link reads the same %APPDATA% path and is fine,
+# because a hook runs inside Claude Code's process tree. So both folders
+# are candidates, whichever exist are read, and a watcher that finds
+# neither says so in notify.log rather than nothing for ever.
 #
-# WHY IT CANNOT EAT A CARD HE NEVER SAW. Two guards. The focus stamp must
-# be LATER than the card's own `at`, so being in a session already does
-# nothing — only arriving after it spoke counts. And the app only toasts
-# a session he is not looking at (`isUserViewingSession`, quoted in
-# notify_watch.py), so a card does not arrive for the session on screen
-# in the first place.
+# TWO WAYS HE CAN BE "IN" THE SESSION, and the card comes down on either:
+#   A · ENTERED — the session's focus stamp is LATER than the card's own
+#       `at`. He clicked into it after it spoke. A tap inside the session
+#       moves the stamp too, so his "one tap" is this rule.
+#   B · VIEWING — the Claude window is the FOREGROUND window, and the
+#       card's session is the one displayed, which is the session with
+#       the newest focus stamp of all. He was already there when the
+#       answer landed and has the window in front: he is looking at the
+#       answer, and a card about it is telling him what he can see.
+# Both need the session, never just the window — entering Claude on some
+# other session clears nothing, which is the half of his sentence that
+# says "not if I enter to Claude so all the Claude disappear".
+#
+# WHY IT CANNOT EAT A CARD HE NEVER SAW. Every uncertainty answers no: a
+# card with no session, a session with no file, an unreadable stamp, a
+# foreground that is not Claude, a store that is not there. A wrong yes
+# is a notification he never saw; a wrong no is a card he dismisses by
+# hand, as he did before this existed. And B asks for the window IN
+# FRONT — a session left showing behind Chrome keeps its card until he
+# comes back to it.
+#
+# Measured against the live column 2026-09-05, 96 cards naming a
+# session: 74 joined by one id or the other. The rest: 18 sessions old
+# enough to have aged out of the app's store, and 4 Cowork `cse_…` ones,
+# which live in the cloud and have no local file — Cowork cards can never
+# dismiss themselves this way, the same limit that stops them being opened.
 
-SESSIONS = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude-code-sessions"
+SESSIONS_UNDER = Path("Claude") / "claude-code-sessions"
+PACKAGES = Path(os.environ.get("LOCALAPPDATA", "")) / "Packages"
+CLAUDE_EXE = "claude.exe"      # the desktop app's process, for a card that
+                               # names no window; matched on the basename
 ARRIVAL_POLL_S = 2.0           # how often the store is asked, while cards
                                # with a session are on screen and only then
-ARRIVAL_SCAN_MAX = 60          # session files read in one pass; the store
-                               # grows for ever and the newest are the ones
-                               # a live card can belong to
+ARRIVAL_SCAN_MAX = 60          # session files read per root per pass; the
+                               # store grows for ever and the newest are the
+                               # ones a live card can belong to
 
 
-def focus_times(root=None) -> dict[str, float]:
+def session_roots() -> list[Path]:
+    """Every folder the app's session store might be in, that exists.
+
+    `%APPDATA%\\Claude\\…` for a process inside the app's container (a
+    hook, a Claude Code session), and every
+    `%LOCALAPPDATA%\\Packages\\Claude_*\\LocalCache\\Roaming\\Claude\\…`
+    for one outside it — this app. The package folder is globbed because
+    its suffix is the publisher hash, and a reinstall under another
+    identity would move it. Never raises; [] when nothing is there.
+    """
+    found: list[Path] = []
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        found.append(Path(appdata) / SESSIONS_UNDER)
+    try:
+        for pkg in sorted(PACKAGES.glob("Claude_*")):
+            found.append(pkg / "LocalCache" / "Roaming" / SESSIONS_UNDER)
+    except OSError:
+        pass
+    out: list[Path] = []
+    for root in found:
+        try:
+            if root.is_dir():
+                out.append(root)
+        except OSError:
+            continue
+    return out
+
+
+def focus_times(roots=None) -> dict[str, float]:
     """Every session the desktop app knows: id -> `lastFocusedAt`, ms.
 
     Keyed under BOTH names a card can carry — the CLI id a Stop hook is
     given (`cliSessionId`, and the `priorCliSessionIds` of a session that
     has been resumed) and the app's own `local_…` id a watched toast
     carries — so a caller matches on the one it has without knowing which
-    kind it is.
+    kind it is. Across roots and across files the NEWEST stamp wins a
+    shared id: a resumed session names its predecessor and the live one is
+    the one he is in, and the same file seen through two paths is the
+    same file.
 
-    Newest file first, and it stops at ARRIVAL_SCAN_MAX: this runs on a
-    timer and the store is unbounded. Never raises. A store that is not
-    there, a file being rewritten under us, a machine where APPDATA says
+    Newest file first, ARRIVAL_SCAN_MAX per root: this runs on a timer
+    and the store is unbounded. Never raises. A store that is not there,
+    a file being rewritten under us, a machine where the folders say
     nothing — all of them are "no opinion", which reads downstream as
     "he has not arrived" and costs a card nothing.
     """
-    base = Path(root) if root else SESSIONS
-    try:
-        files = sorted(base.glob("*/*/local_*.json"),
-                       key=lambda p: p.stat().st_mtime, reverse=True)
-    except OSError:
-        return {}
+    if roots is None:
+        roots = session_roots()
+    elif isinstance(roots, (str, Path)):
+        roots = [Path(roots)]
     out: dict[str, float] = {}
-    for path in files[:ARRIVAL_SCAN_MAX]:
+    for base in roots:
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue                      # mid-write, or not ours to read
-        if not isinstance(data, dict):
+            files = sorted(Path(base).glob("*/*/local_*.json"),
+                           key=lambda p: p.stat().st_mtime, reverse=True)
+        except OSError:
             continue
-        try:
-            when = float(data.get("lastFocusedAt") or 0)
-        except (TypeError, ValueError):
-            continue
-        if when <= 0:
-            continue
-        names = [data.get("cliSessionId"), data.get("sessionId")]
-        prior = data.get("priorCliSessionIds")
-        if isinstance(prior, list):
-            names.extend(prior)
-        for name in names:
-            key = str(name or "")
-            # The newest file wins a shared id: a resumed session names
-            # its predecessor, and the live one is the one he is in.
-            if key and key not in out:
-                out[key] = when
+        for path in files[:ARRIVAL_SCAN_MAX]:
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue                  # mid-write, or not ours to read
+            if not isinstance(data, dict):
+                continue
+            try:
+                when = float(data.get("lastFocusedAt") or 0)
+            except (TypeError, ValueError):
+                continue
+            if when <= 0:
+                continue
+            names = [data.get("cliSessionId"), data.get("sessionId")]
+            prior = data.get("priorCliSessionIds")
+            if isinstance(prior, list):
+                names.extend(prior)
+            for name in names:
+                key = str(name or "")
+                if key and when > out.get(key, 0.0):
+                    out[key] = when
     return out
 
 
-def arrived(item, focus) -> bool:
-    """Has he gone to the session this card came from, since it arrived?
+_RESUME = re.compile(r"^claude://resume\?session=([0-9a-fA-F-]{36})$")
 
-    `focus` is focus_times()'s map. False for a card with no session, a
-    session the store has never heard of, and an unreadable timestamp —
-    every uncertainty answers "no", because the cost of a wrong yes is a
-    notification he never saw and the cost of a wrong no is a card he
-    dismisses by hand, as he does today.
-    """
+
+def session_keys(item) -> list[str]:
+    """The names this card's session goes by in the store: its `session`
+    field, and the app's own `local_<uuid>` read off its resume link — a
+    hook card whose CLI id the store has forgotten can still be joined
+    through the link, which names the app's id directly."""
+    keys: list[str] = []
     session = str((item or {}).get("session", "") or "")
-    when = focus.get(session)
-    if not session or not when:
-        return False
+    if session:
+        keys.append(session)
+    m = _RESUME.match(str((item or {}).get("link", "") or ""))
+    if m:
+        keys.append(f"local_{m.group(1)}")
+    return keys
+
+
+def _stamp_of(item, focus) -> float:
+    """The focus stamp for this card's session, ms, or 0 when the store
+    does not know it under any of its names."""
+    return max((float(focus.get(k) or 0) for k in session_keys(item)),
+               default=0.0)
+
+
+def _card_at(item) -> float:
+    """The card's own arrival, as a POSIX timestamp, or 0."""
     try:
-        at = datetime.fromisoformat(str(item.get("at", ""))).timestamp()
+        return datetime.fromisoformat(str(item.get("at", ""))).timestamp()
     except (TypeError, ValueError):
+        return 0.0
+
+
+def in_front(hwnd) -> bool:
+    """Is the Claude window the foreground window right now?
+
+    By handle when the card names one — every hook card does, and it is
+    the app's single top-level window, `Chrome_WidgetWin_1` titled
+    "Claude". By process when it does not: the foreground window belongs
+    to `Claude.exe`. False on any doubt.
+    """
+    try:
+        import ctypes
+        u32, k32 = _handles()
+        front = int(u32.GetForegroundWindow() or 0)
+    except Exception:                     # noqa: BLE001
         return False
-    return (when / 1000.0) > at
+    if not front:
+        return False
+    want = _window(hwnd)
+    if want:
+        return front == want
+    try:
+        pid = ctypes.c_ulong(0)
+        u32.GetWindowThreadProcessId(front, ctypes.addressof(pid))
+        if not pid.value:
+            return False
+        handle = k32.OpenProcess(0x1000, 0, pid.value)   # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            size = ctypes.c_ulong(1024)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if not k32.QueryFullProcessImageNameW(handle, 0, buf,
+                                                   ctypes.addressof(size)):
+                return False
+            return Path(buf.value).name.lower() == CLAUDE_EXE
+        finally:
+            k32.CloseHandle(handle)
+    except Exception:                     # noqa: BLE001
+        return False
+
+
+def arrived(item, focus) -> bool:
+    """Rule A. Has he gone INTO the session this card came from, since
+    it arrived? Its focus stamp is later than the card's own `at`. False
+    for a card with no session, a session the store has never heard of,
+    and an unreadable timestamp."""
+    when, at = _stamp_of(item, focus), _card_at(item)
+    return bool(when and at) and (when / 1000.0) > at
+
+
+def viewing(item, focus, front) -> bool:
+    """Rule B. Is he LOOKING at the session this card came from? The
+    Claude window is in front (`front`, from in_front) and the card's
+    session holds the newest focus stamp in the store — it is the one on
+    screen. False without a session, without a stamp, and whenever any
+    other session's stamp is newer: then he is in Claude, but somewhere
+    else, and his card is not the one to touch."""
+    if not front or not focus:
+        return False
+    when = _stamp_of(item, focus)
+    return bool(when) and when >= max(focus.values())
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +699,16 @@ def _handles():
         u32.AttachThreadInput.restype = ctypes.c_int
         k32.GetCurrentThreadId.argtypes = []
         k32.GetCurrentThreadId.restype = ctypes.c_ulong
+        # in_front's fallback: whose window is in front, by executable.
+        k32.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int,
+                                    ctypes.c_ulong]
+        k32.OpenProcess.restype = ctypes.c_void_p
+        k32.QueryFullProcessImageNameW.argtypes = [
+            ctypes.c_void_p, ctypes.c_ulong, ctypes.c_wchar_p,
+            ctypes.c_void_p]
+        k32.QueryFullProcessImageNameW.restype = ctypes.c_int
+        k32.CloseHandle.argtypes = [ctypes.c_void_p]
+        k32.CloseHandle.restype = ctypes.c_int
         _HANDLES = (u32, k32)
     return _HANDLES
 
@@ -1179,19 +1333,38 @@ class Engine:
         itself when nothing unread names a session, so an idle machine
         pays nothing.
         """
+        said = False
         while not stop.wait(ARRIVAL_POLL_S):
             with self._lock:
                 waiting = [dict(i) for i in self.store.items()
-                           if not i.get("seen")
-                           and str(i.get("session", "") or "")]
+                           if not i.get("seen") and session_keys(i)]
             if not waiting:
                 return
-            focus = focus_times()
+            roots = session_roots()
+            focus = focus_times(roots)
+            if not said:
+                # Once per column, so notify.log can answer "did it even
+                # find the store" — the question the first cut could not.
+                said = True
+                if roots:
+                    self._log(f"WATCHING {len(waiting)} card(s) for his "
+                              f"arrival | {len(focus)} session ids under "
+                              + " ; ".join(str(r) for r in roots))
+                else:
+                    self._log("WATCHING for his arrival but found NO "
+                              "session store — looked under %APPDATA% and "
+                              "%LOCALAPPDATA%\\Packages\\Claude_*")
+                    log.warning("notify: no Claude session store found — "
+                                "cards will not dismiss on arrival")
+            if not focus:
+                continue
             for item in waiting:
                 if stop.is_set():
                     return
                 if arrived(item, focus):
                     self.dismiss(int(item.get("id", 0)), by="arrival")
+                elif viewing(item, focus, in_front(item.get("hwnd"))):
+                    self.dismiss(int(item.get("id", 0)), by="viewing")
 
     # -- plumbing --
 

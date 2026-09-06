@@ -635,6 +635,13 @@ class NotifyConfig:
     # sessions to the Stop hook, which has already carded them; "all"
     # takes those too.
     watch: str = "cowork"
+    # A card comes down by itself when he reaches the session it came
+    # from: he clicks into it after it spoke, or already has it on screen
+    # with the Claude window in front. Only that card — entering Claude on
+    # another session clears nothing. False: cards wait for the ×, a
+    # click or the key, as they did before 2026-09-05. See notify.py,
+    # "knowing he has ARRIVED".
+    dismiss_on_arrival: bool = True
     # Where the card appears before it has been dragged, and where it
     # was dragged to — the review card's sentinels, the review card's
     # reasons.
@@ -1617,6 +1624,8 @@ def load(path: Path) -> Config:
                                      NotifyConfig.interrupt)).strip().lower(),
             quiet_s=int(notify.get("quiet_s", NotifyConfig.quiet_s)),
             watch=str(notify.get("watch", NotifyConfig.watch)).strip().lower(),
+            dismiss_on_arrival=bool(notify.get(
+                "dismiss_on_arrival", NotifyConfig.dismiss_on_arrival)),
             corner=str(notify.get("corner",
                                   NotifyConfig.corner)).strip().lower(),
             anchor=str(notify.get("anchor",
