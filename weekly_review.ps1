@@ -34,12 +34,12 @@ $ProgressPreference    = 'SilentlyContinue'
 # --- the three absolute paths, because a task's working directory is not ours
 # The repo is wherever THIS FILE lives -- not a typed path. Measured
 # 2026-09-05 10:20: a concurrent rename session had already set this to
-# ...\Projects\DeskIT while the folder was still ...\Projects\HebrewDictation,
+# ...\Projects\DeskIT while the folder was still ...\Projects\DeskIT,
 # which would have made the next Saturday hit "repo path is gone" and exit 0
 # in silence. $PSScriptRoot follows the folder through a rename without anyone
 # remembering to edit a string; the typed path stays only as a fallback for a
 # host that runs the script by content rather than by file.
-$Repo   = if ($PSScriptRoot) { $PSScriptRoot } else { 'C:\Users\shimr\Desktop\Organized\Projects\HebrewDictation' }
+$Repo   = if ($PSScriptRoot) { $PSScriptRoot } else { 'C:\Users\shimr\Desktop\Organized\Projects\DeskIT' }
 $LogDir = Join-Path $Repo 'problems\weekly'
 $Log    = Join-Path $LogDir 'run.log'
 
