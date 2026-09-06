@@ -3110,15 +3110,29 @@ class Dashboard:
                             fill=ui.FAINT, justify="left", text=listed)
         if note is not None:
             row.create_image(Q_PAD, y_note, anchor="nw", image=note)
-        push = ui.Button(row, "Push", lambda b=branch: self._push_branch(b),
-                         w=96, h=30, primary=True, bg=ui.CARD,
-                         icon=ui.ICON["link"])
-        row.create_window(CW - Q_PAD, 13, anchor="ne", window=push)
-        self._push_buttons[branch] = push
-        if self._pushing is not None:
-            # One push at a time: the second press would be racing the
-            # first for the same two refs.
-            push.enable(False)
+        done = commits == 0 and bool(info.get("on_origin")) \
+            and bool(info.get("trunk"))
+        if done:
+            # Nothing left to push: the branch is on GitHub and `fast`
+            # already holds every commit on it. A blue Push here is what
+            # sent him to the wrong card twice on 2026-09-06 — the old
+            # week's button sat under the new week's, looking identical,
+            # and both presses answered "Everything up-to-date" while the
+            # new work stayed local. So a finished branch says it is
+            # finished and offers nothing to press.
+            row.create_text(CW - Q_PAD, 20, anchor="e", font=(ui.MEDIUM, 9),
+                            fill=ui.FAINT, text="✓ on GitHub, in " + TRUNK)
+        else:
+            push = ui.Button(row, "Push",
+                             lambda b=branch: self._push_branch(b),
+                             w=96, h=30, primary=True, bg=ui.CARD,
+                             icon=ui.ICON["link"])
+            row.create_window(CW - Q_PAD, 13, anchor="ne", window=push)
+            self._push_buttons[branch] = push
+            if self._pushing is not None:
+                # One push at a time: the second press would be racing
+                # the first for the same two refs.
+                push.enable(False)
         scroller.bind_wheel(row)
 
     def _push_branch(self, branch: str) -> None:
