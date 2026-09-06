@@ -692,6 +692,15 @@ def weekly_branches() -> list[dict]:
         code, out, _err = _git("rev-parse", "--verify", "--quiet",
                                f"refs/remotes/origin/{name}")
         row["on_origin"] = code == 0 and bool(out.strip())
+        # "Merged" is measured against GitHub's fast, not the local one:
+        # the local fast is often behind (the button may not move the
+        # branch this tree stands on), and what he is asking is whether
+        # the work is safely up and in, not what this checkout thinks.
+        target = f"origin/{TRUNK}" if _git(
+            "rev-parse", "--verify", "--quiet",
+            f"origin/{TRUNK}^{{commit}}")[0] == 0 else trunk
+        row["merged"] = bool(target) and _git(
+            "merge-base", "--is-ancestor", name, target)[0] == 0
         rows.append(row)
     return rows
 
@@ -764,9 +773,10 @@ def _merge_elsewhere(branch: str) -> dict:
     if code != 0:
         shutil.rmtree(tmp, ignore_errors=True)
         return {"pushed": True, "merged": False,
-                "said": f"{branch} is on GitHub. {TRUNK} has moved on, so "
-                        f"the merge needs a scratch worktree, and one could "
-                        f"not be made — {_first_line(err) or 'git refused'}."}
+                "said": f"The branch is on GitHub, but it could not be "
+                        f"merged into {TRUNK}: git failed to set up the "
+                        f"merge ({_first_line(err) or 'no reason given'}). "
+                        f"Press Push again in a moment."}
     try:
         code, out, err = _git("merge", "--no-edit", branch, cwd=work,
                               timeout=GIT_NET_S)
@@ -778,25 +788,27 @@ def _merge_elsewhere(branch: str) -> dict:
             names = [ln.strip() for ln in clashes.splitlines() if ln.strip()]
             _git("merge", "--abort", cwd=work)
             return {"pushed": True, "merged": False,
-                    "said": f"{branch} is on GitHub. The merge into {TRUNK} "
-                            f"CONFLICTS and was aborted, not resolved"
-                            + (f" — {', '.join(names[:4])}" if names
-                               else f" — {_first_line(out + err)}")
-                            + ". That one is yours to look at."}
+                    "said": f"The branch is on GitHub, but merging it into "
+                            f"{TRUNK} runs into a conflict"
+                            + (f" in {', '.join(names[:4])}" if names
+                               else f" ({_first_line(out + err)})")
+                            + ". Nothing was changed — that conflict needs "
+                              "you to resolve it by hand."}
         sha = _git("rev-parse", "HEAD", cwd=work)[1].strip()
         code, out, err = _git("push", "origin", f"{sha}:refs/heads/{TRUNK}",
                               timeout=GIT_NET_S)
         if code != 0:
             return {"pushed": True, "merged": False,
-                    "said": f"{branch} is on GitHub. The merge into {TRUNK} "
-                            f"came out clean but origin refused it — "
-                            f"{_first_line(err or out)}. Nothing was forced."}
+                    "said": f"The branch is on GitHub, but GitHub refused "
+                            f"the merged {TRUNK} ({_first_line(err or out)}). "
+                            f"Nothing was forced. Press Push again in a "
+                            f"moment."}
         _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
         return {"pushed": True, "merged": True,
-                "said": f"{branch} is on GitHub, and {TRUNK} has it as a "
-                        f"merge commit ({sha[:7]}) — {TRUNK} had moved on, "
-                        f"so it took a real merge. Your local {TRUNK} is "
-                        f"behind origin now; pull it when the tree is yours."}
+                "said": f"Successfully pushed. {TRUNK} on GitHub now includes "
+                        f"this work (merge commit {sha[:7]}). Your local "
+                        f"{TRUNK} is still on the older commit — run git pull "
+                        f"when you're done working."}
     finally:
         # The one --force in this file, and it is on a TEMP FOLDER, not
         # on a ref: `worktree remove` refuses a tree with anything in it,
@@ -834,41 +846,43 @@ def push_weekly(branch: str) -> dict:
     code, out, err = _git("push", "origin", branch, timeout=GIT_NET_S)
     if code != 0:
         return {"pushed": False, "merged": False,
-                "said": f"{branch} did NOT go up — "
-                        f"{_first_line(err or out) or 'git refused'}"}
+                "said": f"Push failed — GitHub did not take the branch "
+                        f"({_first_line(err or out) or 'no reason given'}). "
+                        f"Nothing changed. Check your connection and press "
+                        f"Push again."}
     # origin/fast as it is NOW, not as it was last week: every check
     # below is about what is on GitHub at this moment.
     code, _out, err = _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
     if code != 0:
         return {"pushed": True, "merged": False,
-                "said": f"{branch} is on GitHub. {TRUNK} was left alone: "
-                        f"origin/{TRUNK} could not be read "
-                        f"({_first_line(err) or 'the fetch failed'}), and a "
-                        f"merge nobody can check is not one to make."}
+                "said": f"The branch is on GitHub, but it was not merged "
+                        f"into {TRUNK}: GitHub's {TRUNK} could not be read "
+                        f"({_first_line(err) or 'the fetch failed'}). Press "
+                        f"Push again in a moment."}
     told, foreign = _foreign_on_trunk()
     if not told:
         return {"pushed": True, "merged": False,
-                "said": f"{branch} is on GitHub. {TRUNK} was left alone: git "
-                        f"could not say what is on it that origin has not, "
-                        f"and not knowing is not the same as clean."}
+                "said": f"The branch is on GitHub, but it was not merged "
+                        f"into {TRUNK}: git could not tell whether {TRUNK} "
+                        f"holds unpushed work from another session, so the "
+                        f"merge was skipped to be safe. Press Push again in "
+                        f"a moment."}
     if foreign:
         return {"pushed": True, "merged": False,
-                "said": f"{branch} is on GitHub. {TRUNK} was NOT merged: it "
-                        f"carries {len(foreign)} commit(s) GitHub has not "
-                        f"seen, and the routine never commits to {TRUNK} — "
-                        f"so they are another session's: "
-                        f"{'; '.join(foreign[:3])}. That work goes up with "
-                        f"the session that wrote it, never with this "
-                        f"button."}
+                "said": f"The branch is on GitHub, but it was not merged "
+                        f"into {TRUNK}: {TRUNK} has {len(foreign)} commit(s) "
+                        f"from another session that are not on GitHub yet "
+                        f"({'; '.join(foreign[:3])}). Push that work from "
+                        f"its own session first, then press Push here again."}
     if _git("merge-base", "--is-ancestor", f"origin/{TRUNK}", branch)[0] != 0:
         return _merge_elsewhere(branch)
     code, out, err = _git("push", "origin", f"{branch}:{TRUNK}",
                           timeout=GIT_NET_S)
     if code != 0:
         return {"pushed": True, "merged": False,
-                "said": f"{branch} is on GitHub. {TRUNK} was refused by "
-                        f"origin — {_first_line(err or out)}. Nothing was "
-                        f"forced."}
+                "said": f"The branch is on GitHub, but GitHub refused to "
+                        f"update {TRUNK} ({_first_line(err or out)}). Nothing "
+                        f"was forced. Press Push again in a moment."}
     # And the local branch, IF git will let us: a fetch into a ref is
     # fast-forward-only without a +, and it refuses outright to write the
     # branch a working tree is standing on. That refusal is the guard we
@@ -879,17 +893,14 @@ def push_weekly(branch: str) -> dict:
     head = _git("rev-parse", "--abbrev-ref", "HEAD")[1].strip()
     trailer = ""
     if not moved:
-        trailer = (f" Your local {TRUNK} still points at the old tip: "
-                   + (f"git will not move the branch this working tree is "
-                      f"standing on, and the tree is not ours to touch. "
-                      if head == TRUNK else
-                      f"the local fast-forward was refused (push.log says "
-                      f"why). ")
-                   + "`git pull` when it suits you.")
+        trailer = (f" Your local {TRUNK} is still on the older commit"
+                   + (" (git won't move the branch this working tree is "
+                      "standing on)" if head == TRUNK else "")
+                   + " — run git pull when you're done working.")
     _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
     return {"pushed": True, "merged": True,
-            "said": f"{branch} is on GitHub, and {TRUNK} carries it — a "
-                    f"fast-forward, no merge commit." + trailer}
+            "said": f"Successfully pushed. {TRUNK} on GitHub now includes "
+                    f"this work." + trailer}
 
 
 def _wrap(widths, limit: int, gap: int = 6,
@@ -3093,16 +3104,25 @@ class Dashboard:
         row.keep = [subject, note]
         row.create_text(Q_PAD, 13, anchor="nw", font=(ui.MEDIUM, 10),
                         fill=ui.FG, text=branch)
-        facts = [f"{commits} commit" + ("" if commits == 1 else "s"),
-                 f"{len(files)} file" + ("" if len(files) == 1 else "s"),
-                 f"on GitHub as origin/{branch}" if info.get("on_origin")
-                 else "not on GitHub yet"]
+        # One plain sentence about where the work is, in the words he
+        # asked for on 2026-09-06: not "4 commits · 3 files · not on
+        # GitHub yet", but what that means and what to do about it.
+        done = bool(info.get("on_origin")) and bool(info.get("merged"))
+        amount = (f"{commits} commit" + ("" if commits == 1 else "s")
+                  + f", {len(files)} file" + ("" if len(files) == 1 else "s"))
         if not info.get("trunk"):
-            # Nothing to compare against, so the counts above are zeros
-            # and saying so beats letting him read them as "empty".
-            facts.append(f"no {TRUNK} in this repo to measure against")
+            status = (f"Can't tell what's pushed — this repo has no {TRUNK} "
+                      f"branch to compare against.")
+        elif done:
+            status = f"Successfully pushed — it's on GitHub and in {TRUNK}."
+        elif info.get("on_origin"):
+            status = (f"On GitHub, but not in {TRUNK} yet ({amount}). "
+                      f"Press Push to merge it.")
+        else:
+            status = (f"Not pushed yet — {amount} exist only on this "
+                      f"computer. Press Push to send them to GitHub.")
         row.create_text(Q_PAD, 31, anchor="nw", font=(ui.UI, 8),
-                        fill=ui.FAINT, text="   ·   ".join(facts))
+                        fill=ui.GREEN if done else ui.FAINT, text=status)
         if subject is not None:
             row.create_image(Q_PAD, y_subject, anchor="nw", image=subject)
         if name_lines:
@@ -3110,18 +3130,16 @@ class Dashboard:
                             fill=ui.FAINT, justify="left", text=listed)
         if note is not None:
             row.create_image(Q_PAD, y_note, anchor="nw", image=note)
-        done = commits == 0 and bool(info.get("on_origin")) \
-            and bool(info.get("trunk"))
         if done:
-            # Nothing left to push: the branch is on GitHub and `fast`
-            # already holds every commit on it. A blue Push here is what
-            # sent him to the wrong card twice on 2026-09-06 — the old
-            # week's button sat under the new week's, looking identical,
-            # and both presses answered "Everything up-to-date" while the
-            # new work stayed local. So a finished branch says it is
-            # finished and offers nothing to press.
+            # Nothing left to push: the branch is on GitHub and GitHub's
+            # `fast` already holds every commit on it. A blue Push here is
+            # what sent him to the wrong card twice on 2026-09-06 — the
+            # old week's button sat under the new week's, looking
+            # identical, and both presses answered "Everything up-to-date"
+            # while the new work stayed local. So a finished branch says
+            # so in the status line and offers nothing to press.
             row.create_text(CW - Q_PAD, 20, anchor="e", font=(ui.MEDIUM, 9),
-                            fill=ui.FAINT, text="✓ on GitHub, in " + TRUNK)
+                            fill=ui.GREEN, text="✓ Pushed")
         else:
             push = ui.Button(row, "Push",
                              lambda b=branch: self._push_branch(b),
@@ -3146,9 +3164,8 @@ class Dashboard:
         if self._pushing is not None:
             return
         self._pushing = branch
-        self._push_said[branch] = (f"pushing {branch} — the branch first, so "
-                                   f"the work is safe off this machine, then "
-                                   f"{TRUNK} if it is clean…")
+        self._push_said[branch] = (f"Pushing… sending the branch to GitHub "
+                                   f"first, then merging it into {TRUNK}.")
         self._note(f"pushing {branch}…")
 
         def work() -> None:
@@ -3156,7 +3173,8 @@ class Dashboard:
                 result = push_weekly(branch)
             except Exception as e:        # noqa: BLE001 — a failure is a
                 result = {"pushed": False, "merged": False,    # sentence,
-                          "said": f"could not push {branch}: {e}"}
+                          "said": f"Push failed before it started ({e}). "
+                                  f"Nothing changed. Press Push again."}
             self._events.put(lambda r=result: self._push_done(branch, r))
 
         threading.Thread(target=work, daemon=True,
