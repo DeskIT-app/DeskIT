@@ -87,7 +87,7 @@ ICON_PNG = APP_DIR / "icon.png"
 # buttons and picks their icon by this; without one the window inherits
 # pythonw.exe's identity, which is why the taskbar showed a generic file
 # icon rather than the app's.
-APP_ID = "Yoav.HebrewDictation.Dashboard"
+APP_ID = "Yoav.DeskIT.Dashboard"
 
 W, H = 940, 648          # fixed, which is what lets every bitmap be cached
 SIDE = 212               # the sidebar

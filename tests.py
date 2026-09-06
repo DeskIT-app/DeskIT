@@ -380,8 +380,8 @@ def test_cue_files_are_valid_wavs() -> None:
 
 def test_launcher_scripts_point_at_the_venv() -> None:
     here = Path(__file__).resolve().parent
-    for name, needle in (("Hebrew Dictation.vbs", "main.py"),
-                         ("Stop Dictation.vbs", "--stop"),
+    for name, needle in (("DeskIT.vbs", "main.py"),
+                         ("Stop DeskIT.vbs", "--stop"),
                          ("Dashboard.vbs", "dashboard.py")):
         script = here / name
         assert script.exists(), f"{name} missing"
@@ -397,7 +397,7 @@ def test_clipboard_roundtrip_and_restore() -> None:
               "round-trip so it isn't lost)")
         return
     try:
-        marker = "בדיקת לוח — HebrewDictation"
+        marker = "בדיקת לוח — DeskIT"
         injector.set_text(marker)
         kind, text = injector.snapshot()
         assert kind == "text" and text == marker, (kind, text)
@@ -5126,7 +5126,7 @@ def test_the_control_channel_answers_and_survives_a_bad_request() -> None:
         # ...and it is still serving afterwards.
         assert control.send("status", value=2) == {"ok": True, "echo": 2}
         # Asked BEFORE restore(), and that is the point: afterwards
-        # PIPE_NAME is the real one again, so a Hebrew Dictation that
+        # PIPE_NAME is the real one again, so a DeskIT that
         # happens to be RUNNING answers it and this fails for a reason
         # that has nothing to do with the control channel. stop() is
         # idempotent, so the finally below still runs it.
@@ -18130,7 +18130,7 @@ def test_receiving_plays_the_cue_shows_the_card_and_hands_back_counts() -> None:
                             card=card)
         reply = eng.receive({"source": "claude-code", "kind": "done",
                              "title": "Claude finished", "body": "b" * 50,
-                             "project": "HebrewDictation"})
+                             "project": "DeskIT"})
         assert reply == {"ok": True, "id": 1, "unread": 1,
                          "coalesced": False, "held": False}, reply
         assert cue == ["notify"], cue
@@ -18665,13 +18665,13 @@ def test_the_hook_script_maps_events_and_never_fails() -> None:
     the script does can fail loudly."""
     import notify_hook as hook
 
-    cwd = r"C:\Users\shimr\Desktop\Organized\Projects\HebrewDictation"
+    cwd = r"C:\Users\shimr\Desktop\Organized\Projects\DeskIT"
     p = hook.payload_from_hook({"hook_event_name": "Stop", "cwd": cwd,
                                 "session_id": "abc",
                                 "last_assistant_message": "x " * 400})
     assert p["kind"] == "done" and p["title"] == "Claude finished", p
     assert p["source"] == "claude-code" and p["session"] == "abc"
-    assert p["project"] == "HebrewDictation", p["project"]
+    assert p["project"] == "DeskIT", p["project"]
     assert len(p["body"]) == 300, len(p["body"])
     p = hook.payload_from_hook({"hook_event_name": "Notification",
                                 "notification_type": "idle_prompt",
@@ -19117,7 +19117,7 @@ def test_the_notify_cue_exists_and_has_its_own_shape() -> None:
 def _item(**over) -> dict:
     base = {"id": 7, "source": "claude-code", "label": "Claude Code",
             "kind": "done", "title": "Claude finished",
-            "body": "It is done.", "project": "HebrewDictation",
+            "body": "It is done.", "project": "DeskIT",
             "at": "2026-09-03T14:00:00", "session": "abc", "seen": False}
     base.update(over)
     return base
@@ -19204,7 +19204,7 @@ def test_the_card_never_hands_one_string_both_hebrew_and_latin() -> None:
     try:
         card = nc.card_for(_item(title=title, body=body,
                                  label="Claude Code",
-                                 project="HebrewDictation"),
+                                 project="DeskIT"),
                            seconds=30, unread=3)
         nc.compose(card, 1.0, 1.0, "dismiss", {})
     finally:
@@ -19897,7 +19897,7 @@ def test_the_notify_screen_builds_and_paints_every_state():
     traceback, and the word has to be the one the owner reads."""
     last = {"id": 5, "at": "2026-09-03T14:00:00", "source": "claude-code",
             "label": "Claude Code", "kind": "done",
-            "title": "Claude finished", "project": "HebrewDictation",
+            "title": "Claude finished", "project": "DeskIT",
             "seen": False}
     with _window() as board:
         if board is None:
@@ -19948,7 +19948,7 @@ def test_the_notify_list_draws_the_file_and_notices_it_moved():
             "label": "Claude Code", "kind": "done",
             "title": "קלוד סיים — Claude finished",
             "body": "הכרטיס עובד — Hebrew and English both render.",
-            "project": "HebrewDictation", "seen": False},
+            "project": "DeskIT", "seen": False},
            {"id": 1, "at": "2026-09-03T13:00:00", "source": "cli",
             "kind": "info", "title": "A Latin title", "body": "",
             "project": "", "seen": True}]

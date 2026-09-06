@@ -4,5 +4,5 @@ pluginManagement {
 dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
-rootProject.name = "HebrewDictation"
+rootProject.name = "DeskIT"
 include(":app")

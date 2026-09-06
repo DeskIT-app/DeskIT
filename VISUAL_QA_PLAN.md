@@ -1,6 +1,6 @@
 # Ask-the-Screen (Visual Q&A) — implementation prompt
 
-You are implementing a new feature in the HebrewDictation repo on the
+You are implementing a new feature in the DeskIT repo on the
 `fast` branch. This document is the complete brief. **Read `AGENTS.md`
 first and obey every house rule in it**, then read the module docstrings
 of `overlay.py`, `popup.py`, `lookup.py`, `polish.py`, `hotkey.py`, and

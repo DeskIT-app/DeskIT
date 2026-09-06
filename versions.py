@@ -199,12 +199,12 @@ def _stop_running_instance() -> bool:
         time.sleep(0.25)
     raise SwitchError(
         f"a running instance did not exit within {STOP_WAIT_S:.0f} s — "
-        "nothing was changed. Stop it manually (Stop Dictation) and try "
+        "nothing was changed. Stop it manually (Stop DeskIT) and try "
         "again.")
 
 
 def _start_instance() -> None:
-    """Launch the app the way 'Hebrew Dictation.vbs' does."""
+    """Launch the app the way 'DeskIT.vbs' does."""
     import subprocess as sp
 
     creationflags = 0

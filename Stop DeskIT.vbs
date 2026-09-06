@@ -1,4 +1,4 @@
-' Asks the running dictation app to quit. Two falling beeps mean it stopped.
+' Asks the running DeskIT to quit. Two falling beeps mean it stopped.
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 folder = fso.GetParentFolderName(WScript.ScriptFullName)

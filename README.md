@@ -99,17 +99,17 @@ reply or the exact problem.
 
 ## Run
 
-**Normal use: double-click `Hebrew Dictation` on the Desktop** (or
-`Hebrew Dictation.vbs` in this folder). It runs in the background with no
+**Normal use: double-click `DeskIT` on the Desktop** (or
+`DeskIT.vbs` in this folder). It runs in the background with no
 console window and no taskbar entry. **Two rising beeps = it is listening.**
-To quit: double-click `Stop Hebrew Dictation` — two falling beeps confirm.
+To quit: double-click `Stop DeskIT` — two falling beeps confirm.
 
 Run **`install_fonts.py`** once to install Rubik for your user (no
 admin) — the dashboard's typeface, designed for Hebrew and Latin
 together; without it the window falls back to Segoe UI and stays
 correct, just plainer. Then open **`Dashboard.vbs`** and drive all of it
 from one window — see
-[The dashboard](#the-dashboard) below. Double-clicking `Hebrew Dictation`
+[The dashboard](#the-dashboard) below. Double-clicking `DeskIT`
 while it is *already* running opens the dashboard too, instead of the old
 "already running" complaint.
 
@@ -2250,7 +2250,7 @@ wanted one.
 
 **Sending one by hand.** From PowerShell, against the running app:
 
-    $t=(gc 'C:\Users\shimr\Desktop\Organized\Projects\HebrewDictation\server_token.txt' -Raw).Trim(); irm 'http://127.0.0.1:8756/notify' -Method Post -Headers @{Authorization="Bearer $t"} -ContentType 'application/json; charset=utf-8' -Body '{"title":"Claude finished"}'
+    $t=(gc 'C:\Users\shimr\Desktop\Organized\Projects\DeskIT\server_token.txt' -Raw).Trim(); irm 'http://127.0.0.1:8756/notify' -Method Post -Headers @{Authorization="Bearer $t"} -ContentType 'application/json; charset=utf-8' -Body '{"title":"Claude finished"}'
 
 (`-Raw` matters: without it `gc` returns an array and the header is
 wrong; and `irm` on PowerShell 5.1 throws on any non-2xx, which is the
@@ -2303,7 +2303,7 @@ coalesced. `[notify] cue = false` keeps the cards and drops the sound.
 
 **Where it goes.** Every arrival, reminder and dismissal is one line in
 `notify.log` (`RECEIVED #12 from claude-code (done) | project
-HebrewDictation | title 'Claude finished' | 212 chars | unread 3`,
+DeskIT | title 'Claude finished' | 212 chars | unread 3`,
 `REMINDED 1/2`, `DISMISSED by key | 3 marked seen`); the last 100 items
 live in `notify.json`, which the dashboard's **Notify** screen reads
 straight off the disk — the count and the newest one's line in the hero,

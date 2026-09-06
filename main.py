@@ -3,9 +3,9 @@
 Hold the hotkey (default: Right Ctrl), speak Hebrew, release — the cleaned
 transcript is pasted into whatever window has focus. See README.md.
 
-Normally launched by double-clicking "Hebrew Dictation.vbs", which runs it
+Normally launched by double-clicking "DeskIT.vbs", which runs it
 windowless via pythonw.exe. With no console there is no Ctrl+C, so a second
-launch is refused (single-instance mutex) and "Stop Dictation.vbs" (i.e.
+launch is refused (single-instance mutex) and "Stop DeskIT.vbs" (i.e.
 --stop) asks the running instance to exit.
 
 Flags:
@@ -4828,7 +4828,7 @@ def main() -> int:
     # would make every Stop in that window a silent no-op: the dashboard
     # would say "nothing to stop" (it enables the button as soon as the
     # mutex says an instance exists) and the app would come up behind it
-    # anyway, hook live. Same hole for "Stop Dictation.vbs".
+    # anyway, hook live. Same hole for "Stop DeskIT.vbs".
     quit_signal = singleton.QuitSignal()
 
     # Loading two Whisper models onto the GPU takes ~25 s during which a
@@ -4927,7 +4927,7 @@ def main() -> int:
              f", '{cfg.english_hotkey}' for English" if cfg.english_hotkey
              else "",
              "Ctrl+C here to quit." if HAS_CONSOLE
-             else 'Double-click "Stop Dictation.vbs" to quit.')
+             else 'Double-click "Stop DeskIT.vbs" to quit.')
     if cfg.latch_hotkey:
         log.info("long dictation: while holding '%s', tap '%s' to lock the "
                  "recording on — then let go and talk %s. Tap '%s' again to "

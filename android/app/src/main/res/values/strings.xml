@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Hebrew Dictation</string>
-    <string name="ime_label">Hebrew Dictation (mic)</string>
+    <string name="app_name">DeskIT</string>
+    <string name="ime_label">DeskIT (mic)</string>
 
     <!-- Keyboard face. English on purpose: it sits under a Hebrew text
          field, and mixing scripts in the same glance is noise. -->

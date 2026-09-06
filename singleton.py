@@ -123,7 +123,7 @@ class InstanceLock:
             raise AlreadyRunning(
                 "DeskIT is already running (only one instance may "
                 "run — two would paste every transcript twice). Use "
-                "'Stop dictation' first if you want to restart it.")
+                "'Stop DeskIT' first if you want to restart it.")
         self._handle = handle
 
     def release(self) -> None:

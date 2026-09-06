@@ -112,7 +112,7 @@ if (-not $Claude) {
 # and buried the FATAL there, which is a phantom directory and a lost warning.
 # So the target starts outside the repo and only moves in once the repo is
 # confirmed to exist.
-$Fallback = Join-Path $env:LOCALAPPDATA 'HebrewDictation\weekly-run.log'
+$Fallback = Join-Path $env:LOCALAPPDATA 'DeskIT\weekly-run.log'
 $script:Target = $Fallback
 
 # Permission mode for the unattended run. The command reads problems.json,

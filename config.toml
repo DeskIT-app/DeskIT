@@ -226,8 +226,8 @@ corner = "top-right"          # top-right | top-left | bottom-right | bottom-lef
                               # Where it starts before you have moved it. On the
                               # right it is placed BESIDE the status dot, never
                               # over it: the dot does not move for this
-x = -291                      # the top-left of the CARD where you last dragged
-y = 235                       # it, in screen pixels — what you can SEE, not the
+x = -283                      # the top-left of the CARD where you last dragged
+y = 258                       # it, in screen pixels — what you can SEE, not the
                               # window, which starts 26 px further up and left to
                               # leave room for its own shadow. -100000 = never
                               # moved: use `corner`. It has to be a number no
@@ -1120,8 +1120,8 @@ anchor = "bottom"              # bottom | top. Which edge of the stack stays
                                # so a card kept in the bottom-right corner
                                # never runs off the screen; "top" pins the
                                # top edge and grows downward, as it used to
-x = 2191                    # the top-left of the CARD where you last
-y = 1419                    # dragged it, in screen pixels — but `y` is the
+x = 2188                    # the top-left of the CARD where you last
+y = 1373                    # dragged it, in screen pixels — but `y` is the
                                # edge `anchor` names, so with the default
                                # "bottom" it is the BOTTOM of the stack and
                                # a taller card grows up away from it.
@@ -1570,8 +1570,8 @@ card_seconds = 20             # how long the card stays on screen before it
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
-x = 370                   # the top-left of the CARD where you last
-y = 910                   # dragged it, in screen pixels. -100000 = never
+x = -1530                   # the top-left of the CARD where you last
+y = 887                   # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a
                               # monitor to the left of the primary
 scale = 1.0                   # how big it is drawn (0.6 .. 1.4)
