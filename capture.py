@@ -6211,7 +6211,7 @@ class Controller:
             self._free_screen()
 
     def _new_recorder(self, box, cfg) -> ScreenRecorder:
-        directory = capture_dir(cfg.folder)
+        directory = capture_dir(cfg.clip_folder or cfg.folder)
         taken = {p.name for p in directory.glob("clip *.mp4")}
         path = directory / capture_name("clip", taken=taken)
         # The SAME microphone dictation uses, when the owner asked for

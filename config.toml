@@ -749,11 +749,19 @@ record_hotkey = "ctrl+f12"     # tap to start, tap again to stop. One key
                                # same thought as the first, and a recorder
                                # you have to hunt for with the mouse records
                                # you hunting for it
-folder = "captures"            # relative to the APP folder, not to whatever
-                               # directory the process started in — this app
-                               # is launched from a .vbs, a shortcut and a
-                               # scheduled task, and all three disagree.
-                               # An absolute path is used as given
+folder = "C:\\Users\\shimr\\Desktop\\Organized\\Photos\\Screenshots\\DeskIT capture"
+                               # where screenshots and camera photos go.
+                               # A relative name is relative to the APP
+                               # folder, not to whatever directory the
+                               # process started in — this app is launched
+                               # from a .vbs, a shortcut and a scheduled
+                               # task, and all three disagree. An absolute
+                               # path is used as given
+clip_folder = "C:\\Users\\shimr\\Desktop\\Organized\\Videos\\DeskIT"
+                               # where screen RECORDINGS (clip *.mp4) go.
+                               # Empty means the same folder as the
+                               # pictures; an absolute path is used as
+                               # given, like `folder`
 copy_to_clipboard = true       # Win+Shift+S's promise. CF_DIB and the
                                # registered PNG format, so Paint, Word,
                                # Chrome and Slack all find one they like and
@@ -952,7 +960,8 @@ timer = 0                      # 0, 3 or 10 seconds of self-timer to start
                                # on. `t` cycles it while the window is
                                # open, and Esc cancels a countdown before
                                # it closes the window
-folder = "captures"            # the same folder the screen captures go
+folder = "C:\\Users\\shimr\\Desktop\\Organized\\Photos\\Screenshots\\DeskIT capture"
+                               # the same folder the screen captures go
                                # to, so there is one place to look for
                                # pictures. The files are named
                                # "photo 2026-08-26 18-45-22.png" rather

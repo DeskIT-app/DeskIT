@@ -12030,7 +12030,8 @@ def test_the_shipped_config_carries_the_capture_section() -> None:
     cfg = config_mod.load(here / "config.toml")
     assert cfg.capture.audio == "off", "the shipped default must be off"
     ignored = (here / ".gitignore").read_text("utf-8")
-    assert f"{cfg.capture.folder}/" in ignored, \
+    assert Path(cfg.capture.folder).is_absolute() \
+        or f"{cfg.capture.folder}/" in ignored, \
         "pictures of this screen must not be committable"
 
 
@@ -12898,7 +12899,8 @@ def test_the_shipped_config_carries_the_camera_section() -> None:
     assert cfg.camera.mirror is False
     assert cfg.camera.timer == 0
     ignored = (here / ".gitignore").read_text("utf-8")
-    assert f"{cfg.camera.folder}/" in ignored, \
+    assert Path(cfg.camera.folder).is_absolute() \
+        or f"{cfg.camera.folder}/" in ignored, \
         "photographs of this room must not be committable"
 
 

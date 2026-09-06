@@ -1721,7 +1721,7 @@ is already carrying two Whisper models and gemma3.
 
 ### Where it all goes, and what never leaves
 
-Everything lands in `captures\` beside the app (`[capture] folder`), named
+Pictures land in `[capture] folder` and recordings in `[capture] clip_folder` (empty = the same place; the shipped default was `captures\` beside the app), named
 `shot 2026-08-25 22-41-03.png` and `clip 2026-08-25 22-41-03.mp4` — hyphens
 where a clock would put colons, so sorting the folder by name is sorting it
 by time. Two captures inside one second get ` (2)`; nothing is ever
@@ -3670,6 +3670,7 @@ for `מבשרים`, all of which the local model got right.
 | `[capture] toast_in_shots` | `true` | may a screenshot **see** the cards? `true`, so you can photograph one and show it to somebody — the Windows flag that hides a window from a capture hides it from *your* grab too, which is why the camera card refuses it as well. It does not compound: the desktop is frozen before the deck is taken off the screen, so a card lands in a picture once and never eats the drag. `false` hides them from every capture and every recording |
 | `[capture] always_save` | `false` | write **every** capture to `folder`, or only the ones you ask to keep. `false` means the picture is on the clipboard and nowhere else until Save is pressed — the one setting here that gives something up, in exchange for a folder that holds what you meant to keep |
 | `[capture] copy_clip_path` | `true` | a finished recording goes on the clipboard as a **file** (CF_HDROP), so it pastes into a chat or a folder |
+| `[capture] clip_folder` | *(empty)* | where screen **recordings** (`clip *.mp4`) go; empty means the same as `folder`. An absolute path is used as given — this machine sends clips to `Videos\DeskIT` and pictures to `Photos\Screenshots\DeskIT capture` |
 | `[capture] fps` | `30` | measured achievable with zero dropped frames at 720p and 1080p; 1440p settles at ~28 and stays real-time because frames carry wall-clock stamps, not frame numbers |
 | `[capture] quality` | `balanced` | `small` \| `balanced` \| `sharp` — crf 30/26/20. Screen content is flat colour and sharp edges, so these are softer than the same names mean for camera video |
 | `[capture] cursor` | `true` | BitBlt does not include the pointer, so it is painted in. Without it nobody can tell what is being pointed at |

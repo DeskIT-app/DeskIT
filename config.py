@@ -401,6 +401,9 @@ class CaptureConfig:
     # directory the process was started from — this app is launched from a
     # .vbs, a shortcut and a scheduled task, and all three disagree.
     folder: str = "captures"
+    # Where screen RECORDINGS (clip *.mp4) go. Empty means the same folder
+    # as the pictures; an absolute path is used as given, like `folder`.
+    clip_folder: str = ""
     # Win+Shift+S's promise: the capture is pasteable immediately. false
     # still writes the file.
     copy_to_clipboard: bool = True
@@ -1550,6 +1553,8 @@ def load(path: Path) -> Config:
                 "record_hotkey",
                 CaptureConfig.record_hotkey)).strip().lower(),
             folder=str(capture.get("folder", CaptureConfig.folder)).strip(),
+            clip_folder=str(capture.get(
+                "clip_folder", CaptureConfig.clip_folder)).strip(),
             copy_to_clipboard=bool(capture.get(
                 "copy_to_clipboard", CaptureConfig.copy_to_clipboard)),
             after_shot=str(capture.get(
