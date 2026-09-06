@@ -1200,8 +1200,16 @@ class Engine:
         there is nothing left in it. Returns what it showed, so a caller
         can ask "is anything still unread?" without a second read of the
         store. Never raises: a card that cannot paint must not cost the
-        dismissal, the HTTP reply or the reminder that called this."""
+        dismissal, the HTTP reply or the reminder that called this.
+
+        The arrival watcher is armed here as well as on arrival, because
+        a column can come back without one: the app restarts holding
+        cards that were unread when it went down, and those must still
+        go away when he reaches their sessions rather than wait for the
+        next notification to wake the thread up."""
         items = self.live()
+        if items:
+            self._watch_arm()
         try:
             if items:
                 self._show(items)
