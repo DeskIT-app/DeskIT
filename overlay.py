@@ -127,9 +127,15 @@ class Splash:
         self._landings_over = False   # the splash thread's last land() ran
         # Where the status dot will be, so the release's last beat can
         # land its light IN the dot rather than in the corner the dot
-        # used to occupy. main.py sets it from `[dot] corner` before
-        # start(); skin\boot.py reads it and nothing else does.
+        # used to occupy. main.py sets these from `[dot] corner` and
+        # `[dot] x/y` before start(); skin\boot.py reads them and nothing
+        # else does. The pair matter as much as the corner now that the
+        # dot can be dragged out of its corner — AGENTS.md names
+        # boot._landing as one of the three things that follow the dot,
+        # and a light landing in an empty corner is exactly the defect it
+        # warns about.
         self.dot_corner = "bottom-right"
+        self.dot_x = self.dot_y = -100000
 
     @classmethod
     def off(cls) -> "Splash":
@@ -526,6 +532,26 @@ STATES = {
 # together. Bottom-right is the default since 2026-09-07 — see StatusDot.
 DOT_CORNERS = ("bottom-right", "top-right")
 
+# "never moved". NOT -1: a monitor to the left of the primary has real
+# negative screen coordinates — measured here, the virtual desktop starts
+# at x = -1920 — so -1 threw away every card that was dragged onto it. The
+# sentinel has to be a number no desktop can reach. Mirrors
+# config.HINT_UNSET; a test asserts the two agree. It sits up here, above
+# the dot rather than beside the cards, because the dot uses it too now —
+# `[dot] x/y`, which is where a dragged dot is remembered.
+HINT_UNSET = -100000
+
+# How long "Move the dot" leaves the disc draggable before it gives up
+# and hands the click back to the shelf. The dashboard hides itself for
+# the duration, so this is also what puts that window back if he presses
+# the button and then walks away: without a deadline, one stray press
+# would leave a dot that no longer opens the shelf and a control window
+# nobody can see.
+DOT_MOVE_S = 45.0
+# A release that travelled less than this is a click, not a drag —
+# NotifyCard's rule and its number, kept the same everywhere.
+DOT_CLICK_PX = 4
+
 
 def _work_area():
     """(x, y, w, h) of the primary monitor's work area — the taskbar
@@ -546,6 +572,66 @@ def _work_area():
     return None
 
 
+def _virtual_screen():
+    """(x, y, w, h) of the WHOLE desktop, every monitor in it, or None.
+
+    skin\\glass.virtual_screen is the same four metrics; it is not
+    imported for the reason `_work_area` is not — this module is the path
+    that still runs with skin\\ deleted. It is what a saved position is
+    clamped against: this machine has a monitor at x = -1920, so clamping
+    to the primary would walk a dot dropped over there back onto the
+    middle screen on every launch.
+    """
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        m = user32.GetSystemMetrics
+        bounds = (int(m(76)), int(m(77)), int(m(78)), int(m(79)))
+        if bounds[2] > 0 and bounds[3] > 0:
+            return bounds
+    except Exception:
+        _log.debug("could not read the virtual screen", exc_info=True)
+    return None
+
+
+def dot_spot(corner: str, work, box, margin,
+             x: int = HINT_UNSET, y: int = HINT_UNSET,
+             bounds=None) -> tuple[int, int]:
+    """Where the status dot's window goes: its top-left, in screen pixels.
+
+    ONE ARITHMETIC FOR BOTH PICTURES. The glass dot is a 38 px box with
+    8 x 4 px margins and the Tk fallback is a 19 px one with 10 x 6, so
+    `box` and `margin` are arguments rather than constants — but the RULE
+    is the same in both and lives here only: a position he dragged it to
+    wins over the corner, and either way the whole dot has to end up
+    somewhere he can reach.
+
+    `work` is the primary monitor's work area, (x, y, w, h) with the
+    taskbar taken out, which is what the corners are measured from — the
+    bottom-right one sits ABOVE the taskbar and not under it.
+
+    `bounds` is the whole virtual desktop, and a saved position is
+    clamped against it rather than against `work`. HintCard.origin's
+    reason, and the dot's is stronger: it is 38 px across, so unlike a
+    card there is no "keep 60 px reachable" — the entire square has to
+    stay on the desktop or there is nothing left to grab. A dot saved on
+    a monitor that has since been unplugged comes back on one that has
+    not.
+
+    Pure arithmetic, so a test can check every corner and every dropped
+    position without a screen.
+    """
+    wx, wy, ww, wh = work
+    bw, bh = box
+    if int(x) > HINT_UNSET and int(y) > HINT_UNSET:
+        vx, vy, vw, vh = bounds if bounds else (wx, wy, ww, wh)
+        return (int(max(vx, min(int(x), vx + vw - bw))),
+                int(max(vy, min(int(y), vy + vh - bh))))
+    mx, my = margin
+    at_x = wx + ww - bw - mx
+    at_y = wy + my if str(corner) == "top-right" else wy + wh - bh - my
+    return int(at_x), int(at_y)
+
+
 class StatusDot:
     """A small always-on-top dot: the app is running, and what it is doing.
 
@@ -564,18 +650,57 @@ class StatusDot:
     ignore a press outside the disc. `on_click` is None by default, and
     with None the window is created exactly as it always was.
 
+    AND IT MOVES. `corner` used to be the whole story and it was read
+    once, at startup, which is exactly what the owner complained about on
+    2026-09-07: "the dot — I want it to be movable, and without needing
+    to open and close the app... I press 'set' and then the desk
+    disappears and I drag the dot wherever I want it". So `x, y` is where
+    he dropped it — `[dot] x/y`, HINT_UNSET for "never dragged, use the
+    corner" — and `move()` puts the dot into MOVE MODE for a few seconds:
+    the disc answers HTCAPTION instead of HTCLIENT, Windows itself does
+    the drag, and the release lands in `placed()` and goes back into
+    config.toml through `on_change`, exactly as every card's drag does.
+    Move mode is what keeps the two gestures apart — while it is on the
+    disc cannot fire `on_click`, because a press on an HTCAPTION pixel
+    never becomes WM_LBUTTONDOWN at all — and it is why `moving()` has a
+    DEADLINE rather than a flag: the dashboard hides itself for the
+    duration, so a press followed by a change of mind must expire on its
+    own or there is no way back.
+
+    `rect` is where the window actually is, kept up to date by whichever
+    painter is running. The shelf reads it: a click on the dot is a click
+    outside the shelf, and it already toggles it, so the shelf's
+    close-on-click-away has to leave this square alone or the panel would
+    close and reopen in one press.
+
     Same thread rules as Splash: Tk only on the overlay thread, callers
     only ever put strings on a queue. `on_click` fires ON the overlay
     thread, so whatever it does may only read a flag and start a thread.
     """
 
     def __init__(self, size: int = 13, margin_x: int = 10,
-                 margin_y: int = 6, corner: str = "bottom-right") -> None:
+                 margin_y: int = 6, corner: str = "bottom-right",
+                 x: int = HINT_UNSET, y: int = HINT_UNSET,
+                 on_change=None) -> None:
         self._q: queue.Queue = queue.Queue()
         self._size = size
         self._margin = (margin_x, margin_y)
         self.corner = corner if corner in DOT_CORNERS else "bottom-right"
         self.on_click = None
+        # Where it was dragged to, and the hook that writes that down —
+        # HintCard's two, spelled the same way so main.py's _save_dot is
+        # the twin of _save_hint and one line editor serves both.
+        self.x, self.y = int(x), int(y)
+        self._on_change = on_change
+        # The window's screen rect, (left, top, right, bottom), or None
+        # when there is no window. Set by the painter, read by the shelf.
+        self.rect = None
+        # Move mode's deadline on the monotonic clock. 0.0 is "not
+        # moving", which is also what it reads as before the app starts.
+        self._move_until = 0.0
+        # "the position changed under you — go there". Set by placed()
+        # and to_corner(); the painter clears it and moves the window.
+        self._replace = threading.Event()
         self._thread: threading.Thread | None = None
         self._alive = threading.Event()
         self._closing = threading.Event()
@@ -586,6 +711,86 @@ class StatusDot:
         obj = cls()
         obj._enabled = False
         return obj
+
+    # -- where it is, and how it gets there --
+
+    def dragged(self) -> bool:
+        """Has it been dropped somewhere? Then x, y decide and the corner
+        does not. config.DotConfig.moved is the same test on the file."""
+        return self.x > HINT_UNSET and self.y > HINT_UNSET
+
+    def moving(self) -> bool:
+        """Is the disc draggable right now? A deadline, not a flag — see
+        the class docstring."""
+        return time.monotonic() < self._move_until
+
+    def move(self, seconds: float = DOT_MOVE_S) -> bool:
+        """Make the disc draggable for the next `seconds`. False if there
+        is no dot to drag, so the dashboard can say so instead of hiding
+        itself in front of nothing.
+
+        Safe from the control thread: it writes one float, and the
+        painter reads it on its own next frame.
+        """
+        if self._thread is None or not self._enabled:
+            return False
+        self._move_until = time.monotonic() + max(1.0, float(seconds))
+        return True
+
+    def rest(self) -> None:
+        """Move mode over — because it was dropped, or because it ran
+        out. Idempotent; the painter and the clock both call it."""
+        self._move_until = 0.0
+
+    def placed(self, x: int, y: int) -> None:
+        """Remember where a drag left it, and write it down.
+
+        HintCard.placed, with its two rules and without its third. The
+        rules kept: an unchanged position is not written again, because
+        one release arrives as more than one message and this is the line
+        editor's caller; and a negative coordinate is written as it comes,
+        because the monitor to the left of the primary starts at x = -1920
+        and refusing it would drag the dot home every time.
+
+        The rule dropped is the shadow: the dot's window IS the picture,
+        with no transparent margin around it, so what is saved is the
+        window's own top-left and there is nothing to add back.
+        """
+        x, y = int(x), int(y)
+        if (x, y) == (self.x, self.y):
+            return
+        self.x, self.y = x, y
+        self._replace.set()
+        self._changed(x=self.x, y=self.y)
+
+    def to_corner(self) -> None:
+        """Forget the dropped position and go back to `corner`, now.
+
+        The way out of a dot dragged somewhere unfortunate — behind a
+        taskbar's clock, onto a monitor that is about to be unplugged —
+        without opening config.toml. Does nothing if it was never
+        dragged, so pressing it twice is not a write.
+        """
+        if not self.dragged():
+            return
+        self.x = self.y = HINT_UNSET
+        self._replace.set()
+        self._changed(x=self.x, y=self.y)
+
+    def state(self) -> dict:
+        """What the dashboard draws, small enough to ride the status poll
+        several times a second."""
+        return {"corner": self.corner, "x": self.x, "y": self.y,
+                "dragged": self.dragged(), "moving": self.moving()}
+
+    def _changed(self, **fields) -> None:
+        if self._on_change is None:
+            return
+        try:
+            self._on_change(fields)
+        except Exception:
+            _log.info("could not save the dot's %s",
+                      ", ".join(fields), exc_info=True)
 
     # -- caller's thread --
 
@@ -641,15 +846,24 @@ class StatusDot:
         dot = canvas.create_oval(pad, pad, pad + self._size, pad + self._size,
                                  width=0)
 
-        # A corner of the WORK AREA, so bottom-right is above the taskbar
-        # and not under it; the whole screen only if Windows will not say.
+        # Where he dragged it to, or a corner of the WORK AREA so that
+        # bottom-right is above the taskbar and not under it; the whole
+        # screen only if Windows will not say. dot_spot is the same
+        # arithmetic skin\dot.spot uses, with this window's smaller box
+        # and wider margins — so a position dropped on the glass path is
+        # honoured here too, to within the six pixels the two boxes
+        # differ by.
         work = _work_area() or (0, 0, root.winfo_screenwidth(),
                                 root.winfo_screenheight())
-        wx, wy, ww, wh = work
-        mx, my = self._margin
-        at_x = wx + ww - box - mx
-        at_y = wy + my if self.corner == "top-right" else wy + wh - box - my
+        bounds = _virtual_screen() or work
+
+        def where() -> tuple[int, int]:
+            return dot_spot(self.corner, work, (box, box), self._margin,
+                            self.x, self.y, bounds)
+
+        at_x, at_y = where()
         root.geometry(f"{box}x{box}+{at_x}+{at_y}")
+        self.rect = (at_x, at_y, at_x + box, at_y + box)
         # Realise the window first: SetWindowLongW on an unrealised Tk
         # window silently does nothing and still reports success.
         root.update_idletasks()
@@ -666,9 +880,23 @@ class StatusDot:
             centre = box / 2.0
             reach = self._size / 2.0 + 2.0
             last = [0.0]
+            # The drag, and it is the disc's own gesture rather than
+            # HTCAPTION's: there is no window proc to answer here, so the
+            # press is tracked by hand the way shelf.py's fallback tracks
+            # its head strip. `grab` is the offset from the window's
+            # corner to the pointer, and it FOLLOWS the drag — the origin
+            # is never re-read at the end of it (AGENTS.md, the card that
+            # snapped back).
+            drag = {"grab": None, "from": (0, 0), "moved": 0}
 
             def press(event) -> None:
                 if math.hypot(event.x - centre, event.y - centre) > reach:
+                    return
+                if self.moving():
+                    drag["grab"] = (event.x_root - root.winfo_x(),
+                                    event.y_root - root.winfo_y())
+                    drag["from"] = (event.x_root, event.y_root)
+                    drag["moved"] = 0
                     return
                 now = time.monotonic()
                 if now - last[0] < 0.3:     # a double-click is one click
@@ -680,7 +908,39 @@ class StatusDot:
                     _log.info("the dot's click could not open the shelf",
                               exc_info=True)
 
+            def motion(event) -> None:
+                if drag["grab"] is None:
+                    return
+                ox, oy = drag["from"]
+                drag["moved"] = max(drag["moved"],
+                                    abs(event.x_root - ox)
+                                    + abs(event.y_root - oy))
+                if drag["moved"] < DOT_CLICK_PX:
+                    return              # still a press until it is not
+                dx, dy = drag["grab"]
+                root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+
+            def release(_event) -> None:
+                """The drop. Move mode ends either way — he asked for one
+                move and he has had it, and leaving it armed would leave
+                the disc unable to open the shelf. A release that
+                travelled less than DOT_CLICK_PX is a press he thought
+                better of and writes nothing."""
+                if drag["grab"] is None:
+                    return
+                drag["grab"] = None
+                self.rest()
+                if drag["moved"] < DOT_CLICK_PX:
+                    return
+                got = dot_spot(self.corner, work, (box, box), self._margin,
+                               root.winfo_x(), root.winfo_y(), bounds)
+                root.geometry(f"+{got[0]}+{got[1]}")
+                self.rect = (got[0], got[1], got[0] + box, got[1] + box)
+                self.placed(*got)
+
             canvas.bind("<Button-1>", press)
+            canvas.bind("<B1-Motion>", motion)
+            canvas.bind("<ButtonRelease-1>", release)
         # THE DOT USED TO EXCLUDE ITSELF FROM CAPTURE HERE. Removed
         # 2026-09-04 at the owner's request: he wants the screenshot key
         # to freeze the screen and photograph it AS IT IS, and a window
@@ -703,7 +963,13 @@ class StatusDot:
                 k = 0.55 + 0.45 * (0.5 + 0.5 * math.cos(state["phase"]))
                 fill = _mix(fill, _CHROMA, k)
             canvas.itemconfig(dot, fill=fill)
-            canvas.itemconfig(ring, outline=ring_col)
+            # WHILE IT IS WAITING TO BE DRAGGED, the containing ring goes
+            # white. The control window has hidden itself by then, so the
+            # dot is the only thing on screen that can say move mode is
+            # on — and the ring is already drawn, so saying it costs a
+            # colour rather than a shape.
+            canvas.itemconfig(ring, outline="#ffffff" if self.moving()
+                              else ring_col)
             root.after(45, paint)
 
         def pump() -> None:
@@ -717,6 +983,13 @@ class StatusDot:
                     state["phase"] = 0.0
             except queue.Empty:
                 pass
+            # Somebody moved it from somewhere else — a drop that had to
+            # be clamped, or "Back to the corner" from the dashboard.
+            if self._replace.is_set():
+                self._replace.clear()
+                at = where()
+                root.geometry(f"+{at[0]}+{at[1]}")
+                self.rect = (at[0], at[1], at[0] + box, at[1] + box)
             root.after(60, pump)
 
         paint()
@@ -725,13 +998,15 @@ class StatusDot:
             _pump_until(root, self._closing)
         finally:
             import gc                       # see Splash: same Tcl teardown
+            self.rect = None                # nothing on screen to click
+            self.rest()
             try:
                 _forget_window(root)        # and the same repaint rule
                 root.destroy()
             except Exception:
                 pass
-            paint = pump = None                       # noqa: F841
-            canvas = dot = ring = root = None         # noqa: F841
+            paint = pump = where = None                   # noqa: F841
+            canvas = dot = ring = root = None             # noqa: F841
             gc.collect()
 
 
@@ -741,14 +1016,6 @@ def _mix(colour: str, towards: str, k: float) -> str:
     b = [int(towards[i:i + 2], 16) for i in (1, 3, 5)]
     return "#%02x%02x%02x" % tuple(
         max(0, min(255, round(x * k + y * (1 - k)))) for x, y in zip(a, b))
-
-
-# "never moved". NOT -1: a monitor to the left of the primary has real
-# negative screen coordinates — measured here, the virtual desktop starts
-# at x = -1920 — so -1 threw away every card that was dragged onto it. The
-# sentinel has to be a number no desktop can reach. Mirrors
-# config.HINT_UNSET; a test asserts the two agree.
-HINT_UNSET = -100000
 
 
 class HintCard:

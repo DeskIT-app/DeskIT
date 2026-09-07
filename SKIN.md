@@ -84,7 +84,7 @@ makes the answer true.
 | `boot.py` | the corner card, the waveform, and the thread that drives both |
 | `reveal.py` | the release, on the GPU |
 | `burst.py` | the release, for machines with no GPU |
-| `dot.py` | the status dot: five states, the halo gated on `NO_HALO` — paused is the one without one, checked on rendered alpha 8 px out from the disc rather than on the colour table, because the halo rule is about DRAWING — and, since 2026-09-07, a BUTTON: `Dot.hit` answers HTCLIENT on the disc plus 2 px and HTTRANSPARENT on the glow, `place()` puts it in a corner of the work area (`[dot] corner`, bottom-right by default), and the halo ends at `HALO_R` = 18 px so no glow reaches the window's edge |
+| `dot.py` | the status dot: five states, the halo gated on `NO_HALO` — paused is the one without one, checked on rendered alpha 8 px out from the disc rather than on the colour table, because the halo rule is about DRAWING — and, since 2026-09-07, a BUTTON: `Dot.hit` answers HTCLIENT on the disc plus 2 px and HTTRANSPARENT on the glow, `place()` puts it in a corner of the work area (`[dot] corner`, bottom-right by default) while `spot()` prefers wherever it was dragged to (`[dot] x/y`), the disc answers HTCAPTION instead while `move()` is armed so Windows drags it, and the halo ends at `HALO_R` = 18 px so no glow reaches the window's edge |
 | `shelf.py` | the glass under the panel beside the dot (`face()` + `run()`): `notify.py`'s recipe with the shelf's geometry and `hint.py`'s shadow put back. Nothing animates, so `run()` caches the composed picture on `(card, hover, scale)` and re-blits it — composing a full panel is 41 ms and the tick is one second |
 | `hint.py` | the key card while a key is held; its `DOTS` are derived from `DOT_STATES`, so the card and the corner dot cannot disagree |
 | `notify.py`, `review.py` | the glass under the notification column and the second-reading card |
@@ -206,8 +206,24 @@ built without WS_EX_TRANSPARENT and asks it per pixel, and a click on the
 disc calls `overlay.StatusDot.on_click` — main.py's `_tap_shelf`, the
 same toggle as ctrl+alt+d. Two clicks inside 300 ms are one click, so a
 double-click is not an open and a close. The reveal's landing follows
-the dot (`boot._landing` asks `dot.place`), and so do the shelf and the
+the dot (`boot._landing` asks `dot.spot`), and so do the shelf and the
 key card (`HintCard.origin`, `DOT_ROOM`, measured against the work area).
+
+**And the same disc is the drag handle.** `overlay.StatusDot.move()`
+arms move mode for a few seconds — the dashboard's "Move the dot" sends
+it down the control pipe while the app runs — and while it is armed
+`Dot.hit` answers **HTCAPTION** on the disc instead of HTCLIENT, so
+Windows itself runs the drag exactly as it does for the notify column
+and the shelf. That message split is what makes one press unable to be
+both gestures: a caption press arrives as WM_NCLBUTTONDOWN and the
+shelf's toggle is on WM_LBUTTONDOWN. Everything outside CORE / 2 + 2 px
+still answers HTTRANSPARENT in move mode — the glow never takes a click
+away from the window underneath, armed or not — so the thing that
+LIGHTS UP to say "drag me" is the containing ring at 8 px, drawn white
+and `MOVE_W` wide, and not a bigger halo: what glows has to be what can
+be pressed. The drop is read off the handle with `glass.where()`,
+clamped so the whole 38 px square stays on the virtual desktop, and
+written to `[dot] x/y`.
 
 **The mark.** A dalet drawn as a desk: a tabletop with one leg hanging
 from its right end, the top's edge just past the leg, the lamp-dot above
@@ -408,7 +424,8 @@ context rather than testing a path the app never takes.
   animation effects off in Windows the card simply goes and nothing fires.
 - **It ends somewhere.** The last beat gathers the light into the status
   dot — bottom-right of the work area since 2026-09-07, wherever `[dot]
-  corner` says; the one thing that stays on screen for the rest of the
-  session — rather than fading to nothing. A uniform fade to zero has no
+  corner` says, or wherever `[dot] x/y` says it was dragged to; the one
+  thing that stays on screen for the rest of the session — rather than
+  fading to nothing. A uniform fade to zero has no
   event structure and reads as "it vanished".
 - **Seeded per boot**, so the fifth time is not a replay of the first.

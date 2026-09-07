@@ -694,8 +694,11 @@ def run(splash) -> None:
                         _log.debug("skin: no burst layer", exc_info=True)
                         motion = False
                 if motion and burst_glass is not None:
-                    burst = _arm_burst(card, burst_glass,
-                                       getattr(splash, "dot_corner", None))
+                    burst = _arm_burst(
+                        card, burst_glass,
+                        getattr(splash, "dot_corner", None),
+                        getattr(splash, "dot_x", None),
+                        getattr(splash, "dot_y", None))
                     land_at = _land_ms(burst)
 
             # THE CARD IS ONLY DRAWN WHILE IT STILL HAS A WINDOW.
@@ -824,18 +827,30 @@ def _burst_box():
     return 0, 0, pw, ph
 
 
-def _landing(corner, box, work) -> tuple[float, float]:
+def _landing(corner, box, work, x=None, y=None, bounds=None
+             ) -> tuple[float, float]:
     """Where the release's light lands: the CENTRE of the status dot, in
     the release layer's own coordinates.
 
-    skin/dot.place is the one answer for where the dot is — `corner` is
+    skin/dot is the one answer for where the dot is — `corner` is
     `[dot] corner`, `work` the primary work area the dot is measured
     from — and `box` is the layer (x, y, w, h) from _burst_box. Pure
     arithmetic, so a test can hold the landing and the dot together.
+
+    `x, y` are `[dot] x/y`, where it was dragged to, and they beat the
+    corner exactly as they do for the dot's own window. Omitted, this
+    asks `place` and gets the corner, which is what it always did and
+    what every caller written before the dot could move still gets.
+    AGENTS.md names this function as one of the three things that follow
+    the dot; a light landing in the corner a dragged dot has left is the
+    defect that warning is about.
     """
     from . import dot as dot_mod
-    x, y, w, h = dot_mod.place(corner, work)
-    return (x + w / 2.0 - box[0], y + h / 2.0 - box[1])
+    if x is None or y is None:
+        dx, dy, w, h = dot_mod.place(corner, work)
+    else:
+        dx, dy, w, h = dot_mod.spot(corner, work, x, y, bounds)
+    return (dx + w / 2.0 - box[0], dy + h / 2.0 - box[1])
 
 
 def _land_ms(shot) -> float:
@@ -868,7 +883,7 @@ def _land_ms(shot) -> float:
     return float(T_FLASH[0])
 
 
-def _arm_burst(card, glass, dot_corner=None):
+def _arm_burst(card, glass, dot_corner=None, dot_x=None, dot_y=None):
     """Build the release, pointed at the card the light is leaving.
 
     TWO RELEASES, and which one runs is decided by what the graphics card
@@ -880,19 +895,28 @@ def _arm_burst(card, glass, dot_corner=None):
     is what that budget can actually draw.
 
     Both start where the card is, so in both the light has a cause; the
-    reveal ENDS where the dot is (`dot_corner`, from the Splash object -
-    see _landing), so the arrival has a place to arrive at.
+    reveal ENDS where the dot is (`dot_corner` and `dot_x/dot_y`, from
+    the Splash object - see _landing), so the arrival has a place to
+    arrive at. The pair are read as well as the corner because the dot
+    can be dragged out of its corner now; None for either means it never
+    was, and the corner answers as it always did.
     """
     x, y, _w, _h = card.placement()
     heart = (x + WIN_W / 2, y + PAD + WAVE_Y)
     if glass.on_gpu:
         from .reveal import Reveal, T_DIP as REVEAL_DIP
         from . import dot as dot_mod
+        from .glass import virtual_screen
         corner = dot_corner if dot_corner in dot_mod.CORNERS \
             else dot_mod.DEFAULT_CORNER
+        moved = (dot_x is not None and dot_y is not None
+                 and int(dot_x) > dot_mod.UNSET and int(dot_y) > dot_mod.UNSET)
         shot = Reveal(glass.width, glass.height, origin=heart,
                       seed=card._seed,
-                      landing=_landing(corner, _burst_box(), work_area()))
+                      landing=_landing(corner, _burst_box(), work_area(),
+                                       dot_x if moved else None,
+                                       dot_y if moved else None,
+                                       virtual_screen() if moved else None))
         shot.draw(glass.canvas, REVEAL_DIP[0])
     else:
         shot = Burst(glass.width, glass.height, seed=card._seed,

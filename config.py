@@ -117,18 +117,41 @@ CARD_CORNERS = (FOLLOW_DOT,) + HINT_CORNERS
 class DotConfig:
     """The status dot — see overlay.StatusDot and skin\\dot.py.
 
-    One line, because the dot has one decision left in it: which corner
-    of the primary monitor's work area it sits in. Bottom-right since
-    2026-09-07 — above the taskbar, in a corner nothing else lives in,
-    which is what let the disc become a button (a click opens the shelf,
-    exactly as ctrl+alt+d does). Top-right is the corner it used to keep
-    and is still allowed. The shelf and the key card follow this corner
-    unless their own `corner` says otherwise (`corner_for`).
+    `corner` is where the dot starts: which corner of the primary
+    monitor's work area it sits in. Bottom-right since 2026-09-07 —
+    above the taskbar, in a corner nothing else lives in, which is what
+    let the disc become a button (a click opens the shelf, exactly as
+    ctrl+alt+d does). Top-right is the corner it used to keep and is
+    still allowed. The shelf and the key card follow this corner unless
+    their own `corner` says otherwise (`corner_for`), and they go on
+    following it after the dot has been dragged away from it.
 
-    Read once, at startup. There is no live re-placement: a change here
-    applies the next time the app starts.
+    `x` and `y` are where he dragged it to, and they beat the corner.
+    The owner asked for this on 2026-09-07, in these words: "the dot — I
+    want it to be movable, and without needing to open and close the
+    app... I press 'set' and then the desk disappears and I drag the dot
+    wherever I want it". So the corner is no longer read once and kept:
+    Settings' "Move the dot" reaches the RUNNING app down the control
+    pipe (main.App.control_command, `dot`), the dot's own window becomes
+    draggable for as long as it takes to drop it, and the position lands
+    back here through the same comment-keeping line edit every card's
+    drag uses. Nothing restarts.
+
+    HINT_UNSET, not -1, and for the reason spelled out on HintConfig: a
+    monitor to the LEFT of the primary has genuinely negative screen
+    coordinates, so the sentinel has to be a number no desktop can
+    reach. Both or neither — half a position is refused at load, because
+    a dot placed by one coordinate is a dot in a place nobody chose.
     """
     corner: str = "bottom-right"
+    x: int = HINT_UNSET
+    y: int = HINT_UNSET
+
+    def moved(self) -> bool:
+        """Has it been dragged? Then `x, y` decide and `corner` does
+        not. One place answers it, so overlay.py, skin\\dot.py and the
+        dashboard cannot disagree about what the sentinel means."""
+        return self.x > HINT_UNSET and self.y > HINT_UNSET
 
 
 DOT_CORNERS = ("bottom-right", "top-right")
@@ -1466,7 +1489,11 @@ def load(path: Path) -> Config:
             retry_seconds=float(feedback.get(
                 "retry_seconds", FeedbackConfig.retry_seconds)),
         ),
-        dot=DotConfig(corner=dot_corner),
+        dot=DotConfig(
+            corner=dot_corner,
+            x=int(dot.get("x", DotConfig.x)),
+            y=int(dot.get("y", DotConfig.y)),
+        ),
         hint=HintConfig(
             enabled=bool(hint.get("enabled", HintConfig.enabled)),
             after_ms=int(hint.get("after_ms", HintConfig.after_ms)),
@@ -2013,6 +2040,17 @@ def load(path: Path) -> Config:
         raise ConfigError(f"dot.corner must be one of {DOT_CORNERS} (which "
                           "corner of the work area the status dot sits "
                           f"in), got {cfg.dot.corner!r}")
+    # Half a dragged position is not a position. Both at the sentinel
+    # means "never dragged, use the corner"; both real means "here". One
+    # of each is a file someone edited by hand and got wrong, and the
+    # dot would silently ignore it and go back to the corner — which is
+    # exactly the kind of quiet nothing this file refuses to do.
+    if (cfg.dot.x > HINT_UNSET) != (cfg.dot.y > HINT_UNSET):
+        raise ConfigError(
+            f"dot.x and dot.y must be set together — both {HINT_UNSET} "
+            "means the dot has never been dragged and sits in dot.corner, "
+            "and any other pair is where it was dropped; got "
+            f"x={cfg.dot.x!r}, y={cfg.dot.y!r}")
     if cfg.hint.after_ms < 0:
         raise ConfigError("hint.after_ms must be >= 0")
     if cfg.hint.corner not in HINT_CORNERS:

@@ -113,6 +113,13 @@ LOOKS = {
 }
 
 POLL_MS = 800
+# How long this window stays hidden waiting for the dot to be dragged
+# before it comes back whether or not anything happened. The APP gives up
+# first — overlay.DOT_MOVE_S is 45 s and its next status says so, which
+# is what normally ends the wait — so this is only the backstop for an
+# app that stops answering mid-drag. A window that hid itself and never
+# came back is a worse bug than a drag that had to be asked for twice.
+DOT_WAIT_S = 75.0
 # THE PILE IS AS TALL AS ITS ROWS. It was a fixed 286 px card with a
 # scroller inside it and "+N more", and the owner's photograph of it
 # on 2026-09-07 was rows in the middle of an empty card: the card grew
@@ -1284,6 +1291,12 @@ class Dashboard:
         # _fill_settings — and the tick that will build the next.
         self._settings_left: list = []
         self._settings_tick = None
+        # THIS WINDOW HAS HIDDEN ITSELF SO HE CAN DRAG THE DOT, and this
+        # is when to stop waiting for it. 0.0 = not waiting. A deadline
+        # rather than a flag, because the thing that ends the wait is in
+        # ANOTHER PROCESS: if the app stops answering mid-drag there has
+        # to be something that still puts this window back.
+        self._dot_waiting = 0.0
         self._rows_after = None
         self._rows_left: list = []
         # How wide a drawn row is on the place that is up. The Said list
@@ -5693,6 +5706,12 @@ class Dashboard:
                 builders.append(lambda: self._files_card(scroller))
             elif name == "Phone":
                 builders.append(lambda: self._phone_block(scroller))
+            elif name == "Cards":
+                # Above the rows of [dot], because "Move the dot" is the
+                # only way to set `dot.x` and `dot.y` and those two lines
+                # are folded away behind "2 more in this section" — a
+                # button he can find beats a number he would have to type.
+                builders.append(lambda: self._dot_block(scroller))
             for group in settings_mod.groups_for(name, sections, elsewhere):
                 pairs = [(row, s) for row in group.rows
                          if (s := settings_mod.find(sections, row.path))
@@ -6064,6 +6083,151 @@ class Dashboard:
 
     # -- the three blocks that used to be screens
 
+    def _dot_block(self, scroller) -> None:
+        """Where the status dot sits, and the button that moves it.
+
+        THE OWNER'S ASK, 2026-09-07, verbatim: "the dot — I want it to be
+        movable, and without needing to open and close the app. Like, put
+        a marker, like a button, and then I press 'set' and then the desk
+        disappears and I drag the dot wherever I want it, whenever I want
+        it, wherever I want it — and without needing to open and close
+        the app."
+
+        So: Move the dot HIDES THIS WINDOW (that is "the desk
+        disappears"), the disc becomes draggable in the running app, and
+        this window comes back by itself the moment the drag ends — or
+        when the app says it has stopped waiting, which is what happens
+        if he presses the button and then changes his mind. Nothing
+        restarts and nothing has to be typed into config.toml.
+
+        It lives on the Cards page, over the [dot] rows, because that is
+        where the dot's other decision (`corner`) already is. The two
+        lines it writes — `dot.x` and `dot.y` — are on this same page,
+        folded behind "2 more in this section", so the button and the
+        numbers it sets are never in two different places.
+
+        The buttons need the RUNNING app: the dot is a window that
+        process owns, and there is nothing to drag when it is not there.
+        Disabled and said plainly, the way the awake block says the same
+        thing about its own switch.
+        """
+        # 172 and not 148: ui.Card's body is `h - 2 * pad`, so the two
+        # buttons at y=98 need 130 px of body and 148 would have clipped
+        # them by eighteen. Measured against ui.Card's own arithmetic
+        # rather than eyeballed, because this card is built on a hidden
+        # desktop where nobody can see it come out short.
+        card = ui.Card(scroller.inner, CW, 172, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="T H E   D O T", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        self.parts["dot_where"] = tk.Label(
+            body, text="", bg=ui.CARD, fg=ui.FG, font=(ui.DISPLAY, 15,
+                                                       "bold"))
+        self.parts["dot_where"].place(x=0, y=22)
+        self.parts["dot_hint"] = tk.Label(
+            body, text="", bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+            wraplength=CW - 72, justify="left", anchor="w")
+        self.parts["dot_hint"].place(x=0, y=52)
+        wide = widgets.button_width("Move the dot")
+        self.parts["dot_move"] = ui.Button(body, "Move the dot",
+                                           self._move_dot, w=wide, h=32,
+                                           primary=True)
+        self.parts["dot_move"].place(x=0, y=98)
+        home = widgets.button_width("Back to the corner")
+        self.parts["dot_home"] = ui.Button(body, "Back to the corner",
+                                           self._dot_to_corner, w=home,
+                                           h=32, quiet=True)
+        self.parts["dot_home"].place(x=wide + 12, y=98)
+        scroller.bind_wheel(card)
+        self._paint_dot()
+
+    def _paint_dot(self) -> None:
+        """Say where the dot is now, and which of the two buttons is
+        worth pressing. Called when the card is built and on every status
+        poll while the Settings screen is up."""
+        p = self.parts
+        if "dot_where" not in p or not p["dot_where"].winfo_exists():
+            return
+        info = (self.status.get("dot") or {}) if self.running else {}
+        moved = bool(info.get("dragged"))
+        if not self.running:
+            where = "NOT RUNNING"
+            said = ("The dot is a window the running app owns, so there is "
+                    "nothing to drag while it is stopped. Start dictation "
+                    "and this button moves it.")
+        elif info.get("moving"):
+            where = "WAITING FOR YOU"
+            said = ("Drag the disc where you want it and let go. If you "
+                    "leave it, it gives up on its own and the dot goes "
+                    "back to being a button.")
+        elif moved:
+            where = f"at {info.get('x')}, {info.get('y')}"
+            said = ("Where you dropped it. Move the dot picks it up "
+                    "again; Back to the corner sends it home to the "
+                    f"{info.get('corner', 'bottom-right')} of your main "
+                    "screen.")
+        else:
+            where = f"in the {info.get('corner', 'bottom-right')} corner"
+            said = ("Move the dot hides this window and waits for you to "
+                    "drag the disc — anywhere, on any screen. Let go and "
+                    "it stays there, and it is remembered.")
+        p["dot_where"].config(text=where,
+                              fg=ui.FG if self.running else ui.FAINT)
+        p["dot_hint"].config(text=said)
+        for name, on in (("dot_move", self.running),
+                         ("dot_home", self.running and moved)):
+            button = p.get(name)
+            if button is not None and button.winfo_exists():
+                button.enable(bool(on))
+
+    def _move_dot(self) -> None:
+        """Ask the running app to make the disc draggable. The window
+        hides itself only once the app has said yes, so a refusal never
+        costs him a window that vanished for nothing."""
+        if not self.running:
+            self._note("start dictation first — the dot belongs to the "
+                       "running app")
+            return
+        self._ask("dot", then=self._dot_moving, do="move")
+
+    def _dot_moving(self, reply: dict | None) -> None:
+        if reply is None or not reply.get("ok"):
+            self._announce(reply, "the dot would not move")
+            return
+        # The deadline is the app's own patience plus a little: the app
+        # gives up first and its next status says so, and this is only
+        # the backstop for an app that stops answering mid-drag.
+        self._dot_waiting = time.monotonic() + DOT_WAIT_S
+        try:
+            self.root.withdraw()
+        except Exception:
+            self._dot_waiting = 0.0
+
+    def _dot_to_corner(self) -> None:
+        self._ask("dot", then=lambda r: self._announce(
+            r, "the dot is back in its corner"), do="corner")
+
+    def _dot_returns(self) -> None:
+        """Put this window back when the drag is over — or when the wait
+        has been going on longer than anyone meant it to.
+
+        Called from every status poll while `_dot_waiting` stands. The
+        app stopping is the same answer as the app saying it is no longer
+        waiting: either way there is nothing left to drag, and a control
+        window that stayed hidden would be the worse bug of the two.
+        """
+        info = (self.status.get("dot") or {}) if self.running else {}
+        if info.get("moving") and time.monotonic() < self._dot_waiting:
+            return
+        self._dot_waiting = 0.0
+        self._raise_window()
+        if info.get("dragged"):
+            self._note(f"the dot is at {info.get('x')}, {info.get('y')} "
+                       "now, and it stays there")
+        else:
+            self._note("the dot did not move")
+
     def _phone_block(self, scroller) -> None:
         """The endpoint the Android keyboard talks to. 39 dictations and
         228 notification relays came through it in ten days, announced at
@@ -6278,8 +6442,16 @@ class Dashboard:
 
     def _paint_settings(self) -> None:
         """The one value the running app can change on its own: the
-        fullscreen auto-pause, which its status reports."""
+        fullscreen auto-pause, which its status reports — and the dot
+        card, which is not a value in the file at all but a picture of
+        where the dot is right now.
+
+        The dot card is painted BEFORE the "is there a status" guard: an
+        app that has just stopped answering sends an empty status, and
+        that is exactly the change the card most needs to hear about.
+        """
         p = self.parts
+        self._paint_dot()
         if "rows" not in p or not self.status:
             return
         auto = self.status.get("auto_pause_fullscreen")
@@ -6835,6 +7007,11 @@ class Dashboard:
         self.status = reply or {}
         stage = self.status.get("stage", "")
         self.running = bool(reply) and stage == "running"
+        # Before anything is drawn: this window may not be on screen at
+        # all — it hid itself so he could drag the dot — and deciding
+        # whether to come back is the first thing a fresh status is for.
+        if self._dot_waiting:
+            self._dot_returns()
 
         colour, word = self._look()
         self.parts["state"].config(text=word)

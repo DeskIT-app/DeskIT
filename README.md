@@ -383,6 +383,15 @@ for the two things a field cannot hold, a list and a Hebrew string (Tk
 has no bidi caret). A name wider than its menu is cut with an ellipsis
 rather than at the menu's edge.
 
+**Three tabs open with a block that is not a row**, because the thing
+they are about cannot be typed: **Phone** has the link the keyboard
+talks to, **The app** has the version switch, the sounds and the files,
+and **Cards** has **the dot** — where it is now, **Move the dot**, and
+**Back to the corner**. That last one is there rather than on Home
+because the two lines it writes (`[dot] x` and `[dot] y`) are on the
+same card, folded behind "2 more in this section": a button you can find
+beats a pair of numbers you would have to measure and type.
+
 **Every box on that place is rounded, including the fields.** The
 switches and the menus always were — they are cached Pillow faces — but
 a `tk.Entry` is a hard grey rectangle with a one-pixel highlight, and
@@ -939,6 +948,19 @@ hand on the mouse, could have it.
   because that corner is the close button of every maximised window;
   `[dot] corner = "top-right"` puts it back, button and all. Turn it off
   with `indicator = false`.
+- **And you can put the dot wherever you like, while the app is
+  running.** Settings › Cards › **Move the dot**: the control window
+  hides itself, the disc turns into something you drag — its ring goes
+  white to say so — and wherever you drop it is where it stays. The
+  window comes back by itself when you let go, and says where the dot
+  ended up. Nothing restarts, and nothing has to be typed into
+  `config.toml`: the drop is written to `[dot] x` and `[dot] y`, and
+  **Back to the corner** clears them again. If you press the button and
+  then change your mind, move mode runs out after 45 seconds and the
+  disc goes back to being the shelf's button. The panel and the key card
+  still open in `[dot] corner` — drag the dot across the screen and they
+  do not follow it; each of them remembers its own place if you drag it
+  too.
 - **Two `pythonw.exe` processes in Task Manager is normal** — a venv's
   `python.exe` is a launcher stub that runs the real interpreter as a
   child. It is one app; the single-instance guard is what proves it.
@@ -2366,20 +2388,33 @@ sets, and 330 processes seen where `Get-Process` sees 325.
 
 **Tap `ctrl+alt+d` — or click the status dot — and a small panel opens
 beside the dot with everything waiting on it. Tap it again, click the
-dot again, press `Esc`, or press the X at the top of the panel, and it
-is gone.** It is the desk without sitting down at it: the state, the
-pile, the last thing you said, the screens, and one door to the window.
+dot again, press `Esc`, press the X at the top of the panel, or just
+click anywhere else on the screen, and it is gone.** It is the desk
+without sitting down at it: the state, the pile, the last thing you
+said, the screens, and one door to the window.
 
 **The owner's rule, and it is the whole design: it opens only on the key
-press or a click on the dot; the same press, the same click, `Esc` or
-the X closes it; never on hover, never on passing the corner.** Nothing
-arrives here. The corner of the screen where this panel lives is the
-same corner cards arrive in on their own, and a panel that also opened
-by itself — or on a pointer wandering past — would make that corner
-unpredictable, which is the one thing a corner you glance at cannot be.
-You ask for it, you answer what is on it, it goes away. The click on the
-dot is a click on the *disc* — the glow around it stays transparent to
-the mouse — and a double-click is one click, not an open and a close.
+press or a click on the dot; the same press, the same click, `Esc`, the
+X or a click somewhere else closes it; never on hover, never on passing
+the corner.** Nothing arrives here. The corner of the screen where this
+panel lives is the same corner cards arrive in on their own, and a panel
+that also opened by itself — or on a pointer wandering past — would make
+that corner unpredictable, which is the one thing a corner you glance at
+cannot be. You ask for it, you answer what is on it, it goes away. The
+click on the dot is a click on the *disc* — the glow around it stays
+transparent to the mouse — and a double-click is one click, not an open
+and a close.
+
+**Clicking away closes it, and clicking the dot does not close it
+twice.** Press a mouse button anywhere that is not the panel — a browser
+window, the desktop, another app — and the panel goes down; the buttons
+on the panel itself are not "away", so answering the first of five
+things waiting still leaves the other four in front of you. The one
+square that is spared is the dot's own, because the dot is already a
+toggle: without that exception a click on it would close the panel and
+open it again in the same press. Nothing closes while a screenshot
+selection is being dragged, either — the panel is already off the live
+screen by then, and a drag is not a click away.
 
 **What it holds**, top to bottom:
 
@@ -2500,24 +2535,29 @@ ever bites.
    opens, and the click lands on whatever is under the glow.
 3. With the panel up, click something underneath *through* the panel's
    shadow margin — the click lands on it, because the margin is
-   transparent to the mouse.
-4. Hold Right Ctrl, tap `←` to lock on, and press `ctrl+alt+d`: the panel
+   transparent to the mouse, and the panel goes down, because that is a
+   click away from it.
+4. With the panel up, click in a browser window: the panel goes and the
+   click still reaches the browser. Open it again and press one of the
+   two answers on a waiting row: the row is answered and the panel
+   stays, so the rest of the pile can be emptied where it stands.
+5. Hold Right Ctrl, tap `←` to lock on, and press `ctrl+alt+d`: the panel
    opens, the head says `recording 0:07` and counts. Press `Esc`: the
    panel closes and **the recording is still running**. Press `Esc`
    again: now the recording is discarded, as it always was.
-5. While locked on, press **Stop**: refused, with the no-op cue — and the
+6. While locked on, press **Stop**: refused, with the no-op cue — and the
    panel stays open.
-6. Let a notification and a second reading both be waiting, then open the
+7. Let a notification and a second reading both be waiting, then open the
    panel and press **Keep** on the proposal: the row goes, the panel
    stays, the count drops by one. Press **Open** on the notification: the
    session comes forward and the panel closes.
-7. `[shelf] rows = 3` from the dashboard, no restart: the next open is a
+8. `[shelf] rows = 3` from the dashboard, no restart: the next open is a
    shorter panel with "+N more" on it.
-8. `[shelf] enabled = false`, restart: the key is unregistered, the row
+9. `[shelf] enabled = false`, restart: the key is unregistered, the row
    is off the hint card and off the Keys board, and everything else — the
    cards, the cues, the window — goes on exactly as before.
-9. `set HD_SKIN=0` and start it from a terminal: the panel is a square Tk
-   card and every button on it still works.
+10. `set HD_SKIN=0` and start it from a terminal: the panel is a square
+   Tk card and every button on it still works.
 
 ## Notify — when Claude (or anything) finishes (`ctrl+alt+m`)
 

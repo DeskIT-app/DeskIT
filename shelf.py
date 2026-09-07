@@ -13,6 +13,37 @@ be built without touching a file that three other people's work is also
 in. Nothing here is a new contract; overlay.py is still where the
 contract is written down.
 
+AND IT CLOSES WHEN HE LOOKS AWAY. The owner, 2026-09-07: "when I press
+the dot and the screen opens — I want that if I press outside of it, like
+on Google or something, the small tab that opens when I press the dot
+will disappear, so I will not need to press the dot again or the X." So
+there is a fifth door, and it is the one every panel like this has: a
+press of a mouse button anywhere that is not the panel takes it down.
+
+HOW IT IS SEEN, AND WHY IT IS NOT A FOCUS EVENT. This window never has
+the focus to lose. On the glass path it is a plain CreateWindowExW popup
+carrying WS_EX_NOACTIVATE shown with SW_SHOWNOACTIVATE, and on the Tk
+path `overlay._no_activate` puts the same flag on; that is deliberate —
+a panel that stole the keyboard would interrupt whatever he was typing —
+and it means WM_KILLFOCUS, WM_ACTIVATE and Tk's <FocusOut> never arrive
+at all. What this app already does when it needs to know about a key or
+a button it was not sent is ASK: capture.py, visual_qa.py and popup.py
+all watch Escape with GetAsyncKeyState, which needs no focus, costs
+microseconds and is the same question from any thread. `_away_loop` asks
+the same way about the mouse, on its own thread, only while the panel is
+up, and only about the DOWN EDGE — the button going from up to down —
+so the press that opened the panel (the button is still down when the
+dot's WM_LBUTTONDOWN fires) is never mistaken for the press that closes
+it.
+
+THE DOT IS NOT "AWAY", and that is the trap this had to be written
+around. A click on the dot is a click outside the panel, and the dot is
+already a toggle: seeing it as away would close the panel and let the
+dot's own handler reopen it in the same press. So `spare` names the
+squares a press may land on without closing anything, and main.py points
+it at the status dot's window. The panel's OWN buttons need no such
+exception — they are inside its rect.
+
 WHAT IT IS. A panel beside the status dot listing everything waiting for
 an answer, with the owner's rule for it, verbatim: **it opens only on the
 key press; the same press or Esc closes it; never on hover, never on
@@ -73,6 +104,49 @@ _log = logging.getLogger("app")
 # (main.App._shelf_card). The uptime line wants the same tick anyway.
 REFRESH_S = 1.0
 
+# How often the mouse is asked whether a button has just gone down, while
+# the panel is up and only then. 25 ms: a click holds the button for
+# 50-150 ms, so nothing real is missed, and the question is two
+# GetAsyncKeyState calls and one GetCursorPos — the same three-microsecond
+# question capture.py asks about Escape forty times a second while a
+# selection is live. With the panel DOWN the loop still wakes on this
+# beat but asks nothing: it reads one attribute, finds no panel and goes
+# back to sleep, which is cheaper than the 50 Hz tick the panel's own
+# painter has run at for the whole life of the app since it was written.
+AWAY_S = 0.025
+# The buttons a press on which means "I am doing something over there".
+# Left and right: a left click is the case he described, and a right
+# click is a context menu opening somewhere else, which is the same
+# thing. The middle button is left out — it is the wheel, and pressing
+# the wheel to scroll should not take a panel down.
+AWAY_BUTTONS = (0x01, 0x02)               # VK_LBUTTON, VK_RBUTTON
+
+
+def away_from(point, rect, spares=()) -> bool:
+    """Is a press at `point` outside the panel and outside everything
+    that is allowed to be pressed without closing it?
+
+    `rect` is (left, top, right, bottom) of the visible panel, and None
+    means there is no panel on screen — nothing to close, so nothing is
+    away. `spares` is the same shape, and holds the status dot's window:
+    see the module docstring for why that square is the one exception.
+
+    Pure, so the rule can be checked without a window, a mouse or a
+    screen — which matters, because a hidden desktop has no pointer to
+    click with.
+    """
+    if rect is None:
+        return False
+    x, y = point
+
+    def inside(box) -> bool:
+        return (box is not None
+                and box[0] <= x <= box[2] and box[1] <= y <= box[3])
+
+    if inside(rect):
+        return False
+    return not any(inside(box) for box in (spares or ()))
+
 
 class ShelfCard(overlay.HintCard):
     """The panel beside the dot. Built once at startup, shown on a key.
@@ -88,6 +162,7 @@ class ShelfCard(overlay.HintCard):
                  x: int = overlay.HINT_UNSET, y: int = overlay.HINT_UNSET,
                  scale: float = 1.0, rows: int = sc.PILE_MAX,
                  on_change=None, on_press=None, on_refresh=None,
+                 on_away=None, spare=None,
                  dot_corner: str = "bottom-right") -> None:
         # `dot_corner` is where the status dot is: the panel opens BESIDE
         # it — above a bottom-right dot, to the left of a top-right one —
@@ -98,10 +173,22 @@ class ShelfCard(overlay.HintCard):
         self.rows = max(sc.ROWS_MIN, min(sc.ROWS_MAX, int(rows)))
         self._on_press = on_press
         self._on_refresh = on_refresh
+        # He pressed somewhere else, so the panel goes away. main.py
+        # points this at the same `_shelf_close` the key, Esc, the X and
+        # a second click on the dot all go through — closing the panel is
+        # more than hiding a window (the notification column comes back,
+        # the key card comes back, Stop disarms) and that knowledge lives
+        # there, not here.
+        self._on_away = on_away
+        # What may be pressed without counting as away: the status dot's
+        # own square. See the module docstring — it is a toggle, so
+        # closing for it would close and reopen in one press.
+        self._spare = spare
         self.rect = None            # the visible panel's screen rect, or None
         self._current = None        # the card dict on screen, or None
         self._state_lock = threading.Lock()
         self._refresher: threading.Thread | None = None
+        self._watcher: threading.Thread | None = None
 
     # -- caller's thread --
 
@@ -124,6 +211,13 @@ class ShelfCard(overlay.HintCard):
         self._refresher = threading.Thread(target=self._refresh_loop,
                                            daemon=True, name="shelf-refresh")
         self._refresher.start()
+        # And the watch for a press that lands somewhere else. Its own
+        # thread for the same two reasons: one implementation serves both
+        # paint paths, and a close must never be decided from inside the
+        # painter's pump.
+        self._watcher = threading.Thread(target=self._away_loop, daemon=True,
+                                         name="shelf-away")
+        self._watcher.start()
 
     def show(self, card: dict | None) -> None:
         """Put the panel up, or take it down with None.
@@ -228,6 +322,67 @@ class ShelfCard(overlay.HintCard):
                     self.show(fresh)
             except Exception:                        # noqa: BLE001
                 _log.debug("the shelf's refresh stumbled", exc_info=True)
+
+    # -- the watcher's thread --
+
+    def _away_loop(self) -> None:
+        """Take the panel down when a mouse button goes down anywhere
+        else. The fifth door — see the module docstring for why this is a
+        poll and not a focus event.
+
+        THE DOWN EDGE, and only the down edge. `GetAsyncKeyState`'s high
+        bit says the button is down NOW; the state is remembered here and
+        a close is decided on the transition, which is what keeps the
+        press that OPENED the panel — the button is still down while the
+        dot's WM_LBUTTONDOWN is being handled — from immediately closing
+        it again. The low bit ("pressed since you last asked") is
+        deliberately not used: it is consumed by whoever asks first, and
+        three other files in this app ask about keys.
+
+        `self.rect is None` means there is no panel on screen to close —
+        it is down, or it is HUSHED off the live screen because he is
+        dragging a screenshot selection, and a drag is exactly the press
+        that must not close anything.
+        """
+        try:
+            user32 = ctypes.WinDLL("user32", use_last_error=True)
+            point = ctypes.wintypes.POINT()
+        except Exception:                            # noqa: BLE001
+            _log.debug("the shelf cannot watch the mouse", exc_info=True)
+            return
+        # "Assume the button is already down", which is what makes the
+        # first sample after the panel appears an edge that never fires.
+        was_down = True
+        while not self._closing.wait(AWAY_S):
+            try:
+                rect = self.rect
+                if rect is None or self._on_away is None \
+                        or not self.visible():
+                    # Nothing on screen to close: the panel is down, or
+                    # it is HUSHED off the live screen because he is
+                    # dragging a screenshot selection. The mouse is not
+                    # asked at all, and the latch is re-armed so that the
+                    # press which brings the panel back — a click on the
+                    # dot, with the button still down while the dot's
+                    # handler runs — is not read as a press away from it.
+                    was_down = True
+                    continue
+                down = any(user32.GetAsyncKeyState(vk) & 0x8000
+                           for vk in AWAY_BUTTONS)
+                pressed, was_down = down and not was_down, down
+                if not pressed:
+                    continue
+                if not user32.GetCursorPos(ctypes.byref(point)):
+                    continue
+                spares = self._spare() if self._spare is not None else ()
+                if not away_from((point.x, point.y), rect, spares):
+                    continue
+                _log.info("shelf: closed by a press at %d, %d — outside it",
+                          point.x, point.y)
+                self._on_away()
+            except Exception:                        # noqa: BLE001
+                _log.debug("the shelf's watch on the mouse stumbled",
+                           exc_info=True)
 
     # -- the presenter's own thread --
 
@@ -417,4 +572,4 @@ class ShelfCard(overlay.HintCard):
             gc.collect()
 
 
-__all__ = ["ShelfCard", "REFRESH_S"]
+__all__ = ["ShelfCard", "away_from", "REFRESH_S", "AWAY_S", "AWAY_BUTTONS"]
