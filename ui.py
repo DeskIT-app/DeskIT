@@ -925,8 +925,20 @@ RAIL_PAINT = 6            # the rail the thumb is DRAWN on
 RAIL_HIT = 14             # ...and the width a hand may grab it by
 THUMB_W = 4               # the thumb itself, unchanged
 THUMB_MIN = 36            # the shortest it is allowed to get
-TOP_DISC = 28             # the "back to the top" button
-TOP_INSET = 10            # how far it floats off the two edges it hugs
+GUTTER = 10               # the strip of itself the canvas keeps clear to
+                          # the right of everything packed into it. Every
+                          # screen already left it — each one asks for a
+                          # page ten pixels wider than its own rows — and
+                          # since 2026-09-07 the canvas holds the content
+                          # to it instead of trusting whoever calls
+TOP_DISC = GUTTER * 2     # the "back to the top" button: half of it on
+                          # that strip and half on the rail, which between
+                          # them are the only 20 px of a page with no
+                          # content in them — the thumb shares the rail
+                          # and stops above it, see TOP_FOOT
+TOP_INSET = 8             # its air — under it, and between it and the
+                          # lowest the thumb may come
+TOP_FOOT = TOP_DISC + TOP_INSET * 2   # what the rail gives up to it
 
 
 def _wheel_to_the_pointer(event):
@@ -988,10 +1000,19 @@ def _arrow_disc(size: int, fill: str, bg: str, border: str,
     a bare ↑ — because a lone up arrow in a page that scrolls reads as
     "up a bit", and this one goes all the way home.
 
-    `bg` fills the corners the circle does not: a Tk widget is an opaque
-    rectangle, forever (AGENTS.md), so a disc floating over a card shows
-    four small triangles of the page's own ground. That is the cheapest
-    honest version of a shadow and it is the only one this toolkit has.
+    `bg` fills the corners the circle does not, and THAT IS WHY THE
+    BUTTON DOES NOT FLOAT OVER THE ROWS ANY MORE. A Tk widget is an
+    opaque rectangle, forever (AGENTS.md): the eleven per cent of this
+    tile the circle leaves over is painted `bg` and there is no way to
+    make it see-through. Parked over a row — a rounded #24201a face on
+    the #14110c ground — those corners are seven L* darker than what is
+    behind them and you see a square with a circle on it, which is what
+    the owner reported on 2026-09-07: "you can see it's a bit cut,
+    because you made it like a circle but also square." Counted off the
+    bitmap the same day, at the 28 px it was then: 84 of its 784 pixels
+    were still the ground colour. So `bg` has to be the
+    truth, and the button now sits in the one column of a page where the
+    ground really is the ground — see `Scroller._show_top`.
     """
     key = ("top-disc", size, fill, bg, border, ink)
     if key not in _cache:
@@ -1042,13 +1063,16 @@ class Scroller(tk.Frame):
        screen: the extra width is hit area to the RIGHT of the paint,
        past where the thumb has always been.
     3. **A way home.** Once the view has left the top a small disc
-       appears in the bottom-LEFT corner and takes it back. Left, and not
-       the customary right, because the right is where the work is:
-       `widgets.PileRow` places its Yes/No/✕ flush against the row's
-       right edge, and the pile is taller than the viewport, so a disc in
-       the bottom-right corner would sit on an answer button every time
-       the button is visible. The left 40 px of a row carries a mark
-       icon, a time, or nothing — and it is the far side of the rail.
+       appears at the FOOT OF THE RAIL and takes it back. Not floating in
+       a corner of the page: an opaque tile floating over rows is the
+       square the owner photographed on 2026-09-07, and no corner of a
+       scrolling page is free of rows. The disc is instead parked in the
+       one column that is nothing but ground on all six places — the
+       GUTTER the canvas keeps to the right of the content, plus the
+       inner half of the rail — where its own corners are the page's own
+       colour and there is no square left to see. The rail gives up
+       TOP_FOOT px at its bottom for it, the way a Windows scrollbar's
+       thumb stops above the arrow button at its end.
     """
 
     def __init__(self, parent, w: int, h: int, bg: str = PANE):
@@ -1060,13 +1084,22 @@ class Scroller(tk.Frame):
         self.rail = tk.Canvas(self, width=RAIL_HIT, height=h, bg=bg,
                               highlightthickness=0, bd=0)
         self.rail.pack(side="right", fill="y")
+        self._width = int(w)             # fixed at build time; only h moves
         self._height = h
         self._thumb = (0, 0)             # (top, length) of what is painted
         self._grab = None                # (pressed at, first, fraction)
         self._hot = False
         self.inner = tk.Frame(self.canvas, bg=bg)
+        # `w - GUTTER`, so the strip the way home parks in belongs to the
+        # canvas and not to whatever was packed in here. Every dashboard
+        # screen already asked for a page ten pixels wider than its rows
+        # and left the strip alone by hand; the first-run wizard's device
+        # rows are `fill="x"` and did not, and they now stop where the
+        # others do. Nothing moved on the screens that were already
+        # right: the ten pixels were the frame's own background before
+        # and are the canvas's own background now, and both are `bg`.
         self.canvas.create_window(0, 0, anchor="nw", window=self.inner,
-                                  width=w)
+                                  width=w - GUTTER)
         self.inner.bind("<Configure>", self._resized)
         for widget in (self.canvas, self.inner):
             widget.bind("<MouseWheel>", self._wheel)
@@ -1149,6 +1182,19 @@ class Scroller(tk.Frame):
         # happens after this event rather than during it.
         self.after_idle(self._paint_thumb)
 
+    def _rail_room(self) -> int:
+        """How much of the rail the thumb may use.
+
+        The viewport, less the foot the way home is parked in. Reserved
+        ALWAYS and not only while the disc is on screen: the disc appears
+        after one notch of the wheel, and a thumb whose scale changed at
+        that moment would jump under a hand that was about to grab it.
+        Giving it up for good costs the bottom TOP_FOOT px of travel and
+        is what a native Windows scrollbar does for the arrow button at
+        its end.
+        """
+        return max(THUMB_MIN, self._height - TOP_FOOT)
+
     def _paint_thumb(self) -> None:
         try:
             first, last = self.canvas.yview()
@@ -1159,12 +1205,13 @@ class Scroller(tk.Frame):
             self._thumb = (0, 0)         # everything fits: no thumb at all
             self._show_top(False)
             return
-        length = max(THUMB_MIN, int((last - first) * self._height))
-        # Clamped, because `length` has a floor and `first * height` does
+        room = self._rail_room()
+        length = max(THUMB_MIN, int((last - first) * room))
+        # Clamped, because `length` has a floor and `first * room` does
         # not: a very long page put the last few pixels of its thumb past
         # the bottom of its own rail, which is also where a drag would
         # have run out of room.
-        top = max(0, min(int(first * self._height), self._height - length))
+        top = max(0, min(int(first * room), room - length))
         self._thumb = (top, length)
         lit = self._hot or self._grab is not None
         # Centred in RAIL_PAINT and not in RAIL_HIT: the extra width is
@@ -1203,7 +1250,7 @@ class Scroller(tk.Frame):
             return "break"
         pressed, first, fraction = self._grab
         top, length = self._thumb
-        span = max(1, self._height - length)
+        span = max(1, self._rail_room() - length)
         room = max(0.0, 1.0 - fraction)
         where = first + (event.y - pressed) / span * room
         self.canvas.yview_moveto(max(0.0, min(room, where)))
@@ -1245,10 +1292,26 @@ class Scroller(tk.Frame):
         if button is None or not button.winfo_exists():
             return
         if on:
+            # THE FOOT OF THE RAIL, and not a corner of the page. Its
+            # right edge is GUTTER px into the rail and its left edge is
+            # GUTTER px short of the canvas, so the whole tile lies on
+            # the strip the canvas keeps clear plus the empty half of the
+            # rail. Measured on the built window, 2026-09-07: it lands at
+            # sheet x1136..1156 on Home, Problems and Settings, x816..836
+            # on Said and Corrections, x805..825 on Keys — and on all six
+            # it is clear of everything the page drew, of the panel that
+            # stands beside Said, Corrections and Keys (which begins at
+            # the pixel the disc ends on), and of the footer under the
+            # page, which is outside it entirely. That answers both
+            # of the day's complaints at once — nothing behind it but
+            # ground, so no square; and it is 568 px to the right of the
+            # "Show 25 more · 75 older still here" it used to sit on top
+            # of at the bottom of Said.
+            #
             # Placed every time rather than once: `resize()` moves the
             # bottom edge it hangs off.
-            button.place(x=TOP_INSET, y=self._height - TOP_INSET,
-                         anchor="sw")
+            button.place(x=self._width + GUTTER,
+                         y=self._height - TOP_INSET, anchor="se")
             # `tk.Misc.tkraise(button)` and not `button.tkraise()`:
             # tkinter's Canvas rebinds BOTH `lift` and `tkraise` to
             # `tag_raise`, which wants an item id and raises TclError
