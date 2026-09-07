@@ -12,8 +12,10 @@ the screen the moment the file is saved, and there is no second list to
 forget to update. The one thing typed by hand is the words — TABS, at
 the bottom of this file: which lines get a plain label, a sentence and
 a menu with names on it. They name lines the file has (a test checks),
-and everything they do not name is still on the screen, under
-"Everything", with the file's own comment as its help.
+and everything they do not name is still on the screen, on the tab that
+owns its section (TAB_SECTIONS), said with the plain words at the
+bottom of this file rather than the file's own — and each line is drawn
+exactly once, which a test holds.
 
 TWO PARSERS, ON PURPOSE. tomllib reads the values — it is the parser the
 app itself trusts, and a value read any other way could disagree with the
@@ -295,14 +297,14 @@ def matches(setting: Setting, query: str) -> bool:
 # label, one short sentence, and for a menu what each value is called —
 # and it decides only what is said FIRST, and how. Every path here has to
 # exist in the file (tests.py checks), and every line of the file that is
-# not here is still on the screen, under "Everything", with the comment
-# from the file as its help. Nothing can be dropped; it can only be said
-# plainly or said in full.
+# not here is still on the screen, on the tab that owns its section,
+# with the plain words below as its title and help. Nothing can be
+# dropped; it can only be said by hand or said by its section.
 #
 # The owner's brief, 2026-09-01, after the first version showed him all
 # hundred and forty lines at once: tabs across the top, plain words, a
 # menu he can pick from wherever a value names a model, and "just set the
-# things I do not need to change" — which is what "Everything" is for.
+# things I do not need to change" — which is what General is for.
 
 
 @dataclass(frozen=True)
@@ -327,7 +329,9 @@ class Tab:
     groups: tuple[Group, ...]
 
 
-EVERYTHING = "Everything"
+GENERAL = "General"
+APP = "The app"           # the blocks that used to be screens, and [awake]
+ADVANCED = "Advanced"     # only ever drawn for a section no tab owns
 
 _ENGINES = (("local", "On this computer"),
             ("gemini", "In the cloud (Gemini)"),
@@ -340,6 +344,10 @@ _PUNCTUATORS = (("groq", "Groq — fast, free tier"),
                 ("ollama", "Ollama, on this computer"))
 _CORNERS = (("top-right", "Top right"), ("top-left", "Top left"),
             ("bottom-right", "Bottom right"), ("bottom-left", "Bottom left"))
+# The two corners the status dot may sit in, and the cards' menu with
+# "beside the dot" in front of the four — what `corner = "dot"` says.
+_DOT_CORNERS = (("bottom-right", "Bottom right"), ("top-right", "Top right"))
+_CARD_CORNERS = (("dot", "Beside the dot"),) + _CORNERS
 _SPEAK = (("off", "Never"), ("button", "With a button"), ("auto", "Always"))
 _AFTER_SHOT = (("toast", "Show a small card"), ("editor", "Open the editor"),
                ("nothing", "Nothing"))
@@ -402,7 +410,11 @@ AUTO_LANGUAGE = Friendly(
 DOT = Friendly(
     "indicator", "The little dot in the corner",
     "Blue means it is listening, red means it is recording, amber means it "
-    "is writing your words down.")
+    "is writing your words down. Click it and the panel opens beside it.")
+DOT_CORNER = Friendly(
+    "dot.corner", "Which corner the dot sits in",
+    "A corner of the main screen above the taskbar. The panel and the key "
+    "card open beside it there.", _DOT_CORNERS)
 LEARNED = Friendly(
     "vocab.enabled", "Use the words it has learned",
     "Corrections you taught it with the correction key are applied to "
@@ -412,20 +424,23 @@ REPORT = Friendly(
     "The report key opens a box; the app attaches the dictation, the "
     "recording and the settings itself.")
 
+# ONE LINE, ONE PLACE. The owner, 2026-09-07, on tabs that repeated a
+# setting and a last tab that repeated them all: "if there is
+# 'Everything' then it is already somewhere else, so I do not need it" —
+# and, on the sentences with controls inside them, "make normal settings,
+# no need to be clever". So: a path is named by exactly ONE tab (a test
+# holds it), General is the dozen things a person actually changes, the
+# groups below are the lines worth a menu with names on it, and every
+# other line of the file is drawn on the tab that owns its SECTION — see
+# TAB_SECTIONS and groups_for — as a plain title, one sentence and its
+# control, the same row a hand-written line gets.
 TABS: tuple[Tab, ...] = (
-    Tab("Common", (
-        Group("", (PUNCTUATE_AUTO, HINT_ENABLED, AUTO_PAUSE, MARKER, REPAIR,
-                   ENGINE, MICROPHONE, AUTO_LANGUAGE, DOT, LEARNED,
-                   REPORT)),
+    Tab(GENERAL, (
+        Group("", (ENGINE, MICROPHONE, AUTO_LANGUAGE, PUNCTUATE_AUTO, REPAIR,
+                   LEARNED, MARKER, HINT_ENABLED, AUTO_PAUSE, DOT,
+                   DOT_CORNER, REPORT)),
     )),
     Tab("Dictation", (
-        Group("ENGINE", (
-            ENGINE, MICROPHONE, AUTO_LANGUAGE,
-            Friendly("fallback_to_local",
-                     "Use this computer when the cloud has nothing left",
-                     "A free cloud service only answers so many times a "
-                     "day; when it stops, the model here does the work."),
-        )),
         Group("RECORDING", (
             Friendly("min_seconds", "Shortest hold that counts, in seconds",
                      "Anything shorter is treated as an accidental tap and "
@@ -437,10 +452,8 @@ TABS: tuple[Tab, ...] = (
             Friendly("latch_max_seconds",
                      "Longest recording once it is locked on, in seconds",
                      "Zero means no limit at all."),
-            AUTO_PAUSE,
         )),
         Group("PASTING", (
-            MARKER,
             Friendly("feedback.placeholder", "The marker itself",
                      "The characters it leaves at the cursor while it "
                      "works."),
@@ -453,13 +466,17 @@ TABS: tuple[Tab, ...] = (
                      "The app borrows the clipboard to paste, then puts "
                      "back whatever was on it."),
         )),
+        Group("WHEN THE CLOUD RUNS OUT", (
+            Friendly("fallback_to_local",
+                     "Use this computer when the cloud has nothing left",
+                     "A free cloud service only answers so many times a "
+                     "day; when it stops, the model here does the work."),
+        )),
         Group("FIXING WORDS", (
-            REPAIR,
             Friendly("polish.max_wait_s",
                      "Longest your paste may be held up, in seconds",
                      "Past this the dictation is pasted exactly as it came "
                      "and the answer is thrown away."),
-            LEARNED,
             Friendly("study.enabled", "Keep learning while you are away",
                      "After a quiet spell it listens again to what you sent "
                      "and learns from what it got wrong. Nothing leaves the "
@@ -473,7 +490,6 @@ TABS: tuple[Tab, ...] = (
             Friendly("splash", "Show a small window while the models load",
                      "Without it, clicking the shortcut looks like it did "
                      "nothing."),
-            DOT,
             Friendly("setup.done", "Skip the first-run walkthrough",
                      "The walkthrough runs once per copy of the app; this "
                      "is the switch that turns it off by hand."),
@@ -481,7 +497,6 @@ TABS: tuple[Tab, ...] = (
     )),
     Tab("Text", (
         Group("PUNCTUATION", (
-            PUNCTUATE_AUTO,
             Friendly("punctuate.prefer", "Which service punctuates first",
                      "The other two are tried underneath when it has "
                      "nothing left for today.", _PUNCTUATORS),
@@ -500,20 +515,6 @@ TABS: tuple[Tab, ...] = (
         Group("LOOKING UP", (
             Friendly("lookup.both_ways", "Answer Hebrew selections too",
                      "Off, only an English selection gets an answer."),
-        )),
-    )),
-    Tab("Card", (
-        Group("THE KEY CARD", (
-            HINT_ENABLED,
-            Friendly("hint.after_ms",
-                     "Show it after holding for, in milliseconds",
-                     "A quick dictation is over before the card appears."),
-            Friendly("hint.corner", "Which corner it starts in",
-                     "Where the card appears before you have dragged it "
-                     "somewhere else.", _CORNERS),
-            Friendly("hint.scale", "How big the card is drawn",
-                     "The minus and plus on the card itself change this "
-                     "and remember it."),
         )),
     )),
     Tab("Screen", (
@@ -587,6 +588,20 @@ TABS: tuple[Tab, ...] = (
                      "draw on it."),
         )),
     )),
+    Tab("Cards", (
+        Group("THE KEY CARD", (
+            Friendly("hint.after_ms",
+                     "Show it after holding for, in milliseconds",
+                     "A quick dictation is over before the card appears."),
+            Friendly("hint.corner", "Which corner it starts in",
+                     "Where the card appears before you have dragged it "
+                     "somewhere else; beside the dot means the dot's own "
+                     "corner, next to it.", _CARD_CORNERS),
+            Friendly("hint.scale", "How big the card is drawn",
+                     "The minus and plus on the card itself change this "
+                     "and remember it."),
+        )),
+    )),
     Tab("Phone", (
         Group("DICTATING FROM THE PHONE", (
             Friendly("server.enabled", "Dictate from the phone",
@@ -596,7 +611,25 @@ TABS: tuple[Tab, ...] = (
                      "The phone has to be pointed at the same number."),
         )),
     )),
+    Tab(APP, ()),
 )
+
+# WHICH SECTIONS OF THE FILE EACH TAB OWNS. Every line of those sections
+# that no tab names by hand is drawn on that tab, one group per section
+# in the file's own order, titled with the section's plain words. "" is
+# the top of the file. A section no tab owns lands on ADVANCED — so a
+# section added to config.toml is on the screen the moment the file is
+# saved — and the test that every line is drawn exactly once is what
+# keeps this table and TABS from disagreeing.
+TAB_SECTIONS: dict[str, tuple[str, ...]] = {
+    "Dictation": ("", "audio", "feedback", "polish", "vocab", "study",
+                  "local", "review", "setup"),
+    "Text": ("punctuate", "translate", "lookup", "gemini"),
+    "Screen": ("visual_qa", "capture", "camera"),
+    "Cards": ("dot", "hint", "notify", "problems", "shelf"),
+    "Phone": ("server",),
+    APP: ("awake",),
+}
 
 
 def tab_named(name: str) -> Tab | None:
@@ -607,9 +640,50 @@ def tab_named(name: str) -> Tab | None:
 
 
 def friendly_paths() -> list[str]:
-    """Every path the words name, tab by tab (a path may be on two tabs)."""
+    """Every path a tab names by hand, tab by tab — each of them once."""
     return [row.path for tab in TABS for group in tab.groups
             for row in group.rows]
+
+
+def owned_sections(name: str, sections) -> tuple[str, ...]:
+    """The sections a tab draws the rest of. ADVANCED owns whatever no
+    tab does, so nothing in the file can fall through the floor."""
+    if name == ADVANCED:
+        taken = {s for names in TAB_SECTIONS.values() for s in names}
+        return tuple(sec.name for sec in sections if sec.name not in taken)
+    return TAB_SECTIONS.get(name, ())
+
+
+def groups_for(name: str, sections, skip=()) -> list[Group]:
+    """What a tab draws, in order: the groups written for it by hand,
+    then every remaining line of the sections it owns, one group per
+    section in the file's own order, said with `words_for`. `skip` is
+    what another screen draws — the keys, on the Keys place."""
+    out: list[Group] = []
+    tab = tab_named(name)
+    if tab is not None:
+        out.extend(tab.groups)
+    leave = set(skip) | set(friendly_paths())
+    owned = owned_sections(name, sections)
+    for section in sections:
+        if section.name not in owned:
+            continue
+        rows = tuple(words_for(s) for s in section.settings
+                     if s.path not in leave)
+        if rows:
+            title = section_words(section.name, section.help).label
+            out.append(Group(title.upper(), rows))
+    return out
+
+
+def tab_names(sections, skip=()) -> list[str]:
+    """The tabs in the order the bar shows them. ADVANCED appears only
+    when a section no tab owns has a line to draw, and then before
+    APP, which is always last."""
+    names = [tab.name for tab in TABS]
+    if groups_for(ADVANCED, sections, skip):
+        names.insert(names.index(APP), ADVANCED)
+    return names
 
 
 # ------------------------------------------------- the words for the rest
@@ -622,18 +696,19 @@ def friendly_paths() -> list[str]:
 # with a word error rate and a date.
 #
 # So the words below finish the job TABS started, for every line and
-# every section rather than the fifty most-touched. The rule for each
+# every section rather than the fifty most-touched: they are what the
+# tab that owns a section says for each of its remaining lines. The
+# rule for each
 # one: a title a person understands without knowing the code, and one
 # sentence saying what changes when they change it. No underscores, no
 # identifiers, no acronyms, units spelled out, and never a measurement
-# or a date — the file keeps those, and the switch at the top of the
-# screen puts them back under the row for anyone who wants them.
+# or a date — the file keeps those, and the search still finds a line
+# by them (`matches` reads the file's own words as well as these).
 #
-# The fifty-odd Friendly objects above are reused as they are, so a line
-# that is on a tab AND under Everything says exactly the same thing in
-# both places. A test holds this table to naming every key and every
-# section the file has, so a setting added to config.toml cannot arrive
-# without words.
+# The Friendly objects above win over the ones below for the lines they
+# name, so a line says one thing wherever it is looked up. A test holds
+# this table to naming every key and every section the file has, so a
+# setting added to config.toml cannot arrive without words.
 
 _MORE: tuple[Friendly, ...] = (
     # -- the top of the file: the keys, and what every dictation goes
@@ -936,8 +1011,9 @@ _MORE: tuple[Friendly, ...] = (
     Friendly("shelf.rows", "How many waiting things it lists",
              "The rest become one line that opens this window instead."),
     Friendly("shelf.corner", "Which corner it opens in",
-             "Before you have dragged it somewhere else. On the right it "
-             "stops short of the dot rather than covering it.", _CORNERS),
+             "Before you have dragged it somewhere else. Beside the dot "
+             "means the dot's own corner, where it opens above the dot "
+             "rather than covering it.", _CARD_CORNERS),
     Friendly("shelf.x", "Where you last dragged the panel, across",
              "Counted from the left edge of the screen."),
     Friendly("shelf.y", "Where you last dragged the panel, down",
@@ -1108,6 +1184,9 @@ SECTION_WORDS: dict[str, Friendly] = {
         Friendly("", "The basics",
                  "The keys you hold and tap, and the choices every "
                  "dictation goes through on its way to the cursor."),
+        Friendly("dot", "The dot in the corner",
+                 "The little always-on dot that says the app is running "
+                 "and what it is doing; click it and the panel opens."),
         Friendly("hint", "The card while a key is held",
                  "The little card that appears if you keep the dictation "
                  "key down, saying what the other keys will do."),

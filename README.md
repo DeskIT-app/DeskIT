@@ -265,7 +265,7 @@ command, display name, icon), so the pin launches `Dashboard.vbs` with
 the right name and face. If you pinned it before this existed, unpin and
 pin it again — the shell reads these when the pin is created.
 
-**Four places along the top, and no rail.** The window had grown a left
+**Three places along the top, and no rail.** The window had grown a left
 rail of nine rows — Overview, History, Review, Awake, Notify, Keys,
 Version, Problems, Settings — and the rail was 212 px, 18% of the window,
 spent on a menu of screens that saw **2.1 actions a day between them**.
@@ -273,38 +273,52 @@ Ten days of logs, counted 2026-09-06: **968 actions at a key, 333 at a
 card, 21 in this window**. Nine of those ten days had zero or one. All 21
 were: nine review verdicts, four dismiss-alls, five screens/night
 toggles and three key rebinds, in four bursts — this window is opened to
-*catch up*, not to browse, and then closed. So the nine rows are four
+*catch up*, not to browse, and then closed. So the nine rows are three
 words on a 56 px bar:
 
-- **Waiting** — everything that wants an answer, in one pile. It opens
-  here.
-- **Said** — everything you have said, and the words it has learned.
+- **Home** — everything that wants an answer, in one pile, and under
+  it everything you have said and the words it has learned — one page
+  that scrolls. It opens here.
 - **Keys** — every binding, lit on a picture of a keyboard.
 - **Settings** — every line of `config.toml`, plus the three things that
   were really settings all along.
 
-The bar carries the mark and the wordmark at the left, the four places in
-the middle with a 2 px gold underline on the one you are on, and at the
-right the state as a sentence — the dot in its live colour, the word
-(*Off*, *Starting*, *Listening*, *Recording*, *Locked on*,
-*Transcribing*, *Paused*), the uptime — and **one** button: Pause when it is running, Resume when it
-is paused, Start when it is off. That is the whole point of the bar: "is
-it on?" is the question this window exists to answer, and it is now
-answered on every place rather than on one of them. **Stop moved to
-Settings → The app**, because the old rail put a 25-second mistake one
-slip away from Pause. The window is 1160×720 (it was 940×648) and still
-fixed, which is what lets every bitmap be cached.
+For one day there were four — Waiting and Said were two places — and
+the owner's verdict was that Keys and Settings are places you go while
+what is waiting and what was said are one desk, to be scrolled and not
+switched between. So they are one page again, and the page scrolls.
 
-**Waiting is the window's whole job, said in one sentence.** *"Five
+The bar carries the mark and the wordmark at the left, the three places
+in the middle with a 2 px gold underline on the one you are on, and at
+the right the state as a sentence — the dot in its live colour, the word
+(*Off*, *Starting*, *Listening*, *Recording*, *Locked on*,
+*Transcribing*, *Paused*), the uptime — and **two** buttons: **Screens
+off** (Screens on while they are dark; only while the app runs, since
+the screens are the running app's to put out), and Pause when it is
+running, Resume when it is paused, Start when it is off. Screens off
+was a small gold link in the home's footer and the owner could not
+find it; a thing pressed every evening belongs beside Pause. "Is it
+on?" is the question this window exists to answer, and it is answered
+on every place rather than on one of them. **Stop moved to Settings →
+The app**, because the old rail put a 25-second mistake one slip away
+from Pause. The window is 1160×720 (it was 940×648) and still fixed,
+which is what lets every bitmap be cached.
+
+**Home is the window's whole job, said in one sentence.** *"Five
 things want an answer."* — or *"Nothing is waiting."*, with "Nothing else
 on the desk needs you right now." under it. Then ONE card holding the
 merged pile: unread notifications (Go there / ×), second-reading
 proposals (the sentence with the changed word on a gold-soft pill, the
 reason under it, Yes / No), open problems (Fixed / Close), and the weekly
 routine's questions (Answer / Later) — newest first, whatever kind they
-are, three rows visible, six at most, then "+N more" opens the card into
-the room below it. Under the card, one faint line about finishes being
-held until their session goes quiet.
+are, up to twelve of them, **the card exactly as tall as its rows**;
+anything older is counted on one line and the whole list has it. It
+was a fixed card with a scroller inside it and "+N more", and the
+owner's photograph of that on 2026-09-07 was rows floating in the
+middle of an empty card — the card grew and the scroller inside it did
+not. A page that scrolls has no use for a card that scrolls inside it.
+Under the card, one faint line about finishes being held until their
+session goes quiet.
 
 The merge is the finding, not a layout preference. Those four things used
 to be four screens; they are four sources of *one* thing — something is
@@ -319,8 +333,15 @@ Under the pile, **the rest of the day, one line each**: **Said** (the
 last dictation, drawn RTL, with the time and "N today"), **Took** (the
 last capture and the folder it went to), **Looked up** (the last term →
 its meaning). A line whose store does not exist is skipped rather than
-shown empty. And a footer under a rule: the screens/awake state with the
-one button that changes it, whether the phone is live, which version is
+shown empty. Clicking the Said line scrolls the page down to **Said**:
+the search, the six filters, the last hundred things you said as rows,
+and the vocabulary panel beside them (see *Everything you said, on the
+home* below). The whole of that — pile, rest of the day, Said — is one
+`ui.Scroller`, so the wheel does the same thing wherever the pointer
+is, and a notch is 48 px rather than a fifth of the screen: it used to
+jump, and the owner called it "laggy and ugly"; a wheel tick on the
+home now costs about 4 ms. Under the page, fixed, a footer under a
+rule: the awake state, whether the phone is live, which version is
 running, how many words it has learned. Four facts that are true
 whichever place is open, so they read as a footer and not as a fifth
 thing to do.
@@ -336,66 +357,64 @@ more than a line — a question with its two-to-five answers and its box, a
 report with its evidence and its screenshot, a weekly branch with the one
 button that publishes it.
 
-**Settings is the file — and the first tab says it in sentences.** A
-settings screen is a column of labels and a column of controls, and the
-label is always a noun phrase: "Punctuate every dictation" tells you what
-the line is called and nothing about what happens if you change it. The
-first tab, **In your words**, says the forty lines that matter most as
-prose with the controls inside the words:
+**Settings is the file, on tabs a person can find things on.** Seven of
+them: **General** (the dozen things you actually change — where speech
+becomes words, the microphone, whether it notices English, punctuation,
+fixing misheard words, the learned words, the marker, the key card, the
+game pause, the dot, reporting a problem), then **Dictation**, **Text**,
+**Screen**, **Cards**, **Phone**, and **The app**. Every row is the same
+row: a plain title, one plain sentence under it, and its control at the
+right — a switch for a `true`/`false`, a menu with names on it where a
+value names a model or a mode ("Groq — fast, free tier", "Only taught
+words"), a field for a number or a word, and an "In the file" button
+for the two things a field cannot hold, a list and a Hebrew string (Tk
+has no bidi caret). A name wider than its menu is cut with an ellipsis
+rather than at the menu's edge.
 
-> *Punctuate every dictation `[no]`; when you press the punctuate key,
-> ask `[Groq — fast, free tier]` first, wait at most `[6]` seconds, and
-> `[leave out]` the vowel points.*
+**Every line of `config.toml` is drawn exactly once.** `settings.TABS`
+names by hand the fifty-odd lines worth a sentence and a menu, and
+`settings.TAB_SECTIONS` says which tab owns each *section* of the file —
+Dictation owns `[audio]`, `[polish]`, `[local]`, `[review]` and so on,
+Text owns `[punctuate]`, `[translate]`, `[lookup]`, Cards owns `[hint]`,
+`[notify]`, `[problems]`, `[shelf]` — so every remaining line of a
+section is drawn on that tab, one group per section, titled and
+explained with the plain words in `settings.WORDS` rather than the
+file's own `latch_max_seconds` and its measured comment. A section no
+tab owns lands on an **Advanced** tab that only appears when it has
+something to show, so a section added to the file is on the screen the
+moment it is saved. A test holds the tabs and the Keys screen to drawing
+every line once and nothing twice.
 
-Four paragraphs — *when you dictate*, *after it lands*, *on the desk*,
-*the phone* — flowed by `prose.py` onto a Canvas at a fixed 34 px line.
-A `tk.Text` with `window_create` was built and photographed beside it and
-lost: it wraps for free, but a display line holding a 28 px control is
-28 px tall and a plain one is ~18, `spacing1`/`spacing2` add to both, and
-the ragged rhythm that comes out is not tunable. The hand-flowed Canvas
-is 21 ms against 32 and gives one rhythm, which is what makes a paragraph
-of controls read as a paragraph. A control never straddles a line, and
-one wider than the column is clamped rather than left hanging off the
-edge. Every `Bit` in those sentences names a real path in `config.toml`,
-and a test walks them.
+This replaced two things from the day before, on the owner's word
+(2026-09-07): a first tab that said forty settings as *sentences* with
+the controls inside the words, and a last tab, **Everything**, that
+repeated the whole file in the file's own words. The sentences were
+clever and he said "make normal settings, no need to be clever" —
+and their controls, parented to the sheet rather than the card, painted
+over the tab bar when scrolled. Everything he answered in one line: "if
+there is Everything, it is already somewhere else, so I do not need
+it." One line, one place. The file's own names and comments stay in the
+file — and in the search: the magnifier at the right of the tabs finds a
+line by its plain title, its sentence, its section, its dotted name or
+the comment beside it, and the cross brings the tabs back.
 
-Under the sentences on that same tab are **three blocks that used to be
-rail rows**, because none of them is a place you go — each is a thing you
-check and occasionally flip, which is what a settings block is:
-**Awake** (the status rows, Check status, Screens off/on), **Phone** (the
-endpoint, the link, Copy) and **The app** (which version is running and
-the one-click switch, Stop, Send a test, and one Play button per cue kind
-— that last one is a filed complaint answered: *he could not tell the
-twenty sounds apart*, and the answer to that is not a louder cue but a
-Play button beside the name of the thing the cue is FOR).
+**The app** holds the three blocks that used to be rail rows, because
+none of them is a place you go — each is a thing you check and
+occasionally flip: **Awake** (the status rows, Check status, Screens
+off/on), **The app** (which version is running and the one-click switch,
+Stop, Send a test, and one Play button per cue kind — a filed complaint
+answered: *he could not tell the twenty sounds apart*, and the answer to
+that is not a louder cue but a Play button beside the name of the thing
+the cue is FOR), and **Files** (the four things worth opening, named for
+what they are: *Everything you said*, *The app's diary*, *The settings
+file*, *The app's folder*), followed by the `[awake]` lines. **Phone**
+opens with the endpoint, the link and Copy, then the `[server]` lines.
 
-Then the six tabs that were always there (Common, Dictation, Text, Card,
-Screen, Phone) with the fifty-odd lines most people touch — a plain
-label, one short sentence, and where a value names a model or a mode, a
-menu with names on it ("Groq — fast, free tier", "Only words it has been
-taught") instead of the raw value. The last tab, **Everything**, is the
-whole of `config.toml` as it is written: `settings.py` reads the file,
-every assignment becomes a row, the comment around it becomes the help
-under the row, and a `gemini | local | fake` at the front of a comment
-becomes the row's menu. A switch for a `true`/`false`, a menu for a
-choice, a field for a number or a word, and an "In the file" button for
-the two things a field cannot hold — a list, and a Hebrew string (Tk has
-no bidi caret). Everything also carries **Files**: the four things worth
-opening, named for what they are rather than what they are called on disk
-(*Everything you said*, *The app's diary*, *The settings file*, *The
-app's folder*). The magnifier at the right of the tabs opens a search
-over all of it — a word from a name or a comment — and the cross brings
-the tabs back. A setting added to the file is on Everything the moment
-the file is saved, the words in `settings.TABS` are checked against the
-file by a test, and another test holds Keys and Settings to covering the
-file between them — which is what the owner asked for, from both sides:
-show all of them, and do not make me read all of them.
-
-The sentences are worth their build cost for a reason the logs make
-plain: **191 settings in 20 sections produced exactly three writes in ten
-days**, and the three cancel out — he rebound one key to `h` and back to
-`ctrl+f9` six seconds later. A screen nobody edits is a screen that
-should be readable, and this is the version of it you can read.
+Worth knowing before touching any of it: **191 settings in 20 sections
+produced exactly three writes in ten days**, and the three cancel out —
+he rebound one key to `h` and back to `ctrl+f9` six seconds later. A
+screen nobody edits is a screen that should be readable, and a wheel
+tick on any tab now costs 5–9 ms.
 
 Writes go through `config.set_values`, the line editor that keeps the
 comments. While the app runs they go through the app (`set_option`, over
@@ -408,8 +427,8 @@ and delay. Anything else is written all the same and the reply says so:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ ⌐ DeskIT   Waiting  Said  Keys  Settings    ● Listening  up 4h 40m   │
-│            ───────                                        [ Pause ]  │
+│ ⌐ DeskIT   Home  Keys  Settings   ● Listening  up 4h 40m             │
+│            ────                            [ ☾ Screens off ] [ Pause ]│
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  Five things want an answer.               ⊗ Report a problem        │
@@ -424,7 +443,6 @@ and delay. Anything else is written all the same and the reply says so:
 │  │ ⚠            You reported this on 6 Sep                        │  │
 │  │              …‹the line he typed, right-aligned›                │  │
 │  │                                            [Fixed]  [Close]    │  │
-│  │    +2 more                                                     │  │
 │  └────────────────────────────────────────────────────────────────┘  │
 │  2 finishes held until the session that sent them goes quiet.         │
 │                                                                      │
@@ -432,8 +450,15 @@ and delay. Anything else is written all the same and the reply says so:
 │  Said       23:46   …‹the last dictation, right-aligned›   1 today   │
 │  Took       22:27   shot 2026-09-06 22-27-55.png           1 today   │
 │  Looked up  23:46   leverage → מָנוֹף                                  │
+│                                                                      │
+│  SAID                                     the last 100 of what you said│
+│  ┌ 🔍 Search everything you have said… ┐                             │
+│  (All) Dictation  Translated  Punctuated  Looked up  Learned  Failed │
+│  ┌ 23:46 ▣  …‹what you said›  ⧉ ┐   ┌ VOCABULARY  38          ┐      │
+│  ┌ 23:12 ▣  …                  ┐   │ Ctrl+F9 teach it a word  │      │
+│  … the page scrolls …               └──────────────────────────┘     │
 │  ──────────────────────────────────────────────────────────────────  │
-│  ☾ The screens are off since 22:46.  Screens on                      │
+│  ☾ The screens are off since 22:46.                                  │
 │                    phone live · running fast · 38 words learned      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -446,9 +471,11 @@ app being the light rather than the furniture — and it is the same table
 the cards, the dot, the boxes and the phone page draw from. `SKIN.md`
 holds it, with the contrast ratio behind every colour.
 
-### Everything you said, in the window
+### Everything you said, on the home
 
-**Said is `transcripts.log`, read back.** It was called History, and
+**Said is `transcripts.log`, read back**, and it is the lower half of
+the home page — under the pile and the rest of the day, reached by
+scrolling or by clicking the Said line. It was called History, and
 "history" appears **zero times in 11,046 lines of log** — nothing that
 screen does is logged and no window action was ever recorded there, so
 the name was renamed to the thing it holds. The last hundred entries,
@@ -555,6 +582,18 @@ start a recording every time.
   pause key yourself. It only ever un-pauses *its own* pause.
 
 ### The keys, drawn on a keyboard
+
+**Press a key and the board answers.** While the Keys place is up, a
+real press on the keyboard lights the cap under your finger and the
+panel says what lives there — *Report a problem · tap · chord* for `R`,
+since `ctrl+alt+r` is on it — or that the app never takes it: *"Q is
+yours."* The owner's ask, verbatim: "if I press R, for example, it
+would tell me what it does." Tk reports the press with the Windows
+virtual-key code, `keyboard.cap_for_vk` turns it into the cap, and the
+modifiers come back unsided the way the caps are named. Never while
+the key dialog is listening for a new binding (that press is the
+dialog's), and never on another place, where a key press is typing.
+Clicking a cap does the same thing.
 
 **Keys is a picture of a keyboard with your bindings lit on it.** It used
 to be a row per binding — "Translate (tap) `[F8]`" — in a scrolling
@@ -780,17 +819,23 @@ hand on the mouse, could have it.
   clicking a shortcut that does nothing — so you click again. It does not
   take focus and does not appear in Alt-Tab; it vanishes once the hotkey is
   live. Turn it off with `splash = false`.
-- **A small dot sits in the top-right corner while the app runs** — blue
-  when idle, red while recording, red and breathing while a recording is
-  *locked on*, amber while transcribing, grey while paused. If you ever saw
-  the loading box stay on screen *and* no dot appear, that was one bug, not
-  two: `quit()` in Tkinter sets a flag shared by every Tk window in the
-  process, so about half the time the splash's "close" closed the dot
-  instead and left itself running. Neither overlay calls `quit()` any more
-  (`overlay._pump_until`), and a test asserts they never will. It is how you tell a running app
-  from one you never started or already closed. It is click-through, so it
-  never intercepts the close button it sits on. Turn it off with
-  `indicator = false`.
+- **A small dot sits in the bottom-right corner while the app runs**, just
+  above the taskbar — blue when idle, red while recording, red and
+  breathing while a recording is *locked on*, amber while transcribing,
+  grey while paused. If you ever saw the loading box stay on screen *and*
+  no dot appear, that was one bug, not two: `quit()` in Tkinter sets a
+  flag shared by every Tk window in the process, so about half the time
+  the splash's "close" closed the dot instead and left itself running.
+  Neither overlay calls `quit()` any more (`overlay._pump_until`), and a
+  test asserts they never will. It is how you tell a running app from one
+  you never started or already closed. **The disc is a button**: click it
+  and the shelf opens beside it, exactly what `ctrl+alt+d` does; click it
+  again and the shelf closes. Only the disc takes the click — the glow
+  around it lets the mouse through to whatever is underneath. It lived in
+  the top-right until 2026-09-07 and was click-through as a whole there,
+  because that corner is the close button of every maximised window;
+  `[dot] corner = "top-right"` puts it back, button and all. Turn it off
+  with `indicator = false`.
 - **Two `pythonw.exe` processes in Task Manager is normal** — a venv's
   `python.exe` is a launcher stub that runs the real interpreter as a
   child. It is one app; the single-instance guard is what proves it.
@@ -2216,19 +2261,22 @@ sets, and 330 processes seen where `Get-Process` sees 325.
 
 ## The shelf (`ctrl+alt+d`)
 
-**Tap `ctrl+alt+d` and a small panel opens beside the status dot with
-everything waiting on it. Tap it again, or press `Esc`, and it is gone.**
-It is the desk without sitting down at it: the state, the pile, the last
-thing you said, the screens, and one door to the window.
+**Tap `ctrl+alt+d` — or click the status dot — and a small panel opens
+beside the dot with everything waiting on it. Tap it again, click the
+dot again, press `Esc`, or press the X at the top of the panel, and it
+is gone.** It is the desk without sitting down at it: the state, the
+pile, the last thing you said, the screens, and one door to the window.
 
 **The owner's rule, and it is the whole design: it opens only on the key
-press; the same press or `Esc` closes it; never on hover, never on
-passing the corner.** Nothing arrives here. The corner of the screen
-where this panel lives is the same corner cards arrive in on their own,
-and a panel that also opened by itself — or on a pointer wandering past
-— would make that corner unpredictable, which is the one thing a corner
-you glance at cannot be. You ask for it, you answer what is on it, it
-goes away.
+press or a click on the dot; the same press, the same click, `Esc` or
+the X closes it; never on hover, never on passing the corner.** Nothing
+arrives here. The corner of the screen where this panel lives is the
+same corner cards arrive in on their own, and a panel that also opened
+by itself — or on a pointer wandering past — would make that corner
+unpredictable, which is the one thing a corner you glance at cannot be.
+You ask for it, you answer what is on it, it goes away. The click on the
+dot is a click on the *disc* — the glow around it stays transparent to
+the mouse — and a double-click is one click, not an open and a close.
 
 **What it holds**, top to bottom:
 
@@ -2239,9 +2287,12 @@ goes away.
   on** (355 of 495), which means the key was released and the machine is
   still listening, and that is the one state where missing feedback costs
   a whole recording.
-- **Pause** and **Stop**, beside it. Stop **arms** rather than quits: the
-  first press turns it into a confirmation, and it is refused outright
-  while a recording is running or locked on.
+- **Pause** and **Stop**, beside it, and the **X** at the far right of
+  the band, where every window keeps its close button. Stop **arms**
+  rather than quits: the first press turns it into a confirmation, and
+  it is refused outright while a recording is running or locked on. The
+  X closes the panel and nothing else — the same door as the key and
+  `Esc` — and it lights on hover like its two neighbours.
 - **Waiting for you** — the same merged pile the window's Waiting place
   draws, from the same four stores: unread notifications, second-reading
   proposals, open problems, the weekly routine's questions. Newest first,
@@ -2288,8 +2339,10 @@ measured:
   `Esc` aimed at the panel can never also throw away a locked recording.
 - **Every pixel that is not a named rectangle answers
   `HTTRANSPARENT`** — the 26 px shadow margin and the panel's own padding
-  included — so a click aimed at the close button of a maximised window
-  still lands on it. Asserted at three scales and four pile sizes.
+  included — so a click aimed at whatever is underneath still lands on
+  it (in the top-right, where the panel lived until 2026-09-07, that was
+  the close button of every maximised window). Asserted at three scales
+  and four pile sizes.
 - **Nothing animates.** Composing a full panel is 41 ms, so the
   one-second tick does not recompose: the picture is cached on
   `(card, hover, scale)` and re-blitted, and a genuinely new picture only
@@ -2307,11 +2360,17 @@ with a full pile of five (370 empty, 682 at the cap). That is tall for
 something that sits beside a 13 px dot, and it is defensible only because
 it opens on a deliberate press; the lever if it is too much is
 `[shelf] rows`, and `3` brings it to 520. It opens beside the dot and
-never under it — it inherits the hint card's `DOT_ROOM`, so on this
-2560-wide screen it lands at x 2100, y 14. While it is up the hint card
-steps aside and the notification column is hushed (`[shelf]
-hush_notifications`); both come straight back when it closes, nothing is
-marked seen and no reminder is lost.
+never under it — it inherits the hint card's `DOT_ROOM`, measured
+against the **work area** the dot is measured against. With the dot in
+its bottom-right corner (the default since 2026-09-07) the panel sits
+**above** the dot, right-aligned to its own 14 px margin: on this
+2560x1440 screen with a 48 px taskbar the visible panel's right edge is
+at x 2546 and its bottom edge at y 1332, 18 px clear of the dot's window
+at y 1350. With `[dot] corner = "top-right"` it keeps the old placement
+beside the dot, x 2100, y 14. While it is up the hint card steps aside
+and the notification column is hushed (`[shelf] hush_notifications`);
+both come straight back when it closes, nothing is marked seen and no
+reminder is lost.
 
 **Every answer goes through the same method the card would have
 called** — `_notify_opened` / `_notify_dismissed`, `_review_verdict`,
@@ -2329,14 +2388,16 @@ Saturday past the cap into "+N more". That is three lines to change if it
 ever bites.
 
 **Check it by hand.**
-1. Tap `ctrl+alt+d`: the panel appears beside the dot, not under it. Tap
+1. Tap `ctrl+alt+d`: the panel appears above the dot, not on it. Tap
    again: gone. Tap once more and press `Esc` with the pointer anywhere
-   at all — gone.
+   at all — gone. Once more, and press the X at the top-right of the
+   panel — gone. Click the dot's disc: open; click it again: gone.
 2. Wave the pointer over that corner without pressing anything: nothing
-   opens, ever.
-3. With the panel up, click the close button of a maximised window
-   *through* the panel's shadow margin — it closes the window, because
-   the margin is transparent to the mouse.
+   opens, ever. Click the dot's *glow* rather than its disc: nothing
+   opens, and the click lands on whatever is under the glow.
+3. With the panel up, click something underneath *through* the panel's
+   shadow margin — the click lands on it, because the margin is
+   transparent to the mouse.
 4. Hold Right Ctrl, tap `←` to lock on, and press `ctrl+alt+d`: the panel
    opens, the head says `recording 0:07` and counts. Press `Esc`: the
    panel closes and **the recording is still running**. Press `Esc`
@@ -3990,7 +4051,8 @@ for `מבשרים`, all of which the local model got right.
 | `latch_max_seconds` | `0` | the cap once locked; `0` = none. `max_seconds` guards against a swallowed key-up, and a locked recording has no key-up to lose |
 | `[audio] sample_rate` | `16000` | falls back to the device default if refused |
 | `[audio] device` | `""` | `""` = system default; index from `--list-devices` |
-| `indicator` | `true` | the top-right status dot; click-through and never in Alt-Tab |
+| `indicator` | `true` | the status dot in the corner (`[dot] corner`); never in Alt-Tab. The disc is a button that opens the shelf; the glow around it is click-through |
+| `[dot] corner` | `bottom-right` | `bottom-right` \| `top-right`. Which corner of the primary monitor's **work area** the dot sits in — above the taskbar, never under it. The shelf and the key card open beside it there unless their own `corner` says otherwise. Read once at startup |
 | `splash` | `true` | show a small window while the models load; it does not take focus and leaves no taskbar entry |
 | `fallback_to_local` | `true` | use the local model when every cloud model is out of quota |
 | `[feedback] enabled` | `true` | paste a marker at the cursor while transcribing |
@@ -4066,7 +4128,7 @@ for `מבשרים`, all of which the local model got right.
 | `[shelf] enabled` | `true` | the panel beside the dot (see [The shelf](#the-shelf-ctrlaltd)). `false` unregisters the key entirely and nothing else changes: every card, every cue and the window go on working |
 | `[shelf] shelf_hotkey` | `ctrl+alt+d` | **tap** to open the panel beside the status dot; tap again, or press `Esc`, and it closes. It never opens on its own and never on hover. Rebind from the dashboard's Keys place; `""` = no key, and then there is no way to open it |
 | `[shelf] rows` | `5` | how many waiting things it lists before the rest become one `+N more` line that opens the window instead (`1` to `8`). It is also the height lever: five rows is a 648 px panel, three is 520 |
-| `[shelf] corner` | `top-right` | `top-right` \| `top-left` \| `bottom-right` \| `bottom-left`. Where it opens before you have dragged it. On the right-hand corners it stops short of the status dot rather than covering it |
+| `[shelf] corner` | `dot` | `dot` \| `top-right` \| `top-left` \| `bottom-right` \| `bottom-left`. Where it opens before you have dragged it. `dot` is the status dot's own corner (`[dot] corner`), where the panel opens beside the dot — above it at the bottom of the screen, to its left at the top — and never covers it. `[hint] corner` takes the same word for the same reason, so the corner is decided once |
 | `[shelf] x` | `-100000` | the left edge of the panel where you last dragged it, in screen pixels. `-100000` = never moved: use `corner`. Same sentinel as `[notify] x`, for the same reason — a negative coordinate is real on a monitor to the left of the primary |
 | `[shelf] y` | `-100000` | the top edge of that same panel |
 | `[shelf] scale` | `1.0` | how big it is drawn, `0.6` to `1.4` |

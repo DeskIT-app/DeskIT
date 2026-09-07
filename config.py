@@ -81,7 +81,13 @@ class HintConfig:
     """
     enabled: bool = True
     after_ms: int = 400
-    corner: str = "top-right"
+    # "dot" = the same corner as the status dot ([dot] corner), which is
+    # what the file ships with, so the corner is decided in ONE place
+    # unless this section says a corner of its own. By the time a Config
+    # exists this is a real corner: load() resolves the word against
+    # DotConfig.corner (`corner_for`), so nothing downstream ever sees
+    # "dot" — the cards, the dashboard and the tests all read a corner.
+    corner: str = "dot"
     # Where it was last dragged to, and how big it was last made. Written
     # by the card itself, which is why they are settings and not state in
     # a side file — everything else the card knows lives here, and a
@@ -101,6 +107,39 @@ class HintConfig:
 HINT_CORNERS = ("top-right", "top-left", "bottom-right", "bottom-left")
 HINT_SCALE_MIN, HINT_SCALE_MAX = 0.6, 1.4
 HINT_UNSET = -100000
+# What a card's `corner` may say in the FILE: a corner, or "dot" for the
+# status dot's. HINT_CORNERS is what a Config carries after load().
+FOLLOW_DOT = "dot"
+CARD_CORNERS = (FOLLOW_DOT,) + HINT_CORNERS
+
+
+@dataclass(frozen=True)
+class DotConfig:
+    """The status dot — see overlay.StatusDot and skin\\dot.py.
+
+    One line, because the dot has one decision left in it: which corner
+    of the primary monitor's work area it sits in. Bottom-right since
+    2026-09-07 — above the taskbar, in a corner nothing else lives in,
+    which is what let the disc become a button (a click opens the shelf,
+    exactly as ctrl+alt+d does). Top-right is the corner it used to keep
+    and is still allowed. The shelf and the key card follow this corner
+    unless their own `corner` says otherwise (`corner_for`).
+
+    Read once, at startup. There is no live re-placement: a change here
+    applies the next time the app starts.
+    """
+    corner: str = "bottom-right"
+
+
+DOT_CORNERS = ("bottom-right", "top-right")
+
+
+def corner_for(own: str, dot: str) -> str:
+    """A card's corner as the app uses it: its own, unless the file says
+    "dot", in which case the status dot's. The one place the rule lives;
+    load() applies it to [hint] and [shelf]."""
+    own = str(own or "").strip().lower()
+    return str(dot).strip().lower() if own == FOLLOW_DOT else own
 
 
 @dataclass(frozen=True)
@@ -123,7 +162,10 @@ class ShelfConfig:
     enabled: bool = True
     hotkey: str = "ctrl+alt+d"
     rows: int = 5
-    corner: str = "top-right"
+    # "dot" = beside the status dot, in its corner ([dot] corner) — above
+    # it at the bottom of the screen, to its left at the top. Resolved to
+    # a real corner by load(), as HintConfig.corner is.
+    corner: str = "dot"
     # Where it was last dragged to and how big it was last made, written
     # by the card itself. HINT_UNSET and not -1, for the reason spelled
     # out on HintConfig: a monitor to the left of the primary has real
@@ -1064,6 +1106,7 @@ class Config:
     gemini: GeminiConfig = field(default_factory=GeminiConfig)
     local: LocalConfig = field(default_factory=LocalConfig)
     feedback: FeedbackConfig = field(default_factory=FeedbackConfig)
+    dot: DotConfig = field(default_factory=DotConfig)
     hint: HintConfig = field(default_factory=HintConfig)
     setup: SetupConfig = field(default_factory=SetupConfig)
     translate: TranslateConfig = field(default_factory=TranslateConfig)
@@ -1326,6 +1369,10 @@ def load(path: Path) -> Config:
     gemini = data.get("gemini", {})
     local = data.get("local", {})
     feedback = data.get("feedback", {})
+    dot = data.get("dot", {})
+    # The dot's corner is read FIRST because two other sections may say
+    # "dot" and mean it (corner_for); it is checked below with the rest.
+    dot_corner = str(dot.get("corner", DotConfig.corner)).strip().lower()
     hint = data.get("hint", {})
     setup = data.get("setup", {})
     translate = data.get("translate", {})
@@ -1419,10 +1466,12 @@ def load(path: Path) -> Config:
             retry_seconds=float(feedback.get(
                 "retry_seconds", FeedbackConfig.retry_seconds)),
         ),
+        dot=DotConfig(corner=dot_corner),
         hint=HintConfig(
             enabled=bool(hint.get("enabled", HintConfig.enabled)),
             after_ms=int(hint.get("after_ms", HintConfig.after_ms)),
-            corner=str(hint.get("corner", HintConfig.corner)).strip().lower(),
+            corner=corner_for(hint.get("corner", HintConfig.corner),
+                              dot_corner),
             x=int(hint.get("x", HintConfig.x)),
             y=int(hint.get("y", HintConfig.y)),
             scale=float(hint.get("scale", HintConfig.scale)),
@@ -1721,8 +1770,8 @@ def load(path: Path) -> Config:
             hotkey=str(shelf.get(
                 "shelf_hotkey", ShelfConfig.hotkey)).strip().lower(),
             rows=int(shelf.get("rows", ShelfConfig.rows)),
-            corner=str(shelf.get("corner",
-                                 ShelfConfig.corner)).strip().lower(),
+            corner=corner_for(shelf.get("corner", ShelfConfig.corner),
+                              dot_corner),
             x=int(shelf.get("x", ShelfConfig.x)),
             y=int(shelf.get("y", ShelfConfig.y)),
             scale=float(shelf.get("scale", ShelfConfig.scale)),
@@ -1958,10 +2007,16 @@ def load(path: Path) -> Config:
                           "feedback.enabled is true (nothing to erase)")
     if cfg.feedback.retry_seconds < 0:
         raise ConfigError("feedback.retry_seconds must be >= 0")
+    # [dot] first: [hint] and [shelf] may have borrowed its corner, and a
+    # bad dot corner should be named as the dot's and not as theirs.
+    if cfg.dot.corner not in DOT_CORNERS:
+        raise ConfigError(f"dot.corner must be one of {DOT_CORNERS} (which "
+                          "corner of the work area the status dot sits "
+                          f"in), got {cfg.dot.corner!r}")
     if cfg.hint.after_ms < 0:
         raise ConfigError("hint.after_ms must be >= 0")
     if cfg.hint.corner not in HINT_CORNERS:
-        raise ConfigError(f"hint.corner must be one of {HINT_CORNERS}, "
+        raise ConfigError(f"hint.corner must be one of {CARD_CORNERS}, "
                           f"got {cfg.hint.corner!r}")
     if not (HINT_SCALE_MIN <= cfg.hint.scale <= HINT_SCALE_MAX):
         raise ConfigError(
@@ -2021,7 +2076,7 @@ def load(path: Path) -> Config:
     # ("no key") and "esc" and a duplicate are not.
     # [shelf]. The key itself went through check_hotkeys with the rest.
     if cfg.shelf.corner not in HINT_CORNERS:
-        raise ConfigError(f"shelf.corner must be one of {HINT_CORNERS}, "
+        raise ConfigError(f"shelf.corner must be one of {CARD_CORNERS}, "
                           f"got {cfg.shelf.corner!r}")
     if not (HINT_SCALE_MIN <= cfg.shelf.scale <= HINT_SCALE_MAX):
         raise ConfigError(

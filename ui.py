@@ -25,6 +25,8 @@ blue. Only the geometry and the spacing moved.
 """
 from __future__ import annotations
 
+import math
+
 import ctypes
 import tkinter as tk
 from pathlib import Path
@@ -408,11 +410,25 @@ class Card(tk.Canvas):
         super().__init__(parent, width=w, height=h, bg=bg,
                          highlightthickness=0, bd=0)
         self.w, self.h, self.fill = w, h, fill
+        self._radius, self._ground, self._border, self._pad = \
+            radius, bg, border, pad
         self.face_item = self.create_image(
             0, 0, anchor="nw", image=rounded(w, h, radius, fill, bg, border))
         self.body = tk.Frame(self, bg=fill)
-        self.create_window(pad, pad, anchor="nw", window=self.body,
-                           width=w - 2 * pad, height=h - 2 * pad)
+        self._body_item = self.create_window(
+            pad, pad, anchor="nw", window=self.body,
+            width=w - 2 * pad, height=h - 2 * pad)
+
+    def resize(self, h: int) -> None:
+        """A new height: the face is redrawn and the body follows. A
+        card as tall as its rows (the home's pile) changes height every
+        time a row arrives or is answered."""
+        h = max(2 * self._pad + 1, int(h))
+        self.h = h
+        self.configure(height=h)
+        self.face(rounded(self.w, h, self._radius, self.fill, self._ground,
+                          self._border))
+        self.itemconfig(self._body_item, height=h - 2 * self._pad)
 
     def face(self, image) -> None:
         """Swap the background bitmap — how a row lights up under the
@@ -759,18 +775,31 @@ class KeyCap(tk.Canvas):
                         fill=FAINT if off else FG)
 
 
+SCROLL_STEP = 16          # one wheel unit, in pixels
+SCROLL_UNITS = 3          # units per notch: 48 px, about one row
+
+
 class Scroller(tk.Frame):
     """A scrolling column with a thin thumb beside it.
 
     Not `ttk.Scrollbar`: on Windows that is a native, light-grey, 17 px
     wide control with arrow buttons at both ends, and dropping one down
     the side of this window undoes the whole exercise.
+
+    IT SCROLLS IN PIXELS. A Canvas with no `yscrollincrement` moves a
+    tenth of its own height per unit, and the wheel handler sent two
+    units a notch: a fifth of the screen per click, which is what the
+    owner called "laggy and ugly" on 2026-09-07 — the content did not
+    glide, it jumped. Now a notch is SCROLL_UNITS x SCROLL_STEP px,
+    about one row, and a high-resolution wheel that sends smaller
+    deltas still moves at least one unit rather than rounding to none.
     """
 
     def __init__(self, parent, w: int, h: int, bg: str = PANE):
         super().__init__(parent, bg=bg)
         self.canvas = tk.Canvas(self, width=w, height=h, bg=bg,
-                                highlightthickness=0, bd=0)
+                                highlightthickness=0, bd=0,
+                                yscrollincrement=SCROLL_STEP)
         self.canvas.pack(side="left")
         self.rail = tk.Canvas(self, width=6, height=h, bg=bg,
                               highlightthickness=0, bd=0)
@@ -804,8 +833,23 @@ class Scroller(tk.Frame):
                                              self.rail["bg"]))
 
     def _wheel(self, event) -> None:
-        self.canvas.yview_scroll(int(-event.delta / 60), "units")
+        delta = getattr(event, "delta", 0) or 0
+        if not delta:
+            return
+        units = -delta * SCROLL_UNITS / 120.0
+        units = int(math.copysign(max(1, round(abs(units))), units))
+        self.canvas.yview_scroll(units, "units")
         self._paint_thumb()
+
+    def resize(self, h: int) -> None:
+        """A new height for the viewport. The canvas and the rail were
+        sized once at construction, and a frame grown around them by
+        `place` centred the old viewport in the new room — rows in the
+        middle of an empty card, photographed 2026-09-07."""
+        self._height = int(h)
+        self.canvas.configure(height=self._height)
+        self.rail.configure(height=self._height)
+        self.after_idle(self._paint_thumb)
 
     def bind_wheel(self, widget) -> None:
         """The wheel has to be bound to every child: a Canvas does not see

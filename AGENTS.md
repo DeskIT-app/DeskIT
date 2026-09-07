@@ -49,20 +49,26 @@ deliberately not on it: those are things you sit down to.
 **The dashboard** (`dashboard.py` + `ui.py` + `widgets.py`) is four
 places along a 56 px top bar — no rail, since 2026-09-07:
 
-- **Waiting** — the home. One title line, one card holding the merged
-  pile (notify unread + review pending + problems open + questions
-  pending, newest first, capped, "+N more"), one line each for the rest
-  of the day, and a footer of facts. "The whole list" behind it holds
-  what needs more than a line: a question with its options, a report with
-  its evidence, a weekly branch with its Push button.
-- **Said** — `transcripts.log` read back (history.py) with the
-  vocabulary panel beside it.
+- **Home** — one page that scrolls (`ui.Scroller`, in pixels). One title
+  line, one card as tall as its rows holding the merged pile (notify
+  unread + review pending + problems open + questions pending, newest
+  first, up to twelve, older ones counted), one line each for the rest
+  of the day, then Said — `transcripts.log` read back (history.py) with
+  the search, the filters and the vocabulary panel beside the rows — and
+  a fixed footer of facts. "The whole list" behind it holds what needs
+  more than a line: a question with its options, a report with its
+  evidence, a weekly branch with its Push button. Waiting and Said were
+  two places for one day (2026-09-07); the owner wanted one desk.
 - **Keys** — the bindings lit on a drawn 87-cap keyboard (keyboard.py);
-  click a cap to rebind it.
-- **Settings** — forty lines said as sentences (prose.py) plus the
-  existing tabs, "Everything" as the whole file (settings.py), and the
-  three blocks that used to be rail rows: Awake, Phone, The app (version
-  switch, Stop, Send a test, the cue sounds).
+  click a cap, or press a real key, to see what it does and rebind it.
+- **Settings** — General, Dictation, Text, Screen, Cards, Phone, The app
+  (settings.py: TABS names lines by hand, TAB_SECTIONS gives each tab the
+  rest of its sections, WORDS says every line plainly; every line drawn
+  exactly once, a test holds it). The app carries the three blocks that
+  used to be rail rows: Awake, the version switch, Stop, Send a test,
+  the cue sounds, the files. No sentences, no "Everything" — both
+  removed on the owner's word the day after they were built.
+- **The bar** carries Screens off beside Pause, on every place.
 
 Everything is documented, with measurements, in `README.md` and
 `config.toml`.
@@ -166,7 +172,13 @@ back.
 - **Tests:** `.venv\Scripts\python.exe tests_quiet.py` runs the suite on a
   hidden Windows desktop so none of its windows flash over the owner's
   work (asked for 2026-09-02; same tests.py, same exit code, output
-  printed at the end). `.venv\Scripts\python.exe tests.py` is the
+  printed at the end). **Seventeen of them still leave that desktop** —
+  the ask card grabs the display, the drag tests move the REAL mouse —
+  so an ordinary run ends with fifteen seconds of windows over his work
+  and his pointer taken. While he is at the machine, add `--no-screen`:
+  those are skipped outright and the run is invisible (asked for
+  2026-09-07, "a lot of things jump on my screen"). Run it plainly once
+  before shipping, since --no-screen's exit code says nothing about them. `.venv\Scripts\python.exe tests.py` is the
   same suite in the open — plain asserts, **hundreds** of test
   functions carrying thousands of them, safe to run while
   dictation is live (two bugs that used to kill the app mid-suite are
@@ -641,6 +653,24 @@ back.
   Through GDI there are only TWO real Rubik weights, 400 and 700 (the
   Skia path is different — see the variable-font trap below), so a design
   that wants a third step has to get it from size or colour.
+- **A glow that does not reach alpha 0 inside its window IS the window.**
+  The status dot's halo was a radial gradient of radius 26 px in a 38 px
+  layered window: alpha 27 at every edge midpoint, and the owner saw "a
+  square" on every wallpaper and title bar it crossed. UpdateLayeredWindow
+  composites the whole rectangle, so any non-zero pixel on the border
+  draws the rectangle. Every soft thing on a Glass has to end strictly
+  inside its box (`skin\dot.HALO_R` = BOX / 2 − 1, and
+  `test_the_dot_glows_to_nothing_inside_its_own_window` walks the whole
+  border of every state) — and check it by rendering, never by the
+  radius alone: `Dither=True` and antialiasing both reach past a number.
+  Related, and the trap that is easy to re-arm: **the dot's corner is
+  decided ONCE, in `[dot] corner`**, and three other things follow it —
+  `skin\dot.place` (the window), `skin\boot._landing` (where the reveal's
+  light lands), and `overlay.HintCard.origin` with `dot_corner=` (where
+  the shelf and the key card stop short of it). `[hint]` and `[shelf]`
+  say `corner = "dot"` and `config.load` resolves the word, so a Config
+  never carries it. Hard-coding "top-right" anywhere in that chain puts a
+  card on the dot or lands the light in an empty corner.
 - **A glass hook is named `<thing>_run`.** The shelf's is
   `skin.shelf_run(card)`, registered in `skin\__init__.py` exactly the
   way `notify_run` is; `tests.py:14791` enforces the naming rule, and a

@@ -185,14 +185,19 @@ def _aurora_shader():
 class Reveal:
     """One release. Build it, then draw(canvas, t) until it returns False."""
 
-    def __init__(self, width: int, height: int, origin, seed=None) -> None:
+    def __init__(self, width: int, height: int, origin, seed=None,
+                 landing=None) -> None:
         self.w, self.h = float(width), float(height)
         self.ox, self.oy = float(origin[0]), float(origin[1])
         rng = random.Random(seed)
         self.rng = rng
-        # where the status dot sits - top right, a little in from the
-        # corner. Kept in step with skin/dot.py's own placement.
-        self.landing = (self.w - 27.0, 23.0)
+        # where the status dot sits, in this layer's coordinates. boot.py
+        # works it out from `[dot] corner` and the work area through
+        # skin/dot.place (boot._landing) and hands it in; built bare, the
+        # dot's default corner is assumed - bottom-right, a little in
+        # from the edge, the taskbar not accounted for.
+        self.landing = (tuple(float(v) for v in landing) if landing
+                        else (self.w - 27.0, self.h - 23.0))
 
         # how far the front must go to leave the screen entirely
         corners = ((0, 0), (self.w, 0), (0, self.h), (self.w, self.h))
@@ -450,8 +455,9 @@ class Reveal:
         has no event structure at all - it reads as "it vanished", which is
         the difference between an ending and a stop. So the last beat
         CONVERGES rather than disperses: a thread of light gathers to the
-        top-right corner where the little always-on dot lives, and finishes
-        with one small pulse there.
+        corner where the little always-on dot lives (`self.landing` -
+        bottom-right since 2026-09-07, wherever `[dot] corner` says), and
+        finishes with one small pulse there.
 
         That is not decoration. The dot is the app's resting state - the
         one thing that stays on screen for the rest of the session - so the

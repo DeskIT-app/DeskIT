@@ -75,7 +75,6 @@ import hotkey as hotkey_mod
 import keyboard as keyboard_mod
 import launch
 import awake as awake_mod
-import prose as prose_mod
 import settings as settings_mod
 import singleton
 import ui
@@ -113,25 +112,20 @@ LOOKS = {
 }
 
 POLL_MS = 800
-# THE PILE: how many things the Waiting card holds before it says
-# "+N more", and the rectangle it holds them in. Fixed, not grown to
-# fit: a home whose furniture moves every time a notification arrives
-# is a home you cannot learn. Three rows of 80 px fit the 246 px inside
-# the card exactly; a fourth scrolls, and ui.Scroller paints no thumb
-# until there is something to scroll.
-PILE_CAP = 6             # the most the card will ever hold
-PILE_SHOWN = 3           # what fits without scrolling; the rest is "+N more"
+# THE PILE IS AS TALL AS ITS ROWS. It was a fixed 286 px card with a
+# scroller inside it and "+N more", and the owner's photograph of it
+# on 2026-09-07 was rows in the middle of an empty card: the card grew
+# for "+N more" and the scroller inside it did not. On a home that
+# scrolls as ONE page a card that scrolls inside it is a mistake twice
+# over, so the card holds every row up to PILE_CAP and the page does
+# the scrolling.
+PILE_CAP = 12            # the most the card will ever hold; older ones
+                         # are counted, and the whole list has them
 PILE_ROW_H = 72
-PILE_Y = 100
-# 258 inside: three 72 px rows, the two hairlines between them, and the
-# "+N more" line with its 8/4 of air — 255, measured 2026-09-07. It was
-# 274 (246 inside) and the last 10 px of "+N more" were behind the card's
-# own edge, so the one thing on the card that says there is more of it
-# was the one thing you had to scroll to see.
-PILE_H = 286
-PILE_H_OPEN = 470        # expanded, into the room the rest of the day had
+PILE_Y = 100             # where the page starts, under the title
+PAGE_H = H - TOP - PILE_Y - 62      # down to the footer rule
 CAPTURE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
-# The Said place is a list and a panel side by side. The list keeps the
+# The Said half of the home is a list and a panel side by side. The list keeps the
 # width a sentence needs; the panel takes what is left.
 SAID_W = CW - 320
 
@@ -147,10 +141,6 @@ KEY_LEGEND_Y = 58        # the five swatches; two lines each, ending at 98
 KEY_BOARD_Y = 100
 KEY_FOOT_GAP = 22        # ground under the last line, so it is not flush
 KEY_FOOT_LINE = 17       # one line of the 8 pt foot, measured
-# The first Settings tab. It is a TAB and not a mode, so every piece of
-# machinery the dense view has — the chips, the search, the one-card-per-
-# tick build, the tests that walk them — works on it unchanged.
-DESK = "In your words"
 SOUND_COLUMNS = 5
 KEY_LEGEND = (
     ("held", "down the whole time it works", "hold"),
@@ -172,21 +162,22 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
 # clearing review verdicts that had piled up, dismissing everything at
 # once, turning the screens off, and rebinding a key. Nine equal rows
 # with a 190-line Settings screen behind one of them is a filing cabinet
-# for a drawer. So: what is WAITING (notify + review + problems +
-# questions, in one pile), what was SAID (history + vocabulary), the
-# KEYS, and SETTINGS (which absorbs Awake, Version and the phone).
+# for a drawer. So: HOME (what is waiting — notify + review + problems +
+# questions, in one pile — and under it what was said: history +
+# vocabulary, on one page that scrolls), the KEYS, and SETTINGS (which
+# absorbs Awake, Version and the phone). Waiting and Said were two
+# places for a day; the owner's verdict on 2026-09-07 was that Keys and
+# Settings are places you go and the rest is one desk, to be scrolled.
 # Overview is gone: its state line is in the top bar now, on every place.
-NAV = (("waiting", "Waiting"), ("said", "Said"),
-       ("keys", "Keys"), ("settings", "Settings"))
+NAV = (("home", "Home"), ("keys", "Keys"), ("settings", "Settings"))
 
-# A place takes its glyph from ui.ICON[key] where there is one. Waiting
-# and Said are new words for old screens, and ui.py is not this wave's
-# file, so they borrow the glyphs those screens had — the bell and the
-# clock — HERE, rather than the one table that names the places having
-# to call them "notify" and "history". A key with no glyph and no entry
-# here is still a KeyError the first time the bar is built, which is the
-# point.
-NAV_GLYPH = {"waiting": "notify", "said": "history"}
+# A place takes its glyph from ui.ICON[key] where there is one. Home is
+# a new word for an old screen, and ui.py is not this wave's file, so it
+# borrows the glyph Overview had — HERE, rather than the one table that
+# names the places having to call it "overview". A key with no glyph
+# and no entry here is still a KeyError the first time the bar is built,
+# which is the point.
+NAV_GLYPH = {"home": "overview"}
 
 # The Awake screen probes the machine (powercfg, PowerShell — a few
 # seconds) the moment it opens. Off for the tests, which open every
@@ -234,14 +225,11 @@ ENTRY_W = 150
 # does not, and the first draft ran the comment into the next title.
 LINE = 17                    # one line of the small face
 TITLE_H = 22                 # a row's own name, and the air under it
-# A control INSIDE a sentence (prose.py). DROP_ROOM is what ui.Dropdown
-# keeps for its own padding and caret glyph — its label is drawn at x 12
-# and its ▾ at w - 12, and it clamps to w - 40, so a box sized with 46
-# to spare is one the menu will never cut a second time. PROSE_FIELD_MAX
-# is the widest a field may be before it is shown cut instead: past
-# about a third of the column the sentence stops being a sentence.
+# DROP_ROOM is what ui.Dropdown keeps for its own padding and caret glyph
+# — its label is drawn at x 12 and its ▾ at w - 12, and it clamps to
+# w - 40 — so a name cut to CONTROL_W - 46 is one the menu will never
+# cut a second time, silently, at its own edge.
 DROP_ROOM = 46
-PROSE_FIELD_MAX = 300
 # A one-line field, and the strip the settings tabs live in. Rubik's line
 # box is ~20% taller than the Segoe one these were drawn for: a 9 pt line
 # needs 25 px and both search cards had an 18 px body, so the placeholder
@@ -250,6 +238,7 @@ PROSE_FIELD_MAX = 300
 # squashed to 30. Both measured on the hidden desktop, 2026-09-07.
 FIELD_H = 48                                 # 26 of body inside an 11 pad
 TAB_BAR_H = max(ui.PILL_H + 6, FIELD_H)      # the tabs, or the field
+SAID_HEAD_H = 22 + FIELD_H + 10 + ui.PILL_H + 4   # eyebrow, field, chips
 
 # "Dictate (hold)" is one string in config.py because that is all the old
 # window needed. Here the how is its own column.
@@ -1028,6 +1017,27 @@ def _wrap(widths, limit: int, gap: int = 6,
     return spots
 
 
+class _Column:
+    """A frame inside the page that the row builders treat like a
+    Scroller: `.inner` to pack into, `clear()`, `bind_wheel()` so the
+    page scrolls from a row too, and a `to_top()` that does nothing —
+    the page decides where it is, and a list redrawn under the reader
+    must not yank the page back to the top."""
+
+    def __init__(self, inner, page) -> None:
+        self.inner, self.page = inner, page
+
+    def clear(self) -> None:
+        for child in self.inner.winfo_children():
+            child.destroy()
+
+    def bind_wheel(self, widget) -> None:
+        self.page.bind_wheel(widget)
+
+    def to_top(self) -> None:
+        pass
+
+
 def _keys_screen_paths() -> set[str]:
     """The config.toml paths the Keys screen owns. The Settings screen
     leaves those to it — one place to rebind a key — and a test holds the
@@ -1173,7 +1183,7 @@ class Dashboard:
         self._busy_until = 0.0     # ignore polls right after a command, so a
                                    # stale status cannot flicker the buttons
                                    # back for one frame
-        self.screen = "Waiting"
+        self.screen = "Home"
         self.parts: dict = {}      # the widgets of whichever screen is up
         self.log: list[history.Event] = []
         self._log_stamp: tuple[int, float] = (0, 0.0)
@@ -1185,12 +1195,8 @@ class Dashboard:
         self._search_after = None
         self._settings_query = ""
         self._settings_after = None
-        self._settings_tab = DESK
+        self._settings_tab = settings_mod.GENERAL
         self._settings_searching = False
-        # "Show the file's own words": off, every dense row is a plain
-        # title and one plain sentence; on, the dotted name and the
-        # comment config.toml keeps come back underneath it.
-        self._settings_raw = False
         # The settings cards still to be built, one per tick — see
         # _fill_settings — and the tick that will build the next.
         self._settings_left: list = []
@@ -1240,7 +1246,7 @@ class Dashboard:
         self._push_buttons: dict = {}
         self._push_said: dict = {}  # what the last press did, per branch
         self._pushing = None        # the branch a push is in flight for
-        # Which of the Waiting place's two views is up: the calm home, or
+        # Which of the Home place's two views is up: the calm home, or
         # the whole backlog behind it.
         self._waiting_view = "home"
         # Which binding the key dialog is listening for, or None. The
@@ -1303,10 +1309,11 @@ class Dashboard:
         self.sheet = tk.Frame(self.pane, bg=ui.BG, width=W, height=H - TOP)
         self.sheet.place(x=0, y=0)
         self.sheet.pack_propagate(False)
-        self._show("Waiting")
+        self._show("Home")
 
     def _topbar(self) -> None:
-        """The mark, the four places, and the state — one 56 px strip.
+        """The mark, the three places, the state, and two buttons — one
+        56 px strip.
 
         THE RAIL IS GONE, and the reason is arithmetic as much as taste.
         A 212 px rail took 18% of the window to say four words, and the
@@ -1334,7 +1341,7 @@ class Dashboard:
                  font=(ui.DISPLAY, 13, "bold")).place(x=PAD + 34, y=17)
 
         self.nav = widgets.Tabs(bar, [name for _key, name in NAV], bg=ui.BG,
-                                selected="Waiting", command=self._show)
+                                selected="Home", command=self._show)
         self.nav.place(x=PAD + 126, y=17)
 
         # The state chip and the button are placed from the RIGHT edge, so
@@ -1343,8 +1350,18 @@ class Dashboard:
         self.parts["run"] = ui.Button(bar, "Pause", self._toggle_pause,
                                       w=104, h=32, bg=ui.BG, quiet=True)
         self.parts["run"].place(x=W - PAD, y=12, anchor="ne")
+        # SCREENS OFF is in the bar, on every place. It was a small gold
+        # link in the home's footer and the owner could not find it
+        # (2026-09-07: "it would have been good to understand where it
+        # was"); a button beside Pause is where a thing pressed every
+        # evening belongs. Placed by _paint_bar_screens, and only while
+        # the app runs — the screens are the running app's to put out.
+        wide = widgets.button_width("Screens off", icon=True)
+        self.parts["bar_screens"] = ui.Button(
+            bar, "Screens off", lambda: self._screens("toggle"), w=wide,
+            h=32, bg=ui.BG, quiet=True, icon=ui.ICON["awake"])
         chip = widgets.StateChip(bar, bg=ui.BG, size=15)
-        chip.place(x=W - PAD - 120, y=TOP // 2, anchor="e")
+        chip.place(x=W - PAD - 120 - wide - 12, y=TOP // 2, anchor="e")
         self.parts["chip"] = chip
         # The three names the rest of the window has always used for the
         # state, kept: _refresh writes the word and the uptime through
@@ -1381,12 +1398,12 @@ class Dashboard:
         for child in self.sheet.winfo_children():
             child.destroy()
         keep = {k: self.parts[k] for k in
-                ("hint", "lamp", "state", "uptime", "chip", "run")
+                ("hint", "lamp", "state", "uptime", "chip", "run",
+                 "bar_screens")
                 if k in self.parts}
         self.parts = keep
         self._hide_toast()
-        {"Waiting": self._screen_waiting,
-         "Said": self._screen_said,
+        {"Home": self._screen_home,
          "Keys": self._screen_keys,
          "Settings": self._screen_settings}[name]()
         self._refresh(self.status or None)
@@ -1479,17 +1496,22 @@ class Dashboard:
 
     # ------------------------------------------------------------ waiting
 
-    def _screen_waiting(self) -> None:
-        """The home: one sentence, one card of what wants an answer, and
-        one line each for everything else that happened today.
+    def _screen_home(self) -> None:
+        """The home: what wants an answer, then everything said, on ONE
+        page that scrolls.
 
-        THE SHAPE IS THE OWNER'S SECOND ANSWER. The first rebuild of this
-        screen put six panels on it — counts, the last dictation, the
-        captures, the phone, the version, the vocabulary — and he said
-        "too overwhelming, too many stuff". What he accepted is this: a
-        title that says how many things want him, ONE card holding all of
-        them whatever kind they are, and under it three quiet lines that
-        report rather than ask.
+        THE OWNER'S THIRD ANSWER. The first rebuild of this screen put
+        six panels on it — counts, the last dictation, the captures, the
+        phone, the version, the vocabulary — and he said "too
+        overwhelming, too many stuff". The second split it into Waiting
+        and Said, and on 2026-09-07 he said that split was not one he
+        wanted: Keys and Settings are places you go, but what is waiting
+        and what was said are one desk, to be scrolled and not switched
+        between. So: a title that says how many things want him, ONE
+        card holding all of them whatever kind they are, three quiet
+        lines for the rest of the day, and under them the last hundred
+        things he said with the words the app learned from saying them —
+        one page, one scroller, the footer fixed beneath it.
 
         THE PILE IS MERGED ON PURPOSE. Notifications, second-reading
         proposals, open problems and the routine's questions used to be
@@ -1498,13 +1520,16 @@ class Dashboard:
         less than which is newest. Ten days of use: 333 answers were
         given at a CARD and 21 in this window, and every one of the 21
         was catching up on a backlog. So the window opens on the backlog,
-        newest first, with the verb each row needs on the row.
+        newest first, with the verb each row needs on the row — and the
+        card is as tall as its rows, because a page that scrolls has no
+        use for a card that scrolls inside it.
 
         ONE GOLD BUTTON PER SURFACE. Only Yes on a second reading is the
         lamp; every other button here is quiet. Two lit buttons on one
         screen is two primary actions, which is none.
         """
         p = self.parts
+        self._row_w = SAID_W
         p["waiting_head"] = tk.Label(self.sheet, text="", bg=ui.BG,
                                      fg=ui.FG, font=(ui.DISPLAY, 21, "bold"))
         p["waiting_head"].place(x=PAD, y=24)
@@ -1527,49 +1552,6 @@ class Dashboard:
         p["dismiss_key"] = ui.KeyCap(self.sheet, "Ctrl+Alt+M", bg=ui.BG,
                                      w=96, h=26)
 
-        # The card is a fixed rectangle with a Scroller in it rather than
-        # a card that grows: a screen whose furniture moves when a
-        # notification arrives is a screen you cannot learn. ui.Scroller
-        # paints no thumb at all until it needs one, so with three rows
-        # in it there is nothing to see.
-        p["pile_card"] = ui.Card(self.sheet, CW, PILE_H, fill=ui.CARD,
-                                 bg=ui.BG, pad=14)
-        p["pile_list"] = ui.Scroller(p["pile_card"].body, CW - 28,
-                                     PILE_H - 28, bg=ui.CARD)
-        p["pile_list"].place(x=0, y=0)
-
-        p["held_line"] = tk.Label(self.sheet, text="", bg=ui.BG,
-                                  fg=ui.FAINT, font=(ui.UI, 9),
-                                  justify="left", anchor="w")
-
-        p["rest_eyebrow"] = tk.Label(
-            self.sheet, text="T H E   R E S T   O F   T H E   D A Y"
-                             "   ·   O N E   L I N E   E A C H",
-            bg=ui.BG, fg=ui.FAINT, font=(ui.MEDIUM, 8))
-        p["rest"] = tk.Frame(self.sheet, bg=ui.BG, width=CW, height=140)
-
-        # The bottom strip: the machine, the phone, the version, the
-        # words. Four facts that are true whichever place is open, on one
-        # line, under a rule — so they read as a footer and not as a
-        # fifth thing to do.
-        widgets.rule(self.sheet, CW, bg=ui.BG, colour=ui.RULE, x=PAD,
-                     y=H - TOP - 54)
-        widgets.icon(self.sheet, "awake", bg=ui.BG, colour=ui.FAINT,
-                     size=13).place(x=PAD + 2, y=H - TOP - 40)
-        p["strip_awake"] = tk.Label(self.sheet, text="", bg=ui.BG, fg=ui.DIM,
-                                    font=(ui.UI, 10), anchor="w")
-        p["strip_awake"].place(x=PAD + 26, y=H - TOP - 39)
-        p["strip_screens"] = tk.Label(self.sheet, text="", bg=ui.BG,
-                                      fg=ui.ACCENT_TEXT,
-                                      font=(ui.UI, 10, "bold"),
-                                      cursor="hand2")
-        p["strip_screens"].bind("<Button-1>",
-                                lambda _e: self._screens("toggle"))
-        p["strip_facts"] = tk.Label(self.sheet, text="", bg=ui.BG,
-                                    fg=ui.FAINT, font=(ui.UI, 9), anchor="e")
-        p["strip_facts"].place(x=PAD + CW - 100, y=H - TOP - 38,
-                               anchor="ne")
-
         # Reporting a problem used to be a button in the rail, on every
         # screen, because a bug is noticed while looking at the thing that
         # is wrong. The rail is gone and the key (Ctrl+Alt+R) is how all
@@ -1581,6 +1563,52 @@ class Dashboard:
                 w=widgets.button_width("Report a problem", icon=True),
                 bg=ui.BG, quiet=True, icon=ui.ICON["error"])
             p["report_button"].place(x=PAD + CW, y=20, anchor="ne")
+
+        # THE PAGE. Everything under the title is in one Scroller, so the
+        # wheel does the same thing wherever the pointer is.
+        page = ui.Scroller(self.sheet, CW + 10, PAGE_H, bg=ui.BG)
+        page.place(x=PAD, y=PILE_Y)
+        p["page"] = page
+
+        # 1. The pile: a card exactly as tall as what is in it, filled by
+        #    _fill_waiting and packed only while it has rows. The faint
+        #    line under it says what has arrived and is not on it.
+        p["pile_card"] = ui.Card(page.inner, CW, 60, fill=ui.CARD, bg=ui.BG,
+                                 pad=14)
+        p["pile_list"] = _Column(p["pile_card"].body, page)
+        p["held_line"] = tk.Label(page.inner, text="", bg=ui.BG,
+                                  fg=ui.FAINT, font=(ui.UI, 9),
+                                  justify="left", anchor="w")
+
+        # 2. The rest of the day: three lines that report and do not ask.
+        p["rest_eyebrow"] = tk.Label(
+            page.inner, text="T H E   R E S T   O F   T H E   D A Y"
+                             "   ·   O N E   L I N E   E A C H",
+            bg=ui.BG, fg=ui.FAINT, font=(ui.MEDIUM, 8))
+        p["rest_eyebrow"].pack(anchor="w", padx=2, pady=(6, 6))
+        p["rest"] = tk.Frame(page.inner, bg=ui.BG, width=CW, height=132)
+        p["rest"].pack(anchor="w")
+        p["rest"].pack_propagate(False)
+
+        # 3. Said: the search, the filters, the rows, the vocabulary.
+        self._said_block(page)
+        page.bind_wheel(page.inner)
+
+        # The bottom strip: the machine, the phone, the version, the
+        # words. Four facts that are true whichever place is open, on one
+        # line, under a rule — so they read as a footer and not as a
+        # fifth thing to do. Fixed under the page, never scrolled away.
+        widgets.rule(self.sheet, CW, bg=ui.BG, colour=ui.RULE, x=PAD,
+                     y=H - TOP - 54)
+        widgets.icon(self.sheet, "awake", bg=ui.BG, colour=ui.FAINT,
+                     size=13).place(x=PAD + 2, y=H - TOP - 40)
+        p["strip_awake"] = tk.Label(self.sheet, text="", bg=ui.BG, fg=ui.DIM,
+                                    font=(ui.UI, 10), anchor="w")
+        p["strip_awake"].place(x=PAD + 26, y=H - TOP - 39)
+        p["strip_facts"] = tk.Label(self.sheet, text="", bg=ui.BG,
+                                    fg=ui.FAINT, font=(ui.UI, 9), anchor="e")
+        p["strip_facts"].place(x=PAD + CW - 100, y=H - TOP - 38,
+                               anchor="ne")
 
         # A thing that needs more than a line — a question with five
         # answers to press, a report with its evidence, a branch waiting
@@ -1594,10 +1622,124 @@ class Dashboard:
         p["whole_list"] = whole
 
         self._pile_stamp = None
-        self._pile_open = False
         self._waiting_view = "home"
         self._fill_waiting()
-        self._paint_rest()
+        self._fill_history()
+
+    def _said_block(self, page) -> None:
+        """The Said half of the home, inside the page: the search, the
+        six filters, the rows drawn on canvases rather than built out of
+        widgets, and the vocabulary panel beside them.
+
+        History and Vocabulary were two of the nine rail rows, and
+        neither was ever opened: "history" appears zero times in eleven
+        thousand log lines, and the vocabulary had no screen at all
+        despite 38 entries and 389 repair passes. They sit together
+        because they are one subject — the list is what he said, the
+        panel is what saying it taught the machine — and under the pile
+        because that is where the day continues.
+        """
+        p = self.parts
+        head = tk.Frame(page.inner, bg=ui.BG, width=CW, height=SAID_HEAD_H)
+        head.pack(anchor="w", pady=(16, 0))
+        head.pack_propagate(False)
+        p["said_head"] = head
+        tk.Label(head, text="S A I D", bg=ui.BG, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=2, y=0)
+        tk.Label(head, text=f"the last {HISTORY_ROWS} of what you said",
+                 bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 9)).place(x=CW, y=0,
+                                                              anchor="ne")
+        # 46 and not 40: a 9 pt line in Rubik has a 25 px box (measured
+        # 2026-09-07) and this card's body was 18, so the placeholder and
+        # the caret both lost their descenders behind the card's own
+        # edge. FIELD_H is the height a one-line field has to be.
+        search = ui.Card(head, SAID_W, FIELD_H, radius=11, pad=11, bg=ui.BG)
+        search.place(x=0, y=22)
+        tk.Label(search.body, text=ui.ICON["search"], bg=ui.CARD,
+                 fg=ui.FAINT, font=(ui.ICONS, 10)).place(x=0, y=2)
+        entry = tk.Entry(search.body, bg=ui.CARD, fg=ui.FG, bd=0,
+                         highlightthickness=0, font=(ui.UI, 10),
+                         insertbackground=ui.ACCENT)
+        entry.place(x=26, y=0, width=SAID_W - 90, height=FIELD_H - 22)
+        entry.insert(0, self._query)
+        entry.bind("<KeyRelease>", lambda _e: self._search_soon(entry.get()))
+        p["search"] = entry
+        p["placeholder"] = tk.Label(search.body,
+                                    text="Search everything you have said…",
+                                    bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9))
+        if not self._query:
+            p["placeholder"].place(x=26, y=0)
+        entry.bind("<FocusIn>", lambda _e: p["placeholder"].place_forget())
+
+        chips = tk.Frame(head, bg=ui.BG)
+        chips.place(x=0, y=22 + FIELD_H + 10)
+        p["chips"] = {}
+        for name, kind in history.FILTERS:
+            chip = ui.Chip(chips, name, lambda k=kind: self._filter_to(k),
+                           active=(kind == self._filter), bg=ui.BG)
+            chip.pack(side="left", padx=(0, 6))
+            p["chips"][kind] = chip
+
+        # The list on the left keeps the width a sentence needs whatever
+        # is in it (a grid column with a floor), the panel takes the rest.
+        body = tk.Frame(page.inner, bg=ui.BG)
+        body.pack(anchor="w", pady=(12, 0))
+        body.columnconfigure(0, minsize=SAID_W + 10)
+        left = tk.Frame(body, bg=ui.BG)
+        left.grid(row=0, column=0, sticky="nw")
+        # The rows have a frame of their own: clearing the list destroys
+        # every child of it, and the sentence for an empty list must
+        # not be one of them.
+        rows = tk.Frame(left, bg=ui.BG)
+        rows.pack(anchor="w")
+        p["list"] = _Column(rows, page)
+        p["empty"] = tk.Label(left, text="", bg=ui.BG, fg=ui.FAINT,
+                              font=(ui.UI, 10))
+        side = tk.Frame(body, bg=ui.BG)
+        side.grid(row=0, column=1, sticky="n", padx=(10, 0))
+        self._vocab_panel(side)
+
+        foot = tk.Frame(page.inner, bg=ui.BG, width=CW, height=40)
+        foot.pack(anchor="w", pady=(6, 24))
+        foot.pack_propagate(False)
+        tk.Label(foot, text="Everything older is still in "
+                            "transcripts.log, untouched.",
+                 bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8)).place(x=0, y=12)
+        wide = widgets.button_width("Open transcripts.log", icon=True)
+        ui.Button(foot, "Open transcripts.log",
+                  lambda: launch.open_path(history.LOG), w=wide, h=30,
+                  quiet=True, bg=ui.BG,
+                  icon=ui.ICON["file"]).place(x=SAID_W - wide, y=4)
+        for widget in (head, body, foot):
+            page.bind_wheel(widget)
+
+    def _scroll_to_said(self) -> None:
+        """The Said half of the home, brought into view — what a click on
+        the "Said" line of the rest of the day does."""
+        page, head = self.parts.get("page"), self.parts.get("said_head")
+        if page is None or head is None:
+            return
+        try:
+            page.update_idletasks()
+            total = max(1, page.inner.winfo_height())
+            page.canvas.yview_moveto(head.winfo_y() / total)
+            page._paint_thumb()
+        except tk.TclError:
+            pass
+
+    def _paint_bar_screens(self) -> None:
+        """The Screens off button in the bar: its word follows the
+        screens, and it is only there while the app runs."""
+        button = self.parts.get("bar_screens")
+        if button is None or not button.winfo_exists():
+            return
+        awake = (self.status.get("awake") or {}) if self.running else {}
+        button.configure_text("Screens on" if awake.get("dark")
+                              else "Screens off")
+        if self.running:
+            button.place(x=W - PAD - 104 - 12, y=12, anchor="ne")
+        else:
+            button.place_forget()
 
     def _poll_waiting(self) -> None:
         """Once a second from _refresh. Four stores, one stamp each, and
@@ -1811,23 +1953,27 @@ class Dashboard:
         p["waiting_sub"].config(
             text="Nothing else on the desk needs you right now.")
 
-        shown = items[:PILE_CAP] if self._pile_open else items[:PILE_SHOWN]
-        card_h = PILE_H_OPEN if self._pile_open else PILE_H
-        scroller = p["pile_list"]
-        scroller.clear()
+        shown = items[:PILE_CAP]
+        older = count - len(shown)
+        column = p["pile_list"]
+        column.clear()
+        card = p["pile_card"]
         if not items:
-            p["pile_card"].place_forget()
+            card.pack_forget()
         else:
-            p["pile_card"].place(x=PAD, y=PILE_Y, height=card_h)
-            p["pile_card"].face(ui.rounded(CW, card_h, 14, ui.CARD, ui.BG,
-                                           ui.LINE))
-            scroller.place_configure(height=card_h - 28)
+            # As tall as its rows: the hairlines between them, and one
+            # line for what did not fit.
+            card.resize(28 + len(shown) * PILE_ROW_H + (len(shown) - 1)
+                        + (30 if older else 0))
+            if not card.winfo_manager():
+                card.pack(anchor="w", pady=(0, 14),
+                          before=p["rest_eyebrow"])
             for index, spec in enumerate(shown):
                 if index:
-                    widgets.rule(scroller.inner, CW - 28, bg=ui.CARD,
+                    widgets.rule(column.inner, CW - 28, bg=ui.CARD,
                                  colour=ui.LINE).pack(fill="x")
                 row = widgets.PileRow(
-                    scroller.inner, CW - 28, bg=ui.CARD,
+                    column.inner, CW - 28, bg=ui.CARD,
                     mark=spec.get("mark", ""),
                     mark_colour=spec.get("mark_colour"),
                     eyebrow=spec.get("eyebrow", ""),
@@ -1837,27 +1983,18 @@ class Dashboard:
                     buttons=spec.get("buttons", ()),
                     height=PILE_ROW_H)
                 row.pack(fill="x")
-                scroller.bind_wheel(row)
-                scroller.bind_wheel(row.canvas)
-            hidden = count - len(shown)
-            if hidden > 0 and not self._pile_open:
-                more = tk.Label(scroller.inner, text=f"+{hidden} more",
+                column.bind_wheel(row)
+                column.bind_wheel(row.canvas)
+            if older:
+                more = tk.Label(column.inner,
+                                text=f"{older} older still waiting — the "
+                                     "whole list has them",
                                 bg=ui.CARD, fg=ui.ACCENT_TEXT,
                                 font=(ui.UI, 10), cursor="hand2")
-                more.pack(anchor="w", padx=40, pady=(8, 4))
-                more.bind("<Button-1>", lambda _e: self._pile_more(True))
-            elif self._pile_open:
-                less = tk.Label(scroller.inner, text="Show fewer", bg=ui.CARD,
-                                fg=ui.DIM, font=(ui.UI, 10), cursor="hand2")
-                less.pack(anchor="w", padx=40, pady=(8, 4))
-                less.bind("<Button-1>", lambda _e: self._pile_more(False))
-                if count > PILE_CAP:
-                    tk.Label(scroller.inner,
-                             text=f"{count - PILE_CAP} older still waiting "
-                                  f"\u2014 the whole list has them",
-                             bg=ui.CARD, fg=ui.FAINT,
-                             font=(ui.UI, 8)).pack(anchor="w", padx=40)
-            scroller.to_top()
+                more.pack(anchor="w", padx=40, pady=(8, 0))
+                more.bind("<Button-1>", lambda _e: self._waiting_all())
+                column.bind_wheel(more)
+            column.bind_wheel(card)
 
         # Dismiss all belongs to the notifications and to nothing else.
         unread = sum(1 for i in items if i["kind"] == "notify")
@@ -1869,14 +2006,6 @@ class Dashboard:
             p["dismiss_key"].place_forget()
 
         self._paint_held()
-        top = (PILE_Y + card_h + 14) if items else 106
-        p["held_line"].place(x=PAD + 2, y=top)
-        if self._pile_open and items:
-            p["rest_eyebrow"].place_forget()
-            p["rest"].place_forget()
-        else:
-            p["rest_eyebrow"].place(x=PAD + 2, y=top + 34)
-            p["rest"].place(x=PAD, y=top + 58)
         self._paint_rest()
 
     def _paint_held(self) -> None:
@@ -1897,17 +2026,17 @@ class Dashboard:
             held = int(info.get("held") or 0)
         except (TypeError, ValueError):
             held = 0
+        eyebrow = self.parts.get("rest_eyebrow")
         if held:
             line.config(text=f"{held} finish{'es' if held > 1 else ''} "
                              "held until the session that sent them goes "
                              "quiet. They will arrive here, not on your "
                              "screen.")
+            if not line.winfo_manager() and eyebrow is not None:
+                line.pack(anchor="w", padx=2, pady=(0, 10), before=eyebrow)
         else:
             line.config(text="")
-
-    def _pile_more(self, open_: bool) -> None:
-        self._pile_open = open_
-        self._fill_waiting()
+            line.pack_forget()
 
     def _notify_one(self, do: str, ident) -> None:
         """Go there / × on one notification.
@@ -1960,7 +2089,7 @@ class Dashboard:
             lines.append(("Said", said.when.strftime("%H:%M"),
                           said.text or "", f"{count} today",
                           ui.is_rtl(said.text or ""),
-                          lambda: self._show("Said")))
+                          lambda: self._scroll_to_said()))
         else:
             # The one sentence a first run has to say. Kept as its own
             # part because a test reads it: an empty history that says
@@ -1983,7 +2112,7 @@ class Dashboard:
             lines.append(("Looked up", looked.when.strftime("%H:%M"),
                           looked.text or looked.source or "", "",
                           ui.is_rtl(looked.text or ""),
-                          lambda: self._show("Said")))
+                          lambda: self._scroll_to_said()))
 
         y = 0
         for label, when, text, meta, rtl, command in lines:
@@ -2047,14 +2176,6 @@ class Dashboard:
             sentence = "The machine sleeps on its own timer."
         p["strip_awake"].config(text=sentence)
         p["strip_awake"].update_idletasks()
-        p["strip_screens"].config(text="Screens on" if dark
-                                  else "Screens off")
-        if self.running:
-            p["strip_screens"].place(
-                x=PAD + 26 + p["strip_awake"].winfo_reqwidth() + 22,
-                y=H - TOP - 39)
-        else:
-            p["strip_screens"].place_forget()
 
         bits = []
         phone = (self.status or {}).get("phone")
@@ -2066,77 +2187,7 @@ class Dashboard:
             bits.append(f"{learned} words learned")
         p["strip_facts"].config(text="   ·   ".join(bits))
 
-    def _screen_said(self) -> None:
-        """Everything he has said, and the words it has learned from him.
-
-        History and Vocabulary were two of the nine rows, and neither was
-        ever opened: "history" appears zero times in eleven thousand log
-        lines, and the vocabulary had no screen at all despite 38 entries
-        and 389 repair passes. They are one place because they are one
-        subject — the list is what he said, the panel is what saying it
-        taught the machine — and side by side the panel finally has a
-        reason to be looked at.
-
-        The list keeps everything it had: the search, the six filters, the
-        rows drawn on a canvas rather than built out of widgets (a
-        hundred rows the obvious way is seven hundred Tk windows and a
-        two-second pause on every keystroke), and the learned rows with
-        their before/after pill.
-        """
-        self._title("Said", f"the last {HISTORY_ROWS} of what you said")
-        p = self.parts
-        self._row_w = SAID_W
-
-        # 46 and not 40: a 9 pt line in Rubik has a 25 px box (measured
-        # 2026-09-07) and this card's body was 18, so the placeholder and
-        # the caret both lost their descenders behind the card's own
-        # edge. FIELD_H is the height a one-line field has to be.
-        search = ui.Card(self.sheet, SAID_W, FIELD_H, radius=11, pad=11,
-                         bg=ui.BG)
-        search.place(x=PAD, y=64)
-        tk.Label(search.body, text=ui.ICON["search"], bg=ui.CARD,
-                 fg=ui.FAINT, font=(ui.ICONS, 10)).place(x=0, y=2)
-        entry = tk.Entry(search.body, bg=ui.CARD, fg=ui.FG, bd=0,
-                         highlightthickness=0, font=(ui.UI, 10),
-                         insertbackground=ui.ACCENT)
-        entry.place(x=26, y=0, width=SAID_W - 90, height=FIELD_H - 22)
-        entry.insert(0, self._query)
-        entry.bind("<KeyRelease>", lambda _e: self._search_soon(entry.get()))
-        p["search"] = entry
-        p["placeholder"] = tk.Label(search.body,
-                                    text="Search everything you have said…",
-                                    bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9))
-        if not self._query:
-            p["placeholder"].place(x=26, y=0)
-        entry.bind("<FocusIn>", lambda _e: p["placeholder"].place_forget())
-
-        chips = tk.Frame(self.sheet, bg=ui.BG)
-        chips.place(x=PAD, y=118)
-        p["chips"] = {}
-        for name, kind in history.FILTERS:
-            chip = ui.Chip(chips, name, lambda k=kind: self._filter_to(k),
-                           active=(kind == self._filter), bg=ui.BG)
-            chip.pack(side="left", padx=(0, 6))
-            p["chips"][kind] = chip
-
-        p["list"] = ui.Scroller(self.sheet, SAID_W + 10, 442, bg=ui.BG)
-        p["list"].place(x=PAD, y=160)
-        p["empty"] = tk.Label(self.sheet, text="", bg=ui.BG, fg=ui.FAINT,
-                              font=(ui.UI, 10))
-
-        tk.Label(self.sheet, text="Everything older is still in "
-                                 "transcripts.log, untouched.",
-                 bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8)).place(x=PAD, y=624)
-        wide = widgets.button_width("Open transcripts.log", icon=True)
-        ui.Button(self.sheet, "Open transcripts.log",
-                  lambda: launch.open_path(history.LOG), w=wide, h=30,
-                  quiet=True, bg=ui.BG,
-                  icon=ui.ICON["file"]).place(x=PAD + SAID_W - wide, y=616)
-
-        self._vocab_panel()
-        self._fill_history()
-
-    def _vocab_panel(self) -> None:
+    def _vocab_panel(self, parent=None) -> None:
         """What saying things has taught it: the count, the last pairs it
         learned, and the key that teaches it one on purpose.
 
@@ -2146,11 +2197,13 @@ class Dashboard:
         words are Hebrew, which pair_pill already knows how to do.
         """
         p = self.parts
-        x = PAD + SAID_W + 20
         width = CW - SAID_W - 20
-        card = ui.Card(self.sheet, width, 508, fill=ui.CARD, bg=ui.BG,
-                       pad=16)
-        card.place(x=x, y=64)
+        card = ui.Card(parent if parent is not None else self.sheet,
+                       width, 508, fill=ui.CARD, bg=ui.BG, pad=16)
+        if parent is not None:
+            card.pack(anchor="n")
+        else:
+            card.place(x=PAD + SAID_W + 20, y=64)
         body, inner = card.body, width - 32
         tk.Label(body, text="V O C A B U L A R Y", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.MEDIUM, 8)).place(x=0, y=0)
@@ -2278,13 +2331,12 @@ class Dashboard:
         scroller = self.parts["list"]
         scroller.clear()
         shown = history.filtered(self.log, self._filter, self._query)
-        self.parts["empty"].place_forget()
+        self.parts["empty"].pack_forget()
         if not shown:
             self.parts["empty"].config(
                 text="Nothing here yet." if not self.log
                 else "Nothing matches that.")
-            self.parts["empty"].place(x=PAD + SAID_W / 2, y=320,
-                                      anchor="center")
+            self.parts["empty"].pack(anchor="w", padx=8, pady=(24, 24))
         self._rows_left = list(shown)
         self._draw_rows(8)
         scroller.to_top()
@@ -2566,7 +2618,7 @@ class Dashboard:
         launch.open_path(APP_DIR / name)
 
     def _waiting_all(self) -> None:
-        """The whole backlog, on the Waiting place: every report, every
+        """The whole backlog, on the Home place: every report, every
         question the routine asked, every branch it left behind.
 
         The pile on the home says WHAT is waiting in one line each; this
@@ -2593,21 +2645,22 @@ class Dashboard:
         button that publishes it.
         """
         # This view REPLACES the home on the same place, so it clears the
-        # sheet itself rather than going through _show — the four places
+        # sheet itself rather than going through _show — the three places
         # are what the top bar selects, and a sub-view is not a place.
         self._stop_rows()
         for child in self.sheet.winfo_children():
             child.destroy()
         self.parts = {k: self.parts[k] for k in
-                      ("hint", "lamp", "state", "uptime", "chip", "run")
+                      ("hint", "lamp", "state", "uptime", "chip", "run",
+                 "bar_screens")
                       if k in self.parts}
         self._waiting_view = "all"
-        self._title("Waiting")
+        self._title("Home", "the whole list")
         p = self.parts
         back = tk.Label(self.sheet, text="←  the calm list", bg=ui.BG,
                         fg=ui.ACCENT_TEXT, font=(ui.UI, 10), cursor="hand2")
         back.place(x=PAD + CW, y=26, anchor="ne")
-        back.bind("<Button-1>", lambda _e: self._show("Waiting"))
+        back.bind("<Button-1>", lambda _e: self._show("Home"))
         p["problems_head"] = tk.Label(self.sheet, text="", bg=ui.BG,
                                       fg=ui.DIM, font=(ui.UI, 10))
         p["problems_head"].place(x=PAD, y=66)
@@ -4765,8 +4818,8 @@ class Dashboard:
         did; the rows are still here, under the board, three to a line,
         and they are what the tests walk.
         """
-        self._title("Keys", "click a key on the board, then press the one "
-                            "you want")
+        self._title("Keys", "press a key, or click one on the board, to see "
+                            "what it does — then change it")
         p = self.parts
         p["caps"] = {}
         self._cap_selected = None
@@ -4794,6 +4847,12 @@ class Dashboard:
         p["rebind_body"] = panel.body
         p["rebind_w"] = panel_w - 32
         self._paint_rebind()
+        # A REAL KEY PRESS answers the question the board asks. Bound on
+        # the window rather than the board: the press lands wherever
+        # the focus is, and it propagates up to the toplevel from any
+        # widget. _key_pressed checks the place is still Keys, so the
+        # binding can outlive the screen without doing anything.
+        self.root.bind("<KeyPress>", self._key_pressed)
 
         # THE ROWS ARE STILL HERE, and they are not a fallback. A cap is
         # 43 px of picture with a one-word caption on it; the row says the
@@ -4884,6 +4943,28 @@ class Dashboard:
                     x=cap.winfo_reqwidth() + 12, y=22)
         scroller.bind_wheel(grid)
 
+    def _key_pressed(self, event) -> None:
+        """A key pressed for real while the Keys place is up: the cap
+        under the finger lights and the panel says what it does, or
+        that the app never takes it. The owner, 2026-09-07: "if I press
+        R, for example, it would tell me what it does."
+
+        Not while the key dialog is listening — that press belongs to
+        the dialog, and changing the selection under it would rebind
+        the wrong key — and never on another place, where a key press
+        is typing."""
+        if self.screen != "Keys" or getattr(self, "_capturing", None):
+            return
+        if self.parts.get("board") is None:
+            return
+        try:
+            vk = int(getattr(event, "keycode", 0) or 0)
+        except (TypeError, ValueError):
+            return
+        cap = keyboard_mod.cap_for_vk(vk)
+        if cap is not None:
+            self._cap_clicked(cap)
+
     def _cap_clicked(self, cap_id: str | None) -> None:
         """A cap on the board. Which binding is that, and can it be
         changed here?
@@ -4938,16 +5019,18 @@ class Dashboard:
         if cap_id is None:
             tk.Label(body, bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 10),
                      wraplength=width, justify="left",
-                     text="Click a key on the board to see what it does — "
-                          "and to change it.").pack(anchor="w", pady=(14, 0))
+                     text="Press a key, or click one on the board, to see "
+                          "what it does — and to change it."
+                     ).pack(anchor="w", pady=(14, 0))
         elif not on_it:
             tk.Label(body, text=cap_id.upper(), bg=ui.CARD, fg=ui.FG,
                      font=(ui.DISPLAY, 15, "bold")).pack(anchor="w",
                                                          pady=(12, 0))
             tk.Label(body, bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9),
                      wraplength=width, justify="left",
-                     text="The app never sees this one. Pick a binding "
-                          "below and press this key when it asks."
+                     text=f"{cap_id.upper()} is yours — the app never "
+                          "takes it. Pick a binding below and press "
+                          "this key when it asks."
                      ).pack(anchor="w", pady=(6, 0))
         else:
             for field, raw in on_it:
@@ -5020,19 +5103,22 @@ class Dashboard:
     # ----------------------------------------------------------- settings
 
     def _screen_settings(self) -> None:
-        """Every line of config.toml, drawn from the file itself — behind
-        tabs that say the common ones plainly.
+        """Every line of config.toml, drawn from the file itself, on
+        tabs a person can find things on.
 
         Nothing here is typed by hand except the words: settings.py reads
-        the file, and settings.TABS says which lines get a plain label, a
-        short sentence and a menu with names on it. Everything else is on
-        the last tab, "Everything", with the comment from the file as its
-        help, and the magnifier searches all of it. A test holds this
-        screen and the Keys screen to covering the file between them, so
-        a setting cannot drop off — it can only be said plainly or said
-        in full. That is the owner's rule from both directions: "show all
-        of them" the first time, "I do not need to know all of this" the
-        second.
+        the file, settings.TABS says which lines get a plain label, a
+        short sentence and a menu with names on it, and TAB_SECTIONS
+        says which tab draws the rest of each section — with the plain
+        words of settings.WORDS as title and help, never the file's own
+        names. General is the dozen things he actually changes; The app
+        holds the blocks that used to be screens. A test holds the tabs
+        and the Keys screen to drawing every line of the file exactly
+        once, so a setting cannot drop off and cannot be said twice.
+        That is the owner's rule from both directions: "show all of
+        them" (2026-09-01), then "normal settings, no need to be clever
+        — if there is Everything, it is already somewhere else"
+        (2026-09-07).
 
         Writes go through config.set_values, the line editor that keeps
         the comments, and through the running app when there is one, so
@@ -5114,8 +5200,7 @@ class Dashboard:
             entry.focus_set()
             return
         p["settings_tabs"] = {}
-        names = [DESK] + [tab.name for tab in settings_mod.TABS]
-        names.append(settings_mod.EVERYTHING)
+        names = settings_mod.tab_names(p["sections"], _keys_screen_paths())
         for name in names:
             chip = ui.Chip(bar, name, lambda n=name: self._settings_go(n),
                            active=(name == self._settings_tab), bg=ui.BG)
@@ -5174,38 +5259,31 @@ class Dashboard:
         sections = p["sections"]
         elsewhere = _keys_screen_paths()
         builders: list = []
-        if self._settings_tab == DESK and not self._settings_searching:
-            self._settings_left = []
-            self._fill_desk(scroller)
-            self._draw_settings()
-            scroller.to_top()
-            return
-        everything = self._settings_tab == settings_mod.EVERYTHING
-        if self._settings_searching or everything:
-            query = self._settings_query if self._settings_searching else ""
-            drawn: list = []
+        if self._settings_searching:
+            query = self._settings_query
             for section in sections:
                 rows = [s for s in section.settings
                         if s.path not in elsewhere
                         and settings_mod.matches(s, query)]
                 if not rows:
                     continue
-                keys_here = [s for s in section.settings
-                             if s.path in elsewhere]
-                note = ("" if not keys_here or query else
-                        f" {len(keys_here)} of its lines are keys — those "
-                        "are on the Keys screen.")
-                drawn.append(lambda s=section, r=rows, n=note:
-                             self._settings_card(scroller, s, r, n))
-            if drawn:
-                builders.append(lambda: self._raw_switch_card(scroller))
-                builders.extend(drawn)
-            if everything and not self._settings_searching:
-                builders.append(lambda: self._files_card(scroller))
+                title = settings_mod.section_words(
+                    section.name, section.help).label.upper()
+                pairs = [(settings_mod.words_for(s), s) for s in rows]
+                builders.append(lambda t=title, pr=pairs:
+                                self._friendly_card(scroller, t, pr))
         else:
-            tab = (settings_mod.tab_named(self._settings_tab)
-                   or settings_mod.TABS[0])
-            for group in tab.groups:
+            name = self._settings_tab
+            # The blocks that used to be screens sit above the rows of
+            # the tab they belong to: the phone's link on Phone; awake,
+            # the version, the sounds and the files on The app.
+            if name == settings_mod.APP:
+                builders.append(lambda: self._awake_block(scroller))
+                builders.append(lambda: self._app_block(scroller))
+                builders.append(lambda: self._files_card(scroller))
+            elif name == "Phone":
+                builders.append(lambda: self._phone_block(scroller))
+            for group in settings_mod.groups_for(name, sections, elsewhere):
                 pairs = [(row, s) for row in group.rows
                          if (s := settings_mod.find(sections, row.path))
                          is not None]
@@ -5293,132 +5371,6 @@ class Dashboard:
             y += height
         scroller.bind_wheel(card)
 
-    def _row_help(self, setting, lines: int = 3) -> tuple[str, int]:
-        """The file's own comment, wrapped to the room a dense row has."""
-        text = setting.help.replace("\n", " ")
-        if not text:
-            return "", 0
-        return ui.clamp(text, ui.UI, 8, CW - 36 - CONTROL_W - 12, lines)
-
-    def _plain_help(self, text: str, lines: int = 2) -> tuple[str, int]:
-        """The one sentence the words give a line, wrapped the same way."""
-        if not text:
-            return "", 0
-        return ui.clamp(text.replace("\n", " "), ui.UI, 8,
-                        CW - 36 - CONTROL_W - 12, lines)
-
-    def _raw_name(self, setting) -> str:
-        """`[section] key` — what the file calls this line. Only ever
-        drawn with the switch on."""
-        return (f"[{setting.section}] {setting.key}" if setting.section
-                else setting.key)
-
-    def _dense_row(self, setting) -> tuple[str, int, str, int, int]:
-        """One dense row, measured before it is drawn: the plain
-        sentence, the file's own name and comment (only with the switch
-        on), and the height the whole row needs.
-
-        LINE is what a line of the small face really occupies —
-        Rubik 8 pt has a linespace of 17 and Rubik 10 pt of 20, measured
-        on the hidden desktop 2026-09-07. The rows around this one were
-        drawn for a 15 px line and got away with it on their tail
-        padding; a row with two blocks of text under it does not, and
-        the first draft ran the file's comment into the next title."""
-        plain, plain_lines = self._plain_help(
-            settings_mod.words_for(setting).help)
-        raw, raw_lines = ("", 0)
-        height = TITLE_H + plain_lines * LINE + 8
-        if self._settings_raw:
-            raw, raw_lines = self._row_help(setting)
-            height += 5 + LINE + raw_lines * LINE
-        return plain, plain_lines, raw, raw_lines, height
-
-    def _raw_switch_card(self, scroller) -> None:
-        """The one switch on this screen that is not a setting.
-
-        The owner, 2026-09-07, reading these rows: "it is impossible to
-        understand what each setting is — there are underscores that mean
-        nothing and lots of unclear words." Those were config.toml's own
-        names and comments, which are written for whoever maintains the
-        app. They are still here — the measurements in them are the
-        reason half these numbers are what they are — but behind this,
-        and off to start with."""
-        card = self._new_card(scroller, 68)
-        card.create_text(18, 16, text="Show the file's own words",
-                         anchor="nw", fill=ui.FG, font=(ui.UI, 10))
-        card.create_text(18, 37, text="The name each setting has in the "
-                                      "settings file, and the note the "
-                                      "file keeps beside it.",
-                         anchor="nw", fill=ui.FAINT, font=(ui.UI, 8))
-        switch = ui.Switch(card, self._settings_raw,
-                           command=self._settings_raw_set, bg=ui.CARD)
-        card.create_window(CW - 18, 17, window=switch, anchor="ne")
-        self.parts["settings_raw"] = switch
-        scroller.bind_wheel(card)
-
-    def _settings_raw_set(self, value: bool) -> None:
-        """Redrawing the view destroys the switch that asked for it, so
-        the refill waits for the click to finish."""
-        self._settings_raw = bool(value)
-        self.root.after_idle(self._fill_settings)
-
-    def _settings_card(self, scroller, section, rows, note: str = "") -> None:
-        """A section of the file in plain words: what it is for, then one
-        row per line with a title, a sentence and its control.
-
-        With the switch on, the file's own name for the line and the
-        file's own comment come back underneath each row — the same text
-        this card used to lead with, in the place it belongs."""
-        words = settings_mod.section_words(section.name, section.help)
-        shown, lines = ("", 0)
-        blurb = (words.help + note).strip()
-        if blurb:
-            shown, lines = ui.clamp(blurb.replace("\n", " "), ui.UI, 8,
-                                    CW - 36, 3)
-        raw_head, raw_head_lines = ("", 0)
-        if self._settings_raw and section.help:
-            raw_head, raw_head_lines = ui.clamp(
-                f"[{section.title}] · " + section.help.replace("\n", " "),
-                ui.UI, 8, CW - 36, 4)
-        measured = [self._dense_row(s) for s in rows]
-        head = 18 + LINE + (lines * LINE + 8 if lines else 0) \
-            + (raw_head_lines * LINE + 8 if raw_head_lines else 0)
-        card = self._new_card(scroller,
-                              head + sum(m[-1] for m in measured) + 8)
-        y = 18
-        card.create_text(18, y, text=words.label.upper(), anchor="nw",
-                         fill=ui.FAINT, font=(ui.UI, 8))
-        y += LINE
-        if lines:
-            card.create_text(18, y, text=shown, anchor="nw", fill=ui.DIM,
-                             font=(ui.UI, 8))
-            y += lines * LINE + 8
-        if raw_head_lines:
-            card.create_text(18, y, text=raw_head, anchor="nw", fill=ui.FAINT,
-                             font=(ui.UI, 8))
-            y += raw_head_lines * LINE + 8
-        for setting, (plain, plain_lines, raw, raw_lines, height) in \
-                zip(rows, measured):
-            row = settings_mod.words_for(setting)
-            card.create_text(18, y, text=row.label, anchor="nw", fill=ui.FG,
-                             font=(ui.UI, 10))
-            under = y + TITLE_H - 1
-            if plain_lines:
-                card.create_text(18, under, text=plain, anchor="nw",
-                                 fill=ui.FAINT, font=(ui.UI, 8))
-                under += plain_lines * LINE
-            if self._settings_raw:
-                under += 5
-                card.create_text(18, under, text=self._raw_name(setting),
-                                 anchor="nw", fill=ui.DIM, font=(ui.UI, 8))
-                under += LINE
-                if raw_lines:
-                    card.create_text(18, under, text=raw, anchor="nw",
-                                     fill=ui.FAINT, font=(ui.UI, 8))
-            self._control(card, y, setting, self._menu_for(row, setting))
-            y += height
-        scroller.bind_wheel(card)
-
     def _microphones(self) -> list:
         """(what the file writes, a name) for every input device, the way
         the first-run setup lists them. Asked once per visit.
@@ -5489,6 +5441,13 @@ class Dashboard:
             card.create_window(right, y - 2, window=button, anchor="ne")
             self._register_row(setting, "file", button)
         elif options:
+            # A name wider than the menu is CUT, with an ellipsis, rather
+            # than cut silently at the menu's edge: a Windows device name
+            # is 390 px and the box is not (measured 2026-09-07).
+            pt = getattr(ui, "PT_BODY", 12)
+            options = [(v, widgets.fit(str(n), ui.UI, pt,
+                                       CONTROL_W - DROP_ROOM))
+                       for v, n in options]
             menu = ui.Dropdown(card, options, value,
                                command=lambda v, s=setting:
                                self._apply_setting(s, v),
@@ -5553,144 +5512,6 @@ class Dashboard:
             row += 44
         scroller.bind_wheel(files)
 
-    # -- the desk: forty lines said as sentences, and three blocks that
-    #    used to be screens
-
-    def _fill_desk(self, scroller) -> None:
-        """The first tab: the settings that have words, and the three
-        screens that were really settings all along.
-
-        Awake, Version and Phone were three of the nine rail rows. None
-        of them is a place you go; each is a thing you check and
-        occasionally flip, which is what a settings block is. They are
-        here, under the sentences, in the order he would reach for them.
-        """
-        for eyebrow, sentences in prose_mod.BLOCKS:
-            self._settings_left.append(
-                lambda e=eyebrow, s=sentences:
-                self._prose_card(scroller, e, s))
-        self._settings_left.append(lambda: self._awake_block(scroller))
-        self._settings_left.append(lambda: self._phone_block(scroller))
-        self._settings_left.append(lambda: self._app_block(scroller))
-
-    def _prose_card(self, scroller, eyebrow: str, sentences) -> None:
-        """One paragraph, flowed onto a Canvas.
-
-        The height cannot be known before the words are placed — that is
-        the one thing `tk.Text` did better — so the canvas is built tall,
-        filled, and then cut down to what was used.
-        """
-        width = CW - 44
-        card = tk.Canvas(scroller.inner, width=CW, height=400, bg=ui.BG,
-                         highlightthickness=0, bd=0)
-        card.pack(anchor="w", pady=(0, 14))
-        holder = tk.Canvas(card, width=width, height=400, bg=ui.CARD,
-                           highlightthickness=0, bd=0)
-        used = prose_mod.flow_block(holder, width, eyebrow, sentences,
-                                    bg=ui.CARD, make=self._prose_control,
-                                    y=4)
-        height = used + 24
-        card.configure(height=height)
-        card.create_image(0, 0, anchor="nw",
-                          image=ui.rounded(CW, height, 14, ui.CARD, ui.BG,
-                                           ui.LINE))
-        holder.configure(height=height - 24)
-        card.create_window(22, 12, anchor="nw", window=holder)
-        scroller.bind_wheel(card)
-        scroller.bind_wheel(holder)
-
-    def _prose_control(self, bit):
-        """The control for one `prose.Bit`, wired to the same writer the
-        dense rows use.
-
-        None when the path is not in this config.toml — an older file, a
-        branch without the section — and the sentence then says its words
-        and quietly leaves the control out rather than refusing to draw.
-        """
-        p = self.parts
-        setting = settings_mod.find(p["sections"], bit.path)
-        if setting is None:
-            return None
-        value = p["values"].setdefault(setting.path, setting.value)
-        if setting.kind == "bool":
-            holder = tk.Frame(self.sheet, bg=ui.CARD)
-            switch = ui.Switch(holder, bool(value),
-                               command=lambda v, s=setting:
-                               self._apply_setting(s, v), bg=ui.CARD)
-            switch.pack(side="left")
-            # padx/bd/highlight all zeroed: a Label's own few pixels of
-            # padding land BETWEEN the word and the comma that follows
-            # it in the sentence ("yes , paste with"), and a sentence
-            # cannot have a space before its comma.
-            word = tk.Label(holder, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 11),
-                            text=self._bit_word(bit, bool(value)),
-                            padx=0, pady=0, bd=0, highlightthickness=0)
-            word.pack(side="left", padx=(7, 0))
-            self._register_row(setting, "switch", switch)
-            return holder
-        names = list(bit.names or ())
-        if not names and setting.choices:
-            names = [(c, c) for c in setting.choices]
-        if names and setting.kind == "str":
-            if not any(v == setting.value for v, _n in names):
-                names = [(setting.value, str(setting.value))] + names
-            # MEASURED IN THE FONT THE MENU DRAWS IN, and with the room
-            # the menu itself keeps. ui.Dropdown writes its label at
-            # ui.PT_BODY and clamps it to w - 40; this used to size the
-            # box from an 11 pt measurement and then clamp at w - 34, so
-            # every label was cut twice at two different widths — which
-            # is how "balanced" reached the screen as "balance", with no
-            # mark to say a letter was missing.
-            pt = getattr(ui, "PT_BODY", 12)
-            widest = max(ui.text_width(str(n), ui.UI, pt) for _v, n in names)
-            width = min(bit.width or 300, max(78, widest + DROP_ROOM))
-            # The label is CUT to the box rather than the box grown to
-            # the label: [audio] device is a Windows device name and the
-            # sentence would be one control wide.
-            names = [(v, widgets.fit(str(n), ui.UI, pt, width - DROP_ROOM))
-                     for v, n in names]
-            menu = ui.Dropdown(self.sheet, names, value,
-                               command=lambda v, s=setting:
-                               self._apply_setting(s, v),
-                               bg=ui.CARD, w=width, h=28)
-            self._register_row(setting, "dropdown", menu)
-            return menu
-        # A number, or free text: the same little field the dense rows
-        # use, sized to what is in it rather than to a column.
-        #
-        # SIZED IN PIXELS, not in characters. `width=` is a count of
-        # average characters and a Windows device name is not average:
-        # "Headset Microphone (Arctis 7 Chat), Windows WASAPI" needs
-        # 390 px and was given a 264 px box, so it was cut in the middle
-        # of a letter with nothing to say so (measured 2026-09-07). The
-        # Entry goes in a holder of the exact width instead, and when the
-        # value does not fit the field it is SHOWN cut, with an ellipsis
-        # — and the whole of it comes back the moment the caret lands in
-        # it, which is the only moment the whole of it is any use.
-        shown = _shown(value)
-        room = min(bit.width or PROSE_FIELD_MAX, PROSE_FIELD_MAX)
-        box = max(44, min(ui.text_width(shown, ui.UI, 11) + 20, room))
-        holder = tk.Frame(self.sheet, bg=ui.CARD, width=box, height=28)
-        holder.pack_propagate(False)
-        entry = tk.Entry(holder, bg=ui.BG, fg=ui.FG, bd=0,
-                         highlightthickness=1, highlightbackground=ui.LINE,
-                         highlightcolor=ui.ACCENT,
-                         insertbackground=ui.ACCENT, font=(ui.UI, 11),
-                         justify="center")
-        entry.pack(fill="both", expand=True)
-        entry.insert(0, shown)
-        entry._cut_to = box - 20 if ui.text_width(shown, ui.UI, 11) + 20 \
-            > box else 0
-        self._cut_field(entry)
-        entry.bind("<Return>", lambda _e, s=setting, w=entry:
-                   self._entry_done(s, w))
-        entry.bind("<FocusIn>", lambda _e, w=entry, s=setting:
-                   self._whole_field(w, s))
-        entry.bind("<FocusOut>", lambda _e, s=setting, w=entry:
-                   (self._entry_done(s, w), self._cut_field(w)))
-        self._register_row(setting, "entry", entry)
-        return holder
-
     @staticmethod
     def _cut_field(entry) -> None:
         """Show a too-long value cut, with an ellipsis. A no-op for every
@@ -5721,16 +5542,6 @@ class Dashboard:
                 entry.insert(0, whole)
         except tk.TclError:
             pass
-
-    @staticmethod
-    def _bit_word(bit, value: bool) -> str:
-        """The word beside a switch inside a sentence. `Bit.names` says
-        it when the sentence needs a verb ("add" / "leave out"); plain
-        yes and no when it does not."""
-        for want, word in (bit.names or ()):
-            if str(want).lower() == ("true" if value else "false"):
-                return word
-        return "yes" if value else "no"
 
     # -- the three blocks that used to be screens
 
@@ -6094,9 +5905,8 @@ class Dashboard:
 
     def _log_arrived(self, events: list[history.Event]) -> None:
         self.log = events
-        if self.screen == "Said":
+        if self.screen == "Home":
             self._fill_history()
-        elif self.screen == "Waiting":
             self._paint_rest()
 
     def _pump(self) -> None:
@@ -6508,8 +6318,8 @@ class Dashboard:
                                "Resume" if self.status.get("paused")
                                else "Pause")
 
-        {"Waiting": self._poll_waiting,
-         "Said": lambda: None,
+        self._paint_bar_screens()
+        {"Home": self._poll_waiting,
          "Keys": self._paint_keys,
          "Settings": self._paint_settings}[self.screen]()
 

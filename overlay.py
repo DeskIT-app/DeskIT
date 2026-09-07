@@ -125,6 +125,11 @@ class Splash:
         self._on_land = None          # set by finish(), fired once by land()
         self._land_lock = threading.Lock()
         self._landings_over = False   # the splash thread's last land() ran
+        # Where the status dot will be, so the release's last beat can
+        # land its light IN the dot rather than in the corner the dot
+        # used to occupy. main.py sets it from `[dot] corner` before
+        # start(); skin\boot.py reads it and nothing else does.
+        self.dot_corner = "bottom-right"
 
     @classmethod
     def off(cls) -> "Splash":
@@ -516,25 +521,61 @@ STATES = {
     "paused":     ("#6f6f6f", "#1e1e1e", False),
 }
 
+# Where the dot may sit: a corner of the primary monitor's WORK AREA.
+# Mirrors config.DOT_CORNERS and skin\dot.CORNERS; a test holds the three
+# together. Bottom-right is the default since 2026-09-07 — see StatusDot.
+DOT_CORNERS = ("bottom-right", "top-right")
+
+
+def _work_area():
+    """(x, y, w, h) of the primary monitor's work area — the taskbar
+    excluded — or None if Windows will not say. skin\\glass.work_area is
+    the same call; it is not imported because this module is the path
+    that runs with skin\\ deleted. A private WinDLL handle, like every
+    other ctypes use in this file."""
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        rect = ctypes.wintypes.RECT()
+        SPI_GETWORKAREA = 0x0030
+        if user32.SystemParametersInfoW(SPI_GETWORKAREA, 0,
+                                        ctypes.byref(rect), 0):
+            return (int(rect.left), int(rect.top),
+                    int(rect.right - rect.left), int(rect.bottom - rect.top))
+    except Exception:
+        _log.debug("could not read the work area", exc_info=True)
+    return None
+
 
 class StatusDot:
     """A small always-on-top dot: the app is running, and what it is doing.
 
-    Modelled on the screen-recording indicator, and click-through for the
-    same reason one would be: it sits in the top-right corner, which on
-    Windows is the close button of every maximised window. WS_EX_TRANSPARENT
-    means the click lands on the X underneath, as if the dot were painted
-    on the glass.
+    Modelled on the screen-recording indicator. It used to sit in the
+    top-right corner and be click-through for that reason: on Windows
+    that corner is the close button of every maximised window, and
+    WS_EX_TRANSPARENT let the click land on the X underneath. Since
+    2026-09-07 it sits in the BOTTOM-RIGHT corner of the primary work
+    area (`corner`, from `[dot] corner`; top-right is still allowed) and
+    THE DISC IS A BUTTON: `on_click` is called for a click on the disc
+    itself — main.py sets it to the shelf's toggle, the same thing
+    ctrl+alt+d does — and everything around the disc stays click-through.
+    On the glass path skin\\dot.py answers WM_NCHITTEST per pixel; on this
+    Tk fallback the chroma-keyed pixels are click-through of their own
+    accord (a keyed pixel never sees the mouse), so the canvas only has to
+    ignore a press outside the disc. `on_click` is None by default, and
+    with None the window is created exactly as it always was.
 
     Same thread rules as Splash: Tk only on the overlay thread, callers
-    only ever put strings on a queue.
+    only ever put strings on a queue. `on_click` fires ON the overlay
+    thread, so whatever it does may only read a flag and start a thread.
     """
 
     def __init__(self, size: int = 13, margin_x: int = 10,
-                 margin_y: int = 6) -> None:
+                 margin_y: int = 6, corner: str = "bottom-right") -> None:
         self._q: queue.Queue = queue.Queue()
         self._size = size
         self._margin = (margin_x, margin_y)
+        self.corner = corner if corner in DOT_CORNERS else "bottom-right"
+        self.on_click = None
         self._thread: threading.Thread | None = None
         self._alive = threading.Event()
         self._closing = threading.Event()
@@ -600,13 +641,46 @@ class StatusDot:
         dot = canvas.create_oval(pad, pad, pad + self._size, pad + self._size,
                                  width=0)
 
-        sw = root.winfo_screenwidth()
+        # A corner of the WORK AREA, so bottom-right is above the taskbar
+        # and not under it; the whole screen only if Windows will not say.
+        work = _work_area() or (0, 0, root.winfo_screenwidth(),
+                                root.winfo_screenheight())
+        wx, wy, ww, wh = work
         mx, my = self._margin
-        root.geometry(f"{box}x{box}+{sw - box - mx}+{my}")
+        at_x = wx + ww - box - mx
+        at_y = wy + my if self.corner == "top-right" else wy + wh - box - my
+        root.geometry(f"{box}x{box}+{at_x}+{at_y}")
         # Realise the window first: SetWindowLongW on an unrealised Tk
         # window silently does nothing and still reports success.
         root.update_idletasks()
-        _no_activate(root, click_through=True)
+        # Click-through as a whole ONLY when nobody wants the click. With
+        # an on_click the window keeps taking the mouse, the chroma-keyed
+        # pixels around the disc let it through by themselves, and the
+        # handler below refuses anything outside the disc plus 2 px — so
+        # the outer pixel of the ring is the one thing the fallback eats
+        # (the glass dot lets it through); noted, not fixed, because the
+        # fallback is the path with skin\ deleted.
+        on_click = self.on_click
+        _no_activate(root, click_through=on_click is None)
+        if on_click is not None:
+            centre = box / 2.0
+            reach = self._size / 2.0 + 2.0
+            last = [0.0]
+
+            def press(event) -> None:
+                if math.hypot(event.x - centre, event.y - centre) > reach:
+                    return
+                now = time.monotonic()
+                if now - last[0] < 0.3:     # a double-click is one click
+                    return
+                last[0] = now
+                try:
+                    on_click()
+                except Exception:
+                    _log.info("the dot's click could not open the shelf",
+                              exc_info=True)
+
+            canvas.bind("<Button-1>", press)
         # THE DOT USED TO EXCLUDE ITSELF FROM CAPTURE HERE. Removed
         # 2026-09-04 at the owner's request: he wants the screenshot key
         # to freeze the screen and photograph it AS IT IS, and a window
@@ -701,19 +775,27 @@ class HintCard:
     is stay out of the DRAG, and it does that by being hushed off the
     live screen after the freeze, not by being absent from the picture.
 
-    Click-through, like the dot, and for the identical hard-won reason:
-    `top-right` is the close button of every maximised window. The "don't
-    show this again" row is therefore drawn as a place to look, and turned
-    off in the dashboard — the card cannot take a click without also
-    taking the ones aimed at the X underneath it.
+    Click-through, like the dot's glow, and for the identical hard-won
+    reason: `top-right` is the close button of every maximised window.
+    The "don't show this again" row is therefore drawn as a place to
+    look, and turned off in the dashboard — the card cannot take a click
+    without also taking the ones aimed at the X underneath it.
+
+    `dot_corner` is where the status dot is (`[dot] corner`), which this
+    card never covers: in the dot's own corner it stops short of the
+    dot's square — beside it at the top, ABOVE it at the bottom. The
+    corner itself defaults to the dot's in config.py (`corner = "dot"`),
+    so both usually arrive here as the same word.
     """
 
-    def __init__(self, after_ms: int = 400, corner: str = "top-right",
+    def __init__(self, after_ms: int = 400, corner: str = "bottom-right",
                  margin: int = 14, x: int = HINT_UNSET, y: int = HINT_UNSET,
-                 scale: float = 1.0, on_change=None) -> None:
+                 scale: float = 1.0, on_change=None,
+                 dot_corner: str = "bottom-right") -> None:
         self._q: queue.Queue = queue.Queue()
         self._after = max(0, int(after_ms)) / 1000.0
         self._corner = corner
+        self._dot_corner = dot_corner
         self._margin = margin
         # Where the owner dragged it to and how big they made it. -1 means
         # never moved: `corner` decides. Written from the overlay thread
@@ -868,9 +950,13 @@ class HintCard:
         finally:
             self._alive.set()
 
-    # The status dot's corner, which this never takes. The dot is the one
+    # The status dot's square, which this never takes. The dot is the one
     # thing on screen that says the app is alive; it does not move for a
-    # panel that is only up while a key is held.
+    # panel that is only up while a key is held. In the dot's own corner
+    # the card stops short of it by this much: to the LEFT of a top-right
+    # dot (today's rule, unchanged), ABOVE a bottom-right one — the dot's
+    # window is 38 px plus a 4 px margin from the work area's edge, so 46
+    # plus the card's own margin leaves 18 px of daylight between them.
     DOT_ROOM = 46
 
     UNSET = HINT_UNSET
@@ -879,7 +965,8 @@ class HintCard:
         return self.x > self.UNSET and self.y > self.UNSET
 
     def origin(self, width: int, height: int, screen: tuple[int, int],
-               inset: int = 0, bounds: tuple[int, int, int, int] | None = None
+               inset: int = 0, bounds: tuple[int, int, int, int] | None = None,
+               work: tuple[int, int, int, int] | None = None
                ) -> tuple[int, int]:
         """Where the window's top-left goes.
 
@@ -888,6 +975,12 @@ class HintCard:
         Tk card (which does not) put the VISIBLE edge in the same place.
 
         `screen` is the PRIMARY monitor, which is where the corners are.
+        `work` is that monitor's WORK AREA, (x, y, w, h) with the taskbar
+        taken out; given, the corners are its corners, so a bottom-*
+        card sits above the taskbar rather than under it — which is
+        where the status dot now lives, and the card is placed against
+        the dot. None means the whole screen, which is what every test
+        written before the work area was passed still gets.
         `bounds` is the whole virtual desktop — every monitor — and it is
         what a saved position is clamped against, because clamping to the
         primary would walk a card off a second screen and back onto this
@@ -911,15 +1004,22 @@ class HintCard:
             x = max(vx + keep - card_w, min(self.x, vx + vw - keep))
             y = max(vy + keep - card_h, min(self.y, vy + vh - keep))
             return int(x - inset), int(y - inset)
-        # Beside the dot, not under it: on the right-hand corners the card
-        # stops short of the dot's own square by DOT_ROOM.
-        room = self.DOT_ROOM if self._corner == "top-right" else 0
+        wx, wy, ww, wh = work if work else (0, 0, sw, sh)
+        # Beside the dot, not under it: in the dot's own corner the card
+        # stops short of the dot's square by DOT_ROOM — sideways when the
+        # dot is at the top, upwards when it is at the bottom.
+        room_x = room_y = 0
+        if self._corner == self._dot_corner:
+            if self._corner == "top-right":
+                room_x = self.DOT_ROOM
+            elif self._corner == "bottom-right":
+                room_y = self.DOT_ROOM
         if self._corner.endswith("left"):
-            x = m - inset
+            x = wx + m - inset
         else:
-            x = sw - m - room - width + inset
-        y = (m - inset if self._corner.startswith("top")
-             else sh - m - height + inset)
+            x = wx + ww - m - room_x - width + inset
+        y = (wy + m - inset if self._corner.startswith("top")
+             else wy + wh - m - room_y - height + inset)
         return int(x), int(y)
 
     def _build_and_loop(self) -> None:
@@ -953,7 +1053,8 @@ class HintCard:
             w, h = _hint_paint(canvas, card, self.scale)
             canvas.configure(width=w, height=h)
             x, y = self.origin(w, h, (root.winfo_screenwidth(),
-                                      root.winfo_screenheight()))
+                                      root.winfo_screenheight()),
+                               work=_work_area())
             root.geometry(f"{w}x{h}+{x}+{y}")
             root.deiconify()
             root.update_idletasks()

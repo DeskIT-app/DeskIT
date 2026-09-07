@@ -174,7 +174,7 @@ def run(shelf) -> None:
     """
     import overlay
 
-    from .glass import Glass, primary_screen, virtual_screen
+    from .glass import Glass, primary_screen, virtual_screen, work_area
 
     glass = None
     shown = None                   # the card dict on screen, or None
@@ -218,12 +218,14 @@ def run(shelf) -> None:
     def on_hit(x, y):
         """Every pixel of the window, in window coordinates.
 
-        HTCLIENT for a button or an answer, HTCAPTION for the head strip
-        (so Windows itself does the drag) and HTTRANSPARENT for everything
-        else INCLUDING THE SHADOW MARGIN — which is what keeps a click
-        aimed at the close button of a maximised window underneath landing
-        on that close button. This panel opens in the top-right corner,
-        where that button is, so it is not a hypothetical.
+        HTCLIENT for a button or an answer (the X on the head band is
+        one), HTCAPTION for the head strip (so Windows itself does the
+        drag) and HTTRANSPARENT for everything else INCLUDING THE SHADOW
+        MARGIN — which is what keeps a click aimed at whatever is
+        underneath landing there. This panel opened in the top-right
+        corner until 2026-09-07, where the close button of every
+        maximised window is, so it was never a hypothetical; it opens
+        above the dot in the bottom-right now and the rule is kept.
 
         It doubles as the hover tracker: WM_NCHITTEST arrives on every
         mouse move over the window, and leaving the panel always crosses
@@ -311,8 +313,10 @@ def run(shelf) -> None:
         if glass is None:
             # primary for the corner, the whole desktop for a saved
             # position: a panel left on a second screen belongs there.
+            # The work area so that "beside the dot" is measured from the
+            # edge the dot is measured from — above the taskbar.
             x, y = shelf.origin(win_w, win_h, primary_screen(), SHADOW,
-                                virtual_screen())
+                                virtual_screen(), work_area())
             frost = _frost(x, y, win_w, win_h)
             glass = Glass(x, y, win_w, win_h, hit=on_hit, moved=on_move,
                           clicked=on_click)

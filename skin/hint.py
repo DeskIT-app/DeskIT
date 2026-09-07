@@ -44,8 +44,8 @@ import logging
 import queue
 import time
 
-from .glass import (Glass, primary_screen, virtual_screen, HTTRANSPARENT,
-                    HTCLIENT, HTCAPTION)
+from .glass import (Glass, primary_screen, virtual_screen, work_area,
+                    HTTRANSPARENT, HTCLIENT, HTCAPTION)
 from .palette import (BG, CARD, LINE, FG, KEY_BG, KEY_EDGE, LINE_HI,
                       DOT_STATES, argb, rgb)
 
@@ -391,8 +391,10 @@ def run(hint_card) -> None:
         win_w, win_h = width + SHADOW * 2, height + SHADOW * 2
         # primary for the corners, the whole desktop for a saved position:
         # a card left on a second screen belongs on that second screen.
+        # The work area so a bottom corner is above the taskbar, where the
+        # status dot is, and the card lands beside it rather than on it.
         x, y = hint_card.origin(win_w, win_h, primary_screen(), SHADOW,
-                                virtual_screen())
+                                virtual_screen(), work_area())
         if glass is not None and (glass.width, glass.height) != (win_w, win_h):
             take_down()
         if glass is None:

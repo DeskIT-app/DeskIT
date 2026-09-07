@@ -3107,13 +3107,25 @@ def test_the_overlays_never_call_mainloop_or_quit() -> None:
             f"at it first. Use _pump_until() and a per-overlay Event.")
 
 
-def test_status_dot_is_click_through_and_shuts_down_cleanly() -> None:
-    """It sits in the top-right corner, which is the close button of every
-    maximised window — without WS_EX_TRANSPARENT it would eat that click.
-    Also guards the same Tcl teardown bug as the splash."""
+def test_status_dot_takes_a_click_on_its_disc_and_nowhere_else() -> None:
+    """The dot used to be click-through as a whole (WS_EX_TRANSPARENT),
+    because it sat on the close button of every maximised window. Since
+    2026-09-07 it sits in the bottom-right of the work area and THE DISC
+    IS A BUTTON: the window carries no WS_EX_TRANSPARENT, WM_NCHITTEST
+    answers HTCLIENT on the disc and HTTRANSPARENT everywhere else — the
+    glow, the ring, the corners — and a click on the disc fires
+    `on_click`, which main.py points at the shelf's toggle. Asked of the
+    REAL window with SendMessage, so this is the probe for skin\\glass's
+    hit plumbing as well. Also guards the same Tcl teardown bug as the
+    splash, and the position: bottom-right of the WORK AREA, above the
+    taskbar, the dot's own 8 x 4 px margins."""
     import subprocess
     import overlay as overlay_mod
     assert overlay_mod.WS_EX_TRANSPARENT == 0x20
+    assert overlay_mod.DOT_CORNERS == ("bottom-right", "top-right")
+    assert overlay_mod.StatusDot().corner == "bottom-right"
+    assert overlay_mod.StatusDot().on_click is None, \
+        "a dot nobody wired up must stay the old click-through layer"
     for name, (fill, ring, _) in overlay_mod.STATES.items():
         assert fill.startswith("#") and len(fill) == 7, (name, fill)
         assert ring.startswith("#") and len(ring) == 7, (name, ring)
@@ -3123,9 +3135,14 @@ def test_status_dot_is_click_through_and_shuts_down_cleanly() -> None:
     # the window was realised) left a process that exited 0 with either no
     # dot at all or a dot that ate clicks on the close button.
     script = r"""
-import ctypes, time, overlay
-d = overlay.StatusDot(); d.start(); time.sleep(1.0)
+import ctypes, ctypes.wintypes as w, time, overlay
+clicks = []
+d = overlay.StatusDot(); d.on_click = lambda: clicks.append(1)
+d.start(); time.sleep(1.0)
 u = ctypes.WinDLL('user32')
+u.SendMessageW.restype = ctypes.c_longlong
+u.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t,
+                           ctypes.c_longlong]
 class R(ctypes.Structure):
     _fields_ = [('l',ctypes.c_int),('t',ctypes.c_int),
                 ('r',ctypes.c_int),('b',ctypes.c_int)]
@@ -3134,15 +3151,30 @@ def cb(h, l):
     if u.IsWindowVisible(h):
         rc = R(); u.GetWindowRect(h, ctypes.byref(rc))
         if 10 < rc.r-rc.l < 60 and 10 < rc.b-rc.t < 60:
-            hits.append((u.GetWindowLongW(h,-20) & 0xffffffff, rc.l, rc.r))
+            hits.append((h, u.GetWindowLongW(h,-20) & 0xffffffff,
+                         rc.l, rc.t, rc.r, rc.b))
     return True
 u.EnumWindows(ctypes.WINFUNCTYPE(
     ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(cb), None)
 assert hits, 'no dot window'
-ex, left, right = hits[0]
-assert ex & 0x20, 'not click-through: it would eat the close button'
+hwnd, ex, left, top, right, bottom = hits[0]
+assert not (ex & 0x20), 'click-through as a whole: the disc is a button'
 assert ex & 0x08000000, 'not no-activate: it would steal focus'
-assert right >= u.GetSystemMetrics(0) - 40, ('not in the top-right', right)
+work = w.RECT(); u.SystemParametersInfoW(0x0030, 0, ctypes.byref(work), 0)
+assert right == work.right - 8, ('not at the right margin', right, work.right)
+assert bottom == work.bottom - 4, ('not above the taskbar', bottom, work.bottom)
+def lp(x, y): return (int(y) & 0xFFFF) << 16 | (int(x) & 0xFFFF)
+cx, cy = (left + right) // 2, (top + bottom) // 2
+def hit(x, y): return u.SendMessageW(hwnd, 0x0084, 0, lp(x, y))
+assert hit(cx, cy) == 1, ('the disc is not a button', hit(cx, cy))
+assert hit(cx + 14, cy) == -1, ('the glow took the click', hit(cx + 14, cy))
+assert hit(left + 1, top + 1) == -1, 'the corner took the click'
+assert hit(right - 1, bottom - 1) == -1, 'the corner took the click'
+# WM_LBUTTONDOWN at the centre, client coordinates: the callback fires
+u.SendMessageW(hwnd, 0x0201, 1, lp(cx - left, cy - top)); time.sleep(.2)
+assert clicks == [1], ('a click on the disc did nothing', clicks)
+u.SendMessageW(hwnd, 0x0201, 1, lp(cx - left, cy - top)); time.sleep(.2)
+assert clicks == [1], ('a double-click toggled twice', clicks)
 for s in ('recording','locked','busy','ready'):
     d.set_state(s); time.sleep(.1)
 d.stop(); print('ok')
@@ -3153,6 +3185,87 @@ d.stop(); print('ok')
     assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
     assert "ok" in out.stdout, out.stdout
     assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
+
+
+def test_the_dot_is_a_button_only_on_its_disc() -> None:
+    """The arithmetic behind the probe above, checked without a window:
+    HTCLIENT inside the disc plus two pixels, HTTRANSPARENT at 14 px and
+    at the corners; and `place` puts the 38 px box in the bottom-right of
+    the WORK AREA it is given, with the same margins the top-right always
+    had. BOX stays 38 — two tests identify the dot by its size."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    from skin import dot as skin_dot
+    from skin.glass import HTCLIENT, HTTRANSPARENT
+
+    assert skin_dot.BOX == 38 and skin_dot.CORE == 10.0
+    assert skin_dot.HIT_R == skin_dot.CORE / 2 + 2
+    assert skin_dot.CORNERS == ("bottom-right", "top-right")
+    assert skin_dot.DEFAULT_CORNER == "bottom-right"
+    d = skin_dot.Dot()
+    c = skin_dot.BOX / 2
+    assert d.corner == "bottom-right"
+    assert d.hit(c, c) == HTCLIENT
+    assert d.hit(c + 7, c) == HTCLIENT and d.hit(c, c - 7) == HTCLIENT
+    assert d.hit(c + 8, c) == HTTRANSPARENT, "the ring is not a button"
+    assert d.hit(c + 14, c) == HTTRANSPARENT, "the glow is not a button"
+    for corner in ((0, 0), (0, 37), (37, 0), (37, 37)):
+        assert d.hit(*corner) == HTTRANSPARENT, corner
+    work = (0, 0, 2560, 1392)                 # this machine: a 48 px taskbar
+    assert skin_dot.place("bottom-right", work) == (2560 - 38 - 8,
+                                                    1392 - 38 - 4, 38, 38)
+    assert skin_dot.place("top-right", work) == (2560 - 38 - 8, 4, 38, 38)
+    # a work area that does not start at the origin is a monitor like
+    # any other
+    assert skin_dot.place("bottom-right", (-1920, 100, 1920, 1000)) == \
+        (-1920 + 1920 - 46, 100 + 1000 - 42, 38, 38)
+    assert skin_dot.Dot("sideways").corner == "bottom-right", \
+        "a corner the dot cannot sit in falls back rather than raises"
+
+
+def test_the_dot_glows_to_nothing_inside_its_own_window() -> None:
+    """THE DOT LOOKED LIKE A SQUARE. The halo was a radial gradient of
+    radius CORE * 2.6 = 26 px in a 38 px window, which left alpha 27 at
+    every edge midpoint (0 at the corners) — a faint tinted square on any
+    wallpaper or title bar. Measured 2026-09-07: 27/27/27/27 for every lit
+    state. Every glow and sweep now reaches alpha 0 strictly inside the
+    window, so this walks the WHOLE border of every state, after the
+    cross-fade has settled (14 frames), and asks for zero. The halo still
+    has to read: alpha > 8 at 14 px from the centre, as the paused test
+    already requires."""
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    try:
+        import skia
+        from skin import dot as skin_dot
+        from skin.palette import DOT_STATES
+    except Exception:
+        return
+    B = skin_dot.BOX
+    assert skin_dot.HALO_R <= B / 2 - 1, skin_dot.HALO_R
+    for state in DOT_STATES:
+        d = skin_dot.Dot()
+        d.set(state)                          # from "ready", cross-fading
+        surface = skia.Surface(B, B)
+        canvas = surface.getCanvas()
+        for frame in range(14):
+            d.draw(canvas, frame * 22.0)      # the sweep turns, the breath breathes
+        alpha = surface.makeImageSnapshot().toarray(
+            colorType=skia.kRGBA_8888_ColorType)[:, :, 3]
+        border = [int(alpha[0].max()), int(alpha[B - 1].max()),
+                  int(alpha[:, 0].max()), int(alpha[:, B - 1].max())]
+        assert border == [0, 0, 0, 0], (
+            f"the {state} dot paints its window's edge {border} — that is "
+            f"the square")
+        mid = B // 2
+        for x, y in ((0, mid), (B - 1, mid), (mid, 0), (mid, B - 1),
+                     (0, 0), (0, B - 1), (B - 1, 0), (B - 1, B - 1)):
+            assert alpha[y, x] == 0, (state, x, y, int(alpha[y, x]))
+        if state not in skin.palette.NO_HALO:
+            assert alpha[mid, mid + 14] > 8, (
+                f"the {state} halo no longer reads at 14 px")
 
 
 def test_status_dot_ignores_states_it_does_not_know() -> None:
@@ -3282,9 +3395,26 @@ def test_the_ready_cue_lands_with_the_light_and_not_before_it() -> None:
     reveal = reveal_mod.Reveal(1920, 1080, origin=(1600.0, 900.0), seed=7)
     assert boot_mod._land_ms(reveal) == reveal_mod.T_LAND[1] - 320
     assert boot_mod._land_ms(object()) == burst_mod.T_FLASH[0]
-    # ...and it is the status dot's own corner the light arrives at, which
-    # is what makes the cue land ON something. skin/dot.py: (pw-27, 23).
-    assert reveal.landing == (1920 - 27.0, 23.0), reveal.landing
+    # ...and it is the status dot's own centre the light arrives at, which
+    # is what makes the cue land ON something. boot._landing asks
+    # skin/dot.place, so the dot and the landing cannot drift apart:
+    # bottom-right of the WORK AREA (above the taskbar) since 2026-09-07,
+    # top-right when [dot] corner says so.
+    from skin import dot as skin_dot
+    box, work = (0, 0, 1920, 1080), (0, 0, 1920, 1040)
+    for corner in skin_dot.CORNERS:
+        x, y, w, h = skin_dot.place(corner, work)
+        assert boot_mod._landing(corner, box, work) == (x + w / 2, y + h / 2)
+    assert boot_mod._landing("bottom-right", box, work) == (1920 - 27.0,
+                                                            1040 - 23.0)
+    assert boot_mod._landing("top-right", box, work) == (1920 - 27.0, 23.0)
+    aimed = reveal_mod.Reveal(1920, 1080, origin=(1600.0, 900.0), seed=7,
+                              landing=boot_mod._landing("bottom-right", box,
+                                                        work))
+    assert aimed.landing == (1893.0, 1017.0), aimed.landing
+    # built bare (preview, record, the warm-up) it assumes the default
+    # corner and the whole layer
+    assert reveal.landing == (1920 - 27.0, 1080 - 23.0), reveal.landing
 
     # ONCE, AND NEVER LOST. Three separate backstops call land() — the
     # draw loop, boot.run's finally and Splash._run's — so it has to be
@@ -9166,8 +9296,8 @@ def test_no_button_draws_its_label_past_its_own_face() -> None:
             board._show(name)
             look(board, name, bad)
         board._show("Settings")
-        for tab in [t.name for t in settings_mod.TABS] + \
-                [settings_mod.EVERYTHING]:
+        for tab in settings_mod.tab_names(board.parts["sections"],
+                                          dash._keys_screen_paths()):
             board._settings_go(tab)
             board._finish_settings()
             look(board, tab, bad)
@@ -9211,7 +9341,7 @@ def test_a_second_window_in_one_process_can_still_draw() -> None:
     with _window() as again:
         if again is None:
             return
-        again._show("Said")
+        again._show("Home")
         assert again.pane.winfo_children()
 
 
@@ -9236,7 +9366,7 @@ def test_the_history_screen_filters_and_searches_what_it_was_given() -> None:
             board.root.update()
             return len(board.parts["list"].inner.winfo_children())
 
-        board._show("Said")
+        board._show("Home")
         assert rows() == 3, rows()
         board._filter_to("lookup")
         assert rows() == 1, rows()
@@ -9254,10 +9384,10 @@ def test_the_window_says_something_when_there_is_no_log_at_all() -> None:
     with _window([]) as board:
         if board is None:
             return
-        board._show("Said")
+        board._show("Home")
         board.root.update()
         assert board.parts["empty"].cget("text"),             "an empty history says nothing at all"
-        board._show("Waiting")
+        board._show("Home")
         board._paint_rest()
         assert "Nothing dictated yet" in board.parts["last_text"].cget("text")
 
@@ -10163,6 +10293,67 @@ def test_the_keyboard_lights_every_binding_on_the_cap_it_lives_on() -> None:
     # generated from vk_for rather than typed out.
     assert set(kb.offered()) == set("` - = [ ] \\ ; ' , . /".split()), \
         kb.offered()
+
+
+def test_a_real_key_press_on_the_keys_place_lights_its_cap() -> None:
+    """The owner, 2026-09-07: "if I press R, for example, it would tell
+    me what it does." A press reaches the window as a Tk keycode, which
+    on Windows is the virtual-key code; keyboard.cap_for_vk turns it
+    into the cap, and the panel says what lives there — or that the
+    app never takes it. Never while the dialog is listening for a new
+    binding, and never on another place."""
+    import types
+
+    import hotkey as hotkey_mod
+    import keyboard as keyboard_mod
+
+    assert keyboard_mod.cap_for_vk(hotkey_mod.vk_for("r")) == "r"
+    assert keyboard_mod.cap_for_vk(hotkey_mod.vk_for("f8")) == "f8"
+    assert keyboard_mod.cap_for_vk(0x11) == "ctrl", "unsided ctrl"
+    assert keyboard_mod.cap_for_vk(0) is None
+
+    def press(board, name: str):
+        board._key_pressed(types.SimpleNamespace(
+            keycode=hotkey_mod.vk_for(name)))
+
+    def said(board) -> str:
+        out = []
+        body = board.parts["rebind_body"]
+        stack = list(body.winfo_children())
+        while stack:
+            widget = stack.pop()
+            try:
+                out.append(str(widget.cget("text")))
+            except Exception:
+                pass
+            stack.extend(widget.winfo_children())
+        return "\n".join(out)
+
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Keys")
+        assert board._cap_selected is None
+        press(board, "q")
+        assert board._cap_selected == "q"
+        assert "Q is yours" in said(board), said(board)
+        # His own example: R carries ctrl+alt+r, the report key.
+        press(board, "r")
+        assert board._cap_selected == "r"
+        assert "Report a problem" in said(board), said(board)
+        press(board, "f8")
+        assert board._cap_selected == "f8"
+        assert "Translate" in said(board), said(board)
+        # The dialog's press is the dialog's.
+        board._capturing = "translate_hotkey"
+        press(board, "q")
+        assert board._cap_selected == "f8"
+        board._capturing = None
+        # On another place a key is typing, not a question.
+        board._show("Home")
+        board._key_pressed(types.SimpleNamespace(
+            keycode=hotkey_mod.vk_for("r")))
+        assert board.screen == "Home"
 
 
 def test_the_keys_screen_can_reach_every_key_it_lists() -> None:
@@ -14762,18 +14953,26 @@ def test_every_skin_window_is_click_through_and_never_focusable() -> None:
                  "WS_EX_TOPMOST"):
         assert flag in creation, f"a skin window is created without {flag}"
     # Click-through is still the DEFAULT and still unconditional for every
-    # window that does not ask for the mouse: the hint card is the only one
-    # that does, it takes it in four small rectangles, and everything else
-    # it is asked about answers HTTRANSPARENT (see the hit-test test).
+    # window that does not ask for the mouse: the cards take it in a few
+    # small rectangles, the dot (since 2026-09-07) in its disc alone, and
+    # everything else they are asked about answers HTTRANSPARENT (see the
+    # hit-test tests). The boot moment never takes it at all.
     assert "if hit is None:\n            style |= WS_EX_TRANSPARENT" in \
         creation, "a window with no hit test is no longer click-through"
     assert glass_mod.WS_EX_TRANSPARENT == 0x20
     assert glass_mod.WS_EX_NOACTIVATE == 0x08000000
     assert glass_mod.HTTRANSPARENT == -1
-    for name in ("dot", "boot", "reveal", "burst"):
+    for name in ("boot", "reveal", "burst"):
         text = (Path(__file__).resolve().parent / "skin"
                 / f"{name}.py").read_text("utf-8")
         assert "hit=" not in text, f"skin/{name}.py now takes the mouse"
+    # The dot asks for the mouse ONLY when somebody wired a click up, and
+    # with nobody it is the old layer exactly.
+    text = (Path(__file__).resolve().parent / "skin" / "dot.py").read_text(
+        "utf-8")
+    assert "if on_click is not None:\n        glass = Glass(*dot.placement(), " \
+           "hit=dot.hit" in text, "the dot takes the mouse unconditionally"
+    assert "else:\n        glass = Glass(*dot.placement())" in text
     # SW_SHOWNOACTIVATE, not deiconify: AGENTS.md measured Tk taking the
     # foreground the instant it realises a window, and the fix there is to
     # take it BACK. A plain popup shown this way never takes it at all.
@@ -15705,12 +15904,15 @@ def test_a_bad_hint_corner_is_refused_at_load() -> None:
         path = tmp / "config.toml"
         base = (Path(__file__).resolve().parent / "config.toml"
                 ).read_text("utf-8")
-        path.write_text(base.replace('corner = "top-right"',
-                                     'corner = "middle"'), "utf-8")
+        # The shipped [hint] says `corner = "dot"` — the first such line
+        # in the file; [shelf]'s is the second and much further down.
+        assert base.count('corner = "dot"') == 2, "the file changed shape"
+        path.write_text(base.replace('corner = "dot"',
+                                     'corner = "middle"', 1), "utf-8")
         try:
             config_mod.load(path)
         except config_mod.ConfigError as e:
-            assert "corner" in str(e), e
+            assert "hint.corner" in str(e), e
         else:
             raise AssertionError("a nonsense corner loaded happily")
         path.write_text(base.replace("after_ms = 400", "after_ms = -1"),
@@ -15797,21 +15999,95 @@ def test_key_names_are_written_the_way_a_person_reads_them() -> None:
 
 
 def test_the_card_goes_in_the_corner_it_was_asked_for() -> None:
-    """Pure arithmetic, so all four are checked without a screen."""
+    """Pure arithmetic, so all four are checked without a screen — with
+    the dot in each of ITS two corners, because the card stops short of
+    the dot's square only in the corner the dot is actually in."""
     screen = (1920, 1080)
+    room = overlay_mod.HintCard.DOT_ROOM
+    # The dot at the top-right, as it was until 2026-09-07: top-right
+    # alone stops short, sideways, so the status dot keeps its own square.
+    # The dot is the one thing on screen that says the app is alive, and
+    # it does not move for a panel that is only up while a key is held.
     got = {}
     for corner in config_mod.HINT_CORNERS:
-        card = overlay_mod.HintCard(corner=corner, margin=10)
+        card = overlay_mod.HintCard(corner=corner, margin=10,
+                                    dot_corner="top-right")
         got[corner] = card.origin(300, 400, screen)
     assert got["top-left"] == (10, 10), got
     assert got["bottom-left"] == (10, 1080 - 400 - 10), got
     assert got["bottom-right"] == (1920 - 300 - 10, 1080 - 400 - 10), got
-    # top-right alone stops short, so the status dot keeps its own square.
-    # The dot is the one thing on screen that says the app is alive, and it
-    # does not move for a panel that is only up while a key is held.
-    x, y = got["top-right"]
-    assert y == 10, got
-    assert x == 1920 - 300 - 10 - overlay_mod.HintCard.DOT_ROOM, got
+    assert got["top-right"] == (1920 - 300 - 10 - room, 10), got
+    # The dot at the bottom-right, where it lives now: bottom-right alone
+    # stops short, UPWARDS, and top-right is an ordinary corner again.
+    got = {}
+    for corner in config_mod.HINT_CORNERS:
+        card = overlay_mod.HintCard(corner=corner, margin=10,
+                                    dot_corner="bottom-right")
+        got[corner] = card.origin(300, 400, screen)
+    assert got["top-left"] == (10, 10), got
+    assert got["bottom-left"] == (10, 1080 - 400 - 10), got
+    assert got["top-right"] == (1920 - 300 - 10, 10), got
+    assert got["bottom-right"] == (1920 - 300 - 10,
+                                   1080 - 400 - 10 - room), got
+    # and the default dot corner IS bottom-right, in the class as in the
+    # file, so a card built with no word about the dot behaves the same
+    assert overlay_mod.HintCard(corner="bottom-right", margin=10).origin(
+        300, 400, screen) == got["bottom-right"]
+
+
+def test_the_cards_open_above_a_bottom_right_dot_and_beside_a_top_right_one(
+) -> None:
+    """The shelf and the key card open BESIDE the dot, never over it, and
+    "beside" depends on which corner the dot is in. With the work area
+    handed in (the dot is placed against the work area, above the
+    taskbar), a bottom-right card's visible bottom edge is above the
+    dot's window and its right edge is at the card's own margin; a
+    top-right card keeps today's placement — its right edge stops short
+    of the dot by DOT_ROOM and its top is at the margin. The same
+    arithmetic for both cards, because the shelf inherits it."""
+    import shelf as shelf_mod
+    import shelf_card as sc
+
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    from skin import dot as skin_dot
+
+    screen, work = (2560, 1440), (0, 0, 2560, 1392)
+    desktop = (-1920, 0, 4480, 1440)
+    inset, m = sc.SHADOW, 14
+    card = sc.card_for({"mode": "listening", "uptime_s": 5},
+                       _shelf_pile(3), "", False, max_rows=5)
+    w, h = sc.measure(card, 1.0)
+    win_w, win_h = w + inset * 2, h + inset * 2
+    for corner in ("bottom-right", "top-right"):
+        dx, dy, dw, dh = skin_dot.place(corner, work)
+        for kind in ("shelf", "hint"):
+            if kind == "shelf":
+                thing = shelf_mod.ShelfCard(corner=corner, margin=m,
+                                            dot_corner=corner)
+            else:
+                thing = overlay_mod.HintCard(corner=corner, margin=m,
+                                             dot_corner=corner)
+            x, y = thing.origin(win_w, win_h, screen, inset, desktop, work)
+            left, top = x + inset, y + inset
+            right, bottom = left + w, top + h
+            if corner == "bottom-right":
+                assert right == 2560 - m, (kind, right)
+                assert bottom < dy, (kind, "the card sits on the dot",
+                                     bottom, dy)
+                assert dy - bottom >= 12, (kind, "no daylight", dy - bottom)
+                assert bottom <= work[3] - m, (kind, "under the taskbar")
+            else:
+                assert top == m, (kind, top)
+                assert right < dx, (kind, "the card sits on the dot",
+                                    right, dx)
+                assert right == 2560 - m - overlay_mod.HintCard.DOT_ROOM, \
+                    (kind, right)
+    # Without a work area the arithmetic is the old one, on the screen:
+    # every test written before the work area was passed still holds.
+    plain = overlay_mod.HintCard(corner="top-left", margin=12)
+    assert plain.origin(300, 400, (1920, 1080)) == (12, 12)
 
 
 def test_the_shadow_margin_does_not_move_the_visible_edge() -> None:
@@ -16038,10 +16314,11 @@ def test_the_shelf_takes_the_mouse_where_it_is_painted_and_nowhere_else():
     two of them overlap, and everything else — the shadow margin and the
     panel's own padding included — answers HTTRANSPARENT.
 
-    That last one is not tidiness. The panel opens in the top-right
-    corner, which is the close button of every maximised window, and a
-    hole that swallowed a click aimed at it is the trap the status dot
-    paid for once already.
+    That last one is not tidiness. The panel opened in the top-right
+    corner until 2026-09-07, which is the close button of every maximised
+    window, and a hole that swallowed a click aimed at it is the trap the
+    status dot paid for once already; it opens above the dot in the
+    bottom-right now and the rule is kept.
     """
     import shelf_card as sc
 
@@ -16075,6 +16352,89 @@ def test_the_shelf_takes_the_mouse_where_it_is_painted_and_nowhere_else():
             assert sc.hit_test(card, scale, 2, 2) == (sc.HTTRANSPARENT, None)
             assert sc.hit_test(card, scale, pad + width / 2,
                                pad + height - 2) == (sc.HTTRANSPARENT, None)
+
+
+def test_the_shelf_has_an_x_that_closes_it() -> None:
+    """The third way out, for the hand that is already on the mouse: an X
+    at the top-right of the head band, in BOTH painters (shelf_card.compose
+    is what skin\\shelf.py draws over its glass and what flat() draws on
+    the Tk fallback, so one region serves both). It is a named rectangle
+    like every other button — a press resolves to "close", action_at
+    calls it chrome, and main.App routes it to _shelf_close, the same
+    door the key, Esc and a second click on the dot go through. It lights
+    on hover like its neighbours, and it never opens anything: the
+    owner's rule is untouched."""
+    import main as main_mod
+    import shelf_card as sc
+
+    assert sc.CLOSE == "close" and sc.CLOSE in sc.CHROME
+    for scale in (0.6, 1.0, 1.4):
+        for waiting in (0, 4):
+            card = sc.card_for({"mode": "listening", "uptime_s": 90},
+                               _shelf_pile(waiting), "", False, max_rows=5)
+            boxes = sc.regions(card, scale)
+            width, _height = sc.measure(card, scale)
+            x0, y0, x1, y1 = boxes[sc.CLOSE]
+            # top-right of the head band: flush with the card's right
+            # padding, inside the band, and to the RIGHT of Stop
+            assert abs(x1 - (sc.SHADOW + width - sc.PAD * scale)) < 1, \
+                (scale, x1)
+            head_top, head_h = sc._bands(card, scale)["head"]
+            assert y0 >= sc.SHADOW + head_top - 1, (scale, y0, head_top)
+            assert y1 <= sc.SHADOW + head_top + head_h + 1, (scale, y1)
+            assert x0 >= boxes[sc.STOP][2], "the X is not right of Stop"
+            assert abs((x1 - x0) - sc.CLOSE_W * scale) < 1, (x1 - x0)
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            assert sc.hit_test(card, scale, cx, cy) == (sc.HTCLIENT, sc.CLOSE)
+            assert sc.action_at(card, sc.CLOSE) == ("chrome", sc.CLOSE)
+            # lit on hover: the plate under the X changes when it is the
+            # hovered region, and only there
+            plain = sc.compose(card, scale, None)
+            lit = sc.compose(card, scale, sc.CLOSE)
+            other = sc.compose(card, scale, sc.STOP)
+            px = (int(cx - sc.SHADOW), int(cy - sc.SHADOW))
+            edge = (int(x0 - sc.SHADOW + 2), int(y0 - sc.SHADOW + 2))
+            assert lit.getpixel(edge) != plain.getpixel(edge), \
+                (scale, "hovering the X does not light it")
+            assert other.getpixel(edge) == plain.getpixel(edge), \
+                (scale, "hovering Stop lit the X")
+            assert plain.getpixel(px)[3] > 0, "no glyph under the pointer"
+
+    # main.py: the press ends in _shelf_close, and only there
+    src = (Path(__file__).resolve().parent / "main.py").read_text("utf-8")
+    body = src[src.index("def _shelf_chrome"):]
+    body = body[:body.index("def _shelf_screens")]
+    assert "shelf_card_mod.CLOSE" in body and "_shelf_close()" in body
+    hushed = []
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg = _hint_cfg()
+    app.hint = _FakeHint()
+    app.notify_card = type("_Column", (), {
+        "hush": lambda s: hushed.append("hushed"),
+        "unhush": lambda s: hushed.append("back")})()
+    app.machine = type("_M", (), {"state": hotkey_mod.IDLE,
+                                  "paused": False})()
+    app._activity = "ready"
+    app._started_at = time.monotonic() - 300
+    app._rec_at = 0.0
+    app._stats_lock = threading.Lock()
+    app._stats = {"dictations": 0}
+    app._last_lock = threading.Lock()
+    app._last = None
+    app._shelf_stop_armed = True
+    app._shelf_stamp = ()
+    app.notify = app._review = app.problems = app.questions = None
+    app.awake = None
+    app.shelf = _FakeShelf()
+    app._shelf_open()
+    assert app.shelf.visible() and hushed == ["hushed"]
+    app._shelf_pressed(("chrome", sc.CLOSE))
+    assert not app.shelf.visible(), "the X did not close the panel"
+    assert hushed == ["hushed", "back"], hushed
+    assert app._shelf_stop_armed is False, "closing disarms Stop"
+    # the hint card is offered the corner back (with nothing to say for a
+    # key nobody is holding, which is None — the offer is what matters)
+    assert len(app.hint.shown) == 2, app.hint.shown
 
 
 def test_the_shelf_stops_growing_at_the_row_it_was_given() -> None:
@@ -16389,6 +16749,85 @@ def test_the_shelf_section_parses_and_is_bounded() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_the_dot_section_decides_the_corner_for_every_card_beside_it(
+) -> None:
+    """ONE PLACE DECIDES THE CORNER. `[dot] corner` says where the status
+    dot sits (bottom-right of the work area since 2026-09-07; top-right
+    is the corner it used to keep). The shelf and the key card ship with
+    `corner = "dot"`, which load() resolves to the dot's corner — so a
+    Config never carries the word, every card reads a real corner, and
+    the three tables that name the dot's corners agree. A section may
+    still say a corner of its own, and a bad dot corner is refused at
+    load, named as the dot's."""
+    import shutil
+
+    import overlay as overlay_mod
+    assert config_mod.DOT_CORNERS == ("bottom-right", "top-right")
+    assert config_mod.DOT_CORNERS == overlay_mod.DOT_CORNERS
+    skin = _skin_or_skip()
+    if skin is not None and skin.on():
+        from skin import dot as skin_dot
+        assert skin_dot.CORNERS == config_mod.DOT_CORNERS
+    assert config_mod.CARD_CORNERS == ("dot",) + config_mod.HINT_CORNERS
+    assert config_mod.HintConfig.corner == config_mod.FOLLOW_DOT
+    assert config_mod.ShelfConfig.corner == config_mod.FOLLOW_DOT
+    assert config_mod.corner_for("dot", "top-right") == "top-right"
+    assert config_mod.corner_for("bottom-left", "top-right") == "bottom-left"
+
+    shipped = config_mod.load(Path(sys.path[0]) / "config.toml")
+    assert shipped.dot.corner == "bottom-right", shipped.dot
+    assert shipped.hint.corner == "bottom-right", shipped.hint.corner
+    assert shipped.shelf.corner == "bottom-right", shipped.shelf.corner
+    text = (Path(sys.path[0]) / "config.toml").read_text("utf-8")
+    assert "[dot]" in text and text.index("[dot]") < text.index("[hint]")
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-dot-"))
+    try:
+        path = tmp / "config.toml"
+        # no [dot] at all: the defaults are the shipped ones
+        path.write_text("", "utf-8")
+        cfg = config_mod.load(path)
+        assert (cfg.dot.corner, cfg.hint.corner, cfg.shelf.corner) == \
+            ("bottom-right",) * 3
+        # the dot moves and both cards follow it
+        path.write_text('[dot]\ncorner = "top-right"\n', "utf-8")
+        cfg = config_mod.load(path)
+        assert (cfg.dot.corner, cfg.hint.corner, cfg.shelf.corner) == \
+            ("top-right",) * 3
+        # ...unless a section says otherwise, explicitly
+        path.write_text('[dot]\ncorner = "top-right"\n'
+                        '[shelf]\ncorner = "bottom-left"\n'
+                        '[hint]\ncorner = "dot"\n', "utf-8")
+        cfg = config_mod.load(path)
+        assert cfg.shelf.corner == "bottom-left" and cfg.hint.corner == \
+            "top-right", (cfg.shelf.corner, cfg.hint.corner)
+        # a corner the dot cannot sit in is refused as the DOT's
+        for bad in ('corner = "bottom-left"', 'corner = "middle"',
+                    'corner = "dot"'):
+            path.write_text(f"[dot]\n{bad}\n", "utf-8")
+            try:
+                config_mod.load(path)
+                assert False, f"[dot] {bad} was accepted"
+            except config_mod.ConfigError as e:
+                assert "dot.corner" in str(e), (bad, e)
+        # and a card's nonsense is still the card's
+        path.write_text('[shelf]\ncorner = "middle"\n', "utf-8")
+        try:
+            config_mod.load(path)
+            assert False, "a nonsense shelf corner was accepted"
+        except config_mod.ConfigError as e:
+            assert "shelf.corner" in str(e) and "dot" in str(e), e
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    # main.py hands the dot's corner to the dot and to both cards, and
+    # points the dot's click at the shelf's toggle
+    src = (Path(__file__).resolve().parent / "main.py").read_text("utf-8")
+    assert "StatusDot(corner=self._dot_corner)" in src
+    assert "self.dot.on_click = self._tap_shelf" in src
+    assert src.count("dot_corner=self._dot_corner") >= 3, \
+        "a card is built without the dot's corner"
+
+
 def test_a_saved_card_position_keeps_every_comment_in_the_config() -> None:
     """It is written from the overlay thread on every drag, so this is the
     line-editor's most frequent caller — a round-trip here would quietly
@@ -16675,7 +17114,7 @@ def test_every_line_of_config_toml_is_a_setting_the_screen_can_draw() -> None:
         assert line.lstrip().startswith(setting.key), (setting.path, line)
         assert setting.kind == settings_mod.kind_of(setting.value)
     names = [s.name for s in sections]
-    assert names[:3] == ["", "hint", "setup"], names[:3]
+    assert names[:4] == ["", "dot", "hint", "setup"], names[:4]
 
 
 def test_the_help_on_a_setting_is_the_comment_in_the_file() -> None:
@@ -16707,8 +17146,9 @@ def test_the_help_on_a_setting_is_the_comment_in_the_file() -> None:
     assert find("hotkey").help.startswith("hold = dictate Hebrew")
     for path, choices in (
             ("punctuate.prefer", ("groq", "gemini", "ollama")),
-            ("hint.corner", ("top-right", "top-left", "bottom-right",
+            ("hint.corner", ("dot", "top-right", "top-left", "bottom-right",
                              "bottom-left")),
+            ("dot.corner", ("bottom-right", "top-right")),
             ("backend", ("gemini", "local", "fake")),
             ("polish.when", ("never", "known", "always")),
             ("local.device", ("auto", "cuda", "cpu"))):
@@ -16731,19 +17171,22 @@ def test_the_help_on_a_setting_is_the_comment_in_the_file() -> None:
 
 
 def test_the_plain_words_name_lines_the_file_has() -> None:
-    """settings.TABS is the one hand-written thing on the screen, so it
-    is the one thing that can go stale: every path it names must be in
-    the file, every menu name must be a value the file allows, and no
-    tab may name a line twice."""
+    """settings.TABS and TAB_SECTIONS are the two hand-written things on
+    the screen, so they are the two things that can go stale: every path
+    a tab names must be in the file, every menu name must be a value the
+    file allows, no path may be named twice ACROSS the tabs (one line,
+    one place — the owner's rule of 2026-09-07), General comes first and
+    The app last, and every section a tab owns must exist, once."""
     import settings as settings_mod
 
     sections = settings_mod.read(
         Path(__file__).resolve().parent / "config.toml")
     paths = _config_paths()
-    assert settings_mod.TABS[0].name == "Common"
-    assert settings_mod.tab_named(settings_mod.EVERYTHING) is None
+    assert settings_mod.TABS[0].name == settings_mod.GENERAL
+    assert settings_mod.TABS[-1].name == settings_mod.APP
+    assert settings_mod.tab_named(settings_mod.ADVANCED) is None
+    seen: list = []
     for tab in settings_mod.TABS:
-        seen: list = []
         for group in tab.groups:
             for row in group.rows:
                 assert row.path in paths, (tab.name, row.path)
@@ -16757,6 +17200,14 @@ def test_the_plain_words_name_lines_the_file_has() -> None:
                         assert ({v for v, _ in row.names}
                                 == set(setting.choices)), \
                             (row.path, row.names, setting.choices)
+    names = {sec.name for sec in sections}
+    owned: list = []
+    for tab_name, its_sections in settings_mod.TAB_SECTIONS.items():
+        assert settings_mod.tab_named(tab_name) is not None, tab_name
+        for name in its_sections:
+            assert name in names, (tab_name, name)
+            assert name not in owned, (tab_name, name)
+            owned.append(name)
 
 
 def test_every_line_and_every_section_has_plain_words() -> None:
@@ -16811,11 +17262,13 @@ def test_the_plain_words_say_nothing_only_a_programmer_would_say() -> None:
 
 
 def test_the_two_screens_cover_the_whole_file_between_them() -> None:
-    """Keys on the Keys screen, every other line on Settings' last tab,
-    nothing in neither — and each plain-words tab draws exactly the
-    lines the words name. A new line in config.toml is on the screen the
-    moment the file is saved; a new hotkey field has to be registered in
-    HOTKEY_FIELDS, which the Keys screen tests already hold it to."""
+    """Keys on the Keys screen, every other line on exactly ONE settings
+    tab, nothing in neither and nothing twice — and each tab draws
+    exactly the lines groups_for says it does. A new line in config.toml
+    is on the tab that owns its section the moment the file is saved; a
+    new section lands on Advanced; a new hotkey field has to be
+    registered in HOTKEY_FIELDS, which the Keys screen tests already
+    hold it to."""
     import settings as settings_mod
 
     import dashboard as dash
@@ -16824,20 +17277,26 @@ def test_the_two_screens_cover_the_whole_file_between_them() -> None:
         if board is None:
             return
         board._show("Settings")
-        board._settings_go(settings_mod.EVERYTHING)
-        board._finish_settings()
-        drawn = set(board.parts["rows"])
+        sections = board.parts["sections"]
         keys = dash._keys_screen_paths()
-        assert not drawn & keys, drawn & keys
-        assert drawn | keys == _config_paths(), \
-            sorted(_config_paths() - drawn - keys)
-        assert all(len(v) == 1 for v in board.parts["rows"].values())
-        for tab in settings_mod.TABS:
-            board._settings_go(tab.name)
+        drawn: dict = {}
+        for name in settings_mod.tab_names(sections, keys):
+            board._settings_go(name)
             board._finish_settings()
-            named = {row.path for group in tab.groups for row in group.rows}
-            assert set(board.parts["rows"]) == named, \
-                (tab.name, set(board.parts["rows"]) ^ named)
+            rows = set(board.parts["rows"])
+            said = {row.path for group in
+                    settings_mod.groups_for(name, sections, keys)
+                    for row in group.rows}
+            assert rows == said, (name, rows ^ said)
+            assert all(len(v) == 1 for v in board.parts["rows"].values())
+            for path in rows:
+                assert path not in drawn, (path, drawn.get(path), name)
+                drawn[path] = name
+        assert not set(drawn) & keys, set(drawn) & keys
+        assert set(drawn) | keys == _config_paths(), \
+            sorted(_config_paths() - set(drawn) - keys)
+        assert drawn["backend"] == settings_mod.GENERAL
+        assert drawn["awake.hold"] == settings_mod.APP
 
 
 def _settings_words(board) -> str:
@@ -16855,14 +17314,13 @@ def _settings_words(board) -> str:
     return "\n".join(out)
 
 
-def test_the_everything_view_says_it_in_plain_words_first() -> None:
-    """What the owner sees on 2026-09-07 and what he saw before it.
-
-    Off — and it starts off — a row is a plain title and one plain
-    sentence, and not one dotted name or measured comment is on the
-    screen. On, the file's own name and the file's own comment come back
-    UNDER the plain words rather than instead of them: nothing is lost,
-    it is only said plainly first."""
+def test_every_tab_says_it_in_plain_words() -> None:
+    """What the owner saw on 2026-09-07 ("impossible to understand …
+    underscores … unclear words") cannot come back: on every tab a row
+    is a plain title and one plain sentence, a section is its plain
+    name, and not one dotted name, file comment or short form is drawn
+    anywhere. The file's own words stay in the file — and in the search,
+    which still finds a line by them."""
     import settings as settings_mod
 
     import dashboard as dash
@@ -16871,27 +17329,27 @@ def test_the_everything_view_says_it_in_plain_words_first() -> None:
         if board is None:
             return
         board._show("Settings")
-        board._settings_go(settings_mod.EVERYTHING)
+        sections = board.parts["sections"]
+        keys = dash._keys_screen_paths()
+        for name in settings_mod.tab_names(sections, keys):
+            board._settings_go(name)
+            board._finish_settings()
+            plain = _settings_words(board)
+            for jargon in ("latch_max_seconds", "auto_language",
+                           "restore_delay_ms", "[polish]", "WER", "_hotkey",
+                           "Show the file's own words"):
+                assert jargon not in plain, (name, jargon)
+        board._settings_go("Dictation")
         board._finish_settings()
-        assert board._settings_raw is False, "the file's words start hidden"
         plain = _settings_words(board)
-        assert "Show the file's own words" in plain, "the switch is missing"
         assert "Longest recording once it is locked on" in plain
         assert "FIXING MISHEARD WORDS" in plain, "the section's plain title"
-        for jargon in ("latch_max_seconds", "auto_language",
-                       "restore_delay_ms", "[polish]", "WER"):
-            assert jargon not in plain, jargon
-        board.parts["settings_raw"].toggle()
-        board.root.update()        # the redraw waits for the click to end
+        assert "THE SPEECH MODEL ON THIS COMPUTER" in plain
+        board._settings_open_search()
+        board._settings_search("latch_max")
         board._finish_settings()
-        assert board._settings_raw is True
-        full = _settings_words(board)
-        assert "latch_max_seconds" in full and "[polish] when" in full
-        assert "Longest recording once it is locked on" in full, \
-            "the plain words stay; the file's own join them underneath"
-        assert set(board.parts["rows"]) == (
-            _config_paths() - dash._keys_screen_paths()), \
-            "the switch changed what is SAID, not which lines are drawn"
+        assert "latch_max_seconds" in board.parts["rows"], \
+            "the search no longer reads the file's own words"
 
 
 def test_the_settings_screen_can_reach_its_last_row() -> None:
@@ -16910,10 +17368,16 @@ def test_the_settings_screen_can_reach_its_last_row() -> None:
     try:
         board.closing = True
         board._show("Settings")
-        board._settings_go(settings_mod.EVERYTHING)
+        sections = board.parts["sections"]
+        keys = dash._keys_screen_paths()
+        last = settings_mod.flatten(sections)[-1]
+        owner = next(name for name in settings_mod.tab_names(sections, keys)
+                     if any(row.path == last.path for group in
+                            settings_mod.groups_for(name, sections, keys)
+                            for row in group.rows))
+        board._settings_go(owner)
         board._finish_settings()
         board.root.update()
-        last = settings_mod.flatten(board.parts["sections"])[-1]
         _kind, widget = board.parts["rows"][last.path][-1]
         scroller = board.parts["settings_list"]
         scroller.canvas.yview_moveto(1.0)
@@ -16933,11 +17397,13 @@ def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
     """The write is config.set_values with the dotted path and nothing
     else — the line editor that keeps the comments. A refused value
     (set_values validates the whole file first) puts the switch back and
-    says why, in both places the row is drawn."""
+    says why, wherever the row is drawn."""
+    import settings as settings_mod
+
     with _window() as board:
         if board is None:
             return
-        board._show("Settings")                 # opens on the sentences
+        board._show("Settings")                 # opens on General
         board._finish_settings()
         written: list = []
         real = config_mod.set_values
@@ -16952,11 +17418,16 @@ def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
             assert board.parts["values"]["punctuate.auto"] is True
             assert "punctuate.auto saved" in board._toast_text, \
                 board._toast_text
-            # The same line on another tab shows the new value.
+            # Drawn again after a visit to another tab, the line shows
+            # the new value: the values cache outlives the widgets.
             board._settings_go("Text")
             board._finish_settings()
+            assert "punctuate.auto" not in board.parts["rows"], \
+                "one line, one place"
+            board._settings_go(settings_mod.GENERAL)
+            board._finish_settings()
             [(kind, again)] = board.parts["rows"]["punctuate.auto"]
-            assert again.get() is True, "the Text tab did not follow"
+            assert again.get() is True, "General did not follow"
 
             def refuse(path, updates):
                 raise config_mod.ConfigError("punctuate.auto must be a bool")
@@ -17020,7 +17491,7 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
             assert "must be one of" in board._toast_text
 
             # A field: what was typed has to parse as what the file holds.
-            board._settings_go("Card")
+            board._settings_go("Cards")
             board._finish_settings()
             after = settings_mod.find(sections, "hint.after_ms")
             [(kind, entry)] = board.parts["rows"]["hint.after_ms"]
@@ -17043,140 +17514,17 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
             config_mod.set_values = real
 
 
-def test_the_settings_sentences_are_real_lines_and_write_back_the_same_way():
-    """prose.py says forty settings as sentences with the control inside
-    the words. Every Bit has to name a line that is actually in
-    config.toml — a sentence about a setting that does not exist is a
-    control bound to nothing — and turning one has to go down the same
-    set_option / config.set_values path a dense row does, with the dotted
-    path and nothing else."""
-    import settings as settings_mod
+def test_a_cut_label_always_shows_an_ellipsis_and_fits_its_box() -> None:
+    """Two rules for a name drawn inside a control, both broken before
+    they were measured (2026-09-07):
 
-    import dashboard as dash
-    import prose as prose_mod
-
-    paths = prose_mod.paths()
-    assert len(paths) == len(set(paths)), "a setting is said twice"
-    have = {s.path for s in settings_mod.flatten(
-        settings_mod.read(REPO / "config.toml"))}
-    assert not set(paths) - have, sorted(set(paths) - have)
-    assert not set(paths) & dash._keys_screen_paths(), \
-        "a key belongs on the Keys place, not in a sentence"
-    # The words find the sentence, so the search can offer it as well as
-    # the file.
-    assert "after it lands" in prose_mod.matches("punctuate")
-    assert prose_mod.matches("") == set()
-
-    with _window() as board:
-        if board is None:
-            return
-        board._show("Settings")
-        board._finish_settings()
-        assert board._settings_tab == dash.DESK
-        assert set(board.parts["rows"]) == set(paths), \
-            set(board.parts["rows"]) ^ set(paths)
-        assert all(len(v) == 1 for v in board.parts["rows"].values())
-        asked = []
-        real = config_mod.set_values
-        config_mod.set_values = lambda path, values: asked.append(values)
-        try:
-            [(kind, switch)] = board.parts["rows"]["punctuate.auto"]
-            assert kind == "switch"
-            before = board.parts["values"]["punctuate.auto"]
-            switch.toggle()
-            board.root.update()
-            assert asked == [{"punctuate.auto": not before}], asked
-            assert board.parts["values"]["punctuate.auto"] is not before
-        finally:
-            config_mod.set_values = real
-
-
-def test_a_sentence_wraps_on_a_word_and_never_cuts_a_control_in_half():
-    """The Canvas flow is the reason Settings can be prose at all: a
-    fixed 34 px line whatever a line holds, wrapping on a measured word,
-    and a control that does not fit is moved DOWN whole rather than
-    hanging off the edge (which is what both engines did before the
-    widths were clamped)."""
-    import tkinter as tk
-
-    import prose as prose_mod
-    import ui as ui_mod
-
-    try:
-        root = tk.Tk()
-    except Exception as e:                     # no display: nothing to test
-        print(f"    (skipped: no Tk window — {e})")
-        return
-    try:
-        root.withdraw()
-        # A Font belongs to the interpreter that made it and ui.py caches
-        # them in a module global; the suite builds many roots.
-        ui_mod.forget_images()
-        canvas = tk.Canvas(root, width=400, height=600)
-        made = []
-
-        def make(bit):
-            widget = tk.Frame(canvas, width=120, height=26)
-            made.append(widget)
-            return widget
-
-        sentence = ["one two three four five six seven eight nine ten ",
-                    prose_mod.Bit("a.b"), " and then some more words here ",
-                    prose_mod.Bit("c.d"), " end."]
-        used = prose_mod.flow_block(canvas, 400, "an eyebrow", [sentence],
-                                    bg=ui_mod.CARD, make=make)
-        assert len(made) == 2
-        root.update_idletasks()
-        assert used > prose_mod.LINE_H, used
-        # every line box is the same height, whatever is on it
-        assert (used - prose_mod.EYEBROW_H) % prose_mod.LINE_H == 0, used
-        # nothing placed hangs off the right edge of the column
-        for item in canvas.find_all():
-            box = canvas.bbox(item)
-            assert box is None or box[2] <= 402, (item, box)
-        # a control WIDER than the column is clamped, not hung off it
-        wide = tk.Frame(canvas, width=900, height=26)
-        pen = prose_mod.Flow(canvas, 400, bg=ui_mod.CARD)
-        pen.control(wide)
-        root.update_idletasks()
-        assert wide.winfo_reqwidth() >= 900          # it is still wide
-        assert pen.x <= 400 + pen.space, pen.x       # the pen is not
-        # A SENTENCE HAS THE SPACES IT IS WRITTEN WITH. The pen used to
-        # add one after every word and one more for each empty fragment
-        # split(" ") leaves at the ends, and `control` added another of
-        # its own — so "Punctuate every dictation [no]; when" was drawn
-        # with a space before its semicolon and two before its control.
-        pen = prose_mod.Flow(canvas, 4000, bg=ui_mod.CARD)
-        pen.words("Transcribe ")
-        after_words = pen.x
-        box = tk.Frame(canvas, width=100, height=26)
-        pen.control(box)
-        assert pen.x == after_words + 100, (pen.x, after_words)
-        before_tail = pen.x
-        pen.words("; when you press")
-        assert pen.x > before_tail
-        one_space = ui_mod.text_width(" ", ui_mod.UI, pen.size)
-        plain = ui_mod.text_width("Transcribe", ui_mod.UI, pen.size)
-        assert abs(after_words - (plain + one_space)) <= 1, \
-            (after_words, plain, one_space)
-    finally:
-        try:
-            root.destroy()
-        except Exception:
-            pass
-
-
-def test_a_control_inside_a_sentence_never_says_less_than_it_had_room_for():
-    """Two rules for a control drawn INSIDE a paragraph, both of them
-    broken before they were measured (2026-09-07):
-
-    1. a label is cut only when it has to be, and a cut ALWAYS shows an
+    1. a name is cut only when it has to be, and a cut ALWAYS shows an
        ellipsis. `ui.clamp` marks a cut when it runs out of words but
        not when it shaves letters off one word that is too wide, so
-       "balanced" reached a 63 px menu as "balance" and read as a typo;
+       "balanced" once reached a 63 px menu as "balance" and read as a
+       typo;
     2. what is shown fits the box it is shown in — the [audio] device
-       menu was sized from an 11 pt measurement, drawn at 12, and cut in
-       the middle of a letter at the field's own border.
+       menu was once sized from an 11 pt measurement and drawn at 12.
     """
     import tkinter as tk
 
@@ -17214,67 +17562,40 @@ def test_a_control_inside_a_sentence_never_says_less_than_it_had_room_for():
             return
         board.closing = True
         board._show("Settings")
-        board._settings_go(dash.DESK)
-        board._finish_settings()
-        board.root.update()
-        # every full name a sentence offers, per line of config.toml
-        import prose as prose_mod
-        whole: dict = {}
-        for _eyebrow, sentences in prose_mod.BLOCKS:
-            for sentence in sentences:
-                for piece in sentence:
-                    if isinstance(piece, prose_mod.Bit) and piece.names:
-                        whole.setdefault(piece.path, set()).update(
-                            str(n) for _v, n in piece.names)
+        sections = board.parts["sections"]
+        keys = dash._keys_screen_paths()
         seen = 0
-        for path, entries in board.parts["rows"].items():
-            for kind, widget in entries:
-                if kind != "dropdown":
-                    continue
-                seen += 1
-                shown = widget.itemcget(widget._label, "text")
-                room = widget.winfo_reqwidth() - dash.DROP_ROOM
-                assert ui_mod.text_width(shown, ui_mod.UI,
-                                         ui_mod.PT_BODY) <= room + 2, \
-                    (path, shown, widget.winfo_reqwidth())
-                if path in whole and shown not in whole[path]:
-                    assert shown.endswith("…"), \
-                        f"{path} shows {shown!r}, which is neither one of " \
-                        f"its words nor marked as cut"
-        assert seen >= 6, seen
-
-        # AND THE ELLIPSIS MAY NEVER REACH config.toml. A field shown cut
-        # gives the whole of its value back the moment the caret lands in
-        # it, so what _entry_done reads is always the real thing; leaving
-        # it unchanged writes nothing at all.
-        written: list = []
-        board._ask = lambda *a, **k: written.append((a, k))
-        real = config_mod.set_values
-        config_mod.set_values = lambda *a, **k: written.append((a, k))
-        try:
+        for name in settings_mod.tab_names(sections, keys):
+            board._settings_go(name)
+            board._finish_settings()
+            board.root.update()
             for path, entries in board.parts["rows"].items():
-                for kind, entry in entries:
-                    if kind != "entry" or not getattr(entry, "_cut_to", 0):
+                for kind, widget in entries:
+                    if kind != "dropdown":
                         continue
-                    setting = settings_mod.find(board.parts["sections"],
-                                                path)
-                    value = dash._shown(board.parts["values"][path])
-                    assert entry.get() != value and entry.get().endswith("…")
-                    board._whole_field(entry, setting)
-                    assert entry.get() == value, (entry.get(), value)
-                    board._entry_done(setting, entry)
-                    board._cut_field(entry)
-                    assert entry.get().endswith("…"), entry.get()
-            assert not written, written
-        finally:
-            config_mod.set_values = real
+                    seen += 1
+                    shown = widget.itemcget(widget._label, "text")
+                    assert ui_mod.text_width(shown, ui_mod.UI,
+                                             ui_mod.PT_BODY) \
+                        <= widget.winfo_reqwidth() - 20, \
+                        (path, shown, widget.winfo_reqwidth())
+                    row = settings_mod.words_for(path)
+                    setting = settings_mod.find(sections, path)
+                    whole = ({str(n) for _v, n in row.names}
+                             | set(setting.choices) | {str(setting.value)})
+                    if path == "audio.device":
+                        whole |= {n for _v, n in board._microphones()}
+                    if shown not in whole:
+                        assert shown.endswith("…"), \
+                            f"{path} shows {shown!r}, which is neither one " \
+                            f"of its words nor marked as cut"
+        assert seen >= 6, seen
 
 
 def test_a_search_narrows_the_settings_to_the_lines_that_match() -> None:
     import settings as settings_mod
 
     import dashboard as dash
-    import prose as prose_mod
 
     with _window() as board:
         if board is None:
@@ -17296,13 +17617,16 @@ def test_a_search_narrows_the_settings_to_the_lines_that_match() -> None:
         board._finish_settings()
         assert board.parts["rows"] == {}
         # The cross: the tabs come back, on the tab that was up — which
-        # is the first one, the sentences, since that is where Settings
-        # opens.
+        # is the first one, General, since that is where Settings opens.
         board._settings_close_search()
         board._finish_settings()
         assert not board._settings_searching and not board._settings_query
-        assert board._settings_tab == dash.DESK
-        assert set(board.parts["rows"]) == set(prose_mod.paths())
+        assert board._settings_tab == settings_mod.GENERAL
+        assert set(board.parts["rows"]) == {
+            row.path for group in settings_mod.groups_for(
+                settings_mod.GENERAL, board.parts["sections"],
+                dash._keys_screen_paths())
+            for row in group.rows}
 
 
 # ------------------------------------------------- auto punctuation
@@ -18179,7 +18503,7 @@ def test_the_waiting_pile_lists_what_the_second_reading_waits_on() -> None:
                 return
             board._notify_store = lambda: None
             board._problems_store = lambda: None
-            board._show("Waiting")
+            board._show("Home")
 
             def rows():
                 return [w for w in
@@ -18911,6 +19235,7 @@ def test_the_dashboard_has_an_awake_block_that_waits_for_the_app() -> None:
     the app running the hero reads the HOLD, and the switch the SCREENS."""
     import dashboard as dash
     import awake as awake_mod
+    import settings as settings_mod
 
     saved = dash.AWAKE_AUTO_CHECK
     dash.AWAKE_AUTO_CHECK = False
@@ -18918,8 +19243,9 @@ def test_the_dashboard_has_an_awake_block_that_waits_for_the_app() -> None:
         with _window() as board:
             if board is None:
                 return
-            board._show("Settings")       # opens on the sentences
-            board._finish_settings()      # ...which end with the blocks
+            board._show("Settings")
+            board._settings_go(settings_mod.APP)   # the blocks live there
+            board._finish_settings()
             p = board.parts
             for name in ("awake_toggle", "awake_screen", "awake_check",
                          "awake_rows", "awake_state"):
@@ -21060,12 +21386,12 @@ def test_a_notification_lands_on_the_waiting_place_not_a_screen_of_its_own():
     import dashboard as dash
     import ui
     names = [key for key, _label in dash.NAV]
-    assert ("waiting", "Waiting") in dash.NAV
-    assert names[0] == "waiting", names
-    glyph = ui.ICON[dash.NAV_GLYPH["waiting"]]
+    assert ("home", "Home") in dash.NAV
+    assert names[0] == "home", names
+    glyph = ui.ICON[dash.NAV_GLYPH["home"]]
     assert len(glyph) == 1 and ord(glyph) < 0x10000, repr(glyph)
-    assert '"Waiting"' in inspect.getsource(dash.Dashboard._show)
-    assert '"Waiting"' in inspect.getsource(dash.Dashboard._refresh)
+    assert '"Home"' in inspect.getsource(dash.Dashboard._show)
+    assert '"Home"' in inspect.getsource(dash.Dashboard._refresh)
     assert not hasattr(dash.Dashboard, "_screen_notify"), \
         "the Notify screen is gone; the pile is where a notification is"
     named = {f for _title, fields in dash.KEY_GROUPS for f in fields}
@@ -21116,7 +21442,7 @@ def test_a_held_finish_is_said_on_the_waiting_place_and_never_counted_twice():
     with _window() as board:
         if board is None:
             return
-        board._show("Waiting")
+        board._show("Home")
         line = board.parts["held_line"]
         board.running = False
         board._paint_held()
@@ -21179,7 +21505,7 @@ def test_the_waiting_pile_draws_the_four_stores_and_notices_they_moved():
     with _window() as board:
         if board is None:
             return
-        board._show("Waiting")
+        board._show("Home")
         board._notify_store = lambda: Fake(notify)
         board._review_store = lambda: Fake(review)
         board._problems_store = lambda: Fake(problems)
@@ -21191,7 +21517,7 @@ def test_the_waiting_pile_draws_the_four_stores_and_notices_they_moved():
         rows = [w for w in board.parts["pile_list"].inner.winfo_children()
                 if isinstance(w, widgets_mod.PileRow)]
         assert len(rows) == 3, len(rows)
-        assert board.parts["pile_card"].winfo_manager() == "place"
+        assert board.parts["pile_card"].winfo_manager() == "pack"
         assert "Three things" in board.parts["waiting_head"].cget("text")
         # Exactly one gold button on the surface: Yes on a second reading.
         golds = [b for row in rows for b in row.buttons.values()
@@ -21455,6 +21781,7 @@ def test_problems_settings_are_in_the_real_config_and_checked_at_load(
     the moment he presses the key: `esc` already discards a locked
     recording, and keep_resolved outside 0..2000 is either a store that
     keeps nothing or a problems.md nobody can read."""
+    import re
     import shutil
 
     import main as main_mod
@@ -21547,8 +21874,16 @@ def test_problems_settings_are_in_the_real_config_and_checked_at_load(
     # and this machine's virtual screen starts at x = -1920, which is why
     # the sentinel cannot be -1.
     assert config_mod.HINT_UNSET == -100000
+    # THE SENTINEL IS THE CODE'S DEFAULT, not a promise about the file.
+    # The app WRITES these back the moment the card is dragged (it did
+    # on 2026-09-07 at 16:21), exactly as it does for [hint], [review]
+    # and [notify] — whose dragged positions have sat in the file for
+    # weeks with no test minding. Asserting the sentinel in config.toml
+    # made using the feature a red suite.
+    blank = config_mod.ProblemsConfig()
     for field in ("x", "y", "card_x", "card_y"):
-        assert getattr(p, field) == config_mod.HINT_UNSET, field
+        assert getattr(blank, field) == config_mod.HINT_UNSET, field
+        assert isinstance(getattr(p, field), int), field
         assert settings_mod.find(list(sections.values()),
                                  f"problems.{field}").kind == "int", field
     tmp = Path(tempfile.mkdtemp(prefix="problems-drag-"))
@@ -21558,11 +21893,15 @@ def test_problems_settings_are_in_the_real_config_and_checked_at_load(
         head = base.index("\n[problems]\n")
         tail = base.index("\n[", head + 3)
         section = base[head:tail]
+        # WHATEVER THE LINE HOLDS, not the sentinel: the app writes
+        # these back the moment the card is dragged, so a fixture built
+        # by replacing "-100000" only works until the feature is used
+        # once (it stopped working on 2026-09-07 at 16:21).
         for field, value in (("x", -1920), ("y", -3),
                              ("card_x", 8000), ("card_y", 0)):
-            old = f"\n{field} = -100000"
-            assert section.count(old) == 1, (field, section.count(old))
-            section = section.replace(old, f"\n{field} = {value}")
+            pattern = re.compile(rf"^{field} = -?\d+", re.M)
+            section, hits = pattern.subn(f"{field} = {value}", section)
+            assert hits == 1, (field, hits)
         path.write_text(base[:head] + section + base[tail:], "utf-8")
         got = config_mod.load(path).problems
         assert (got.x, got.y, got.card_x, got.card_y) == \
@@ -21782,7 +22121,7 @@ def test_the_problems_list_draws_a_report_with_and_without_a_picture(
         # The real problems.md is not this test's to rewrite; opening the
         # tab regenerates it, and the store here is a fake.
         board._write_digest = lambda: None
-        board._show("Waiting")
+        board._show("Home")
         board._waiting_all()          # the whole backlog, behind the pile
         board._problems_store = lambda: Fake(three)
         board._problems_stamp = None
@@ -22512,23 +22851,25 @@ def test_the_new_widgets_read_the_palette_when_they_are_built():
             pass
 
 
-def test_the_window_has_four_places_and_every_one_of_them_is_registered():
+def test_the_window_has_three_places_and_every_one_of_them_is_registered():
     """A place is five registrations (NAV, ICON, _show, _refresh, and for
     a key KEY_GROUPS + NESTED_HOTKEYS); missing any one of them is a
     KeyError the first time somebody clicks.
 
-    There are FOUR, in this order, and Settings is always last: Waiting
-    (notify + review + problems + questions), Said (history +
-    vocabulary), Keys, Settings (which absorbed Awake, Version and the
-    phone). Waiting and Said are new words for old screens, so NAV_GLYPH
-    is what says whose glyph they borrow. Every place has to fit along
-    the 56 px top bar with the state chip and the one button, which is
-    the whole reason nine rows became four words."""
+    There are THREE, in this order, and Settings is always last: Home
+    (notify + review + problems + questions in one pile, then history +
+    vocabulary, on one page that scrolls), Keys, Settings (which
+    absorbed Awake, Version and the phone). Waiting and Said were two
+    places for a day; the owner said on 2026-09-07 that only Keys and
+    Settings are places you go. Home is a new word for an old screen,
+    so NAV_GLYPH is what says whose glyph it borrows. Every place has to
+    fit along the 56 px top bar with the state chip and the two buttons,
+    which is the whole reason nine rows became three words."""
     import dashboard as dash
     import ui
 
     names = [key for key, _label in dash.NAV]
-    assert names == ["waiting", "said", "keys", "settings"], names
+    assert names == ["home", "keys", "settings"], names
     assert dash.SIDE == 0, "the rail is gone"
     for key, label in dash.NAV:
         glyph = ui.ICON[dash.NAV_GLYPH.get(key, key)]

@@ -81,7 +81,7 @@ makes the answer true.
 | `boot.py` | the corner card, the waveform, and the thread that drives both |
 | `reveal.py` | the release, on the GPU |
 | `burst.py` | the release, for machines with no GPU |
-| `dot.py` | the status dot: five states, and the halo gated on `NO_HALO` — paused is the one without one, checked on rendered alpha 8 px out from the disc rather than on the colour table, because the halo rule is about DRAWING |
+| `dot.py` | the status dot: five states, the halo gated on `NO_HALO` — paused is the one without one, checked on rendered alpha 8 px out from the disc rather than on the colour table, because the halo rule is about DRAWING — and, since 2026-09-07, a BUTTON: `Dot.hit` answers HTCLIENT on the disc plus 2 px and HTTRANSPARENT on the glow, `place()` puts it in a corner of the work area (`[dot] corner`, bottom-right by default), and the halo ends at `HALO_R` = 18 px so no glow reaches the window's edge |
 | `shelf.py` | the glass under the panel beside the dot (`face()` + `run()`): `notify.py`'s recipe with the shelf's geometry and `hint.py`'s shadow put back. Nothing animates, so `run()` caches the composed picture on `(card, hover, scale)` and re-blits it — composing a full panel is 41 ms and the tick is one second |
 | `hint.py` | the key card while a key is held; its `DOTS` are derived from `DOT_STATES`, so the card and the corner dot cannot disagree |
 | `notify.py`, `review.py` | the glass under the notification column and the second-reading card |
@@ -181,6 +181,30 @@ listening is a cool blue at nearly the same distance from transcribing
 rather than hue alone. `palette.NO_HALO = frozenset({"paused"})` and
 `skin\dot.py` gates on it. The test checks rendered alpha 8 px out from
 the disc, not the colour table, because the halo rule is about drawing.
+
+**The halo ends inside the window, and that was a bug until 2026-09-07.**
+The gradient ran to CORE × 2.6 = 26 px in a 38 px box, which left alpha
+27 at every edge midpoint (0 at the corners) — a faint tinted square on
+any wallpaper or title bar, and the owner's words for it were "the dot
+looks like a square". It ends at `HALO_R` = BOX / 2 − 1 = 18 px now, the
+inner stop moved out to 0.62 so the light around the disc is the same
+light (alpha 27 at 14 px from the centre, against 42 before), and a test
+walks the whole border of every state and asks for zero. BOX stays 38
+because two tests identify the dot by its size.
+
+**The dot is a button, and only the disc is.** It moved from the
+top-right corner to the bottom-right of the work area that same night —
+above the taskbar, a corner nothing else lives in — which is what made a
+button possible at all: in the top-right it sat on the close button of
+every maximised window and had to be click-through as a whole. Now
+`Dot.hit` answers HTCLIENT inside CORE / 2 + 2 px and HTTRANSPARENT
+everywhere else (the ring, the halo, the corners), `glass.Glass` is
+built without WS_EX_TRANSPARENT and asks it per pixel, and a click on the
+disc calls `overlay.StatusDot.on_click` — main.py's `_tap_shelf`, the
+same toggle as ctrl+alt+d. Two clicks inside 300 ms are one click, so a
+double-click is not an open and a close. The reveal's landing follows
+the dot (`boot._landing` asks `dot.place`), and so do the shelf and the
+key card (`HintCard.origin`, `DOT_ROOM`, measured against the work area).
 
 **The mark.** A dalet drawn as a desk: a tabletop with one leg hanging
 from its right end, the top's edge just past the leg, the lamp-dot above
@@ -380,7 +404,8 @@ context rather than testing a path the app never takes.
 - **Reduced motion is honoured** — `SPI_GETCLIENTAREAANIMATION`. With
   animation effects off in Windows the card simply goes and nothing fires.
 - **It ends somewhere.** The last beat gathers the light into the status
-  dot in the top-right — the one thing that stays on screen for the rest of
-  the session — rather than fading to nothing. A uniform fade to zero has
-  no event structure and reads as "it vanished".
+  dot — bottom-right of the work area since 2026-09-07, wherever `[dot]
+  corner` says; the one thing that stays on screen for the rest of the
+  session — rather than fading to nothing. A uniform fade to zero has no
+  event structure and reads as "it vanished".
 - **Seeded per boot**, so the fifth time is not a replay of the first.

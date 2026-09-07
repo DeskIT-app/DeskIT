@@ -19,7 +19,9 @@ WHAT IS ON IT, in this order and no other:
      it has been up. Pause, and Stop. Stop ARMS on the first press and
      quits on the second (`stop_armed`): the door out of the app must not
      be one keystroke away from a live dictation, and there is no undo
-     for a quit.
+     for a quit. And an X at the far right of the band (`CLOSE`), which
+     closes the panel — the same thing the key and Esc do, for the hand
+     that is already on the mouse.
   2. THE PILE — one merged list of everything waiting for an answer:
      unread notifications, second-reading proposals, open problems,
      pending questions. ONE list, not four sections, because the question
@@ -219,9 +221,10 @@ ROWS_MIN, ROWS_MAX = 1, 8  # what `[shelf] rows` may be set to
 
 # What a hit landed on. The chrome's names are fixed strings; a pile row's
 # are built by `row_name` so one scheme covers however many rows there are.
-PAUSE, STOP, COPY, SCREENS, DOOR, MORE, DRAG = (
-    "pause", "stop", "copy", "screens", "door", "more", "drag")
-CHROME = (PAUSE, STOP, COPY, SCREENS, DOOR, MORE, DRAG)
+PAUSE, STOP, COPY, SCREENS, DOOR, MORE, DRAG, CLOSE = (
+    "pause", "stop", "copy", "screens", "door", "more", "drag", "close")
+CHROME = (PAUSE, STOP, COPY, SCREENS, DOOR, MORE, DRAG, CLOSE)
+CLOSE_W = BTN_H           # the X is a square the height of a head button
 
 
 def row_name(index: int, slot: str) -> str:
@@ -511,6 +514,11 @@ def _glyph(cache: dict, kind: str, size: float, colour="dim", weight=1.6):
     elif kind == "chevron":
         d.line([(m * .40, m * .24), (m * .66, m * .50), (m * .40, m * .76)],
                fill=c, width=lw, joint="curve")
+    elif kind == "close":
+        # The X: two strokes, the same weight as the chevron, inside the
+        # middle 44% of the box so it reads as a mark and not a hole.
+        d.line([(m * .28, m * .28), (m * .72, m * .72)], fill=c, width=lw)
+        d.line([(m * .72, m * .28), (m * .28, m * .72)], fill=c, width=lw)
     elif kind == "desk":
         # ד as a desk: the bar, the leg, the lamp.
         d.line([(m * .16, m * .34), (m * .84, m * .34)], fill=c,
@@ -628,17 +636,21 @@ def regions(card: dict, scale: float = 1.0,
     bands = _bands(card, s)
     out: dict = {}
 
-    # -- the head: Stop then Pause, right to left along the row
+    # -- the head: the X, then Stop, then Pause, right to left along the
+    # row. The X is at the top-right of the band because that is where
+    # every window on this desktop keeps its close button, and a hand
+    # that reached for the mouse goes there without looking.
     top, height = bands["head"]
     y = y0 + top + (height - BTN_H * s) / 2
+    out[CLOSE] = (right - CLOSE_W * s, y, right, y + BTN_H * s)
     stop = _chip(cache, "Stop", 8.5 * s, "red", "card", "line", 11 * s,
                  BTN_H * s, 7 * s, weight=600, rtl=False)
     pause = _chip(cache, "Pause", 8.5 * s, "dim", "card", "line", 11 * s,
                   BTN_H * s, 7 * s, weight=600, rtl=False)
     # a glyph rides in front of each label; the box grows by its room
     glyph_room = 16 * s
-    out[STOP] = (right - stop.width - glyph_room, y, right,
-                 y + BTN_H * s)
+    px = out[CLOSE][0] - 8 * s
+    out[STOP] = (px - stop.width - glyph_room, y, px, y + BTN_H * s)
     px = out[STOP][0] - 8 * s
     out[PAUSE] = (px - pause.width - glyph_room, y, px, y + BTN_H * s)
 
@@ -696,8 +708,9 @@ def hit_test(card: dict, scale: float, x: int, y: int,
     Everything that is not a named rectangle is HTTRANSPARENT, which is
     what lets a click go through to the window underneath — the same rule
     the hint card and the notify column live by, and for the same reason:
-    this thing sits in the top-right corner, where the close button of
-    every maximised window is.
+    this thing sits in a corner of somebody else's screen, and until
+    2026-09-07 that corner was the close button of every maximised
+    window. The X on the head band is one of the rectangles (CLOSE).
     """
     boxes = regions(card, scale, cache)
     for name, box in boxes.items():
@@ -803,6 +816,18 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
            "Stop?" if (card.get("stop_armed") and stop_ok) else "Stop",
            ("red" if card.get("stop_armed") else "dim") if stop_ok
            else "faint", "stop")
+    # THE X, at the top-right of the band: the same plate as its two
+    # neighbours, lit the same way on hover, with the glyph alone in it.
+    # Drawn inside the rectangle `regions` claimed, like every button.
+    x0, y0, x1, y1 = (c - SHADOW for c in boxes[CLOSE])
+    lit = hover == CLOSE
+    place(_rr((x1 - x0, y1 - y0), 7 * s,
+              fill=tuple(INK["plate" if lit else "card"]) + (255,),
+              outline=tuple(INK["plate_edge" if lit else "line"]) + (255,),
+              width=1), x0, y0)
+    cross = _glyph(cache, "close", 14 * s, colour="ink" if lit else "dim")
+    place(cross, x0 + ((x1 - x0) - cross.width) / 2,
+          y0 + ((y1 - y0) - cross.height) / 2)
 
     # ---- the hairlines ----------------------------------------------------
     # Walked off the sections list rather than off `bands`: there are two
@@ -1004,4 +1029,4 @@ __all__ = ["INK", "INK_FALLBACKS", "KIND", "STATE_WORD", "STATE_COLOUR",
            "clamp_scale", "row_name", "CARD_W", "SHADOW", "PAD", "RADIUS",
            "PILE_MAX", "ROWS_MIN", "ROWS_MAX", "SCALE_MIN", "SCALE_MAX",
            "HTTRANSPARENT", "HTCLIENT", "HTCAPTION", "PAUSE", "STOP", "COPY",
-           "SCREENS", "DOOR", "MORE", "DRAG", "CHROME"]
+           "SCREENS", "DOOR", "MORE", "DRAG", "CLOSE", "CHROME"]

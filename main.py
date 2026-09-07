@@ -534,16 +534,28 @@ class App:
         # CARET: who may send keystrokes at the focused window.
         self._cursor_lock = threading.Lock()
         # The only thing on screen once loading is done: a dot that says
-        # the app is alive, and what it is doing.
-        self.dot = (overlay_mod.StatusDot() if cfg.indicator
-                    else overlay_mod.StatusDot.off())
+        # the app is alive, and what it is doing. Its corner ([dot]
+        # corner, bottom-right of the work area since 2026-09-07) is the
+        # one every card beside it is placed against — getattr, so a
+        # config.py without [dot] (classic) gets the default. Read once,
+        # here; the dot is not re-placed while the app runs.
+        self._dot_corner = str(getattr(getattr(cfg, "dot", None), "corner",
+                                       "bottom-right"))
+        self.dot = (overlay_mod.StatusDot(corner=self._dot_corner)
+                    if cfg.indicator else overlay_mod.StatusDot.off())
+        # THE DISC IS A BUTTON. A click on it does exactly what ctrl+alt+d
+        # does — _tap_shelf reads one flag and starts a thread, which is
+        # the whole reason it may be called from the dot's own thread.
+        # The glow around the disc stays click-through (skin\dot.Dot.hit).
+        self.dot.on_click = self._tap_shelf
         # And, for the press someone hesitated on, a card naming what the
         # keys will do. Off by config, and off by construction the rest of
         # the time: nothing is on screen until a key has been held for
         # hint.after_ms, which an ordinary dictation never reaches.
         self.hint = (overlay_mod.HintCard(
             cfg.hint.after_ms, cfg.hint.corner, x=cfg.hint.x, y=cfg.hint.y,
-            scale=cfg.hint.scale, on_change=self._save_hint)
+            scale=cfg.hint.scale, on_change=self._save_hint,
+            dot_corner=self._dot_corner)
             if cfg.hint.enabled else overlay_mod.HintCard.off())
         # And the second reading's card (review.py): one proposal, three
         # buttons, a clock. Off by config, and off by construction until a
@@ -648,7 +660,8 @@ class App:
                     rows=getattr(scfg, "rows", 5),
                     on_change=self._save_shelf_card,
                     on_press=self._shelf_pressed,
-                    on_refresh=self._shelf_refresh)
+                    on_refresh=self._shelf_refresh,
+                    dot_corner=self._dot_corner)
             except Exception:                    # noqa: BLE001
                 log.info("the shelf would not build — its key will say so "
                          "and nothing else changes", exc_info=True)
@@ -1265,10 +1278,10 @@ class App:
             return
         self._activity = state
         self.dot.set_state(state)
-        # ONE PANEL OWNS THE TOP-RIGHT CORNER. Both cards default there
-        # and the shelf key is in _SCREEN_ACTIONS, so both can be wanted
-        # at once; the one he asked for wins, and the hint card comes
-        # back the moment the shelf closes (see _shelf_close).
+        # ONE PANEL OWNS THE DOT'S CORNER. Both cards default to it
+        # ([dot] corner) and the shelf key is in _SCREEN_ACTIONS, so both
+        # can be wanted at once; the one he asked for wins, and the hint
+        # card comes back the moment the shelf closes (see _shelf_close).
         shelf = getattr(self, "shelf", None)
         up = False
         try:
@@ -2279,7 +2292,8 @@ class App:
             old = self.hint
             new = (overlay_mod.HintCard(
                 hcfg.after_ms, hcfg.corner, x=hcfg.x, y=hcfg.y,
-                scale=hcfg.scale, on_change=self._save_hint)
+                scale=hcfg.scale, on_change=self._save_hint,
+                dot_corner=self._dot_corner)
                 if hcfg.enabled else overlay_mod.HintCard.off())
             old.stop()
             self.hint = new
@@ -3068,6 +3082,11 @@ class App:
         except Exception:                        # noqa: BLE001
             return
         card = getattr(self, "shelf", None)
+        if name == shelf_card_mod.CLOSE:
+            # The X on the head band: the same door the key, Esc and a
+            # second click on the dot all go through.
+            self._shelf_close()
+            return
         if name == shelf_card_mod.PAUSE:
             self.set_paused(not self.machine.paused)
             self._shelf_push()
@@ -3169,7 +3188,9 @@ class App:
                         scale=scfg.scale, rows=getattr(scfg, "rows", 5),
                         on_change=self._save_shelf_card,
                         on_press=self._shelf_pressed,
-                        on_refresh=self._shelf_refresh)
+                        on_refresh=self._shelf_refresh,
+                        dot_corner=getattr(self, "_dot_corner",
+                                           "bottom-right"))
                 except Exception:                # noqa: BLE001
                     log.info("the shelf would not rebuild", exc_info=True)
                     new = None
@@ -5465,6 +5486,10 @@ def main() -> int:
     # the app writes becomes a status update, so the splash narrates the
     # real startup instead of just spinning.
     splash = overlay_mod.Splash() if cfg.splash else overlay_mod.Splash.off()
+    # The release's last beat lands its light IN the status dot, so the
+    # splash has to know which corner the dot will be in (skin\boot.py).
+    splash.dot_corner = str(getattr(getattr(cfg, "dot", None), "corner",
+                                    "bottom-right"))
     splash.start()
     splash_log = SplashLog(splash)
     log.addHandler(splash_log)

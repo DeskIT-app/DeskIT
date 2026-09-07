@@ -293,6 +293,32 @@ def cap_for(raw: str) -> str | None:
     return None
 
 
+def cap_for_vk(vk: int) -> str | None:
+    """The cap a Windows virtual-key code lands on. Tk reports a key
+    press on Windows with `keycode` = the VK, so this is how a REAL press
+    finds its cap on the board — the owner's ask of 2026-09-07: "if I
+    press R, it should tell me what it does". Modifiers come back
+    unsided (0x11 is ctrl, left or right), which is how the caps are
+    named — and a sided code from a hook is folded the same way."""
+    modifier = _MODIFIER_CAPS.get(int(vk))
+    if modifier is not None:
+        return modifier
+    for cap, code in cap_vks().items():
+        if code == vk:
+            return cap
+    return None
+
+
+# The modifier caps are not in cap_vks (they are never a binding's
+# trigger on their own), so a press on one is named here: VK_SHIFT /
+# VK_CONTROL / VK_MENU / VK_LWIN as Tk reports them, and the sided
+# codes a raw hook reports, all folded to the cap's one name.
+_MODIFIER_CAPS = {0x10: "shift", 0xA0: "shift", 0xA1: "shift",
+                  0x11: "ctrl", 0xA2: "ctrl", 0xA3: "ctrl",
+                  0x12: "alt", 0xA4: "alt", 0xA5: "alt",
+                  0x5B: "win", 0x5C: "win"}
+
+
 def name_for(cap_id: str) -> str | None:
     """The name `hotkey.vk_for` knows a cap by — what a click on it has
     to turn into before anything can be bound to it."""

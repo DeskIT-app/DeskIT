@@ -2,6 +2,7 @@
 
     .venv\\Scripts\\python.exe tests_quiet.py            # the whole suite
     .venv\\Scripts\\python.exe tests_quiet.py --out x.txt # keep the transcript
+    .venv\\Scripts\\python.exe tests_quiet.py --no-screen # nothing on your screen
 
 The suite stands up real windows — cards, the dashboard, overlays — and
 while it runs they pop over whatever the owner is doing. Windows lets a
@@ -19,6 +20,15 @@ that has the input, i.e. yours — which is also why they must never run
 hidden: their clicks would land on your windows). Those run in the open,
 after the rest, for about fifteen seconds. Same `tests.py`, same
 interpreter, same exit code; only the location changes.
+
+**While you are at the machine, use --no-screen.** The seventeen leave
+the hidden desktop by design — the ask card grabs the display, the drag
+tests move the REAL mouse — so an ordinary run puts windows over what
+you are doing and takes the pointer for about fifteen seconds. With
+--no-screen they are skipped outright and the run is invisible; the
+exit code then says nothing about them, so run the suite plainly once
+before shipping. (The owner asked for this on 2026-09-07: "a lot of
+things jump on my screen".)
 
 Python's own subprocess.STARTUPINFO does not expose lpDesktop, so the
 hidden half is started through CreateProcessW directly, with cmd's
@@ -132,6 +142,9 @@ def _read(path: Path) -> str:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--out", help="keep the transcript in this file")
+    parser.add_argument("--no-screen", action="store_true",
+                        help="skip the tests that need the real screen "
+                             "or the real mouse, so nothing appears")
     args = parser.parse_args(argv)
     # The transcript carries Hebrew and the odd replacement character; a
     # console in cp1255 must not be what kills the run at the last line.
@@ -150,25 +163,39 @@ def main(argv=None) -> int:
     hidden_text = _read(hidden_out)
     hidden_failed = _FAIL.findall(hidden_text)
 
-    # 2. the screen tests, and anything that failed hidden, in the open
+    # 2. the screen tests, and anything that failed hidden, in the open —
+    #    unless he is sitting there, in which case nothing runs in the
+    #    open at all and the seventeen are simply not run.
     picks = list(NEEDS_SCREEN) + [n for n in hidden_failed
                                   if n not in NEEDS_SCREEN]
-    open_proc = subprocess.run([str(python), "tests.py", *picks], cwd=HERE,
-                               capture_output=True, text=True,
-                               encoding="utf-8", errors="replace")
-    open_text = (open_proc.stdout or "") + (open_proc.stderr or "")
-    open_failed = _FAIL.findall(open_text)
+    if args.no_screen:
+        picks = []
+        open_text = ""
+        open_failed = list(hidden_failed)
+    else:
+        open_proc = subprocess.run([str(python), "tests.py", *picks],
+                                   cwd=HERE, capture_output=True,
+                                   text=True, encoding="utf-8",
+                                   errors="replace")
+        open_text = (open_proc.stdout or "") + (open_proc.stderr or "")
+        open_failed = _FAIL.findall(open_text)
 
-    transcript = (hidden_text
-                  + "\n---- in the open: the screen tests"
-                  + (", and what failed hidden" if hidden_failed else "")
-                  + " ----\n" + open_text)
+    transcript = hidden_text if args.no_screen else (
+        hidden_text
+        + "\n---- in the open: the screen tests"
+        + (", and what failed hidden" if hidden_failed else "")
+        + " ----\n" + open_text)
     if args.out:                          # first: a console can still choke
         Path(args.out).write_text(transcript, "utf-8")
     sys.stdout.write(transcript)
     hidden_only = [n for n in hidden_failed if n not in open_failed]
-    print(f"\n(hidden desktop {DESKTOP!r}: {len(picks)} test(s) ran in the "
-          f"open; {time.monotonic() - started:.0f}s in all)")
+    if args.no_screen:
+        print(f"\n(hidden desktop {DESKTOP!r}: nothing ran in the open; "
+              f"{len(NEEDS_SCREEN)} test(s) that need the screen or the "
+              f"mouse were SKIPPED; {time.monotonic() - started:.0f}s)")
+    else:
+        print(f"\n(hidden desktop {DESKTOP!r}: {len(picks)} test(s) ran in "
+              f"the open; {time.monotonic() - started:.0f}s in all)")
     if hidden_only:
         print(f"passed in the open after failing hidden — they need the "
               f"screen, add them to NEEDS_SCREEN: {', '.join(hidden_only)}")

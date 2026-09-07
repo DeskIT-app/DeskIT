@@ -35,8 +35,13 @@ second ago — and it is why:
 IT TAKES CLICKS, which is the one thing the hint card may not do. Every
 pixel that is not a named rectangle answers HTTRANSPARENT
 (`shelf_card.hit_test`), including the whole shadow margin, so a click
-aimed at the close button of a maximised window underneath still lands on
-that close button — the trap the status dot paid for once already.
+aimed at whatever is underneath still lands there — the trap the status
+dot paid for once already, back when both lived on the close button of
+every maximised window. One of the named rectangles is the X at the
+top-right of the head band (`shelf_card.CLOSE`): a press there is
+`pressed("close")`, which main.py routes to `_shelf_close`, the same
+door ctrl+alt+d and Esc use. It opens beside the dot — ABOVE a
+bottom-right dot, which is where the dot lives now — and never over it.
 
 EVERY CALLBACK FIRES ON THE PAINTER'S THREAD, so `on_press` and
 `on_refresh` may only enqueue or spawn. That is `_notify_dismissed`'s rule
@@ -79,12 +84,17 @@ class ShelfCard(overlay.HintCard):
 
     CORNERS = ("top-right", "top-left", "bottom-right", "bottom-left")
 
-    def __init__(self, corner: str = "top-right", margin: int = 14,
+    def __init__(self, corner: str = "bottom-right", margin: int = 14,
                  x: int = overlay.HINT_UNSET, y: int = overlay.HINT_UNSET,
                  scale: float = 1.0, rows: int = sc.PILE_MAX,
-                 on_change=None, on_press=None, on_refresh=None) -> None:
+                 on_change=None, on_press=None, on_refresh=None,
+                 dot_corner: str = "bottom-right") -> None:
+        # `dot_corner` is where the status dot is: the panel opens BESIDE
+        # it — above a bottom-right dot, to the left of a top-right one —
+        # and never over it (overlay.HintCard.origin, DOT_ROOM).
         super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
-                         scale=scale, on_change=on_change)
+                         scale=scale, on_change=on_change,
+                         dot_corner=dot_corner)
         self.rows = max(sc.ROWS_MIN, min(sc.ROWS_MAX, int(rows)))
         self._on_press = on_press
         self._on_refresh = on_refresh
@@ -289,7 +299,8 @@ class ShelfCard(overlay.HintCard):
                 return
             w, h = sc.measure(st["card"], self.scale)
             x, y = self.origin(w, h, (root.winfo_screenwidth(),
-                                      root.winfo_screenheight()))
+                                      root.winfo_screenheight()),
+                               work=overlay._work_area())
             paint()
             root.geometry(f"{w}x{h}+{x}+{y}")
             self.rect = (x, y, x + w, y + h)
