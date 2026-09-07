@@ -9729,6 +9729,26 @@ def test_the_way_home_covers_nothing_on_any_of_the_six_places() -> None:
 # ------------------------------------------------------- the window itself
 
 
+def _texts(widget) -> list[str]:
+    """Every word drawn anywhere under `widget`.
+
+    A door on the home is a card with labels inside it now rather than a
+    label on the page, so a test that wants to know what a tile SAYS has
+    to look under it. A widget with no -text option (a Canvas, a rule)
+    contributes nothing rather than raising.
+    """
+    found = []
+    for child in widget.winfo_children():
+        try:
+            text = child.cget("text")
+        except Exception:                 # noqa: BLE001 — no such option
+            text = ""
+        if text:
+            found.append(str(text))
+        found += _texts(child)
+    return found
+
+
 @contextlib.contextmanager
 def _window(log=None):
     """A dashboard with nothing behind it.
@@ -24176,9 +24196,14 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
     then maybe add more tabs… to get more information, I don't need
     everything on my home screen."
 
-    So: at most PILE_CAP rows whatever is waiting, a line of doors under
-    them that counts the rest and CAN BE CLICKED to the place that holds
-    it, and nothing on the page that needs scrolling to be seen.
+    So: at most PILE_CAP rows whatever is waiting, a band of doors under
+    them that says what each place is holding and CAN BE CLICKED to get
+    there, and nothing on the page that needs scrolling to be seen.
+
+    The doors were a thin line of counts drawn only for the kinds that
+    had something waiting; they are a band of five tiles now, one per
+    place, always drawn. What is being held to has not changed — a count
+    with nowhere to go is a count nobody can act on.
     """
     import dashboard as dash
     import widgets as widgets_mod
@@ -24221,25 +24246,132 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
         assert len(rows) == dash.PILE_CAP == 3, len(rows)
         assert "Six things" in board.parts["waiting_head"].cget("text"), \
             board.parts["waiting_head"].cget("text")
+        # The subline has to AGREE with the headline: six things want an
+        # answer and three of them are on the screen, so it says which
+        # three and how many are not, rather than "nothing else needs
+        # you" under a headline that says six things do.
+        sub = board.parts["waiting_sub"].cget("text")
+        assert "newest three" in sub and "three more are waiting" in sub, sub
         # Exactly one lit button on the surface, still.
         golds = [b for row in rows for b in row.buttons.values()
                  if isinstance(b, widgets_mod.ToneButton)]
         assert len(golds) == 1, len(golds)
-        # The doors: what else waits, and the place that holds it.
-        said = {w.cget("text"): w
-                for w in board.parts["elsewhere"].winfo_children()}
-        assert "5 corrections" in said, sorted(said)
-        assert "1 problem" in said, sorted(said)
-        assert all(w.winfo_manager() for w in said.values())
-        board.parts["elsewhere"].update_idletasks()
-        # they are laid left to right with a separator BETWEEN them, and
-        # the last thing on the line is never a separator
-        placed = sorted(said.values(), key=lambda w: w.winfo_x())
-        assert placed[-1].cget("text") != "·", "a dangling separator"
-        # and a door is a door
-        said["5 corrections"].event_generate("<Button-1>")
+        # The doors: every place, what it is holding, and the way in.
+        band = board.parts["elsewhere"]
+        board.root.update_idletasks()
+        tiles = sorted(band.winfo_children(), key=lambda w: w.winfo_x())
+        assert len(tiles) == 5, len(tiles)
+        assert all(t.winfo_manager() for t in tiles)
+        # The count and the words it counts are two labels on one line,
+        # so the tile is read as the set of things drawn on it.
+        words = {t: _texts(t) for t in tiles}
+        corrections = next(t for t in tiles
+                           if "corrections waiting" in words[t])
+        assert "5" in words[corrections], words[corrections]
+        trouble = next(t for t in tiles if "problems open" in words[t])
+        assert "1" in words[trouble], words[trouble]
+        # the band fills the row: the last tile ends where the page does
+        last = tiles[-1]
+        assert last.winfo_x() + last.winfo_width() == dash.CW, (
+            f"the band stops {dash.CW - last.winfo_x() - last.winfo_width()}"
+            " px short of the row")
+        # and a door is a door — the WHOLE tile, not one word on it
+        corrections.event_generate("<Button-1>")
         board.root.update()
         assert board.screen == "Corrections", board.screen
+
+
+def test_the_home_fills_its_page_whether_nothing_or_everything_waits():
+    """The home has two walls and it has to stand between them.
+
+    It overflowed once, so PILE_CAP was set to three and the page was
+    made to fit without scrolling. Then it emptied out: with nothing
+    waiting there was a headline, three one-line rows of the day, and
+    three hundred pixels of bare ground with the footer rule sitting
+    over nothing at all. His photograph of that, 2026-09-07: "the home
+    screen looks very empty and not good... make it so it doesn't
+    overflow like it was before — but you know, fix it."
+
+    Both walls are one measurement: the page is exactly as tall as the
+    room it has. Nothing waiting, two things waiting or more than fit,
+    the band of doors takes the slack the pile is not using and the
+    ground under it puts the day's lines on the footer rule — so there
+    is never a hole, and there is never a scrollbar.
+    """
+    import dashboard as dash
+
+    class Fake:
+        def __init__(self, items):
+            self._items = items
+
+        def unread(self):
+            return list(self._items)
+
+        def recent(self, n=30):
+            return list(self._items)[:n]
+
+        def pending(self):
+            return list(self._items)
+
+        def open(self):
+            return list(self._items)
+
+        def items(self, *_status):
+            return list(self._items)
+
+    review = [{"id": f"r{i}", "when": f"2026-09-07 20:0{i}:00",
+               "status": "pending", "proposed": "הטקסט הזה נכון עכשיו.",
+               "text": "הטקסט הזה נכן עכשיו.",
+               "changes": [{"before": "נכן", "after": "נכון",
+                            "why": "הגייה דומה"}]} for i in range(5)]
+    problems = [{"id": f"p{i}", "when": "2026-09-07 09:00:00",
+                 "status": "open", "what": "A card stayed on the screen."}
+                for i in range(2)]
+    with _window() as board:
+        if board is None:
+            return
+        board._notify_store = lambda: None
+        board._questions_store = lambda: None
+        board._show("Home")
+        for name, proposals, reports in (("nothing", [], []),
+                                         ("two", [], problems),
+                                         ("six", review, problems[:1])):
+            board._review_store = lambda p=proposals: Fake(p)
+            board._problems_store = lambda r=reports: Fake(r)
+            board._pile_stamp = object()
+            board._poll_waiting()
+            board.root.update_idletasks()
+            page = board.parts["page"]
+            tall = page.inner.winfo_reqheight()
+            assert tall == dash.PAGE_H, (
+                f"with {name} waiting the page is {tall} px in a "
+                f"{dash.PAGE_H} px window — "
+                + ("it overflows, which is what PILE_CAP was for"
+                   if tall > dash.PAGE_H else
+                   f"{dash.PAGE_H - tall} px of it is a hole"))
+            # The band is there whatever is waiting, and it is the whole
+            # width of the row: it is the only thing a quiet home has to
+            # say, so it may never be the thing that is missing.
+            tiles = sorted(board.parts["elsewhere"].winfo_children(),
+                           key=lambda w: w.winfo_x())
+            assert len(tiles) == 5, (name, len(tiles))
+            assert tiles[0].winfo_x() == 0
+            assert (tiles[-1].winfo_x() + tiles[-1].winfo_width()
+                    == dash.CW), name
+            # Every tile is still a door to somewhere that is not here.
+            # By index and re-read each time: pressing one rebuilds the
+            # screen, so the widgets from before the press are gone.
+            for index in range(5):
+                tiles = sorted(board.parts["elsewhere"].winfo_children(),
+                               key=lambda w: w.winfo_x())
+                said = _texts(tiles[index])
+                tiles[index].event_generate("<Button-1>")
+                board.root.update()
+                assert board.screen != "Home", (name, said)
+                board._show("Home")
+                board._pile_stamp = object()
+                board._poll_waiting()
+                board.root.update_idletasks()
 
 
 def test_the_corrections_place_holds_every_proposal_and_one_gold() -> None:
