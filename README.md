@@ -320,17 +320,48 @@ The window is 1160×720 (it was 940×648) and still fixed, which is what
 lets every bitmap be cached.
 
 **The home is the window's whole job, said in one sentence.** *"Five
-things want an answer."* — or *"Nothing is waiting."*, with "Nothing else
-on the desk needs you right now." under it. Then ONE card holding the
+things want an answer."* — or *"Nothing is waiting."*, with a second line
+under it that answers the one thing the first leaves open: whether what
+you can see is all of it. *"Nothing else on the desk needs you right
+now."* when nothing waits, *"They are all here…"* when they fit, and
+*"The newest three are here, and three more are waiting."* when they do
+not. It counts what did not fit rather than saying where it went,
+because three of the four kinds have a place of their own and unread
+notifications do not — their place is this page, and they are the
+commonest overflow of the four. It used to say the first of those whatever was
+waiting, so the page could read *"Six things want an answer."* over
+*"Nothing else needs you right now"* — two sentences that cannot both be
+true, in the two biggest lines on the screen. Then ONE card holding the
 merged pile: unread notifications (Go there / ×), second-reading
 proposals (the sentence with the changed word on a gold-soft pill, the
 reason under it, Yes / No), open problems (Fixed / Close), and the weekly
 routine's questions (Answer / Later) — newest first, whatever kind they
 are, **the newest three and no more**, in a card exactly as tall as its
-rows. Under it, one line of counts — *5 corrections · 1 problem* — and
-each count is the door to the place that holds them, because a number
-with nowhere to go is a number nobody can act on. Under that, one faint
-line about finishes being held until their session goes quiet.
+rows, and under it one faint line about finishes being held until their
+session goes quiet.
+
+Then **the band of doors**: five tiles across the whole width, one per
+place, each with what that place is holding at this moment — *5
+corrections waiting*, *1 problems open*, *23 said today*, *16 keys to
+press*, *7 tabs of settings*. The whole tile is the way in, because a
+number with nowhere to go is a number nobody can act on.
+
+The band was one thin 26 px line of the same counts, drawn only for the
+kinds that had something waiting — so on a quiet desk it drew nothing at
+all, and the home was a headline, three one-line rows of the day, and
+three hundred pixels of bare ground with the footer rule sitting over
+nothing. His photograph of that, 2026-09-07: *"the home screen looks
+very empty and not good… make it so it doesn't overflow like it was
+before — but you know, fix it."* So the band is always there, all five
+of them whatever is waiting, and it is where the page's slack goes: 69 px
+under three rows of pile, 142 under two, 200 with nothing waiting at all,
+and the ground under it lands the day's three lines on the footer rule.
+Nothing waiting, two things waiting or more than fit, the page comes to
+exactly the 502 px it has — no hole, and no scrollbar. None of the
+heights are typed: a Card body clips, Rubik is 43 px tall at 18 pt on
+this machine's 1.33 scaling and something else on the next one, so the
+band asks its own tiles how short it may get and the page is asked how
+tall it came out.
 
 The card was a fixed rectangle with a scroller inside it and a "+N
 more" that grew it, and his photograph of that on 2026-09-07 was rows
@@ -346,7 +377,7 @@ unreadable contributes nothing and the other three still draw:
 `[questions]` is not in `config.toml` on this branch, so that section
 simply is not there.
 
-Under the pile, **the rest of the day, one line each**: **Said** (the
+Under the band, **the rest of the day, one line each**: **Said** (the
 last dictation, drawn RTL, with the time and "N today"), **Took** (the
 last capture and the folder it went to), **Looked up** (the last term →
 its meaning). A line whose store does not exist is skipped rather than

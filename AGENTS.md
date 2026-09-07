@@ -49,12 +49,17 @@ deliberately not on it: those are things you sit down to.
 **The dashboard** (`dashboard.py` + `ui.py` + `widgets.py`) is four
 places along a 56 px top bar — no rail, since 2026-09-07:
 
-- **Home** — a summary and nothing else: one title line, one card as
-  tall as its rows holding the newest THREE of the merged pile (notify
-  unread + review pending + problems open + questions pending), one
-  line of counts under it where each count is a door to the place that
-  holds them, one line each for the rest of the day, a fixed footer of
-  facts. It fits without scrolling.
+- **Home** — a summary and nothing else: one title line and a second
+  line saying whether what you can see is all of it, one card as tall
+  as its rows holding the newest THREE of the merged pile (notify
+  unread + review pending + problems open + questions pending), a band
+  of five door tiles under it — always all five, whatever is waiting,
+  each with what its place is holding and the whole tile the way in —
+  one line each for the rest of the day, a fixed footer of facts. It
+  fits without scrolling AND without a hole: the band takes whatever
+  room the pile is not using and the ground under it lands the day on
+  the footer rule, so the page is exactly PAGE_H whether nothing, two
+  things or more than fit are waiting (a test holds all three).
 - **Corrections** — every pending proposal of the second reading, with
   the vocabulary panel beside it.
 - **Problems** — his reports, the routine's questions and the weekly

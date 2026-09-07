@@ -129,6 +129,39 @@ SAID_PAGE = 25           # rows a press of Show more adds on the Said
 PILE_ROW_H = 72
 PILE_Y = 100             # where the page starts, under the title
 PAGE_H = H - TOP - PILE_Y - 62      # down to the footer rule
+
+# THE DOORS ARE A BAND, AND THE BAND IS ALWAYS THERE. They were one thin
+# 26 px line of counts that drew only the kinds with something waiting,
+# so on a quiet desk it drew NOTHING — and the home was a headline, three
+# one-line rows of the day, and 300 px of bare ground under them with the
+# footer rule sitting on nothing. His words on 2026-09-07: "the home
+# screen looks very empty and not good". A count that exists only when it
+# is not zero cannot hold a page together. So all five places are on the
+# band, always, each with what it is holding at this moment, and each of
+# them still the door it was — a count with nowhere to go is a count
+# nobody can act on.
+#
+# The band is also where the page's slack goes, which is what stops the
+# hole coming back somewhere else. Measured on this window (the page is
+# 502 px and the day's block is 161): three pile rows leave the band its
+# minimum and the page fills exactly, two leave it 142, none leave it the
+# maximum and 141 px of ground that _settle_page spends putting the day's
+# lines on the footer rule. Past DOOR_MAX_H a tile stops being a door and
+# starts being a poster, which is why the leftover is ground and not more
+# tile.
+DOOR_MIN_H = 69          # the number and the line under it, and the pad.
+                         # A FLOOR AND NOT THE ANSWER: what the band may
+                         # never be shorter than. _paint_doors asks the
+                         # tiles what they actually need in the font that
+                         # is loaded and raises this if they need more,
+                         # because a Card body is a create_window with a
+                         # height and a band a pixel short cuts the words
+                         # in half without saying so.
+DOOR_MAX_H = 200
+DOOR_NOTE_GAP = 5        # between the count's line and the third line
+DOOR_GAP = 12            # between the tiles, and the least ground under
+                         # the band
+DOOR_PAD = 12
 CAPTURE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 # The Said half of the home is a list and a panel side by side. The list keeps the
 # width a sentence needs; the panel takes what is left.
@@ -1652,11 +1685,13 @@ class Dashboard:
                 bg=ui.BG, quiet=True, icon=ui.ICON["error"])
             p["report_button"].place(x=PAD + CW, y=20, anchor="ne")
 
-        # THE PAGE. A summary fits without scrolling — three rows of pile,
-        # a line of counts and three lines of the day come to 545 px of
-        # the 664 the sheet has — but it is in a Scroller all the same, so
-        # a row that grows (a second reading with two changes, a long
-        # report) is reachable rather than clipped.
+        # THE PAGE. A summary fits without scrolling — the fullest it
+        # ever gets is three rows of pile, the band of doors at its
+        # smallest and the day's three lines, and _settle_page sizes the
+        # band so that comes to exactly the 502 px the page has — but it
+        # is in a Scroller all the same, so a row that grows (a second
+        # reading with two changes, a long report) is reachable rather
+        # than clipped.
         page = ui.Scroller(self.sheet, CW + 10, PAGE_H, bg=ui.BG)
         page.place(x=PAD, y=PILE_Y)
         p["page"] = page
@@ -1668,17 +1703,30 @@ class Dashboard:
                                   fg=ui.FAINT, font=(ui.UI, 9),
                                   justify="left", anchor="w")
 
-        # WHAT ELSE IS WAITING, AND WHERE TO READ IT. One quiet line of
-        # counts, each of them the door to the place that holds them.
-        p["elsewhere"] = tk.Frame(page.inner, bg=ui.BG, width=CW, height=26)
-        p["elsewhere"].pack(anchor="w", pady=(0, 6))
+        # WHERE EVERYTHING IS. The band of doors, under the pile because
+        # the pile is what the headline is about and this is the answer
+        # to "and what else". Always drawn and always the full width —
+        # see the note over DOOR_MIN_H for why that is the whole point.
+        p["elsewhere"] = tk.Frame(page.inner, bg=ui.BG, width=CW,
+                                  height=DOOR_MIN_H)
+        p["elsewhere"].pack(anchor="w")
         p["elsewhere"].pack_propagate(False)
+
+        # The ground between the band and the day. A widget and not a
+        # pady, because its height is COMPUTED: whatever the page has
+        # left over goes in here, which is what lands the day's three
+        # lines on the footer rule instead of leaving the rule with
+        # nothing above it. _settle_page owns it.
+        p["ground"] = tk.Frame(page.inner, bg=ui.BG, width=CW,
+                               height=DOOR_GAP)
+        p["ground"].pack(anchor="w")
+        p["ground"].pack_propagate(False)
 
         p["rest_eyebrow"] = tk.Label(
             page.inner, text="T H E   R E S T   O F   T H E   D A Y"
                              "   ·   O N E   L I N E   E A C H",
             bg=ui.BG, fg=ui.FAINT, font=(ui.MEDIUM, 8))
-        p["rest_eyebrow"].pack(anchor="w", padx=2, pady=(6, 6))
+        p["rest_eyebrow"].pack(anchor="w", padx=2, pady=(0, 6))
         p["rest"] = tk.Frame(page.inner, bg=ui.BG, width=CW, height=132)
         p["rest"].pack(anchor="w")
         p["rest"].pack_propagate(False)
@@ -1703,17 +1751,44 @@ class Dashboard:
         self._waiting_view = "home"
         self._fill_waiting()
 
-    def _door(self, parent, text: str, place: str, *, colour=None):
-        """One word that takes him to a place. The home is made of these:
-        a count is only useful if the thing it counts can be reached."""
-        label = tk.Label(parent, text=text, bg=ui.BG,
-                         fg=colour or ui.DIM, font=(ui.UI, 10),
-                         cursor="hand2")
-        label.bind("<Button-1>", lambda _e: self._show(place))
-        label.bind("<Enter>", lambda _e: label.config(fg=ui.FG))
-        label.bind("<Leave>",
-                   lambda _e: label.config(fg=colour or ui.DIM))
-        return label
+    def _make_door(self, tile, place: str) -> None:
+        """Turn a tile into the door to a place: all of it clicks, all of
+        it lights, and everything drawn on it does what the tile does.
+
+        The home is made of these — a count is only useful if the thing
+        it counts can be reached. It is the WHOLE tile and not the word
+        on it because a 212 px card with one live line somewhere in the
+        middle of it is a card that looks pressable and mostly is not;
+        and it is every child as well as the card, because a Label drawn
+        over a Canvas takes the click that was meant for the Canvas.
+        """
+        def everything(widget):
+            yield widget
+            for child in widget.winfo_children():
+                yield from everything(child)
+
+        def paint(fill: str):
+            def done(_event=None):
+                if not tile.winfo_exists():
+                    return
+                # tile.fill and not a private: Card.resize() repaints
+                # from it, so the band growing under the pointer keeps
+                # the colour the pointer put there.
+                tile.fill = fill
+                tile.face(ui.rounded(tile.w, tile.h, 14, fill, ui.BG,
+                                     ui.LINE))
+                for widget in everything(tile.body):
+                    try:
+                        widget.configure(bg=fill)
+                    except tk.TclError:
+                        pass              # an icon, a rule, anything
+            return done
+
+        for widget in everything(tile):
+            widget.configure(cursor="hand2")
+            widget.bind("<Button-1>", lambda _e: self._show(place))
+            widget.bind("<Enter>", paint(ui.CHIP_HOVER))
+            widget.bind("<Leave>", paint(ui.CARD))
 
     def _screen_said(self) -> None:
         """transcripts.log read back: the search, the six filters, and the
@@ -2228,8 +2303,32 @@ class Dashboard:
             text="Nothing is waiting." if not count else
             f"{_count_word(count)} thing{'' if count == 1 else 's'} "
             f"want{'s' if count == 1 else ''} an answer.")
+        # THE SUBLINE HAS TO AGREE WITH THE HEADLINE. It said "Nothing
+        # else on the desk needs you right now" whatever was waiting, so
+        # the page could read "Six things want an answer." over "Nothing
+        # else needs you right now" — two sentences that cannot both be
+        # true, in the two biggest lines on the screen. Now it says the
+        # one thing the headline leaves open: whether what he can see is
+        # all of it.
+        #
+        # It COUNTS what did not fit rather than saying where it went,
+        # and that is deliberate. Three of the four kinds have a place
+        # of their own on the band below; unread notifications do not —
+        # their place IS this page — and on this machine they are the
+        # commonest overflow of the four (87 of the last 100 cards were
+        # per-turn finishes). A sentence that sent him to a door that is
+        # not there would be wrong most of the times it was read.
+        extra = count - PILE_CAP
         p["waiting_sub"].config(
-            text="Nothing else on the desk needs you right now.")
+            text="Nothing else on the desk needs you right now."
+            if not count else
+            "It is here, and nothing else needs you right now."
+            if count == 1 else
+            "They are all here, and nothing else needs you right now."
+            if count <= PILE_CAP else
+            f"The newest {_count_word(PILE_CAP).lower()} are here, and "
+            f"{_count_word(extra).lower()} more "
+            f"{'is' if extra == 1 else 'are'} waiting.")
 
         shown = items[:PILE_CAP]
         column = p["pile_list"]
@@ -2242,8 +2341,16 @@ class Dashboard:
             # line for what did not fit.
             card.resize(28 + len(shown) * PILE_ROW_H + (len(shown) - 1))
             if not card.winfo_manager():
+                # Straight under the headline, because the pile is what
+                # the headline is ABOUT. It used to be packed under the
+                # line of counts, which put a count of the things above
+                # the things themselves. The held line, when there is
+                # one, belongs between the card and the band, so the
+                # card goes before whichever of the two is there.
+                held = p["held_line"]
                 card.pack(anchor="w", pady=(0, 14),
-                          before=p["rest_eyebrow"])
+                          before=held if held.winfo_manager()
+                          else p["elsewhere"])
             for index, spec in enumerate(shown):
                 if index:
                     widgets.rule(column.inner, CW - 28, bg=ui.CARD,
@@ -2275,42 +2382,196 @@ class Dashboard:
 
         self._paint_held()
         self._paint_rest()
+        self._settle_page()
+
+    def _settle_page(self) -> None:
+        """Give the page's slack to the band, and put the day's lines on
+        the footer rule.
+
+        The hole this fixes was a page packed from the top of a 502 px
+        box: with nothing waiting there were 300 px of nothing under the
+        last line and a footer rule with an empty page over it. Two
+        anchors fix that — the band grows into the room the pile is not
+        using, and whatever is STILL left becomes the ground above the
+        day, so the day always ends where the page ends.
+
+        Measured and not arithmetic, because arithmetic here is a
+        promise about font metrics that this repo has already broken
+        once (see button_width): the page is packed, asked how tall it
+        came out, and told the difference.
+        """
+        p = self.parts
+        page, band, ground = (p.get("page"), p.get("elsewhere"),
+                              p.get("ground"))
+        if page is None or band is None or ground is None:
+            return
+        if not band.winfo_exists() or not ground.winfo_exists():
+            return
+        floor = getattr(self, "_door_floor", DOOR_MIN_H)
+        band.configure(height=floor)
+        self._size_doors(floor)
+        ground.configure(height=DOOR_GAP)
+        page.inner.update_idletasks()
+        slack = PAGE_H - page.inner.winfo_reqheight()
+        grow = max(0, min(slack, DOOR_MAX_H - floor))
+        if grow:
+            band.configure(height=floor + grow)
+            self._size_doors(floor + grow)
+            page.inner.update_idletasks()
+            slack = PAGE_H - page.inner.winfo_reqheight()
+        ground.configure(height=DOOR_GAP + max(0, slack))
+
+    def _size_doors(self, height: int) -> None:
+        """The tiles are as tall as the band. Their words sit on the
+        middle line whatever that height is, so a tall tile has ground
+        under it rather than a heading hanging off its top edge, and the
+        third line — the one that says what the place is for — is only
+        drawn when the band is tall enough to hold all of it. _door_full
+        is that height, measured off the labels themselves: a note half
+        drawn is worse than no note, because a Card body clips without
+        telling anyone."""
+        full = getattr(self, "_door_full", 0)
+        for tile, _block, note in getattr(self, "_door_tiles", ()):
+            if not tile.winfo_exists():
+                continue
+            tile.resize(height)
+            if height >= full and not note.winfo_manager():
+                note.pack(anchor="w", pady=(DOOR_NOTE_GAP, 0))
+            elif height < full and note.winfo_manager():
+                note.pack_forget()
+
+    def _door_counts(self, items: list[dict]) -> list[tuple]:
+        """The five places, each as (place, glyph, number, what the
+        number is, what the place is for).
+
+        Every number here is the number of ROWS the place will show him
+        when he gets there, which is the only kind of count worth
+        putting on a door: Corrections is what the second reading is
+        proposing, Problems is his reports and the routine's questions
+        together (they share a place, so they share a tile), Said is
+        today's dictations, and Keys and Settings are as long as their
+        own lists. Unread messages are deliberately not here: their
+        place IS this page, and a door back to the page you are standing
+        on is not a door.
+        """
+        today = time.strftime("%Y-%m-%d")
+        said = sum(1 for e in self.log
+                   if e.kind == "dictation"
+                   and e.when.strftime("%Y-%m-%d") == today)
+        learned = _words_learned()
+        proposals = sum(1 for i in items if i["kind"] == "review")
+        trouble = sum(1 for i in items
+                      if i["kind"] in ("problem", "question"))
+        return [
+            ("Corrections", "review", proposals, "corrections waiting",
+             "and the words it has learned from the ones you said yes to"
+             if learned is None else
+             f"and the {learned} words it has learned from them"),
+            ("Problems", "error", trouble, "problems open",
+             "what you reported, and what the weekly routine asked you"
+             if self._problems_on else
+             "reporting is switched off — the switch is in Settings"),
+            ("Said", "history", said, "said today",
+             "the last hundred of them, with the search over them"),
+            ("Keys", "keys", len(config_mod.HOTKEY_FIELDS), "keys to press",
+             "every one of them lit on a drawn keyboard"),
+            ("Settings", "settings", len(settings_mod.TABS),
+             "tabs of settings",
+             "config.toml, in the words its own comments use"),
+        ]
 
     def _paint_doors(self, items: list[dict]) -> None:
-        """One line under the pile: what else is waiting, and the place
-        that holds it. The home shows the newest three of everything; a
-        count with nowhere to go is a count nobody can act on, so each of
-        these is the door to its own place.
+        """The band under the pile: the five places, what each of them is
+        holding right now, and the way in.
+
+        It was one thin line that named only the kinds with something
+        waiting — see the note over DOOR_MIN_H for the page that left
+        behind. The rule it always had is the rule it still has: a count
+        with nowhere to go is a count nobody can act on, so the whole
+        tile is the door, not just the word on it.
         """
         frame = self.parts.get("elsewhere")
         if frame is None or not frame.winfo_exists():
             return
         for child in frame.winfo_children():
             child.destroy()
-        counts = [("correction", "Corrections",
-                   sum(1 for i in items if i["kind"] == "review")),
-                  ("problem", "Problems",
-                   sum(1 for i in items if i["kind"] == "problem")),
-                  ("question", "Problems",
-                   sum(1 for i in items if i["kind"] == "question")),
-                  ("message", "Home",
-                   sum(1 for i in items if i["kind"] == "notify"))]
-        x = 2
-        for word, place, number in [c for c in counts if c[2]]:
-            if x > 2:                      # a separator BETWEEN, never after
-                dot = tk.Label(frame, text="·", bg=ui.BG, fg=ui.FAINT,
-                               font=(ui.UI, 10))
-                dot.place(x=x, y=2)
-                x += 14
-            text = f"{number} {word}{'' if number == 1 else 's'}"
-            if place == self.screen:      # the messages are already here
-                label = tk.Label(frame, text=text, bg=ui.BG, fg=ui.FAINT,
-                                 font=(ui.UI, 10))
-            else:
-                label = self._door(frame, text, place)
-            label.place(x=x, y=2)
-            label.update_idletasks()
-            x += label.winfo_reqwidth() + 8
+        self._door_tiles: list[tuple] = []
+        doors = self._door_counts(items)
+        # The band fills the row exactly. The remainder of the division
+        # is handed out a pixel at a time to the tiles on the left rather
+        # than left as a gap at the right edge, where it would read as
+        # the band having come up short.
+        room = CW - DOOR_GAP * (len(doors) - 1)
+        width, over = divmod(room, len(doors))
+        x = 0
+        for index, (place, glyph, number, line, note_text) in \
+                enumerate(doors):
+            tile_w = width + (1 if index < over else 0)
+            tile = ui.Card(frame, tile_w, DOOR_MIN_H, fill=ui.CARD,
+                           bg=ui.BG, pad=DOOR_PAD)
+            tile.place(x=x, y=0)
+            x += tile_w + DOOR_GAP
+
+            # The words ride on a frame of their own, placed on the
+            # middle line, so a band that has grown into an empty page
+            # has ground above and below its tiles instead of five
+            # headings hanging from their top edges.
+            #
+            # THE NUMBER AND ITS WORDS ARE ONE LINE, not two. Stacked,
+            # Rubik wants 43 px for the number and 26 for the line under
+            # it, and 69 + the padding is 24 px more than the band has
+            # when the pile is full — a tile that could only fit by
+            # cutting "corrections waiting" through the letters. Side by
+            # side they cost the 43 the number costs anyway, and "5
+            # corrections waiting" reads as the sentence it is.
+            block = tk.Frame(tile.body, bg=ui.CARD)
+            block.place(x=0, rely=0.5, anchor="w")
+            head = tk.Frame(block, bg=ui.CARD)
+            head.pack(anchor="w")
+            # The glyph LEADS the line, the way the mark leads a row of
+            # the pile. It was in the tile's top corner, which is fine
+            # on a short tile and marooned on a tall one — the band is
+            # 200 px when nothing is waiting, and an icon three lines
+            # above the words it belongs to is an icon about nothing.
+            widgets.icon(head, glyph, bg=ui.CARD,
+                         colour=ui.ACCENT if number else ui.FAINT,
+                         size=12).pack(side="left", padx=(0, 9))
+            tk.Label(head, text=str(number), bg=ui.CARD,
+                     fg=ui.FG if number else ui.FAINT,
+                     font=(ui.DISPLAY, 18, "bold")).pack(side="left")
+            # anchor "s" and 5 px of ground: it sits on the number's
+            # baseline rather than at the top of the taller line.
+            tk.Label(head, text=line, bg=ui.CARD, fg=ui.DIM,
+                     font=(ui.UI, 10), anchor="w").pack(side="left",
+                                                        anchor="s",
+                                                        padx=(7, 0),
+                                                        pady=(0, 5))
+            note = tk.Label(block, text=note_text, bg=ui.CARD, fg=ui.FAINT,
+                            font=(ui.UI, 9), anchor="w", justify="left",
+                            wraplength=tile_w - 2 * DOOR_PAD)
+            self._door_tiles.append((tile, block, note))
+            self._make_door(tile, place)
+
+        # HOW SHORT THE BAND MAY GET IS ASKED, NOT TYPED. A Card CLIPS —
+        # its body is a create_window with a height on it — so a band one
+        # pixel too short cuts "corrections waiting" through the middle
+        # of the letters and says nothing about it, and every one of
+        # these numbers is a font's answer rather than ours: Rubik 18
+        # bold is 43 px tall here and Rubik 10 is 26, at a tk scaling of
+        # 1.33 that is this machine's and not the next one's. So the two
+        # heights that matter are measured. DOOR_MIN_H is only the least
+        # the band should ever LOOK like; if a font change pushes the
+        # floor past it, the page gains a few pixels of scroll, which is
+        # the right way round — reachable, not cut.
+        frame.update_idletasks()
+        words_h = max((b.winfo_reqheight()
+                       for _t, b, _n in self._door_tiles), default=0)
+        # reqheight answers for a widget nothing has packed yet, which is
+        # what lets the third line be measured before it is ever shown.
+        note_h = max((n.winfo_reqheight()
+                      for _t, _b, n in self._door_tiles), default=0)
+        self._door_floor = max(DOOR_MIN_H, words_h + 2 * DOOR_PAD)
+        self._door_full = words_h + DOOR_NOTE_GAP + note_h + 2 * DOOR_PAD
 
     def _paint_held(self) -> None:
         """The one faint line under the card: what has arrived and is
@@ -2330,14 +2591,16 @@ class Dashboard:
             held = int(info.get("held") or 0)
         except (TypeError, ValueError):
             held = 0
-        eyebrow = self.parts.get("rest_eyebrow")
+        band = self.parts.get("elsewhere")
         if held:
             line.config(text=f"{held} finish{'es' if held > 1 else ''} "
                              "held until the session that sent them goes "
                              "quiet. They will arrive here, not on your "
                              "screen.")
-            if not line.winfo_manager() and eyebrow is not None:
-                line.pack(anchor="w", padx=2, pady=(0, 10), before=eyebrow)
+            # Between the card and the band of doors: it is a footnote to
+            # the pile, so it goes under the pile and not under the page.
+            if not line.winfo_manager() and band is not None:
+                line.pack(anchor="w", padx=2, pady=(0, 10), before=band)
         else:
             line.config(text="")
             line.pack_forget()
