@@ -220,7 +220,7 @@ indicator = true              # small dot in the corner ([dot] below): blue = ru
 # it - exactly what ctrl+alt+d does - click it again and the shelf
 # closes. Only the disc takes the click: the glow around it lets the
 # mouse through to whatever is underneath, so it never blocks anything.
-corner = "bottom-right"       # bottom-right | top-right. Which corner of the
+corner = "top-right"       # bottom-right | top-right. Which corner of the
                               # main screen's work area the dot sits in. The
                               # shelf and the key card open beside it there
                               # unless their own `corner` says otherwise.
@@ -1645,8 +1645,8 @@ card_seconds = 20             # how long the card stays on screen before it
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
-x = -1530                   # the top-left of the CARD where you last
-y = 887                   # dragged it, in screen pixels. -100000 = never
+x = -1450                   # the top-left of the CARD where you last
+y = 1030                   # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a
                               # monitor to the left of the primary
 scale = 1.0                   # how big it is drawn (0.6 .. 1.4)
