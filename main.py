@@ -84,6 +84,7 @@ NESTED_HOTKEYS = {
     "screens_hotkey": "awake.screens_hotkey",
     "dismiss_hotkey": "notify.dismiss_hotkey",
     "report_hotkey": "problems.report_hotkey",
+    "shelf_hotkey": "shelf.shelf_hotkey",
 }
 
 # What the dashboard may change while the app runs and have it FELT
@@ -95,7 +96,7 @@ NESTED_HOTKEYS = {
 # line edit, and answered with "applies the next time it starts".
 LIVE_SECTIONS = {"punctuate": "_punctuator", "translate": "_translator",
                  "polish": "_polisher", "feedback": None, "vocab": None,
-                 "hint": None, "review": None}
+                 "hint": None, "review": None, "shelf": None}
 LIVE_TOP_LEVEL = ("auto_pause_fullscreen", "paste_chord", "restore_delay_ms")
 
 # THE WEEKLY ROUTINE'S QUESTION, and the three numbers that decide when it
@@ -157,8 +158,11 @@ AUTO_PUNCTUATE_MIN_WORDS = 3
 # into, and one of the two is on the dictation hotkey. Latched it is
 # allowed, like the rest of them, and latching is exactly the state in
 # which typing a report while the microphone runs makes sense.
+# The shelf key is in here too: the panel reads nothing at the cursor and
+# writes nothing anywhere, so it is as true mid-sentence as a screenshot
+# is — and "what is waiting" is a fair question to ask while talking.
 _SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo",
-                             "screens", "notify_dismiss"})
+                             "screens", "notify_dismiss", "shelf"})
 
 # How old the last dictation may be before a report stops blaming it.
 # Five minutes covers "that came out wrong, let me say why" — the press
@@ -369,6 +373,11 @@ class App:
         # latch. Kept here purely so the log lines name the real number.
         self._cap = cfg.max_seconds
         self._latched = False
+        # When the recording that is running started, for the one line on
+        # the shelf that says how long it has been going. One monotonic()
+        # written on the hook thread beside `_cap` and read nowhere hot;
+        # 0.0 means nothing has been recorded yet this run.
+        self._rec_at = 0.0
         if cfg.translate_hotkey or cfg.punctuate_hotkey or cfg.lookup_hotkey:
             parse_chord(cfg.translate.copy_chord)        # fail fast, as above
         if cfg.translate_hotkey or cfg.punctuate_hotkey:
@@ -618,6 +627,40 @@ class App:
             x=int(getattr(pcfg, "x", unset) if pcfg is not None else unset),
             y=int(getattr(pcfg, "y", unset) if pcfg is not None else unset),
             on_change=self._save_problem_card)
+        # THE SHELF (shelf.py + shelf_card.py + skin\shelf.py): the panel
+        # beside the dot that one key opens, listing everything waiting
+        # for an answer with its own two answers on every row.
+        #
+        # Imported HERE and not at the top of the file, in a try/except,
+        # for the reason every optional card in this app is looked up
+        # rather than named: the module lands with its own half of the
+        # feature, `classic`'s Config has no [shelf] section at all, and a
+        # missing painter must cost one log line rather than a process
+        # that will not start. It also keeps Pillow out of the import
+        # graph of an app started with [shelf] enabled = false.
+        self.shelf = None
+        scfg = getattr(cfg, "shelf", None)
+        if scfg is not None and scfg.enabled:
+            try:
+                import shelf as shelf_mod
+                self.shelf = shelf_mod.ShelfCard(
+                    corner=scfg.corner, x=scfg.x, y=scfg.y, scale=scfg.scale,
+                    rows=getattr(scfg, "rows", 5),
+                    on_change=self._save_shelf_card,
+                    on_press=self._shelf_pressed,
+                    on_refresh=self._shelf_refresh)
+            except Exception:                    # noqa: BLE001
+                log.info("the shelf would not build — its key will say so "
+                         "and nothing else changes", exc_info=True)
+                self.shelf = None
+        # Armed by the first press of Stop on the panel and cleared by
+        # anything else, so the second press is the one that quits. Read
+        # and written only from the shelf's own callbacks.
+        self._shelf_stop_armed = False
+        # The four store stamps the panel was last built from. The
+        # refresh compares these before it reads anything at all — see
+        # _shelf_refresh.
+        self._shelf_stamp: tuple = ()
         self._review = None
         # The decoder's per-word confidence for the LAST live transcription,
         # read under the model lock in _transcribe and written into the
@@ -696,7 +739,7 @@ class App:
         touched from here, which is the rule in AGENTS.md that costs a
         day every time it is broken. Cheap enough for the keyboard hook.
         """
-        for name in ("notify_card", "review_card", "hint"):
+        for name in ("notify_card", "review_card", "hint", "shelf"):
             card = getattr(self, name, None)
             if card is None:
                 continue
@@ -786,6 +829,14 @@ class App:
         pcfg = getattr(cfg, "problems", None)
         if pcfg is not None and pcfg.enabled and getattr(pcfg, "hotkey", ""):
             taps[parse_binding(pcfg.hotkey)] = "problem_report"
+        # The shelf key, on the same terms: [shelf] enabled = false
+        # unregisters it and there is then no way to open the panel at
+        # all, which is what that line is for. getattr on both the
+        # section and the field, because this file is byte-identical on
+        # the classic branch and that Config has neither.
+        scfg = getattr(cfg, "shelf", None)
+        if scfg is not None and scfg.enabled and getattr(scfg, "hotkey", ""):
+            taps[parse_binding(scfg.hotkey)] = "shelf"
         return (hotkeys, taps,
                 vk_for(cfg.latch_hotkey) if cfg.latch_hotkey else None,
                 vk_for(cfg.pause_hotkey) if cfg.pause_hotkey else None)
@@ -1104,6 +1155,20 @@ class App:
                 return True
         except Exception:
             pass
+        # The shelf last of the three, and with NO pointer gate — the one
+        # deliberate difference. The two above arrive uninvited, so eating
+        # a keystroke away from them would eat a letter somebody was
+        # typing; the shelf was opened half a second ago by a deliberate
+        # press, and while it is up Esc means "close it". Ordering it
+        # after them keeps their more specific claim first. Returning True
+        # here ends the event before the state machine's cancel_guard, so
+        # this Esc can never also throw away a locked recording.
+        try:
+            card = getattr(self, "shelf", None)
+            if card is not None and card.on_key(vk):
+                return True
+        except Exception:
+            pass
         if self._lookup_vk is not None and vk == self._lookup_vk:
             return False
         if self._vqa_vk is not None and vk == self._vqa_vk:
@@ -1200,10 +1265,30 @@ class App:
             return
         self._activity = state
         self.dot.set_state(state)
-        # The card rides the same state, so it can never disagree with the
-        # dot about whether a recording is live — including the early
-        # return above, which is exactly the case where "ready" is a lie.
-        self.hint.show(self._hint_card(state))
+        # ONE PANEL OWNS THE TOP-RIGHT CORNER. Both cards default there
+        # and the shelf key is in _SCREEN_ACTIONS, so both can be wanted
+        # at once; the one he asked for wins, and the hint card comes
+        # back the moment the shelf closes (see _shelf_close).
+        shelf = getattr(self, "shelf", None)
+        up = False
+        try:
+            up = shelf is not None and shelf.visible()
+        except Exception:                        # noqa: BLE001
+            up = False
+        if not up:
+            # The card rides the same state, so it can never disagree with
+            # the dot about whether a recording is live — including the
+            # early return above, which is exactly the case where "ready"
+            # is a lie.
+            self.hint.show(self._hint_card(state))
+        else:
+            # A recording starting or stopping is the one thing on the
+            # panel that must not wait for the refresh tick. ON A THREAD:
+            # this method runs inside the keyboard hook (_on_start calls
+            # it), and rebuilding the card reads four JSON stores — 2.3 ms
+            # measured, and still not something to do in the 300 ms
+            # Windows allows a hook before it unhooks the app silently.
+            self._shelf_push()
 
     def _save_hint(self, fields: dict) -> None:
         """Write what the owner did to the card back into config.toml.
@@ -1712,6 +1797,8 @@ class App:
                 setattr(self, worker, None)
             if section == "hint":
                 self._hint_power(fresh.hint)
+            if section == "shelf":
+                self._shelf_power(getattr(fresh, "shelf", None))
             live = True
         message = (f"{name} saved" if live
                    else f"{name} saved — it applies the next time it starts")
@@ -1754,6 +1841,12 @@ class App:
         self.hint.start()
         self.review_card.start()
         self.notify_card.start()
+        # The shelf's thread, up before the key is ever pressed: the
+        # panel is built when it opens, but the presenter has to be
+        # waiting for it. Off with [shelf] enabled = false, in which case
+        # there is no object here at all.
+        if getattr(self, "shelf", None) is not None:
+            self.shelf.start()
         self.notify.start()
         self.notify_watch.start()
         # The weekly routine's question, WATCHED FOR rather than pushed:
@@ -1869,6 +1962,8 @@ class App:
         self.dot.stop()
         self.hint.stop()
         self.review_card.stop()
+        if getattr(self, "shelf", None) is not None:
+            self.shelf.stop()
         # The watcher first — it feeds the engine, and an arrival during
         # the shutdown would arm reminders nobody is left to answer.
         if getattr(self, "notify_watch", None) is not None:
@@ -2197,6 +2292,7 @@ class App:
         self.recorder.begin()   # also restores the cap a latch may have lifted
         self._question_texts = []
         self._cap, self._latched = self.cfg.max_seconds, False
+        self._rec_at = time.monotonic()
         self._set_state("recording")
         # An ask-the-screen card that is reading an answer aloud stops the
         # moment you start talking over it — that is what makes the thing
@@ -2371,6 +2467,9 @@ class App:
             return
         if action == "problem_report":
             self._tap_problem()
+            return
+        if action == "shelf":
+            self._tap_shelf()
             return
         if action not in ("translate", "punctuate"):
             return
@@ -2550,6 +2649,536 @@ class App:
                 engine.dismiss(by="key")
                 self._say("notifications dismissed")
         threading.Thread(target=work, daemon=True, name="notify-key").start()
+
+    # ---- the shelf (shelf.py + shelf_card.py) ----
+
+    # Which of a row's answers takes the screen somewhere else. Those
+    # close the panel, because something has replaced it; everything else
+    # ANSWERS what is on the panel, and answering the first of five
+    # things waiting must not make him press the key again for the second
+    # — the whole point of putting two buttons on every row is that the
+    # pile can be emptied where it stands. One set, so the rule is
+    # readable and reversible.
+    _SHELF_LEAVES = frozenset({"notify.open", "problem.open",
+                               "question.answer"})
+
+    def _tap_shelf(self) -> None:
+        """The panel beside the dot: open it, or close the one that is up.
+
+        ONE PRESS, ONE TOGGLE. `PTTStateMachine._take_tap` holds the vk
+        until the key comes up, so Windows' auto-repeat cannot fire this
+        twice, and this method itself only reads one flag and starts a
+        thread: building the card reads four small JSON stores (2.3 ms
+        measured), and nothing that touches the disk runs inside the
+        keyboard hook's 300 ms.
+
+        It never opens on hover and never on its own. That is the owner's
+        rule for this panel, and it is what makes a panel this tall
+        acceptable beside a 13 px dot.
+        """
+        card = getattr(self, "shelf", None)
+        if card is None:
+            self._cue_once("noop", "shelf-off")
+            log.info("the shelf is off ([shelf] enabled = false) — there is "
+                     "nothing for this key to open")
+            return
+        try:
+            if card.visible():
+                self._shelf_close()
+                return
+        except Exception:                        # noqa: BLE001
+            return
+        threading.Thread(target=self._shelf_open, daemon=True,
+                         name="shelf-open").start()
+
+    def _shelf_open(self) -> None:
+        """Build the panel and put it up. On a thread of its own."""
+        card = getattr(self, "shelf", None)
+        if card is None:
+            return
+        try:
+            self._shelf_stop_armed = False
+            fresh = self._shelf_card(force=True)
+            if fresh is None:
+                return
+            # ONE PILE IN ONE CORNER. The hint card defaults to the same
+            # corner and the shelf key works mid-dictation, so both can be
+            # wanted at once; and the notification column is showing the
+            # same items this panel now lists, with the same two answers.
+            # hush() sets an Event and returns — no Tk, no queue — so it
+            # is safe from anywhere, nothing is marked seen and no
+            # reminder is spent.
+            self.hint.show(None)
+            scfg = getattr(self.cfg, "shelf", None)
+            if getattr(scfg, "hush_notifications", True):
+                column = getattr(self, "notify_card", None)
+                if column is not None:
+                    column.hush()
+            card.show(fresh)
+            log.info("shelf: open — %d waiting", int(fresh.get("waiting", 0)))
+        except Exception:                        # noqa: BLE001
+            log.exception("the shelf would not open — dictation is "
+                          "unaffected")
+
+    def _shelf_close(self) -> None:
+        """Down, and the corner given back to whoever else wants it.
+
+        Safe from the hook thread: every call in here only sets an Event
+        or puts something on a queue.
+        """
+        card = getattr(self, "shelf", None)
+        if card is not None:
+            card.hide()
+        self._shelf_stop_armed = False
+        try:
+            column = getattr(self, "notify_card", None)
+            if column is not None:
+                column.unhush()
+        except Exception:                        # noqa: BLE001
+            log.debug("could not bring the notification column back",
+                      exc_info=True)
+        try:
+            self.hint.show(self._hint_card(self._activity))
+        except Exception:                        # noqa: BLE001
+            log.debug("could not put the hint card back", exc_info=True)
+
+    def _shelf_push(self) -> None:
+        """Rebuild the panel and show it, on a thread. Called from places
+        that run inside the keyboard hook (_set_state) and from the
+        buttons that change something the panel is showing."""
+        card = getattr(self, "shelf", None)
+        if card is None:
+            return
+
+        def work() -> None:
+            try:
+                if not card.visible():
+                    return
+                fresh = self._shelf_card(force=True)
+                if fresh is not None and card.visible():
+                    card.show(fresh)
+            except Exception:                    # noqa: BLE001
+                log.debug("could not refresh the shelf", exc_info=True)
+        threading.Thread(target=work, daemon=True, name="shelf-push").start()
+
+    def _shelf_stamps(self) -> tuple:
+        """What tells the panel that something it is showing has moved,
+        WITHOUT reading anything: (size, mtime_ns) per store.
+
+        Three of the four stores already answer this question for the
+        dashboard's change detector; the second reading's has no `stamp`,
+        so its own path is stat'd here in the same shape. A refresh that
+        finds these unchanged reads no JSON at all.
+        """
+        out = []
+        for owner, attr in ((getattr(self, "notify", None), "store"),
+                            (getattr(self, "_review", None), "store"),
+                            (self, "problems"), (self, "questions")):
+            store = getattr(owner, attr, None) if owner is not None else None
+            stamp = None
+            if store is not None:
+                try:
+                    reader = getattr(store, "stamp", None)
+                    if callable(reader):
+                        stamp = reader()
+                    else:
+                        st = store.path.stat()
+                        stamp = (st.st_size, st.st_mtime_ns)
+                except Exception:                # noqa: BLE001
+                    stamp = None
+            out.append(stamp)
+        return tuple(out)
+
+    def _shelf_state(self) -> dict:
+        """The head of the panel: which dot, how long up, and the clause
+        after it. Three attribute reads and a subtraction."""
+        machine = getattr(self, "machine", None)
+        mode = _DOT_FOR.get(getattr(machine, "state", None))
+        if mode is None:
+            if getattr(machine, "paused", False):
+                mode = "paused"
+            else:
+                mode = "busy" if self._activity == "busy" else "listening"
+        note = ""
+        if mode in ("recording", "locked") and self._rec_at:
+            live = max(0.0, time.monotonic() - self._rec_at)
+            note = f"recording {int(live) // 60}:{int(live) % 60:02d}"
+        else:
+            with self._stats_lock:
+                said = int(self._stats.get("dictations", 0))
+            note = f"{said} today" if said else ""
+        return {"mode": mode,
+                "uptime_s": time.monotonic() - self._started_at,
+                "stop_armed": bool(self._shelf_stop_armed),
+                "note": note}
+
+    def _shelf_pile(self) -> list:
+        """Everything waiting for an answer, from all four stores, newest
+        first, as one list.
+
+        ONE LIST AND ONE ORDER, which is the notification column's order
+        ("the first one will be at the upper side and the oldest one will
+        be on the down side"). The cost of one rule for four sources is
+        that a burst of notifications can push a question that has waited
+        since Saturday past the cap into "+N more"; the alternative is
+        two rules, and this one is three lines to change if he minds.
+
+        Every store is read through getattr and every read is wrapped: a
+        store that is off, missing or unreadable costs its own rows and
+        nothing else. `self.questions` is None on this machine today
+        ([questions] is not in config.toml), which is exactly the case
+        this shape is for.
+
+        The verb on an answer names the SOURCE as well as the act
+        ("notify.dismiss"), because ids from four stores share one list
+        and _shelf_pressed must know which store an id belongs to.
+        shelf_card hands the verb back untouched and decides nothing.
+        """
+        rows: list[dict] = []
+        engine = getattr(self, "notify", None)
+        if engine is not None:
+            try:
+                for item in engine.live():
+                    rows.append({
+                        "kind": str(item.get("kind") or "info"),
+                        "id": item.get("id"),
+                        "text": str(item.get("title")
+                                    or item.get("label") or ""),
+                        "at": str(item.get("at") or ""),
+                        "pill": "",
+                        "answers": [("notify.open", "Open"),
+                                    ("notify.dismiss", "Dismiss")]})
+            except Exception:                    # noqa: BLE001
+                log.debug("shelf: could not read the notifications",
+                          exc_info=True)
+        review = getattr(self, "_review", None)
+        if review is not None:
+            try:
+                import review as review_mod
+                for item in review.store.pending():
+                    changes = item.get("changes") or []
+                    piece = (review_mod.snippet(item.get("text") or "",
+                                                changes[0])
+                             if changes else {})
+                    rows.append({
+                        "kind": "review",
+                        "id": item.get("id"),
+                        "text": str(piece.get("right")
+                                    or item.get("text") or ""),
+                        "at": str(item.get("when") or ""),
+                        "pill": str(piece.get("word") or ""),
+                        "answers": [("review.accept", "Keep"),
+                                    ("review.reject", "No")]})
+            except Exception:                    # noqa: BLE001
+                log.debug("shelf: could not read the second reading",
+                          exc_info=True)
+        store = getattr(self, "problems", None)
+        if store is not None:
+            try:
+                for item in store.items(problems_mod.OPEN):
+                    rows.append({
+                        "kind": "problem",
+                        "id": item.get("id"),
+                        "text": str(item.get("text") or ""),
+                        "at": str(item.get("at") or ""),
+                        "pill": "",
+                        "answers": [("problem.open", "Open"),
+                                    ("problem.close", "Close")]})
+            except Exception:                    # noqa: BLE001
+                log.debug("shelf: could not read the problems", exc_info=True)
+        store = getattr(self, "questions", None)
+        if store is not None:
+            try:
+                for item in store.items(questions_mod.PENDING):
+                    rows.append({
+                        "kind": "question",
+                        "id": item.get("id"),
+                        "text": str(item.get("question")
+                                    or item.get("text") or ""),
+                        "at": str(item.get("at") or ""),
+                        "pill": "",
+                        "answers": [("question.answer", "Answer"),
+                                    ("question.later", "Later")]})
+            except Exception:                    # noqa: BLE001
+                log.debug("shelf: could not read the questions",
+                          exc_info=True)
+        rows.sort(key=lambda r: str(r.get("at") or ""), reverse=True)
+        return rows
+
+    def _shelf_card(self, force: bool = False) -> dict | None:
+        """The whole panel as data, or None when nothing has moved.
+
+        `force` skips the change detector, which is what opening the
+        panel and a state change both want. Otherwise the four stamps are
+        compared FIRST and no JSON is read at all when they agree — the
+        refresh runs once a second for as long as the panel is up, and
+        the usual answer to "has anything changed" is no.
+        """
+        card = getattr(self, "shelf", None)
+        if card is None:
+            return None
+        stamps = self._shelf_stamps()
+        state = self._shelf_state()
+        if not force and stamps == self._shelf_stamp:
+            return None
+        self._shelf_stamp = stamps
+        try:
+            import shelf_card as shelf_card_mod
+        except Exception:                        # noqa: BLE001
+            log.debug("shelf: no painter", exc_info=True)
+            return None
+        with self._last_lock:
+            last = dict(self._last) if self._last else None
+        dark = False
+        try:
+            awake = getattr(self, "awake", None)
+            dark = bool(awake.state().get("dark")) if awake is not None \
+                else False
+        except Exception:                        # noqa: BLE001
+            dark = False
+        return shelf_card_mod.card_for(
+            state, self._shelf_pile(),
+            {"text": (last or {}).get("final", ""),
+             "at": (last or {}).get("when", "")},
+            dark, max_rows=card.rows)
+
+    def _shelf_refresh(self) -> dict | None:
+        """The panel's own once-a-second question, answered on its
+        refresher thread (shelf.ShelfCard._refresh_loop).
+
+        None means "nothing you are showing has changed", and that is the
+        usual answer: the stores are compared by stamp before anything is
+        read, and the only thing that moves on its own is the uptime line,
+        which changes once a minute.
+        """
+        card = getattr(self, "shelf", None)
+        if card is None or not card.visible():
+            return None
+        shown = card.current() or {}
+        fresh = self._shelf_card()
+        if fresh is not None:
+            return fresh
+        # Nothing in the stores moved. Rebuild only if the head would
+        # actually read differently — a repaint a second of an identical
+        # picture is the one thing this panel promised not to do.
+        state = self._shelf_state()
+        try:
+            import shelf_card as shelf_card_mod
+            words = shelf_card_mod.uptime_words(state["uptime_s"])
+        except Exception:                        # noqa: BLE001
+            return None
+        same = (state["mode"] == shown.get("mode")
+                and state["stop_armed"] == shown.get("stop_armed")
+                and " · ".join(p for p in (words, state["note"]) if p)
+                == (shown.get("uptime") or ""))
+        return None if same else self._shelf_card(force=True)
+
+    def _shelf_pressed(self, what) -> None:
+        """A click on the panel, already resolved by shelf_card.action_at.
+
+        ARRIVES ON THE PAINTER'S THREAD, so every branch below either
+        enqueues, flips a flag, or starts a thread — the rule
+        _notify_dismissed's docstring states and the reason the panel's
+        pump can never be made to wait on a disk or the clipboard.
+        """
+        try:
+            if not what:
+                return
+            if what[0] == "row":
+                self._shelf_row(str(what[2]), what[3])
+            elif what[0] == "chrome":
+                self._shelf_chrome(str(what[1]))
+        except Exception:                        # noqa: BLE001
+            log.exception("the shelf could not act on %r — dictation is "
+                          "unaffected", what)
+
+    def _shelf_row(self, do: str, ident) -> None:
+        """One of a row's two answers. Every one of these is a method the
+        cards already call: the panel is a second door onto the same
+        answers, never a second implementation of them."""
+        source, _, verb = do.partition(".")
+        if source == "notify":
+            if verb == "open":
+                self._notify_opened(ident)
+            else:
+                self._notify_dismissed(ident)
+        elif source == "review":
+            self._review_verdict(str(ident),
+                                 "accepted" if verb == "accept"
+                                 else "rejected")
+        elif source == "problem":
+            if verb == "open":
+                open_dashboard()
+            else:
+                threading.Thread(target=self._shelf_problem_close,
+                                 args=(str(ident),), daemon=True,
+                                 name="shelf-problem").start()
+        elif source == "question":
+            if verb == "answer":
+                threading.Thread(target=self._shelf_question, daemon=True,
+                                 args=(str(ident),),
+                                 name="shelf-question").start()
+            else:
+                self._q_hushed[str(ident)] = (time.monotonic()
+                                              + QUESTION_REASK_S)
+                log.info("questions: %s waved away from the shelf — back in "
+                         "about %.0f min", ident, QUESTION_REASK_S / 60.0)
+        else:
+            return
+        if do in self._SHELF_LEAVES:
+            self._shelf_close()
+        else:
+            self._shelf_push()
+
+    def _shelf_problem_close(self, ident: str) -> None:
+        """Answered, and problems.md rewritten. Own thread: the store
+        takes a cross-process lock and the digest is written from scratch
+        every time — the same two steps the dashboard's own Close does
+        (dashboard._write_digest), and forgetting the second one leaves
+        the file the weekly routine reads a week out of date."""
+        store = getattr(self, "problems", None)
+        if store is None:
+            return
+        try:
+            store.resolve(ident, problems_mod.CLOSED, by="shelf")
+            problems_mod.digest(store, APP_DIR / problems_mod.DIGEST_NAME)
+            self._say("report closed")
+        except Exception:                        # noqa: BLE001
+            log.exception("shelf: could not close %s", ident)
+
+    def _shelf_question(self, ident: str) -> None:
+        """The real question card, on the real question. The shelf never
+        tries to BE that card — it has two to five options and a text box
+        — it just stops standing in front of it."""
+        store = getattr(self, "questions", None)
+        if store is None:
+            return
+        item = store.get(ident)
+        card = self._answer_box()
+        if item is None or card is None:
+            return
+        self._question_show(card, item)
+
+    def _shelf_chrome(self, name: str) -> None:
+        """The panel's own buttons. Pause and Screens change something the
+        panel is SHOWING, so they refresh it in place; the two doors
+        replace it, so they close it."""
+        try:
+            import shelf_card as shelf_card_mod
+        except Exception:                        # noqa: BLE001
+            return
+        card = getattr(self, "shelf", None)
+        if name == shelf_card_mod.PAUSE:
+            self.set_paused(not self.machine.paused)
+            self._shelf_push()
+            return
+        if name == shelf_card_mod.STOP:
+            self._shelf_stop(card)
+            return
+        if name == shelf_card_mod.COPY:
+            with self._last_lock:
+                text = (self._last or {}).get("final", "")
+            if not text:
+                self._cue_once("noop", "shelf-copy")
+                self._say("nothing dictated yet")
+                return
+            # ON A THREAD, and this is not caution: injector._board_lock
+            # is shared with the whole process and the longest thing on it
+            # holds it for 2.1 s (control_command's copy_last says the
+            # same). The panel's pump may not wait on that.
+            threading.Thread(target=self._copy_text, args=(text,),
+                             daemon=True, name="shelf-copy").start()
+            self._say(f"{len(text)} chars copied")
+            self._shelf_close()
+            return
+        if name == shelf_card_mod.SCREENS:
+            threading.Thread(target=self._shelf_screens, daemon=True,
+                             name="shelf-screens").start()
+            return
+        if name in (shelf_card_mod.DOOR, shelf_card_mod.MORE):
+            open_dashboard()
+            self._shelf_close()
+
+    def _shelf_screens(self) -> None:
+        """The screens off or back, then the row says which. Own thread:
+        the engine may spawn a process."""
+        try:
+            state = self.awake.toggle(by="shelf")
+            self._say("screens off — the machine stays awake" if
+                      state.get("dark") else "screens on")
+        except Exception:                        # noqa: BLE001
+            log.exception("shelf: the screens would not switch")
+        self._shelf_push()
+
+    def _shelf_stop(self, card) -> None:
+        """Quitting, armed. The first press turns the word into a
+        question and the second one quits, because there is no undo for a
+        quit and this panel opens with one keystroke.
+
+        REFUSED WHILE A RECORDING IS RUNNING, out loud. The rectangle
+        stays claimed either way: a button that disappears leaves a hole
+        that answers HTTRANSPARENT, and in this corner the pixel
+        underneath is the close button of every maximised window — the
+        trap the status dot paid for once already.
+        """
+        shown = (card.current() if card is not None else None) or {}
+        if not shown.get("stop_ok", True):
+            self._cue_once("noop", "shelf-stop")
+            self._say("not while the microphone is live — finish the "
+                      "dictation first")
+            log.info("shelf: Stop refused, a recording is running")
+            return
+        if not self._shelf_stop_armed:
+            self._shelf_stop_armed = True
+            self._say("press Stop again to quit")
+            self._shelf_push()
+            return
+        log.info("shelf: Stop pressed twice — quitting")
+        self._shelf_close()
+        threading.Thread(target=singleton.request_quit, daemon=True,
+                         name="shelf-stop").start()
+
+    def _save_shelf_card(self, fields: dict) -> None:
+        """Where the panel was dragged to, written into [shelf] through
+        the same comment-keeping line edit every other card uses."""
+        scfg = getattr(self.cfg, "shelf", None)
+        if scfg is None:
+            return
+        self.cfg = dataclasses.replace(
+            self.cfg, shelf=dataclasses.replace(scfg, **fields))
+        config_mod.set_values(self.config_path,
+                              {f"shelf.{k}": v for k, v in fields.items()})
+        log.info("shelf: %s", ", ".join(f"{k}={v}" for k, v in fields.items()))
+
+    def _shelf_power(self, scfg) -> None:
+        """Rebuild the panel from a changed [shelf] — switched on or off,
+        moved, resized, or given a different `rows` from the dashboard.
+
+        _hint_power's shape and for its reason: the old card's thread is
+        joined and the new one's waited for, and this is called from the
+        control pipe, which has to answer at once.
+        """
+        def swap() -> None:
+            old = getattr(self, "shelf", None)
+            new = None
+            if scfg is not None and scfg.enabled:
+                try:
+                    import shelf as shelf_mod
+                    new = shelf_mod.ShelfCard(
+                        corner=scfg.corner, x=scfg.x, y=scfg.y,
+                        scale=scfg.scale, rows=getattr(scfg, "rows", 5),
+                        on_change=self._save_shelf_card,
+                        on_press=self._shelf_pressed,
+                        on_refresh=self._shelf_refresh)
+                except Exception:                # noqa: BLE001
+                    log.info("the shelf would not rebuild", exc_info=True)
+                    new = None
+            if old is not None:
+                old.stop()
+            self.shelf = new
+            if new is not None:
+                new.start()
+        threading.Thread(target=swap, daemon=True, name="shelf-swap").start()
 
     def _tap_problem(self) -> None:
         """One key, one line, and the app attaches the rest of the report.

@@ -74,8 +74,12 @@ SCALE_MIN, SCALE_MAX = 0.6, 1.4
 DISMISS, DRAG = "dismiss", "drag"
 
 # One colour per kind: the bar across the top, the label and the badge.
-KIND_COLOUR = {"done": (86, 196, 120), "input": (232, 168, 64),
-               "error": (248, 122, 125), "info": (29, 109, 212)}
+# LAMPLIGHT semantics: done is the success green, input is the ACCENT
+# (in this app "your attention is wanted" and "the primary action" are
+# the same sentence, so they are the same colour on purpose), error is
+# the danger red and info is COOL — the one cool point in a warm world.
+KIND_COLOUR = {"done": (99, 200, 140), "input": (227, 166, 60),
+               "error": (241, 134, 122), "info": (143, 192, 240)}
 FOOTER = "Esc / click to dismiss"
 
 # Row heights at scale 1.0. Chrome rows are fixed so the card's height is
@@ -108,11 +112,11 @@ STACK_MAX = 8             # the ceiling [notify] stack_max is validated
 
 # skin\palette.py's values, spelled out: this module is reached with the
 # skin folder deleted. Tuples, because Pillow wants them.
-INK = (232, 235, 243)
-INK_DIM = (163, 171, 188)
-INK_FAINT = (116, 125, 141)
-LINE = (52, 58, 69)
-CARD = (31, 35, 45)
+INK = (241, 236, 226)        # FG      13.76:1 on the card
+INK_DIM = (178, 168, 150)    # DIM      6.89:1
+INK_FAINT = (126, 117, 100)  # FAINT    3.56:1 — labels and rules
+LINE = (58, 52, 42)          # LINE
+CARD = (36, 32, 26)          # CARD
 
 ELLIPSIS = "…"
 

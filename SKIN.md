@@ -31,7 +31,7 @@ the last stanza of `requirements.txt`.
 
 ## What it touches outside itself
 
-Four files, one guarded hook each, all in FRONT of code that was not
+Five files, one guarded hook each, all in FRONT of code that was not
 otherwise edited:
 
 | file | hook | what falls back |
@@ -39,30 +39,229 @@ otherwise edited:
 | `overlay.py` | `Splash._run`, `StatusDot._run` | the original Tk splash and dot |
 | `ui.py` | one `repaint(globals())` at the end of the palette block | the original hex literals, which are still there |
 | `visual_qa.py` | `_pump_wave` | the original `create_oval` rings |
-| `dashboard.py` | none — it gained named constants instead of 13 inline hexes | the constants carry the OLD values in `ui.py` |
+| `shelf.py` | `skin.shelf_run(card)` in `ShelfCard._build_and_loop` | `shelf_card.flat()` in a plain Tk window with square corners, every button still working |
+| `dashboard.py` | none — it reads `ui`'s names, and so do `widgets.py`, `keyboard.py` and `prose.py`, at call time rather than at import | whatever `ui.py`'s own literals say |
 
 `ui.py` is the only interesting one. `from ui import CARD` binds the value
 at import time, so the repaint has to happen while `ui.py` is still
 executing — which is where the hook sits. `visual_qa.py` reads its palette
 out of `ui.py`, so the ask card is recoloured without a hook of its own.
 
+**Every shade the window draws now has a name.** `UI_NAMES` went from 30
+to **47**: three the skin had and `ui.py` did not (`LINE_HI`, `FOCUS`,
+`ACCENT_ON`, which `repaint` had therefore been silently skipping), two
+the direction needs (`COOL`, `RECORDING`), and twelve that `ui.py` used
+to spell out as hex INSIDE its own widget constructors — below the
+`# --- SKIN` marker, where `repaint` could never reach them. A test now
+fails on any `"#rrggbb"` below that marker. Each new name was also added
+to `ui.py`'s pre-marker block at an OLD-palette value, so deleting
+`skin\` still gives back a coherent COBALT window rather than a
+half-repainted one.
+
+**`fonts.py` is not part of the revert, and should not be.** The look
+needs Rubik actually loaded — measured 2026-09-06, it was not: a fresh
+process asking GDI for "Rubik" got Arial back, so `ui.pick_face` returned
+Segoe UI and every surface in this document had been drawn in the
+fallback face. `fonts.load()` calls `AddFontResourceExW(path, FR_PRIVATE,
+0)` for every file in `fonts\`, at the import of `ui.py` (before
+`pick_face`) and of `visual_qa.py`. It is four calls, under 3 ms,
+idempotent, and it never raises. Deleting `skin\` does not undo it,
+because the typeface was never the skin's choice — `ui.pick_face`'s
+preference list has asked for Rubik all along; this is only the call that
+makes the answer true.
+
 ## What is in the folder
 
 | file | job |
 |---|---|
-| `palette.py` | COBALT: the elevation ladder, the contrast table, the light ramp |
+| `palette.py` | LAMPLIGHT: the elevation ladder, the contrast table, the light ramp, `UI_NAMES` (47), `DOT_STATES` as `(fill, ring, pulses)` and `NO_HALO` |
 | `ease.py` | the curves, as one-line canonical formulas |
 | `gl.py` | an OpenGL context, so Skia can use the graphics card |
 | `glass.py` | a click-through, never-focusable layered window Skia paints on |
 | `boot.py` | the corner card, the waveform, and the thread that drives both |
 | `reveal.py` | the release, on the GPU |
 | `burst.py` | the release, for machines with no GPU |
-| `dot.py` | the status dot |
+| `dot.py` | the status dot: five states, and the halo gated on `NO_HALO` — paused is the one without one, checked on rendered alpha 8 px out from the disc rather than on the colour table, because the halo rule is about DRAWING |
+| `shelf.py` | the glass under the panel beside the dot (`face()` + `run()`): `notify.py`'s recipe with the shelf's geometry and `hint.py`'s shadow put back. Nothing animates, so `run()` caches the composed picture on `(card, hover, scale)` and re-blits it — composing a full panel is 41 ms and the tick is one second |
+| `hint.py` | the key card while a key is held; its `DOTS` are derived from `DOT_STATES`, so the card and the corner dot cannot disagree |
+| `notify.py`, `review.py` | the glass under the notification column and the second-reading card |
 | `wave.py` | the microphone rings in the ask card |
 | `preview.py` | `python -m skin.preview burst\|card\|all` |
 | `record.py` | `python -m skin.record out.mp4` — film it over the real desktop |
 
 ## The design
+
+### LAMPLIGHT — one lamp on a dark desk
+
+The palette was COBALT (`#11151b` ground, `#1d6dd4` accent). Since
+2026-09-07 it is **LAMPLIGHT**: the app is the light, not the furniture.
+
+The argument for it is not taste, it is coherence. It is the only palette
+the owner has ever said he liked, and **the logo he loves is already
+painted in it** — a dark tile, a light desk, a gold lamp. Choosing this
+makes the app become its mark instead of the mark being an outlier on its
+own screen. The risk is his own sentence from round 1, when a warm
+graphite and gold restyle came back as *"it just looks like the colours
+changed"*: this direction only works if the shapes change too, which is
+why it shipped with the rail gone, the keyboard drawn and the shelf built
+rather than on its own.
+
+**The surface ladder.** Neighbours step 3–5 L\* apart; closer than that
+and two surfaces read as one, which is the fault this file's palette was
+written to fix in the first place.
+
+| token | hex | L\* | step |
+|---|---|---|---|
+| `GROUND` | `#14110C` | 5.2 | — |
+| `PANE` | `#1C1813` | 8.5 | +3.3 |
+| `CARD` | `#24201A` | 12.5 | +4.0 |
+| `CARD_HI` | `#2E2921` | 16.9 | +4.4 |
+| `LINE` | `#3A342A` | 22.0 | +5.1 |
+| `LINE_HI` | `#4E4737` | 30.4 | +8.4 |
+
+**The text, against the two surfaces it actually lands on.** Body text is
+≥ 4.50 everywhere it can go; `FAINT` is the one shade allowed to fail it,
+and it is bounded from both sides — 3.0 ≤ x < 4.5 — because a
+well-meaning lift would turn it into a second body colour.
+
+| token | hex | on ground | on card |
+|---|---|---|---|
+| `FG` | `#F1ECE2` | 15.99 | 13.76 |
+| `DIM` | `#B2A896` | 8.01 | 6.89 |
+| `ACCENT_TEXT` | `#F0BA5C` | 10.66 | 9.17 |
+| `GREEN` | `#63C88C` | 9.12 | 7.84 |
+| `ACCENT` / warning | `#E3A63C` | 8.77 | 7.55 |
+| `RED` | `#F1867A` | 7.56 | 6.50 |
+| `FAINT` | `#7E7564` | 4.14 | 3.56 — labels and rules only, never prose |
+
+**On a gold fill the label is `ACCENT_ON` (`#1A1409`), at 8.52 : 1.** `FG`
+on gold is **1.8 : 1** and simply vanishes. That mattered immediately:
+the accept button of the review card, the Send of the problem and answer
+cards and the picked option's badge digit were all drawing white on the
+accent, and the blue palette had been hiding it — white on the old accent
+was 4.10 : 1, already failing AA, and the same code on gold is
+unreadable. All four now use `ACCENT_ON`. There was **no contrast test**
+before this; there is one now, and it asserts every number in the two
+tables above.
+
+**Where the accent is spent, and where it may never go.** The lamp dot,
+the ONE primary action on a surface, the focus ring (`FOCUS == ACCENT`),
+and the selected place's edge. **It never fills a surface, a card border
+or the rail, and no surface ever has two gold things lit at once.**
+`COOL` (`#8FC0F0`) is the listening dot and links, and nothing else.
+`AMBER == ACCENT`, deliberately: in this app "your attention is wanted
+here" and "this is the primary action" are the same message. The cost of
+that is worth writing down — a surface that ever needs a *needs-you*
+badge **and** a primary button has no second attention colour. The rule
+holds today because the review card and the notify card never both need
+it, and it will bite the day it stops holding.
+
+**The five dot states.** The dot is a layered window sitting on the
+user's wallpaper, so it always paints its own `#1A1A1A` backplate and is
+checked against that rather than against a surface:
+
+| state | hex | on the backplate | L\* |
+|---|---|---|---|
+| listening | `#8FC0F0` | 9.09 | 76.0 |
+| recording | `#FF5B4E` | 5.68 | 61.0 |
+| locked | `#FF8A7E` | 7.62 | 70.1 |
+| transcribing | `#F5C043` | 10.36 | 80.5 |
+| paused | `#6F6F6F` | 3.46 | 46.8 |
+
+Every pair separates by light (ΔL\* ≥ 8) or by hue (Δhue ≥ 40) — ΔL\* is
+what a colour-blind eye keeps, Δhue is what it may lose — and all ten
+pairs pass. The one exception is **recording against locked**, which is
+one colour by design: they are 9.1 L\* and 1.2° apart, and what actually
+separates them is the 0.16 Hz breath the dot has always had.
+
+**Paused is the one state with no halo**, and that is the rule, not a
+detail: `paused` is a neutral grey with no warmth in it at all, and
+listening is a cool blue at nearly the same distance from transcribing
+(ΔL\* 4.5) — so the halo's *presence* is what tells "off" from "on",
+rather than hue alone. `palette.NO_HALO = frozenset({"paused"})` and
+`skin\dot.py` gates on it. The test checks rendered alpha 8 px out from
+the disc, not the colour table, because the halo rule is about drawing.
+
+**The mark.** A dalet drawn as a desk: a tabletop with one leg hanging
+from its right end, the top's edge just past the leg, the lamp-dot above
+the left of the top, and — at 48 px and up only — two light arcs to the
+dot's right. Tile `CARD` with a `rgba(255,255,255,.08)` rim and a radius
+of 15/64; letter `FG`; dot and arcs `ACCENT`, with a glow fading .55→0
+out to r 14 drawn UNDER the desk. Two variants: a **lit tile** (gold
+tile, ground-coloured desk) for a selected state, and **one-colour**
+(`DIM`) for the taskbar and for disabled. The wordmark is "DeskIT" in
+Rubik 700 with the "IT" in `ACCENT_TEXT`. `make_icon.py` draws it on the
+design's own 64-unit grid at 4× and downsamples with LANCZOS; the arcs
+are solved from their SVG arc commands rather than eyeballed, which is
+what puts both of them exactly on the lamp's own centreline. Two cuts:
+`full ≥ 48` with the glow and the arcs, `small < 48` with neither —
+16 px cannot hold what 256 px can, and below 48 the glow is a smudge, so
+`ui._icon_art` takes the small frame out of `icon.ico` rather than
+downsampling the full cut.
+
+**The type.** Rubik, at last actually loaded (see `fonts.py` above), in
+two weights: through GDI only 400 and 700 are real. Every size is the
+Segoe-era number **+2 px**, because Rubik draws Hebrew ~13% smaller at
+the same nominal size (93% of nominal against Segoe's 107% at 15 px), and
+every row is +20% for its taller line box. Emphasis comes from size and
+from `ACCENT_TEXT`, never from a Medium that does not exist.
+
+| name | pt | px | what |
+|---|---|---|---|
+| `PT_TITLE` | 20 | 27 | the one big line on a screen |
+| `PT_HERO` | 15 | 20 | a state, or a number that is the point of a tile |
+| `PT_WORDS` | 13 | 17 | **his own words** |
+| `PT_BODY` | 12 | 16 | body, buttons, every ordinary line |
+| `PT_LABEL` | 10 | 13 | a Hebrew label, a meta line |
+| `PT_CAPS` | 9 | 12 | Latin small caps, an eyebrow |
+
+Rows followed: `PILL_H` 36 (was 30), `BTN_H` 40 (36), `CAP_H` 40 (34),
+`SWITCH_W/H` 46/26 (42/24), `ROW_H` 44 (36). No letter-spacing on a
+Hebrew run, ever. And a Latin run inside an RTL line reorders — `2.1 s ·
+local` comes out as `s · local 2.1` — so a meta line that mixes Hebrew
+with numbers or filenames is drawn as separate runs and never as one
+string.
+
+### Five decisions worth disagreeing with
+
+1. **The hint card's key chips are key caps, not accent chips.** In gold,
+   fifteen accent chips turned a legend into fifteen primary actions
+   competing for one glance. They take `ui.KeyCap`'s face now, in both
+   painters (`skin\hint.py` and `overlay.py`'s Tk fallback), and the only
+   lit thing on that card is the state bead.
+2. **The review card's clock bar stays gold beside the gold accept
+   button.** Strictly that is two gold things on one surface. It is a
+   rule and not a control, and desaturating it loses the "this is about
+   to go away" signal — so it is flagged here rather than hidden.
+3. **`capture.INKS` is deliberately NOT on the palette.** Those four are
+   drawn on somebody else's screenshot and need to be foreign to the
+   picture rather than native to the app. The red went one step brighter
+   (`#e83e30`) so a mark still reads when the capture is OF this app's
+   own gold chrome, and `MARK` stayed the vivid `#ffd640` for the same
+   reason: under LAMPLIGHT the chrome is warm, so the pencil has to
+   separate by being brighter and more saturated than any gold the app
+   draws (Y .70 against .44).
+4. **`popup.PRESSED` is `#d9483c`, not the palette's `RED`.** It is a
+   FILL with the ✕ drawn over it: `FG` on the palette red is 2.1 : 1 and
+   on this one 3.61 : 1, which is what a graphic needs. The text-weight
+   message ("the clipboard is busy") moved to a new `DANGER_TEXT` at
+   7.56 : 1.
+5. **`glass_plate`'s tint is the gold taken down to the blue's own
+   luminance** (Y .272 against .269), so the plate is the same weight over
+   a screenshot as it always was; the three glass inks were matched the
+   same way (.88/.53/.33 against .91/.52/.35).
+
+Two more, in files that read the table rather than write it.
+`skin\reveal.py`'s seven-stop ramp was retuned with its **luminance order
+preserved** (1.00/.90/.68/.55/.51/.02) because `_front` reads the stops
+inner-to-edge and assumes each is dimmer than the last. And `shelf_card`
+reads its colours from `skin.palette` **by name**, with one fallback
+table holding the LAMPLIGHT literals for the case where `skin\` is
+deleted — against the palette as it stands nothing falls back; its
+`recording` and `locked` come out of `DOT_STATES` when they are there, so
+the shelf's own dot and the corner dot can never disagree.
+
+### The boot moment
 
 **The card** holds a waveform. It grows from a near-flat line into a full
 voice as each model loads, glowing, with a gradient running along its
@@ -142,6 +341,16 @@ report `fontStyle().weight() == 300` and identical advance widths. Asking
 for the Medium file and expecting Medium gets Light, which is what the
 first card shipped as. `boot._rubik` pins the `wght` axis with `makeClone`;
 verified 300/400/500/700 measuring 79.30/80.98/82.96/84.96 px.
+
+**The two paths do not have the same ladder, and only the Skia one is
+free.** Because `boot._rubik` clones the axis, a glass card can use a
+genuine Medium. The Tk/GDI path cannot: measured 2026-09-06 with all four
+files privately loaded, `("Rubik", 500)`, `Rubik Medium` and
+`Rubik SemiBold` all resolve to the 400 outlines (advance 104 px for
+`מבנה חדש` at 24 px, against 108 for 700), so `ui.MEDIUM` is a real
+family name that draws at regular weight. Emphasis in the window comes
+from size and from `ACCENT_TEXT`; emphasis on a glass card may come from
+a weight.
 
 **Skia builds its raster pipeline lazily.** The first frame containing the
 bolt cost 83 ms — one stutter, landing exactly on the frame the effect is

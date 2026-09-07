@@ -1,107 +1,159 @@
-"""COBALT — the same blue this app has always been, brought into focus.
+"""LAMPLIGHT — one lamp on a dark desk. The app is the light, not the desk.
 
-This is deliberately not a new identity. The lookup box (popup.py) and the
-capture windows carry their own copies of the old palette as COLORREFs and
-are not touched by the reskin, so a hue flip would have left the app half
-recoloured, which is worse than either state. What was wrong with the old
-palette was not its hue. It was measurable:
+The blue is gone. It was never wrong on contrast — COBALT fixed that — it
+was wrong on IDENTITY: the mark the owner actually likes is a dark tile, a
+white desk and a gold lamp, and a blue window around that mark made the
+mark the outlier. This palette makes the app become its own icon.
 
-    bg #0d1017 L*4.68 and pane #10131a L*5.88 are 1.2 L* apart, which is
-        below the threshold where two surfaces read as two surfaces
-    accent #2d6cdf as text is 3.92:1 — FAILS WCAG AA
-    white on that accent is 4.10:1 — FAILS AA, so every filled button in
-        the dashboard was already illegible by the standard
-    danger #e0352b is 4.27:1 — FAILS AA
-    amber #e0a32b at 8.56:1 was the one semantic colour already right
+Read the numbers, not the adjectives. Every value below was measured with
+the WCAG formula and CIE L*, and the ladder is the first thing to check:
 
-So: same family, correct spacing, and every pair checked rather than
-eyeballed. The elevation ladder is L* 6.6 / 10.2 / 13.7 / 18.4 / 24.3 /
-31.0 — adjacent surfaces 3.5-4.7 apart, which is the band where a card
-reads as lifted off its pane without anything looking milky.
+    ground  #14110C  L*  5.2
+    pane    #1C1813  L*  8.5   (+3.3)
+    card    #24201A  L* 12.5   (+4.0)
+    card-hi #2E2921  L* 16.9   (+4.4)
+    line    #3A342A  L* 22.0   (+5.1)
+    line-hi #4E4737  L* 30.4   (+8.4, and it is a border, not a surface)
 
-Contrast, measured (ratio against bg, then against the highest surface):
+Adjacent surfaces are 3.3-4.4 L* apart, which is the band where a card
+reads as lifted off its pane without anything looking milky. Closer and two
+surfaces read as one — the fault this file was originally written to fix.
 
-    text    #e8ebf3   15.35 : 1  /  11.56 : 1     AAA everywhere
-    dim     #a3abbc    7.94 : 1  /   5.98 : 1     AAA to s1, AA through s3
-    faint   #747d8d    4.41 : 1  /   3.32 : 1     non-text only, by design
-    accent-text #8fbeff 9.57 : 1 /   7.21 : 1     AAA on all four surfaces
-    white on accent #1d6dd4        5.01 : 1       AA — the old one failed
+Contrast, measured (ratio against ground, then card, then card-hover):
 
-FAINT is under 4.5 on purpose and is only ever used for hairline labels
-and rules, never for anything a person has to read. The three semantics
-(success/warning/danger) are all AA or better on every surface.
+    text        #F1ECE2  15.99 : 1  13.76  12.26     AAA everywhere
+    dim         #B2A896   8.01       6.89   6.14     AAA to card, AA above
+    faint       #7E7564   4.14       3.56   3.17     RULES AND LABELS ONLY
+    accent      #E3A63C   8.77       7.55   6.72
+    accent-text #F0BA5C  10.66       9.17   8.17     AAA on all four
+    success     #63C88C   9.12       7.84   6.99
+    danger      #F1867A   7.56       6.50   5.79
+    cool        #8FC0F0   9.83       8.46   7.54
+    recording   #FF5B4E   6.15       5.29   4.71
 
-The industry band for dim text is 6-9:1 — Linear's muted is 6.13, GitHub's
-6.15, Radix slate-11 is 9.06. 7.94 sits in the middle of that on purpose.
+    accent-on   #1A1409 on the gold fill        8.52 : 1
+    text        #F1ECE2 on accent-soft         12.39 : 1
+
+FAINT is under 4.5 on purpose and is only ever a hairline label or a rule,
+never anything a person has to read — the same discipline COBALT kept.
+
+Three rules the values alone cannot carry, and every surface has to:
+
+1. **The accent never fills a surface, a card border or the rail.** It is
+   the lamp: the one primary action on a surface, the focus ring, the lit
+   edge of the selected place. Two gold things lit at once on one surface
+   is the bug, not the taste question.
+2. **Blue is the listening dot and links.** `COOL` is the one cool point in
+   a warm world and it keeps the blue the owner has already learned.
+3. **Warning IS the accent, deliberately.** In this app "your attention is
+   wanted here" and "this is the primary action" are the same sentence.
+   The cost is that a surface needing a needs-you badge AND a primary
+   button has no second attention colour; the day that stops holding, the
+   badge gets a shape rather than a hue.
+
+The five dot states are not drawn from this ladder. The status dot is a
+38 px layered window sitting on the user's *wallpaper*, so it paints its
+own dark backplate and needs lit colours whatever is behind it. Against
+#1A1A1A: listening 9.09, recording 5.68, locked 7.62, transcribing 10.36,
+paused 3.46. Every pair separates by light (dL* >= 8) or by hue, except
+recording/locked, which are one colour by design — the 0.16 Hz breath is
+what separates them — and paused, which separates from listening by having
+NO HALO at all rather than by hue alone.
 """
 from __future__ import annotations
 
 # ---------------------------------------------------------------- surfaces
-BG = "#11151b"          # L* 6.64  the window, the sidebar, the card ground
-PANE = "#181c23"        # L* 10.15 a content pane on the window
-CARD = "#1f232d"        # L* 13.73 a card face
-CARD_HI = "#282d38"     # L* 18.42 a card face under the pointer
-LINE = "#343a45"        # L* 24.28 hairline border
-LINE_HI = "#434957"     # L* 30.99 a border that is being interacted with
-FOCUS = "#646e7f"       # 3.56:1 on bg — a focus ring you can actually see
+BG = "#14110c"          # L*  5.2  the window, the card ground
+PANE = "#1c1813"        # L*  8.5  a field, a strip, a secondary face
+CARD = "#24201a"        # L* 12.5  a lifted face
+CARD_HI = "#2e2921"     # L* 16.9  a face under the pointer
+LINE = "#3a342a"        # L* 22.0  hairline border
+LINE_HI = "#4e4737"     # L* 30.4  a border being interacted with
+FOCUS = "#e3a63c"       # the focus ring IS the accent — 8.77:1 on bg
 
 # ------------------------------------------------------------------- text
-FG = "#e8ebf3"          # 15.35:1 on bg
-DIM = "#a3abbc"         # 7.94:1
-FAINT = "#747d8d"       # 4.41:1 — rules and micro-labels, never prose
+FG = "#f1ece2"          # 15.99:1 on bg
+DIM = "#b2a896"         # 8.01:1
+FAINT = "#7e7564"       # 4.14:1 — rules and micro-labels, never prose
 
 # ----------------------------------------------------------------- accent
-ACCENT = "#1d6dd4"      # white on it is 5.01:1, which finally passes AA
-ACCENT_HI = "#3482eb"   # hover, and solid chips on a card (see the note)
-ACCENT_DOWN = "#175bb4"
-ACCENT_SOFT = "#122b4e"  # the accent at card weight, for selected states
-ACCENT_TEXT = "#8fbeff"  # the accent at TEXT weight — 9.57:1, AAA
-ACCENT_ON = "#ffffff"
+ACCENT = "#e3a63c"      # the lamp. 8.52:1 against its own on-colour
+ACCENT_HI = "#f0b854"   # hover — 10.48:1 on bg
+ACCENT_DOWN = "#c68c28"  # pressed
+ACCENT_SOFT = "#332711"  # L* 16.5 — a selected row's fill, text 12.39:1
+ACCENT_TEXT = "#f0ba5c"  # the accent at TEXT weight — 10.66:1, AAA
+ACCENT_ON = "#1a1409"   # text ON the gold fill — 8.52:1
 
 # -------------------------------------------------------------- semantics
-GREEN = "#67c986"       # 8.96:1 on bg
-AMBER = "#f0b758"       # 10.13:1
-RED = "#f87a7d"         # 7.04:1 — the old #e0352b was 4.27 and failed
-TEAL = "#51c5d2"
-VIOLET = "#c89ef7"
+GREEN = "#63c88c"       # 9.12:1 — done, learned
+AMBER = ACCENT          # = the accent, deliberately (see the note above)
+RED = "#f1867a"         # 7.56:1 — errors and destructive
+TEAL = "#7fc8c8"        # 9.86:1 — a history badge, not a state
+VIOLET = "#c3a2ec"      # 8.70:1 — a history badge, and awake-while-dark
+
+# The two the window palette does not own: the dot's red, which has to
+# carry on a wallpaper, and the one cool point in a warm world.
+RECORDING = "#ff5b4e"   # L* 61 — the dot while it is capturing
+COOL = "#8fc0f0"        # 9.83:1 — the listening dot, links, informational
 
 # ------------------------------------------------------- derived surfaces
-EDGE = "#242932"        # a secondary button
-EDGE_HI = "#2e3440"
-EDGE_DOWN = "#1c212a"
-STROKE = "#343a45"
+EDGE = "#29241d"        # a secondary button — L* 14.5, between card and hi
+EDGE_HI = "#332d24"     # L* 18.8
+EDGE_DOWN = "#1f1b15"   # L* 10.0
+STROKE = LINE
 
-# The eight the dashboard used to spell out inline, moved onto the ladder.
-# Each one is now a step that exists in the ramp above rather than a shade
-# picked to look right next to whatever it happened to sit beside.
-RULE = "#1e232c"        # sidebar hairline: one step over PANE
-ACCENT_EDGE = "#1e4176"  # the border of a selected row: over ACCENT_SOFT
-SIDE_IDLE = "#1a1f27"   # an unselected sidebar row
-SIDE_CARD = "#181c23"   # the sidebar's state card — PANE exactly
-QUOTE_BG = "#1f232d"    # the quoted transcript — CARD exactly
-QUOTE_EDGE = "#343a45"  # LINE
-TILE_EDGE = "#3c434f"   # a row under the pointer, just over LINE_HI
-CHIP_BG = "#212630"     # the square behind a row icon
+# The eight the dashboard used to spell out inline, kept on the ladder.
+RULE = "#211d17"        # a hairline on the ground: one step over PANE
+ACCENT_EDGE = "#5a431a"  # the border of a selected row: over ACCENT_SOFT
+SIDE_IDLE = "#1a1610"    # an unselected row on the ground
+SIDE_CARD = PANE         # the state card at the foot of a column
+QUOTE_BG = CARD          # the quoted transcript — CARD exactly
+QUOTE_EDGE = LINE
+TILE_EDGE = "#5a5240"    # a row under the pointer, just over LINE_HI
+CHIP_BG = "#292419"      # the square behind a row icon
+
+# ------------------------------------------- the thirteen widget shades
+# ui.py used to spell these out INSIDE its own widget constructors, where
+# no repalette could reach them, so the filter chips and every key cap
+# stayed on the old colours while the rest of the window changed. They are
+# on the ladder now and `repaint` covers them.
+BTN_OFF = "#211d17"      # a disabled button: RULE — flat, one step over bg
+BTN_OFF_EDGE = "#2b2620"
+CHIP_ON_EDGE = "#5a431a"  # a chip that is on: ACCENT_SOFT with a lit edge
+CHIP_OFF = "#1f1b15"      # a chip, a pill, a pair pill at rest: EDGE_DOWN
+CHIP_OFF_EDGE = "#332d24"  # EDGE_HI
+CHIP_HOVER = "#29241d"     # EDGE
+CHIP_HOVER_EDGE = "#4e4737"  # LINE_HI
+TRACK_OFF = "#4e4737"      # the switch's track when off — LINE_HI, so the
+#                            knob (FG) reads as ON A TRACK rather than as a
+#                            dot floating on the card
+KEY_BG = "#29241d"       # a key cap is a secondary face with a lit rim
+KEY_EDGE = "#4e4737"
+KEY_HI = "#332d24"       # a key cap under the pointer
+THUMB = "#4e4737"        # the scroller's thumb — LINE_HI
 
 # The accent pre-composited over BG at four weights. Baked as flat fills
 # because a blur to suggest a glow costs a frame; these cost nothing.
-GLOW_05 = "#121924"
-GLOW_10 = "#121e2e"
-GLOW_16 = "#132339"
-GLOW_24 = "#142a47"
+GLOW_05 = "#1e180e"
+GLOW_10 = "#292011"
+GLOW_16 = "#352914"
+GLOW_24 = "#463518"
 
 # ------------------------------------------------------------- the light
-# The value ramp the burst is built from, core outward. Five stops, warm
-# at the core and cool at the edge, because that is what hot things do and
+# The value ramp the burst is built from, core outward. Five stops, warm at
+# the core and cool at the edge, because that is what hot things do and
 # because a ramp that stays one hue reads as a UI element lit from inside
-# rather than as light. Never a saturated red anywhere: R/(R+G+B) >= 0.8 is
-# the single highest seizure-risk colour and every guideline gives it its
-# own stricter threshold.
+# rather than as light. LAMPLIGHT keeps that shape and moves the middle of
+# it onto the lamp: white, then incandescent, then the gold itself, then
+# the one cool colour in the palette at the rim. Never a saturated red
+# anywhere: R/(R+G+B) >= 0.8 is the single highest seizure-risk colour and
+# every guideline gives it its own stricter threshold. The warmest stop
+# here computes to 0.37.
 LIGHT_CORE = (255, 255, 255)
-LIGHT_HOT = (255, 244, 214)      # #FFF4D6 — the classic incandescent stop
-LIGHT_MID = (143, 190, 255)
-LIGHT_ACCENT = (52, 130, 235)
-LIGHT_DEEP = (18, 43, 78)
+LIGHT_HOT = (255, 240, 206)      # #FFF0CE — the classic incandescent stop
+LIGHT_MID = (240, 186, 92)       # ACCENT_TEXT: the lamp at its own weight
+LIGHT_ACCENT = (143, 192, 240)   # COOL: the corona, and the blue's new home
+LIGHT_DEEP = (24, 38, 60)        # #18263C — night at the rim
 
 
 def rgb(colour: str) -> tuple[int, int, int]:
@@ -139,27 +191,47 @@ def hex_of(colour) -> str:
 # What ui.py exports, and therefore what a reskin has to be able to answer
 # for. Kept as an explicit map rather than "everything uppercase in this
 # module" so that adding a colour here cannot silently repaint a widget
-# nobody looked at.
+# nobody looked at. `repaint` writes ONLY over names ui.py already defines,
+# so every entry below has a matching literal in ui.py's palette block —
+# which is what the app falls back to when skin\ is deleted.
 UI_NAMES = {
     "BG": BG, "PANE": PANE, "CARD": CARD, "CARD_HI": CARD_HI, "LINE": LINE,
+    "LINE_HI": LINE_HI, "FOCUS": FOCUS,
     "FG": FG, "DIM": DIM, "FAINT": FAINT,
     "ACCENT": ACCENT, "ACCENT_HI": ACCENT_HI, "ACCENT_DOWN": ACCENT_DOWN,
     "ACCENT_SOFT": ACCENT_SOFT, "ACCENT_TEXT": ACCENT_TEXT,
+    "ACCENT_ON": ACCENT_ON,
     "RED": RED, "AMBER": AMBER, "GREEN": GREEN, "VIOLET": VIOLET,
-    "TEAL": TEAL, "EDGE": EDGE, "EDGE_HI": EDGE_HI, "EDGE_DOWN": EDGE_DOWN,
+    "TEAL": TEAL, "COOL": COOL, "RECORDING": RECORDING,
+    "EDGE": EDGE, "EDGE_HI": EDGE_HI, "EDGE_DOWN": EDGE_DOWN,
     "STROKE": STROKE,
     "RULE": RULE, "ACCENT_EDGE": ACCENT_EDGE, "SIDE_IDLE": SIDE_IDLE,
     "SIDE_CARD": SIDE_CARD, "QUOTE_BG": QUOTE_BG, "QUOTE_EDGE": QUOTE_EDGE,
     "TILE_EDGE": TILE_EDGE, "CHIP_BG": CHIP_BG,
+    "BTN_OFF": BTN_OFF, "BTN_OFF_EDGE": BTN_OFF_EDGE,
+    "CHIP_ON_EDGE": CHIP_ON_EDGE, "CHIP_OFF": CHIP_OFF,
+    "CHIP_OFF_EDGE": CHIP_OFF_EDGE, "CHIP_HOVER": CHIP_HOVER,
+    "CHIP_HOVER_EDGE": CHIP_HOVER_EDGE, "TRACK_OFF": TRACK_OFF,
+    "KEY_BG": KEY_BG, "KEY_EDGE": KEY_EDGE, "KEY_HI": KEY_HI,
+    "THUMB": THUMB,
 }
 
 # overlay.STATES is (fill, ring, pulses) and a test asserts that shape, so
 # the dot's colours are given here in the same form rather than as a new
-# structure the test would not recognise.
+# structure the test would not recognise. `ring` is the backplate the Tk
+# fallback paints under the disc; the glass dot draws a halo of `fill`
+# instead. Measured against #1A1A1A, the darkest wallpaper the dot has to
+# survive: 9.09 / 5.68 / 7.62 / 10.36 / 3.46.
 DOT_STATES = {
-    "ready":     (ACCENT_HI, "#12233d", False),
-    "recording": (RED, "#3b1416", False),
-    "locked":    (RED, "#3b1416", True),
-    "busy":      (AMBER, "#332404", False),
-    "paused":    (FAINT, "#1b2029", False),
+    "ready":     (COOL, "#16232f", False),        # listening — the one cool
+    "recording": (RECORDING, "#3a140f", False),   # capturing now
+    "locked":    ("#ff8a7e", "#3a140f", True),    # latched, breathing
+    "busy":      ("#f5c043", "#33260a", False),   # the lamp at full
+    "paused":    ("#6f6f6f", "#1e1e1e", False),   # neutral, and see NO_HALO
 }
+
+# Paused is the ONE state with no halo. It is the only neutral in the set,
+# and a grey halo on a dark wallpaper is a smudge rather than a light — so
+# the state reads by the halo's ABSENCE, which no colourblindness and no
+# wallpaper can take away. Everything else glows.
+NO_HALO = frozenset({"paused"})

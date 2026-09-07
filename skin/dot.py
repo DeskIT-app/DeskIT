@@ -31,7 +31,7 @@ import time
 
 from . import ease
 from .glass import Glass, primary_screen
-from .palette import DOT_STATES, argb, rgb
+from .palette import DOT_STATES, NO_HALO, argb, rgb
 
 _log = logging.getLogger("app")
 
@@ -88,14 +88,25 @@ class Dot:
         if pulses:
             glow = 0.62 + 0.38 * (0.5 + 0.5 * math.cos(clock_ms / 1000.0))
 
-        # the halo — the whole reason this is a layered window
-        canvas.drawCircle(cx, cy, CORE * 2.6, skia.Paint(
-            BlendMode=skia.BlendMode.kPlus, Dither=True,
-            Shader=skia.GradientShader.MakeRadial(
-                center=(cx, cy), radius=CORE * 2.6,
-                colors=[argb(150 * glow, fill), argb(52 * glow, fill),
-                        argb(0, fill)],
-                positions=[0.0, 0.45, 1.0])))
+        # THE HALO — the whole reason this is a layered window, and the
+        # whole reason PAUSED is legible. Every lit state glows; paused is
+        # the one neutral in the set and it gets nothing, so the state
+        # reads by the halo's ABSENCE. A grey halo on a dark wallpaper is
+        # a smudge rather than a light, and hue alone would leave paused
+        # and listening a colourblind viewer's coin toss. The halo fades
+        # across a state change with everything else, so switching INTO
+        # paused dims out rather than snapping off.
+        halo = (0.0 if self.state in NO_HALO else 1.0) * k
+        halo += (0.0 if self._from in NO_HALO else 1.0) * (1.0 - k)
+        if halo > 0.004:
+            canvas.drawCircle(cx, cy, CORE * 2.6, skia.Paint(
+                BlendMode=skia.BlendMode.kPlus, Dither=True,
+                Shader=skia.GradientShader.MakeRadial(
+                    center=(cx, cy), radius=CORE * 2.6,
+                    colors=[argb(150 * glow * halo, fill),
+                            argb(52 * glow * halo, fill),
+                            argb(0, fill)],
+                    positions=[0.0, 0.45, 1.0])))
 
         # a hairline containing ring, so the dot has an edge against a
         # white window as well as against a dark one

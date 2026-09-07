@@ -52,7 +52,7 @@ construction, and Tk is still the wrong tool for a sentence it cannot be
 told the direction of. `ui.is_rtl` aligns each drawn transcript the way
 its first strong character will lay it out.
 
-The look — rounded cards, the sidebar, the switches — is all in ui.py; the
+The look — rounded cards, the top bar, the switches — is all in ui.py; the
 palette is unchanged from the first version of this window.
 """
 from __future__ import annotations
@@ -72,11 +72,14 @@ import config as config_mod
 import control
 import history
 import hotkey as hotkey_mod
+import keyboard as keyboard_mod
 import launch
 import awake as awake_mod
+import prose as prose_mod
 import settings as settings_mod
 import singleton
 import ui
+import widgets
 
 APP_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = APP_DIR / "config.toml"
@@ -89,23 +92,73 @@ ICON_PNG = APP_DIR / "icon.png"
 # icon rather than the app's.
 APP_ID = "Yoav.DeskIT.Dashboard"
 
-W, H = 940, 648          # fixed, which is what lets every bitmap be cached
-SIDE = 212               # the sidebar
+W, H = 1160, 720         # fixed, which is what lets every bitmap be cached
+SIDE = 0                 # the rail is gone; the places are along the top
+TOP = 56                 # the bar: the mark, four places, the state, one key
 PAD = 24
-CW = W - SIDE - PAD * 2  # 680 — the usable width of a screen
+CW = W - PAD * 2         # 1112 — the usable width of a screen
 
-# activity -> (dot colour, the word for it)
+# activity -> (dot colour, the word for it). The colours are asked of
+# `ui` when the chip is painted, not here, so a repainted palette lands
+# without this table being edited; the WORDS are the five states the dot
+# has, in the same spelling the dot's own tooltip uses.
 LOOKS = {
-    "stopped":   (ui.FAINT, "STOPPED"),
-    "starting":  (ui.AMBER, "STARTING"),
-    "ready":     (ui.ACCENT, "RUNNING"),
-    "recording": (ui.RED, "RECORDING"),
-    "locked":    (ui.RED, "LOCKED ON"),
-    "busy":      (ui.AMBER, "TRANSCRIBING"),
-    "paused":    (ui.DIM, "PAUSED"),
+    "stopped":   ("FAINT", "Off"),
+    "starting":  ("AMBER", "Starting"),
+    "ready":     ("COOL", "Listening"),
+    "recording": ("RECORDING", "Recording"),
+    "locked":    ("RECORDING", "Locked on"),
+    "busy":      ("AMBER", "Transcribing"),
+    "paused":    ("DIM", "Paused"),
 }
 
 POLL_MS = 800
+# THE PILE: how many things the Waiting card holds before it says
+# "+N more", and the rectangle it holds them in. Fixed, not grown to
+# fit: a home whose furniture moves every time a notification arrives
+# is a home you cannot learn. Three rows of 80 px fit the 246 px inside
+# the card exactly; a fourth scrolls, and ui.Scroller paints no thumb
+# until there is something to scroll.
+PILE_CAP = 6             # the most the card will ever hold
+PILE_SHOWN = 3           # what fits without scrolling; the rest is "+N more"
+PILE_ROW_H = 72
+PILE_Y = 100
+# 258 inside: three 72 px rows, the two hairlines between them, and the
+# "+N more" line with its 8/4 of air — 255, measured 2026-09-07. It was
+# 274 (246 inside) and the last 10 px of "+N more" were behind the card's
+# own edge, so the one thing on the card that says there is more of it
+# was the one thing you had to scroll to see.
+PILE_H = 286
+PILE_H_OPEN = 470        # expanded, into the room the rest of the day had
+CAPTURE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
+# The Said place is a list and a panel side by side. The list keeps the
+# width a sentence needs; the panel takes what is left.
+SAID_W = CW - 320
+
+# The Keys place, top to bottom. A 40 px cap makes a 746x278 board, which
+# leaves 346 px for the panel beside it and ~190 px under it for the
+# fifteen rows — three to a line, five lines, no scrolling in the
+# ordinary case. The legend ends at 98 and the board starts at 100, so
+# nothing overlaps anything; the foot is the one faint line about the
+# safe keys, placed UP from the bottom edge (see _screen_keys).
+KEY_UNIT = 40
+KEY_COLUMNS = 4
+KEY_LEGEND_Y = 58        # the five swatches; two lines each, ending at 98
+KEY_BOARD_Y = 100
+KEY_FOOT_GAP = 22        # ground under the last line, so it is not flush
+KEY_FOOT_LINE = 17       # one line of the 8 pt foot, measured
+# The first Settings tab. It is a TAB and not a mode, so every piece of
+# machinery the dense view has — the chips, the search, the one-card-per-
+# tick build, the tests that walk them — works on it unchanged.
+DESK = "In your words"
+SOUND_COLUMNS = 5
+KEY_LEGEND = (
+    ("held", "down the whole time it works", "hold"),
+    ("tapped", "fires and still reaches the app underneath", "tap"),
+    ("chord", "the modifier lit softly, the key fully", "chord"),
+    ("only sometimes", "Esc, while a recording is running", "sometimes"),
+    ("unlit", "the app never sees it", None),
+)
 HISTORY_ROWS = 100       # what "the last hundred" means, in one place
 SEARCH_MS = 160          # how long typing has to stop before the list moves
 
@@ -114,18 +167,26 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
            "green": ui.GREEN, "amber": ui.AMBER, "red": ui.RED,
            "faint": ui.FAINT}
 
-NAV = (("overview", "Overview"), ("history", "History"),
-       ("review", "Review"), ("awake", "Awake"), ("notify", "Notify"),
-       ("keys", "Keys"), ("version", "Version"),
-       ("problems", "Problems"), ("settings", "Settings"))
+# FOUR PLACES, not nine rows. Ten days of use said the window sees 2.1
+# actions a day and all twenty-one of them were the same four things:
+# clearing review verdicts that had piled up, dismissing everything at
+# once, turning the screens off, and rebinding a key. Nine equal rows
+# with a 190-line Settings screen behind one of them is a filing cabinet
+# for a drawer. So: what is WAITING (notify + review + problems +
+# questions, in one pile), what was SAID (history + vocabulary), the
+# KEYS, and SETTINGS (which absorbs Awake, Version and the phone).
+# Overview is gone: its state line is in the top bar now, on every place.
+NAV = (("waiting", "Waiting"), ("said", "Said"),
+       ("keys", "Keys"), ("settings", "Settings"))
 
-# A nav row takes its glyph from ui.ICON[key], so the key of a screen and
-# the name of its glyph are normally the same word. Problems has no glyph
-# of its own — ui.py is not this wave's file — so it borrows the error
-# mark HERE, rather than the one table that names the screens having to
-# call the screen "error". A key with no glyph and no entry here is still
-# a KeyError the first time the sidebar is built, which is the point.
-NAV_GLYPH = {"problems": "error"}
+# A place takes its glyph from ui.ICON[key] where there is one. Waiting
+# and Said are new words for old screens, and ui.py is not this wave's
+# file, so they borrow the glyphs those screens had — the bell and the
+# clock — HERE, rather than the one table that names the places having
+# to call them "notify" and "history". A key with no glyph and no entry
+# here is still a KeyError the first time the bar is built, which is the
+# point.
+NAV_GLYPH = {"waiting": "notify", "said": "history"}
 
 # The Awake screen probes the machine (powercfg, PowerShell — a few
 # seconds) the moment it opens. Off for the tests, which open every
@@ -143,7 +204,7 @@ KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("What to do with the screen", ("capture_hotkey", "record_hotkey",
                                     "camera_hotkey")),
     ("The app itself", ("pause_hotkey", "screens_hotkey", "dismiss_hotkey",
-                        "report_hotkey")),
+                        "report_hotkey", "shelf_hotkey")),
 )
 
 # Keys that live INSIDE a config section, and the dotted path set_values
@@ -159,11 +220,36 @@ NESTED_HOTKEYS = {
     "screens_hotkey": "awake.screens_hotkey",
     "dismiss_hotkey": "notify.dismiss_hotkey",
     "report_hotkey": "problems.report_hotkey",
+    "shelf_hotkey": "shelf.shelf_hotkey",
 }
 
 # The right-hand column of a settings row: a switch, a menu, or a field.
 CONTROL_W = 236
 ENTRY_W = 150
+# What a line of text really occupies on a settings card. Rubik's 8 pt
+# linespace is 17 and its 10 pt is 20 — measured on the hidden desktop
+# 2026-09-07, against the 15 the Segoe-era rows were drawn for. The rows
+# with one block of text under them got away with 15 on their tail
+# padding; a row that can also carry the file's own name and comment
+# does not, and the first draft ran the comment into the next title.
+LINE = 17                    # one line of the small face
+TITLE_H = 22                 # a row's own name, and the air under it
+# A control INSIDE a sentence (prose.py). DROP_ROOM is what ui.Dropdown
+# keeps for its own padding and caret glyph — its label is drawn at x 12
+# and its ▾ at w - 12, and it clamps to w - 40, so a box sized with 46
+# to spare is one the menu will never cut a second time. PROSE_FIELD_MAX
+# is the widest a field may be before it is shown cut instead: past
+# about a third of the column the sentence stops being a sentence.
+DROP_ROOM = 46
+PROSE_FIELD_MAX = 300
+# A one-line field, and the strip the settings tabs live in. Rubik's line
+# box is ~20% taller than the Segoe one these were drawn for: a 9 pt line
+# needs 25 px and both search cards had an 18 px body, so the placeholder
+# and the caret lost their descenders behind the card's edge; the tab
+# strip was 36 for a 36 px chip plus 3 px of air, so every tab was
+# squashed to 30. Both measured on the hidden desktop, 2026-09-07.
+FIELD_H = 48                                 # 26 of body inside an 11 pad
+TAB_BAR_H = max(ui.PILL_H + 6, FIELD_H)      # the tabs, or the field
 
 # "Dictate (hold)" is one string in config.py because that is all the old
 # window needed. Here the how is its own column.
@@ -182,6 +268,30 @@ def human_time(seconds: float) -> str:
     if seconds < 3600:
         return f"{seconds // 60}m"
     return f"{seconds // 3600}h {(seconds % 3600) // 60:02d}m"
+
+
+# Three things want an answer, not 3. A number in a sentence that is
+# about how much is left to do reads as data; the word reads as a
+# sentence, which is what the title line is. Past six the digit is
+# honestly better — "seventeen things" is a wall.
+_COUNT_WORDS = ("No", "One", "Two", "Three", "Four", "Five", "Six")
+
+
+def _count_word(n: int) -> str:
+    return _COUNT_WORDS[n] if 0 <= n < len(_COUNT_WORDS) else str(n)
+
+
+def _words_learned() -> int | None:
+    """How many corrections the vocabulary holds, or None if there is no
+    file. The COUNT only — the words themselves are his."""
+    import json
+    try:
+        with (APP_DIR / "vocab.json").open(encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    entries = data.get("corrections") if isinstance(data, dict) else None
+    return len(entries) if isinstance(entries, list) else None
 
 
 def split_label(label: str) -> tuple[str, str]:
@@ -926,6 +1036,66 @@ def _keys_screen_paths() -> set[str]:
             for field, _label in config_mod.HOTKEY_FIELDS}
 
 
+def _dot_states() -> dict:
+    """`skin.palette.DOT_STATES` if the skin is here, else {}.
+
+    The corner dot and this window are the same lamp seen twice, and the
+    one table that measured the five states is the skin's. Asked for at
+    call time and never at import: deleting `skin\\` is the supported way
+    back to a plain window (SKIN.md), and this must not be the import
+    that makes that fail."""
+    try:
+        from skin import palette as skin_palette
+    except Exception:                     # noqa: BLE001 — no skin folder
+        return {}
+    return getattr(skin_palette, "DOT_STATES", {}) or {}
+
+
+def _look_colours(activity: str) -> tuple[str, str]:
+    """(colour, word) for a state.
+
+    The colour comes from the DOT's OWN table first — the five states in
+    `skin.palette.DOT_STATES`, which is where they were measured against
+    the dot's dark backplate — so the chip in the bar and the dot in the
+    corner can never disagree about what "transcribing" looks like. That
+    matters for one state in particular: the lamp at full is `#f5c043`
+    and `AMBER` is `#e3a63c`, and reading the second would have made the
+    two lamps two colours.
+
+    Without a skin folder it falls back to `ui`, resolved at the moment
+    it is asked for; a palette with neither COOL nor RECORDING falls back
+    again, so this window opens on a checkout whose ui.py predates them.
+    """
+    name, word = LOOKS.get(activity, LOOKS["ready"])
+    measured = _dot_states().get(activity)
+    if measured:
+        return measured[0], word
+    fallback = {"COOL": "ACCENT", "RECORDING": "RED"}.get(name, "DIM")
+    colour = getattr(ui, name, None) or getattr(ui, fallback, ui.DIM)
+    return colour, word
+
+
+def _has_halo(activity: str) -> bool:
+    """Whether this state's lamp carries a glow.
+
+    Paused has none — that is the whole way "off" is told apart from
+    "quiet" at a glance, and it is `skin.palette.NO_HALO`'s rule. Off and
+    starting-blind are the same kind of nothing, so they are here too."""
+    if activity in ("paused", "stopped"):
+        return False
+    try:
+        from skin import palette as skin_palette
+    except Exception:                     # noqa: BLE001 — no skin folder
+        return True
+    return activity not in getattr(skin_palette, "NO_HALO", frozenset())
+
+
+def _quiet_button(*args, **kwargs):
+    """ui.Button, quiet — as a plain function so it can stand where
+    widgets.gold_button stands."""
+    return ui.Button(*args, quiet=True, **kwargs)
+
+
 def _shown(value) -> str:
     """A value as the field shows it, and as config.set_values will read
     it back: repr for a float so 6.0 stays 6.0, str for the rest."""
@@ -1003,7 +1173,7 @@ class Dashboard:
         self._busy_until = 0.0     # ignore polls right after a command, so a
                                    # stale status cannot flicker the buttons
                                    # back for one frame
-        self.screen = "Overview"
+        self.screen = "Waiting"
         self.parts: dict = {}      # the widgets of whichever screen is up
         self.log: list[history.Event] = []
         self._log_stamp: tuple[int, float] = (0, 0.0)
@@ -1015,14 +1185,22 @@ class Dashboard:
         self._search_after = None
         self._settings_query = ""
         self._settings_after = None
-        self._settings_tab = settings_mod.TABS[0].name
+        self._settings_tab = DESK
         self._settings_searching = False
+        # "Show the file's own words": off, every dense row is a plain
+        # title and one plain sentence; on, the dotted name and the
+        # comment config.toml keeps come back underneath it.
+        self._settings_raw = False
         # The settings cards still to be built, one per tick — see
         # _fill_settings — and the tick that will build the next.
         self._settings_left: list = []
         self._settings_tick = None
         self._rows_after = None
         self._rows_left: list = []
+        # How wide a drawn row is on the place that is up. The Said list
+        # shares its place with the vocabulary panel, so it is narrower
+        # than the sheet; every other list is the full width.
+        self._row_w = CW
         self._slide_after = None
         self._breath_after = None
         self._stats_shown = False   # the count-up runs once per screen visit
@@ -1062,6 +1240,14 @@ class Dashboard:
         self._push_buttons: dict = {}
         self._push_said: dict = {}  # what the last press did, per branch
         self._pushing = None        # the branch a push is in flight for
+        # Which of the Waiting place's two views is up: the calm home, or
+        # the whole backlog behind it.
+        self._waiting_view = "home"
+        # Which binding the key dialog is listening for, or None. The
+        # panel beside the keyboard reads it, so the board says "press
+        # the key you want" at the same moment the dialog does.
+        self._capturing = None
+        self._cap_selected = None
 
         self._build()
         # After _build: LoadImage/WM_SETICON need a realised window, and on
@@ -1107,109 +1293,78 @@ class Dashboard:
     # ------------------------------------------------------------- chrome
 
     def _build(self) -> None:
-        self._sidebar()
-        self.pane = tk.Frame(self.root, bg=ui.PANE, width=W - SIDE, height=H)
-        self.pane.place(x=SIDE, y=0)
+        self._topbar()
+        self.pane = tk.Frame(self.root, bg=ui.BG, width=W, height=H - TOP)
+        self.pane.place(x=0, y=TOP)
         self.pane.pack_propagate(False)
         # Screens are built onto a SHEET inside the pane, not onto the pane
         # itself, so a new screen can slide into place — the pane stays
         # put, the sheet moves. The toast lives on the pane and does not.
-        self.sheet = tk.Frame(self.pane, bg=ui.PANE, width=W - SIDE,
-                              height=H)
+        self.sheet = tk.Frame(self.pane, bg=ui.BG, width=W, height=H - TOP)
         self.sheet.place(x=0, y=0)
         self.sheet.pack_propagate(False)
-        self._show("Overview")
+        self._show("Waiting")
 
-    def _sidebar(self) -> None:
-        """Identity at the top, the four screens under it, the state at the
-        bottom — where it stays visible whichever screen is open."""
-        bar = tk.Frame(self.root, bg=ui.BG, width=SIDE, height=H)
+    def _topbar(self) -> None:
+        """The mark, the four places, and the state — one 56 px strip.
+
+        THE RAIL IS GONE, and the reason is arithmetic as much as taste.
+        A 212 px rail took 18% of the window to say four words, and the
+        nine rows in it were a menu of screens that saw two actions a day
+        between them. Along the top the same four words cost 56 px of
+        height, the content gets the whole width, and the state — the one
+        thing that was worth keeping visible on every screen — sits at the
+        right of the bar where it is read as a sentence rather than as a
+        card in a corner.
+
+        The one BUTTON here is Pause / Resume / Start: the state and the
+        single thing you would do about it, side by side. Stop moved to
+        Settings › The app, where a thing that costs 25 seconds to undo
+        belongs — the old rail put it one slip away from Pause.
+        """
+        bar = tk.Frame(self.root, bg=ui.BG, width=W, height=TOP)
         bar.place(x=0, y=0)
-        tk.Frame(self.root, bg=ui.RULE, width=1, height=H).place(x=SIDE - 1,
-                                                                   y=0)
-        badge = ui.icon_bitmap(ICON_PNG, 32, ui.BG)
+        bar.pack_propagate(False)
+        self.bar = bar
+        badge = ui.icon_bitmap(ICON_PNG, 26, ui.BG)
         if badge is not None:
             self._keep.append(badge)
-            tk.Label(bar, image=badge, bg=ui.BG).place(x=20, y=22)
+            tk.Label(bar, image=badge, bg=ui.BG).place(x=PAD, y=15)
         tk.Label(bar, text="DeskIT", bg=ui.BG, fg=ui.FG,
-                 font=(ui.UI, 10, "bold")).place(x=62, y=23)
+                 font=(ui.DISPLAY, 13, "bold")).place(x=PAD + 34, y=17)
+
+        self.nav = widgets.Tabs(bar, [name for _key, name in NAV], bg=ui.BG,
+                                selected="Waiting", command=self._show)
+        self.nav.place(x=PAD + 126, y=17)
+
+        # The state chip and the button are placed from the RIGHT edge, so
+        # a longer word ("Transcribing") grows leftwards into empty bar
+        # rather than pushing the button off the window.
+        self.parts["run"] = ui.Button(bar, "Pause", self._toggle_pause,
+                                      w=104, h=32, bg=ui.BG, quiet=True)
+        self.parts["run"].place(x=W - PAD, y=12, anchor="ne")
+        chip = widgets.StateChip(bar, bg=ui.BG, size=15)
+        chip.place(x=W - PAD - 120, y=TOP // 2, anchor="e")
+        self.parts["chip"] = chip
+        # The three names the rest of the window has always used for the
+        # state, kept: _refresh writes the word and the uptime through
+        # them, and nine tests read them.
+        self.parts["lamp"] = chip.lamp
+        self.parts["state"] = chip.word
+        self.parts["uptime"] = chip.meta
+        # The dictation-key hint used to live under the wordmark in the
+        # rail. It is one line of chrome that repeated what the Keys
+        # place says in full, so it is now the bar's tooltip-of-record:
+        # built, never placed, and read by _refresh and by the tests.
         self.parts["hint"] = tk.Label(bar, text="", bg=ui.BG, fg=ui.FAINT,
                                       font=(ui.UI, 8))
-        self.parts["hint"].place(x=62, y=42)
-
-        # Nine rows and the report button have to fit above the state
-        # card, which is why the stride is 46 rather than the 48 eight
-        # rows could afford. 86 + 46*9 = 500, the button sits at 504 and
-        # the card starts at 546.
-        #
-        # With [problems] enabled = false there are eight rows and no
-        # button, and the sidebar goes back to the 92 and 48 it had
-        # before any of this: the spacing those eight rows were designed
-        # with, rather than eight of them rattling around in nine rows'
-        # worth of room. 92 + 48*8 = 476, and the card is still at 546.
-        self.nav: dict[str, tuple] = {}
-        rows = [(key, name) for key, name in NAV
-                if key != "problems" or self._problems_on]
-        y, stride = (86, 46) if self._problems_on else (92, 48)
-        for key, name in rows:
-            item = tk.Canvas(bar, width=188, height=42, bg=ui.BG,
-                             highlightthickness=0, bd=0, cursor="hand2")
-            item.place(x=12, y=y)
-            faces = (ui.rounded(188, 42, 11, ui.ACCENT_SOFT, ui.BG, ui.ACCENT_EDGE),
-                     ui.rounded(188, 42, 11, ui.BG, ui.BG),
-                     ui.rounded(188, 42, 11, ui.SIDE_IDLE, ui.BG))
-            face = item.create_image(0, 0, anchor="nw", image=faces[1])
-            glyph = item.create_text(28, 21,
-                                     text=ui.ICON[NAV_GLYPH.get(key, key)],
-                                     font=(ui.ICONS, 13), fill=ui.DIM)
-            label = item.create_text(50, 22, text=name, font=(ui.UI, 10),
-                                     anchor="w", fill=ui.DIM)
-            self.nav[name] = (item, face, glyph, label, faces)
-            item.bind("<Button-1>", lambda _e, n=name: self._show(n))
-            item.bind("<Enter>", lambda _e, n=name: self._nav_hover(n, True))
-            item.bind("<Leave>", lambda _e, n=name: self._nav_hover(n, False))
-            y += stride
-
-        # The report button lives in the SIDEBAR, once, rather than on
-        # each of the nine screens. Two reasons, and the second is the
-        # real one. A bug is noticed while looking at the thing that is
-        # wrong, so the way to say so has to be in the same place
-        # whichever screen that is — and the eight screens place every
-        # widget absolutely, with the top-right taken on Review and
-        # Settings and the bottom-right taken on History, so there is no
-        # one free rectangle on the sheet to put it in. The sidebar has
-        # one, it survives _show destroying the sheet, and it sits under
-        # the Problems row that reads the reports back.
-        if self._problems_on:
-            ui.Button(bar, "Report a problem", self._report, w=188, h=34,
-                      bg=ui.BG, quiet=True,
-                      icon=ui.ICON["error"]).place(x=12, y=y + 4)
-
-        card = ui.Card(bar, 188, 78, bg=ui.BG, fill=ui.SIDE_CARD, radius=12,
-                       pad=14)
-        card.place(x=12, y=H - 102)
-        self.parts["lamp"] = tk.Label(card.body, bg=ui.SIDE_CARD)
-        self.parts["lamp"].place(x=-4, y=6)
-        self.parts["state"] = tk.Label(card.body, text="", bg=ui.SIDE_CARD,
-                                       fg=ui.FG, font=(ui.UI, 10, "bold"))
-        self.parts["state"].place(x=26, y=4)
-        self.parts["uptime"] = tk.Label(card.body, text="", bg=ui.SIDE_CARD,
-                                        fg=ui.FAINT, font=(ui.UI, 8))
-        self.parts["uptime"].place(x=26, y=24)
+        widgets.rule(self.root, W, bg=ui.BG, colour=ui.RULE, x=0, y=TOP - 1)
 
     def _nav_hover(self, name: str, over: bool) -> None:
-        item, face, _glyph, _label, faces = self.nav[name]
-        if name != self.screen:
-            item.itemconfig(face, image=faces[2] if over else faces[1])
+        self.nav._hover(name, over)
 
     def _paint_nav(self) -> None:
-        for name, (item, face, glyph, label, faces) in self.nav.items():
-            picked = name == self.screen
-            item.itemconfig(face, image=faces[0] if picked else faces[1])
-            item.itemconfig(glyph, fill=ui.ACCENT_TEXT if picked else ui.DIM)
-            item.itemconfig(label, fill=ui.FG if picked else ui.DIM,
-                            font=(ui.UI, 10, "bold") if picked
-                            else (ui.UI, 10))
+        self.nav.select(self.screen)
 
     def _show(self, name: str) -> None:
         """Swap screens. Everything the old one registered goes with it, so
@@ -1226,17 +1381,13 @@ class Dashboard:
         for child in self.sheet.winfo_children():
             child.destroy()
         keep = {k: self.parts[k] for k in
-                ("hint", "lamp", "state", "uptime") if k in self.parts}
+                ("hint", "lamp", "state", "uptime", "chip", "run")
+                if k in self.parts}
         self.parts = keep
         self._hide_toast()
-        {"Overview": self._screen_overview,
-         "History": self._screen_history,
-         "Review": self._screen_review,
-         "Awake": self._screen_awake,
-         "Notify": self._screen_notify,
+        {"Waiting": self._screen_waiting,
+         "Said": self._screen_said,
          "Keys": self._screen_keys,
-         "Version": self._screen_version,
-         "Problems": self._screen_problems,
          "Settings": self._screen_settings}[name]()
         self._refresh(self.status or None)
         self._slide_in()
@@ -1249,19 +1400,29 @@ class Dashboard:
         offsets are a cubic ease-out baked into a table, because computing
         an easing curve for six integers is showing off.
         """
+        if self.closing:
+            # No animation while the window is going away — but the sheet
+            # still has to END where it belongs. Stopping mid-slide left
+            # it 10 to 16 px low, which nobody sees in a window that is
+            # closing and which was in EVERY screenshot taken of one:
+            # the last line of the Keys place looked clipped by the
+            # window's edge for a week, and it was this.
+            self.sheet.place(x=0, y=0)
+            self._slide_after = None
+            return
         offsets = (16, 10, 6, 3, 1, 0)
         self.sheet.place(x=0, y=offsets[step])
-        if step + 1 < len(offsets) and not self.closing:
+        if step + 1 < len(offsets):
             self._slide_after = self.root.after(
                 18, lambda: self._slide_in(step + 1))
         else:
             self._slide_after = None
 
     def _title(self, text: str, right: str = "") -> None:
-        tk.Label(self.sheet, text=text, bg=ui.PANE, fg=ui.FG,
+        tk.Label(self.sheet, text=text, bg=ui.BG, fg=ui.FG,
                  font=(ui.DISPLAY, 17, "bold")).place(x=PAD, y=20)
         if right:
-            tk.Label(self.sheet, text=right, bg=ui.PANE, fg=ui.FAINT,
+            tk.Label(self.sheet, text=right, bg=ui.BG, fg=ui.FAINT,
                      font=(ui.UI, 9)).place(x=PAD + CW, y=28, anchor="ne")
 
     # -------------------------------------------------------------- toast
@@ -1286,7 +1447,8 @@ class Dashboard:
             self._toast.destroy()
         wrapped, lines = ui.clamp(text, ui.UI, 9, CW - 60, 2)
         card = ui.Card(self.pane, CW, 30 + lines * 18, radius=12,
-                       fill=ui.QUOTE_BG, border=ui.QUOTE_EDGE, pad=12)
+                       bg=ui.BG, fill=ui.QUOTE_BG, border=ui.QUOTE_EDGE,
+                       pad=12)
         tk.Label(card.body, text=wrapped, bg=ui.QUOTE_BG, fg=ui.FG,
                  font=(ui.UI, 9), justify="left", anchor="w").place(x=0, y=0)
         self._toast = card
@@ -1301,7 +1463,7 @@ class Dashboard:
         if self.closing or card is not self._toast:
             return
         offsets = (44, 26, 14, 6, 2, 0)
-        card.place(x=PAD, y=H - 16 + offsets[step], anchor="sw")
+        card.place(x=PAD, y=H - TOP - 16 + offsets[step], anchor="sw")
         if step + 1 < len(offsets):
             self.root.after(18, lambda: self._toast_slide(card, step + 1))
 
@@ -1315,266 +1477,629 @@ class Dashboard:
                 pass
             self._toast = None
 
-    # ----------------------------------------------------------- overview
+    # ------------------------------------------------------------ waiting
 
-    def _screen_overview(self) -> None:
-        self._title("Overview")
+    def _screen_waiting(self) -> None:
+        """The home: one sentence, one card of what wants an answer, and
+        one line each for everything else that happened today.
+
+        THE SHAPE IS THE OWNER'S SECOND ANSWER. The first rebuild of this
+        screen put six panels on it — counts, the last dictation, the
+        captures, the phone, the version, the vocabulary — and he said
+        "too overwhelming, too many stuff". What he accepted is this: a
+        title that says how many things want him, ONE card holding all of
+        them whatever kind they are, and under it three quiet lines that
+        report rather than ask.
+
+        THE PILE IS MERGED ON PURPOSE. Notifications, second-reading
+        proposals, open problems and the routine's questions used to be
+        four screens; they are four sources of one thing — something is
+        waiting for an answer — and which of the four it is matters far
+        less than which is newest. Ten days of use: 333 answers were
+        given at a CARD and 21 in this window, and every one of the 21
+        was catching up on a backlog. So the window opens on the backlog,
+        newest first, with the verb each row needs on the row.
+
+        ONE GOLD BUTTON PER SURFACE. Only Yes on a second reading is the
+        lamp; every other button here is quiet. Two lit buttons on one
+        screen is two primary actions, which is none.
+        """
         p = self.parts
-        self._stats_shown = False
+        p["waiting_head"] = tk.Label(self.sheet, text="", bg=ui.BG,
+                                     fg=ui.FG, font=(ui.DISPLAY, 21, "bold"))
+        p["waiting_head"].place(x=PAD, y=24)
+        p["waiting_sub"] = tk.Label(self.sheet, text="", bg=ui.BG,
+                                    fg=ui.DIM, font=(ui.UI, 10))
+        p["waiting_sub"].place(x=PAD + 2, y=64)
 
-        # The geometry that cannot collide: the top row holds the state
-        # word (short by construction — RUNNING, PAUSED) and the buttons,
-        # nothing else; the mic line and the hint get the FULL width on
-        # their own rows underneath. The first layout gave the hint 400 px
-        # next to the buttons and they met in the middle.
-        hero = ui.Card(self.sheet, CW, 148, pad=18)
-        hero.place(x=PAD, y=68)
-        body = hero.body
-        inner = CW - 36
-        # A slim bar in the state's colour down the left edge — the state
-        # readable from the corner of an eye, before the word is.
-        p["hero_bar"] = tk.Label(body, bg=ui.CARD)
-        p["hero_bar"].place(x=-4, y=0)
-        p["hero_lamp"] = tk.Label(body, bg=ui.CARD)
-        p["hero_lamp"].place(x=8, y=-3)
-        p["hero_state"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FG,
-                                   font=(ui.DISPLAY, 19, "bold"))
-        p["hero_state"].place(x=56, y=1)
-        p["hero_meta"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.DIM,
-                                  font=(ui.UI, 9), anchor="w")
-        p["hero_meta"].place(x=57, y=44)
-        p["hero_hint"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FAINT,
-                                  font=(ui.UI, 8), justify="left", anchor="w")
-        p["hero_hint"].place(x=57, y=68)
+        # Dismiss all, and the key that does the same thing without this
+        # window being open. It is placed and unplaced by _fill_waiting:
+        # a button for a column that is not there is a dead control.
+        p["dismiss_all"] = tk.Label(self.sheet, text="Dismiss all", bg=ui.BG,
+                                    fg=ui.DIM, font=(ui.UI, 10),
+                                    cursor="hand2")
+        p["dismiss_all"].bind("<Button-1>",
+                              lambda _e: self._notify("dismiss"))
+        p["dismiss_all"].bind("<Enter>",
+                              lambda _e: p["dismiss_all"].config(fg=ui.FG))
+        p["dismiss_all"].bind("<Leave>",
+                              lambda _e: p["dismiss_all"].config(fg=ui.DIM))
+        p["dismiss_key"] = ui.KeyCap(self.sheet, "Ctrl+Alt+M", bg=ui.BG,
+                                     w=96, h=26)
 
-        row = tk.Frame(body, bg=ui.CARD)
-        row.place(x=inner, y=0, anchor="ne")
-        p["start"] = ui.Button(row, "Start", self._start, w=104,
-                               primary=True, icon=ui.ICON["play"])
-        p["start"].pack(side="left")
-        p["pause"] = ui.Button(row, "Pause", self._toggle_pause, w=100,
-                               icon=ui.ICON["pause"])
-        p["pause"].pack(side="left", padx=8)
-        p["stop"] = ui.Button(row, "Stop", self._stop, w=96,
-                              icon=ui.ICON["stop"])
-        p["stop"].pack(side="left")
+        # The card is a fixed rectangle with a Scroller in it rather than
+        # a card that grows: a screen whose furniture moves when a
+        # notification arrives is a screen you cannot learn. ui.Scroller
+        # paints no thumb at all until it needs one, so with three rows
+        # in it there is nothing to see.
+        p["pile_card"] = ui.Card(self.sheet, CW, PILE_H, fill=ui.CARD,
+                                 bg=ui.BG, pad=14)
+        p["pile_list"] = ui.Scroller(p["pile_card"].body, CW - 28,
+                                     PILE_H - 28, bg=ui.CARD)
+        p["pile_list"].place(x=0, y=0)
 
-        titles = (("DICTATIONS", "count"), ("SPOKEN", "spoken"),
-                  ("CHARACTERS", "chars"), ("AVERAGE WAIT", "wait"))
-        x = PAD
-        tile_hot = ui.rounded(161, 86, 14, ui.CARD_HI, ui.PANE, ui.TILE_EDGE)
-        tile_idle = ui.rounded(161, 86, 14, ui.CARD, ui.PANE, ui.LINE)
-        for title, key in titles:
-            tile = ui.Card(self.sheet, 161, 86, pad=14)
-            tile.place(x=x, y=228)
-            tk.Label(tile.body, text=title, bg=ui.CARD, fg=ui.FAINT,
-                     font=(ui.UI, 8)).place(x=0, y=0)
-            p[f"stat_{key}"] = tk.Label(tile.body, text="—", bg=ui.CARD,
-                                        fg=ui.FG, font=(ui.DISPLAY, 21,
-                                                        "bold"))
-            p[f"stat_{key}"].place(x=0, y=20)
-            p[f"unit_{key}"] = tk.Label(tile.body, text="", bg=ui.CARD,
-                                        fg=ui.DIM, font=(ui.UI, 9))
-            p[f"unit_{key}"].place(x=0, y=36)
-            for widget in (tile, tile.body, *tile.body.winfo_children()):
-                widget.bind("<Enter>",
-                            lambda _e, t=tile: t.face(tile_hot))
-                widget.bind("<Leave>",
-                            lambda _e, t=tile: t.face(tile_idle))
-            x += 173
+        p["held_line"] = tk.Label(self.sheet, text="", bg=ui.BG,
+                                  fg=ui.FAINT, font=(ui.UI, 9),
+                                  justify="left", anchor="w")
 
-        card = ui.Card(self.sheet, CW, 192, pad=18)
-        card.place(x=PAD, y=326)
-        body, inner = card.body, CW - 36
-        tk.Label(body, text=ui.ICON["mic"], bg=ui.CARD, fg=ui.ACCENT,
-                 font=(ui.ICONS, 11)).place(x=0, y=1)
-        tk.Label(body, text="LAST DICTATION", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8)).place(x=22, y=2)
-        p["last_when"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.DIM,
-                                  font=(ui.UI, 9))
-        p["last_when"].place(x=inner, y=1, anchor="ne")
-        p["last_text"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FG,
-                                  font=(ui.TEXT, 12))
-        p["last_meta"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FAINT,
-                                  font=(ui.UI, 8))
-        p["last_meta"].place(x=0, y=100)
-        p["copy"] = ui.Button(body, "Copy text", self._copy_last, w=112,
-                              icon=ui.ICON["copy"])
-        p["copy"].place(x=0, y=118)
-        ui.Button(body, "Show in history", lambda: self._show("History"),
-                  w=140, quiet=True, icon=ui.ICON["history"]).place(x=120,
-                                                                    y=118)
+        p["rest_eyebrow"] = tk.Label(
+            self.sheet, text="T H E   R E S T   O F   T H E   D A Y"
+                             "   ·   O N E   L I N E   E A C H",
+            bg=ui.BG, fg=ui.FAINT, font=(ui.MEDIUM, 8))
+        p["rest"] = tk.Frame(self.sheet, bg=ui.BG, width=CW, height=140)
 
-        vocab = ui.Card(self.sheet, 334, 100, pad=16)
-        vocab.place(x=PAD, y=530)
-        tk.Label(vocab.body, text=ui.ICON["learned"], bg=ui.CARD,
-                 fg=ui.AMBER, font=(ui.ICONS, 10)).place(x=0, y=1)
-        tk.Label(vocab.body, text="VOCABULARY", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8)).place(x=20, y=2)
-        p["vocab_head"] = tk.Label(vocab.body, text="—", bg=ui.CARD,
-                                   fg=ui.FG, font=(ui.DISPLAY, 15, "bold"))
-        p["vocab_head"].place(x=0, y=24)
-        p["vocab_sub"] = tk.Label(vocab.body, text="", bg=ui.CARD, fg=ui.DIM,
-                                  font=(ui.UI, 8))
-        p["vocab_sub"].place(x=0, y=50)
+        # The bottom strip: the machine, the phone, the version, the
+        # words. Four facts that are true whichever place is open, on one
+        # line, under a rule — so they read as a footer and not as a
+        # fifth thing to do.
+        widgets.rule(self.sheet, CW, bg=ui.BG, colour=ui.RULE, x=PAD,
+                     y=H - TOP - 54)
+        widgets.icon(self.sheet, "awake", bg=ui.BG, colour=ui.FAINT,
+                     size=13).place(x=PAD + 2, y=H - TOP - 40)
+        p["strip_awake"] = tk.Label(self.sheet, text="", bg=ui.BG, fg=ui.DIM,
+                                    font=(ui.UI, 10), anchor="w")
+        p["strip_awake"].place(x=PAD + 26, y=H - TOP - 39)
+        p["strip_screens"] = tk.Label(self.sheet, text="", bg=ui.BG,
+                                      fg=ui.ACCENT_TEXT,
+                                      font=(ui.UI, 10, "bold"),
+                                      cursor="hand2")
+        p["strip_screens"].bind("<Button-1>",
+                                lambda _e: self._screens("toggle"))
+        p["strip_facts"] = tk.Label(self.sheet, text="", bg=ui.BG,
+                                    fg=ui.FAINT, font=(ui.UI, 9), anchor="e")
+        p["strip_facts"].place(x=PAD + CW - 100, y=H - TOP - 38,
+                               anchor="ne")
 
-        phone = ui.Card(self.sheet, 334, 100, pad=16)
-        phone.place(x=PAD + 346, y=530)
-        tk.Label(phone.body, text=ui.ICON["globe"], bg=ui.CARD, fg=ui.GREEN,
-                 font=(ui.ICONS, 10)).place(x=0, y=1)
-        tk.Label(phone.body, text="PHONE", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8)).place(x=20, y=2)
-        p["phone_head"] = tk.Label(phone.body, text="—", bg=ui.CARD,
-                                   fg=ui.FG, font=(ui.DISPLAY, 15, "bold"))
-        p["phone_head"].place(x=0, y=24)
-        p["phone_sub"] = tk.Label(phone.body, text="", bg=ui.CARD, fg=ui.DIM,
-                                  font=(ui.UI, 8))
-        p["phone_sub"].place(x=0, y=50)
-        p["phone_copy"] = ui.Button(phone.body, "Copy link", self._copy_phone,
-                                    w=100, h=32, quiet=True,
-                                    icon=ui.ICON["link"])
-        p["phone_copy"].place(x=202, y=26)
+        # Reporting a problem used to be a button in the rail, on every
+        # screen, because a bug is noticed while looking at the thing that
+        # is wrong. The rail is gone and the key (Ctrl+Alt+R) is how all
+        # four reports in ten days were actually filed — so the button
+        # lives here, beside the list it feeds, and says its key.
+        if self._problems_on:
+            p["report_button"] = ui.Button(
+                self.sheet, "Report a problem", self._report, h=30,
+                w=widgets.button_width("Report a problem", icon=True),
+                bg=ui.BG, quiet=True, icon=ui.ICON["error"])
+            p["report_button"].place(x=PAD + CW, y=20, anchor="ne")
 
-    def _paint_overview(self) -> None:
-        p = self.parts
-        if "hero_state" not in p:
+        # A thing that needs more than a line — a question with five
+        # answers to press, a report with its evidence, a branch waiting
+        # to be pushed — is behind this, on the same place.
+        whole = tk.Label(self.sheet, text="the whole list", bg=ui.BG,
+                         fg=ui.DIM, font=(ui.UI, 9), cursor="hand2")
+        whole.place(x=PAD + CW, y=H - TOP - 38, anchor="ne")
+        whole.bind("<Button-1>", lambda _e: self._waiting_all())
+        whole.bind("<Enter>", lambda _e: whole.config(fg=ui.FG))
+        whole.bind("<Leave>", lambda _e: whole.config(fg=ui.DIM))
+        p["whole_list"] = whole
+
+        self._pile_stamp = None
+        self._pile_open = False
+        self._waiting_view = "home"
+        self._fill_waiting()
+        self._paint_rest()
+
+    def _poll_waiting(self) -> None:
+        """Once a second from _refresh. Four stores, one stamp each, and
+        a redraw only when one of them moved — a notification arriving, a
+        verdict given at a card, a report filed, a question asked by the
+        routine. Reading four stat()s costs nothing; rebuilding six rows
+        every second would cost the caret in the answer box."""
+        if getattr(self, "_waiting_view", "home") == "all":
+            self._poll_problems()
             return
-        status = self.status
-        colour, word = self._look()
-        p["hero_state"].config(text=word)
-        p["hero_bar"].config(image=ui.rounded(4, 112, 2, colour, ui.CARD))
+        if "pile_list" not in self.parts:
+            return
+        stamp = (self._notify_stat(), self._review_stat(),
+                 self._problems_stat(), self._questions_stat())
+        if stamp != getattr(self, "_pile_stamp", None):
+            self._fill_waiting()
+        self._paint_rest()
+
+    # -- the pile
+
+    def _waiting_items(self) -> list[dict]:
+        """Everything that wants an answer, newest first, as row specs.
+
+        Each source is guarded on its own: a store that is absent, off or
+        unreadable contributes nothing and the other three still draw.
+        `[questions]` in particular is missing from config.toml on this
+        branch, so _questions_store returns None and the block simply is
+        not there — which is what "show the section only when it exists"
+        means.
+        """
+        items: list[dict] = []
+        items += self._waiting_notify()
+        items += self._waiting_review()
+        items += self._waiting_problems()
+        items += self._waiting_questions()
+        items.sort(key=lambda row: row.get("at", 0.0), reverse=True)
+        # ONE GOLD BUTTON PER SURFACE, across the whole pile and not per
+        # row: with three proposals waiting, three lit Yes buttons are three
+        # primary actions, which is none. The newest keeps the lamp; every
+        # later Yes is drawn quiet and still answers the same way.
+        lit = False
+        for row in items:
+            buttons = []
+            for label, tone, act in row.get("buttons", ()):
+                if tone == "gold":
+                    tone = "quiet" if lit else "gold"
+                    lit = True
+                buttons.append((label, tone, act))
+            row["buttons"] = buttons
+        return items
+
+    @staticmethod
+    def _stamp_of(text: str, fmt: str) -> float:
+        try:
+            return time.mktime(time.strptime(str(text)[:19], fmt))
+        except (ValueError, TypeError, OverflowError):
+            return 0.0
+
+    def _waiting_notify(self) -> list[dict]:
+        try:
+            store = self._notify_store()
+            unread = [i for i in (store.recent(30) if store else [])
+                      if not i.get("seen")]
+        except Exception:                 # noqa: BLE001 — a broken file
+            return []
+        rows = []
+        for item in unread:
+            ident = item.get("id")
+            who = str(item.get("label") or item.get("source") or "")
+            when = ago(str(item.get("at", "")))
+            rows.append({
+                "at": self._stamp_of(item.get("at", ""), "%Y-%m-%dT%H:%M:%S"),
+                "kind": "notify", "mark": "notify",
+                "mark_colour": {"done": ui.GREEN, "input": ui.ACCENT,
+                                "error": ui.RED}.get(
+                    str(item.get("kind") or "info"),
+                    getattr(ui, "COOL", ui.ACCENT_TEXT)),
+                "eyebrow": "   ·   ".join(b for b in (who, when) if b),
+                "eyebrow_right": False,
+                "text": str(item.get("title") or ""),
+                "note": "",
+                "buttons": [("Go there", "quiet",
+                             lambda i=ident: self._notify_one("open", i)),
+                            ("✕", "close",
+                             lambda i=ident: self._notify_one("dismiss", i))],
+            })
+        return rows
+
+    def _waiting_review(self) -> list[dict]:
+        try:
+            pending = self._review_store().pending()
+        except Exception:                 # noqa: BLE001
+            return []
+        rows = []
+        for item in pending:
+            sid = str(item.get("id", ""))
+            text = str(item.get("proposed") or item.get("text") or "")
+            changes = item.get("changes") or []
+            word = str((changes[0].get("after") if changes else "") or "")
+            why = "   ·   ".join(c.get("why", "") for c in changes
+                                      if c.get("why"))
+            rows.append({
+                "at": self._stamp_of(item.get("when", ""),
+                                     "%Y-%m-%d %H:%M:%S"),
+                "kind": "review", "mark": "check", "mark_colour": ui.GREEN,
+                "eyebrow": "Second reading   ·   it heard "
+                           f"{len(changes) or 1} word"
+                           f"{'' if len(changes) == 1 else 's'} differently",
+                "runs": self._pill_runs(text, word),
+                "text": text,
+                "note": why,
+                "buttons": [("Yes", "gold",
+                             lambda s=sid: self._review_decide(s, "accepted")),
+                            ("No", "quiet",
+                             lambda s=sid: self._review_decide(s, "rejected"))],
+            })
+        return rows
+
+    def _waiting_problems(self) -> list[dict]:
+        module, store = self._problems(), self._problems_store()
+        if module is None or store is None:
+            return []
+        try:
+            open_ = store.items(module.OPEN)
+        except Exception:                 # noqa: BLE001
+            return []
+        rows = []
+        for item in open_:
+            ident = str(item.get("id", ""))
+            when = str(item.get("when", ""))
+            at = self._stamp_of(when, "%Y-%m-%d %H:%M:%S")
+            day = (time.strftime("%d %b", time.localtime(at)).lstrip("0")
+                   if at else "")
+            rows.append({
+                "at": at,
+                "kind": "problem", "mark": "alert", "mark_colour": ui.RED,
+                "eyebrow": f"You reported this on {day}" if day
+                           else "You reported this",
+                "text": str(item.get("what") or item.get("text") or
+                            item.get("note") or ""),
+                "note": "",
+                "buttons": [("Fixed", "quiet",
+                             lambda i=ident: self._problem_decide(i, "fixed")),
+                            ("Close", "quiet",
+                             lambda i=ident: self._problem_decide(i,
+                                                                  "closed"))],
+            })
+        return rows
+
+    def _waiting_questions(self) -> list[dict]:
+        """The routine's questions — only when the store is there.
+
+        `[questions]` is not in config.toml on this branch at all, so
+        _questions_store reads it as off and this returns [] and the
+        section is simply not on the screen. When it IS there, the row
+        says what was asked and Answer opens the whole list, because
+        answering needs the options as bands to press and a box to
+        dictate into — a surface this row is far too small to be.
+        """
+        if self._questions() is None:
+            return []
+        rows = []
+        for item in self._pending_questions():
+            rows.append({
+                "at": self._stamp_of(item.get("when", ""),
+                                     "%Y-%m-%d %H:%M:%S"),
+                "kind": "question", "mark": "review",
+                "mark_colour": getattr(ui, "ACCENT_TEXT", ui.ACCENT),
+                "eyebrow": "Saturday's read is waiting on an answer",
+                "text": str(item.get("question") or item.get("text") or ""),
+                "note": "",
+                "buttons": [("Answer", "quiet", self._waiting_all)],
+            })
+        return rows
+
+    @staticmethod
+    def _pill_runs(text: str, word: str):
+        """The sentence as three runs, so the changed word can sit on a
+        pill inside it.
+
+        Only for a right-to-left sentence, and only when the word is
+        actually in it: the ORDER BETWEEN RUNS is ours, not Windows', so
+        a line may only be cut where each piece is one direction. An
+        English proposal, or a word that is not found, comes back as
+        None and is drawn whole by DrawTextW, which is the call that
+        gets a mixed line right.
+        """
+        if not word or not text or not ui.is_rtl(text):
+            return None
+        at = text.find(word)
+        if at < 0:
+            return None
+        head, tail = text[:at], text[at + len(word):]
+        soft = getattr(ui, "ACCENT_SOFT", None) or ui.CARD_HI
+        ink = getattr(ui, "ACCENT_TEXT", None) or ui.ACCENT
+        return [(head.rstrip(), ui.FG, None), (word, ink, soft),
+                (tail.lstrip(), ui.FG, None)]
+
+    def _fill_waiting(self) -> None:
+        if "pile_list" not in self.parts:
+            return
+        self._pile_stamp = (self._notify_stat(), self._review_stat(),
+                            self._problems_stat(), self._questions_stat())
+        p = self.parts
+        items = self._waiting_items()
+        count = len(items)
+        p["waiting_head"].config(
+            text="Nothing is waiting." if not count else
+            f"{_count_word(count)} thing{'' if count == 1 else 's'} "
+            f"want{'s' if count == 1 else ''} an answer.")
+        p["waiting_sub"].config(
+            text="Nothing else on the desk needs you right now.")
+
+        shown = items[:PILE_CAP] if self._pile_open else items[:PILE_SHOWN]
+        card_h = PILE_H_OPEN if self._pile_open else PILE_H
+        scroller = p["pile_list"]
+        scroller.clear()
+        if not items:
+            p["pile_card"].place_forget()
+        else:
+            p["pile_card"].place(x=PAD, y=PILE_Y, height=card_h)
+            p["pile_card"].face(ui.rounded(CW, card_h, 14, ui.CARD, ui.BG,
+                                           ui.LINE))
+            scroller.place_configure(height=card_h - 28)
+            for index, spec in enumerate(shown):
+                if index:
+                    widgets.rule(scroller.inner, CW - 28, bg=ui.CARD,
+                                 colour=ui.LINE).pack(fill="x")
+                row = widgets.PileRow(
+                    scroller.inner, CW - 28, bg=ui.CARD,
+                    mark=spec.get("mark", ""),
+                    mark_colour=spec.get("mark_colour"),
+                    eyebrow=spec.get("eyebrow", ""),
+                    eyebrow_right=spec.get("eyebrow_right", True),
+                    text=spec.get("text", ""), runs=spec.get("runs"),
+                    note=spec.get("note", ""),
+                    buttons=spec.get("buttons", ()),
+                    height=PILE_ROW_H)
+                row.pack(fill="x")
+                scroller.bind_wheel(row)
+                scroller.bind_wheel(row.canvas)
+            hidden = count - len(shown)
+            if hidden > 0 and not self._pile_open:
+                more = tk.Label(scroller.inner, text=f"+{hidden} more",
+                                bg=ui.CARD, fg=ui.ACCENT_TEXT,
+                                font=(ui.UI, 10), cursor="hand2")
+                more.pack(anchor="w", padx=40, pady=(8, 4))
+                more.bind("<Button-1>", lambda _e: self._pile_more(True))
+            elif self._pile_open:
+                less = tk.Label(scroller.inner, text="Show fewer", bg=ui.CARD,
+                                fg=ui.DIM, font=(ui.UI, 10), cursor="hand2")
+                less.pack(anchor="w", padx=40, pady=(8, 4))
+                less.bind("<Button-1>", lambda _e: self._pile_more(False))
+                if count > PILE_CAP:
+                    tk.Label(scroller.inner,
+                             text=f"{count - PILE_CAP} older still waiting "
+                                  f"\u2014 the whole list has them",
+                             bg=ui.CARD, fg=ui.FAINT,
+                             font=(ui.UI, 8)).pack(anchor="w", padx=40)
+            scroller.to_top()
+
+        # Dismiss all belongs to the notifications and to nothing else.
+        unread = sum(1 for i in items if i["kind"] == "notify")
+        if unread:
+            p["dismiss_key"].place(x=PAD + CW, y=60, anchor="ne")
+            p["dismiss_all"].place(x=PAD + CW - 108, y=64, anchor="ne")
+        else:
+            p["dismiss_all"].place_forget()
+            p["dismiss_key"].place_forget()
+
+        self._paint_held()
+        top = (PILE_Y + card_h + 14) if items else 106
+        p["held_line"].place(x=PAD + 2, y=top)
+        if self._pile_open and items:
+            p["rest_eyebrow"].place_forget()
+            p["rest"].place_forget()
+        else:
+            p["rest_eyebrow"].place(x=PAD + 2, y=top + 34)
+            p["rest"].place(x=PAD, y=top + 58)
+        self._paint_rest()
+
+    def _paint_held(self) -> None:
+        """The one faint line under the card: what has arrived and is
+        NOT on the screen.
+
+        A finish is held until the session that sent it has been quiet
+        for [notify] quiet_s seconds \u2014 so it is unread, it is real, and
+        there is no card for it anywhere. Without this line the count in
+        the title and the column in the corner disagree, and neither says
+        why.
+        """
+        line = self.parts.get("held_line")
+        if line is None or not line.winfo_exists():
+            return
+        info = (self.status.get("notify") or {}) if self.running else {}
+        try:
+            held = int(info.get("held") or 0)
+        except (TypeError, ValueError):
+            held = 0
+        if held:
+            line.config(text=f"{held} finish{'es' if held > 1 else ''} "
+                             "held until the session that sent them goes "
+                             "quiet. They will arrive here, not on your "
+                             "screen.")
+        else:
+            line.config(text="")
+
+    def _pile_more(self, open_: bool) -> None:
+        self._pile_open = open_
+        self._fill_waiting()
+
+    def _notify_one(self, do: str, ident) -> None:
+        """Go there / × on one notification.
+
+        Through the running app when there is one — only it can raise the
+        window that sent the thing, and only it owns the card column. With
+        nothing running the × still has to work, because the list is the
+        file and the file is readable either way; "Go there" cannot, and
+        says so rather than doing nothing.
+        """
+        if self.running:
+            self._busy_until = time.monotonic() + 1
+            self._ask("notify", then=lambda r: self._notify_answered(r, do),
+                      do=do, id=ident)
+            return
+        if do == "open":
+            self._note("nothing is running — start it to reach what sent "
+                       "that")
+            return
+        try:
+            store = self._notify_store()
+            if store is not None and ident is not None:
+                store.mark_seen([ident])
+        except Exception as e:            # noqa: BLE001
+            self._note(f"could not mark that seen: {e}")
+        self._fill_waiting()
+
+    # -- the rest of the day
+
+    def _paint_rest(self) -> None:
+        """Three lines that report and do not ask: what he last said,
+        what he last took a picture of, what he last looked up. A line
+        whose store is not there is not drawn — an empty row that says
+        "nothing yet" every day is a row that has stopped being read."""
+        p = self.parts
+        frame = p.get("rest")
+        if frame is None or not frame.winfo_exists():
+            return
+        for child in frame.winfo_children():
+            child.destroy()
+        self._rest_keep: list = []
+        today = time.strftime("%Y-%m-%d")
+        lines = []
+
+        said = next((e for e in self.log if e.kind == "dictation"), None)
+        count = sum(1 for e in self.log
+                    if e.kind == "dictation"
+                    and e.when.strftime("%Y-%m-%d") == today)
+        if said is not None:
+            lines.append(("Said", said.when.strftime("%H:%M"),
+                          said.text or "", f"{count} today",
+                          ui.is_rtl(said.text or ""),
+                          lambda: self._show("Said")))
+        else:
+            # The one sentence a first run has to say. Kept as its own
+            # part because a test reads it: an empty history that says
+            # nothing at all reads as a broken screen.
+            p["last_text"] = tk.Label(frame, text="Nothing dictated yet.",
+                                      bg=ui.BG, fg=ui.FAINT,
+                                      font=(ui.UI, 10), anchor="w")
+            p["last_text"].place(x=0, y=10)
+
+        took = self._last_capture()
+        if took is not None:
+            path, when, day_count = took
+            lines.append(("Took", time.strftime("%H:%M", time.localtime(when)),
+                          f"{path.name}  ·  in {path.parent.name}\\",
+                          f"{day_count} today", False,
+                          lambda d=path.parent: launch.open_path(d)))
+
+        looked = next((e for e in self.log if e.kind == "lookup"), None)
+        if looked is not None:
+            lines.append(("Looked up", looked.when.strftime("%H:%M"),
+                          looked.text or looked.source or "", "",
+                          ui.is_rtl(looked.text or ""),
+                          lambda: self._show("Said")))
+
+        y = 0
+        for label, when, text, meta, rtl, command in lines:
+            row = widgets.quiet_row(frame, CW, bg=ui.BG, label=label,
+                                    when=when, text=text, meta=meta, rtl=rtl,
+                                    command=command,
+                                    keep=self._rest_keep)
+            row.place(x=0, y=y)
+            y += 43
+
+        self._paint_strip()
+
+    def _last_capture(self):
+        """(path, mtime, how many today) of the newest picture, or None.
+
+        Read off the disk rather than out of a store, because there is no
+        store: a screenshot is a file in [capture] folder and that is all
+        it has ever been. 7.4 of them a day, and until tonight nothing in
+        this window knew they existed.
+        """
+        try:
+            cfg = config_mod.load(CONFIG_PATH)
+            folder = Path(getattr(cfg.capture, "folder", "") or "")
+        except Exception:                 # noqa: BLE001
+            return None
+        if not folder or not folder.is_dir():
+            return None
+        try:
+            shots = [f for f in folder.iterdir()
+                     if f.is_file() and f.suffix.lower() in CAPTURE_SUFFIXES]
+        except OSError:
+            return None
+        if not shots:
+            return None
+        shots.sort(key=lambda f: f.stat().st_mtime)
+        newest = shots[-1]
+        midnight = time.mktime(time.strptime(time.strftime("%Y-%m-%d"),
+                                             "%Y-%m-%d"))
+        today = sum(1 for f in shots if f.stat().st_mtime >= midnight)
+        return newest, newest.stat().st_mtime, today
+
+    def _paint_strip(self) -> None:
+        p = self.parts
+        if "strip_awake" not in p or not p["strip_awake"].winfo_exists():
+            return
+        awake = (self.status.get("awake") or {}) if self.running else {}
+        dark = bool(awake.get("dark"))
+        if not self.running:
+            sentence = ("Nothing is running, so nothing is holding the "
+                        "machine awake.")
+        elif dark:
+            since = awake.get("since") or awake.get("hold_since")
+            when = (time.strftime("%H:%M", time.localtime(since))
+                    if since else "")
+            sentence = (f"The screens are off since {when}. The machine "
+                        "stays awake." if when else
+                        "The screens are off. The machine stays awake.")
+        elif awake.get("held"):
+            sentence = "The machine stays awake while this runs."
+        else:
+            sentence = "The machine sleeps on its own timer."
+        p["strip_awake"].config(text=sentence)
+        p["strip_awake"].update_idletasks()
+        p["strip_screens"].config(text="Screens on" if dark
+                                  else "Screens off")
+        if self.running:
+            p["strip_screens"].place(
+                x=PAD + 26 + p["strip_awake"].winfo_reqwidth() + 22,
+                y=H - TOP - 39)
+        else:
+            p["strip_screens"].place_forget()
 
         bits = []
-        # The version leads: it is the one fact on this line that changes
-        # what the rest of the words mean ("local" under fast is a
-        # different repair pass than "local" under classic).
+        phone = (self.status or {}).get("phone")
+        bits.append("phone live" if phone else "phone off")
         if getattr(self, "branch", "") not in ("", "?"):
-            bits.append(self.branch)
-        if status.get("backend"):
-            bits.append(status["backend"])
-        if status.get("mic"):
-            bits.append(status["mic"])
-        if status.get("uptime_s"):
-            bits.append(f"up {human_time(status['uptime_s'])}")
-        meta, _lines = ui.clamp("   ·   ".join(bits), ui.UI, 9,
-                                CW - 36 - 57, 1)
-        p["hero_meta"].config(text=meta)
-        hint, _lines = ui.clamp(self._explain(), ui.UI, 8, CW - 36 - 57, 2)
-        p["hero_hint"].config(text=hint)
+            bits.append(f"running {self.branch}")
+        learned = _words_learned()
+        if learned is not None:
+            bits.append(f"{learned} words learned")
+        p["strip_facts"].config(text="   ·   ".join(bits))
 
-        p["start"].enable(not status)
-        p["stop"].enable(bool(status))
-        p["pause"].enable(self.running)
-        p["pause"].configure_text("Resume" if status.get("paused")
-                                  else "Pause")
+    def _screen_said(self) -> None:
+        """Everything he has said, and the words it has learned from him.
 
-        stats = status.get("stats") or {}
-        count = stats.get("dictations", 0)
-        targets = {
-            "count": (count, "{:.0f}", ""),
-            "spoken": (stats.get("seconds", 0) / 60, "{:.1f}", "min"),
-            "chars": (stats.get("chars", 0), "{:,.0f}", ""),
-            "wait": (stats.get("latency", 0.0) / count if count else 0.0,
-                     "{:.1f}", "s"),
-        }
-        if not status:
-            for key in targets:
-                p[f"stat_{key}"].config(text="—")
-                self._unit(key, "")
-            self._stats_shown = False
-        elif not self._stats_shown:
-            # The first look at this screen counts the numbers up from
-            # zero — 350 ms, then they are just numbers again. Every poll
-            # after this one writes them directly.
-            self._stats_shown = True
-            self._count_up(targets, step=0)
-        else:
-            for key, (value, fmt, unit) in targets.items():
-                p[f"stat_{key}"].config(text=fmt.format(value))
-                self._unit(key, unit)
+        History and Vocabulary were two of the nine rows, and neither was
+        ever opened: "history" appears zero times in eleven thousand log
+        lines, and the vocabulary had no screen at all despite 38 entries
+        and 389 repair passes. They are one place because they are one
+        subject — the list is what he said, the panel is what saying it
+        taught the machine — and side by side the panel finally has a
+        reason to be looked at.
 
-        last = next((e for e in self.log if e.kind == "dictation"), None)
-        text = last.text if last else ""
-        if text:
-            # Windows draws the paragraph (ui.draw_text) — Tk's own text
-            # path lays mixed Hebrew/English runs out in the wrong order.
-            photo, _h, _lines = ui.draw_text(text, pt=12, width=CW - 36,
-                                             max_lines=3, colour=ui.FG,
-                                             bg=ui.CARD)
-            p["last_text"].config(image=photo, text="")
-            p["last_text"].photo = photo
-            p["last_text"].place(x=0, y=26, anchor="nw")
-            p["last_when"].config(text=last.when.strftime("%H:%M"))
-            p["last_meta"].config(text=last.meta())
-        else:
-            p["last_text"].config(image="",
-                                  text="Nothing dictated yet — hold the "
-                                       "dictation key and say something.",
-                                  justify="left", anchor="w")
-            p["last_text"].place(x=0, y=26, anchor="nw")
-            p["last_when"].config(text="")
-            p["last_meta"].config(text="")
-        p["copy"].enable(bool(text))
-
-        vocab = status.get("vocab") or {}
-        if vocab:
-            learned = vocab.get("corrections", 0)
-            p["vocab_head"].config(
-                text=f"{learned} word{'' if learned == 1 else 's'} learned")
-            p["vocab_sub"].config(
-                text=f"{vocab.get('automatic', 0)} repaired automatically"
-                     f"   ·   {vocab.get('hotwords', 0)} hotwords")
-        else:
-            p["vocab_head"].config(text="—")
-            p["vocab_sub"].config(text="start it to see what it has learned"
-                                  if not status else "")
-
-        url = status.get("phone", "")
-        p["phone_head"].config(text="endpoint is live" if url else "off")
-        p["phone_sub"].config(
-            text="dictate from the phone on this network" if url
-            else "[server] enabled = false, or it is not running")
-        p["phone_copy"].enable(bool(url))
-
-        pending = status.get("pending") or 0
-        if pending:
-            self._note(f"{pending} recording(s) waiting in pending\\ — "
-                       f"run main.py --drain to get the text back")
-
-    def _count_up(self, targets: dict, step: int) -> None:
-        """The stat tiles counting to their values, eased so the last few
-        frames land softly. Twelve frames at 30 ms."""
-        if self.closing or "stat_count" not in self.parts:
-            return
-        frames = 12
-        progress = 1 - (1 - step / frames) ** 3
-        for key, (value, fmt, unit) in targets.items():
-            self.parts[f"stat_{key}"].config(text=fmt.format(value * progress))
-            self._unit(key, unit)
-        if step < frames and self.screen == "Overview":
-            self.root.after(30, lambda: self._count_up(targets, step + 1))
-
-    def _unit(self, key: str, text: str) -> None:
-        """Park the unit right after the number, whatever its width."""
-        value = self.parts[f"stat_{key}"]
-        value.update_idletasks()
-        self.parts[f"unit_{key}"].config(text=text)
-        self.parts[f"unit_{key}"].place(x=value.winfo_reqwidth() + 4, y=36)
-
-    # ------------------------------------------------------------ history
-
-    def _screen_history(self) -> None:
-        self._title("History", f"the last {HISTORY_ROWS} of what you said")
+        The list keeps everything it had: the search, the six filters, the
+        rows drawn on a canvas rather than built out of widgets (a
+        hundred rows the obvious way is seven hundred Tk windows and a
+        two-second pause on every keystroke), and the learned rows with
+        their before/after pill.
+        """
+        self._title("Said", f"the last {HISTORY_ROWS} of what you said")
         p = self.parts
+        self._row_w = SAID_W
 
-        search = ui.Card(self.sheet, CW, 40, radius=11, pad=11)
+        # 46 and not 40: a 9 pt line in Rubik has a 25 px box (measured
+        # 2026-09-07) and this card's body was 18, so the placeholder and
+        # the caret both lost their descenders behind the card's own
+        # edge. FIELD_H is the height a one-line field has to be.
+        search = ui.Card(self.sheet, SAID_W, FIELD_H, radius=11, pad=11,
+                         bg=ui.BG)
         search.place(x=PAD, y=64)
         tk.Label(search.body, text=ui.ICON["search"], bg=ui.CARD,
-                 fg=ui.FAINT, font=(ui.ICONS, 10)).place(x=0, y=1)
+                 fg=ui.FAINT, font=(ui.ICONS, 10)).place(x=0, y=2)
         entry = tk.Entry(search.body, bg=ui.CARD, fg=ui.FG, bd=0,
                          highlightthickness=0, font=(ui.UI, 10),
                          insertbackground=ui.ACCENT)
-        entry.place(x=26, y=0, width=CW - 90, height=18)
+        entry.place(x=26, y=0, width=SAID_W - 90, height=FIELD_H - 22)
         entry.insert(0, self._query)
         entry.bind("<KeyRelease>", lambda _e: self._search_soon(entry.get()))
         p["search"] = entry
@@ -1582,31 +2107,133 @@ class Dashboard:
                                     text="Search everything you have said…",
                                     bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9))
         if not self._query:
-            p["placeholder"].place(x=26, y=1)
+            p["placeholder"].place(x=26, y=0)
         entry.bind("<FocusIn>", lambda _e: p["placeholder"].place_forget())
 
-        chips = tk.Frame(self.sheet, bg=ui.PANE)
-        chips.place(x=PAD, y=114)
+        chips = tk.Frame(self.sheet, bg=ui.BG)
+        chips.place(x=PAD, y=118)
         p["chips"] = {}
         for name, kind in history.FILTERS:
             chip = ui.Chip(chips, name, lambda k=kind: self._filter_to(k),
-                           active=(kind == self._filter))
+                           active=(kind == self._filter), bg=ui.BG)
             chip.pack(side="left", padx=(0, 6))
             p["chips"][kind] = chip
 
-        p["list"] = ui.Scroller(self.sheet, CW + 10, 448)
-        p["list"].place(x=PAD, y=156)
-        p["empty"] = tk.Label(self.sheet, text="", bg=ui.PANE, fg=ui.FAINT,
+        p["list"] = ui.Scroller(self.sheet, SAID_W + 10, 442, bg=ui.BG)
+        p["list"].place(x=PAD, y=160)
+        p["empty"] = tk.Label(self.sheet, text="", bg=ui.BG, fg=ui.FAINT,
                               font=(ui.UI, 10))
 
         tk.Label(self.sheet, text="Everything older is still in "
                                  "transcripts.log, untouched.",
-                 bg=ui.PANE, fg=ui.FAINT, font=(ui.UI, 8)).place(x=PAD, y=616)
+                 bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8)).place(x=PAD, y=624)
+        wide = widgets.button_width("Open transcripts.log", icon=True)
         ui.Button(self.sheet, "Open transcripts.log",
-                  lambda: launch.open_path(history.LOG), w=170, h=30,
-                  quiet=True, bg=ui.PANE,
-                  icon=ui.ICON["file"]).place(x=PAD + CW - 170, y=608)
+                  lambda: launch.open_path(history.LOG), w=wide, h=30,
+                  quiet=True, bg=ui.BG,
+                  icon=ui.ICON["file"]).place(x=PAD + SAID_W - wide, y=616)
+
+        self._vocab_panel()
         self._fill_history()
+
+    def _vocab_panel(self) -> None:
+        """What saying things has taught it: the count, the last pairs it
+        learned, and the key that teaches it one on purpose.
+
+        The pairs are drawn with ui.pair_pill — the same widget the
+        review card and the learned rows use — so a correction looks the
+        same wherever it is shown, and the arrow points LEFT when the
+        words are Hebrew, which pair_pill already knows how to do.
+        """
+        p = self.parts
+        x = PAD + SAID_W + 20
+        width = CW - SAID_W - 20
+        card = ui.Card(self.sheet, width, 508, fill=ui.CARD, bg=ui.BG,
+                       pad=16)
+        card.place(x=x, y=64)
+        body, inner = card.body, width - 32
+        tk.Label(body, text="V O C A B U L A R Y", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        learned = _words_learned()
+        p["vocab_count"] = tk.Label(
+            body, text="—" if learned is None else str(learned), bg=ui.CARD,
+            fg=ui.FG, font=(ui.DISPLAY, 24, "bold"))
+        p["vocab_count"].place(x=0, y=20)
+        tk.Label(body, text="words it has learned to hear your way",
+                 bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9), wraplength=inner,
+                 justify="left").place(x=0, y=60)
+
+        keys = self.status.get("keys") or self._read_keys()
+        teach = pretty_key(keys.get("correct_hotkey", ""))
+        row = tk.Frame(body, bg=ui.CARD)
+        row.place(x=0, y=92)
+        ui.KeyCap(row, teach, bg=ui.CARD,
+                  w=max(56, 26 + ui.text_width(teach, ui.UI, 10)),
+                  h=28).pack(side="left")
+        tk.Label(row, text="teach it a word", bg=ui.CARD, fg=ui.DIM,
+                 font=(ui.UI, 9)).pack(side="left", padx=(10, 0))
+
+        widgets.rule(body, inner, bg=ui.CARD, colour=ui.LINE, x=0, y=136)
+        tk.Label(body, text="L A T E L Y", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=150)
+        pairs = tk.Canvas(body, width=inner, height=250, bg=ui.CARD,
+                          highlightthickness=0, bd=0)
+        pairs.place(x=0, y=172)
+        p["vocab_pairs"] = pairs
+        y = 0
+        for wrong, right in self._recent_pairs(8):
+            ui.pair_pill(pairs, inner, y, wrong, right, ui.CARD)
+            y += 30
+        if not y:
+            pairs.create_text(0, 6, anchor="nw", font=(ui.UI, 9),
+                              fill=ui.FAINT,
+                              text="Nothing learned yet — say Yes to a "
+                                   "second reading, or press the teach key "
+                                   "on a word it got wrong.")
+
+        try:
+            cap = config_mod.load(CONFIG_PATH).vocab.max_terms
+        except Exception:                 # noqa: BLE001 — unreadable config
+            cap = None
+        p["vocab_hot"] = tk.Label(
+            body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=inner,
+            justify="left",
+            text=("The best of them go into the decoder's prompt before it "
+                  f"listens — {cap} at a time." if cap
+                  else "The best of them go into the decoder's prompt "
+                       "before it listens."))
+        p["vocab_hot"].place(x=0, y=436)
+
+    def _recent_pairs(self, limit: int) -> list:
+        """The last corrections, newest first — out of the log if it has
+        learned rows in it, and out of vocab.json when it does not (the
+        file is the record; the log only holds the last hundred lines)."""
+        out: list = []
+        for event in self.log:
+            if event.kind == "learned":
+                for pair in (event.pairs or []):
+                    out.append(pair)
+                    if len(out) >= limit:
+                        return out
+        if out:
+            return out
+        import json
+        try:
+            with (APP_DIR / "vocab.json").open(encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            return out
+        entries = data.get("corrections") if isinstance(data, dict) else []
+        for entry in reversed(entries or []):
+            if not isinstance(entry, dict):
+                continue
+            heard = str(entry.get("heard") or "")
+            meant = str(entry.get("meant") or "")
+            if heard and meant:
+                out.append((heard, meant))
+            if len(out) >= limit:
+                break
+        return out
 
     def _filter_to(self, kind: str | None) -> None:
         self._filter = kind
@@ -1656,7 +2283,8 @@ class Dashboard:
             self.parts["empty"].config(
                 text="Nothing here yet." if not self.log
                 else "Nothing matches that.")
-            self.parts["empty"].place(x=PAD + CW / 2, y=320, anchor="center")
+            self.parts["empty"].place(x=PAD + SAID_W / 2, y=320,
+                                      anchor="center")
         self._rows_left = list(shown)
         self._draw_rows(8)
         scroller.to_top()
@@ -1702,7 +2330,8 @@ class Dashboard:
         column.
         """
         raw = event.text or event.note or ""
-        left, edge = 106, CW - 14
+        row_w = getattr(self, "_row_w", CW)
+        left, edge = 106, row_w - 14
         width = edge - left
         pairs = event.pairs if event.kind == "learned" else []
 
@@ -1719,11 +2348,12 @@ class Dashboard:
                 bg=ui.CARD)
             height = 46 + text_h
 
-        row = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.PANE,
-                        highlightthickness=0, bd=0, cursor="hand2")
+        row = tk.Canvas(scroller.inner, width=row_w, height=height,
+                        bg=ui.BG, highlightthickness=0, bd=0,
+                        cursor="hand2")
         row.pack(pady=(0, 8))
-        idle = ui.rounded(CW, height, 12, ui.CARD, ui.PANE, ui.LINE)
-        hot = ui.rounded(CW, height, 12, ui.CARD_HI, ui.PANE, ui.TILE_EDGE)
+        idle = ui.rounded(row_w, height, 12, ui.CARD, ui.BG, ui.LINE)
+        hot = ui.rounded(row_w, height, 12, ui.CARD_HI, ui.BG, ui.TILE_EDGE)
         face = row.create_image(0, 0, anchor="nw", image=idle)
         colour = COLOURS[event.colour]
 
@@ -1772,133 +2402,11 @@ class Dashboard:
         except OSError:
             return None
 
-    def _screen_review(self) -> None:
-        self._title("Review", "what the second reading proposes — you decide")
-        p = self.parts
-        p["review_head"] = tk.Label(self.sheet, text="", bg=ui.PANE,
-                                    fg=ui.DIM, font=(ui.UI, 10))
-        p["review_head"].place(x=PAD, y=66)
-        p["review_list"] = ui.Scroller(self.sheet, CW + 10, 500)
-        p["review_list"].place(x=PAD, y=100)
-        p["review_empty"] = tk.Label(self.sheet, text="", bg=ui.PANE,
-                                     fg=ui.FAINT, font=(ui.UI, 10))
-        tk.Label(self.sheet,
-                 text="After each dictation a card asks the same question "
-                      "for a few seconds; what it got no answer to waits "
-                      "here. Yes teaches the vocabulary; No is remembered.",
-                 bg=ui.PANE, fg=ui.FAINT, font=(ui.UI, 8),
-                 wraplength=CW, justify="left").place(x=PAD, y=606)
-        self._review_stamp = None
-        self._fill_review()
-
-    def _poll_review(self) -> None:
-        """Once a second from _refresh: redraw only when the file moved —
-        a new proposal from the app, or a decision from its card."""
-        if "review_list" not in self.parts:
-            return
-        if self._review_stat() != getattr(self, "_review_stamp", None):
-            self._fill_review()
-
-    def _fill_review(self) -> None:
-        if "review_list" not in self.parts:
-            return
-        self._review_stamp = self._review_stat()
-        try:
-            store = self._review_store()
-            pending, decided = store.pending(), store.decided(30)
-            summary = store.summary()
-        except Exception:                 # noqa: BLE001 — a broken file
-            pending, decided = [], []
-            summary = {"pending": 0, "accepted": 0, "rejected": 0}
-        self.parts["review_head"].config(
-            text=f"{summary.get('pending', 0)} waiting   ·   "
-                 f"{summary.get('accepted', 0)} accepted   ·   "
-                 f"{summary.get('rejected', 0)} rejected")
-        scroller = self.parts["review_list"]
-        scroller.clear()
-        empty = self.parts["review_empty"]
-        empty.place_forget()
-        if not pending and not decided:
-            empty.config(text="Nothing to review yet — dictate, and the "
-                              "second reading speaks up when it disagrees.")
-            empty.place(x=PAD + CW / 2, y=300, anchor="center")
-        for item in pending:
-            self._review_row(scroller, item, pending=True)
-        if decided:
-            tk.Label(scroller.inner, text="DECIDED", bg=ui.PANE,
-                     fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
-                anchor="w", pady=(8 if pending else 0, 6))
-        for item in decided:
-            self._review_row(scroller, item, pending=False)
-        scroller.to_top()
-
-    def _review_row(self, scroller: ui.Scroller, item: dict,
-                    pending: bool) -> None:
-        """One proposal, one canvas — the sentence as it would read, the
-        changed words as pills, the reason, and Yes / No while it is
-        still a question. Same layout rules as a history row: time and
-        the buttons on the left, text flush right."""
-        text = item.get("proposed") or item.get("text") or ""
-        changes = item.get("changes") or []
-        left, edge = 106, CW - 14
-        width = edge - left
-        photo, text_h, _lines = ui.draw_text(
-            text, pt=11, width=width, max_lines=2,
-            colour=ui.FG if pending else ui.DIM, bg=ui.CARD)
-        why = "   ·   ".join(c.get("why", "") for c in changes
-                             if c.get("why"))
-        note = None
-        note_h = 0
-        if why:
-            note, note_h, _l = ui.draw_text(why, pt=8, width=width,
-                                            max_lines=1, colour=ui.FAINT,
-                                            bg=ui.CARD)
-        height = 13 + text_h + (38 if changes else 0) \
-            + (note_h + 6 if note is not None else 0) + 12
-        height = max(height, 80)
-        row = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.PANE,
-                        highlightthickness=0, bd=0)
-        row.pack(pady=(0, 8))
-        row.create_image(0, 0, anchor="nw", image=ui.rounded(
-            CW, height, 12, ui.CARD, ui.PANE,
-            ui.TILE_EDGE if pending else ui.LINE))
-        when = str(item.get("when", ""))
-        row.create_text(14, 15, text=when[11:16], anchor="nw",
-                        font=(ui.UI, 10, "bold"), fill=ui.FG)
-        try:
-            day = time.strftime("%d %b", time.strptime(when,
-                                                       "%Y-%m-%d %H:%M:%S"))
-        except ValueError:
-            day = ""
-        row.create_text(14, 34, text=day, anchor="nw", font=(ui.UI, 8),
-                        fill=ui.FAINT)
-        row.create_image(left, 13, anchor="nw", image=photo)
-        y = 13 + text_h + 8
-        if changes:
-            x = edge
-            for change in changes[:4]:
-                after = change.get("after") or "—"
-                x -= ui.pair_pill(row, x, y, change.get("before", ""),
-                                  after, ui.CARD) + 6
-            y += 36
-        if note is not None:
-            row.create_image(edge, y, anchor="ne", image=note)
-        if pending:
-            sid = str(item.get("id", ""))
-            yes = ui.Button(row, "Yes", lambda s=sid: self._review_decide(
-                s, "accepted"), w=44, h=26, quiet=True, fg=ui.GREEN)
-            no = ui.Button(row, "No", lambda s=sid: self._review_decide(
-                s, "rejected"), w=40, h=26, quiet=True, fg=ui.RED)
-            row.create_window(14, height - 38, window=yes, anchor="nw")
-            row.create_window(62, height - 38, window=no, anchor="nw")
-        else:
-            accepted = item.get("status") == "accepted"
-            by = item.get("by") or ""
-            row.create_text(14, height - 26, anchor="nw", font=(ui.UI, 8),
-                            fill=ui.GREEN if accepted else ui.FAINT,
-                            text=("accepted" if accepted else "rejected")
-                            + (f"  ·  {by}" if by else ""))
-        scroller.bind_wheel(row)
+    # The Review SCREEN is gone. A proposal is one of the four things
+    # that can be waiting, and it is now a row in the Waiting pile
+    # (_waiting_review) with the same Yes / No and the same store call
+    # underneath. What is left here is the store, the change detector and
+    # the verdict — the parts that were never about a screen.
 
     def _review_decide(self, sid: str, verdict: str) -> None:
         """Yes or No on a row. Written to review.json here — the app
@@ -1914,7 +2422,7 @@ class Dashboard:
             self._note("accepted — the app will learn it"
                        if verdict == "accepted" else "rejected")
             self._ask("review_absorb")
-        self._fill_review()
+        self._fill_waiting()
 
     # ----------------------------------------------------------- problems
 
@@ -2057,8 +2565,18 @@ class Dashboard:
         name = getattr(self._problems(), "DIGEST_NAME", "problems.md")
         launch.open_path(APP_DIR / name)
 
-    def _screen_problems(self) -> None:
-        """His own bug list: what he reported, and whether it is answered.
+    def _waiting_all(self) -> None:
+        """The whole backlog, on the Waiting place: every report, every
+        question the routine asked, every branch it left behind.
+
+        The pile on the home says WHAT is waiting in one line each; this
+        is where a thing that needs more than a line gets it — a question
+        with two to five answers to press and a box to dictate into, a
+        report with its evidence, a weekly branch with the one button
+        that publishes it. Reached from "the whole list" beside the
+        title, and from Answer on a question row.
+
+        His own bug list: what he reported, and whether it is answered.
 
         The shape is Review's, because the job is Review's — rows out of
         a json store, two buttons each — and the only difference is who
@@ -2074,33 +2592,48 @@ class Dashboard:
         routine committed its work to gets a row of its own, with the one
         button that publishes it.
         """
-        self._title("Problems", "what you reported — you decide when it is "
-                                "done")
+        # This view REPLACES the home on the same place, so it clears the
+        # sheet itself rather than going through _show — the four places
+        # are what the top bar selects, and a sub-view is not a place.
+        self._stop_rows()
+        for child in self.sheet.winfo_children():
+            child.destroy()
+        self.parts = {k: self.parts[k] for k in
+                      ("hint", "lamp", "state", "uptime", "chip", "run")
+                      if k in self.parts}
+        self._waiting_view = "all"
+        self._title("Waiting")
         p = self.parts
-        p["problems_head"] = tk.Label(self.sheet, text="", bg=ui.PANE,
+        back = tk.Label(self.sheet, text="←  the calm list", bg=ui.BG,
+                        fg=ui.ACCENT_TEXT, font=(ui.UI, 10), cursor="hand2")
+        back.place(x=PAD + CW, y=26, anchor="ne")
+        back.bind("<Button-1>", lambda _e: self._show("Waiting"))
+        p["problems_head"] = tk.Label(self.sheet, text="", bg=ui.BG,
                                       fg=ui.DIM, font=(ui.UI, 10))
         p["problems_head"].place(x=PAD, y=66)
         # WHAT NEEDS HIM LEADS THE TAB. The report counts are a state of
         # the world; a pending question is the routine standing still
         # until he answers, so when there is one it takes the left of
         # this line and the counts move over. _fill_problems places both.
-        p["questions_head"] = tk.Label(self.sheet, text="", bg=ui.PANE,
+        p["questions_head"] = tk.Label(self.sheet, text="", bg=ui.BG,
                                        fg=ui.ACCENT_TEXT,
                                        font=(ui.MEDIUM, 10))
-        p["problems_list"] = ui.Scroller(self.sheet, CW + 10, 496)
+        p["problems_list"] = ui.Scroller(self.sheet, CW + 10, 498, bg=ui.BG)
         p["problems_list"].place(x=PAD, y=100)
-        p["problems_empty"] = tk.Label(self.sheet, text="", bg=ui.PANE,
+        p["problems_empty"] = tk.Label(self.sheet, text="", bg=ui.BG,
                                        fg=ui.FAINT, font=(ui.UI, 10),
                                        wraplength=CW - 80, justify="center")
         tk.Label(self.sheet,
-                 text="Report a problem is in the sidebar, on every "
-                      "screen. Fixed and Closed both take a report off "
-                      "this list; nothing open is ever thrown away.",
-                 bg=ui.PANE, fg=ui.FAINT, font=(ui.UI, 8),
-                 wraplength=CW - 190, justify="left").place(x=PAD, y=612)
-        ui.Button(self.sheet, "Open problems.md", self._open_digest, w=170,
-                  h=30, quiet=True, bg=ui.PANE,
-                  icon=ui.ICON["page"]).place(x=PAD + CW - 170, y=608)
+                 text="Report a problem is on the calm list, and on "
+                      "Ctrl+Alt+R wherever you are. Fixed and Closed both "
+                      "take a report off this list; nothing open is ever "
+                      "thrown away.",
+                 bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
+                 wraplength=CW - 190, justify="left").place(x=PAD, y=620)
+        wide = widgets.button_width("Open problems.md", icon=True)
+        ui.Button(self.sheet, "Open problems.md", self._open_digest, w=wide,
+                  h=30, quiet=True, bg=ui.BG,
+                  icon=ui.ICON["page"]).place(x=PAD + CW - wide, y=616)
         self._problems_stamp = None
         self._questions_stamp = None
         # Opening the tab is the cue: the weekly read wants problems.md
@@ -2199,7 +2732,7 @@ class Dashboard:
             self._question_block(scroller, qmodule,
                                  homed.get(str(item.get("id", "")), []), "")
         if done:
-            tk.Label(scroller.inner, text="ANSWERED", bg=ui.PANE,
+            tk.Label(scroller.inner, text="ANSWERED", bg=ui.BG,
                      fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
                 anchor="w", pady=(8 if waiting else 0, 6))
         for item in done:
@@ -2308,11 +2841,11 @@ class Dashboard:
         height = max(84, bottom + (46 if open_ else 30))
         if shot is not None:
             height = max(height, shot.height() + 26)
-        row = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.PANE,
+        row = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.BG,
                         highlightthickness=0, bd=0)
         row.pack(pady=(0, 8))
         row.create_image(0, 0, anchor="nw", image=ui.rounded(
-            CW, height, 12, ui.CARD, ui.PANE,
+            CW, height, 12, ui.CARD, ui.BG,
             ui.TILE_EDGE if open_ else ui.LINE))
         if shot is not None:
             row.create_image(edge, 13, anchor="ne", image=shot)
@@ -2402,10 +2935,10 @@ class Dashboard:
         """
         if module is None or not items:
             return
-        block = tk.Frame(scroller.inner, bg=ui.PANE)
+        block = tk.Frame(scroller.inner, bg=ui.BG)
         block.pack(anchor="w", fill="x", pady=(0, 0))
         if header:
-            tk.Label(block, text=header, bg=ui.PANE, fg=ui.ACCENT_TEXT,
+            tk.Label(block, text=header, bg=ui.BG, fg=ui.ACCENT_TEXT,
                      font=(ui.MEDIUM, 8)).pack(anchor="w", pady=(0, 6))
         for item in items:
             self._question_row(block, scroller, module, item)
@@ -2534,14 +3067,14 @@ class Dashboard:
         y_actions = y
         height = y_actions + 30 + 12
 
-        row = tk.Canvas(parent, width=width, height=height, bg=ui.PANE,
+        row = tk.Canvas(parent, width=width, height=height, bg=ui.BG,
                         highlightthickness=0, bd=0)
         row.pack(anchor="w", padx=(Q_INDENT, 0), pady=(0, 8))
         # The accent edge is what says this card is not another report:
         # the reports around it are hairlined, and this one is the app
         # asking rather than him telling.
         row.create_image(0, 0, anchor="nw", image=ui.rounded(
-            width, height, 12, ui.CARD, ui.PANE, ui.ACCENT_EDGE))
+            width, height, 12, ui.CARD, ui.BG, ui.ACCENT_EDGE))
         # The canvas is the only reference Python holds to these: a
         # PhotoImage nothing keeps is collected, and the row then draws
         # blank boxes where the sentences were.
@@ -3047,10 +3580,10 @@ class Dashboard:
         already DONE and that nobody has looked at — and in a frame, for
         the reason the questions are in one.
         """
-        block = tk.Frame(scroller.inner, bg=ui.PANE)
+        block = tk.Frame(scroller.inner, bg=ui.BG)
         block.pack(anchor="w", fill="x", pady=(0, 2))
         tk.Label(block, text="THE ROUTINE'S WORK — READ IT, THEN PUSH",
-                 bg=ui.PANE, fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
+                 bg=ui.BG, fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
             anchor="w", pady=(0, 6))
         for info in rows:
             self._weekly_row(block, scroller, info)
@@ -3096,11 +3629,11 @@ class Dashboard:
         y += note_h + (6 if note is not None else 0)
         height = max(74, y + 8)
 
-        row = tk.Canvas(parent, width=CW, height=height, bg=ui.PANE,
+        row = tk.Canvas(parent, width=CW, height=height, bg=ui.BG,
                         highlightthickness=0, bd=0)
         row.pack(anchor="w", pady=(0, 8))
         row.create_image(0, 0, anchor="nw", image=ui.rounded(
-            CW, height, 12, ui.CARD, ui.PANE, ui.TILE_EDGE))
+            CW, height, 12, ui.CARD, ui.BG, ui.TILE_EDGE))
         row.keep = [subject, note]
         row.create_text(Q_PAD, 13, anchor="nw", font=(ui.MEDIUM, 10),
                         fill=ui.FG, text=branch)
@@ -3920,7 +4453,7 @@ class Dashboard:
 
     # -------------------------------------------------------------- awake
 
-    def _screen_awake(self) -> None:
+    def _awake_block(self, scroller) -> None:
         """The machine held awake, and the screens off on a key — awake.py.
 
         Three cards. The hero says whether the hold is standing — it goes
@@ -3939,10 +4472,14 @@ class Dashboard:
         does not need the app — it reads the machine — so it works either
         way, and runs by itself when the screen opens.
         """
-        self._title("Awake", "the computer never sleeps; the screens can")
         p = self.parts
-        hero = ui.Card(self.sheet, CW, 148, pad=18)
-        hero.place(x=PAD, y=68)
+        holder = tk.Frame(scroller.inner, bg=ui.BG, width=CW, height=548)
+        holder.pack(anchor="w", pady=(0, 14))
+        holder.pack_propagate(False)
+        tk.Label(holder, text="A W A K E", bg=ui.BG, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=2, y=0)
+        hero = ui.Card(holder, CW, 148, pad=18, bg=ui.BG)
+        hero.place(x=0, y=18)
         body, inner = hero.body, CW - 36
         p["awake_bar"] = tk.Label(body, bg=ui.CARD)
         p["awake_bar"].place(x=-4, y=0)
@@ -3965,31 +4502,38 @@ class Dashboard:
                                       primary=True, icon=ui.ICON["awake"])
         p["awake_toggle"].place(x=inner, y=0, anchor="ne")
 
-        strip = ui.Card(self.sheet, CW, 76, pad=18)
-        strip.place(x=PAD, y=228)
+        strip = ui.Card(holder, CW, 76, pad=18, bg=ui.BG)
+        strip.place(x=0, y=178)
+        wide = widgets.button_width("Screens off again", icon=True)
         p["awake_screen"] = ui.Button(strip.body, "Screens off again",
-                                      lambda: self._screens("again"), w=156,
+                                      lambda: self._screens("again"), w=wide,
                                       icon=ui.ICON["power"])
         p["awake_screen"].place(x=0, y=2)
-        p["awake_check"] = ui.Button(strip.body, "Check status",
-                                     self._awake_check, w=132, quiet=True,
-                                     icon=ui.ICON["check"])
-        p["awake_check"].place(x=168, y=2)
+        p["awake_check"] = ui.Button(
+            strip.body, "Check status", self._awake_check, quiet=True,
+            w=widgets.button_width("Check status", icon=True),
+            icon=ui.ICON["check"])
+        p["awake_check"].place(x=wide + 12, y=2)
         p["awake_checked"] = tk.Label(strip.body, text="", bg=ui.CARD,
                                       fg=ui.FAINT, font=(ui.UI, 8),
                                       anchor="e")
         p["awake_checked"].place(x=CW - 36, y=12, anchor="ne")
 
-        card = ui.Card(self.sheet, CW, 310, pad=18)
-        card.place(x=PAD, y=316)
+        card = ui.Card(holder, CW, 282, pad=18, bg=ui.BG)
+        card.place(x=0, y=266)
         tk.Label(card.body, text="WILL IT STILL BE THERE WHEN YOU ARE AWAY",
                  bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8)).place(x=0, y=0)
         p["awake_rows"] = tk.Frame(card.body, bg=ui.CARD, width=CW - 36,
-                                   height=254)
+                                   height=226)
         p["awake_rows"].place(x=0, y=22)
         p["awake_rows"].pack_propagate(False)
         self._awake_shape = None
         self._paint_awake_rows()
+        scroller.bind_wheel(holder)
+        scroller.bind_wheel(hero)
+        scroller.bind_wheel(strip)
+        scroller.bind_wheel(card)
+        self._paint_awake()
         if AWAKE_AUTO_CHECK and getattr(self, "_awake_probe", None) is None:
             self.root.after(150, self._awake_check)
 
@@ -4167,271 +4711,12 @@ class Dashboard:
         except OSError:
             return None
 
-    def _screen_notify(self) -> None:
-        """What arrived from Claude — or anything else that knocked on
-        /notify — and whether it has been seen. notify.py.
-
-        Three cards, the Awake screen's shape. The hero is the count that
-        matters (UNREAD in amber, ALL SEEN in green) with the newest one's
-        source, title and age, and the one button that changes anything:
-        Dismiss all, which marks everything seen and takes the whole
-        column down — the × on a card answers only the card it is on.
-        A strip under it sends a test notification through the running
-        app and opens notify.log; the list below is the last thirty from
-        notify.json, unseen ones edged brighter.
-
-        Dismiss and Send a test go through the RUNNING APP: the card, the
-        cue and the reminders live in the process with the hotkey in it,
-        not in this window, so with nothing running both are disabled and
-        the hint says why. The list does not need the app — it reads the
-        file — so it works either way, and follows the file while the
-        screen is open.
-        """
-        self._title("Notify", "when Claude — or anything — finishes")
-        p = self.parts
-        hero = ui.Card(self.sheet, CW, 148, pad=18)
-        hero.place(x=PAD, y=68)
-        body, inner = hero.body, CW - 36
-        p["notify_bar"] = tk.Label(body, bg=ui.CARD)
-        p["notify_bar"].place(x=-4, y=0)
-        p["notify_glyph"] = tk.Label(body, text=ui.ICON["notify"],
-                                     bg=ui.CARD, fg=ui.FAINT,
-                                     font=(ui.ICONS, 22))
-        p["notify_glyph"].place(x=6, y=2)
-        p["notify_state"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FG,
-                                     font=(ui.DISPLAY, 19, "bold"))
-        p["notify_state"].place(x=56, y=1)
-        p["notify_meta"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.DIM,
-                                    font=(ui.UI, 9), anchor="w")
-        p["notify_meta"].place(x=57, y=44)
-        p["notify_hint"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.FAINT,
-                                    font=(ui.UI, 8), justify="left",
-                                    anchor="w")
-        p["notify_hint"].place(x=57, y=68)
-        p["notify_dismiss"] = ui.Button(body, "Dismiss all",
-                                        lambda: self._notify("dismiss"),
-                                        w=164, primary=True,
-                                        icon=ui.ICON["check"])
-        p["notify_dismiss"].place(x=inner, y=0, anchor="ne")
-
-        strip = ui.Card(self.sheet, CW, 76, pad=18)
-        strip.place(x=PAD, y=228)
-        p["notify_test"] = ui.Button(strip.body, "Send a test",
-                                     lambda: self._notify("test"), w=140,
-                                     icon=ui.ICON["play"])
-        p["notify_test"].place(x=0, y=2)
-        p["notify_log"] = ui.Button(strip.body, "Open notify.log",
-                                    self._notify_open_log, w=156, quiet=True,
-                                    icon=ui.ICON["page"])
-        p["notify_log"].place(x=152, y=2)
-        p["notify_count"] = tk.Label(strip.body, text="", bg=ui.CARD,
-                                     fg=ui.FAINT, font=(ui.UI, 8),
-                                     anchor="e")
-        p["notify_count"].place(x=CW - 36, y=12, anchor="ne")
-
-        p["notify_list"] = ui.Scroller(self.sheet, CW + 10, 330)
-        p["notify_list"].place(x=PAD, y=316)
-        p["notify_empty"] = tk.Label(self.sheet, text="", bg=ui.PANE,
-                                     fg=ui.FAINT, font=(ui.UI, 10))
-        self._notify_stamp = None
-        self._fill_notify()
-
-    def _paint_notify(self) -> None:
-        p = self.parts
-        if "notify_state" not in p:
-            return
-        info = (self.status.get("notify") or {}) if self.running else {}
-        enabled = bool(info.get("enabled"))
-        try:
-            unread = int(info.get("unread") or 0)
-        except (TypeError, ValueError):
-            unread = 0
-        # A finish waiting for its session to go quiet is unread and NOT
-        # on the screen (2026-09-05): counted apart, so the hero never
-        # says "1 UNREAD" over an empty corner.
-        try:
-            held = min(unread, int(info.get("held") or 0))
-        except (TypeError, ValueError):
-            held = 0
-        shown = unread - held
-        last = info.get("last") or {}
-        kind = str(last.get("kind") or "info")
-        bits = [str(last.get("label") or last.get("source") or ""),
-                str(last.get("title") or ""), ago(str(last.get("at", "")))]
-        newest = "   ·   ".join(b for b in bits if b)
-        if not self.running:
-            colour, word = ui.FAINT, ui.FG
-            state = "NOT RUNNING"
-            meta = "the app puts the card up; start it first"
-            hint = ("The cue, the card and the reminders live in the "
-                    "running app — the process with the hotkey in it — so "
-                    "start dictation first. The list below is the file, "
-                    "and works without it.")
-        elif "notify" not in self.status:
-            # A running app that predates the door: its status has no
-            # section at all. Not "off" — the file may well say enabled.
-            colour, word = ui.DIM, ui.FG
-            state = "NOT WIRED"
-            meta = "the running app predates the notify door"
-            hint = ("The app that is running has no /notify route and no "
-                    "card. Stop it and start it again on this code.")
-        elif not enabled:
-            colour, word = ui.DIM, ui.FG
-            state = "OFF"
-            meta = "[notify] enabled = false"
-            hint = ("The route answers 503 and nothing is shown, stored or "
-                    "played. Turn it on in Settings and restart the app.")
-        elif shown > 0:
-            colour = ui.RED if kind == "error" else ui.AMBER
-            word = colour
-            state = f"{shown} UNREAD"
-            meta = newest or "something is waiting"
-            left = info.get("reminders_left") or 0
-            if info.get("reminding"):
-                hint = (f"Reminding: {left} more. Dismiss all marks "
-                        "everything seen and takes the column down; so does "
-                        "Esc over it or the dismiss key. The x on one card "
-                        "answers just that one.")
-            else:
-                hint = ("Waiting quietly. Dismiss all marks everything seen "
-                        "and takes the column down; so does Esc over it or "
-                        "the dismiss key. The x on one card answers just "
-                        "that one.")
-            if held:
-                hint = (f"{held} finish{'es' if held > 1 else ''} still "
-                        "waiting for a session to go quiet. " + hint)
-        elif held > 0:
-            colour, word = ui.DIM, ui.FG
-            state = f"{held} WAITING"
-            meta = newest or "a finish, held"
-            hint = ("A finish is held until the session that sent it has "
-                    "been quiet for [notify] quiet_s seconds; if the session "
-                    "speaks again first it is retired unseen. Nothing rings "
-                    "for it.")
-        else:
-            colour, word = ui.GREEN, ui.FG
-            state = "ALL SEEN"
-            meta = newest or "nothing has arrived yet"
-            hint = ("Anything that POSTs to /notify on the phone endpoint "
-                    "lands here — Claude Code through its hooks, or a "
-                    "program of your own. Send a test to hear the cue and "
-                    "see the card; unread ones stack, newest on top.")
-        p["notify_bar"].config(image=ui.rounded(4, 112, 2, colour, ui.CARD))
-        p["notify_glyph"].config(fg=colour if unread and self.running
-                                 else ui.FAINT)
-        p["notify_state"].config(text=state, fg=word)
-        p["notify_meta"].config(text=ui.clamp(meta, ui.UI, 9,
-                                              CW - 36 - 57 - 172, 1)[0])
-        p["notify_hint"].config(text=ui.clamp(hint, ui.UI, 8,
-                                              CW - 36 - 57, 2)[0])
-        p["notify_dismiss"].enable(self.running and enabled)
-        p["notify_test"].enable(self.running and enabled)
-        self._poll_notify()
-
-    def _poll_notify(self) -> None:
-        """Once a second from _refresh: redraw only when the file moved —
-        an arrival in the app, a dismissal from its card or key."""
-        if "notify_list" not in self.parts:
-            return
-        if self._notify_stat() != getattr(self, "_notify_stamp", None):
-            self._fill_notify()
-
-    def _fill_notify(self) -> None:
-        if "notify_list" not in self.parts:
-            return
-        self._notify_stamp = self._notify_stat()
-        items: list[dict] = []
-        kept = 0
-        try:
-            store = self._notify_store()
-            if store is not None:
-                items = list(store.recent(30))
-                try:
-                    kept = len(store.items())
-                except Exception:         # noqa: BLE001 — a store without it
-                    kept = len(items)
-        except Exception:                 # noqa: BLE001 — a broken file
-            items, kept = [], 0
-        unread = sum(1 for item in items if not item.get("seen"))
-        self.parts["notify_count"].config(
-            text=(f"{kept} kept   ·   {unread} unread" if kept
-                  else "nothing kept yet"))
-        scroller = self.parts["notify_list"]
-        scroller.clear()
-        empty = self.parts["notify_empty"]
-        empty.place_forget()
-        if not items:
-            empty.config(text="Nothing has arrived yet — Send a test, or "
-                              "let Claude finish something.")
-            empty.place(x=PAD + CW / 2, y=460, anchor="center")
-        for item in items:
-            self._notify_row(scroller, item)
-        scroller.to_top()
-
-    def _notify_row(self, scroller: ui.Scroller, item: dict) -> None:
-        """One notification, one canvas: time and day on the left, the
-        title and the first two lines of the body flush right, and who
-        sent it under them. Same layout rules as a review row — and the
-        same rule about text: title, body and the source line all go
-        through ui.draw_text (DrawTextW), because a title from Claude is
-        Hebrew, English or both in one line, and a create_text scrambles
-        the mixed case silently."""
-        seen = bool(item.get("seen"))
-        kind = str(item.get("kind") or "info")
-        colour = {"done": ui.GREEN, "input": ui.AMBER, "error": ui.RED,
-                  "info": ui.ACCENT}.get(kind, ui.ACCENT)
-        left, edge = 106, CW - 14
-        width = edge - left
-        title = str(item.get("title") or "")
-        body = str(item.get("body") or "")
-        photo, text_h, _lines = ui.draw_text(
-            title, pt=11, width=width, max_lines=1,
-            colour=ui.FG if not seen else ui.DIM, bg=ui.CARD)
-        more = None
-        more_h = 0
-        if body.strip():
-            more, more_h, _l = ui.draw_text(body, pt=9, width=width,
-                                            max_lines=2, colour=ui.FAINT,
-                                            bg=ui.CARD)
-        who = "   ·   ".join(
-            s for s in (str(item.get("label") or item.get("source") or ""),
-                        str(item.get("project") or "")) if s)
-        note = None
-        note_h = 0
-        if who:
-            note, note_h, _l = ui.draw_text(who, pt=8, width=width,
-                                            max_lines=1, colour=ui.FAINT,
-                                            bg=ui.CARD)
-        height = 13 + text_h + (more_h + 4 if more is not None else 0) \
-            + (note_h + 6 if note is not None else 0) + 12
-        height = max(height, 60)
-        row = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.PANE,
-                        highlightthickness=0, bd=0)
-        row.pack(pady=(0, 8))
-        row.create_image(0, 0, anchor="nw", image=ui.rounded(
-            CW, height, 12, ui.CARD, ui.PANE,
-            ui.TILE_EDGE if not seen else ui.LINE))
-        at = str(item.get("at", ""))
-        row.create_text(14, 15, text=at[11:16], anchor="nw",
-                        font=(ui.UI, 10, "bold"),
-                        fill=ui.FG if not seen else ui.DIM)
-        try:
-            day = time.strftime("%d %b", time.strptime(at[:19],
-                                                       "%Y-%m-%dT%H:%M:%S"))
-        except ValueError:
-            day = ""
-        row.create_text(14, 34, text=day, anchor="nw", font=(ui.UI, 8),
-                        fill=ui.FAINT)
-        row.create_image(left - 18, 19, anchor="nw",
-                         image=ui.rounded(8, 8, 4, colour, ui.CARD))
-        row.create_image(left, 13, anchor="nw", image=photo)
-        y = 13 + text_h + 4
-        if more is not None:
-            row.create_image(left, y, anchor="nw", image=more)
-            y += more_h + 6
-        if note is not None:
-            row.create_image(edge, y, anchor="ne", image=note)
-        scroller.bind_wheel(row)
+    # The Notify SCREEN is gone too, and for the same reason: an unread
+    # notification is a thing waiting for an answer, so it is a row in
+    # the Waiting pile (_waiting_notify) rather than a hero, a strip and
+    # a list of its own. Dismiss all kept its place beside the title;
+    # "Send a test" moved to Settings > The app, next to the cue sounds
+    # it is a test OF.
 
     def _notify(self, do: str) -> None:
         """dismiss / test, through the running app."""
@@ -4442,16 +4727,14 @@ class Dashboard:
     def _notify_answered(self, reply: dict | None, do: str) -> None:
         self._announce(reply, {"dismiss": "all marked seen",
                                "test": "test notification sent"}.get(do, do))
-        # The reply carries the new state; paint it now rather than one
+        # The reply carries the new state; take it now rather than one
         # poll later, so Dismiss all is seen to do something at once. The
-        # paint ends in _poll_notify, which refills the list if the file
-        # moved — and a dismissal or a test always moves it.
+        # pile is then refilled from the file, which a dismissal or a
+        # test has always just moved.
         if reply and reply.get("ok") and isinstance(reply.get("notify"),
                                                     dict):
             self.status["notify"] = reply["notify"]
-            self._paint_notify()
-        else:
-            self._fill_notify()
+        self._fill_waiting()
 
     def _notify_open_log(self) -> None:
         path = APP_DIR / "notify.log"
@@ -4461,60 +4744,262 @@ class Dashboard:
             self._note(f"could not open {path.name}")
 
     def _screen_keys(self) -> None:
-        """Every bindable key, in a column that scrolls.
+        """Every binding, lit on the board it lives on.
 
-        It scrolls because the arithmetic ran out. The window is a fixed
-        940x648 (deliberately — every bitmap in it is cached against that
-        size), the title takes the first 64 px, and three cards of 3, 4
-        and 1 rows ended at y=640: eight pixels of headroom. Adding
-        ask-the-screen made the fourth key of its group land at y=654 and
-        the card below it start off the bottom of the window, where it was
-        invisible with no way to reach it — which is exactly how it
-        shipped, because the test only asserted the row EXISTED. A
-        Scroller costs nothing while everything fits (it paints no thumb
-        at all until it has to) and means the next key added is a one-line
-        change again.
+        The old screen was fifteen rows of "Translate (tap)   [F8]" in a
+        scrolling column — a lookup table for a thing that is already
+        spatial. He does not remember that translate is F8, he remembers
+        where his finger goes; and the question this screen actually has
+        to answer, "which keys has this app taken from me", was fifteen
+        separate readings.
+
+        So: the board, with the bound caps lit and the Hebrew legends
+        beside the Latin ones, because those are what his fingers type.
+        Held, tapped, chord and only-sometimes are drawn differently
+        (keyboard._skin), the modifier of a chord is lit softly under the
+        key that carries it, and Esc — which cancels a recording and is
+        watched rather than registered — has a broken edge, because it is
+        the one key here that is only sometimes the app's.
+
+        Clicking a cap opens the same key-capture dialog the rows always
+        did; the rows are still here, under the board, three to a line,
+        and they are what the tests walk.
         """
-        self._title("Keys", "click a key, then press the one you want")
+        self._title("Keys", "click a key on the board, then press the one "
+                            "you want")
         p = self.parts
         p["caps"] = {}
-        named = {f for _title, fields in KEY_GROUPS for f in fields}
-        labels = dict(config_mod.HOTKEY_FIELDS)
-        groups = [(title, [f for f in fields if f in labels])
-                  for title, fields in KEY_GROUPS]
-        # Anything added to HOTKEY_FIELDS and not to KEY_GROUPS still has
-        # to appear somewhere, or the one place a key is registered would
-        # stop being the one place it shows up.
-        extra = [f for f, _label in config_mod.HOTKEY_FIELDS
-                 if f not in named]
-        if extra:
-            groups.append(("Other keys", extra))
+        self._cap_selected = None
 
-        scroller = ui.Scroller(self.sheet, CW + 10, H - 64 - 24)
-        scroller.place(x=PAD, y=64)
-        p["keys_list"] = scroller
-        for title, fields in groups:
-            if not fields:
-                continue
-            card = ui.Card(scroller.inner, CW, 60 + len(fields) * 46,
-                           pad=18)
-            card.pack(anchor="w", pady=(0, 14))
-            tk.Label(card.body, text=title.upper(), bg=ui.CARD, fg=ui.FAINT,
-                     font=(ui.UI, 8)).place(x=0, y=0)
-            row = 24
-            for field in fields:
+        keys = self.status.get("keys") or self._read_keys()
+        try:
+            lit, unmapped = keyboard_mod.bindings(keys)
+        except Exception as e:            # noqa: BLE001 — never a blank screen
+            lit, unmapped = {}, []
+            self._note(f"could not read the bindings: {e}")
+
+        self._key_legend(y=KEY_LEGEND_Y)
+
+        board = keyboard_mod.Board(self.sheet, lit, u=KEY_UNIT,
+                                   bg=ui.BG, command=self._cap_clicked)
+        board.place(x=PAD, y=KEY_BOARD_Y)
+        p["board"] = board
+
+        panel_x = PAD + board.size[0] + 20
+        panel_w = max(220, PAD + CW - panel_x)
+        panel = ui.Card(self.sheet, panel_w, board.size[1], fill=ui.CARD,
+                        bg=ui.BG, pad=16)
+        panel.place(x=panel_x, y=KEY_BOARD_Y)
+        p["rebind_panel"] = panel
+        p["rebind_body"] = panel.body
+        p["rebind_w"] = panel_w - 32
+        self._paint_rebind()
+
+        # THE ROWS ARE STILL HERE, and they are not a fallback. A cap is
+        # 43 px of picture with a one-word caption on it; the row says the
+        # whole sentence config.py registered ("Report a problem (tap)"),
+        # and the test that walks HOTKEY_FIELDS walks these.
+        # THE ONE FAINT LINE AT THE BOTTOM IS MEASURED AND PLACED FIRST,
+        # upwards from the window's own edge, and the list is then given
+        # the room that is left.
+        #
+        # It used to be the other way round — the list at a fixed height
+        # and the line at a fixed y — and the two only agreed while the
+        # line was one line long. It is not always one line: a binding on
+        # a key this board cannot draw prepends a sentence to it, and at
+        # two lines the fixed y put the second one past the bottom edge.
+        # Measured 2026-09-07: it ended at y 643 of the sheet's 664 in
+        # the ordinary case and at 666 — off the window — in the other.
+        missing = ", ".join(f"{f} = {r!r}" for f, r in unmapped)
+        safe = ("Anything not lit is untouched by this app. The keys it "
+                "cannot take at all — the punctuation caps, ` - = [ ] \\ "
+                "; ' , . / — have no code Windows can bind, which is why "
+                "they are the safe ones.")
+        if missing:
+            safe = f"Bound to a key this board does not draw: {missing}. " \
+                   + safe
+        said, lines = ui.clamp(safe, ui.UI, 8, CW, 3)
+        safe_y = H - TOP - KEY_FOOT_GAP - lines * KEY_FOOT_LINE
+        tk.Label(self.sheet, text=said, bg=ui.BG, fg=ui.FAINT,
+                 font=(ui.UI, 8), justify="left").place(x=PAD, y=safe_y)
+
+        top = KEY_BOARD_Y + board.size[1] + 22
+        p["keys_list"] = ui.Scroller(self.sheet, CW + 10,
+                                     max(60, safe_y - top - 16), bg=ui.BG)
+        p["keys_list"].place(x=PAD, y=top)
+        self._key_rows(p["keys_list"], lit)
+
+    def _key_legend(self, y: int) -> None:
+        """The five ways a cap can look, said once."""
+        colours = keyboard_mod.palette()
+        x = PAD
+        for title, note, state in KEY_LEGEND:
+            face, edge, _ink, dashed = keyboard_mod._skin(state, False,
+                                                          colours)
+            swatch = tk.Canvas(self.sheet, width=18, height=18, bg=ui.BG,
+                               highlightthickness=0, bd=0)
+            swatch.place(x=x, y=y + 2)
+            swatch.create_rectangle(1, 1, 17, 17, fill=face,
+                                    outline=colours["lit_edge"] if dashed
+                                    else edge,
+                                    dash=(3, 3) if dashed else None)
+            tk.Label(self.sheet, text=title, bg=ui.BG, fg=ui.FG,
+                     font=(ui.UI, 9, "bold")).place(x=x + 26, y=y)
+            tk.Label(self.sheet, text=note, bg=ui.BG, fg=ui.FAINT,
+                     font=(ui.UI, 8)).place(x=x + 26, y=y + 17)
+            x += 30 + max(ui.text_width(title, ui.UI, 9),
+                          ui.text_width(note, ui.UI, 8)) + 26
+
+    def _key_rows(self, scroller: ui.Scroller, lit: dict) -> None:
+        """The fifteen bindings, three to a line, each with the cap that
+        opens the rebind dialog for it."""
+        p = self.parts
+        keys = self.status.get("keys") or self._read_keys()
+        grid = tk.Frame(scroller.inner, bg=ui.BG)
+        grid.pack(anchor="w")
+        column_w = (CW - 20) // KEY_COLUMNS
+        for index, (field, label) in enumerate(config_mod.HOTKEY_FIELDS):
+            what, how = split_label(label)
+            cell = tk.Frame(grid, bg=ui.BG, width=column_w, height=42)
+            cell.grid(row=index // KEY_COLUMNS, column=index % KEY_COLUMNS,
+                      sticky="w")
+            cell.pack_propagate(False)
+            cell.grid_propagate(False)
+            shown = pretty_key(keys.get(field, ""))
+            cap = ui.KeyCap(cell, shown,
+                            lambda f=field, la=label: self._capture(f, la),
+                            bg=ui.BG,
+                            w=max(74, 34 + ui.text_width(shown, ui.UI, 10)),
+                            h=30)
+            cap.place(x=0, y=4)
+            p["caps"][field] = cap
+            tk.Label(cell, text=what, bg=ui.BG, fg=ui.FG,
+                     font=(ui.UI, 10)).place(x=cap.winfo_reqwidth() + 12,
+                                             y=4)
+            note = how or ("chord" if "+" in str(keys.get(field, ""))
+                           else "")
+            if note:
+                tk.Label(cell, text=note, bg=ui.BG, fg=ui.FAINT,
+                         font=(ui.UI, 8)).place(
+                    x=cap.winfo_reqwidth() + 12, y=22)
+        scroller.bind_wheel(grid)
+
+    def _cap_clicked(self, cap_id: str | None) -> None:
+        """A cap on the board. Which binding is that, and can it be
+        changed here?
+
+        A cap with exactly one binding on it goes straight to the rebind
+        dialog. A cap with two (F8 is translate bare and look up with
+        ctrl) cannot: the panel names both and the row below is how you
+        pick which one to change — guessing would rebind the wrong one
+        half the time.
+        """
+        self._cap_selected = cap_id
+        board = self.parts.get("board")
+        if board is not None:
+            board.pick(cap_id)
+        self._paint_rebind()
+
+    def _paint_rebind(self) -> None:
+        """The panel beside the board: what the selected cap does now,
+        and the way to change it."""
+        p = self.parts
+        body = p.get("rebind_body")
+        if body is None or not body.winfo_exists():
+            return
+        for child in body.winfo_children():
+            child.destroy()
+        width = p.get("rebind_w", 240)
+        tk.Label(body, text="T H I S   K E Y", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).pack(anchor="w")
+
+        keys = self.status.get("keys") or self._read_keys()
+        labels = dict(config_mod.HOTKEY_FIELDS)
+        cap_id = self._cap_selected
+        on_it = [(field, raw) for field, raw in keys.items()
+                 if field in labels and raw
+                 and keyboard_mod.cap_for(raw) == cap_id] if cap_id else []
+
+        # WHILE IT IS LISTENING, THE PANEL IS ABOUT THAT AND NOTHING
+        # ELSE. The card used to be packed after everything, and on a cap
+        # carrying TWO bindings (F8 is translate bare and look up with
+        # ctrl) the panel's fixed height was already full — so the one
+        # thing that says "the app is waiting for you to press a key" was
+        # the one thing clipped out of it (photographed 2026-09-07). It
+        # goes first now, and the bindings it is NOT listening for step
+        # aside: offering to change the other one mid-capture is an
+        # offer that cannot be taken.
+        if getattr(self, "_capturing", None):
+            self._listening_card(body, min(width, 240))
+            on_it = [pair for pair in on_it if pair[0] == self._capturing]
+            if not on_it:
+                return
+
+        if cap_id is None:
+            tk.Label(body, bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 10),
+                     wraplength=width, justify="left",
+                     text="Click a key on the board to see what it does — "
+                          "and to change it.").pack(anchor="w", pady=(14, 0))
+        elif not on_it:
+            tk.Label(body, text=cap_id.upper(), bg=ui.CARD, fg=ui.FG,
+                     font=(ui.DISPLAY, 15, "bold")).pack(anchor="w",
+                                                         pady=(12, 0))
+            tk.Label(body, bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9),
+                     wraplength=width, justify="left",
+                     text="The app never sees this one. Pick a binding "
+                          "below and press this key when it asks."
+                     ).pack(anchor="w", pady=(6, 0))
+        else:
+            for field, raw in on_it:
+                head = tk.Frame(body, bg=ui.CARD)
+                head.pack(anchor="w", pady=(12, 0), fill="x")
+                shown = pretty_key(raw)
+                ui.KeyCap(head, shown, bg=ui.CARD,
+                          w=max(58, 34 + ui.text_width(shown, ui.UI, 10)),
+                          h=32).pack(side="left")
+                words = tk.Frame(head, bg=ui.CARD)
+                words.pack(side="left", padx=(12, 0))
                 what, how = split_label(labels[field])
-                tk.Label(card.body, text=what, bg=ui.CARD, fg=ui.FG,
-                         font=(ui.UI, 10)).place(x=0, y=row + 8)
-                tk.Label(card.body, text=how, bg=ui.CARD, fg=ui.FAINT,
-                         font=(ui.UI, 8)).place(x=CW - 36 - 162, y=row + 10)
-                cap = ui.KeyCap(
-                    card.body, "…",
-                    lambda f=field, la=labels[field]: self._capture(f, la))
-                cap.place(x=CW - 36 - 122, y=row)
-                p["caps"][field] = cap
-                row += 46
-            scroller.bind_wheel(card)
+                tk.Label(words, text=what, bg=ui.CARD, fg=ui.FG,
+                         font=(ui.UI, 11, "bold")).pack(anchor="w")
+                tk.Label(words, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9),
+                         text=f"{how or 'tap'}   ·   "
+                              f"{'chord' if '+' in raw else 'bare key'}"
+                         ).pack(anchor="w")
+                # ONE gold thing on a surface. With two bindings on one
+                # cap neither of them is "the" action, so both go quiet
+                # and the line under them says to pick — and while the
+                # app is already listening the lit card is the gold
+                # thing, so the button that opened it steps back.
+                make = (widgets.gold_button
+                        if len(on_it) == 1 and not self._capturing
+                        else _quiet_button)
+                make(body, "Change this key",
+                     lambda f=field, la=labels[field]: self._capture(f, la),
+                     bg=ui.CARD, w=min(width, 178), h=32).pack(anchor="w",
+                                                               pady=(10, 0))
+            if len(on_it) > 1:
+                tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                         wraplength=width, justify="left",
+                         text="Two bindings live on this key — the bare one "
+                              "and the one with a modifier. Change whichever "
+                              "you meant."
+                         ).pack(anchor="w", pady=(10, 0))
+
+    def _listening_card(self, body, width: int) -> None:
+        """The panel's own copy of what the key dialog is saying: the
+        board says "press the key you want" at the same moment it does."""
+        labels = dict(config_mod.HOTKEY_FIELDS)
+        what = split_label(labels.get(self._capturing, ""))[0]
+        face = getattr(ui, "ACCENT_SOFT", ui.CARD_HI)
+        lit = ui.Card(body, width, 72, fill=face, bg=ui.CARD,
+                      border=ui.ACCENT, pad=10)
+        lit.pack(anchor="w", pady=(12, 2))
+        tk.Label(lit.body, text="press the key you want", bg=face,
+                 fg=getattr(ui, "ACCENT_TEXT", ui.ACCENT),
+                 font=(ui.UI, 11, "bold")).pack()
+        tk.Label(lit.body, text=f"listening for {what.lower()}  |",
+                 bg=face, fg=ui.DIM, font=(ui.UI, 9)).pack()
 
     def _paint_keys(self) -> None:
         caps = self.parts.get("caps")
@@ -4522,7 +5007,15 @@ class Dashboard:
             return
         keys = self.status.get("keys") or self._read_keys()
         for field, cap in caps.items():
-            cap.set(pretty_key(keys.get(field, "")))
+            if cap.winfo_exists():
+                cap.set(pretty_key(keys.get(field, "")))
+        board = self.parts.get("board")
+        if board is not None and board.winfo_exists():
+            try:
+                lit, _unmapped = keyboard_mod.bindings(keys)
+            except Exception:             # noqa: BLE001
+                return
+            board.relight(lit)
 
     # ----------------------------------------------------------- settings
 
@@ -4547,11 +5040,12 @@ class Dashboard:
         change live where it knows how (main.set_option).
         """
         self._title("Settings", "written back into config.toml, in place")
+        self._row_w = CW
         p = self.parts
         try:
             sections = settings_mod.read(CONFIG_PATH)
         except Exception as e:
-            card = ui.Card(self.sheet, CW, 96, pad=18)
+            card = ui.Card(self.sheet, CW, 96, pad=18, bg=ui.BG)
             card.place(x=PAD, y=64)
             tk.Label(card.body, text="SETTINGS UNAVAILABLE", bg=ui.CARD,
                      fg=ui.FAINT, font=(ui.UI, 8)).place(x=0, y=0)
@@ -4564,12 +5058,18 @@ class Dashboard:
         p["values"] = {}     # path -> what the file holds now
         self._settings_searching = False
         self._settings_query = ""
-        bar = tk.Frame(self.sheet, bg=ui.PANE, width=CW, height=36)
+        # TALL ENOUGH FOR WHAT IS IN IT. ui.Chip is ui.PILL_H (36) and
+        # the strip was 36 with 3 px of air above and below each chip, so
+        # every tab was squashed to 30; the search field that replaces
+        # them had an 18 px body for a 25 px line. Both measured
+        # 2026-09-07.
+        bar = tk.Frame(self.sheet, bg=ui.BG, width=CW, height=TAB_BAR_H)
         bar.place(x=PAD, y=64)
         bar.pack_propagate(False)
         p["settings_bar"] = bar
-        p["settings_list"] = ui.Scroller(self.sheet, CW + 10, H - 110 - 24)
-        p["settings_list"].place(x=PAD, y=110)
+        p["settings_list"] = ui.Scroller(self.sheet, CW + 10,
+                                         H - TOP - 118 - 20, bg=ui.BG)
+        p["settings_list"].place(x=PAD, y=118)
         self._settings_bar()
         self._fill_settings()
 
@@ -4583,44 +5083,45 @@ class Dashboard:
         for child in bar.winfo_children():
             child.destroy()
         if self._settings_searching:
-            box = ui.Card(bar, CW, 36, radius=11, pad=9)
+            box = ui.Card(bar, CW, FIELD_H, radius=11, pad=11, bg=ui.BG)
             box.pack()
             tk.Label(box.body, text=ui.ICON["search"], bg=ui.CARD,
-                     fg=ui.FAINT, font=(ui.ICONS, 10)).place(x=0, y=1)
+                     fg=ui.FAINT, font=(ui.ICONS, 10)).place(x=0, y=2)
             entry = tk.Entry(box.body, bg=ui.CARD, fg=ui.FG, bd=0,
                              highlightthickness=0, font=(ui.UI, 10),
                              insertbackground=ui.ACCENT)
-            entry.place(x=26, y=0, width=CW - 100, height=18)
+            entry.place(x=26, y=0, width=CW - 100, height=FIELD_H - 22)
             entry.insert(0, self._settings_query)
             entry.bind("<KeyRelease>",
                        lambda _e: self._settings_search_soon(entry.get()))
             entry.bind("<Escape>", lambda _e: self._settings_close_search())
             p["settings_search"] = entry
             p["settings_placeholder"] = tk.Label(
-                box.body, text="a word from a setting's name or its "
-                               "comment — Esc brings the tabs back",
+                box.body, text="a word from a setting's name, its sentence "
+                               "or the file's own comment — Esc brings the "
+                               "tabs back",
                 bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9))
             if not self._settings_query:
-                p["settings_placeholder"].place(x=26, y=1)
+                p["settings_placeholder"].place(x=26, y=0)
             entry.bind("<FocusIn>",
                        lambda _e: p["settings_placeholder"].place_forget())
             close = tk.Label(box.body, text="✕", bg=ui.CARD, fg=ui.DIM,
                              font=(ui.UI, 10), cursor="hand2")
-            close.place(x=CW - 18 - 10, y=-1, anchor="ne")
+            close.place(x=CW - 22 - 10, y=0, anchor="ne")
             close.bind("<Button-1>", lambda _e: self._settings_close_search())
             close.bind("<Enter>", lambda _e: close.configure(fg=ui.FG))
             close.bind("<Leave>", lambda _e: close.configure(fg=ui.DIM))
             entry.focus_set()
             return
         p["settings_tabs"] = {}
-        names = [tab.name for tab in settings_mod.TABS]
+        names = [DESK] + [tab.name for tab in settings_mod.TABS]
         names.append(settings_mod.EVERYTHING)
         for name in names:
             chip = ui.Chip(bar, name, lambda n=name: self._settings_go(n),
-                           active=(name == self._settings_tab))
+                           active=(name == self._settings_tab), bg=ui.BG)
             chip.pack(side="left", padx=(0, 6), pady=3)
             p["settings_tabs"][name] = chip
-        glass = tk.Label(bar, text=ui.ICON["search"], bg=ui.PANE, fg=ui.DIM,
+        glass = tk.Label(bar, text=ui.ICON["search"], bg=ui.BG, fg=ui.DIM,
                          font=(ui.ICONS, 12), cursor="hand2")
         glass.pack(side="right", padx=(0, 10))
         glass.bind("<Button-1>", lambda _e: self._settings_open_search())
@@ -4662,7 +5163,10 @@ class Dashboard:
         """
         p = self.parts
         scroller = p.get("settings_list")
-        if scroller is None:
+        # The raw switch redraws on the next idle turn, by which time the
+        # screen may have been left — its scroller is then a destroyed
+        # widget still sitting in `parts`.
+        if scroller is None or not scroller.winfo_exists():
             return
         self._stop_rows()
         scroller.clear()
@@ -4670,9 +5174,16 @@ class Dashboard:
         sections = p["sections"]
         elsewhere = _keys_screen_paths()
         builders: list = []
+        if self._settings_tab == DESK and not self._settings_searching:
+            self._settings_left = []
+            self._fill_desk(scroller)
+            self._draw_settings()
+            scroller.to_top()
+            return
         everything = self._settings_tab == settings_mod.EVERYTHING
         if self._settings_searching or everything:
             query = self._settings_query if self._settings_searching else ""
+            drawn: list = []
             for section in sections:
                 rows = [s for s in section.settings
                         if s.path not in elsewhere
@@ -4682,12 +5193,13 @@ class Dashboard:
                 keys_here = [s for s in section.settings
                              if s.path in elsewhere]
                 note = ("" if not keys_here or query else
-                        f"\n{len(keys_here)} of its lines are keys — those "
+                        f" {len(keys_here)} of its lines are keys — those "
                         "are on the Keys screen.")
-                builders.append(lambda s=section, r=rows, n=note:
-                                self._settings_card(scroller,
-                                                    s.title.upper(),
-                                                    s.help + n, r))
+                drawn.append(lambda s=section, r=rows, n=note:
+                             self._settings_card(scroller, s, r, n))
+            if drawn:
+                builders.append(lambda: self._raw_switch_card(scroller))
+                builders.extend(drawn)
             if everything and not self._settings_searching:
                 builders.append(lambda: self._files_card(scroller))
         else:
@@ -4702,7 +5214,7 @@ class Dashboard:
                                     self._friendly_card(scroller, g.title,
                                                         pr))
         if not builders:
-            card = ui.Card(scroller.inner, CW, 60, pad=18)
+            card = ui.Card(scroller.inner, CW, 60, pad=18, bg=ui.BG)
             card.pack(anchor="w", pady=(0, 14))
             tk.Label(card.body, text=f"nothing in config.toml matches "
                                      f"{self._settings_query!r}",
@@ -4747,10 +5259,10 @@ class Dashboard:
         Only the controls are real widgets, put on the canvas with
         create_window, so the count is one per row rather than three.
         """
-        card = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.PANE,
+        card = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.BG,
                          highlightthickness=0, bd=0)
         card.create_image(0, 0, anchor="nw",
-                          image=ui.rounded(CW, height, 14, ui.CARD, ui.PANE,
+                          image=ui.rounded(CW, height, 14, ui.CARD, ui.BG,
                                            ui.LINE))
         card.pack(anchor="w", pady=(0, 14))
         return card
@@ -4781,39 +5293,129 @@ class Dashboard:
             y += height
         scroller.bind_wheel(card)
 
-    def _row_help(self, setting) -> tuple[str, int]:
+    def _row_help(self, setting, lines: int = 3) -> tuple[str, int]:
+        """The file's own comment, wrapped to the room a dense row has."""
         text = setting.help.replace("\n", " ")
         if not text:
             return "", 0
-        return ui.clamp(text, ui.UI, 8, CW - 36 - CONTROL_W - 12, 3)
+        return ui.clamp(text, ui.UI, 8, CW - 36 - CONTROL_W - 12, lines)
 
-    def _settings_card(self, scroller, title: str, help_text: str,
-                       rows) -> None:
-        """A section of the file as it is written: the key, its comment,
-        and the one control its kind calls for."""
+    def _plain_help(self, text: str, lines: int = 2) -> tuple[str, int]:
+        """The one sentence the words give a line, wrapped the same way."""
+        if not text:
+            return "", 0
+        return ui.clamp(text.replace("\n", " "), ui.UI, 8,
+                        CW - 36 - CONTROL_W - 12, lines)
+
+    def _raw_name(self, setting) -> str:
+        """`[section] key` — what the file calls this line. Only ever
+        drawn with the switch on."""
+        return (f"[{setting.section}] {setting.key}" if setting.section
+                else setting.key)
+
+    def _dense_row(self, setting) -> tuple[str, int, str, int, int]:
+        """One dense row, measured before it is drawn: the plain
+        sentence, the file's own name and comment (only with the switch
+        on), and the height the whole row needs.
+
+        LINE is what a line of the small face really occupies —
+        Rubik 8 pt has a linespace of 17 and Rubik 10 pt of 20, measured
+        on the hidden desktop 2026-09-07. The rows around this one were
+        drawn for a 15 px line and got away with it on their tail
+        padding; a row with two blocks of text under it does not, and
+        the first draft ran the file's comment into the next title."""
+        plain, plain_lines = self._plain_help(
+            settings_mod.words_for(setting).help)
+        raw, raw_lines = ("", 0)
+        height = TITLE_H + plain_lines * LINE + 8
+        if self._settings_raw:
+            raw, raw_lines = self._row_help(setting)
+            height += 5 + LINE + raw_lines * LINE
+        return plain, plain_lines, raw, raw_lines, height
+
+    def _raw_switch_card(self, scroller) -> None:
+        """The one switch on this screen that is not a setting.
+
+        The owner, 2026-09-07, reading these rows: "it is impossible to
+        understand what each setting is — there are underscores that mean
+        nothing and lots of unclear words." Those were config.toml's own
+        names and comments, which are written for whoever maintains the
+        app. They are still here — the measurements in them are the
+        reason half these numbers are what they are — but behind this,
+        and off to start with."""
+        card = self._new_card(scroller, 68)
+        card.create_text(18, 16, text="Show the file's own words",
+                         anchor="nw", fill=ui.FG, font=(ui.UI, 10))
+        card.create_text(18, 37, text="The name each setting has in the "
+                                      "settings file, and the note the "
+                                      "file keeps beside it.",
+                         anchor="nw", fill=ui.FAINT, font=(ui.UI, 8))
+        switch = ui.Switch(card, self._settings_raw,
+                           command=self._settings_raw_set, bg=ui.CARD)
+        card.create_window(CW - 18, 17, window=switch, anchor="ne")
+        self.parts["settings_raw"] = switch
+        scroller.bind_wheel(card)
+
+    def _settings_raw_set(self, value: bool) -> None:
+        """Redrawing the view destroys the switch that asked for it, so
+        the refill waits for the click to finish."""
+        self._settings_raw = bool(value)
+        self.root.after_idle(self._fill_settings)
+
+    def _settings_card(self, scroller, section, rows, note: str = "") -> None:
+        """A section of the file in plain words: what it is for, then one
+        row per line with a title, a sentence and its control.
+
+        With the switch on, the file's own name for the line and the
+        file's own comment come back underneath each row — the same text
+        this card used to lead with, in the place it belongs."""
+        words = settings_mod.section_words(section.name, section.help)
         shown, lines = ("", 0)
-        if help_text:
-            shown, lines = ui.clamp(help_text.replace("\n", " "), ui.UI, 8,
-                                    CW - 36, 4)
-        heights = [22 + self._row_help(s)[1] * 15 + 8 for s in rows]
-        card = self._new_card(scroller, 28 + (lines * 15 + 8 if lines else 0)
-                              + sum(heights) + 6)
+        blurb = (words.help + note).strip()
+        if blurb:
+            shown, lines = ui.clamp(blurb.replace("\n", " "), ui.UI, 8,
+                                    CW - 36, 3)
+        raw_head, raw_head_lines = ("", 0)
+        if self._settings_raw and section.help:
+            raw_head, raw_head_lines = ui.clamp(
+                f"[{section.title}] · " + section.help.replace("\n", " "),
+                ui.UI, 8, CW - 36, 4)
+        measured = [self._dense_row(s) for s in rows]
+        head = 18 + LINE + (lines * LINE + 8 if lines else 0) \
+            + (raw_head_lines * LINE + 8 if raw_head_lines else 0)
+        card = self._new_card(scroller,
+                              head + sum(m[-1] for m in measured) + 8)
         y = 18
-        card.create_text(18, y, text=title, anchor="nw", fill=ui.FAINT,
-                         font=(ui.UI, 8))
-        y += 18
+        card.create_text(18, y, text=words.label.upper(), anchor="nw",
+                         fill=ui.FAINT, font=(ui.UI, 8))
+        y += LINE
         if lines:
             card.create_text(18, y, text=shown, anchor="nw", fill=ui.DIM,
                              font=(ui.UI, 8))
-            y += lines * 15 + 8
-        for setting, height in zip(rows, heights):
-            card.create_text(18, y, text=setting.key, anchor="nw",
-                             fill=ui.FG, font=(ui.UI, 10))
-            text, lines = self._row_help(setting)
-            if lines:
-                card.create_text(18, y + 21, text=text, anchor="nw",
+            y += lines * LINE + 8
+        if raw_head_lines:
+            card.create_text(18, y, text=raw_head, anchor="nw", fill=ui.FAINT,
+                             font=(ui.UI, 8))
+            y += raw_head_lines * LINE + 8
+        for setting, (plain, plain_lines, raw, raw_lines, height) in \
+                zip(rows, measured):
+            row = settings_mod.words_for(setting)
+            card.create_text(18, y, text=row.label, anchor="nw", fill=ui.FG,
+                             font=(ui.UI, 10))
+            under = y + TITLE_H - 1
+            if plain_lines:
+                card.create_text(18, under, text=plain, anchor="nw",
                                  fill=ui.FAINT, font=(ui.UI, 8))
-            self._control(card, y, setting, self._menu_for(None, setting))
+                under += plain_lines * LINE
+            if self._settings_raw:
+                under += 5
+                card.create_text(18, under, text=self._raw_name(setting),
+                                 anchor="nw", fill=ui.DIM, font=(ui.UI, 8))
+                under += LINE
+                if raw_lines:
+                    card.create_text(18, under, text=raw, anchor="nw",
+                                     fill=ui.FAINT, font=(ui.UI, 8))
+            self._control(card, y, setting, self._menu_for(row, setting))
             y += height
         scroller.bind_wheel(card)
 
@@ -4880,7 +5482,9 @@ class Dashboard:
         elif not setting.editable:
             button = ui.Button(card, "In the file",
                                lambda: launch.open_path(CONFIG_PATH),
-                               w=104, h=30, quiet=True,
+                               w=widgets.button_width("In the file",
+                                                      icon=True),
+                               h=30, quiet=True,
                                icon=ui.ICON["settings"])
             card.create_window(right, y - 2, window=button, anchor="ne")
             self._register_row(setting, "file", button)
@@ -4929,7 +5533,8 @@ class Dashboard:
              str(APP_DIR),
              APP_DIR),
         )
-        files = ui.Card(scroller.inner, CW, 60 + len(openers) * 44, pad=18)
+        files = ui.Card(scroller.inner, CW, 60 + len(openers) * 44, pad=18,
+                        bg=ui.BG)
         files.pack(anchor="w", pady=(0, 14))
         tk.Label(files.body, text="FILES", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.UI, 8)).place(x=0, y=0)
@@ -4947,6 +5552,316 @@ class Dashboard:
                                                     y=row + 3)
             row += 44
         scroller.bind_wheel(files)
+
+    # -- the desk: forty lines said as sentences, and three blocks that
+    #    used to be screens
+
+    def _fill_desk(self, scroller) -> None:
+        """The first tab: the settings that have words, and the three
+        screens that were really settings all along.
+
+        Awake, Version and Phone were three of the nine rail rows. None
+        of them is a place you go; each is a thing you check and
+        occasionally flip, which is what a settings block is. They are
+        here, under the sentences, in the order he would reach for them.
+        """
+        for eyebrow, sentences in prose_mod.BLOCKS:
+            self._settings_left.append(
+                lambda e=eyebrow, s=sentences:
+                self._prose_card(scroller, e, s))
+        self._settings_left.append(lambda: self._awake_block(scroller))
+        self._settings_left.append(lambda: self._phone_block(scroller))
+        self._settings_left.append(lambda: self._app_block(scroller))
+
+    def _prose_card(self, scroller, eyebrow: str, sentences) -> None:
+        """One paragraph, flowed onto a Canvas.
+
+        The height cannot be known before the words are placed — that is
+        the one thing `tk.Text` did better — so the canvas is built tall,
+        filled, and then cut down to what was used.
+        """
+        width = CW - 44
+        card = tk.Canvas(scroller.inner, width=CW, height=400, bg=ui.BG,
+                         highlightthickness=0, bd=0)
+        card.pack(anchor="w", pady=(0, 14))
+        holder = tk.Canvas(card, width=width, height=400, bg=ui.CARD,
+                           highlightthickness=0, bd=0)
+        used = prose_mod.flow_block(holder, width, eyebrow, sentences,
+                                    bg=ui.CARD, make=self._prose_control,
+                                    y=4)
+        height = used + 24
+        card.configure(height=height)
+        card.create_image(0, 0, anchor="nw",
+                          image=ui.rounded(CW, height, 14, ui.CARD, ui.BG,
+                                           ui.LINE))
+        holder.configure(height=height - 24)
+        card.create_window(22, 12, anchor="nw", window=holder)
+        scroller.bind_wheel(card)
+        scroller.bind_wheel(holder)
+
+    def _prose_control(self, bit):
+        """The control for one `prose.Bit`, wired to the same writer the
+        dense rows use.
+
+        None when the path is not in this config.toml — an older file, a
+        branch without the section — and the sentence then says its words
+        and quietly leaves the control out rather than refusing to draw.
+        """
+        p = self.parts
+        setting = settings_mod.find(p["sections"], bit.path)
+        if setting is None:
+            return None
+        value = p["values"].setdefault(setting.path, setting.value)
+        if setting.kind == "bool":
+            holder = tk.Frame(self.sheet, bg=ui.CARD)
+            switch = ui.Switch(holder, bool(value),
+                               command=lambda v, s=setting:
+                               self._apply_setting(s, v), bg=ui.CARD)
+            switch.pack(side="left")
+            # padx/bd/highlight all zeroed: a Label's own few pixels of
+            # padding land BETWEEN the word and the comma that follows
+            # it in the sentence ("yes , paste with"), and a sentence
+            # cannot have a space before its comma.
+            word = tk.Label(holder, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 11),
+                            text=self._bit_word(bit, bool(value)),
+                            padx=0, pady=0, bd=0, highlightthickness=0)
+            word.pack(side="left", padx=(7, 0))
+            self._register_row(setting, "switch", switch)
+            return holder
+        names = list(bit.names or ())
+        if not names and setting.choices:
+            names = [(c, c) for c in setting.choices]
+        if names and setting.kind == "str":
+            if not any(v == setting.value for v, _n in names):
+                names = [(setting.value, str(setting.value))] + names
+            # MEASURED IN THE FONT THE MENU DRAWS IN, and with the room
+            # the menu itself keeps. ui.Dropdown writes its label at
+            # ui.PT_BODY and clamps it to w - 40; this used to size the
+            # box from an 11 pt measurement and then clamp at w - 34, so
+            # every label was cut twice at two different widths — which
+            # is how "balanced" reached the screen as "balance", with no
+            # mark to say a letter was missing.
+            pt = getattr(ui, "PT_BODY", 12)
+            widest = max(ui.text_width(str(n), ui.UI, pt) for _v, n in names)
+            width = min(bit.width or 300, max(78, widest + DROP_ROOM))
+            # The label is CUT to the box rather than the box grown to
+            # the label: [audio] device is a Windows device name and the
+            # sentence would be one control wide.
+            names = [(v, widgets.fit(str(n), ui.UI, pt, width - DROP_ROOM))
+                     for v, n in names]
+            menu = ui.Dropdown(self.sheet, names, value,
+                               command=lambda v, s=setting:
+                               self._apply_setting(s, v),
+                               bg=ui.CARD, w=width, h=28)
+            self._register_row(setting, "dropdown", menu)
+            return menu
+        # A number, or free text: the same little field the dense rows
+        # use, sized to what is in it rather than to a column.
+        #
+        # SIZED IN PIXELS, not in characters. `width=` is a count of
+        # average characters and a Windows device name is not average:
+        # "Headset Microphone (Arctis 7 Chat), Windows WASAPI" needs
+        # 390 px and was given a 264 px box, so it was cut in the middle
+        # of a letter with nothing to say so (measured 2026-09-07). The
+        # Entry goes in a holder of the exact width instead, and when the
+        # value does not fit the field it is SHOWN cut, with an ellipsis
+        # — and the whole of it comes back the moment the caret lands in
+        # it, which is the only moment the whole of it is any use.
+        shown = _shown(value)
+        room = min(bit.width or PROSE_FIELD_MAX, PROSE_FIELD_MAX)
+        box = max(44, min(ui.text_width(shown, ui.UI, 11) + 20, room))
+        holder = tk.Frame(self.sheet, bg=ui.CARD, width=box, height=28)
+        holder.pack_propagate(False)
+        entry = tk.Entry(holder, bg=ui.BG, fg=ui.FG, bd=0,
+                         highlightthickness=1, highlightbackground=ui.LINE,
+                         highlightcolor=ui.ACCENT,
+                         insertbackground=ui.ACCENT, font=(ui.UI, 11),
+                         justify="center")
+        entry.pack(fill="both", expand=True)
+        entry.insert(0, shown)
+        entry._cut_to = box - 20 if ui.text_width(shown, ui.UI, 11) + 20 \
+            > box else 0
+        self._cut_field(entry)
+        entry.bind("<Return>", lambda _e, s=setting, w=entry:
+                   self._entry_done(s, w))
+        entry.bind("<FocusIn>", lambda _e, w=entry, s=setting:
+                   self._whole_field(w, s))
+        entry.bind("<FocusOut>", lambda _e, s=setting, w=entry:
+                   (self._entry_done(s, w), self._cut_field(w)))
+        self._register_row(setting, "entry", entry)
+        return holder
+
+    @staticmethod
+    def _cut_field(entry) -> None:
+        """Show a too-long value cut, with an ellipsis. A no-op for every
+        field whose value fits, which is all of them but one."""
+        cut = getattr(entry, "_cut_to", 0)
+        if not cut:
+            return
+        try:
+            if entry.focus_get() is entry:
+                return                    # the caret is in it: say it all
+            whole = entry.get()
+            said = widgets.fit(whole, ui.UI, 11, cut)
+            if said != whole:
+                entry.delete(0, "end")
+                entry.insert(0, said)
+        except tk.TclError:
+            pass
+
+    def _whole_field(self, entry, setting) -> None:
+        """The caret arrived: put the value back as the file holds it."""
+        if not getattr(entry, "_cut_to", 0):
+            return
+        try:
+            values = self.parts.get("values") or {}
+            whole = _shown(values.get(setting.path, setting.value))
+            if entry.get() != whole:
+                entry.delete(0, "end")
+                entry.insert(0, whole)
+        except tk.TclError:
+            pass
+
+    @staticmethod
+    def _bit_word(bit, value: bool) -> str:
+        """The word beside a switch inside a sentence. `Bit.names` says
+        it when the sentence needs a verb ("add" / "leave out"); plain
+        yes and no when it does not."""
+        for want, word in (bit.names or ()):
+            if str(want).lower() == ("true" if value else "false"):
+                return word
+        return "yes" if value else "no"
+
+    # -- the three blocks that used to be screens
+
+    def _phone_block(self, scroller) -> None:
+        """The endpoint the Android keyboard talks to. 39 dictations and
+        228 notification relays came through it in ten days, announced at
+        every startup, with no screen of its own until now."""
+        card = ui.Card(scroller.inner, CW, 132, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="T H E   P H O N E", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        url = (self.status or {}).get("phone", "")
+        self.parts["phone_url"] = tk.Label(
+            body, text=url or "not running, or [server] enabled = false",
+            bg=ui.CARD, fg=ui.FG if url else ui.DIM,
+            font=(ui.UI, 12 if url else 10))
+        self.parts["phone_url"].place(x=0, y=24)
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                 wraplength=CW - 200, justify="left",
+                 text="Open it on the phone over Tailscale and the keyboard "
+                      "there dictates into this machine. The same address "
+                      "takes a POST to /notify, which is how a finish "
+                      "becomes a card on this desk."
+                 ).place(x=0, y=54)
+        ui.Button(body, "Copy link", self._copy_phone, h=32, quiet=True,
+                  w=widgets.button_width("Copy link", icon=True),
+                  icon=ui.ICON["link"]).place(x=CW - 36, y=20, anchor="ne")
+        scroller.bind_wheel(card)
+
+    def _app_block(self, scroller) -> None:
+        """The app itself: which version is running, how to stop it, and
+        the twenty sounds it makes.
+
+        THE SOUNDS ARE HERE BECAUSE HE COULD NOT TELL THEM APART. That is
+        a filed complaint, and the answer to it is not a louder cue, it
+        is a Play button next to the name of the thing the cue is FOR.
+        """
+        try:
+            import cues as cues_mod
+        except Exception:                 # noqa: BLE001 — no cues here
+            cues_mod = None
+        kinds = list(getattr(cues_mod, "CUES", {})) if cues_mod else []
+        sound_rows = (len(kinds) + SOUND_COLUMNS - 1) // SOUND_COLUMNS
+        height = 150 + (30 + sound_rows * 30 if kinds else 0)
+        card = ui.Card(scroller.inner, CW, height, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="T H E   A P P", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+
+        here, others, registry = self._versions()
+        label = (registry.get(here) or {}).get("label", here)
+        tk.Label(body, text=label, bg=ui.CARD,
+                 fg=getattr(ui, "ACCENT_TEXT", ui.ACCENT),
+                 font=(ui.DISPLAY, 17, "bold")).place(x=0, y=20)
+        tk.Label(body, text=f"branch '{here}' — running now", bg=ui.CARD,
+                 fg=ui.FAINT, font=(ui.UI, 8)).place(x=0, y=50)
+        x = 0
+        for name in others:
+            info = registry.get(name) or {"label": name}
+            button = ui.Button(body, f"Switch to {info['label']}",
+                               lambda t=name: self._use_version(t),
+                               w=max(150, 40 + ui.text_width(
+                                   f"Switch to {info['label']}", ui.UI, 10)),
+                               h=32, quiet=True, icon=ui.ICON["version"])
+            button.place(x=x, y=76)
+            self.parts[f"use_{name}"] = button
+            x += button.winfo_reqwidth() + 10
+        self.parts["ver_status"] = tk.Label(
+            body, text="", bg=ui.CARD, fg=ui.AMBER, font=(ui.UI, 8),
+            wraplength=CW - 260, justify="left")
+        self.parts["ver_status"].place(x=0, y=112)
+
+        # Stop lives HERE and nowhere else. It costs 25 seconds of model
+        # loading to undo, and the old rail put it one slip away from
+        # Pause, which costs nothing in either direction.
+        stop = ui.Button(body, "Stop the app", self._stop, h=32,
+                         w=widgets.button_width("Stop the app", icon=True),
+                         quiet=True, icon=ui.ICON["stop"])
+        stop.place(x=CW - 36, y=20, anchor="ne")
+        self.parts["stop"] = stop
+        ui.Button(body, "Send a test notification",
+                  lambda: self._notify("test"), h=32, quiet=True,
+                  w=widgets.button_width("Send a test notification",
+                                         icon=True),
+                  icon=ui.ICON["notify"]).place(x=CW - 36, y=60, anchor="ne")
+        tk.Label(body, text="stopping unloads the models; starting again "
+                            "takes about 25 seconds",
+                 bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8)).place(
+            x=CW - 36, y=100, anchor="ne")
+
+        if kinds:
+            widgets.rule(body, CW - 36, bg=ui.CARD, colour=ui.LINE, x=0,
+                         y=140)
+            tk.Label(body, text="S O U N D S", bg=ui.CARD, fg=ui.FAINT,
+                     font=(ui.MEDIUM, 8)).place(x=0, y=152)
+            column = (CW - 36) // SOUND_COLUMNS
+            for index, kind in enumerate(kinds):
+                cx = (index % SOUND_COLUMNS) * column
+                cy = 176 + (index // SOUND_COLUMNS) * 30
+                ui.Button(body, "▶", lambda k=kind: self._play_cue(k),
+                          w=30, h=24, quiet=True, bg=ui.CARD).place(x=cx,
+                                                                    y=cy)
+                tk.Label(body, text=kind, bg=ui.CARD, fg=ui.DIM,
+                         font=(ui.UI, 9)).place(x=cx + 38, y=cy + 4)
+        scroller.bind_wheel(card)
+
+    def _versions(self):
+        """(the branch we are on, the others, the registry) — never
+        raising: no git on the machine must not blank a settings block."""
+        try:
+            import versions as versions_mod
+            here = (self.branch if self.branch not in ("", "?")
+                    else versions_mod.current_branch())
+            known = versions_mod.known_versions()
+            registry = versions_mod.VERSIONS
+        except Exception:                 # noqa: BLE001
+            return (self.branch or "?"), [], {}
+        return here, [n for n in known if n != here], registry
+
+    def _play_cue(self, kind: str) -> None:
+        """One sound, from THIS process. The app has its own cue player
+        and asking it over the pipe would mean the sound only worked
+        while it ran — and the reason this block exists is that he could
+        not tell them apart, which is a question you ask sitting here."""
+        try:
+            import cues as cues_mod
+            cues_mod.play(kind)
+        except Exception as e:            # noqa: BLE001
+            self._note(f"could not play that: {e}")
 
     # -- changing one
 
@@ -5021,6 +5936,10 @@ class Dashboard:
                 elif kind == "entry":
                     widget.delete(0, "end")
                     widget.insert(0, _shown(value))
+                    # A field that is showing its value cut goes back to
+                    # cut, or the repaint would put 390 px of device name
+                    # into a 264 px box again.
+                    self._cut_field(widget)
             except tk.TclError:
                 pass
 
@@ -5080,112 +5999,10 @@ class Dashboard:
             return
         self._events.put(lambda: setattr(self, "branch", here))
 
-    def _screen_version(self) -> None:
-        """Which whole-app version is running, and the one-click way to
-        change it. Versions are git branches of this very folder;
-        versions.py owns the mechanics (stop the instance, carry
-        config.toml across untouched, flip the branch, restart). This
-        screen is its face.
-
-        Every card here is sized from its text. The first version placed
-        a three-line description in a card built for two, and the third
-        line was clipped mid-glyph by the card's own edge — which read as
-        garbage, and the owner said so."""
-        self._title("Version", "two whole apps in one folder")
-        p = self.parts
-
-        try:
-            import versions as versions_mod
-            here = self.branch if self.branch != "?" \
-                else versions_mod.current_branch()
-            known = versions_mod.known_versions()
-            registry = versions_mod.VERSIONS
-        except Exception as e:
-            # No git must not blank the screen: say what is missing where
-            # the version would have been.
-            card = ui.Card(self.sheet, CW, 96, pad=18)
-            card.place(x=PAD, y=64)
-            tk.Label(card.body, text="VERSIONS UNAVAILABLE", bg=ui.CARD,
-                     fg=ui.FAINT, font=(ui.UI, 8)).place(x=0, y=0)
-            tk.Label(card.body, text=str(e)[:300], bg=ui.CARD, fg=ui.DIM,
-                     font=(ui.UI, 9), wraplength=CW - 72,
-                     justify="left").place(x=0, y=24)
-            return
-
-        info = registry.get(here, {"label": here, "desc": ""})
-        desc, desc_lines = ("", 0)
-        if info["desc"]:
-            desc, desc_lines = ui.clamp(info["desc"], ui.UI, 8, CW - 36, 4)
-        # The card's body is 36 px shorter than the card (pad=18 top and
-        # bottom), and the description starts 66 px into the body.
-        now_h = 36 + 66 + desc_lines * 15 + 8
-        now = ui.Card(self.sheet, CW, now_h, pad=18)
-        now.place(x=PAD, y=64)
-        tk.Label(now.body, text="RUNNING NOW", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8)).place(x=0, y=0)
-        tk.Label(now.body, text=info["label"], bg=ui.CARD,
-                 fg=ui.ACCENT_TEXT,
-                 font=(ui.DISPLAY, 19, "bold")).place(x=0, y=16)
-        tk.Label(now.body, text=f"branch '{here}'", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8)).place(x=0, y=48)
-        if desc_lines:
-            tk.Label(now.body, text=desc, bg=ui.CARD, fg=ui.DIM,
-                     font=(ui.UI, 8), justify="left",
-                     anchor="nw").place(x=0, y=66)
-
-        others = [n for n in known if n != here]
-        blurbs = {}
-        for name in others:
-            oinfo = registry.get(name, {"label": name, "desc": ""})
-            blurbs[name] = (ui.clamp(oinfo["desc"], ui.UI, 8, CW - 210, 3)
-                            if oinfo["desc"] else ("", 0))
-        footer_text = ("switching stops the app, flips the folder and starts "
-                       "it again (~25 s of model loading). your settings "
-                       "come across untouched; a switch refuses while any "
-                       "file other than config.toml has uncommitted "
-                       "changes.")
-        footer, footer_lines = ui.clamp(footer_text, ui.UI, 8, CW - 36, 3)
-        rows_h = sum(30 + blurbs[n][1] * 15 + 10 for n in others) or 24
-        # 26 px of title, the rows, a status line, the footer, and the
-        # card's own 36 px of padding around all of it.
-        card_h = 36 + 26 + rows_h + 24 + footer_lines * 15 + 12
-        card = ui.Card(self.sheet, CW, card_h, pad=18)
-        card.place(x=PAD, y=64 + now_h + 12)
-        tk.Label(card.body, text="SWITCH TO", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8)).place(x=0, y=0)
-        row = 26
-        for name in others:
-            oinfo = registry.get(name, {"label": name, "desc": ""})
-            blurb, lines = blurbs[name]
-            tk.Label(card.body, text=ui.ICON["version"], bg=ui.CARD,
-                     fg=ui.ACCENT, font=(ui.ICONS, 11)).place(x=0, y=row + 7)
-            tk.Label(card.body, text=f"{oinfo['label']}  ({name})",
-                     bg=ui.CARD, fg=ui.FG,
-                     font=(ui.UI, 10)).place(x=26, y=row + 1)
-            if lines:
-                tk.Label(card.body, text=blurb, bg=ui.CARD, fg=ui.FAINT,
-                         font=(ui.UI, 8), justify="left",
-                         anchor="nw").place(x=26, y=row + 21)
-            btn = ui.Button(card.body, "Use this",
-                            lambda t=name: self._use_version(t),
-                            w=96, h=32, quiet=True, icon=ui.ICON["play"])
-            btn.place(x=CW - 36 - 96, y=row + 6)
-            p[f"use_{name}"] = btn
-            row += 30 + lines * 15 + 10
-        if not others:
-            tk.Label(card.body, text="no other version exists on this "
-                                     "machine — see versions.py",
-                     bg=ui.CARD, fg=ui.FAINT,
-                     font=(ui.UI, 9)).place(x=0, y=row)
-            row += 24
-
-        p["ver_status"] = tk.Label(card.body, text="", bg=ui.CARD,
-                                   fg=ui.AMBER, font=(ui.UI, 8),
-                                   wraplength=CW - 36, justify="left")
-        p["ver_status"].place(x=0, y=row + 4)
-        tk.Label(card.body, text=footer, bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8), justify="left",
-                 anchor="nw").place(x=0, y=row + 24)
+    # The Version SCREEN is gone. Which whole app is running, and the
+    # one button that changes it, are three lines in Settings > The app
+    # (_app_block) — versions.py still owns every mechanic, and
+    # _use_version below is still the door into it.
 
     def _use_version(self, target: str) -> None:
         """Switch whole-app version, entirely off the Tk thread.
@@ -5277,10 +6094,10 @@ class Dashboard:
 
     def _log_arrived(self, events: list[history.Event]) -> None:
         self.log = events
-        if self.screen == "History":
+        if self.screen == "Said":
             self._fill_history()
-        elif self.screen == "Overview":
-            self._paint_overview()
+        elif self.screen == "Waiting":
+            self._paint_rest()
 
     def _pump(self) -> None:
         """Everything that touches a widget runs here, on the Tk thread."""
@@ -5334,6 +6151,13 @@ class Dashboard:
             self._note("nothing to stop")
 
     def _toggle_pause(self) -> None:
+        """The one button in the bar. Start when nothing is running,
+        Resume when it is paused, Pause when it is listening — three
+        words on one key, because they are never available at the same
+        time and three buttons would be two lies."""
+        if not self.status:
+            self._start()
+            return
         self._busy_until = time.monotonic() + 1
         self._ask("toggle", then=lambda r: self._announce(
             r, "paused" if (r or {}).get("paused") else "listening again"))
@@ -5395,6 +6219,8 @@ class Dashboard:
                 return
             self._paused_for_capture = True
 
+        self._capturing = field
+        self._paint_rebind()
         top = tk.Toplevel(self.root)
         top.title("Press a key")
         top.configure(bg=ui.BG)
@@ -5423,6 +6249,8 @@ class Dashboard:
                 top.destroy()
             except Exception:
                 pass
+            self._capturing = None
+            self._paint_rebind()
             self._resume_after_capture()
             if key is not None:
                 self._apply_key(field, key)
@@ -5566,41 +6394,52 @@ class Dashboard:
         # Remembered for the breathing loop, which runs between polls and
         # has no status of its own to derive it from.
         self._activity = activity
-        return LOOKS.get(activity, LOOKS["ready"])
+        return _look_colours(activity)
 
     def _breathe(self) -> None:
         """The status lamp, breathing.
 
         Ninety milliseconds a frame, and the glow is quantised inside
         ui.lamp, so a whole breath is a dozen cached bitmaps being swapped
-        onto two Labels — no drawing happens per frame. The rhythm carries
-        the meaning: quick and bright while RECORDING (the state that
-        costs something if missed), slower while transcribing, a long calm
-        swell while merely listening, and perfectly still when there is
-        nothing to breathe about.
+        onto two Labels — no drawing happens per frame. `_glow` says how
+        bright this frame is and `_paint_chip` puts it on; both are used
+        by `_refresh` too, so the colour never waits for a breath.
         """
         if self.closing:
             return
-        colour, _word = LOOKS.get(self._activity, LOOKS["ready"])
+        colour, _word = _look_colours(self._activity)
+        self._paint_chip(colour)
+        self._breath_after = self.root.after(90, self._breathe)
+
+    def _glow(self) -> float:
+        """How bright the lamp's halo is this frame.
+
+        The rhythm carries the meaning: quick and bright while RECORDING
+        (the state that costs something if missed), slower while
+        transcribing, a long calm swell while merely listening. Paused
+        and off get ZERO — no halo at all, which is the spec's one hard
+        rule about the dot and the way "inert" is told from "quiet" at a
+        glance."""
+        if not _has_halo(self._activity):
+            return 0.0
         rhythm = {"recording": (1.2, 0.30, 0.85), "locked": (1.2, 0.30, 0.85),
                   "busy": (1.9, 0.28, 0.68), "ready": (3.6, 0.34, 0.54)}
         beat = rhythm.get(self._activity)
         if beat is None:
-            glow = 0.45
-        else:
-            period, low, high = beat
-            wave = 0.5 + 0.5 * math.sin(
-                time.monotonic() * 2 * math.pi / period)
-            glow = low + (high - low) * wave
+            return 0.45
+        period, low, high = beat
+        wave = 0.5 + 0.5 * math.sin(time.monotonic() * 2 * math.pi / period)
+        return low + (high - low) * wave
+
+    def _paint_chip(self, colour: str) -> None:
+        """The lamp, the word and the uptime onto the chip in the bar."""
         try:
-            self.parts["lamp"].config(
-                image=ui.lamp(26, colour, ui.SIDE_CARD, glow))
-            hero = self.parts.get("hero_lamp")
-            if hero is not None and hero.winfo_exists():
-                hero.config(image=ui.lamp(46, colour, ui.CARD, glow))
+            chip = self.parts.get("chip")
+            if chip is not None and chip.winfo_exists():
+                chip.set(colour, self.parts["state"].cget("text"),
+                         self.parts["uptime"].cget("text"), self._glow())
         except tk.TclError:
             pass                      # a screen swap mid-frame: skip one
-        self._breath_after = self.root.after(90, self._breathe)
 
     def _explain(self) -> str:
         """The sentence under the state word — what it means and what to do
@@ -5646,23 +6485,32 @@ class Dashboard:
         stage = self.status.get("stage", "")
         self.running = bool(reply) and stage == "running"
 
-        _colour, word = self._look()
+        colour, word = self._look()
         self.parts["state"].config(text=word)
         uptime = self.status.get("uptime_s")
         self.parts["uptime"].config(
             text=f"up {human_time(uptime)}" if uptime else "not running")
+        # THE LAMP IS PAINTED HERE, not only by the breathing loop. It
+        # used to be _breathe's alone, and _breathe returns at once while
+        # `closing` is set — so a window built for a screenshot, or any
+        # frame between the first _refresh and the first breath, showed a
+        # grey dot beside the word "Listening". A state and its colour
+        # have to arrive together.
+        self._paint_chip(colour)
         keys = self.status.get("keys") or self._read_keys()
         dictate = pretty_key(keys.get("hotkey", ""))
         self.parts["hint"].config(text=f"hold {dictate}" if dictate != "off"
                                   else "no dictation key set")
 
-        {"Overview": self._paint_overview, "History": lambda: None,
-         "Review": self._poll_review,
-         "Awake": self._paint_awake,
-         "Notify": self._paint_notify,
+        run = self.parts.get("run")
+        if run is not None and run.winfo_exists():
+            run.configure_text("Start" if not self.status else
+                               "Resume" if self.status.get("paused")
+                               else "Pause")
+
+        {"Waiting": self._poll_waiting,
+         "Said": lambda: None,
          "Keys": self._paint_keys,
-         "Version": lambda: None,
-         "Problems": self._poll_problems,
          "Settings": self._paint_settings}[self.screen]()
 
     # ------------------------------------------------------------ shutdown

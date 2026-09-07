@@ -591,7 +591,7 @@ def compose(card: dict, cache: dict | None = None):
                 outline=(rgb("ACCENT") if on else edge) + (255,), width=1),
             bx, mid - BADGE / 2)
         digit = _rtl(cache, str(index + 1), 8.5,
-                     rgb("FG") if on else ink, weight=600)
+                     rgb("ACCENT_ON") if on else ink, weight=600)
         put(digit, bx + (BADGE - digit.width) / 2, mid - digit.height / 2)
         block = _rtl_block(cache, text or " ", OPT_PT, ink, box["text_w"])
         put(block, OPT_PAD_X + BADGE + BADGE_GAP, mid - block.height / 2)
@@ -634,8 +634,10 @@ def compose(card: dict, cache: dict | None = None):
     armed = answerable(card)
     hot = hover == SEND
     if armed:
+        # ON the gold fill the label is ACCENT_ON: 8.52:1, against the
+        # 1.8:1 FG would give. The disarmed face keeps FAINT on EDGE.
         face = rgb("ACCENT_HI") if hot else rgb("ACCENT")
-        outline, ink = None, rgb("FG")
+        outline, ink = None, rgb("ACCENT_ON")
     else:
         face, outline, ink = rgb("EDGE"), rgb("STROKE"), rgb("FAINT")
     put(_rr((sx1 - sx0, sy1 - sy0), BTN_RADIUS, fill=face + (255,),

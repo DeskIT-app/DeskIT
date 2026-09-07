@@ -69,11 +69,13 @@ CHARGE_MS = 1150.0        # contraction, accelerating. Ends here.
 
 # The waveform's colours, left to right. Cool into warm into cool, because
 # one hue reads as a progress bar and a rainbow reads as a toy. These are
-# the light ramp's own stops, so the card and the reveal share a source.
-VOICE_A = (64, 132, 240)
-VOICE_B = (150, 196, 255)
-VOICE_C = (255, 236, 206)
-VOICE_D = (108, 152, 246)
+# the light ramp's own stops, so the card and the reveal share a source —
+# and under LAMPLIGHT the warm middle is the lamp itself rather than a
+# generic highlight, which is what makes the wave read as this app's light.
+VOICE_A = LIGHT_ACCENT           # COOL — the edge of the light
+VOICE_B = LIGHT_MID              # ACCENT_TEXT — the lamp
+VOICE_C = LIGHT_HOT              # incandescent, the core
+VOICE_D = LIGHT_ACCENT           # and back out to the edge
 
 # The boot, as the app itself narrates it: (marker, progress, what to SAY).
 # The markers are matched against the real log lines — taken from actual

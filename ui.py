@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import ctypes
 import tkinter as tk
+from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
 
@@ -66,6 +67,35 @@ QUOTE_BG    = "#1b2231"   # the quoted-transcript panel
 QUOTE_EDGE  = "#2c3648"
 TILE_EDGE   = "#2f3a4d"   # a tile or row under the pointer
 CHIP_BG     = "#1c2432"   # the small square behind a row's icon
+
+# Five names skin\palette.py already had and this module did not, so
+# `repaint` was silently skipping them — it only writes over names that
+# already exist here. Their values are the old palette's, like everything
+# above: this whole block is the app with skin\ deleted.
+LINE_HI     = "#2b3444"   # a border that is being interacted with
+FOCUS       = "#5d6779"   # a focus ring, where the accent is not it
+ACCENT_ON   = "#ffffff"   # text ON the accent fill
+COOL        = "#8fb2f5"   # informational: a link, the listening dot
+RECORDING   = "#e0352b"   # the dot while it is capturing
+
+# The thirteen shades this file used to spell out INSIDE its own widget
+# constructors — the disabled button, the chip's three faces, the switch's
+# off track, the key cap, the scroller's thumb, the two pills. Every one of
+# them was invisible to a repalette, so the filter chips and every key cap
+# stayed on the old colours while the rest of the window changed. The
+# literals are unchanged; only their address is.
+BTN_OFF         = "#151a23"   # a disabled button's face
+BTN_OFF_EDGE    = "#1e2531"
+CHIP_ON_EDGE    = "#2f4d80"   # a chip that is on — ACCENT_SOFT plus an edge
+CHIP_OFF        = "#151b26"   # a chip, a pill and a pair pill at rest
+CHIP_OFF_EDGE   = "#222a36"
+CHIP_HOVER      = "#1b2230"
+CHIP_HOVER_EDGE = "#2c3648"
+TRACK_OFF       = "#2a3242"   # the switch's track when it is off
+KEY_BG          = "#1c2331"   # a key cap
+KEY_EDGE        = "#303a4c"
+KEY_HI          = "#243044"   # a key cap under the pointer
+THUMB           = "#2b3444"   # the scroller's thumb
 
 # --- SKIN -----------------------------------------------------------------
 # One hook, and it has to be HERE rather than anywhere later: `from ui
@@ -129,6 +159,19 @@ def pick_face(candidates: list[str], hebrew: bool = True) -> str:
     return "Segoe UI"
 
 
+# FIRST, hand GDI the fonts, and only then ask it what it has. Being
+# registered under HKCU is a promise to the next logon, not an answer to
+# CreateFontW in this process — measured 2026-09-06, a machine with all
+# four Rubik files installed and past a reboot still gave Arial back for
+# the family "Rubik", and the whole app had been drawing in Segoe UI
+# without a word about it. fonts.load() is idempotent, private to this
+# process, and never raises; see fonts.py for the whole argument.
+try:
+    import fonts as _fonts
+    _fonts.load()
+except Exception:
+    pass
+
 # Rubik first — a face designed for Hebrew and Latin together, installed
 # per-user by the dashboard's setup (see README). Every fallback ends at
 # Segoe UI, which ships with Windows and holds full Hebrew. NEVER put a
@@ -142,6 +185,42 @@ MEDIUM  = pick_face(["Rubik Medium"], hebrew=False)   # small caps headers
 # dashboard is listed in ICON below rather than inline, so a tofu box has
 # one place to be fixed.
 ICONS   = "Segoe Fluent Icons"
+
+# ------------------------------------------------------------- type scale
+#
+# THE SIZES ARE POINTS AND THE DESIGN IS IN PIXELS, so every entry below
+# carries both. Tk and `draw_text(pt=...)` take points; `_px()` turns one
+# into the other at this process's DPI, which is 96 here, so px = pt * 4/3.
+#
+# Why they all moved up. Rubik draws Hebrew about 13% SMALLER than Segoe UI
+# at the same nominal size — measured through this file's own DrawTextW
+# path, letter height 14 px against Segoe's 16 at a nominal 15 — because
+# Hebrew has no ascenders or descenders and its whole legibility budget is
+# how much of the em it uses. Swapping the face without touching the sizes
+# makes the app smaller and harder to read, which is not what a redesign
+# should feel like. Every size is therefore **+2 px on the Segoe-era
+# number**, rounded to the nearest whole point because that is the only
+# granularity Tk offers down here.
+#
+# And Rubik's LINE BOX is 15% taller than Segoe's at the same size (23 px
+# against 20 at a nominal 15), so a row built to the old height crops the
+# descender of a ק. The row heights below are +20% on the old ones, which
+# absorbs both the taller box and the bigger type.
+PT_TITLE = 20      # 26.7 px — the one big line on a screen
+PT_HERO  = 15      # 20 px   — a state, a number that is the point of a tile
+PT_WORDS = 13      # 17.3 px — HIS OWN WORDS: a transcript, a proposal
+PT_BODY  = 12      # 16 px   — body, buttons, every ordinary UI line
+PT_LABEL = 10      # 13.3 px — a Hebrew label, a meta line
+PT_CAPS  = 9       # 12 px   — LATIN SMALL CAPS, an eyebrow, a micro-label
+
+# Row heights, +20% on what they were, and the radii that keep a pill a
+# pill. A name rather than a literal because widgets.py and the window both
+# have to land on the same rhythm.
+PILL_H   = 36      # a chip, a pill, a pair pill      (was 30)
+BTN_H    = 40      # a button                         (was 36)
+CAP_H    = 40      # a key cap                        (was 34)
+SWITCH_W, SWITCH_H = 46, 26                          # (was 42, 24)
+ROW_H    = 44      # one line in a list               (was 36)
 
 ICON = {
     "overview": "\ue80f", "history": "\ue81c", "keys": "\ue765",
@@ -272,12 +351,36 @@ def lamp(size: int, colour: str, bg: str,
     return _cache[key]
 
 
+def _icon_art(path, size: int):
+    """The right CUT of the mark for the size being asked for.
+
+    icon.png is the FULL cut — the lamp with its glow and both arcs — and
+    below 48 px those are a smudge and two grey pixels; that is the whole
+    reason make_icon.py draws two cuts in the first place. The .ico beside
+    it already holds the small cut at 16/24/32, so a small badge takes its
+    frame from there and only the big ones read the .png. Pillow selects an
+    ICO frame by assigning `size` before the pixels are loaded.
+    """
+    if size < 48:
+        ico = Path(path).with_suffix(".ico")
+        try:
+            art = Image.open(ico)
+            for frame in sorted(art.ico.sizes()):
+                if frame[0] >= size:
+                    art.size = frame
+                    break
+            return art.convert("RGB")
+        except Exception:
+            pass                            # no .ico: the .png still works
+    return Image.open(path).convert("RGB")
+
+
 def icon_bitmap(path, size: int, bg: str) -> ImageTk.PhotoImage | None:
     """The app icon, with its corners rounded to match everything else."""
     key = ("app-icon", str(path), size, bg)
     if key not in _cache:
         try:
-            art = Image.open(path).convert("RGB").resize(
+            art = _icon_art(path, size).resize(
                 (size * 4, size * 4), Image.LANCZOS)
         except Exception:
             return None                    # icon.png missing: skip the badge
@@ -327,7 +430,7 @@ class Button(tk.Canvas):
     """
 
     def __init__(self, parent, text: str, command=None, *, w: int = 116,
-                 h: int = 36, radius: int = 10, bg: str = CARD,
+                 h: int = BTN_H, radius: int = 10, bg: str = CARD,
                  primary: bool = False, quiet: bool = False,
                  icon: str | None = None, fg: str | None = None):
         super().__init__(parent, width=w, height=h, bg=bg,
@@ -355,10 +458,11 @@ class Button(tk.Canvas):
         if icon:
             offset = 9
             self._icon_item = self.create_text(0, h / 2, text=icon,
-                                               font=(ICONS, 11),
+                                               font=(ICONS, PT_BODY),
                                                fill=self._colour)
         self._label = self.create_text(w / 2 + offset, h / 2 + 1, text=text,
-                                       font=(UI, 10), fill=self._colour)
+                                       font=(UI, PT_BODY),
+                                       fill=self._colour)
         if icon:
             self.update_idletasks()
             left = self.bbox(self._label)[0]
@@ -385,7 +489,7 @@ class Button(tk.Canvas):
     @staticmethod
     def _face_colour(primary: bool, quiet: bool, fg: str | None) -> str:
         if primary:
-            return "#ffffff"
+            return ACCENT_ON
         return fg or (DIM if quiet else FG)
 
     def _show(self, index: int) -> None:
@@ -418,8 +522,8 @@ class Button(tk.Canvas):
         else:
             self.itemconfig(self._image,
                             image=rounded(self._width, self._height,
-                                          self._radius, "#151a23",
-                                          self._bg, "#1e2531"))
+                                          self._radius, BTN_OFF,
+                                          self._bg, BTN_OFF_EDGE))
         colour = self._colour if on else FAINT
         self.itemconfig(self._label, fill=colour)
         if self._icon_item is not None:
@@ -431,17 +535,21 @@ class Chip(tk.Canvas):
     of words the vocabulary learned."""
 
     def __init__(self, parent, text: str, command=None, *, bg: str = PANE,
-                 active: bool = False, font_size: int = 9):
+                 active: bool = False, font_size: int = PT_LABEL):
         width = 26 + _text_width(text, font_size)
-        super().__init__(parent, width=width, height=30, bg=bg,
+        super().__init__(parent, width=width, height=PILL_H, bg=bg,
                          highlightthickness=0, bd=0,
                          cursor="hand2" if command else "arrow")
-        self._on = rounded(width, 30, 15, ACCENT_SOFT, bg, "#2f4d80")
-        self._off = rounded(width, 30, 15, "#151b26", bg, "#222a36")
-        self._hover = rounded(width, 30, 15, "#1b2230", bg, "#2c3648")
+        self._on = rounded(width, PILL_H, PILL_H // 2, ACCENT_SOFT, bg,
+                           CHIP_ON_EDGE)
+        self._off = rounded(width, PILL_H, PILL_H // 2, CHIP_OFF, bg,
+                            CHIP_OFF_EDGE)
+        self._hover = rounded(width, PILL_H, PILL_H // 2, CHIP_HOVER,
+                              bg, CHIP_HOVER_EDGE)
         self._active = active
         self._image = self.create_image(0, 0, anchor="nw", image=self._off)
-        self._text = self.create_text(width / 2, 16, text=text,
+        self._text = self.create_text(width / 2, PILL_H / 2 + 1,
+                                      text=text,
                                       font=(UI, font_size), fill=DIM)
         if command:
             self.bind("<Button-1>", lambda _e: command())
@@ -460,18 +568,31 @@ class Chip(tk.Canvas):
         self.itemconfig(self._text, fill=ACCENT_TEXT if on else DIM)
 
 
+def _knob_box(on: bool) -> tuple[float, float, float, float]:
+    """The switch's knob, derived from the track rather than typed in.
+
+    It used to be four literals per side, which meant the track could not
+    grow without the knob sliding off the end of it.
+    """
+    inset = 4
+    d = SWITCH_H - inset * 2
+    x = SWITCH_W - inset - d if on else inset
+    return (x, inset, x + d, inset + d)
+
+
 class Switch(tk.Canvas):
     """A toggle. A Checkbutton with a tick in a square box is the single
     most dated thing that was on the old window."""
 
     def __init__(self, parent, value: bool = False, command=None,
                  bg: str = CARD):
-        super().__init__(parent, width=42, height=24, bg=bg,
+        super().__init__(parent, width=SWITCH_W, height=SWITCH_H, bg=bg,
                          highlightthickness=0, bd=0, cursor="hand2")
-        self._on = rounded(42, 24, 12, ACCENT, bg)
-        self._off = rounded(42, 24, 12, "#2a3242", bg)
+        self._on = rounded(SWITCH_W, SWITCH_H, SWITCH_H // 2, ACCENT, bg)
+        self._off = rounded(SWITCH_W, SWITCH_H, SWITCH_H // 2, TRACK_OFF,
+                            bg)
         self._image = self.create_image(0, 0, anchor="nw", image=self._off)
-        self._knob = self.create_oval(4, 4, 20, 20, fill=FG, width=0)
+        self._knob = self.create_oval(*_knob_box(False), fill=FG, width=0)
         self._value = value
         self._command = command
         self.bind("<Button-1>", lambda _e: self.toggle())
@@ -482,7 +603,7 @@ class Switch(tk.Canvas):
         status poll, which must not look like the user clicked it."""
         self._value = bool(on)
         self.itemconfig(self._image, image=self._on if on else self._off)
-        self.coords(self._knob, *((22, 4, 38, 20) if on else (4, 4, 20, 20)))
+        self.coords(self._knob, *_knob_box(on))
 
     def get(self) -> bool:
         return self._value
@@ -517,9 +638,9 @@ class Dropdown(tk.Canvas):
         self._hover = rounded(w, h, 9, EDGE_HI, bg, ACCENT)
         self._image = self.create_image(0, 0, anchor="nw", image=self._idle)
         self._label = self.create_text(12, h / 2 + 1, text="", anchor="w",
-                                       font=(UI, 10), fill=FG)
+                                       font=(UI, PT_BODY), fill=FG)
         self.create_text(w - 12, h / 2, text="▾", anchor="e",
-                         font=(UI, 10), fill=DIM)
+                         font=(UI, PT_BODY), fill=DIM)
         self._popup = None
         self._value = None
         self.set(value)
@@ -538,7 +659,7 @@ class Dropdown(tk.Canvas):
     def set(self, value) -> None:
         """Show `value` without telling anyone — for a repaint."""
         self._value = value
-        text, _lines = clamp(self.label_for(value), UI, 10,
+        text, _lines = clamp(self.label_for(value), UI, PT_BODY,
                              self._width - 40, 1)
         self.itemconfig(self._label, text=text)
 
@@ -561,7 +682,7 @@ class Dropdown(tk.Canvas):
         for value, label in self._choices:
             row = tk.Label(inner, text=label, bg=CARD,
                            fg=ACCENT_TEXT if value == self._value else FG,
-                           font=(UI, 10), anchor="w", padx=12, pady=6,
+                           font=(UI, PT_BODY), anchor="w", padx=12, pady=6,
                            cursor="hand2")
             row.pack(fill="x")
             row.bind("<Enter>", lambda _e, r=row: r.configure(bg=CARD_HI))
@@ -600,13 +721,14 @@ class KeyCap(tk.Canvas):
     "Right Ctrl" and "Start" were the same object to the eye."""
 
     def __init__(self, parent, text: str, command=None, *, bg: str = CARD,
-                 w: int = 122, h: int = 34):
+                 w: int = 122, h: int = CAP_H):
         super().__init__(parent, width=w, height=h, bg=bg,
                          highlightthickness=0, bd=0, cursor="hand2")
-        self._idle = rounded(w, h, 9, "#1c2331", bg, "#303a4c")
-        self._hover = rounded(w, h, 9, "#243044", bg, ACCENT)
+        self._idle = rounded(w, h, 9, KEY_BG, bg, KEY_EDGE)
+        self._hover = rounded(w, h, 9, KEY_HI, bg, ACCENT)
         self._image = self.create_image(0, 0, anchor="nw", image=self._idle)
-        self._label = self.create_text(w / 2, h / 2, text="", font=(UI, 10))
+        self._label = self.create_text(w / 2, h / 2, text="",
+                                       font=(UI, PT_BODY))
         self.set(text)
         self.bind("<Enter>",
                   lambda _e: self.itemconfig(self._image, image=self._hover))
@@ -616,9 +738,24 @@ class KeyCap(tk.Canvas):
             self.bind("<Button-1>", lambda _e: command())
 
     def set(self, text: str) -> None:
+        """The binding on the cap, at the largest size that FITS it.
+
+        A cap is placed on a grid and its width is the caller's; the label
+        is a binding whose length nobody chooses ("Win+Shift+S" is four
+        times "F8"). Type went up 2 px across the app when the face became
+        Rubik, and a label that overruns its cap does not clip — a Canvas
+        text item just draws past the bitmap and lands on whatever is
+        beside it. So the size steps down until the string is inside the
+        cap, which is the same trick `clamp()` plays for a paragraph.
+        """
         off = text.lower() in ("", "off")
-        self.itemconfig(self._label, text=text or "off",
-                        font=(UI, 10) if off else (UI, 10, "bold"),
+        shown = text or "off"
+        size = PT_BODY
+        room = self.winfo_reqwidth() - 16
+        while size > PT_CAPS - 2 and _text_width(shown, size) > room:
+            size -= 1
+        self.itemconfig(self._label, text=shown,
+                        font=(UI, size) if off else (UI, size, "bold"),
                         fill=FAINT if off else FG)
 
 
@@ -663,7 +800,7 @@ class Scroller(tk.Frame):
         length = max(36, int((last - first) * self._height))
         self.rail.create_image(1, int(first * self._height), anchor="nw",
                                tags="thumb",
-                               image=rounded(4, length, 2, "#2b3444",
+                               image=rounded(4, length, 2, THUMB,
                                              self.rail["bg"]))
 
     def _wheel(self, event) -> None:
@@ -708,9 +845,9 @@ def text_width(text: str, family: str, size: int) -> int:
     return _font(family, size).measure(text)
 
 
-def pill(canvas, x: int, y: int, text: str, bg: str, *, size: int = 9,
-         fill: str = "#151b26", border: str = "#222a36",
-         colour: str = DIM) -> int:
+def pill(canvas, x: int, y: int, text: str, bg: str, *,
+         size: int = PT_LABEL, fill: str = CHIP_OFF,
+         border: str = CHIP_OFF_EDGE, colour: str = DIM) -> int:
     """A chip drawn straight onto a canvas, right-aligned at `x`.
 
     The widget version above is a Canvas of its own, which is the right
@@ -719,9 +856,10 @@ def pill(canvas, x: int, y: int, text: str, bg: str, *, size: int = 9,
     """
     width = 26 + text_width(text, UI, size)
     canvas.create_image(x - width, y, anchor="nw",
-                        image=rounded(width, 30, 15, fill, bg, border))
-    canvas.create_text(x - width / 2, y + 15, text=text, font=(UI, size),
-                       fill=colour)
+                        image=rounded(width, PILL_H, PILL_H // 2, fill,
+                                      bg, border))
+    canvas.create_text(x - width / 2, y + PILL_H / 2, text=text,
+                       font=(UI, size), fill=colour)
     return width
 
 
@@ -839,7 +977,7 @@ def draw_text(text: str, *, pt: int, width: int | None, max_lines: int,
 
 
 def pair_pill(canvas, x: int, y: int, wrong: str, correct: str,
-              bg: str, size: int = 9) -> int:
+              bg: str, size: int = PT_LABEL) -> int:
     """One correction — what was heard, what it should have been.
 
     Both words are DrawTextW bitmaps (a corrected word is often mixed,
@@ -852,22 +990,22 @@ def pair_pill(canvas, x: int, y: int, wrong: str, correct: str,
     """
     rtl = is_rtl(wrong) or is_rtl(correct)
     wrong_img, _h, _l = draw_text(wrong, pt=size, width=None, max_lines=1,
-                                  colour=DIM, bg="#151b26")
-    right_img, _h, _l = draw_text(correct, pt=size, width=None, max_lines=1,
-                                  colour=FG, bg="#151b26")
+                                  colour=DIM, bg=CHIP_OFF)
+    right_img, _h, _l = draw_text(correct, pt=size, width=None,
+                                  max_lines=1, colour=FG, bg=CHIP_OFF)
     gap, pad = 24, 13
     a, b = wrong_img.width(), right_img.width()
     width = pad * 2 + a + b + gap
     canvas.create_image(x - width, y, anchor="nw",
-                        image=rounded(width, 30, 15, "#151b26", bg,
-                                      "#222a36"))
-    start = x - width
+                        image=rounded(width, PILL_H, PILL_H // 2,
+                                      CHIP_OFF, bg, CHIP_OFF_EDGE))
+    start, mid = x - width, y + PILL_H / 2
     first, second = (wrong_img, right_img) if not rtl else (right_img,
                                                             wrong_img)
-    canvas.create_image(start + pad, y + 15, anchor="w", image=first)
-    canvas.create_image(x - pad, y + 15, anchor="e", image=second)
+    canvas.create_image(start + pad, mid, anchor="w", image=first)
+    canvas.create_image(x - pad, mid, anchor="e", image=second)
     arrow = "←" if rtl else "→"
-    canvas.create_text(start + pad + first.width() + gap / 2, y + 15,
+    canvas.create_text(start + pad + first.width() + gap / 2, mid,
                        text=arrow, font=(UI, size + 1), fill=FAINT)
     return width
 

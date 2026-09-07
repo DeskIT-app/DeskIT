@@ -41,6 +41,7 @@ LABELS: dict[str, str] = {
     "screens": "מסכים כבויים",
     "notify_dismiss": "סגור התראה",
     "problem_report": "דווח על תקלה",
+    "shelf": "המדף",
 }
 
 # The reason a text key is greyed rather than simply missing. Short enough
@@ -116,6 +117,12 @@ def bindings(cfg) -> list[tuple[str, str]]:
     pcfg = getattr(cfg, "problems", None)
     if pcfg is not None and pcfg.enabled and getattr(pcfg, "hotkey", ""):
         out.append(("problem_report", pcfg.hotkey))
+    # The shelf, on the same terms and both by getattr: a Config without
+    # a [shelf] section binds nothing and shows nothing, which is what
+    # `classic` needs from this file.
+    scfg = getattr(cfg, "shelf", None)
+    if scfg is not None and scfg.enabled and getattr(scfg, "hotkey", ""):
+        out.append(("shelf", scfg.hotkey))
     if cfg.punctuate_hotkey:
         out.append(("punctuate", cfg.punctuate_hotkey))
     if cfg.translate_hotkey:

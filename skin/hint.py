@@ -46,8 +46,8 @@ import time
 
 from .glass import (Glass, primary_screen, virtual_screen, HTTRANSPARENT,
                     HTCLIENT, HTCAPTION)
-from .palette import (BG, CARD, LINE, FG, ACCENT_SOFT, ACCENT_EDGE,
-                      GREEN, AMBER, RED, argb)
+from .palette import (BG, CARD, LINE, FG, KEY_BG, KEY_EDGE, LINE_HI,
+                      DOT_STATES, argb, rgb)
 
 _log = logging.getLogger("app")
 
@@ -65,11 +65,21 @@ STEP = 0.1                # what one press of − or + is worth
 SCALE_MIN, SCALE_MAX = 0.6, 1.4
 BTN = 18                  # the − and + squares
 
-INK = (232, 235, 243)
-INK_DIM = (163, 171, 188)
-INK_FAINT = (116, 125, 141)
-INK_KEY = (143, 190, 255)
-DOTS = {"recording": RED, "locked": AMBER, "ready": GREEN}
+INK = (241, 236, 226)        # FG      13.76:1 on the card
+INK_DIM = (178, 168, 150)    # DIM      6.89:1
+INK_FAINT = (126, 117, 100)  # FAINT    3.56:1 - labels and rules only
+INK_KEY = rgb(FG)            # A KEY CHIP IS A KEY CAP, NOT A BUTTON.
+#                              Fifteen chips in the accent turned this card
+#                              into fifteen primary actions competing for
+#                              one glance; it is a LEGEND. So the chips take
+#                              ui.KeyCap's own face (KEY_BG on KEY_EDGE with
+#                              the glyph in FG) and the only lit thing left
+#                              on the card is the state bead at the top.
+
+# The state bead, taken from the dot's own table so the card and the dot in
+# the corner can never disagree about what colour "recording" is.
+DOTS = {name: rgb(DOT_STATES[name][0])
+        for name in ("recording", "locked", "ready", "busy", "paused")}
 
 # What a hit landed on, for the click handler. Kept as strings rather than
 # rectangles on the instance so `regions()` can be tested without a window.
@@ -240,7 +250,8 @@ def draw(canvas, card: dict, backdrop=None, scale: float = 1.0) -> None:
     # -- the head: state dot and title on the right, size buttons on the
     # left, and the whole strip is the handle you drag it by.
     canvas.drawCircle(right - 5 * s, y + 8 * s, 4.5 * s, skia.Paint(
-        AntiAlias=True, Color=argb(255, DOTS.get(card.get("dot"), GREEN))))
+        AntiAlias=True, Color=argb(255, DOTS.get(card.get("dot"),
+                                                 DOTS["ready"]))))
     title = _text(card["title"], pt=12.0 * s, weight=600)
     canvas.drawImage(_to_skia(title), right - 16 * s - title.width, y + 1)
     sub = _text(card["sub"], pt=9.0 * s, colour=INK_DIM)
@@ -254,7 +265,7 @@ def draw(canvas, card: dict, backdrop=None, scale: float = 1.0) -> None:
         canvas.drawRRect(skia.RRect.MakeRectXY(
             skia.Rect.MakeLTRB(bx0, by0, bx1, by1), 5 * s, 5 * s),
             skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style,
-                       StrokeWidth=1.0, Color=argb(150, LINE)))
+                       StrokeWidth=1.0, Color=argb(150, LINE_HI)))
         mark = _text(glyph, pt=10.0 * s, colour=INK_DIM, weight=600,
                      rtl=False)
         canvas.drawImage(_to_skia(mark),
@@ -277,11 +288,11 @@ def draw(canvas, card: dict, backdrop=None, scale: float = 1.0) -> None:
                 7 * s, 7 * s)
             canvas.drawRRect(box, skia.Paint(
                 AntiAlias=True,
-                Color=argb(190 if on else 120, ACCENT_SOFT if on else BG)))
+                Color=argb(190 if on else 120, KEY_BG if on else BG)))
             canvas.drawRRect(box, skia.Paint(
                 AntiAlias=True, Style=skia.Paint.kStroke_Style,
                 StrokeWidth=1.0,
-                Color=argb(200 if on else 110, ACCENT_EDGE if on else LINE)))
+                Color=argb(200 if on else 110, KEY_EDGE if on else LINE)))
             canvas.drawImage(_to_skia(chip), right - cw + 10 * s,
                              y + 3 * s + (CHIP_H * s - chip.height) / 2)
             text = _text(label, pt=10.0 * s, colour=INK if on else INK_FAINT)

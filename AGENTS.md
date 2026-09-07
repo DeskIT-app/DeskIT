@@ -11,11 +11,11 @@ Hebrew push-to-talk dictation for Windows: hold **Right Ctrl**, speak,
 release, and a cleaned transcript lands at your cursor via clipboard +
 Ctrl+V. Around that core: a repair pass that fixes misheard words, a
 translate key, a punctuate key, a lookup key, a correction box that teaches
-a vocabulary, a background study pass that re-examines sent dictations and learns without being asked (fast only, study.py), a second reading that re-reads every pasted dictation and proposes corrections on a card — learning only what is approved (fast only, review.py, review_card.py, overlay.ReviewCard, the dashboard's Review screen; it stands in for the study pass while on), a screenshot/screen-recording pair of keys, a webcam key
+a vocabulary, a background study pass that re-examines sent dictations and learns without being asked (fast only, study.py), a second reading that re-reads every pasted dictation and proposes corrections on a card — learning only what is approved (fast only, review.py, review_card.py, overlay.ReviewCard, and a row in the dashboard's Waiting pile; it stands in for the study pass while on), a screenshot/screen-recording pair of keys, a webcam key
 that takes a photo into the same editor, a phone endpoint, a hold that
 keeps the machine awake for as long as the app runs and a key that puts
 the screens off and keeps them off so the phone can drive it through
-Claude (awake.py, the dashboard's Awake screen, `ctrl+alt+n`), a notify
+Claude (awake.py, Settings › Awake in the dashboard, `ctrl+alt+n`), a notify
 door (notify.py, `POST /notify`, a cue and a STACK of cards that waits —
 newest on top, anchored by its bottom edge so a long message grows
 upward, nothing times out, a finish HELD until its session has been
@@ -26,20 +26,49 @@ dismiss them
 all, a × per card and a click on a card to go to whoever sent it — how
 Claude Code says it is done, and, through the Windows toasts the desktop
 app raises, how Cowork does too: notify_watch.py, `[notify] watch`; the
-dashboard's Notify screen), a report key that files the owner's own
+unread ones are rows in the dashboard's Waiting pile), a report key that files the owner's own
 bug list with the evidence already attached — where he was, the last
 dictation and a pinned copy of its audio, a screenshot of the screen a
 moment before he asked, the settings that explain a bad transcript —
 and is read through once a week off `problems.md` (problems.py,
-`ctrl+alt+r`, problem_card.py for the card's face, the dashboard's
-Problems screen, and a Saturday 08:00 scheduled task that reviews the
-list, writes the plan and asks about what it did not understand rather
-than guessing: weekly_review.ps1, `/weekly-reports`), and a
-dashboard. Everything is documented,
-with measurements, in `README.md` and `config.toml`.
+`ctrl+alt+r`, problem_card.py for the card's face, a row in the Waiting
+pile with the evidence behind "the whole list", and a Saturday 08:00
+scheduled task that reviews the list, writes the plan and asks about what
+it did not understand rather than guessing: weekly_review.ps1,
+`/weekly-reports`), a **shelf** and a **dashboard**.
+
+**The shelf** (`ctrl+alt+d`; shelf.py, shelf_card.py, `skin\shelf.py`,
+`[shelf]`) is a panel beside the status dot holding the state, the pile
+of things waiting for an answer, the last dictation with Copy, the
+screens and one door to the window. **It opens only on the key press; the
+same press or Esc closes it; never on hover, never on passing the
+corner** — that is the owner's rule, verbatim, and it is what the corner
+being predictable depends on. Settings, the keys and the history are
+deliberately not on it: those are things you sit down to.
+
+**The dashboard** (`dashboard.py` + `ui.py` + `widgets.py`) is four
+places along a 56 px top bar — no rail, since 2026-09-07:
+
+- **Waiting** — the home. One title line, one card holding the merged
+  pile (notify unread + review pending + problems open + questions
+  pending, newest first, capped, "+N more"), one line each for the rest
+  of the day, and a footer of facts. "The whole list" behind it holds
+  what needs more than a line: a question with its options, a report with
+  its evidence, a weekly branch with its Push button.
+- **Said** — `transcripts.log` read back (history.py) with the
+  vocabulary panel beside it.
+- **Keys** — the bindings lit on a drawn 87-cap keyboard (keyboard.py);
+  click a cap to rebind it.
+- **Settings** — forty lines said as sentences (prose.py) plus the
+  existing tabs, "Everything" as the whole file (settings.py), and the
+  three blocks that used to be rail rows: Awake, Phone, The app (version
+  switch, Stop, Send a test, the cue sounds).
+
+Everything is documented, with measurements, in `README.md` and
+`config.toml`.
 
 **Two whole versions of the app live here as git branches**, switched with
-`Versions.vbs` / `dashboard.py`'s Version screen / `versions.py`:
+`Versions.vbs` / the dashboard's Settings › The app / `versions.py`:
 
 - `classic` — frozen behavior (local Whisper + local gemma3:12b repair).
 - `fast` — current development: repair pass goes to **Groq's free API**
@@ -83,7 +112,7 @@ back.
    measurements. Edit it programmatically ONLY through
    `config.set_values()` (line-wise editor that preserves comments); a
    TOML round-trip would delete hours of work. Since 2026-09-01 they are
-   also USER-FACING: the dashboard's Settings screen is generated from
+   also USER-FACING: the dashboard's Settings place is generated from
    the file (`settings.py`), each key's comment is the help under its
    row, and a `gemini | local | fake` at the front of a comment is read
    as that key's menu. Write a new key's comment as a sentence someone
@@ -561,13 +590,62 @@ back.
   and never touched. Note `.gitignore` is in that set even though no test checks it: `versions.py`
   refuses a switch when `git status --porcelain` is dirty, and untracked files count — a
   `captures\` folder ignored on one branch only would block the switch.
+- **The 2026-09-07 redesign is UNCOMMITTED on purpose.** LAMPLIGHT, the
+  four places, the drawn keyboard, the settings sentences and the shelf
+  are all in the working tree and none of it is staged or committed: the
+  owner asked for it to stay that way until he has seen it, so that one
+  git command throws the whole thing away. Do not `git add`, commit,
+  stash or checkout it on his behalf, and do not add files to `fonts\` or
+  anywhere else that a `git checkout .` would leave behind — an untracked
+  file is the one part of this he could not undo.
 - **The look lives in `skin/` and is meant to be deletable.** Every hook
   into it is `try: import skin / except: skin = None` in FRONT of code
   that was not otherwise touched, and `ui.py` still carries the ORIGINAL
   hex literals under the repaint hook — so `rmdir /s skin` really is the
   revert, and two tests assert it. Do not "tidy" those literals to match
   the new palette; that would quietly make the revert stop reverting.
-  `SKIN.md` has the rest.
+  A name added to the skin must ALSO be added to `ui.py`'s pre-`# --- SKIN`
+  block at an OLD-palette value, or deleting `skin\` gives back a
+  half-repainted window instead of a coherent old one. `SKIN.md` has the
+  rest.
+- **A colour is decided in exactly one file, and a test now enforces
+  it.** `skin\palette.py` is the table; `UI_NAMES` carries 47 of them and
+  `repaint(globals())` writes every one into `ui.py`. The defect this
+  answers was real and it was invisible: fourteen `#rrggbb` literals were
+  spelled out INSIDE `ui.py`'s own widget constructors, below the
+  `# --- SKIN` marker, so `repaint` silently skipped them and three
+  further names (`LINE_HI`, `FOCUS`, `ACCENT_ON`) existed in the skin and
+  not in `ui.py` at all.
+  `test_the_window_has_a_name_for_every_shade_its_widgets_draw`
+  fails on any `"#rrggbb"` appearing below that marker. Its sibling,
+  `test_every_colour_the_palette_promises_is_the_contrast_it_claims`,
+  is there because the palette carried its ratios as PROSE — "15.35 : 1"
+  in a docstring that no test could contradict — and asserts AA on every
+  text colour over three surfaces, `FAINT` bounded from BOTH sides
+  (3.0 ≤ x < 4.5: it is the one shade allowed to fail, and a well-meaning
+  lift turns it into a second body colour), the label on the accent fill,
+  and the five dot states against `#1a1a1a`. Never eyeball a new colour;
+  compute it, and put the number in the table.
+- **`fonts.py` must run BEFORE anything asks GDI for a face, and a test
+  holds the order.** Being installed under `HKCU\...\Fonts` is a promise
+  to the next logon, not an answer to `CreateFontW` in this process:
+  measured 2026-09-06, past a reboot and seventeen days after
+  `install_fonts.py` ran, a fresh process asking for "Rubik" got Arial,
+  so `ui.pick_face(["Rubik"])` returned Segoe UI and the whole app had
+  been drawing in the fallback face without a word about it.
+  `fonts.load()` (`AddFontResourceExW`, `FR_PRIVATE`, idempotent, never
+  raises) is called at the import of `ui.py` and of `visual_qa.py`, and
+  `test_the_app_hands_gdi_its_own_fonts_before_it_asks_for_one` asserts
+  that the `_fonts.load()` call in `ui.py` comes before `pick_face` —
+  because a load that runs after the question changes nothing that run.
+  Through GDI there are only TWO real Rubik weights, 400 and 700 (the
+  Skia path is different — see the variable-font trap below), so a design
+  that wants a third step has to get it from size or colour.
+- **A glass hook is named `<thing>_run`.** The shelf's is
+  `skin.shelf_run(card)`, registered in `skin\__init__.py` exactly the
+  way `notify_run` is; `tests.py:14791` enforces the naming rule, and a
+  hook that does not follow it is a hook the fallback path cannot reason
+  about.
 - **Tk antialiases NOTHING, and that is measurable.** A 400x400 grab of
   canvas primitives came back with exactly two distinct colours. So a
   chroma key is bit-exact clean for canvas items (there are no partial
@@ -774,8 +852,13 @@ back.
 | `control.py` | the named pipe between the dashboard and the app: status, commands, replies; handlers must never block |
 | `overlay.py` | every window this app paints by hand: the splash, the status dot, the hint card, the correction and report box (`WordPrompt` — `fill()` puts a dictated line IN the box without sending it, which is the only way a transcript reaches one of OUR windows, `injector` refusing by design to paste into this process), `ProblemCard(WordPrompt)` — a SUBCLASS and not a mode flag, so the review pencil's one-line box is provably untouched; it overrides only `ask` and `_run` — and the review and notify cards on top of `HintCard` |
 | `hint.py` | what the hint card says while the key is held: one row per bound key, read off the live Config under the same condition `main.App._bindings` registers it under, so a rebind moves the row and a feature switched off takes its row away. Pure Python, no Tk — the tests read every row |
-| `dashboard.py` + `ui.py` | control window incl. the Version screen, the generated Settings screen, the Problems screen that answers the bug list and the frameless **Report a problem** card the sidebar button opens |
-| `settings.py` | config.toml as data: every key, its comment as help, `a \| b \| c` as choices — what the Settings screen draws |
+| `dashboard.py` + `ui.py` | the control window: four places along a top bar (Waiting, Said, Keys, Settings), the merged Waiting pile and "the whole list" behind it that answers the bug list and the routine's questions, the generated Settings place with the version switch / Stop / cue sounds in it, and the frameless **Report a problem** card the button beside the Waiting title opens |
+| `widgets.py` | the pieces the window needs that `ui.py` does not have: the tab strip, a hairline, the state chip, an icon-in-a-label, a row whose text stops where its buttons start, `rtl_run()` for a pill inside a Hebrew sentence, and a toned Button. Every colour is read as `ui.NAME` INSIDE the call, so a repainted palette lands on the next screen drawn |
+| `keyboard.py` | the Keys place's board: 87 caps, one Pillow image and one hit table, everything measured from a single cap unit; the bindings are read from `config.HOTKEY_FIELDS` + `hotkey.parse_binding` and lit on it |
+| `prose.py` | the settings said as sentences with the controls inside the words — a hand-flowed Canvas at a fixed 34 px line. Every `Bit` names a real path in `config.toml` and a test walks them |
+| `settings.py` | config.toml as data: every key, its comment as help, `a \| b \| c` as choices — what the Settings place draws |
+| `fonts.py` | hands this process its own copy of Rubik (`AddFontResourceExW`, `FR_PRIVATE`) at the import of `ui.py` and `visual_qa.py`, before anything asks for a face |
+| `shelf.py` + `shelf_card.py` + `skin\shelf.py` | the panel beside the dot: the window/thread/queue class (modelled on `overlay.HintCard`), the pure painter (words, geometry, hit test, `INK`) and the glass. Every answer it offers calls the same `App` method the matching card does; nothing goes through `control.py` |
 | `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |
 | `versions.py` | whole-app version switching |
 | `tests.py` | the suite; run it |

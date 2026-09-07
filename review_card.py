@@ -60,19 +60,25 @@ BUTTONS = ((ACCEPT, 112), (REJECT, 92), (LATER, 104))   # name, width at 1.0
 # skin\palette.py's values, spelled out: this module is reached with the
 # skin folder deleted, and overlay.py keeps its fallback palette the same
 # way. Tuples, because Pillow wants them.
-INK = (232, 235, 243)
-INK_DIM = (163, 171, 188)
-INK_FAINT = (116, 125, 141)
-LINE = (52, 58, 69)
-EDGE = (36, 41, 50)
-EDGE_HI = (46, 52, 64)
-ACCENT = (29, 109, 212)
-ACCENT_HI = (52, 130, 235)
-ACCENT_SOFT = (18, 43, 78)
-ACCENT_TEXT = (143, 190, 255)
-RED = (248, 122, 125)
-RED_SOFT = (74, 30, 36)
-CARD = (31, 35, 45)
+#
+# The gold is spent ONCE on this card, on the accept button, because
+# that is the one primary action it offers. Reject and Later are
+# secondary faces with a hairline; that is the whole 'never two gold
+# things lit on one surface' rule, in one place where it is visible.
+INK = (241, 236, 226)        # FG          13.76:1 on the card
+INK_DIM = (178, 168, 150)    # DIM          6.89:1
+INK_FAINT = (126, 117, 100)  # FAINT        3.56:1 — labels only
+LINE = (58, 52, 42)          # LINE
+EDGE = (41, 36, 29)          # EDGE         a secondary button
+EDGE_HI = (51, 45, 36)       # EDGE_HI
+ACCENT = (227, 166, 60)      # ACCENT       the lamp
+ACCENT_HI = (240, 184, 84)   # ACCENT_HI
+ACCENT_SOFT = (51, 39, 17)   # ACCENT_SOFT  the changed word's pill
+ACCENT_TEXT = (240, 186, 92)  # ACCENT_TEXT  9.17:1 on the card
+ACCENT_ON = (26, 20, 9)      # ACCENT_ON    the label ON the gold fill
+RED = (241, 134, 122)        # RED          6.50:1
+RED_SOFT = (61, 26, 22)      # the danger red at card weight
+CARD = (36, 32, 26)          # CARD
 
 TITLE = "קריאה שנייה"
 LABELS = {ACCEPT: "נכון", REJECT: "לא", LATER: "אחר כך"}
@@ -368,7 +374,7 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
         if name == ACCEPT:
             face = _rr((bx1 - bx0, by1 - by0), 9 * s,
                        fill=(ACCENT_HI if hot else ACCENT) + (255,))
-            colour = INK
+            colour = ACCENT_ON      # 8.52:1 on the fill; INK is 1.8:1
         elif name == REJECT:
             face = _rr((bx1 - bx0, by1 - by0), 9 * s,
                        fill=(EDGE_HI if hot else EDGE) + (255,),

@@ -1,153 +1,196 @@
-"""Draws icon.ico — the Desktop icon for the dashboard.
+"""Draws icon.ico and icon.png — the mark, at every size it is seen at.
 
 Run it only to regenerate the icon:  .venv\\Scripts\\python.exe make_icon.py
 Needs Pillow, which is not in requirements.txt: nothing the app does at
 runtime depends on this, and the .ico it produces is committed.
 
-The design, and why:
+THE MARK, and why:
 
-- An ALEF, large, as the whole icon. Not a microphone: a microphone says
-  "this records audio", which is true of a dozen things on any machine,
-  and it says nothing about the one property that makes this app what it
-  is. The letter says "Hebrew" before you have finished looking at it.
-- A five-bar waveform underneath, so the letter reads as speech rather
-  than as a font sample.
-- The gradient runs from the app's own accent blue (#2d6cdf, the status
-  dot and the dashboard's primary button) into violet, so the icon and
-  the window it opens look like the same product.
+- **A dalet drawn as a desk.** ד is a tabletop with one leg hanging from
+  its right end and the top's edge running just past the leg — which is
+  also a desk seen from the side. It is the D of DeskIT, and it says
+  Hebrew before you have finished looking at it. The letter that was here
+  before was an alef: the right idea, the wrong letter, because an alef is
+  a symmetrical X and a dalet is a piece of furniture.
+- **The dot is the lamp.** It sits above the left of the tabletop and it is
+  the status dot the owner sees in the corner of the screen all day: gold
+  when it listens, red when it records. The icon and the dot are the same
+  object, so the taskbar and the top-right corner say the same thing.
+- **Two arcs to its right** turn the lamp into something that also HEARS.
+  They are the only detail in the drawing, and they are the first thing
+  dropped when the pixel budget runs out.
 
-A microphone-with-alef version was drawn first and lost on the only test
-that matters: legibility at 24 px, which is the size you actually see all
-day in the taskbar. There the mic capsule and the letter inside it merge
-into one grey lozenge, while a letter that IS the icon stays sharp — a
-single shape has no interior detail to lose.
+Two cuts, because each is tuned to a budget — the alef version taught this
+and it is still true:
 
-Everything is drawn at 4x and downsampled with LANCZOS — Pillow has no
-antialiased shape drawing, and rounded corners at 16 px are unforgiving.
+    full (>= 48 px)  the desk, the lamp, its glow and both arcs
+    small (< 48)     the desk and the lamp alone. At 24 px an arc is one
+                     grey pixel that reads as damage, not as sound, and a
+                     glow is a smudge that eats the letter's edge.
+
+Everything is drawn on the SAME 64-unit grid the design was cut on, at 4x
+and downsampled with LANCZOS — Pillow antialiases nothing, and rounded
+corners at 16 px are unforgiving.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFilter
 
 APP_DIR = Path(__file__).resolve().parent
 SIZES = (16, 24, 32, 48, 64, 128, 256)
 SUPER = 4                      # supersampling factor
 S = 256 * SUPER
+GRID = 64.0                    # the design's own units
+K = S / GRID                   # one design unit, in supersampled pixels
 
-TOP_LEFT = (0x36, 0x7a, 0xf0)      # accent blue, lifted a little
-BOTTOM_RIGHT = (0x7b, 0x2f, 0xe0)  # violet
-GLOW = (0x5c, 0xd2, 0xff)          # the cool edge light
+# LAMPLIGHT, spelled out: this script must run with nothing imported but
+# Pillow. skin\palette.py is the source — CARD, FG, ACCENT, and for the
+# two variants BG and DIM.
+TILE = (0x24, 0x20, 0x1a)      # palette.CARD
+LETTER = (0xf1, 0xec, 0xe2)    # palette.FG
+LAMP = (0xe3, 0xa6, 0x3c)      # palette.ACCENT
+GROUND = (0x14, 0x11, 0x0c)    # palette.BG
+QUIET = (0xb2, 0xa8, 0x96)     # palette.DIM
 
-
-def gradient(size: int) -> Image.Image:
-    """A diagonal blue -> violet ramp, with a soft cool glow top-left."""
-    base = Image.new("RGB", (size, size))
-    pixels = base.load()
-    for y in range(size):
-        for x in range(size):
-            t = (x / size * 0.55) + (y / size * 0.45)
-            pixels[x, y] = tuple(
-                round(a + (b - a) * t)
-                for a, b in zip(TOP_LEFT, BOTTOM_RIGHT))
-    # A radial lift in the top-left corner keeps the flat ramp from
-    # reading as a swatch.
-    glow = Image.new("RGB", (size, size), GLOW)
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).ellipse(
-        (-size * 0.45, -size * 0.55, size * 0.72, size * 0.62), fill=90)
-    return Image.composite(glow, base, mask.filter(_blur(size * 0.08)))
+RADIUS = 15 / 64               # the tile's corner, as a fraction of it
+RIM_A = 0.08                   # the hairline lift on the top edge
 
 
-def _blur(radius: float):
-    from PIL import ImageFilter
-    return ImageFilter.GaussianBlur(max(1, radius))
+def u(value: float) -> float:
+    """A design unit in supersampled pixels."""
+    return value * K
 
 
-def rounded_mask(size: int, radius_ratio: float = 0.235) -> Image.Image:
+def rounded_mask(size: int, radius_ratio: float = RADIUS) -> Image.Image:
     mask = Image.new("L", (size, size), 0)
     ImageDraw.Draw(mask).rounded_rectangle(
         (0, 0, size - 1, size - 1), radius=size * radius_ratio, fill=255)
     return mask
 
 
-def hebrew_font(px: int) -> ImageFont.FreeTypeFont:
-    for name in ("segoeuib.ttf", "arialbd.ttf", "david.ttf"):
-        try:
-            font = ImageFont.truetype(f"C:/Windows/Fonts/{name}", px)
-            if font.getbbox("א")[2] > 0:      # it actually has the glyph
-                return font
-        except OSError:
-            continue
-    raise SystemExit("no installed font has a Hebrew alef")
+def desk_mask() -> Image.Image:
+    """The dalet, as two rounded rectangles that share an edge.
 
-
-def alef_mask(size: int, height: float, centre: float) -> Image.Image:
-    """The letter, centred on its INK rather than on its font metrics.
-
-    Hebrew glyphs sit low in the em box, so placing one by the box leaves
-    it visibly high on the tile — the kind of half-pixel wrongness that has
-    no name but makes an icon look homemade.
+    The path this comes from is
+        M14 28H51a2 2 0 0 1 2 2v8h-3v13a2 2 0 0 1-2 2h-6a2 2 0 0 1-2-2V38
+        H12v-8a2 2 0 0 1 2-2Z
+    which is a top spanning x 12..53 at y 28..38, rounded at its two upper
+    corners, and a leg at x 40..50 hanging from y 38 to 53, rounded at its
+    two lower ones. Drawn as two rounded rectangles that overlap by a unit
+    rather than as one outline, because Pillow has no path support and two
+    rectangles with the same fill leave no seam.
     """
-    mask = Image.new("L", (size, size), 0)
-    font = hebrew_font(int(size * height))
-    left, top, right, bottom = font.getbbox("א")
-    ImageDraw.Draw(mask).text(
-        (size * 0.5 - (right + left) / 2,
-         size * centre - (bottom + top) / 2), "א", font=font, fill=255)
-    return mask
-
-
-def waveform_mask(size: int) -> Image.Image:
-    """Five rounded bars, tallest in the middle, under the letter.
-
-    They are what stops the icon reading as a font sample: the letter says
-    which language, the bars say it is being spoken. Dropped below 48 px,
-    where they are a one-pixel grey smudge that only muddies the tile.
-    """
-    mask = Image.new("L", (size, size), 0)
+    mask = Image.new("L", (S, S), 0)
     draw = ImageDraw.Draw(mask)
-    bar_w, gap = size * 0.045, size * 0.036
-    heights = (0.055, 0.105, 0.150, 0.105, 0.055)
-    total = len(heights) * bar_w + (len(heights) - 1) * gap
-    x, base = size * 0.5 - total / 2, size * 0.795
-    for h in heights:
-        half = size * h / 2
-        draw.rounded_rectangle((x, base - half, x + bar_w, base + half),
-                               radius=bar_w / 2, fill=255)
-        x += bar_w + gap
+    # The top. `corners=` keeps the round on the two the path rounds; the
+    # underside stays square so the leg can grow straight out of it.
+    draw.rounded_rectangle((u(12), u(28), u(53), u(38)), radius=u(2),
+                           fill=255, corners=(True, True, False, False))
+    # The leg, overlapping the top by one unit so the join cannot show.
+    draw.rounded_rectangle((u(40), u(37), u(50), u(53)), radius=u(2),
+                           fill=255, corners=(False, False, True, True))
     return mask
 
 
-def build(level: str = "full") -> Image.Image:
-    """Two cuts of one artwork, because each is tuned to a pixel budget.
+def lamp_mask() -> Image.Image:
+    """The dot: circle cx=22 cy=19 r=6."""
+    mask = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(mask).ellipse(
+        (u(22 - 6), u(19 - 6), u(22 + 6), u(19 + 6)), fill=255)
+    return mask
 
-      full (>=48 px) — the letter, with the waveform beneath it.
-      small (<48)    — the letter alone, grown into the room the bars leave
-                       and lifted back to the centre. At 24 px the bars are
-                       one grey row that reads as damage, not as sound.
+
+def glow_mask(peak: float = 0.55, reach: float = 14.0) -> Image.Image:
+    """The lamp's halo: a radial ramp from `peak` at the centre to 0.
+
+    An SVG radial gradient is linear in radius, so this is too — drawn as
+    concentric discs from the outside in, each one overwriting the last, at
+    a step small enough (one supersampled pixel per stop) that the ramp is
+    a ramp and not a staircase. One short blur takes the last of the
+    quantisation out before the LANCZOS pass.
+    """
+    mask = Image.new("L", (S, S), 0)
+    draw = ImageDraw.Draw(mask)
+    cx, cy, outer = u(22), u(19), u(reach)
+    steps = int(outer)
+    for i in range(steps):
+        r = outer * (1 - i / steps)
+        alpha = round(255 * peak * (i / steps))
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r), fill=alpha)
+    return mask.filter(ImageFilter.GaussianBlur(u(0.4)))
+
+
+def arc_mask(start_xy, end_xy, radius: float, width: float,
+             alpha: float) -> Image.Image:
+    """One of the two sound arcs, from its SVG arc command.
+
+    Both are `a R R 0 0 1` — a circular arc, small sweep, clockwise —
+    between two points on the same vertical, so the centre sits on the
+    perpendicular bisector at
+        cx = x - sqrt(R^2 - (dy/2)^2),  cy = midpoint
+    and the half-angle either side of horizontal is asin((dy/2) / R).
+    Solving it here rather than eyeballing an angle is what keeps the two
+    arcs concentric with the lamp: both come out centred on y = 19.
+    """
+    import math
+    (x0, y0), (_x1, y1) = start_xy, end_xy
+    half = (y1 - y0) / 2.0
+    cx = x0 - math.sqrt(max(0.0, radius * radius - half * half))
+    cy = y0 + half
+    sweep = math.degrees(math.asin(max(-1.0, min(1.0, half / radius))))
+    mask = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(mask).arc(
+        (u(cx - radius), u(cy - radius), u(cx + radius), u(cy + radius)),
+        start=-sweep, end=sweep, fill=round(255 * alpha),
+        width=max(1, round(u(width))))
+    return mask
+
+
+def build(level: str = "full", variant: str = "primary") -> Image.Image:
+    """One cut of the mark.
+
+    `variant` is which of the three faces to draw:
+        primary    the dark tile, a light desk and a gold lamp
+        lit        a gold tile, the desk in the ground colour, a light lamp
+                   — a selected state, and what a lit rail row would carry
+        one-colour everything in DIM, for a disabled control
     """
     detailed = level == "full"
-    card = gradient(S)
-    icon = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-    icon.paste(card, (0, 0), rounded_mask(S))
-
-    # A hairline top edge: the light source is above, and without it the
-    # rounded square reads as a sticker rather than a surface.
-    edge = Image.new("L", (S, S), 0)
-    ImageDraw.Draw(edge).rounded_rectangle(
-        (0, 0, S - 1, S - 1), radius=S * 0.235,
-        outline=70, width=int(S * 0.008))
-    icon.paste(Image.new("RGB", (S, S), (255, 255, 255)), (0, 0),
-               edge.filter(_blur(S * 0.004)))
-
-    white = Image.new("RGB", (S, S), (255, 255, 255))
-    if detailed:
-        icon.paste(white, (0, 0), alef_mask(S, height=0.50, centre=0.435))
-        icon.paste(white, (0, 0), waveform_mask(S))
+    if variant == "lit":
+        tile, letter, lamp = LAMP, GROUND, LETTER
+    elif variant == "one-colour":
+        tile, letter, lamp = (0, 0, 0, 0), QUIET, QUIET
     else:
-        icon.paste(white, (0, 0), alef_mask(S, height=0.60, centre=0.505))
+        tile, letter, lamp = TILE, LETTER, LAMP
+
+    icon = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    if variant != "one-colour":
+        icon.paste(Image.new("RGB", (S, S), tile), (0, 0), rounded_mask(S))
+        # A hairline top edge: the light source is above, and without it
+        # the rounded square reads as a sticker rather than a surface.
+        rim = Image.new("L", (S, S), 0)
+        ImageDraw.Draw(rim).rounded_rectangle(
+            (0, 0, S - 1, S - 1), radius=S * RADIUS,
+            outline=round(255 * RIM_A), width=max(1, round(u(1))))
+        icon.paste(Image.new("RGB", (S, S), (255, 255, 255)), (0, 0),
+                   rim.filter(ImageFilter.GaussianBlur(u(0.25))))
+
+    if detailed and variant != "one-colour":
+        # The glow goes UNDER the desk, so the lamp lights the tile and
+        # not the tabletop it is standing on.
+        icon.paste(Image.new("RGB", (S, S), lamp), (0, 0), glow_mask())
+
+    icon.paste(Image.new("RGB", (S, S), letter), (0, 0), desk_mask())
+    icon.paste(Image.new("RGB", (S, S), lamp), (0, 0), lamp_mask())
+
+    if detailed:
+        for (start, end, radius, width, alpha) in (
+                ((33, 12.5), (33, 25.5), 9.0, 2.4, 0.55),
+                ((37, 9.0), (37, 29.0), 13.5, 2.4, 0.28)):
+            icon.paste(Image.new("RGB", (S, S), lamp), (0, 0),
+                       arc_mask(start, end, radius, width, alpha))
     return icon
 
 

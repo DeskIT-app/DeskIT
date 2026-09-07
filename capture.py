@@ -222,8 +222,15 @@ _FREEZE_LUT = _vq._FREEZE_LUT
 # screenshot has meant since before any of us: the mark has to be the one
 # thing on the picture that could not possibly be part of it. MARK (the
 # ask card's warm yellow) is second so the two features share an ink.
+#
+# These four are NOT palette colours and must not become them. They are
+# drawn on somebody else's screenshot, over pixels this app did not
+# choose, so what they need is to be unmistakably foreign to the picture
+# — the four most-separated saturated inks a marker set has. The red is
+# a hair brighter than it was so it still reads against the app's own
+# gold chrome when a capture is taken OF the app.
 INKS = (
-    ("red", (224, 53, 43)),
+    ("red", (232, 62, 48)),
     ("yellow", MARK),
     ("blue", (86, 156, 245)),
     ("white", (245, 249, 255)),

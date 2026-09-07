@@ -272,11 +272,19 @@ def find(sections: list[Section], path: str) -> Setting | None:
 
 
 def matches(setting: Setting, query: str) -> bool:
-    """The search box: a word in the name, the section or the help."""
+    """The search box: a word in what the SCREEN says — the plain title,
+    the plain sentence, the plain name of its section — or a word in what
+    the FILE says, its dotted name and its comment.
+
+    Both, because the two audiences are the same person on different
+    days: "the card while I hold the key" one day and `hint.after_ms` the
+    next, and neither should come back empty."""
     query = (query or "").strip().lower()
     if not query:
         return True
-    hay = f"{setting.path} {setting.help}".lower()
+    words = words_for(setting)
+    hay = " ".join((setting.path, setting.help, words.label, words.help,
+                    section_words(setting.section).label)).lower()
     return all(word in hay for word in query.split())
 
 
@@ -321,11 +329,11 @@ class Tab:
 
 EVERYTHING = "Everything"
 
-_ENGINES = (("local", "On this computer (Whisper)"),
+_ENGINES = (("local", "On this computer"),
             ("gemini", "In the cloud (Gemini)"),
             ("fake", "Fake, for testing"))
 _REPAIR = (("always", "Always"),
-           ("known", "Only words it has been taught"),
+           ("known", "Only taught words"),
            ("never", "Never"))
 _PUNCTUATORS = (("groq", "Groq — fast, free tier"),
                 ("gemini", "Gemini"),
@@ -338,36 +346,63 @@ _AFTER_SHOT = (("toast", "Show a small card"), ("editor", "Open the editor"),
 _QUALITY = (("small", "Small file"), ("balanced", "Balanced"),
             ("sharp", "Sharp"))
 _MIC_TOO = (("off", "No"), ("mic", "Yes"))
+# The file writes six edges for a card and five for the recording clock;
+# the menus say them the way a person would point at them.
+_EDGES = (("right", "Middle of the right edge"),
+          ("left", "Middle of the left edge"),
+          ("top-right", "Top right"), ("top-left", "Top left"),
+          ("bottom-right", "Bottom right"), ("bottom-left", "Bottom left"))
+_CLOCK_CORNERS = _CORNERS + (("off", "Do not show it at all"),)
+_ANCHOR = (("bottom", "Grow upward"), ("top", "Grow downward"))
+_INTERRUPT = (("all", "Every message"),
+              ("input", "Only what needs you"),
+              ("none", "Never interrupt"))
+_WATCH = (("off", "Never look"), ("cowork", "Only from Cowork"),
+          ("all", "All of them"))
+_RUNS_ON = (("auto", "Decide for itself"), ("cuda", "The graphics card"),
+            ("cpu", "The processor"))
+_LOOK_UP_FIRST = (("ollama", "On this computer"),
+                  ("gemini", "Google's model"))
+_REPAIR_FIRST = (("groq", "Groq — fast, free tier"),
+                 ("cerebras", "Cerebras"),
+                 ("ollama", "On this computer"))
+_ASK_FIRST = (("ollama", "On this computer"),
+              ("groq", "Groq — fast, free tier"),
+              ("gemini", "Google's model"))
 
 PUNCTUATE_AUTO = Friendly(
     "punctuate.auto", "Punctuate every dictation",
-    "Commas, full stops and question marks go in on the way to the cursor. "
-    "About a second more per dictation.")
+    "Commas, full stops and question marks go in on the way to the cursor, "
+    "which costs about a second each time.")
 HINT_ENABLED = Friendly(
     "hint.enabled", "Show the key card while a key is held",
     "A card that says what the other keys do, once the key has been held "
     "for a moment.")
 AUTO_PAUSE = Friendly(
-    "auto_pause_fullscreen", "Pause by itself while a game is fullscreen",
-    "The dictation key belongs to the game while it is in front.")
+    "auto_pause_fullscreen", "Pause by itself while a game fills the screen",
+    "While a game or a presentation owns the whole screen, the dictation "
+    "key is left to it, and comes back when it lets go.")
 MARKER = Friendly(
-    "feedback.enabled", "Mark the cursor with … while it transcribes",
+    "feedback.enabled", "Mark the cursor with … while it listens",
     "The marker turns into your words when they arrive.")
 REPAIR = Friendly(
     "polish.when", "Fix misheard words with a model",
-    "Runs after every dictation, usually well under a second.", _REPAIR)
+    "Always, only when the sentence holds a word you have corrected "
+    "before, or never.", _REPAIR)
 ENGINE = Friendly(
-    "backend", "Transcription engine",
+    "backend", "Where your speech is turned into words",
     "On this computer is faster and better at Hebrew, and nothing leaves "
     "the machine.", _ENGINES)
 MICROPHONE = Friendly(
-    "audio.device", "Microphone", "Which one it listens to.")
+    "audio.device", "Microphone", "Which microphone it listens to.")
 AUTO_LANGUAGE = Friendly(
     "auto_language", "Notice when a sentence is English",
-    "Off = everything is treated as Hebrew.")
+    "The app decides for each recording; off, everything you say is taken "
+    "as Hebrew.")
 DOT = Friendly(
-    "indicator", "The status dot in the corner",
-    "Blue = running, red = recording, amber = transcribing.")
+    "indicator", "The little dot in the corner",
+    "Blue means it is listening, red means it is recording, amber means it "
+    "is writing your words down.")
 LEARNED = Friendly(
     "vocab.enabled", "Use the words it has learned",
     "Corrections you taught it with the correction key are applied to "
@@ -387,77 +422,98 @@ TABS: tuple[Tab, ...] = (
         Group("ENGINE", (
             ENGINE, MICROPHONE, AUTO_LANGUAGE,
             Friendly("fallback_to_local",
-                     "Fall back to this computer when the cloud is out of "
-                     "quota"),
+                     "Use this computer when the cloud has nothing left",
+                     "A free cloud service only answers so many times a "
+                     "day; when it stops, the model here does the work."),
         )),
         Group("RECORDING", (
-            Friendly("min_seconds", "Shortest hold that counts (seconds)",
-                     "Anything shorter is treated as an accidental tap."),
+            Friendly("min_seconds", "Shortest hold that counts, in seconds",
+                     "Anything shorter is treated as an accidental tap and "
+                     "thrown away."),
             Friendly("max_seconds",
-                     "Longest recording while holding (seconds)",
-                     "Past this it stops with an error beep."),
+                     "Longest recording while you hold, in seconds",
+                     "Past this it stops on its own, drops the recording "
+                     "and beeps."),
             Friendly("latch_max_seconds",
-                     "Longest recording when locked on (seconds)",
-                     "0 = no limit."),
+                     "Longest recording once it is locked on, in seconds",
+                     "Zero means no limit at all."),
             AUTO_PAUSE,
         )),
         Group("PASTING", (
             MARKER,
-            Friendly("feedback.placeholder", "The marker itself"),
+            Friendly("feedback.placeholder", "The marker itself",
+                     "The characters it leaves at the cursor while it "
+                     "works."),
             Friendly("paste_chord", "Paste with",
-                     "Some terminals want shift+insert instead of ctrl+v."),
+                     "The keys the app presses to put your words at the "
+                     "cursor; some terminals want a different pair."),
             Friendly("restore_delay_ms",
-                     "Wait before the old clipboard comes back (ms)"),
+                     "Wait before your old clipboard comes back, in "
+                     "milliseconds",
+                     "The app borrows the clipboard to paste, then puts "
+                     "back whatever was on it."),
         )),
         Group("FIXING WORDS", (
             REPAIR,
-            Friendly("polish.max_wait_s", "Longest wait for the fix (seconds)",
-                     "Past this the dictation is pasted as it came."),
+            Friendly("polish.max_wait_s",
+                     "Longest your paste may be held up, in seconds",
+                     "Past this the dictation is pasted exactly as it came "
+                     "and the answer is thrown away."),
             LEARNED,
             Friendly("study.enabled", "Keep learning while you are away",
                      "After a quiet spell it listens again to what you sent "
                      "and learns from what it got wrong. Nothing leaves the "
                      "machine."),
             Friendly("study.idle_minutes",
-                     "Minutes of quiet before it starts"),
+                     "Minutes of quiet before it starts",
+                     "It steps aside the moment you press a key, so a "
+                     "dictation never waits for it."),
         )),
         Group("AT STARTUP", (
             Friendly("splash", "Show a small window while the models load",
                      "Without it, clicking the shortcut looks like it did "
                      "nothing."),
             DOT,
-            Friendly("setup.done", "Skip the first-run setup",
-                     "The setup runs once per copy; this is the manual off "
-                     "switch."),
+            Friendly("setup.done", "Skip the first-run walkthrough",
+                     "The walkthrough runs once per copy of the app; this "
+                     "is the switch that turns it off by hand."),
         )),
     )),
     Tab("Text", (
         Group("PUNCTUATION", (
             PUNCTUATE_AUTO,
-            Friendly("punctuate.prefer", "Which service punctuates",
-                     "Whichever goes first, the other two are tried when it "
-                     "is out of quota.", _PUNCTUATORS),
+            Friendly("punctuate.prefer", "Which service punctuates first",
+                     "The other two are tried underneath when it has "
+                     "nothing left for today.", _PUNCTUATORS),
             Friendly("punctuate.max_wait_s",
-                     "Longest wait for punctuation (seconds)",
-                     "Past this the dictation is pasted as it came."),
-            Friendly("punctuate.nikud", "Add vowel points as well"),
+                     "Longest wait for punctuation, in seconds",
+                     "Past this the dictation is pasted exactly as it "
+                     "came."),
+            Friendly("punctuate.nikud", "Add vowel points as well",
+                     "The Hebrew vowel marks go in along with the "
+                     "punctuation."),
         )),
         Group("TRANSLATING", (
-            Friendly("translate.target", "Translate into"),
+            Friendly("translate.target", "Translate into",
+                     "The language the translate key writes in."),
         )),
         Group("LOOKING UP", (
             Friendly("lookup.both_ways", "Answer Hebrew selections too",
-                     "Off = only an English selection gets an answer."),
+                     "Off, only an English selection gets an answer."),
         )),
     )),
     Tab("Card", (
         Group("THE KEY CARD", (
             HINT_ENABLED,
-            Friendly("hint.after_ms", "Show it after holding for (ms)",
-                     "A quick dictation never sees it."),
-            Friendly("hint.corner", "Where it appears",
-                     "Before you have dragged it anywhere.", _CORNERS),
-            Friendly("hint.scale", "Size", "1 = as designed; 0.6 to 1.4."),
+            Friendly("hint.after_ms",
+                     "Show it after holding for, in milliseconds",
+                     "A quick dictation is over before the card appears."),
+            Friendly("hint.corner", "Which corner it starts in",
+                     "Where the card appears before you have dragged it "
+                     "somewhere else.", _CORNERS),
+            Friendly("hint.scale", "How big the card is drawn",
+                     "The minus and plus on the card itself change this "
+                     "and remember it."),
         )),
     )),
     Tab("Screen", (
@@ -465,56 +521,79 @@ TABS: tuple[Tab, ...] = (
             Friendly("visual_qa.enabled", "Ask about the screen",
                      "Hold the key, drag a box, ask; the answer comes back "
                      "on a card."),
-            Friendly("visual_qa.speak", "Read the answer aloud", "", _SPEAK),
+            Friendly("visual_qa.speak", "Read the answer aloud",
+                     "Whether the card offers to say the answer, says every "
+                     "answer as it lands, or never speaks.", _SPEAK),
             Friendly("visual_qa.allow_screenshot_upload",
-                     "Allow the screenshot to go to the cloud",
-                     "Off = only the model on this computer ever sees your "
+                     "Let a picture of your screen go to the cloud",
+                     "Off, only the model on this computer ever sees your "
                      "screen."),
             Friendly("visual_qa.echo_to_field",
                      "Type what you asked into the field you were in",
-                     "Once the card closes."),
+                     "Once the card closes, so the question becomes part of "
+                     "what you were writing."),
             Friendly("visual_qa.auto_send",
-                     "Send a spoken question the moment you let go"),
+                     "Send a spoken question the moment you let go",
+                     "Otherwise you press Enter, which leaves room to edit "
+                     "what you asked first."),
         )),
         Group("SCREENSHOTS", (
             Friendly("capture.enabled", "Screenshots and screen recording",
-                     "Off unregisters both keys."),
-            Friendly("capture.after_shot", "After a screenshot", "",
-                     _AFTER_SHOT),
+                     "Off, both keys stop working and nothing is taken."),
+            Friendly("capture.after_shot", "After a screenshot",
+                     "What happens the moment you let go: a small card, the "
+                     "editor, or nothing at all.", _AFTER_SHOT),
             Friendly("capture.copy_to_clipboard",
-                     "Put the picture on the clipboard"),
+                     "Put the picture on the clipboard",
+                     "It is there the moment you let go of the mouse."),
             Friendly("capture.always_save", "Always save the file as well",
-                     "Off = it is on the clipboard and nowhere else until "
-                     "you press Save."),
-            Friendly("capture.folder", "Save into",
-                     "Relative to the app's folder."),
+                     "Off, the picture is on the clipboard and nowhere else "
+                     "until you press Save."),
+            Friendly("capture.folder", "Where pictures are saved",
+                     "Screenshots and webcam photos both land here. A plain "
+                     "name means a folder beside the app."),
         )),
         Group("RECORDING", (
-            Friendly("capture.quality", "Quality", "", _QUALITY),
-            Friendly("capture.fps", "Frames per second"),
-            Friendly("capture.audio", "Record the microphone too", "",
-                     _MIC_TOO),
-            Friendly("capture.cursor", "Show the pointer"),
-            Friendly("capture.max_minutes", "Stop after (minutes)",
-                     "A backstop for a key tapped by accident. 0 = never."),
+            Friendly("capture.quality", "Quality",
+                     "How much detail a recording keeps, against how large "
+                     "the file is.", _QUALITY),
+            Friendly("capture.fps", "Frames per second",
+                     "How many pictures a second a recording takes."),
+            Friendly("capture.audio", "Record the microphone too",
+                     "Off to start with: a recorder that quietly opens the "
+                     "microphone is a surprise.", _MIC_TOO),
+            Friendly("capture.cursor", "Show the pointer",
+                     "The mouse pointer is painted in, so it is clear what "
+                     "is being pointed at."),
+            Friendly("capture.max_minutes",
+                     "Stop recording after, in minutes",
+                     "A backstop for a key tapped by accident. Zero means "
+                     "never stop by itself."),
         )),
         Group("CAMERA", (
-            Friendly("camera.enabled", "Camera photo"),
+            Friendly("camera.enabled", "Take a photo with the webcam",
+                     "Off, the key does nothing and the camera is never "
+                     "opened."),
             Friendly("camera.mirror", "Mirror the picture",
                      "Off, because writing held up to a webcam reads "
                      "backwards mirrored."),
-            Friendly("camera.timer", "Countdown before the shot (seconds)",
-                     "0, 3 or 10."),
-            Friendly("camera.size", "Picture size"),
-            Friendly("camera.edit_after_shot", "Open the photo in the editor"),
+            Friendly("camera.timer", "Countdown before the shot, in seconds",
+                     "The letter t changes it while the camera window is "
+                     "open."),
+            Friendly("camera.size", "Picture size",
+                     "How big a picture the camera is asked for."),
+            Friendly("camera.edit_after_shot", "Open the photo in the editor",
+                     "Right where the preview was, so you can crop it or "
+                     "draw on it."),
         )),
     )),
     Tab("Phone", (
         Group("DICTATING FROM THE PHONE", (
             Friendly("server.enabled", "Dictate from the phone",
-                     "The Android keyboard sends its recordings here, over "
-                     "Tailscale."),
-            Friendly("server.port", "Port"),
+                     "The phone keyboard sends its recordings here, over "
+                     "your own private network."),
+            Friendly("server.port", "Port number",
+                     "The phone has to be pointed at the same number."),
         )),
     )),
 )
@@ -531,3 +610,612 @@ def friendly_paths() -> list[str]:
     """Every path the words name, tab by tab (a path may be on two tabs)."""
     return [row.path for tab in TABS for group in tab.groups
             for row in group.rows]
+
+
+# ------------------------------------------------- the words for the rest
+#
+# The owner, looking at "Everything" on 2026-09-07: "it is impossible to
+# understand what each setting is — there are underscores that mean
+# nothing and lots of unclear words." He was reading the file's own
+# names and the file's own comments, and both are written for whoever
+# maintains the app: `latch_max_seconds`, and a comment that answers it
+# with a word error rate and a date.
+#
+# So the words below finish the job TABS started, for every line and
+# every section rather than the fifty most-touched. The rule for each
+# one: a title a person understands without knowing the code, and one
+# sentence saying what changes when they change it. No underscores, no
+# identifiers, no acronyms, units spelled out, and never a measurement
+# or a date — the file keeps those, and the switch at the top of the
+# screen puts them back under the row for anyone who wants them.
+#
+# The fifty-odd Friendly objects above are reused as they are, so a line
+# that is on a tab AND under Everything says exactly the same thing in
+# both places. A test holds this table to naming every key and every
+# section the file has, so a setting added to config.toml cannot arrive
+# without words.
+
+_MORE: tuple[Friendly, ...] = (
+    # -- the top of the file: the keys, and what every dictation goes
+    #    through. The keys themselves are rebound on the Keys screen;
+    #    the words are here so the search and the file both have them.
+    Friendly("hotkey", "The dictation key",
+             "Hold it, speak, and let go: your words land where the "
+             "cursor is."),
+    Friendly("english_hotkey", "The English-only key",
+             "A second key that declares the recording English before you "
+             "speak, instead of letting the app work it out."),
+    Friendly("latch_hotkey", "The lock-on key",
+             "Tap it while still holding the dictation key and the "
+             "recording stays on after you let go."),
+    Friendly("translate_hotkey", "The translate key",
+             "Tap it to turn the words already at the cursor into another "
+             "language."),
+    Friendly("punctuate_hotkey", "The punctuation key",
+             "Tap it to put commas and full stops into the words already "
+             "at the cursor, without changing any of them."),
+    Friendly("correct_hotkey", "The teach-a-word key",
+             "Fix a word where it landed, tap this, and it learns the "
+             "correction for next time."),
+    Friendly("lookup_hotkey", "The look-up key",
+             "Select a word, tap this, and a small box says what it means "
+             "without changing anything on screen."),
+    Friendly("pause_hotkey", "The pause key",
+             "Tap it and every key here goes quiet; tap it again and they "
+             "all come back."),
+    # -- [hint]
+    Friendly("hint.x", "Where you last dragged the card, across",
+             "Counted from the left edge of the screen."),
+    Friendly("hint.y", "Where you last dragged the card, down",
+             "Counted from the top edge of the screen."),
+    # -- [audio]
+    Friendly("audio.sample_rate", "How finely the sound is recorded",
+             "The speech model was trained for one setting, so this is "
+             "best left where it is."),
+    # -- [feedback]
+    Friendly("feedback.retry_seconds",
+             "How long it keeps trying to paste, in seconds",
+             "If the window will not take the words it keeps trying this "
+             "long, then saves them for later instead of losing them."),
+    # -- [translate]
+    Friendly("translate.max_chars", "Most letters it will translate at once",
+             "Above this the key refuses, on the assumption a select-all "
+             "caught a whole document."),
+    Friendly("translate.ollama_model", "The model on this computer",
+             "The one it falls back to when the cloud has nothing left "
+             "for today."),
+    Friendly("translate.ollama_url", "Where that model answers",
+             "The address the model on this computer is reached at."),
+    Friendly("translate.timeout_s",
+             "How long to wait for the cloud, in seconds",
+             "Past this it gives up and tries the next service."),
+    Friendly("translate.ollama_timeout_s",
+             "How long to wait for this computer, in seconds",
+             "A model that has not been used for a while has to be loaded "
+             "first, which is slow."),
+    Friendly("translate.settle_ms",
+             "How long the other window gets to hand the text over, in "
+             "milliseconds",
+             "The app copies what you selected; this is the pause it "
+             "allows for the copy to arrive."),
+    # -- [punctuate]
+    Friendly("punctuate.max_chars", "Most letters it will punctuate at once",
+             "With nothing selected the key takes the whole field, so "
+             "this is the ceiling on it."),
+    Friendly("punctuate.groq_model", "Which model to ask on Groq",
+             "Empty means use the same one the repair pass uses."),
+    Friendly("punctuate.ollama_model",
+             "Which model on this computer to ask",
+             "Empty means use the same one the translate key uses."),
+    # -- [lookup]
+    Friendly("lookup.hebrew_share",
+             "How much Hebrew makes a selection Hebrew",
+             "At or above this share of Hebrew words the answer comes "
+             "back in English; below it, in Hebrew."),
+    Friendly("lookup.max_chars", "Most letters it will look up at once",
+             "Above this the key refuses rather than spending a long time "
+             "on it."),
+    Friendly("lookup.prefer", "Which service answers first",
+             "The model on this computer goes first here, so a key you "
+             "tap while reading never spends the cloud's daily turns.",
+             _LOOK_UP_FIRST),
+    Friendly("lookup.model", "Which model writes the meaning",
+             "The one on this computer that answers a look-up."),
+    Friendly("lookup.cold_to_gemini",
+             "Ask the cloud while the local model wakes up",
+             "A model that has not been used in a while takes a long time "
+             "to load, so the first look-up goes out instead."),
+    Friendly("lookup.keep_alive", "How long the model stays ready",
+             "Written as a length of time. Longer keeps look-ups instant "
+             "and holds on to graphics memory."),
+    Friendly("lookup.strip_niqqud",
+             "Take Hebrew vowel marks out of the answer",
+             "The model sometimes writes a whole line in vowel points, "
+             "which is harder to read than plain Hebrew."),
+    Friendly("lookup.dwell_ms", "How long the box waits before closing",
+             "Nothing reads this any more: the box waits for you to close "
+             "it, and never takes itself away."),
+    Friendly("lookup.max_width", "How wide the box opens, in pixels",
+             "You can still drag it wider by either bottom corner."),
+    Friendly("lookup.max_height", "How tall the box opens, in pixels",
+             "A longer answer shrinks its letters to fit before anything "
+             "is cut off."),
+    Friendly("lookup.cache_entries", "How many answers it remembers",
+             "Looking the same word up again is instant and costs "
+             "nothing."),
+    Friendly("lookup.skip_consoles", "Refuse inside terminal windows",
+             "The copy this key makes would otherwise interrupt whatever "
+             "is running there."),
+    # -- [visual_qa]
+    Friendly("visual_qa.visual_qa_hotkey", "The ask-the-screen key",
+             "Tap it and the screen dims so you can drag a box over what "
+             "you want to ask about."),
+    Friendly("visual_qa.prefer", "Which model answers first",
+             "The others are tried underneath it, when sending pictures "
+             "out is allowed at all.", _ASK_FIRST),
+    Friendly("visual_qa.ollama_model",
+             "Which model on this computer answers",
+             "It has to be one that can look at pictures as well as "
+             "read."),
+    Friendly("visual_qa.groq_model", "Which model to ask on Groq",
+             "Used only when sending pictures out is allowed."),
+    Friendly("visual_qa.gemini_fallback", "Try Google's model as well",
+             "Only when sending pictures out is allowed, and only after "
+             "the others."),
+    Friendly("visual_qa.max_side_px",
+             "Biggest the picture is sent at, in pixels",
+             "The long side is shrunk to this before it goes; larger buys "
+             "no more detail, only waiting."),
+    Friendly("visual_qa.num_predict", "Longest answer it may write",
+             "Counted in pieces of words. It is what stops a rambling "
+             "model filling the card."),
+    Friendly("visual_qa.voice", "Which voice reads the answer",
+             "One of the Hebrew voices Windows has installed."),
+    Friendly("visual_qa.window_alpha", "How solid the card looks",
+             "Lower lets more of the screen behind it show through; the "
+             "writing stays sharp either way."),
+    Friendly("visual_qa.warmup", "Wake the model when the app starts",
+             "One throwaway question at startup, so the first real one "
+             "does not keep you waiting."),
+    Friendly("visual_qa.ollama_timeout_s",
+             "How long to wait for this computer, in seconds",
+             "Generous on purpose, because a model that has to load "
+             "itself first is slow."),
+    Friendly("visual_qa.cloud_timeout_s",
+             "How long to wait for a cloud answer, in seconds",
+             "Past this the next service should have the work instead."),
+    # -- [capture]
+    Friendly("capture.capture_hotkey", "The screenshot key",
+             "Tap it and the screen freezes so you can drag a box, or "
+             "hold Shift and lasso a shape."),
+    Friendly("capture.record_hotkey", "The screen recording key",
+             "Tap to start recording a part of the screen, tap again to "
+             "stop."),
+    Friendly("capture.clip_folder", "Where recordings are saved",
+             "Empty means the same folder as the pictures."),
+    Friendly("capture.toast_corner",
+             "Which corner the card after a screenshot appears in",
+             "The small card holding what you just took, with the editor "
+             "one click away on it.", _CORNERS),
+    Friendly("capture.toast_seconds",
+             "How long that card waits for you, in seconds",
+             "The clock stops while the pointer is on the card."),
+    Friendly("capture.toast_stack", "How many such cards may be up at once",
+             "Take another picture while one is up and a second card "
+             "joins it, each with its own clock."),
+    Friendly("capture.toast_in_shots", "Let a screenshot see those cards",
+             "So you can take a picture of one and show it to somebody. "
+             "Off hides them from every picture and recording."),
+    Friendly("capture.copy_clip_path",
+             "Put a finished recording on the clipboard as a file",
+             "So it pastes into a chat or a folder the way a copied file "
+             "does."),
+    Friendly("capture.timer_corner",
+             "Which corner the recording clock sits in",
+             "The little red dot and clock while a recording runs. It is "
+             "hidden from the recording itself.", _CLOCK_CORNERS),
+    Friendly("capture.announce", "Say when a recording has started",
+             "A short banner before it shrinks to the clock, because not "
+             "knowing whether it is running is the usual worry."),
+    # -- [camera]
+    Friendly("camera.camera_hotkey", "The webcam key",
+             "Tap it and a window opens with the live picture and a "
+             "shutter under it."),
+    Friendly("camera.device", "Which camera",
+             "Part of its name is enough. Empty means the first real "
+             "camera Windows lists, skipping the pretend ones."),
+    Friendly("camera.fps", "Frames per second asked of the camera",
+             "A camera that cannot manage it simply sends fewer."),
+    Friendly("camera.folder", "Where photos are saved",
+             "The same folder the screenshots go to, so all the pictures "
+             "are in one place."),
+    Friendly("camera.copy_to_clipboard", "Put the photo on the clipboard",
+             "It is there the moment the shutter fires."),
+    # -- [awake]
+    Friendly("awake.hold", "Hold the computer awake",
+             "While the app is running the machine will not fall asleep "
+             "on its own timer. The screens may still go dark."),
+    Friendly("awake.enabled", "The screens key works",
+             "Off, the key does nothing; the button in this window still "
+             "turns the screens off."),
+    Friendly("awake.screens_hotkey", "The screens key",
+             "Tap it and the screens go dark and stay dark; tap it again "
+             "and they come back. Nothing is locked."),
+    Friendly("awake.screens_off_again_s",
+             "Put the screens out again after, in seconds",
+             "The mouse moving after you press the key wakes them "
+             "straight back up, so it does it once more."),
+    Friendly("awake.keep_screens_off_s",
+             "Keep putting them out for, in seconds",
+             "While the screens are meant to be off, anything that lights "
+             "them is undone this long after the last touch."),
+    Friendly("awake.vitals_minutes",
+             "Write a health line every so many minutes",
+             "While the screens are off, a note in the log of what the "
+             "machine is carrying. Zero writes none."),
+    Friendly("awake.pin_timeouts", "Also change Windows' own sleep settings",
+             "The old settings are put back when the app closes, or at "
+             "the next start if it did not get the chance."),
+    # -- [notify]
+    Friendly("notify.enabled", "Take messages from other programs",
+             "Off, the door is shut: nothing is shown, stored or played."),
+    Friendly("notify.cue", "Play a sound when one arrives",
+             "Off, the card appears in silence."),
+    Friendly("notify.card_seconds", "How long a card stays, in seconds",
+             "Zero means it waits until you dismiss it, however long that "
+             "takes."),
+    Friendly("notify.stack_max", "How many cards may be on screen at once",
+             "The rest wait in this window, counted on the bottom card."),
+    Friendly("notify.remind_every_s",
+             "Show an unread card again after, in seconds",
+             "Zero never reminds you: the card waits quietly instead."),
+    Friendly("notify.remind_times", "How many reminders each message gets",
+             "After that it stops asking and waits for you in this "
+             "window."),
+    Friendly("notify.coalesce_s",
+             "Treat a quick second message as the same one, in seconds",
+             "A repeat from the same program updates the card instead of "
+             "ringing all over again."),
+    Friendly("notify.interrupt", "Which messages may pull you away",
+             "Everything, only what is actually waiting on you, or "
+             "nothing at all.", _INTERRUPT),
+    Friendly("notify.quiet_s",
+             "Hold a finish until that program goes quiet, in seconds",
+             "Zero shows it the moment it lands. Anything waiting on you "
+             "is never held back either way."),
+    Friendly("notify.watch", "Also catch the Claude app's own messages",
+             "Some of its work has no way to knock on this door, so the "
+             "app watches for its pop-ups instead.", _WATCH),
+    Friendly("notify.corner", "Where a card appears",
+             "Before you have dragged it somewhere else.", _EDGES),
+    Friendly("notify.anchor", "Which edge of the pile stays put",
+             "A longer message can grow upward from the bottom or "
+             "downward from the top.", _ANCHOR),
+    Friendly("notify.x", "Where you last dragged a card, across",
+             "Counted from the left edge of the screen."),
+    Friendly("notify.y", "Where you last dragged a card, down",
+             "Counted from the top edge of the screen, at whichever edge "
+             "of the pile stays put."),
+    Friendly("notify.scale", "How big the cards are drawn",
+             "The same size for every card in the pile."),
+    Friendly("notify.dismiss_hotkey", "The dismiss-everything key",
+             "Tap it and every card goes away and is marked as seen, "
+             "wherever the mouse happens to be."),
+    # -- [problems]
+    Friendly("problems.report_hotkey", "The report key",
+             "Tap it and a box opens over whatever is in front, wherever "
+             "the mouse is."),
+    Friendly("problems.shot", "Attach a picture of the screen",
+             "The screen as it looked when you pressed the key. It stays "
+             "on this computer."),
+    Friendly("problems.keep_audio", "Keep the recording it is about",
+             "So the sound outlives the short list of recent recordings "
+             "and can still settle what was really said."),
+    Friendly("problems.keep_resolved", "How many answered reports to keep",
+             "Ones nobody has answered yet are never thrown away, "
+             "whatever this says."),
+    Friendly("problems.x",
+             "Where you last dragged the report box, across",
+             "Counted from the left edge of the screen."),
+    Friendly("problems.y", "Where you last dragged the report box, down",
+             "Counted from the top edge of the screen."),
+    Friendly("problems.card_x",
+             "Where you last dragged this window's report box, across",
+             "The box opened from this window keeps its own place, so it "
+             "never flies off the window it belongs to."),
+    Friendly("problems.card_y",
+             "Where you last dragged this window's report box, down",
+             "Counted from the top edge of the screen."),
+    # -- [shelf]
+    Friendly("shelf.enabled", "The panel beside the dot works",
+             "Off, the key does nothing. Every card, every sound and this "
+             "window go on as before."),
+    Friendly("shelf.shelf_hotkey", "The panel key",
+             "Tap it to open the panel beside the dot; tap it again, or "
+             "press Escape, to close it."),
+    Friendly("shelf.rows", "How many waiting things it lists",
+             "The rest become one line that opens this window instead."),
+    Friendly("shelf.corner", "Which corner it opens in",
+             "Before you have dragged it somewhere else. On the right it "
+             "stops short of the dot rather than covering it.", _CORNERS),
+    Friendly("shelf.x", "Where you last dragged the panel, across",
+             "Counted from the left edge of the screen."),
+    Friendly("shelf.y", "Where you last dragged the panel, down",
+             "Counted from the top edge of the screen."),
+    Friendly("shelf.scale", "How big the panel is drawn",
+             "The whole panel, text and buttons together."),
+    Friendly("shelf.hush_notifications",
+             "Hide the message cards while the panel is open",
+             "The same messages are already listed on the panel. Nothing "
+             "is marked as seen and no reminder is lost."),
+    # -- [server]
+    Friendly("server.host", "Which address it answers on",
+             "Empty means your own private network, so nothing on the "
+             "house network can reach it."),
+    # -- [vocab]
+    Friendly("vocab.max_terms", "How many learned words it may use at once",
+             "A longer list is not a better one: too many and the model "
+             "starts saying them when you did not."),
+    Friendly("vocab.replace_after_hits",
+             "How many corrections before a word is fixed by itself",
+             "One correction could be a slip of the hand, so it waits for "
+             "the same fix to happen again."),
+    Friendly("vocab.hebrew_after_hits",
+             "The same, for a correction that is all Hebrew",
+             "A real Hebrew word handed to the model makes it say that "
+             "word unbidden, so Hebrew has to prove itself more."),
+    Friendly("vocab.keep_audio", "How many recent recordings to keep",
+             "Keeping the sound is what lets a correction be checked "
+             "against what was really said. Zero keeps none."),
+    Friendly("vocab.terms", "The words you seeded by hand",
+             "Your own names and terms. Anything you correct with the "
+             "correction key is added on its own."),
+    # -- [study]
+    Friendly("study.max_clip_seconds",
+             "Longest recording it will study, in seconds",
+             "Listening again to a very long recording buys little extra "
+             "evidence for the time it takes."),
+    Friendly("study.llm_per_day",
+             "How many recordings a model may judge each day",
+             "Past this the rest simply wait for tomorrow."),
+    Friendly("study.corpus_keep", "How many checked recordings to keep",
+             "Kept here as material for teaching the model your own voice "
+             "one day. Zero keeps none."),
+    # -- [polish]
+    Friendly("polish.min_chars", "Shortest text worth fixing, in letters",
+             "Below this there is no sentence to reason from, which is "
+             "where a model starts inventing."),
+    Friendly("polish.prefer", "Which service fixes the words first",
+             "The others follow underneath, so a service that is down "
+             "costs you speed and never the repair.", _REPAIR_FIRST),
+    Friendly("polish.groq_model", "Which model to ask on Groq",
+             "The one the repair pass sends your text to when Groq goes "
+             "first."),
+    Friendly("polish.groq_timeout_s",
+             "How long to wait for Groq, in seconds",
+             "Past this something is wrong and the next service should "
+             "have the work."),
+    Friendly("polish.cerebras_model", "Which model to ask on Cerebras",
+             "Only worth setting if you still have turns left there."),
+    Friendly("polish.cerebras_timeout_s",
+             "How long to wait for Cerebras, in seconds",
+             "Past this the next service should have the work."),
+    Friendly("polish.ollama_model", "Which model on this computer",
+             "The one that fixes the words when no cloud service can. "
+             "Empty means reuse the translate key's model."),
+    Friendly("polish.warm_up", "Wake the model when the app starts",
+             "One throwaway request, so the first dictation of the day "
+             "does not wait for it. It holds graphics memory all the "
+             "while."),
+    # -- [gemini]
+    Friendly("gemini.models", "Which models to try, in order",
+             "Each one has its own small daily allowance, so a list of "
+             "them lasts longer than any single name."),
+    Friendly("gemini.timeout_s", "How long to wait, in seconds",
+             "Past this it gives up and something else is asked."),
+    # -- [local]
+    Friendly("local.model", "Which speech model",
+             "The Hebrew one this app was built around."),
+    Friendly("local.language", "Which language it expects",
+             "It has to stay Hebrew: this model cannot work the language "
+             "out for itself."),
+    Friendly("local.device", "What it runs on",
+             "The graphics card is far faster; it falls back to the "
+             "processor where there is none.", _RUNS_ON),
+    Friendly("local.cleanup", "Take out the ums and the false starts",
+             "The sounds you make while thinking, and a phrase you began "
+             "again, are dropped."),
+    Friendly("local.extra_fillers", "Your own ums to drop",
+             "Only add words you never mean literally, or real speech "
+             "will go with them."),
+    Friendly("local.initial_prompt", "The sentence that sets the scene",
+             "It tells the model to expect Hebrew with English technical "
+             "words in it, so it stops dropping the English half."),
+    Friendly("local.english_model", "The model for English-only speech",
+             "The Hebrew one writes short English sentences out in Hebrew "
+             "letters, so confident English goes here instead."),
+    Friendly("local.english_threshold",
+             "How sure it must be before calling something English",
+             "High on purpose: Hebrew sent to the English model is far "
+             "worse than one English word in Hebrew letters."),
+    Friendly("local.guard_hallucinations",
+             "Stop it inventing words you never said",
+             "The model keeps writing past the end of real speech and "
+             "fills the gap; this makes it fussier about what it keeps."),
+    Friendly("local.beam_size", "How many readings it weighs at once",
+             "Fewer is faster and a little less accurate. Do not change "
+             "it on a hunch — replay your recordings both ways."),
+    Friendly("local.drop_trailing_boilerplate",
+             "Drop stock phrases stuck to the end",
+             "Never in the middle, where they are almost certainly really "
+             "yours."),
+    Friendly("local.extra_boilerplate", "Your own stock phrases to drop",
+             "Whole phrases only: one common word here would delete real "
+             "speech."),
+    # -- [review]
+    Friendly("review.enabled", "Read every dictation a second time",
+             "Off, there are no cards and no proposals, and the quiet "
+             "learning while you are away goes on instead."),
+    Friendly("review.card_seconds", "How long the card stays, in seconds",
+             "The bar under the title is that clock, and it stops while "
+             "the mouse is on the card. Zero shows no card at all."),
+    Friendly("review.corner", "Where the card appears",
+             "Before you have dragged it somewhere else.", _EDGES),
+    Friendly("review.x", "Where you last dragged the card, across",
+             "Counted from the left edge of the screen."),
+    Friendly("review.y", "Where you last dragged the card, down",
+             "Counted from the top edge of the screen."),
+    Friendly("review.scale", "How big the card is drawn",
+             "The whole card, text and buttons together."),
+    Friendly("review.max_changes", "The most words one reading may offer",
+             "A reading that wants more than this is a rewrite rather "
+             "than a repair, and is dropped."),
+    Friendly("review.witness", "How many extra readings must agree",
+             "The recording is read several more ways; a word is only "
+             "offered when this many of them heard it."),
+    Friendly("review.accept_key", "The key that says yes",
+             "It only counts while the mouse is over the card; anywhere "
+             "else it types as usual."),
+    Friendly("review.reject_key", "The key that says no",
+             "Also only while the mouse is over the card."),
+    Friendly("review.later_key", "The key that closes the card for now",
+             "Nothing is decided: the proposal waits for you in this "
+             "window."),
+    Friendly("review.edit_key", "The key that opens the pencil",
+             "A small box asks what the word should have been, and Enter "
+             "accepts the card with that word."),
+    Friendly("review.fix_in_field",
+             "Also fix the words where they landed",
+             "If that window is still in front and still holds exactly "
+             "what was pasted. Off, saying yes only teaches."),
+    Friendly("review.max_clip_seconds",
+             "Longest recording it will read again, in seconds",
+             "Reading a very long recording several more ways holds the "
+             "model up for little gain."),
+    Friendly("review.llm_per_day",
+             "How many readings a model may judge each day",
+             "Past this the reading still runs, and can only offer the "
+             "invented endings it finds on its own."),
+    Friendly("review.local_model",
+             "Ask the model on this computer when the cloud refuses",
+             "Off, because the proposals it made on its own were wrong "
+             "more often than they were right."),
+)
+
+# Every section of the file, said the way the owner would point at it.
+SECTION_WORDS: dict[str, Friendly] = {
+    row.path: row for row in (
+        Friendly("", "The basics",
+                 "The keys you hold and tap, and the choices every "
+                 "dictation goes through on its way to the cursor."),
+        Friendly("hint", "The card while a key is held",
+                 "The little card that appears if you keep the dictation "
+                 "key down, saying what the other keys will do."),
+        Friendly("setup", "The first-run walkthrough",
+                 "The short walkthrough that picks a microphone and has "
+                 "you say one sentence, the first time the app runs."),
+        Friendly("audio", "The microphone",
+                 "Which microphone it listens to, and how finely it "
+                 "records what it hears."),
+        Friendly("feedback", "The marker at the cursor",
+                 "The few characters it drops where you are typing, so "
+                 "you can see it heard you while it works."),
+        Friendly("translate", "Turning text into another language",
+                 "The key that rewrites what is at the cursor in another "
+                 "language, and the services it asks to do it."),
+        Friendly("punctuate", "Commas and full stops",
+                 "Putting punctuation into text that was dictated without "
+                 "any, without changing a single word of it."),
+        Friendly("lookup", "The look-up box",
+                 "The small box that says what a selected word means, and "
+                 "never touches anything on screen."),
+        Friendly("visual_qa", "Ask the screen",
+                 "Drag a box over anything on screen, ask a question about "
+                 "it, and the answer comes back on a card."),
+        Friendly("capture", "Screenshots and screen recordings",
+                 "Drag a box to copy a picture of the screen, or record it "
+                 "to a film. None of it leaves this computer."),
+        Friendly("camera", "The webcam photo",
+                 "A picture from the webcam, into the same folder and the "
+                 "same editor as a screenshot."),
+        Friendly("awake", "Keeping the computer awake",
+                 "The app holds the machine awake while it runs, and one "
+                 "key puts the screens out without locking anything."),
+        Friendly("notify", "Messages from other programs",
+                 "A door other programs knock on: a card appears at the "
+                 "edge of the screen and reminds you until you answer."),
+        Friendly("problems", "Telling it something went wrong",
+                 "One typed line, and the app attaches the rest itself: "
+                 "the dictation, the recording and the settings."),
+        Friendly("shelf", "The panel beside the dot",
+                 "One key opens a small panel next to the dot with "
+                 "everything waiting for you; the same key closes it."),
+        Friendly("server", "The phone",
+                 "Dictate from your phone and let this computer do the "
+                 "listening, so you keep the Hebrew model."),
+        Friendly("vocab", "Words it has learned",
+                 "Names and terms the speech model never heard, handed to "
+                 "it before it listens so it gets them right first time."),
+        Friendly("study", "Learning while you are away",
+                 "After a quiet spell it listens again to what you sent "
+                 "and learns from what it got wrong."),
+        Friendly("polish", "Fixing misheard words",
+                 "A model reads the sentence and puts back a word that was "
+                 "misheard. It may fix words; it may never write new ones."),
+        Friendly("gemini", "Google's models",
+                 "The cloud service several keys fall back on, and how "
+                 "long they are willing to wait for it."),
+        Friendly("local", "The speech model on this computer",
+                 "The model that turns your voice into words with nothing "
+                 "leaving this computer."),
+        Friendly("review", "The second reading",
+                 "The moment a dictation lands, the recording is read "
+                 "again and a card offers back any word it doubts."),
+    )
+}
+
+WORDS: dict[str, Friendly] = {row.path: row for row in _MORE}
+for _tab in TABS:                       # the tabs win: one wording, twice
+    for _group in _tab.groups:
+        for _row in _group.rows:
+            WORDS[_row.path] = _row
+del _tab, _group, _row
+
+
+def _first_sentence(text: str) -> str:
+    """The opening sentence of a comment, for a line with no words yet."""
+    head = (text or "").replace("\n", " ").strip()
+    stop = head.find(". ")
+    if stop > 0:
+        head = head[:stop + 1]
+    return head[:200].strip()
+
+
+def words_for(setting) -> Friendly:
+    """What the screen SAYS for one line: a plain title, one sentence,
+    and the names for its menu where it has one.
+
+    Takes a Setting or a path. A line with nothing written for it falls
+    back to its own name with the underscores opened out and the first
+    sentence of its comment — legible, but not plain, which is why the
+    test holds the table to naming every line the file has."""
+    path = setting if isinstance(setting, str) else setting.path
+    row = WORDS.get(path)
+    if row is not None:
+        return row
+    key = path.rsplit(".", 1)[-1].replace("_", " ").strip()
+    label = (key[:1].upper() + key[1:]) if key else path
+    help_text = "" if isinstance(setting, str) else _first_sentence(
+        setting.help)
+    return Friendly(path, label, help_text)
+
+
+def section_words(name: str, help_text: str = "") -> Friendly:
+    """The same, for a `[section]` header. `name` is "" for the top of
+    the file."""
+    row = SECTION_WORDS.get(name or "")
+    if row is not None:
+        return row
+    plain = (name or "general").replace("_", " ").strip()
+    return Friendly(name or "", plain[:1].upper() + plain[1:],
+                    _first_sentence(help_text))

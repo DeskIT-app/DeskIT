@@ -104,6 +104,47 @@ HINT_UNSET = -100000
 
 
 @dataclass(frozen=True)
+class ShelfConfig:
+    """The panel beside the status dot that one key opens — see shelf.py.
+
+    HintConfig's shape, because it is the same kind of thing: a card that
+    lives in a corner, remembers where it was dragged to and how big it
+    was made, and is switched off by a single line. What it does NOT
+    share is the delay. The hint card appears on its own after `after_ms`
+    of a held key; this one has no clock at all in either direction —
+    the owner's rule for it is "opens only on the key press; the same
+    press or Esc closes it; never on hover" — which is exactly what makes
+    a panel this tall acceptable beside a 13 px dot.
+
+    `rows` is the ceiling on the pile. Everything past it becomes one
+    "+N more" line that opens the window instead, because a panel that
+    grows without a limit is the dense home he already said no to.
+    """
+    enabled: bool = True
+    hotkey: str = "ctrl+alt+d"
+    rows: int = 5
+    corner: str = "top-right"
+    # Where it was last dragged to and how big it was last made, written
+    # by the card itself. HINT_UNSET and not -1, for the reason spelled
+    # out on HintConfig: a monitor to the left of the primary has real
+    # negative coordinates, so the sentinel has to be a number no desktop
+    # can reach.
+    x: int = HINT_UNSET
+    y: int = HINT_UNSET
+    scale: float = 1.0
+    # While the panel is up, the notification column steps aside. The
+    # same cards are listed on the panel with the same two answers, and
+    # two piles in one corner is one too many; nothing is marked seen and
+    # no reminder is spent (overlay.HintCard.hush).
+    hush_notifications: bool = True
+
+
+# What `[shelf] rows` may be set to. One is a panel that says "+7 more"
+# for a normal evening; eight is taller than the screen with a full pile.
+SHELF_ROWS_MIN, SHELF_ROWS_MAX = 1, 8
+
+
+@dataclass(frozen=True)
 class SetupConfig:
     """Switch the first-run wizard off by hand.
 
@@ -1039,6 +1080,7 @@ class Config:
     awake: AwakeConfig = field(default_factory=AwakeConfig)
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     problems: ProblemsConfig = field(default_factory=ProblemsConfig)
+    shelf: ShelfConfig = field(default_factory=ShelfConfig)
 
     @property
     def capture_hotkey(self) -> str:
@@ -1074,6 +1116,11 @@ class Config:
     def report_hotkey(self) -> str:
         """The report-a-problem key, read out of [problems]."""
         return self.problems.hotkey
+
+    @property
+    def shelf_hotkey(self) -> str:
+        """The key that opens the shelf, read out of [shelf]."""
+        return self.shelf.hotkey
 
     @property
     def visual_qa_hotkey(self) -> str:
@@ -1119,6 +1166,11 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
     ("pause_hotkey", "Pause / resume"),
     ("screens_hotkey", "Screens off (tap)"),
     ("report_hotkey", "Report a problem (tap)"),
+    # Before dismiss_hotkey and not after it: a test pins the LAST entry
+    # here as the dismiss key, and the order is the order the Keys screen
+    # lists them in, where "open the shelf" belongs with the other keys
+    # that are about the app itself.
+    ("shelf_hotkey", "Open the shelf (tap)"),
     ("dismiss_hotkey", "Dismiss the notification (tap)"),
 )
 
@@ -1134,6 +1186,7 @@ CHORD_FIELDS: frozenset[str] = frozenset((
     "translate_hotkey", "punctuate_hotkey", "correct_hotkey",
     "lookup_hotkey", "visual_qa_hotkey", "capture_hotkey", "record_hotkey",
     "camera_hotkey", "screens_hotkey", "dismiss_hotkey", "report_hotkey",
+    "shelf_hotkey",
 ))
 
 
@@ -1166,6 +1219,9 @@ def with_field(cfg: "Config", name: str, value) -> "Config":
         return dataclasses.replace(
             cfg, problems=dataclasses.replace(cfg.problems,
                                               hotkey=str(value)))
+    if name == "shelf_hotkey":
+        return dataclasses.replace(
+            cfg, shelf=dataclasses.replace(cfg.shelf, hotkey=str(value)))
     if name == "visual_qa_hotkey":
         return dataclasses.replace(
             cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
@@ -1286,6 +1342,7 @@ def load(path: Path) -> Config:
     awake = data.get("awake", {})
     notify = data.get("notify", {})
     problems = data.get("problems", {})
+    shelf = data.get("shelf", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -1655,6 +1712,23 @@ def load(path: Path) -> Config:
             card_x=int(problems.get("card_x", ProblemsConfig.card_x)),
             card_y=int(problems.get("card_y", ProblemsConfig.card_y)),
         ),
+        shelf=ShelfConfig(
+            enabled=bool(shelf.get("enabled", ShelfConfig.enabled)),
+            # The TOML key is `shelf_hotkey` and the field is `hotkey`,
+            # which is the naming every nested key already uses:
+            # [awake] screens_hotkey -> AwakeConfig.hotkey, [notify]
+            # dismiss_hotkey -> NotifyConfig.hotkey.
+            hotkey=str(shelf.get(
+                "shelf_hotkey", ShelfConfig.hotkey)).strip().lower(),
+            rows=int(shelf.get("rows", ShelfConfig.rows)),
+            corner=str(shelf.get("corner",
+                                 ShelfConfig.corner)).strip().lower(),
+            x=int(shelf.get("x", ShelfConfig.x)),
+            y=int(shelf.get("y", ShelfConfig.y)),
+            scale=float(shelf.get("scale", ShelfConfig.scale)),
+            hush_notifications=bool(shelf.get(
+                "hush_notifications", ShelfConfig.hush_notifications)),
+        ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
         splash=bool(data.get("splash", Config.splash)),
@@ -1945,6 +2019,19 @@ def load(path: Path) -> Config:
     # [problems]. The key itself was checked by check_hotkeys above, which
     # reads it through report_hotkey like every other key — so "" is legal
     # ("no key") and "esc" and a duplicate are not.
+    # [shelf]. The key itself went through check_hotkeys with the rest.
+    if cfg.shelf.corner not in HINT_CORNERS:
+        raise ConfigError(f"shelf.corner must be one of {HINT_CORNERS}, "
+                          f"got {cfg.shelf.corner!r}")
+    if not (HINT_SCALE_MIN <= cfg.shelf.scale <= HINT_SCALE_MAX):
+        raise ConfigError(
+            f"shelf.scale must be between {HINT_SCALE_MIN} and "
+            f"{HINT_SCALE_MAX}, got {cfg.shelf.scale!r}")
+    if not (SHELF_ROWS_MIN <= cfg.shelf.rows <= SHELF_ROWS_MAX):
+        raise ConfigError(
+            f"shelf.rows must be {SHELF_ROWS_MIN}-{SHELF_ROWS_MAX} (how "
+            "many waiting things the panel lists before the rest become "
+            f"one '+N more' line), got {cfg.shelf.rows!r}")
     if not (0 <= cfg.problems.keep_resolved <= PROBLEMS_KEEP_RESOLVED_MAX):
         raise ConfigError(
             f"problems.keep_resolved must be 0-{PROBLEMS_KEEP_RESOLVED_MAX} "

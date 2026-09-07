@@ -85,12 +85,24 @@ N_MOTES = 38
 # The light, core outward. Warm at the heart and cool at the edge, because
 # that is what hot things do, and because a single hue reads as a UI
 # element lit from inside rather than as light.
+#
+# Retuned for LAMPLIGHT, and the shape did not change — only where the warm
+# half lands. The middle of the ramp is now the lamp's own gold instead of
+# a pale blue, so what opens over the desktop is the same light the icon,
+# the dot and the primary button are painted with. The blue did not go
+# away: it moved to the edge, which is exactly where it is in the mark.
+# The DEEPEST stops stay blue-black because a warm shadow reads as haze.
+# The seven stops are used as a BRIGHTNESS ramp as well as a hue one —
+# `_front` reads them inner-to-edge and every gradient below assumes each
+# stop is dimmer than the one before it — so the retune keeps the relative
+# luminance order (1.00 / .90 / .68 / .55 / .51 / .02) and moves only the
+# hue. Getting that wrong turns a shockwave inside out.
 CORE = (255, 255, 255)
-HOT = (255, 240, 208)
-WARM = (255, 206, 150)
-MID = (150, 196, 255)
-COOL = (64, 132, 240)
-DEEP = (18, 43, 78)
+HOT = (255, 240, 206)            # incandescent — palette.LIGHT_HOT
+WARM = (250, 206, 128)           # the lamp, opened up
+MID = (240, 186, 92)             # ACCENT_TEXT: the lamp at its own weight
+COOL = (143, 192, 240)           # palette.COOL — the corona at the rim
+DEEP = (24, 38, 60)              # night beyond it
 DIM = (3, 6, 14)
 
 

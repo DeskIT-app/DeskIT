@@ -72,10 +72,15 @@ WS_EX_NOACTIVATE = 0x08000000
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_TRANSPARENT = 0x00000020   # click-through
 
-BG = "#10131a"
-FG = "#e8ecf4"
-DIM = "#8b97ad"
-ACCENT = "#2d6cdf"
+# LAMPLIGHT, spelled out. This module is imported before ui.py has built
+# anything, so it cannot read the palette — it carries the four names the
+# splash and the word prompt need. skin\palette.py is the source; these are
+# PANE / FG / DIM / ACCENT from it.
+BG = "#1c1813"
+FG = "#f1ece2"
+DIM = "#b2a896"
+ACCENT = "#e3a63c"
+TROUGH = "#3a342a"      # the splash bar's channel — LINE, one step over BG
 
 _DONE = object()   # sentinel: close the window
 
@@ -266,7 +271,7 @@ class Splash:
         # An indeterminate bar drawn by hand: ttk.Progressbar pulls in a
         # theme engine and still needs a timer, and this is ~10 lines.
         bar_w, bar_h, chip_w = 330, 4, 96
-        bar = tk.Canvas(frame, width=bar_w, height=bar_h, bg="#232a36",
+        bar = tk.Canvas(frame, width=bar_w, height=bar_h, bg=TROUGH,
                         highlightthickness=0)
         bar.pack(padx=20, pady=(0, 18))
         chip = bar.create_rectangle(0, 0, chip_w, bar_h, fill=ACCENT,
@@ -492,17 +497,23 @@ def _give_focus_back(hwnd: int) -> None:
 # round dot. Deliberately a colour nothing else would pick.
 _CHROMA = "#0b0c0d"
 
+# The five states, as skin\palette.DOT_STATES spells them — kept here as
+# literals for the same reason as the four above: this module runs before
+# ui.py exists, and it is the path with skin\ deleted. Measured against
+# #1A1A1A, the darkest wallpaper the dot has to survive: 9.09 / 5.68 /
+# 7.62 / 10.36 / 3.46, and every pair separates by light or by hue.
 STATES = {
     # state:      (fill,      ring,      pulses)
-    "ready":      ("#2d6cdf", "#0d1830", False),   # blue: running, idle
-    "recording":  ("#e0352b", "#3a0f0c", False),   # red: capturing now
-    "locked":     ("#e0352b", "#3a0f0c", True),    # red, breathing: latched
-    "busy":       ("#e0a32b", "#332304", False),   # amber: transcribing
-    # Grey: loaded and alive, but the keys are inert. Deliberately still
-    # VISIBLE — a paused app that showed nothing would be indistinguishable
-    # from one that was never started, which is the whole problem the dot
-    # exists to solve.
-    "paused":     ("#8b97ad", "#1b2029", False),
+    "ready":      ("#8fc0f0", "#16232f", False),   # cool: running, listening
+    "recording":  ("#ff5b4e", "#3a140f", False),   # red: capturing now
+    "locked":     ("#ff8a7e", "#3a140f", True),    # red, breathing: latched
+    "busy":       ("#f5c043", "#33260a", False),   # the lamp at full
+    # Neutral grey: loaded and alive, but the keys are inert. Deliberately
+    # still VISIBLE — a paused app that showed nothing would be
+    # indistinguishable from one that was never started, which is the whole
+    # problem the dot exists to solve. It is also the only state with NO
+    # HALO on the glass path, so it reads by absence and not by hue alone.
+    "paused":     ("#6f6f6f", "#1e1e1e", False),
 }
 
 
@@ -3522,19 +3533,22 @@ class NotifyCard(HintCard):
             gc.collect()
 
 
-# The fallback card's palette. These are ui.py's ORIGINAL values, spelled
-# out rather than imported: ui.py builds Tk styles at import and this
-# module is imported before any of that exists. skin\ repaints its own
-# copy and never reads these.
-CARD_BG = "#161b25"
-CARD_LINE = "#232a36"
-CARD_FG = "#e8ecf4"
-CARD_DIM = "#8b97ad"
-CARD_FAINT = "#5d6779"
-CARD_KEY_BG = "#1a2740"
-CARD_KEY_EDGE = "#2b3f66"
-CARD_KEY_FG = "#8fb2f5"
-CARD_DOT = {"recording": "#e0352b", "locked": "#e0a32b"}
+# The fallback card's palette — LAMPLIGHT, spelled out rather than
+# imported: ui.py builds Tk styles at import and this module is imported
+# before any of that exists. skin\ repaints its own copy and never reads
+# these. A key chip is a KEY CAP and not a button: this card is a legend
+# with fifteen keys on it, and fifteen accent chips would be fifteen
+# primary actions competing for one glance. So the chips take ui.KeyCap's
+# own face and the only lit thing on the card is the state dot.
+CARD_BG = "#24201a"
+CARD_LINE = "#3a342a"
+CARD_FG = "#f1ece2"
+CARD_DIM = "#b2a896"
+CARD_FAINT = "#7e7564"
+CARD_KEY_BG = "#29241d"
+CARD_KEY_EDGE = "#4e4737"
+CARD_KEY_FG = "#f1ece2"
+CARD_DOT = {"recording": "#ff5b4e", "locked": "#ff8a7e"}
 
 _HINT_PAD = 14
 _HINT_ROW = 26

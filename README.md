@@ -104,22 +104,58 @@ reply or the exact problem.
 console window and no taskbar entry. **Two rising beeps = it is listening.**
 To quit: double-click `Stop DeskIT` — two falling beeps confirm.
 
-Run **`install_fonts.py`** once to install Rubik for your user (no
-admin) — the dashboard's typeface, designed for Hebrew and Latin
-together; without it the window falls back to Segoe UI and stays
-correct, just plainer. Then open **`Dashboard.vbs`** and drive all of it
-from one window — see
+Open **`Dashboard.vbs`** and drive all of it from one window — see
 [The dashboard](#the-dashboard) below. Double-clicking `DeskIT`
 while it is *already* running opens the dashboard too, instead of the old
 "already running" complaint.
 
+**The typeface hands itself to Windows now (`fonts.py`).** The app draws
+in **Rubik**, which is designed for Hebrew and Latin together and is
+vendored in `fonts\`. It was not actually drawing in it: measured
+2026-09-06, on this machine, with all four files on disk, registered
+under `HKCU\...\CurrentVersion\Fonts` by `install_fonts.py` seventeen
+days earlier and a reboot since — a fresh process asking GDI for the
+family `Rubik` got **Arial** back, so `ui.pick_face(["Rubik"])` returned
+`Segoe UI` and the whole window had been in the fallback face without a
+word about it. A registry entry is a promise to the next logon, not an
+answer to `CreateFontW` in *this* process. So `fonts.load()` calls
+`AddFontResourceExW(path, FR_PRIVATE, 0)` on every file in `fonts\`
+(and on any `Rubik*.ttf` already in the per-user font folder) at the
+import of `ui.py` and of `visual_qa.py`, before anything asks for a
+face. `FR_PRIVATE` means nothing is installed, nothing is written, no
+`WM_FONTCHANGE` goes out to every window on the desktop, and the face is
+gone when the process ends — four calls, under 3 ms together, idempotent,
+and it never raises: a missing folder or a GDI that says no is a log line
+and Segoe UI, because a typeface is not worth a dictation.
+`install_fonts.py` still works and is still worth running once, but the
+app no longer depends on it.
+
+Two consequences of that face, both measured. **Rubik draws Hebrew ~13%
+smaller than Segoe UI at the same nominal size** (93% of nominal against
+107% at 15 px), so every size in the window went **+2 px** and every row
++20% — swapping the face without that makes the app smaller and harder to
+read, which is not what a redesign should feel like. And **GDI gives back
+exactly two Rubik weights, 400 and 700**: the four files in `fonts\` are
+cuts of one variable font, so `Rubik Medium` and `Rubik SemiBold` are
+real family names that draw at regular weight (advance 104 px against
+Rubik 700's 108 for `מבנה חדש` at 24 px). Emphasis in this window comes
+from size and from the accent, never from a Medium that does not exist.
+
 The dashboard can start *and* stop the app, so it can replace both Desktop
 shortcuts on its own; autostart is a separate shortcut in the Startup
 folder and is unaffected either way. Its icon is `icon.ico` — run
-`make_icon.py` (needs Pillow) to regenerate it. There are three cuts of
-one drawing in that file, because 16 px cannot hold what 256 px can: the
-sound arcs are dropped below 48, and the alef knocked out of the
-microphone goes at 16, where it stops being a letter and becomes noise.
+`make_icon.py` (needs Pillow) to regenerate it. **The mark is a dalet
+drawn as a desk**: a tabletop with one leg hanging from its right end,
+the top's edge just past the leg, and the lamp — the same gold dot the
+status dot is — sitting above the left of the top, with two light arcs to
+its right. It is the app in one letter: a desk with a lamp on it, and the
+lamp is the part that is lit. There are **two cuts** of that one drawing
+in the file, because 16 px cannot hold what 256 px can: at 48 px and up
+the lamp keeps its glow and the two arcs; below 48 both go, and what is
+left is the desk and the dot. The whole thing is solved on the design's
+own 64-unit grid, drawn at 4× and downsampled with LANCZOS, into
+`icon.ico` at 16/24/32/48/64/128/256 and `icon.png`. The alef that used
+to be knocked out of a microphone is gone with the microphone.
 
 Because there is no window, the app enforces one instance at a time
 (launching twice would paste every transcript twice) and writes its status
@@ -171,11 +207,13 @@ From a terminal instead of the window:
 .venv\Scripts\python.exe versions.py switch classic
 ```
 
-**Or from the dashboard.** The sidebar has a **Version** screen: it names
-what is running and offers one *Use this* button per other version.
-Switching from there is the same stop–flip–restart, with progress shown in
-the window, and the Overview status line leads with the current version's
-name so "which one am I on?" never needs a click.
+**Or from the dashboard.** Settings → **The app** names what is running
+and offers one *Use this* button per other version. Switching from there
+is the same stop–flip–restart, with progress shown in the window, and the
+running version's name is on the foot of **Waiting** so "which one am I
+on?" never needs a click. It used to be a screen of its own, one of nine
+in a rail; ten days of logs hold **not one line about switching**, so it
+is now three rows in the block that also holds Stop and the cue sounds.
 
 ### What fast costs and needs
 
@@ -227,29 +265,125 @@ command, display name, icon), so the pin launches `Dashboard.vbs` with
 the right name and face. If you pinned it before this existed, unpin and
 pin it again — the shell reads these when the pin is created.
 
-**Five screens down the side, not one long column.** Everything that was
-in that column is still here; it stopped being one scroll of unrelated
-things. The state and the three buttons that change it are on
-**Overview**; everything you have said is on **History**; the keys are on
-**Keys**; which whole-app version is running, and the one-click way to
-change it, is on **Version**; every other line of `config.toml` is on
-**Settings**. The status dot stays in the corner of the sidebar on all
-of them, because "is it on?" is the question the window exists to answer
-and it must never be a click away.
+**Four places along the top, and no rail.** The window had grown a left
+rail of nine rows — Overview, History, Review, Awake, Notify, Keys,
+Version, Problems, Settings — and the rail was 212 px, 18% of the window,
+spent on a menu of screens that saw **2.1 actions a day between them**.
+Ten days of logs, counted 2026-09-06: **968 actions at a key, 333 at a
+card, 21 in this window**. Nine of those ten days had zero or one. All 21
+were: nine review verdicts, four dismiss-alls, five screens/night
+toggles and three key rebinds, in four bursts — this window is opened to
+*catch up*, not to browse, and then closed. So the nine rows are four
+words on a 56 px bar:
 
-**Settings is the file, drawn — behind tabs that say the common lines
-plainly.** Six tabs across the top (Common, Dictation, Text, Card,
-Screen, Phone) hold the fifty-odd lines most people touch, each with a
-plain label, one short sentence and — where a value names a model or a
-mode — a menu with names on it ("Groq — fast, free tier", "Only words it
-has been taught") instead of the raw value. The last tab, **Everything**,
-is the whole of `config.toml` as it is written: `settings.py` reads the
-file, every assignment becomes a row, the comment around it becomes the
-help under the row, and a `gemini | local | fake` at the front of a
-comment becomes the row's menu. A switch for a `true`/`false`, a menu for
-a choice, a field for a number or a word, and an "In the file" button for
+- **Waiting** — everything that wants an answer, in one pile. It opens
+  here.
+- **Said** — everything you have said, and the words it has learned.
+- **Keys** — every binding, lit on a picture of a keyboard.
+- **Settings** — every line of `config.toml`, plus the three things that
+  were really settings all along.
+
+The bar carries the mark and the wordmark at the left, the four places in
+the middle with a 2 px gold underline on the one you are on, and at the
+right the state as a sentence — the dot in its live colour, the word
+(*Off*, *Starting*, *Listening*, *Recording*, *Locked on*,
+*Transcribing*, *Paused*), the uptime — and **one** button: Pause when it is running, Resume when it
+is paused, Start when it is off. That is the whole point of the bar: "is
+it on?" is the question this window exists to answer, and it is now
+answered on every place rather than on one of them. **Stop moved to
+Settings → The app**, because the old rail put a 25-second mistake one
+slip away from Pause. The window is 1160×720 (it was 940×648) and still
+fixed, which is what lets every bitmap be cached.
+
+**Waiting is the window's whole job, said in one sentence.** *"Five
+things want an answer."* — or *"Nothing is waiting."*, with "Nothing else
+on the desk needs you right now." under it. Then ONE card holding the
+merged pile: unread notifications (Go there / ×), second-reading
+proposals (the sentence with the changed word on a gold-soft pill, the
+reason under it, Yes / No), open problems (Fixed / Close), and the weekly
+routine's questions (Answer / Later) — newest first, whatever kind they
+are, three rows visible, six at most, then "+N more" opens the card into
+the room below it. Under the card, one faint line about finishes being
+held until their session goes quiet.
+
+The merge is the finding, not a layout preference. Those four things used
+to be four screens; they are four sources of *one* thing — something is
+waiting for an answer — and which of the four it is matters far less than
+which is newest. Every one of the 21 window actions in ten days was
+somebody catching up on a backlog of them. A store that is absent, off or
+unreadable contributes nothing and the other three still draw:
+`[questions]` is not in `config.toml` on this branch, so that section
+simply is not there.
+
+Under the pile, **the rest of the day, one line each**: **Said** (the
+last dictation, drawn RTL, with the time and "N today"), **Took** (the
+last capture and the folder it went to), **Looked up** (the last term →
+its meaning). A line whose store does not exist is skipped rather than
+shown empty. And a footer under a rule: the screens/awake state with the
+one button that changes it, whether the phone is live, which version is
+running, how many words it has learned. Four facts that are true
+whichever place is open, so they read as a footer and not as a fifth
+thing to do.
+
+Two controls sit beside the title because that is where their subject is:
+**Report a problem** (which also says its key, `Ctrl+Alt+R` — all five
+reports in ten days were filed from the key), and **Dismiss all** with
+`Ctrl+Alt+M` on a key cap beside it. The key cap is there because that
+key has been pressed **zero times** — two separate counts of the logs,
+about ten days each, and zero in both; if the window is going to keep the
+button, it can at least teach the key. "The whole list" at the bottom right opens the things that need
+more than a line — a question with its two-to-five answers and its box, a
+report with its evidence and its screenshot, a weekly branch with the one
+button that publishes it.
+
+**Settings is the file — and the first tab says it in sentences.** A
+settings screen is a column of labels and a column of controls, and the
+label is always a noun phrase: "Punctuate every dictation" tells you what
+the line is called and nothing about what happens if you change it. The
+first tab, **In your words**, says the forty lines that matter most as
+prose with the controls inside the words:
+
+> *Punctuate every dictation `[no]`; when you press the punctuate key,
+> ask `[Groq — fast, free tier]` first, wait at most `[6]` seconds, and
+> `[leave out]` the vowel points.*
+
+Four paragraphs — *when you dictate*, *after it lands*, *on the desk*,
+*the phone* — flowed by `prose.py` onto a Canvas at a fixed 34 px line.
+A `tk.Text` with `window_create` was built and photographed beside it and
+lost: it wraps for free, but a display line holding a 28 px control is
+28 px tall and a plain one is ~18, `spacing1`/`spacing2` add to both, and
+the ragged rhythm that comes out is not tunable. The hand-flowed Canvas
+is 21 ms against 32 and gives one rhythm, which is what makes a paragraph
+of controls read as a paragraph. A control never straddles a line, and
+one wider than the column is clamped rather than left hanging off the
+edge. Every `Bit` in those sentences names a real path in `config.toml`,
+and a test walks them.
+
+Under the sentences on that same tab are **three blocks that used to be
+rail rows**, because none of them is a place you go — each is a thing you
+check and occasionally flip, which is what a settings block is:
+**Awake** (the status rows, Check status, Screens off/on), **Phone** (the
+endpoint, the link, Copy) and **The app** (which version is running and
+the one-click switch, Stop, Send a test, and one Play button per cue kind
+— that last one is a filed complaint answered: *he could not tell the
+twenty sounds apart*, and the answer to that is not a louder cue but a
+Play button beside the name of the thing the cue is FOR).
+
+Then the six tabs that were always there (Common, Dictation, Text, Card,
+Screen, Phone) with the fifty-odd lines most people touch — a plain
+label, one short sentence, and where a value names a model or a mode, a
+menu with names on it ("Groq — fast, free tier", "Only words it has been
+taught") instead of the raw value. The last tab, **Everything**, is the
+whole of `config.toml` as it is written: `settings.py` reads the file,
+every assignment becomes a row, the comment around it becomes the help
+under the row, and a `gemini | local | fake` at the front of a comment
+becomes the row's menu. A switch for a `true`/`false`, a menu for a
+choice, a field for a number or a word, and an "In the file" button for
 the two things a field cannot hold — a list, and a Hebrew string (Tk has
-no bidi caret). The magnifier at the right of the tabs opens a search
+no bidi caret). Everything also carries **Files**: the four things worth
+opening, named for what they are rather than what they are called on disk
+(*Everything you said*, *The app's diary*, *The settings file*, *The
+app's folder*). The magnifier at the right of the tabs opens a search
 over all of it — a word from a name or a comment — and the cross brings
 the tabs back. A setting added to the file is on Everything the moment
 the file is saved, the words in `settings.TABS` are checked against the
@@ -257,46 +391,69 @@ file by a test, and another test holds Keys and Settings to covering the
 file between them — which is what the owner asked for, from both sides:
 show all of them, and do not make me read all of them.
 
+The sentences are worth their build cost for a reason the logs make
+plain: **191 settings in 20 sections produced exactly three writes in ten
+days**, and the three cancel out — he rebound one key to `h` and back to
+`ctrl+f9` six seconds later. A screen nobody edits is a screen that
+should be readable, and this is the version of it you can read.
+
 Writes go through `config.set_values`, the line editor that keeps the
 comments. While the app runs they go through the app (`set_option`, over
 the pipe), so the file has one writer at a time and the app can take the
 change without a restart where it knows how — `[punctuate]`,
-`[feedback]`, `[vocab]`, `[polish]`, `[translate]`, `[hint]` (the card
-is rebuilt), and the paste chord and delay. Anything else is written all
-the same and the reply says so: "saved — it applies the next time it
-starts".
+`[feedback]`, `[vocab]`, `[polish]`, `[translate]`, `[review]`,
+`[hint]` and `[shelf]` (those two cards are rebuilt), and the paste chord
+and delay. Anything else is written all the same and the reply says so:
+"saved — it applies the next time it starts".
 
 ```
-┌──────────────────┬──────────────────────────────────────────────────┐
-│ ▣ DeskIT          │ Overview                                        │
-│   hold Right Ctrl │                                                 │
-│                   │  ● RUNNING                                      │
-│ ▸ Overview        │    fast · local · Arctis 7 @ 16000 Hz           │
-│   History         │    4.2 s spoken -> 96 characters pasted         │
-│   Keys            │                       [Start] [Pause] [Stop]    │
-│   Version         │                                                 │
-│   Settings        │  DICTATIONS  SPOKEN    CHARACTERS  AVERAGE WAIT │
-│                   │  18          6.2 min   4,210       0.5 s        │
-│                   │                                                 │
-│                   │  LAST DICTATION                          21:23  │
-│                   │      … the sentence itself, right-aligned …     │
-│                   │  23.3 s · local · 3.4 s latency                 │
-│                   │  [Copy text] [Show in history]                  │
-│ ● RUNNING         │                                                 │
-│   up 2h 14m       │  VOCABULARY 98 words   PHONE endpoint is live   │
-└──────────────────┴──────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ ⌐ DeskIT   Waiting  Said  Keys  Settings    ● Listening  up 4h 40m   │
+│            ───────                                        [ Pause ]  │
+├──────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  Five things want an answer.               ⊗ Report a problem        │
+│  Nothing else on the desk needs you right now.  Dismiss all Ctrl+Alt+M│
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │ ♪  Claude Code · just now                                      │  │
+│  │    Claude needs a permission — allow Bash…   [Go there]  [×]   │  │
+│  │ ✓            Second reading · it heard 1 word differently      │  │
+│  │              …‹the sentence, right-aligned, one word on a pill› │  │
+│  │                                              [ Yes ]  [ No ]   │  │
+│  │ ⚠            You reported this on 6 Sep                        │  │
+│  │              …‹the line he typed, right-aligned›                │  │
+│  │                                            [Fixed]  [Close]    │  │
+│  │    +2 more                                                     │  │
+│  └────────────────────────────────────────────────────────────────┘  │
+│  2 finishes held until the session that sent them goes quiet.         │
+│                                                                      │
+│  THE REST OF THE DAY · ONE LINE EACH                                 │
+│  Said       23:46   …‹the last dictation, right-aligned›   1 today   │
+│  Took       22:27   shot 2026-09-06 22-27-55.png           1 today   │
+│  Looked up  23:46   leverage → מָנוֹף                                  │
+│  ──────────────────────────────────────────────────────────────────  │
+│  ☾ The screens are off since 22:46.  Screens on                      │
+│                    phone live · running fast · 38 words learned      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 The window is drawn rather than assembled: Tk 8.6 cannot round a corner
 or anti-alias one, so every card, pill, switch and key cap in it is a
 pre-rendered Pillow bitmap with widgets sitting on the flat middle of it
-(`ui.py`). The palette is the one this window has always had.
+(`ui.py`). The palette is **LAMPLIGHT** — one lamp on a dark desk, the
+app being the light rather than the furniture — and it is the same table
+the cards, the dot, the boxes and the phone page draw from. `SKIN.md`
+holds it, with the contrast ratio behind every colour.
 
 ### Everything you said, in the window
 
-**The History screen is `transcripts.log`, read back.** The last hundred
-entries, newest first, one row for each thing *you did* rather than one
-for each line the code wrote:
+**Said is `transcripts.log`, read back.** It was called History, and
+"history" appears **zero times in 11,046 lines of log** — nothing that
+screen does is logged and no window action was ever recorded there, so
+the name was renamed to the thing it holds. The last hundred entries,
+newest first, one row for each thing *you did* rather than one for each
+line the code wrote:
 
 ```
   21:23   ▣    … what you said, up to two lines of it …            ⧉
@@ -321,13 +478,25 @@ same number, and `history.py` exists to reconcile them:
   after`): two whole sentences that differ in two words. The row shows the
   two words.
 
-Filter chips across the top, and a search box that matches what you said,
-what it answered, and which engine answered. **Click a row to copy it** —
-the whole text, not the two lines the row had room for.
+A search box over the top and six filter chips under it (All, Dictation,
+Translated, Punctuated, Looked up, Learned, Failed); the search matches
+what you said, what it answered, and which engine answered. **Click a row
+to copy it** — the whole text, not the two lines the row had room for.
+
+**The vocabulary is beside the list, not behind a tab.** A panel down the
+right says how many words it has learned to hear your way, the key that
+teaches it one (`Ctrl+F9`), and the pairs it learned lately as
+`heard ← meant` pills — the arrow points left because the pair is Hebrew.
+It had no screen of its own before, which is a strange thing for a table
+that 389 repair passes read; it is now in the same eyeful as the
+sentences it changes. Under it, the line that says where those words go:
+the best of them ride into the decoder's prompt before it listens, forty
+at a time.
 
 Nothing here writes to the log; a malformed line is skipped rather than
 repaired. The log is still the record, `Open transcripts.log` is still
-there, and everything older than the last hundred is still in it.
+there at the foot of the place, and everything older than the last
+hundred is still in it.
 
 **Why the Hebrew is on screen at all.** This window used to show the last
 dictation as `4.2 s -> 96 chars` with a Copy button, because Tk was
@@ -354,8 +523,8 @@ believed to have no bidi at all. The truth, measured on 2026-08-20 (Tk
   holds the result against that reference render pixel-for-pixel.
 
 Pure-Hebrew lines are a single run, which is why quick probes look fine
-and the second layer stayed hidden until a mixed sentence landed on the
-overview. The chrome stays English on purpose: a label is one direction
+and the second layer stayed hidden until a mixed sentence landed in the
+window. The chrome stays English on purpose: a label is one direction
 by construction.
 
 ### Pause, and why it is not "stop"
@@ -380,10 +549,58 @@ start a recording every time.
 - `auto_pause_fullscreen` does it by itself while a game or a
   presentation owns the screen (it asks Windows the same question it asks
   before showing its own notifications), and the switch for it is on the
-  dashboard's **Settings** screen. **Off by default**: it is the one
+  dashboard's **Settings** place. **Off by default**: it is the one
   setting that can stop dictation without anyone asking it to, and "my
   hotkey stopped responding" is a much worse half hour than tapping the
   pause key yourself. It only ever un-pauses *its own* pause.
+
+### The keys, drawn on a keyboard
+
+**Keys is a picture of a keyboard with your bindings lit on it.** It used
+to be a row per binding — "Translate (tap) `[F8]`" — in a scrolling
+column, which is a lookup table for a thing that is already spatial. You
+do not remember that translate is F8; you remember where your finger
+goes. And the question the screen actually has to answer, *which keys has
+this app taken from me*, was sixteen separate readings of that column.
+
+Eighty-seven caps, an ANSI tenkeyless board, one Pillow image and one hit
+table. Everything is measured from a single unit `u` (one 1× cap), so the
+board fits whatever room the screen has: at `u=40` it is 746×278, which
+leaves 346 px for the panel beside it and the room under it for the
+bindings, three to a line. The whole board is one image — 26–32 ms to
+draw at `u=43`, 41 ms at `u=60` — and a click redraws all of it in
+~30 ms, under a frame, which is why there is no partial-repaint
+machinery in `keyboard.py` at all.
+
+Five ways a cap can look, and the legend says all five: **held** (down the
+whole time it works), **tapped** (fires and still reaches the app
+underneath), **chord** (the modifier lit softly, the key fully), **only
+sometimes** — a broken edge, which today is `Esc` — and **unlit**, which
+means the app never sees it. Under the board, every binding with its key
+cap and what it does; under those, one quiet line:
+anything not lit is untouched, and the keys this app *cannot* take —
+the punctuation caps — have no code Windows can bind, which is exactly
+why they are the safe ones. **Click a cap** and the panel at the right
+tells you what that key does and offers to change it, through the same
+capture dialog described below.
+
+Four things this got wrong first, all of them worth writing down because
+they are all invisible until you look at the drawing:
+
+- **One cap can carry two bindings.** `translate_hotkey = "f8"` and
+  `lookup_hotkey = "ctrl+f8"` are the same physical key. The map has to
+  be `{cap: [binding, ...]}`; a dict of one silently lost *look up*.
+- **`hotkey.parse_binding` returns UNSIDED modifier VKs** — `0x11` for
+  ctrl, not `0xA2`. A cap map that calls the left one "left ctrl" never
+  matches it, and nine chords lit their letter with no modifier at all.
+- **Pillow has no font fallback.** Rubik holds no `U+2190..2193`, so every
+  arrow cap drew as `.notdef` — while the *same* arrow inside a
+  `ui.KeyCap` looked fine, because Tk falls back per glyph and PIL does
+  not. The four arrows are drawn, not typed.
+- **`Esc` is not in `config.toml`.** It cancels a running recording — it
+  is watched by the recorder, not registered as a hotkey — so it is named
+  on the board by hand and drawn with the broken edge that says "only
+  sometimes".
 
 ### Changing the keys
 
@@ -1882,9 +2099,10 @@ Two separate things, and the separation is the point. **The computer never
 sleeps** while this app runs: the hold goes up the moment the app starts
 and comes down when it exits, whatever the screens are doing, day or night,
 at home or from school. **The screens go off on a key** — tap `ctrl+alt+n`,
-or press **Screens off** on the dashboard's Awake screen, and within a
-second the monitors are dark and *stay* dark; tap or press again and they
-come back. Nothing is locked — the session stays open, which is what lets
+press **Screens off** on the shelf, or use the footer of the dashboard's
+**Waiting** place (the same button is in Settings → Awake, with the
+status rows), and within a second the monitors are dark and *stay* dark;
+tap or press again and they come back. Nothing is locked — the session stays open, which is what lets
 Claude take a screenshot or open a program from the phone.
 
 **What it does, and what it deliberately does not.** The hold is one API
@@ -1897,7 +2115,7 @@ screens still go dark on the monitor's own timer; only sleep is prevented.
 (`SC_MONITORPOWER`, broadcast with a timeout so a hung window cannot hang
 the app), twice: at once, and again three seconds later, because the mouse
 movement that follows a click lights them straight back up. **Screens off
-again** on the Awake screen does the same on demand. A belt to the braces,
+again** in Settings → Awake does the same on demand. A belt to the braces,
 once and without admin, is `powercfg /change standby-timeout-ac 0`: Windows
 itself then never sleeps on mains, app or no app.
 
@@ -1906,8 +2124,8 @@ written (2026-09-02).** `powercfg /a`: classic S3 sleep, no Modern
 Standby. `Sleep after` on AC: 30 minutes; hibernate: off. The System log's
 restarts were all the owner's own or Windows Update at ten in the morning.
 So the culprit was the idle timer, which is exactly what the hold prevents.
-Two things the hold cannot fix are read by **Check status** and named on
-the screen with what to do: the network card's "Allow the computer to turn
+Two things the hold cannot fix are read by **Check status** and named in
+the block with what to do: the network card's "Allow the computer to turn
 off this device to save power" box (ON here — Device Manager, needs
 admin), and Windows Update's active hours (9:00–2:00 here, so an update
 may restart the machine between two and nine).
@@ -1919,7 +2137,7 @@ returns the same ES_* flags without the process names — and the row says
 "held" only when this app is holding AND the kernel agrees. It also shows
 the sleep timer, the standby type, the network card's power-saving flag,
 the update window and whether Claude is running. It runs by itself when
-the screen opens and again after every switch.
+the block is built and again after every switch.
 
 **If the app dies holding.** The hold dies with the process and needs no
 cleanup. The optional `[awake] pin_timeouts` (off by default) also sets the
@@ -1996,6 +2214,147 @@ leak, the process that needs naming is precisely the one that cannot be
 opened. Verified against `Get-Process`: same handle counts, same working
 sets, and 330 processes seen where `Get-Process` sees 325.
 
+## The shelf (`ctrl+alt+d`)
+
+**Tap `ctrl+alt+d` and a small panel opens beside the status dot with
+everything waiting on it. Tap it again, or press `Esc`, and it is gone.**
+It is the desk without sitting down at it: the state, the pile, the last
+thing you said, the screens, and one door to the window.
+
+**The owner's rule, and it is the whole design: it opens only on the key
+press; the same press or `Esc` closes it; never on hover, never on
+passing the corner.** Nothing arrives here. The corner of the screen
+where this panel lives is the same corner cards arrive in on their own,
+and a panel that also opened by itself — or on a pointer wandering past
+— would make that corner unpredictable, which is the one thing a corner
+you glance at cannot be. You ask for it, you answer what is on it, it
+goes away.
+
+**What it holds**, top to bottom:
+
+- **The state**, in the dot's own colour, with the line under it: `up 4h
+  32m · recording 1:42` while the microphone is live, `up 3h 07m · 12
+  today` otherwise. The recording clock is there because of the single
+  loudest number in ten days of logs — **72% of dictations are locked
+  on** (355 of 495), which means the key was released and the machine is
+  still listening, and that is the one state where missing feedback costs
+  a whole recording.
+- **Pause** and **Stop**, beside it. Stop **arms** rather than quits: the
+  first press turns it into a confirmation, and it is refused outright
+  while a recording is running or locked on.
+- **Waiting for you** — the same merged pile the window's Waiting place
+  draws, from the same four stores: unread notifications, second-reading
+  proposals, open problems, the weekly routine's questions. Newest first,
+  whatever kind, each row with the two answers it needs on the row
+  (Dismiss / Open · No / Keep · Close / Open · Later / Answer). Capped at
+  `[shelf] rows` (5), and "+N more" opens the window.
+- **What you said last**, with **Copy**.
+- **Screens off / on**, the same toggle as `ctrl+alt+n`.
+- **Open the desk** — the one lit thing on the panel, and the only gold:
+  history · keys · settings · everything else.
+
+**What it never holds: settings, the key list, the history.** Those are
+things you sit down to, and sitting down is what the control window is
+for. A shelf you have to read is a window with no title bar.
+
+**A row answer that resolves something in place does not close the
+panel.** The first draft said every answer closes it, which makes
+clearing a pile of five cost five key presses — the opposite of what
+putting two buttons on every row is for. The rule shipped instead: **an
+answer that takes the screen somewhere else closes the panel; an answer
+that answers what is on the panel refreshes it where it stands.** Three
+things leave (opening a notification, opening a problem, answering a
+question), and Copy, the door and "+N more" close it as well; Pause and
+Screens off refresh in place.
+
+**One gold thing.** The prototype gave every row's first answer a gold
+pill. On the LAMPLIGHT palette that put seven lit things on one panel and
+left the door — the one primary action — meaning nothing. The primary
+answer on a row is now a lifted plate with prose-weight text, the count
+badge is neutral, and the door is the only lamp. The one gold-soft pill
+that stayed is on a second-reading row, because that pill is *content* —
+the word the model wants to change — and not an action.
+
+**Nothing here is allowed to cost a dictation**, and each of these was
+measured:
+
+- **The hook has 300 ms.** The tap reads one flag and starts a thread.
+  Building the card reads four JSON stores and that happens on
+  `shelf-open`; nothing that touches the disk runs inside the hook.
+- **`Esc` is claimed narrowly.** The panel claims exactly one virtual key
+  (`0x1B`) and only while it is up; it is offered the key *after* the
+  review and notify cards, so their pointer-gated claim comes first, and
+  it ends the event before the state machine's `cancel_guard` — so an
+  `Esc` aimed at the panel can never also throw away a locked recording.
+- **Every pixel that is not a named rectangle answers
+  `HTTRANSPARENT`** — the 26 px shadow margin and the panel's own padding
+  included — so a click aimed at the close button of a maximised window
+  still lands on it. Asserted at three scales and four pile sizes.
+- **Nothing animates.** Composing a full panel is 41 ms, so the
+  one-second tick does not recompose: the picture is cached on
+  `(card, hover, scale)` and re-blitted, and a genuinely new picture only
+  arrives when something changed. `regions()` is 1.9 ms, `card_for()`
+  0.02 ms. The refresh check itself is four `os.stat`-sized stamps —
+  when they agree, no JSON is read at all.
+- **Importing it costs 47 ms**, once, in `App.__init__`, and only when
+  `[shelf] enabled = true`.
+- **Delete `skin\` and it still opens**, as a flat Tk card with square
+  corners, every button working — the same revert rule the rest of the
+  look obeys (see `SKIN.md`).
+
+The panel is **452 px wide** including its shadow margin, and 648 px tall
+with a full pile of five (370 empty, 682 at the cap). That is tall for
+something that sits beside a 13 px dot, and it is defensible only because
+it opens on a deliberate press; the lever if it is too much is
+`[shelf] rows`, and `3` brings it to 520. It opens beside the dot and
+never under it — it inherits the hint card's `DOT_ROOM`, so on this
+2560-wide screen it lands at x 2100, y 14. While it is up the hint card
+steps aside and the notification column is hushed (`[shelf]
+hush_notifications`); both come straight back when it closes, nothing is
+marked seen and no reminder is lost.
+
+**Every answer goes through the same method the card would have
+called** — `_notify_opened` / `_notify_dismissed`, `_review_verdict`,
+`problems.resolve` and then `problems.digest`, `_question_show` with the
+real answer card and its box — and nothing goes over the named pipe: the
+shelf lives inside the running app, and a pipe round trip to reach a
+method on the same object would be a second failure mode for nothing. A
+store that is off, missing or unreadable costs its own rows and nothing
+else; `[questions]` is not in `config.toml` on this branch, so those rows
+are built and tested and will appear the day the section does.
+
+**One cost, stated.** Newest-first is one rule for all four sources, so a
+burst of notifications can push a question that has been waiting since
+Saturday past the cap into "+N more". That is three lines to change if it
+ever bites.
+
+**Check it by hand.**
+1. Tap `ctrl+alt+d`: the panel appears beside the dot, not under it. Tap
+   again: gone. Tap once more and press `Esc` with the pointer anywhere
+   at all — gone.
+2. Wave the pointer over that corner without pressing anything: nothing
+   opens, ever.
+3. With the panel up, click the close button of a maximised window
+   *through* the panel's shadow margin — it closes the window, because
+   the margin is transparent to the mouse.
+4. Hold Right Ctrl, tap `←` to lock on, and press `ctrl+alt+d`: the panel
+   opens, the head says `recording 0:07` and counts. Press `Esc`: the
+   panel closes and **the recording is still running**. Press `Esc`
+   again: now the recording is discarded, as it always was.
+5. While locked on, press **Stop**: refused, with the no-op cue — and the
+   panel stays open.
+6. Let a notification and a second reading both be waiting, then open the
+   panel and press **Keep** on the proposal: the row goes, the panel
+   stays, the count drops by one. Press **Open** on the notification: the
+   session comes forward and the panel closes.
+7. `[shelf] rows = 3` from the dashboard, no restart: the next open is a
+   shorter panel with "+N more" on it.
+8. `[shelf] enabled = false`, restart: the key is unregistered, the row
+   is off the hint card and off the Keys board, and everything else — the
+   cards, the cues, the window — goes on exactly as before.
+9. `set HD_SKIN=0` and start it from a terminal: the panel is a square Tk
+   card and every button on it still works.
+
 ## Notify — when Claude (or anything) finishes (`ctrl+alt+m`)
 
 Claude Code has a "finished" notification of its own, and on this machine
@@ -2007,7 +2366,7 @@ Tailscale link the dictation endpoint uses, POSTs a small JSON body to
 `server_token.txt`, and the app plays a three-note cue, puts a card up at
 the screen edge and keeps reminding you until the card is answered —
 `Esc` with the mouse over it, a tap of `ctrl+alt+m`, or **Dismiss all**
-on the dashboard's Notify screen.
+beside the title of the dashboard's **Waiting** place.
 
 **They stack, they grow upward, and they wait (2026-09-04).** Three
 things asked for in one breath, all of them about the same corner of the
@@ -2150,8 +2509,8 @@ that waits at the edge of the screen and never comes back on its own
 (`"all"` is the old door; `"none"` never makes a sound). `[notify]
 quiet_s` (seconds; it ships at `0` — see the next paragraph) holds a
 `done` until the SESSION that sent it has been quiet that long: the item
-is stored at once and shows in the Notify screen's history, but it is
-not on the screen (`notify.log` says `HELD
+is stored at once, and counted on the line under the Waiting pile, but it
+is not on the screen (`notify.log` says `HELD
 #12`); if the same session speaks again inside the window the held one
 is retired unseen (`SUPERSEDED #12 by #13 | same session`) and the new
 one takes its slot, and when the timer runs out the card finally goes up
@@ -2159,10 +2518,11 @@ one takes its slot, and when the timer runs out the card finally goes up
 rings at once, and takes the pending finish with it, because the
 session is plainly not finished. Two sessions running at once hold their
 finishes apart: the slot is the session id, and a sender with no session
-gets one slot per source. The hero on the Notify screen counts the held
-ones apart (`2 UNREAD`, or `1 WAITING` when nothing is on screen), the
-reply carries `"held": true`, **Send a test** always rings and shows at
-once, and `quiet_s = 0` puts every finish up the moment it lands, as
+gets one slot per source. The held ones are counted apart on their own
+faint line under the Waiting pile ("2 finishes held until the session
+that sent them goes quiet. They will arrive here, not on your screen."),
+the reply carries `"held": true`, **Send a test** always rings and shows
+at once, and `quiet_s = 0` puts every finish up the moment it lands, as
 before. `idle_prompt` was NOT the answer: it has never once fired on this
 machine, so nothing here leans on it. And no door can tell a finish from
 a progress note — only the session can, which is why AGENTS.md now asks
@@ -2285,7 +2645,7 @@ say anything; it cannot make the app *do* anything.
 `[notify] interrupt`) is unread the cue replays and the column comes
 back every `[notify] remind_every_s` (default 120) seconds, at most
 `[notify] remind_times` (default 2) times per arrival; then it waits
-quietly on the Notify screen, unread count intact. A quiet finish never
+quietly in the Waiting pile and on the shelf, unread count intact. A quiet finish never
 brings the column back on its own, and never keeps the reminders alive
 on its account. The dismiss key, `Esc` over the column and **Dismiss
 all** mark *everything* seen at once, because "seen" means you looked,
@@ -2305,12 +2665,17 @@ coalesced. `[notify] cue = false` keeps the cards and drops the sound.
 `notify.log` (`RECEIVED #12 from claude-code (done) | project
 DeskIT | title 'Claude finished' | 212 chars | unread 3`,
 `REMINDED 1/2`, `DISMISSED by key | 3 marked seen`); the last 100 items
-live in `notify.json`, which the dashboard's **Notify** screen reads
-straight off the disk — the count and the newest one's line in the hero,
-the last thirty as rows, unseen ones edged brighter — and follows while
-the screen is open, app running or not. **Send a test** and **Dismiss
-all** go through the running app, because the cue, the card and the
-reminders live in the process with the hotkey in it. `app.log` gets one
+live in `notify.json`, which the dashboard reads straight off the disk:
+the **unread** ones are rows in the Waiting pile, newest first, each with
+Go there and ×, and it follows the file while the window is open, app
+running or not. There is no Notify screen any more, and the reason is the
+one this whole window was rebuilt on — an unread notification is a thing
+waiting for an answer, so it is a row in the one pile rather than a hero,
+a strip and a list of its own. **Dismiss all** kept its place beside the
+Waiting title; **Send a test** moved to Settings → The app, next to the
+cue sounds it is a test OF. Both go through the running app, because the
+cue, the card and the reminders live in the process with the hotkey in
+it. `app.log` gets one
 `notify: received` line per arrival and a `rejected an unauthorised
 /notify` line per bad token. Both files are gitignored; titles and
 bodies are other programs' words and stay on this machine. The column's
@@ -2321,9 +2686,10 @@ which is the point: the pile grows away from the screen edge you put it
 against, however tall it gets.
 
 **Check it by hand.**
-1. Dashboard → Notify → **Send a test**: the cue, the card mid-height on
-   the right ("Test · A test notification", Hebrew and English on one
-   card), the hero says `1 UNREAD`, a row appears.
+1. Dashboard → Settings → **The app** → **Send a test**: the cue, the
+   card mid-height on the right ("Test · A test notification", Hebrew and
+   English on one card), and on **Waiting** the title says one more thing
+   wants an answer, with the row at the top of the pile.
 2. Type a letter into whatever window you were in — it lands there, not
    on the card.
 3. Leave the card alone: it stays, however long you leave it. At +120 s
@@ -2333,15 +2699,16 @@ against, however tall it gets.
    top, the whole pile growing upward from where the first one sat. Press
    the × on the middle one — it goes, the other two stay, and
    `notify.log` says `DISMISSED #2 by card | 1 marked seen`.
-5. Tap `ctrl+alt+m`: the whole column goes, the hero says `ALL SEEN`,
-   `notify.log` says `DISMISSED by key`.
+5. Tap `ctrl+alt+m`: the whole column goes, Waiting says nothing is
+   waiting, `notify.log` says `DISMISSED by key`.
 6. The PowerShell one-liner above twice within five seconds: one cue,
    two rows, `coalesced: true` in the second reply.
 7. Set `[notify] quiet_s` to `20` for this one (it ships at `0`, where
    a finish is a card the moment it lands) and restart, then
    `notify_hook.py --kind done --session S1` (the command-line form
    above) twice a few seconds apart, and wait the twenty seconds out: no
-   cue, the hero says `1 WAITING`, both replies say `"held": true`, and
+   cue, the line under the Waiting pile says one finish is held, both
+   replies say `"held": true`, and
    `notify.log` runs `HELD #1`, `HELD #2`, `SUPERSEDED #1 by #2 | same
    session`, `QUIET #2` — then ONE card, silent. A `--kind input` with
    the same `--session` inside the window lands and rings at once and
@@ -2364,17 +2731,17 @@ its own thread, dragged and remembered the same way.
 
 The owner's own bug list, and one typed line is all it asks for.
 
-Something is wrong — the History tab shows yesterday's count, a dictation
-comes back with a tail nobody said — and by the time it is worth writing
-down, everything that would have explained it is gone. So the report key
-anywhere, or **Report a problem** in the dashboard's sidebar, opens a
-small card; you type the one line and press Enter, and the app is already
+Something is wrong — the list on **Said** shows yesterday's count, a
+dictation comes back with a tail nobody said — and by the time it is
+worth writing down, everything that would have explained it is gone. So
+the report key anywhere, or **Report a problem** beside the title of the
+dashboard's **Waiting** place, opens a small card; you type the one line and press Enter, and the app is already
 standing there with the rest of the form filled in. That is the whole
 design, and it is the argument the correction key already won: a note you
 have to assemble by hand is a note you do not write, so the typed line is
 the only thing ever asked of you.
 
-**What it attaches, and why each piece.** *Where you were* — the tab's
+**What it attaches, and why each piece.** *Where you were* — the place's
 name from the dashboard, `dictation` or `anywhere` from the key — because
 the screen you are looking at answers "where" every single time, and
 asking would be asking you to type what the window already knows. *The
@@ -2573,28 +2940,32 @@ not one, because the floating card lives on the desktop while the box
 opens centred over the dashboard window, and one shared position would
 fling the box off the window it belongs to.
 
-**Reading them back: the Problems tab.** The ninth screen in the
-dashboard's sidebar. Open reports come first, newest first, each with its
-kind, where it came from, the line you typed, the raw → final of the
-dictation drawn as a bitmap (mixed text again), and the screenshot as a
-220-pixel thumbnail in the corner — an attachment you cannot see is one
+**Reading them back: "the whole list".** An open report is one row in the
+Waiting pile with **Fixed** and **Close** on it, which is all a report
+that needs one word of you should cost. The rest of it — the evidence —
+is behind *the whole list* at the foot of Waiting, where it used to be
+the ninth of nine rail rows. Open reports come first, newest first, each
+with its kind, where it came from, the line you typed, the raw → final of
+the dictation drawn as a bitmap (mixed text again), and the screenshot as
+a 220-pixel thumbnail in the corner — an attachment you cannot see is one
 you cannot check, and the picture is the difference between a report
-about the History tab and a report about whatever was actually on the
-screen. **Fixed** and **Close** answer one; below the open ones are the
-answered ones with who answered them. Two things about that thumbnail:
+about the list on Said and a report about whatever was actually on the
+screen. **Fixed** and **Close** answer one there too; below the open ones
+are the answered ones with who answered them. Two things about that
+thumbnail:
 the long side is 220 because that is what a row can give a picture
 without pushing the typed line off it and it is still enough of the
-screen to recognise the tab, and the decode is cached under (path, mtime,
-side) — **measured 2026-09-04, 35.8 ms cold against 0.170 ms warm**, a
-factor of 210 — which matters because the tab rebuilds every row on
-every scroll, and decoding the same JPEG a hundred times to draw the
+screen to recognise the place, and the decode is cached under (path,
+mtime, side) — **measured 2026-09-04, 35.8 ms cold against 0.170 ms
+warm**, a factor of 210 — which matters because the list rebuilds every
+row on every scroll, and decoding the same JPEG a hundred times to draw the
 same 220 pixels is the one cost that would make the picture not worth
 having. The mtime in the key is what makes it safe:
 a shot rewritten in place gets a new key rather than a stale picture.
 
 **`problems.md`, for the weekly read.** It is regenerated from scratch
-every time — when the tab is opened and after every decision — open items
-first, grouped by where they came from, newest first, then a short list
+every time — when the list is opened and after every decision — open
+items first, grouped by where they came from, newest first, then a short list
 of what has been resolved and by whom. From scratch, and never appended
 to, because it is read once a week by the owner *and by an agent working
 through the list*, and a file that is appended to turns into a log, which
@@ -2628,7 +2999,7 @@ loses nothing that could still settle an argument. **Never guess**: in
 his words, if the run did not understand the bug or did not find the bug
 he was talking about, it must not guess but ask. So a report it cannot
 explain from its evidence gets a *specific* question at the top of the
-summary and is **left open**, which keeps the Problems tab showing
+summary and is **left open**, which keeps the pile showing
 exactly the ones that need him; the routine remembers what it has
 already asked and does not ask it again the following week.
 
@@ -2686,12 +3057,13 @@ bug list rather than his.
    if the decoder missed one, and `Shift+Enter` if it wants two lines.
 3. `app.log` gains `problems: 20260904-… filed from the key, with the
    last dictation, with a screenshot`.
-4. Dashboard → **Problems**: the row is there with the kind, the typed
+4. Dashboard → **Waiting**: the row is in the pile with Fixed and Close
+   on it; **the whole list** has it in full, with the kind, the typed
    line, the raw → final of that dictation and a thumbnail of the screen
    as it was before the box opened. `problems\` holds the wav, its
    sidecar `.json` and the `.jpg`.
-5. From another tab, **Report a problem** in the sidebar: the same card,
-   saying `ON HISTORY` in the corner. Type a mixed Hebrew/English line —
+5. **Report a problem** beside the Waiting title: the same card, saying
+   which place you were on in the corner. Type a mixed Hebrew/English line —
    the field draws it scrambled, the echo underneath draws it right — and
    keep typing past the third line: the field grows, the card grows
    downward under it, and its top-left does not move. Click the dashboard
@@ -2704,11 +3076,11 @@ bug list rather than his.
    go — nothing moves, because a chip is not a handle. Drag from the
    title and release over a chip — the card moves and the chip is not
    picked.
-8. `[problems] enabled = false`, restart: no key, no sidebar button, and
-   `problems.json` left exactly where it was.
+8. `[problems] enabled = false`, restart: no key, no button beside the
+   Waiting title, and `problems.json` left exactly where it was.
 
-**Rejected, 2026-09-04.** *A text file* — open notes, write "the History
-tab shows yesterday's count", close notes: this is what he had, and it is
+**Rejected, 2026-09-04.** *A text file* — open notes, write "the list on
+Said shows yesterday's count", close notes: this is what he had, and it is
 what this key replaces, because by the time a report is worth reading the
 thing that would explain it is gone. *Asking him for the context* — which
 tab, which dictation, which backend: every one of those is knowable
@@ -3397,9 +3769,12 @@ What a verdict does, and what nothing else may:
 | **Later**, or the clock runs out | nothing | untouched |
 
 Nothing is learned and nothing is rewritten without a click. What the
-card got no answer to waits in the dashboard's **Review** screen, with
-the same two buttons and the list of what was decided. The dashboard
-writes the verdict to `review.json` (gitignored, next to `vocab.json`)
+card got no answer to waits as a row in the dashboard's **Waiting** pile
+and on the shelf, with the same two buttons — Yes is the one gold button
+on that screen — and the changed word on a pill inside the sentence. Nine
+of the last 72 verdicts were given there and 63 at the card; the window's
+job is the backlog, which is exactly what an unanswered proposal is. The
+dashboard writes the verdict to `review.json` (gitignored, next to `vocab.json`)
 and the running app learns it within seconds — or at its next start.
 
 Measured on this machine with `main.py --review`, 2026-09-02, over the
@@ -3688,15 +4063,23 @@ for `מבשרים`, all of which the local model got right.
 | `[camera] folder` | `captures` | the same folder the screen captures use, so there is one place to look. Files are named `photo ...` rather than `shot ...` |
 | `[camera] copy_to_clipboard` | `true` | on the clipboard the moment it is taken, exactly like a screenshot |
 | `[camera] edit_after_shot` | `true` | open the photo in the screenshot editor, on the pixels where the preview was. `false` makes the key a pure take-and-go |
+| `[shelf] enabled` | `true` | the panel beside the dot (see [The shelf](#the-shelf-ctrlaltd)). `false` unregisters the key entirely and nothing else changes: every card, every cue and the window go on working |
+| `[shelf] shelf_hotkey` | `ctrl+alt+d` | **tap** to open the panel beside the status dot; tap again, or press `Esc`, and it closes. It never opens on its own and never on hover. Rebind from the dashboard's Keys place; `""` = no key, and then there is no way to open it |
+| `[shelf] rows` | `5` | how many waiting things it lists before the rest become one `+N more` line that opens the window instead (`1` to `8`). It is also the height lever: five rows is a 648 px panel, three is 520 |
+| `[shelf] corner` | `top-right` | `top-right` \| `top-left` \| `bottom-right` \| `bottom-left`. Where it opens before you have dragged it. On the right-hand corners it stops short of the status dot rather than covering it |
+| `[shelf] x` | `-100000` | the left edge of the panel where you last dragged it, in screen pixels. `-100000` = never moved: use `corner`. Same sentinel as `[notify] x`, for the same reason — a negative coordinate is real on a monitor to the left of the primary |
+| `[shelf] y` | `-100000` | the top edge of that same panel |
+| `[shelf] scale` | `1.0` | how big it is drawn, `0.6` to `1.4` |
+| `[shelf] hush_notifications` | `true` | while the panel is open the notification column steps aside — the same cards are already listed on it, and two piles in one corner is one too many. They come straight back when it closes, nothing is marked seen and no reminder is lost |
 | `[server] enabled` | `false` | the phone endpoint (see [Dictating from the phone](#dictating-from-the-phone)) |
 | `[server] host` | `""` | `""` = the Tailscale address when up, else `127.0.0.1`. Deliberately never `0.0.0.0` |
 | `[server] port` | `8756` | the port `tailscale serve` should front |
 | `[notify] enabled` | `true` | the notify door (see [Notify](#notify--when-claude-or-anything-finishes-ctrlaltm)). `false` = `/notify` answers 503 and nothing is shown, stored or played |
 | `[notify] cue` | `true` | play the three-note `notify` cue when one arrives and on every reminder. `false` = the card only |
 | `[notify] card_seconds` | `0` | `0` = a card stays until you dismiss it, which is what a stack of them wants. Any other number is the old countdown, in seconds, **paused** while the mouse is on the card, with the reminders bringing the column back |
-| `[notify] stack_max` | `5` | how many unread cards may be on screen at once, newest at the top. The rest wait on the Notify screen and are counted on the bottom card as `+3 earlier`. `1` to `8` |
+| `[notify] stack_max` | `5` | how many unread cards may be on screen at once, newest at the top. The rest wait in the dashboard's Waiting pile and on the shelf, and are counted on the bottom card as `+3 earlier`. `1` to `8` |
 | `[notify] remind_every_s` | `120` | while something is unread, play the cue and show the card again this many seconds after the last time. `0` = never remind |
-| `[notify] remind_times` | `2` | ...at most this many times per arrival, then it waits quietly on the dashboard's Notify screen. `0` = never remind |
+| `[notify] remind_times` | `2` | ...at most this many times per arrival, then it waits quietly in the dashboard's Waiting pile. `0` = never remind |
 | `[notify] coalesce_s` | `5` | a second notification from the **same** source within this many seconds updates the card instead of playing a second cue — Claude fires `Stop` and `Notification` a moment apart. The item is still stored |
 | `[notify] interrupt` | `input` | `all` \| `input` \| `none`. Which arrivals may **pull you out** — play the cue and keep reminding. `input` is only what is waiting on you (a permission, a question, an idle session) and what went wrong; a plain finish lands as a quiet card and waits there. `all` is the door as it was; `none` never makes a sound. Counted 2026-09-05: 87 of the last 100 cards were per-turn finishes, each rung and reminded twice |
 | `[notify] quiet_s` | `0` | `0` = a finish (`done`) is a card the moment it lands — the shipped value since the afternoon of 2026-09-05, when the morning's 60 held 28 finishes and showed 26 of them exactly 60 s late. Any other number holds a finish that many seconds for the **session** that sent it to go quiet first; a second arrival from the same session inside the window retires the first unseen and waits in its place. A permission or a question never waits either way |
@@ -3706,9 +4089,9 @@ for `מבשרים`, all of which the local model got right.
 | `[notify] x` | `-100000` | the top-left of the card where you last dragged it, in screen pixels. `-100000` = never moved: use `corner`. Negative is real on a monitor to the left of the primary |
 | `[notify] y` | `-100000` | same, vertically |
 | `[notify] scale` | `1.0` | how big the card is drawn, `0.6` to `1.4` |
-| `[notify] dismiss_hotkey` | `ctrl+alt+m` | **tap** to take the card down and mark everything seen, wherever the mouse is. Rebind from the dashboard's Keys screen; `""` = no key |
+| `[notify] dismiss_hotkey` | `ctrl+alt+m` | **tap** to take the card down and mark everything seen, wherever the mouse is. Rebind from the dashboard's Keys place; `""` = no key |
 | `[problems] enabled` | `true` | the report key and the dashboard's **Report a problem** button — his own bug list (see [Report a problem](#report-a-problem-ctrlaltr)). `false` unregisters the key, takes the button away and writes nothing; `problems.json` is left exactly where it is |
-| `[problems] report_hotkey` | `ctrl+alt+r` | **tap** to open the report box over whatever is in front, wherever the mouse is. Rebind from the dashboard's Keys screen; `""` = no key, and the sidebar button is then the only door. Lives in `[problems]` and is read as `Config.report_hotkey` like `[notify] dismiss_hotkey` is |
+| `[problems] report_hotkey` | `ctrl+alt+r` | **tap** to open the report box over whatever is in front, wherever the mouse is. Rebind from the dashboard's Keys place; `""` = no key, and the button beside the Waiting title is then the only door. Lives in `[problems]` and is read as `Config.report_hotkey` like `[notify] dismiss_hotkey` is |
 | `[problems] shot` | `true` | attach a screenshot of the screen as it looked a moment **before** the box opened — the tab, the dialog, the wrong number, all of which are gone by the time the report is read. Written into `problems\` beside the report and never leaves this machine. `false` = the typed line and the settings only |
 | `[problems] keep_audio` | `true` | copy the recording the report is about into `problems\`, so it outlives `recent\`'s ring of `[vocab] keep_audio` clips: an unresolved report sits there for weeks and the audio is the only thing that can settle what was actually said. `false` = the report keeps the wav's name and nothing else |
 | `[problems] keep_resolved` | `200` | how many **answered** reports to keep, newest first (`0` to `2000`). Open ones are never trimmed at any setting — a question nobody has answered is not a kilobyte worth saving |

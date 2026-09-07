@@ -537,28 +537,31 @@ PAGE = r"""<!doctype html>
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100dvh; display: flex; flex-direction: column;
          align-items: center; justify-content: center; gap: 22px;
-         background: #10131a; color: #e8ecf4; font: 17px/1.5 system-ui,
+         background: #14110c; color: #f1ece2; font: 17px/1.5 system-ui,
          -apple-system, "Segoe UI", Roboto, sans-serif;
          padding: 24px calc(24px + env(safe-area-inset-right))
                   calc(24px + env(safe-area-inset-bottom))
                   calc(24px + env(safe-area-inset-left)); }
   #mic { width: 190px; height: 190px; border-radius: 50%; border: none;
-         background: #2d6cdf; color: #fff; font-size: 20px; font-weight: 600;
-         box-shadow: 0 10px 34px rgba(45,108,223,.42);
+         background: #e3a63c; color: #1a1409; font-size: 20px;
+         font-weight: 600;
+         box-shadow: 0 10px 34px rgba(227,166,60,.34);
          transition: transform .12s, background .12s, box-shadow .12s;
          /* a long press must not raise selection or the callout menu */
          touch-action: none; user-select: none; -webkit-user-select: none;
          -webkit-touch-callout: none; }
-  #mic:disabled { background: #39404e; box-shadow: none; }
-  #mic.rec { background: #d6392f; transform: scale(1.07);
-             box-shadow: 0 0 0 14px rgba(214,57,47,.18); }
-  #status { min-height: 1.5em; color: #9aa6bd; text-align: center; }
+  #mic:disabled { background: #332d24; color: #7e7564; box-shadow: none; }
+  #mic.rec { background: #ff5b4e; color: #1a1409; transform: scale(1.07);
+             box-shadow: 0 0 0 14px rgba(255,91,78,.20); }
+  #status { min-height: 1.5em; color: #b2a896; text-align: center; }
   #out { width: min(560px, 100%); min-height: 8.5em; padding: 14px 16px;
-         border-radius: 14px; border: 1px solid #29303d; background: #171b24;
-         color: #e8ecf4; font: inherit; resize: vertical; }
-  #copy { padding: 12px 22px; border-radius: 11px; border: 1px solid #39415280;
-          background: #1d2330; color: #cfd070; color: #d8dde8; font: inherit; }
-  .hint { color: #6d788d; font-size: 14px; text-align: center; }
+         border-radius: 14px; border: 1px solid #3a342a; background: #1c1813;
+         color: #f1ece2; font: inherit; resize: vertical; }
+  #out:focus { outline: 2px solid #e3a63c; outline-offset: 1px; }
+  #copy { padding: 12px 22px; border-radius: 11px;
+          border: 1px solid #4e473780;
+          background: #24201a; color: #f1ece2; font: inherit; }
+  .hint { color: #7e7564; font-size: 14px; text-align: center; }
 </style>
 
 <button id="mic">החזק ודבר</button>
@@ -566,7 +569,7 @@ PAGE = r"""<!doctype html>
 <textarea id="out" placeholder="הטקסט יופיע כאן" dir="auto"></textarea>
 <button id="copy">העתק</button>
 <div class="hint">מחזיקים, מדברים, משחררים. הטקסט מועתק אוטומטית.</div>
-<a class="hint" href="app.apk" style="color:#7fa6ee" id="apk">התקן את אפליקציית המקלדת (APK)</a>
+<a class="hint" href="app.apk" style="color:#8fc0f0" id="apk">התקן את אפליקציית המקלדת (APK)</a>
 
 <script>
 const mic = document.getElementById('mic');
@@ -586,7 +589,7 @@ if (!token) say('חסר טוקן — פתח את הכתובת המלאה מהל�
 
 function say(msg, bad) {
   statusEl.textContent = msg;
-  statusEl.style.color = bad ? '#e8837b' : '#9aa6bd';
+  statusEl.style.color = bad ? '#f1867a' : '#b2a896';
 }
 
 let recorder = null, chunks = [], stream = null, startedAt = 0;

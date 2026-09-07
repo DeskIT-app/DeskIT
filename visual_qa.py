@@ -229,6 +229,16 @@ FLASH_MS = 1400          # popup.py's confirmation dwell, same number
 # module here — NONE of its PhotoImage-returning helpers may be called
 # from this thread (see the note on rounded_slab below), only its colours,
 # faces and the one PIL-level function that returns an Image.
+# Hand GDI this app's fonts before anything on this path measures or
+# draws a glyph. Every card here goes through DrawTextW, and a face
+# that has not been loaded silently becomes Arial — see fonts.py. It is
+# idempotent, so ui.py having already called it costs nothing.
+try:
+    import fonts as _fonts
+    _fonts.load()
+except Exception:
+    pass
+
 try:
     import ui as _ui
     PANE, CARD, CARD_HI = _ui.PANE, _ui.CARD, _ui.CARD_HI
@@ -238,11 +248,11 @@ try:
     EDGE, EDGE_HI, EDGE_DOWN, STROKE = (_ui.EDGE, _ui.EDGE_HI,
                                         _ui.EDGE_DOWN, _ui.STROKE)
 except Exception:                       # ui.py absent: the window still works
-    PANE, CARD, CARD_HI, LINE = "#10131a", "#161b25", "#1b2130", "#232a36"
-    FG, DIM, FAINT = "#e8ecf4", "#8b97ad", "#5d6779"
-    ACCENT, ACCENT_HI, ACCENT_DOWN = "#2d6cdf", "#3d7cef", "#2559bd"
-    ACCENT_TEXT, AMBER, GREEN = "#8fb2f5", "#e0a32b", "#33b877"
-    EDGE, EDGE_HI, EDGE_DOWN, STROKE = "#1e2634", "#273040", "#1a212d", "#2a3242"
+    PANE, CARD, CARD_HI, LINE = "#1c1813", "#24201a", "#2e2921", "#3a342a"
+    FG, DIM, FAINT = "#f1ece2", "#b2a896", "#7e7564"
+    ACCENT, ACCENT_HI, ACCENT_DOWN = "#e3a63c", "#f0b854", "#c68c28"
+    ACCENT_TEXT, AMBER, GREEN = "#f0ba5c", "#e3a63c", "#63c88c"
+    EDGE, EDGE_HI, EDGE_DOWN, STROKE = "#29241d", "#332d24", "#1f1b15", "#3a342a"
 
 # The selector's own two colours. DIM_FACTOR is a per-channel multiply on
 # a screenshot we took ourselves, not a translucent window: the overlay is
@@ -258,7 +268,7 @@ except Exception:
     skin = None
 
 DIM_FACTOR = 0.38
-SELECT_BG = "#05070b"
+SELECT_BG = "#0a0806"     # the app's ground, taken under it
 
 # WHAT THE SECOND SENTENCE USED TO SAY, AND WHAT IT COST.
 #
@@ -1315,18 +1325,29 @@ class Speaker:
 # per-pixel Python loops (the specular gradient and the grain) moved into
 # Pillow's C. Do not put them back.
 
-GLASS_BASE = (10, 22, 44)        # smoked navy under the tint: glass that
-                                 # carries text is a SMOKED window, not a
-                                 # clear one, and without this the text
-                                 # loses to any busy wallpaper
-GLASS_TINT = (74, 144, 226)      # the app's blue
+GLASS_BASE = (20, 17, 12)        # the app's own ground under the tint:
+                                 # glass that carries text is a SMOKED
+                                 # window, not a clear one, and without
+                                 # this the text loses to any wallpaper
+GLASS_TINT = (182, 134, 50)      # the app's gold, taken down to the
+                                 # luminance the blue had (Y .272 against
+                                 # .269) so the plate is the same weight
+                                 # over a screenshot as it always was
 GLASS_RIM = (255, 255, 255)
-INK = (238, 245, 255)
-INK_DIM = (168, 194, 226)
-INK_FAINT = (134, 162, 198)
-MARK = (255, 214, 64)            # the pencil's ink: the one warm colour
-                                 # on the whole surface, so a mark can
-                                 # never be mistaken for chrome
+# The three inks are the window's FG/DIM/FAINT moved onto this darker,
+# busier ground: same relative luminance as the blue-grey set they
+# replace (.88/.53/.33 against .91/.52/.35), warm hue.
+INK = (246, 241, 231)
+INK_DIM = (203, 192, 172)
+INK_FAINT = (166, 155, 136)
+MARK = (255, 214, 64)            # the pencil's ink. Left vivid on
+                                 # purpose: the chrome is warm now, so
+                                 # the mark separates from it by being
+                                 # BRIGHTER and more saturated than any
+                                 # gold the app draws (Y .70 v .44), and
+                                 # a yellow highlighter is worth more
+                                 # than palette purity on someone
+                                 # else's picture
 
 # dim the frozen screen and pull it toward night blue in ONE lookup pass
 _FREEZE_LUT = ([min(255, int(v * .34) + 5) for v in range(256)]

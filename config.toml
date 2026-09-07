@@ -226,8 +226,8 @@ corner = "top-right"          # top-right | top-left | bottom-right | bottom-lef
                               # Where it starts before you have moved it. On the
                               # right it is placed BESIDE the status dot, never
                               # over it: the dot does not move for this
-x = -283                      # the top-left of the CARD where you last dragged
-y = 258                       # it, in screen pixels — what you can SEE, not the
+x = -278                      # the top-left of the CARD where you last dragged
+y = 236                       # it, in screen pixels — what you can SEE, not the
                               # window, which starts 26 px further up and left to
                               # leave room for its own shadow. -100000 = never
                               # moved: use `corner`. It has to be a number no
@@ -1191,7 +1191,7 @@ keep_resolved = 200            # how many ANSWERED reports to keep, newest
                                # are never trimmed at any setting - a
                                # question nobody has answered is not a
                                # kilobyte worth saving
-x = -100000                    # the left edge of the report CARD where
+x = 1066                    # the left edge of the report CARD where
                                # you last dragged it to, in screen pixels.
                                # -100000 = you never have, so it opens
                                # where it always opens. The sentinel is a
@@ -1199,7 +1199,7 @@ x = -100000                    # the left edge of the report CARD where
                                # negative coordinates are real on a monitor
                                # to the left of the primary (this one
                                # starts at x = -1920)
-y = -100000                    # the top edge of that same card, in screen
+y = 511                    # the top edge of that same card, in screen
                                # pixels. -100000 = never dragged
 card_x = -100000               # the left edge of the DASHBOARD's report
                                # box, which is a second window and keeps
@@ -1210,6 +1210,50 @@ card_x = -100000               # the left edge of the DASHBOARD's report
 card_y = -100000               # the top edge of the dashboard's report
                                # box, in screen pixels. -100000 = never
                                # dragged
+
+[shelf]
+# THE PANEL BESIDE THE DOT, AND IT ONLY OPENS BECAUSE YOU ASKED.
+# One key opens a small panel in the top-right corner, next to the status
+# dot: what the app is doing right now, everything that is waiting for an
+# answer - unread notifications, second-reading proposals, open problems,
+# questions from the weekly review - each with its own two answers, the
+# last thing you said with a Copy button, the screens, and one door to
+# the control window. The same key closes it again, and so does Esc.
+#
+# It never opens on its own and never on hover. Nothing arrives here; you
+# ask for it, you answer what is on it, and it goes away. Settings, the
+# key list and the history are deliberately NOT on it - those are things
+# you sit down to, and sitting down is what the control window is for.
+enabled = true                 # false unregisters the key entirely.
+                               # Nothing else changes: every card, every
+                               # cue and the window go on working
+shelf_hotkey = "ctrl+alt+d"    # tap: the panel opens beside the dot. Tap
+                               # again, or press Esc, and it closes.
+                               # Rebind from the dashboard; "" = no key,
+                               # and then there is no way to open it
+rows = 5                       # how many waiting things it lists before
+                               # the rest become one "+N more" line that
+                               # opens the window instead (1 .. 8)
+corner = "top-right"           # top-right | top-left | bottom-right | bottom-left.
+                               # Where it opens before you have dragged
+                               # it. On the right-hand corners it stops
+                               # short of the status dot rather than
+                               # covering it
+x = -100000                    # the left edge of the PANEL where you last
+                               # dragged it, in screen pixels. -100000 =
+                               # never moved: use `corner`. The sentinel
+                               # is a number no desktop can reach, because
+                               # a negative coordinate is real on a
+                               # monitor to the left of the primary
+y = -100000                    # the top edge of that same panel, in
+                               # screen pixels. -100000 = never dragged
+scale = 1.0                    # how big it is drawn (0.6 .. 1.4)
+hush_notifications = true      # while the panel is open the notification
+                               # column steps aside - the same cards are
+                               # already listed on it, and two piles in
+                               # one corner is one too many. They come
+                               # straight back when it closes, nothing is
+                               # marked seen and no reminder is lost
 
 [server]
 # Dictate from the PHONE, transcribe on this GPU: the phone records and

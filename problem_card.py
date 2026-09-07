@@ -109,20 +109,23 @@ SHOT_CAPTION = ("The screen as it was a moment before this box opened. "
 SEND_LABEL = "Send"
 CANCEL_LABEL = "Cancel"
 
-# ui.py's palette, spelled out. Read lazily from `ui` when `ui` imports —
+# The palette, spelled out. Read lazily from `ui` when `ui` imports —
 # so skin\palette.py's repaint reaches this card the way it reaches every
 # other surface — and these values, which are ui.py's own literals, when
 # it does not. A painter that must render with no Tk in the process cannot
 # have `import ui` at the top of it (ui pulls in tkinter and ImageTk), and
 # a card that cannot be rendered headless is a card nobody looks at until
-# it is on screen and wrong.
-_FALLBACK = {"CARD": "#161b25", "CARD_HI": "#1b2130",
-             "FG": "#e8ecf4", "DIM": "#8b97ad",
-             "FAINT": "#5d6779", "LINE": "#232a36", "STROKE": "#2a3242",
-             "EDGE": "#1e2634", "ACCENT": "#2d6cdf", "ACCENT_HI": "#3d7cef",
-             "ACCENT_SOFT": "#1a2740", "ACCENT_TEXT": "#8fb2f5",
-             "ACCENT_EDGE": "#2b3f66", "EDGE_HI": "#273040",
-             "CHIP_BG": "#1c2432", "TILE_EDGE": "#2f3a4d"}
+# it is on screen and wrong. These are skin\palette.py's LAMPLIGHT
+# values, which is what ui.py hands back once the skin has repainted it —
+# so the headless card and the on-screen card are the same picture.
+_FALLBACK = {"CARD": "#24201a", "CARD_HI": "#2e2921",
+             "FG": "#f1ece2", "DIM": "#b2a896",
+             "FAINT": "#7e7564", "LINE": "#3a342a", "STROKE": "#3a342a",
+             "EDGE": "#29241d", "ACCENT": "#e3a63c", "ACCENT_HI": "#f0b854",
+             "ACCENT_SOFT": "#332711", "ACCENT_TEXT": "#f0ba5c",
+             "ACCENT_ON": "#1a1409",
+             "ACCENT_EDGE": "#5a431a", "EDGE_HI": "#332d24",
+             "CHIP_BG": "#292419", "TILE_EDGE": "#5a5240"}
 
 
 def hex_of(name: str) -> str:
@@ -552,8 +555,8 @@ def compose(card: dict, cache: dict | None = None):
         on = name == picked
         hot = hover == KIND_PREFIX + name
         # ui.Chip's own three faces, in palette names rather than the
-        # literals it spells inline — its off fill #151b26 and CARD
-        # #161b25 are the same colour to the eye, so an unpicked chip is a
+        # literals it used to spell inline — its off fill and CARD are
+        # one step apart at most, so an unpicked chip is a
         # hairline pill on the card and not a raised button, which is what
         # the dashboard's row looks like and what made this one look
         # heavier than it beside it.
@@ -591,17 +594,22 @@ def compose(card: dict, cache: dict | None = None):
     # dashboard's does; Cancel is the quiet one, and it is a real button
     # rather than only the Escape key because a floating card with no
     # frame gives the mouse nothing else to say no with.
+    #
+    # ON the accent fill the label is ACCENT_ON and not FG. Under the blue
+    # palette white on the accent was 4.10:1 — already below AA — and on a
+    # gold fill it is 1.8:1, which is a word you cannot read on the one
+    # button the card is for. ACCENT_ON is 8.52:1 on it.
     sx0, sy0, sx1, sy1 = box["send"]
     hot = hover == SEND
     put(_rr((sx1 - sx0, sy1 - sy0), BTN_RADIUS,
             fill=(rgb("ACCENT_HI") if hot else rgb("ACCENT")) + (255,)),
         sx0, sy0)
-    label = _rtl(cache, SEND_LABEL, 9.5, rgb("FG"), weight=600)
+    label = _rtl(cache, SEND_LABEL, 9.5, rgb("ACCENT_ON"), weight=600)
     icon = 14
     total = icon + 8 + label.width
     ix = sx0 + (sx1 - sx0 - total) / 2
     _circle_x(img, (int(body[0] + ix), int(body[1] + (sy0 + sy1) / 2)),
-              icon, rgb("FG"))
+              icon, rgb("ACCENT_ON"))
     put(label, ix + icon + 8, (sy0 + sy1) / 2 - label.height / 2)
 
     cx0, cy0, cx1, cy1 = box["cancel"]

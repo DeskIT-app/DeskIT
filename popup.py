@@ -121,7 +121,7 @@ was the second half of the owner's sentence, and the unit he chooses
 between is a line: the headline, or sense 2 but not sense 3. So a press
 in the body takes the line under it, a drag takes the range, a
 double-click takes the whole sense it landed in, and the highlight is a
-band drawn in the app's own palette — ACCENT taken down to #1d365c —
+band drawn in the app's own palette — ACCENT taken down to #332711 —
 rather than the system's blue slab, which on this ground would shout.
 
 Character-level selection was measured and turned down. DrawTextW offers
@@ -901,36 +901,49 @@ def _rgb(r: int, g: int, b: int) -> int:
     return r | (g << 8) | (b << 16)
 
 
-# overlay.py's palette, as COLORREFs, so the app looks like one app.
-BG = _rgb(0x10, 0x13, 0x1A)         # overlay.BG      #10131a
-FG = _rgb(0xE8, 0xEC, 0xF4)         # overlay.FG      #e8ecf4
-DIM = _rgb(0x8B, 0x97, 0xAD)        # overlay.DIM     #8b97ad
-ACCENT = _rgb(0x2D, 0x6C, 0xDF)     # overlay.ACCENT  #2d6cdf
+# LAMPLIGHT, as COLORREFs, so the app looks like one app. The names are
+# skin\palette.py's; this box is raw Win32 and cannot import ui.py, so the
+# values are spelled out and the ratios are given beside them.
+BG = _rgb(0x14, 0x11, 0x0C)         # palette.BG        #14110c  L* 5.2
+FG = _rgb(0xF1, 0xEC, 0xE2)         # palette.FG        15.99:1 on BG
+DIM = _rgb(0xB2, 0xA8, 0x96)        # palette.DIM        8.01:1
+# The one lit thing on this surface: the term you looked up, and the word
+# the bar says after a copy. ACCENT is the fill a pressed button takes;
+# TERM is the same colour at TEXT weight, 10.66:1 on BG, because the
+# accent itself is a fill colour and reads thin as a headline.
+ACCENT = _rgb(0xE3, 0xA6, 0x3C)     # palette.ACCENT     8.77:1 on BG
+ACCENT_ON = _rgb(0x1A, 0x14, 0x09)  # palette.ACCENT_ON  8.52:1 ON the fill
+TERM = _rgb(0xF0, 0xBA, 0x5C)       # palette.ACCENT_TEXT
 # The border, the hairline under the headline, and the close button's
-# hover fill: BG lifted towards DIM, the same move overlay.py makes for
-# its progress trough (#232a36) and its status ring. Not new colours, one
-# ramp between two that were already here.
-EDGE = _rgb(0x2A, 0x33, 0x42)
-HOVER = _rgb(0x1E, 0x25, 0x33)
-# The title bar's ground: the same BG-to-EDGE ramp, a quarter of the way
-# along instead of half. It has to be visible as a different surface and
-# still be quieter than HOVER, or a button under the cursor would stop
-# lighting up the moment it moved into the bar.
-BAR_BG = _rgb(0x17, 0x1C, 0x25)
-# The band behind a selected line: ACCENT taken down until it sits UNDER
-# text rather than in front of it. The system's own COLOR_HIGHLIGHT is a
-# bright blue slab that would be the loudest thing in a dark box, and a
-# selection is not an announcement — it is a note of what you are about
-# to copy. It costs contrast, which is why a selected line is also
-# lifted to FG: DIM on this ground computes to 4.11:1 against the 6.31:1
-# it had on BG — under the 4.5 a 16 px face wants — while FG on it is
-# 10.23:1, better than the sense line had unselected. So the band never
-# makes anything harder to read, and the lift is the same sentence the
-# band is saying twice.
-SEL = _rgb(0x1D, 0x36, 0x5C)
-# Pressed. overlay.STATES' red, the app's one "this is destructive" colour
-# — and the same convention every close button on Windows follows.
-PRESSED = _rgb(0xE0, 0x35, 0x2B)
+# hover fill: the ladder's own steps rather than shades picked to look
+# right next to whatever they happened to sit beside. EDGE is palette.LINE
+# (L* 22.0) and HOVER is palette.CARD (L* 12.5) — the same +7 L* lift over
+# the ground the old pair had.
+EDGE = _rgb(0x3A, 0x34, 0x2A)
+HOVER = _rgb(0x24, 0x20, 0x1A)
+# The title bar's ground: palette.PANE, L* 8.5. It has to be visible as a
+# different surface and still be quieter than HOVER, or a button under the
+# cursor would stop lighting up the moment it moved into the bar.
+BAR_BG = _rgb(0x1C, 0x18, 0x13)
+# The band behind a selected line: palette.ACCENT_SOFT, the accent taken
+# down until it sits UNDER text rather than in front of it. The system's
+# own COLOR_HIGHLIGHT is a bright blue slab that would be the loudest
+# thing in a dark box, and a selection is not an announcement — it is a
+# note of what you are about to copy. It costs contrast, which is why a
+# selected line is also lifted to FG: DIM on this ground computes to
+# 6.21:1 against the 8.01:1 it had on BG, while FG on it is 12.39:1 —
+# better than the sense line had unselected. So the band never makes
+# anything harder to read, and the lift is the same sentence the band is
+# saying twice.
+SEL = _rgb(0x33, 0x27, 0x11)
+# Pressed. The app's one "this is destructive" colour, and the same
+# convention every close button on Windows follows. Deeper than the
+# palette's danger red because this one is a FILL with the ✕ drawn over
+# it: FG on it is 3.61:1, which is what a graphic needs. DANGER_TEXT is
+# the same message at text weight, 7.56:1 on BG, for the one line that
+# says a copy did not work.
+PRESSED = _rgb(0xD9, 0x48, 0x3C)
+DANGER_TEXT = _rgb(0xF1, 0x86, 0x7A)  # palette.RED
 
 # Brushes and pens for the fixed colours live for the life of the process
 # rather than per Popup. They are immutable, they are shared with the
@@ -1312,7 +1325,7 @@ class Popup:
     # bigger and semibold because it is the answer; the senses are smaller
     # and dimmer because they are the footnotes to it.
     _FACE = {
-        "title": (3, FW_SEMIBOLD, FG),
+        "title": (3, FW_SEMIBOLD, TERM),
         "body": (0, FW_NORMAL, FG),
         "wait": (0, FW_NORMAL, DIM),
         "sense": (-3, FW_NORMAL, DIM),
@@ -3956,7 +3969,7 @@ class Popup:
         language the answer is in."""
         if self._flash == "copied":
             return ("הועתק" if rtl else "copied"), ACCENT
-        return ("הלוח תפוס" if rtl else "clipboard busy"), PRESSED
+        return ("הלוח תפוס" if rtl else "clipboard busy"), DANGER_TEXT
 
     def _chip(self, hdc: int, b: w.RECT, fill: int) -> None:
         """The rounded slab under a button that the mouse is on."""
@@ -3982,7 +3995,7 @@ class Popup:
 
         Three states, because a control that does not react to the mouse
         reads as decoration and gets clicked twice: dim on its own, a
-        slate chip and a bright glyph under the cursor, and the app's red
+        lifted chip and a bright glyph under the cursor, and the app's red
         while it is held down — which is where every close button on this
         operating system goes red, and it says "let go here and this
         disappears" before you have committed to it.
@@ -4009,7 +4022,7 @@ class Popup:
         The same treatment as the close button and one deliberate
         difference: held down it goes ACCENT and not red. Red on this
         machine means "this destroys something", and a copy destroys
-        nothing; the box's own blue is the colour it uses for the thing
+        nothing; the box's own gold is the colour it uses for the thing
         that just worked.
 
         BOTH copy buttons are drawn here, and the only difference between
@@ -4031,7 +4044,9 @@ class Popup:
             self._chip(hdc, b, fill)
         done = self._flash == "copied" and self._flash_on == name
         if done:
-            colour = ACCENT if fill is None else FG
+            # On the gold chip the tick is ACCENT_ON, not FG: white on
+            # this fill is 1.8:1 and would vanish.
+            colour = ACCENT if fill is None else ACCENT_ON
         else:
             colour = FG if self._hover == name else DIM
         # A 10 x 10 glyph box, centred in the 18 px hit rectangle.

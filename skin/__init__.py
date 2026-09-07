@@ -206,6 +206,33 @@ def notify_run(card) -> bool:
         return False
 
 
+def shelf_run(card) -> bool:
+    """The shelf — the panel beside the dot that one key opens — on glass.
+
+    The same trade as every card above: the queue, the toggle and every
+    button's meaning stay in shelf.ShelfCard and main.py, and this only
+    paints. Falling back is a downgrade in looks and nothing else — delete
+    the folder and shelf.ShelfCard._build_and_loop puts the same panel up
+    in a flat Tk window with square corners, buttons and all.
+
+    NAMED shelf_run AND NOT shelf, for the reason paint_wave spells out
+    below: skin\\shelf.py exists, so a hook called `shelf` whose body says
+    `from .shelf import run` would rebind skin.shelf from this function to
+    that module on its first call and raise "'module' object is not
+    callable" on its second. notify_run/.notify and review_run/.review are
+    the same pairing, and tests.py asserts the rule for every hook here.
+    """
+    if not on():
+        return False
+    try:
+        from .shelf import run
+        run(card)
+        return True
+    except Exception:
+        _log.info("skin shelf failed, falling back", exc_info=True)
+        return False
+
+
 def paint_wave(card) -> bool:
     """The microphone wave in the ask-the-screen card.
 
