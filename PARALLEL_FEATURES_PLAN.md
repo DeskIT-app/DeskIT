@@ -228,5 +228,14 @@ change — listed so they are not mistaken for oversights:
 
 ## 5. Done means
 
-`.venv\Scripts\python.exe tests.py` green (468 functions), and the four screen
-keys demonstrably answer while a recording is latched.
+`.venv\Scripts\python.exe tests_quiet.py --no-screen` green (468 functions when
+this was written; there are far more now), and the four screen keys demonstrably
+answer while a recording is latched.
+
+Run it the hidden way — house rule 8 in `AGENTS.md`: every test run happens on a
+hidden desktop, and `--no-screen` also skips the sixteen in
+`tests_quiet.NEEDS_SCREEN` that would otherwise take his mouse for fifteen
+seconds. The plain `tests_quiet.py`, which does run those sixteen in the open,
+waits until he is away from the desk — and it is the run that settles this
+change, because the lasso, the drag and the ask card are the screen keys this
+plan is about. Schedule it; do not decide it can be skipped.

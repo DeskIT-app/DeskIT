@@ -265,7 +265,7 @@ command, display name, icon), so the pin launches `Dashboard.vbs` with
 the right name and face. If you pinned it before this existed, unpin and
 pin it again — the shell reads these when the pin is created.
 
-**Three places along the top, and no rail.** The window had grown a left
+**Six places along the top, and no rail.** The window had grown a left
 rail of nine rows — Overview, History, Review, Awake, Notify, Keys,
 Version, Problems, Settings — and the rail was 212 px, 18% of the window,
 spent on a menu of screens that saw **2.1 actions a day between them**.
@@ -273,52 +273,69 @@ Ten days of logs, counted 2026-09-06: **968 actions at a key, 333 at a
 card, 21 in this window**. Nine of those ten days had zero or one. All 21
 were: nine review verdicts, four dismiss-alls, five screens/night
 toggles and three key rebinds, in four bursts — this window is opened to
-*catch up*, not to browse, and then closed. So the nine rows are three
+*catch up*, not to browse, and then closed. So the nine rows are six
 words on a 56 px bar:
 
-- **Home** — everything that wants an answer, in one pile, and under
-  it everything you have said and the words it has learned — one page
-  that scrolls. It opens here.
+- **Home** — a summary, and nothing more: what wants an answer (the
+  newest three, whatever kind they are), one line saying what else is
+  waiting and where, and one line each for the rest of the day. It
+  opens here and it does not need scrolling.
+- **Corrections** — every proposal the second reading is waiting on,
+  and the words it has already learned, side by side.
+- **Problems** — what you reported, the questions the weekly routine
+  asked back, and the branches it left to publish.
+- **Said** — `transcripts.log` read back, with the search and the six
+  filters, twenty-five rows at a time.
 - **Keys** — every binding, lit on a picture of a keyboard.
 - **Settings** — every line of `config.toml`, plus the three things that
   were really settings all along.
 
-For one day there were four — Waiting and Said were two places — and
-the owner's verdict was that Keys and Settings are places you go while
-what is waiting and what was said are one desk, to be scrolled and not
-switched between. So they are one page again, and the page scrolls.
+It took four goes to get there and every one of them was his. Nine
+rail rows became four places (Waiting, Said, Keys, Settings); he said
+Waiting and Said are one desk, so they became one scrolling page and
+three places; he read that page and said **"Home should be a summary,
+and then maybe add more tabs. Home is a summary of everything, and to
+get more information, I don't need everything on my home screen"** —
+so the home says what wants him and what happened today, and every
+kind of thing has a place of its own to be read in full.
 
-The bar carries the mark and the wordmark at the left, the three places
+The bar carries the mark at the left (the wordmark went with the extra
+places — the title bar says DeskIT one line above it), the six places
 in the middle with a 2 px gold underline on the one you are on, and at
 the right the state as a sentence — the dot in its live colour, the word
 (*Off*, *Starting*, *Listening*, *Recording*, *Locked on*,
-*Transcribing*, *Paused*), the uptime — and **two** buttons: **Screens
-off** (Screens on while they are dark; only while the app runs, since
-the screens are the running app's to put out), and Pause when it is
-running, Resume when it is paused, Start when it is off. Screens off
-was a small gold link in the home's footer and the owner could not
-find it; a thing pressed every evening belongs beside Pause. "Is it
-on?" is the question this window exists to answer, and it is answered
-on every place rather than on one of them. **Stop moved to Settings →
-The app**, because the old rail put a 25-second mistake one slip away
-from Pause. The window is 1160×720 (it was 940×648) and still fixed,
-which is what lets every bitmap be cached.
+*Transcribing*, *Paused*), the uptime — and **three** buttons:
+**Screens off** (Screens on while they are dark; only while the app
+runs, since the screens are the running app's to put out), **Pause**
+(Resume when it is paused, Start when it is off), and **Stop**. Screens
+off was a small gold link in the home's footer and he could not find
+it; Stop was on Settings → The app and he could not find that either
+(*"I don't have a button to shut down the model, I only have a button
+to pause it"*). The reason Stop was buried has not gone away — it costs
+25 seconds of model loading to undo — so **it arms before it fires**:
+the first press says *Stop again*, the second one quits, and anything
+else disarms it. "Is it on?" is the question this window exists to
+answer, and it is answered on every place rather than on one of them.
+The window is 1160×720 (it was 940×648) and still fixed, which is what
+lets every bitmap be cached.
 
-**Home is the window's whole job, said in one sentence.** *"Five
+**The home is the window's whole job, said in one sentence.** *"Five
 things want an answer."* — or *"Nothing is waiting."*, with "Nothing else
 on the desk needs you right now." under it. Then ONE card holding the
 merged pile: unread notifications (Go there / ×), second-reading
 proposals (the sentence with the changed word on a gold-soft pill, the
 reason under it, Yes / No), open problems (Fixed / Close), and the weekly
 routine's questions (Answer / Later) — newest first, whatever kind they
-are, up to twelve of them, **the card exactly as tall as its rows**;
-anything older is counted on one line and the whole list has it. It
-was a fixed card with a scroller inside it and "+N more", and the
-owner's photograph of that on 2026-09-07 was rows floating in the
-middle of an empty card — the card grew and the scroller inside it did
-not. A page that scrolls has no use for a card that scrolls inside it.
-Under the card, one faint line about finishes being held until their
-session goes quiet.
+are, **the newest three and no more**, in a card exactly as tall as its
+rows. Under it, one line of counts — *5 corrections · 1 problem* — and
+each count is the door to the place that holds them, because a number
+with nowhere to go is a number nobody can act on. Under that, one faint
+line about finishes being held until their session goes quiet.
+
+The card was a fixed rectangle with a scroller inside it and a "+N
+more" that grew it, and his photograph of that on 2026-09-07 was rows
+floating in the middle of an empty card — the card grew and the
+scroller inside it did not. It is drawn from its rows now.
 
 The merge is the finding, not a layout preference. Those four things used
 to be four screens; they are four sources of *one* thing — something is
@@ -333,18 +350,13 @@ Under the pile, **the rest of the day, one line each**: **Said** (the
 last dictation, drawn RTL, with the time and "N today"), **Took** (the
 last capture and the folder it went to), **Looked up** (the last term →
 its meaning). A line whose store does not exist is skipped rather than
-shown empty. Clicking the Said line scrolls the page down to **Said**:
-the search, the six filters, the last hundred things you said as rows,
-and the vocabulary panel beside them (see *Everything you said, on the
-home* below). The whole of that — pile, rest of the day, Said — is one
-`ui.Scroller`, so the wheel does the same thing wherever the pointer
-is, and a notch is 48 px rather than a fifth of the screen: it used to
-jump, and the owner called it "laggy and ugly"; a wheel tick on the
-home now costs about 4 ms. Under the page, fixed, a footer under a
-rule: the awake state, whether the phone is live, which version is
-running, how many words it has learned. Four facts that are true
-whichever place is open, so they read as a footer and not as a fifth
-thing to do.
+shown empty, and clicking the Said line opens the **Said** place. A
+wheel notch anywhere on the page is 48 px rather than a fifth of the
+screen — it used to jump, and he called it "laggy and ugly"; a tick
+now costs about 4 ms. Under the page, fixed, a footer under a rule: the
+awake state, whether the phone is live, which version is running, how
+many words it has learned. Four facts that are true whichever place is
+open, so they read as a footer and not as a fifth thing to do.
 
 Two controls sit beside the title because that is where their subject is:
 **Report a problem** (which also says its key, `Ctrl+Alt+R` — all five
@@ -427,8 +439,8 @@ and delay. Anything else is written all the same and the reply says so:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│ ⌐ DeskIT   Home  Keys  Settings   ● Listening  up 4h 40m             │
-│            ────                            [ ☾ Screens off ] [ Pause ]│
+│ ⌐  Home  Corrections  Problems  Said  Keys  Settings                 │
+│    ────       ● Listening 4h 40m [☾ Screens off] [ Pause ] [ Stop ]  │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  Five things want an answer.               ⊗ Report a problem        │
@@ -444,6 +456,7 @@ and delay. Anything else is written all the same and the reply says so:
 │  │              …‹the line he typed, right-aligned›                │  │
 │  │                                            [Fixed]  [Close]    │  │
 │  └────────────────────────────────────────────────────────────────┘  │
+│  5 corrections · 1 problem                                           │
 │  2 finishes held until the session that sent them goes quiet.         │
 │                                                                      │
 │  THE REST OF THE DAY · ONE LINE EACH                                 │
@@ -451,12 +464,6 @@ and delay. Anything else is written all the same and the reply says so:
 │  Took       22:27   shot 2026-09-06 22-27-55.png           1 today   │
 │  Looked up  23:46   leverage → מָנוֹף                                  │
 │                                                                      │
-│  SAID                                     the last 100 of what you said│
-│  ┌ 🔍 Search everything you have said… ┐                             │
-│  (All) Dictation  Translated  Punctuated  Looked up  Learned  Failed │
-│  ┌ 23:46 ▣  …‹what you said›  ⧉ ┐   ┌ VOCABULARY  38          ┐      │
-│  ┌ 23:12 ▣  …                  ┐   │ Ctrl+F9 teach it a word  │      │
-│  … the page scrolls …               └──────────────────────────┘     │
 │  ──────────────────────────────────────────────────────────────────  │
 │  ☾ The screens are off since 22:46.                                  │
 │                    phone live · running fast · 38 words learned      │
@@ -471,11 +478,13 @@ app being the light rather than the furniture — and it is the same table
 the cards, the dot, the boxes and the phone page draw from. `SKIN.md`
 holds it, with the contrast ratio behind every colour.
 
-### Everything you said, on the home
+### Everything you said, on its own place
 
-**Said is `transcripts.log`, read back**, and it is the lower half of
-the home page — under the pile and the rest of the day, reached by
-scrolling or by clicking the Said line. It was called History, and
+**Said is `transcripts.log`, read back**, on a place of its own,
+reached from the bar or by clicking the Said line of the home. It
+opens on **twenty-five rows** and grows by twenty-five per press of
+*Show more* — a hundred at once was, in his words, "a lot to scroll
+and it's a nightmare". It was called History, and
 "history" appears **zero times in 11,046 lines of log** — nothing that
 screen does is logged and no window action was ever recorded there, so
 the name was renamed to the thing it holds. The last hundred entries,
@@ -4169,4 +4178,41 @@ Raw Win32 via ctypes (`WH_KEYBOARD_LL` hook + `SendInput`) — the
 unverifiable here, and the raw hook exposes `LLKHF_INJECTED`, which gives
 the clean rule: the hotkey works injected or physical, but only *physical*
 other-key presses abort a recording, so the app's own synthetic Ctrl+V can
-never kill one. Unit tests: `.venv\Scripts\python.exe tests.py`.
+never kill one. Unit tests: see [Tests](#tests) — they run where you
+cannot see them, on purpose.
+
+## Tests
+
+The suite is one file, `tests.py`, and it is not the file you run. It
+stands up real windows — cards, the dashboard, overlays, the correction
+box — and every one of them would land on top of whatever you are doing.
+So it is run through `tests_quiet.py`, which starts it on a second
+Windows desktop: a real desktop with a foreground window and a
+clipboard, that nobody is looking at. Type this:
+
+```
+.venv\Scripts\python.exe tests_quiet.py --no-screen
+```
+
+and nothing appears at all. That is the command while you are at the
+desk, and it has been the rule since 2026-09-07.
+
+`--no-screen` is what makes it silent. Sixteen of the tests cannot live
+on a hidden desktop — the ask card photographs the display, and the drag
+tests move your actual mouse — so they are named in
+`tests_quiet.NEEDS_SCREEN`, and without the flag they run in the open at
+the end: about fifteen seconds of windows over your work with your
+pointer taken away from you. With the flag they are skipped outright.
+
+The price is that the exit code then covers only the tests that ran, so
+the plain form
+
+```
+.venv\Scripts\python.exe tests_quiet.py
+```
+
+is still worth one run before you ship anything — start it as you get up
+from the desk, and it will have finished those sixteen by the time you
+are back. `.venv\Scripts\python.exe tests.py` is the same suite with
+nothing hidden; it is safe to run while dictation is live, but every
+window it opens is one you will watch it open.

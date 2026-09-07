@@ -210,8 +210,15 @@ the same voice as `lookup.py`'s.
   TTS voice handling and the off/button/auto switch; and that the
   screenshot pipeline is bytes-in/bytes-out with no file path anywhere
   in its signatures.
-- `.venv\Scripts\python.exe tests.py` — the full suite (287 existing +
-  yours) passes. Run it BEFORE claiming done, per AGENTS.md.
+- `.venv\Scripts\python.exe tests_quiet.py --no-screen` — the full suite
+  (287 existing + yours, at the time this was written) passes. Run it
+  BEFORE claiming done, per AGENTS.md — and run it that way, hidden:
+  house rule 8 says every test run happens on a hidden desktop, and
+  `--no-screen` skips the sixteen in `tests_quiet.NEEDS_SCREEN` that
+  need the real display or the real mouse. The ask card's own tests are
+  among those sixteen, so the plain `tests_quiet.py` — the one that runs
+  them in the open — is what finally proves this feature, and it waits
+  until he is away from the desk.
 - `main.py --benchmark` before and after your changes: the dictation
   pipeline numbers must not regress — this feature must be inert when
   its window is closed.

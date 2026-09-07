@@ -49,18 +49,20 @@ deliberately not on it: those are things you sit down to.
 **The dashboard** (`dashboard.py` + `ui.py` + `widgets.py`) is four
 places along a 56 px top bar — no rail, since 2026-09-07:
 
-- **Home** — one page that scrolls (`ui.Scroller`, in pixels). One title
-  line, one card as tall as its rows holding the merged pile (notify
-  unread + review pending + problems open + questions pending, newest
-  first, up to twelve, older ones counted), one line each for the rest
-  of the day, then Said — `transcripts.log` read back (history.py) with
-  the search, the filters and the vocabulary panel beside the rows — and
-  a fixed footer of facts. "The whole list" behind it holds what needs
-  more than a line: a question with its options, a report with its
-  evidence, a weekly branch with its Push button. Waiting and Said were
-  two places for one day (2026-09-07); the owner wanted one desk.
-- **Keys** — the bindings lit on a drawn 87-cap keyboard (keyboard.py);
-  click a cap, or press a real key, to see what it does and rebind it.
+- **Home** — a summary and nothing else: one title line, one card as
+  tall as its rows holding the newest THREE of the merged pile (notify
+  unread + review pending + problems open + questions pending), one
+  line of counts under it where each count is a door to the place that
+  holds them, one line each for the rest of the day, a fixed footer of
+  facts. It fits without scrolling.
+- **Corrections** — every pending proposal of the second reading, with
+  the vocabulary panel beside it.
+- **Problems** — his reports, the routine's questions and the weekly
+  branches: everything that needs more than a line.
+- **Said** — `transcripts.log` read back (history.py), search, filters,
+  SAID_PAGE rows at a time behind a Show more.
+- **Keys** — the bindings lit on a drawn keyboard (keyboard.py); click a
+  cap, or press a real key, to see what it does and rebind it.
 - **Settings** — General, Dictation, Text, Screen, Cards, Phone, The app
   (settings.py: TABS names lines by hand, TAB_SECTIONS gives each tab the
   rest of its sections, WORDS says every line plainly; every line drawn
@@ -68,7 +70,13 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   used to be rail rows: Awake, the version switch, Stop, Send a test,
   the cue sounds, the files. No sentences, no "Everything" — both
   removed on the owner's word the day after they were built.
-- **The bar** carries Screens off beside Pause, on every place.
+- **The bar** carries Screens off, Pause and Stop, on every place. Stop
+  ARMS on the first press and quits on the second (`_stop_bar`), the
+  way the shelf's does: 25 seconds of model loading is not something a
+  slip beside Pause may cost him.
+
+  It went nine rail rows -> four places -> three -> six, every step on
+  his word. Do not re-litigate the count without one.
 
 Everything is documented, with measurements, in `README.md` and
 `config.toml`.
@@ -148,6 +156,29 @@ back.
    mid-task. This binds Cowork and cloud sessions working on this repo
    too: their toasts come in through the same door (notify_watch.py,
    `[notify] watch`) and land on the same desk.
+8. **Every test run happens on a hidden desktop — while he is at the
+   machine the command is `.venv\Scripts\python.exe tests_quiet.py
+   --no-screen`.** His words, 2026-09-07: "מהיום אני רוצה שאת כל הטסטים שאתה עושה לעשות בשולחן נסתר כמו שאתה עושה עכשיו, זה נהדר ולא קופץ לי על המסך" —
+   from today, do every test on a hidden desktop the way it is being
+   done now; it is excellent and nothing jumps onto his screen.
+   `tests_quiet.py` starts `tests.py` on a SECOND Windows desktop object
+   (`CreateDesktopW` + `STARTUPINFO.lpDesktop` + `CreateProcessW`), so
+   every window the suite stands up — cards, the dashboard, overlays —
+   is born where nobody is looking. Sixteen tests cannot live there and
+   are named in `tests_quiet.NEEDS_SCREEN`: the ask card grabs the
+   display with `ImageGrab`, the drag tests move the REAL mouse. Without
+   `--no-screen` those sixteen run in the OPEN at the end, which is
+   about fifteen seconds of windows over his work with his pointer taken
+   — exactly what he is objecting to. `--no-screen` skips them outright
+   and the whole run is invisible. The price is that its exit code then
+   covers only what ran, so the plain `tests_quiet.py` still has to
+   happen once before shipping: when he is away from the desk, and only
+   after saying so. `.venv\Scripts\python.exe tests.py` is the entire
+   suite in the open — never reach for it while he is sitting there.
+   The rule is not only about the suite: `tests_quiet.run_hidden(command,
+   cwd, desktop=...)` is importable, and any probe, screenshot or
+   throwaway script that would put a window on his screen goes through
+   it.
 
 ## The machine
 
@@ -169,20 +200,25 @@ back.
 
 ## Traps we already paid for — do not re-arm them
 
-- **Tests:** `.venv\Scripts\python.exe tests_quiet.py` runs the suite on a
-  hidden Windows desktop so none of its windows flash over the owner's
-  work (asked for 2026-09-02; same tests.py, same exit code, output
-  printed at the end). **Seventeen of them still leave that desktop** —
-  the ask card grabs the display, the drag tests move the REAL mouse —
-  so an ordinary run ends with fifteen seconds of windows over his work
-  and his pointer taken. While he is at the machine, add `--no-screen`:
-  those are skipped outright and the run is invisible (asked for
-  2026-09-07, "a lot of things jump on my screen"). Run it plainly once
-  before shipping, since --no-screen's exit code says nothing about them. `.venv\Scripts\python.exe tests.py` is the
-  same suite in the open — plain asserts, **hundreds** of test
-  functions carrying thousands of them, safe to run while
-  dictation is live (two bugs that used to kill the app mid-suite are
-  fixed; see git log). Run them BEFORE claiming done. (This line read
+- **Tests:** how you run them is **house rule 8 above**, not a
+  preference — `.venv\Scripts\python.exe tests_quiet.py --no-screen`
+  while he is at the machine, the plain `tests_quiet.py` only when he is
+  away and has been told (asked for 2026-09-02, the `--no-screen` half
+  on 2026-09-07). Same tests.py, same exit code, output printed at the
+  end. The trap that is left is the LIST: `tests_quiet.NEEDS_SCREEN`
+  holds the sixteen names that need the real display or the real mouse,
+  and it is data precisely so it can be kept in step. Add a test that
+  photographs the screen or moves the pointer and its name goes in
+  there — a test that fails hidden and is NOT in the tuple gets re-run
+  in the open, so a missing name costs a second run rather than a wrong
+  answer, and `--no-screen` will not know to skip it.
+  `.venv\Scripts\python.exe tests.py` is the same suite in the open —
+  plain asserts, **hundreds** of test functions carrying thousands of
+  them, safe to run while dictation is live (two bugs that used to kill
+  the app mid-suite are fixed; see git log) — but every window it opens
+  is one he sees, so it is the thing not to reach for while he is at the
+  desk. Run the suite BEFORE claiming done, through `tests_quiet.py`.
+  (This line read
   "367" for a long time, then "449", and both had drifted badly by the
   time anybody looked — 613 functions on 2026-09-04 — so it says
   "hundreds" on purpose now. Re-count with `Select-String -Path
@@ -891,4 +927,5 @@ back.
 | `shelf.py` + `shelf_card.py` + `skin\shelf.py` | the panel beside the dot: the window/thread/queue class (modelled on `overlay.HintCard`), the pure painter (words, geometry, hit test, `INK`) and the glass. Every answer it offers calls the same `App` method the matching card does; nothing goes through `control.py` |
 | `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |
 | `versions.py` | whole-app version switching |
-| `tests.py` | the suite; run it |
+| `tests.py` | the suite itself — hundreds of plain-assert test functions. Not the file you run |
+| `tests_quiet.py` | how the suite is run: `tests.py` on a hidden Windows desktop, `--no-screen` while he is at the machine (house rule 8). `run_hidden()` is importable, for anything else that must not be seen |

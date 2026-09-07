@@ -23,8 +23,11 @@ rmdir /s /q skin
 ```
 gone. Every hook is `try: import skin / except: skin = None`, so removing
 the folder makes those imports fail, every hook falls through, and the app
-paints itself with the code it always had. `tests.py` passes with the
-folder deleted — that is asserted, not hoped for.
+paints itself with the code it always had. The suite passes with the
+folder deleted — that is asserted, not hoped for. Check it the way
+everything here is checked — `.venv\Scripts\python.exe tests_quiet.py --no-screen`
+— so that proving the look can be thrown away does not throw a single
+window onto his screen.
 
 If you also want the dependency gone: `pip uninstall skia-python` and drop
 the last stanza of `requirements.txt`.

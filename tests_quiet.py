@@ -21,7 +21,7 @@ hidden: their clicks would land on your windows). Those run in the open,
 after the rest, for about fifteen seconds. Same `tests.py`, same
 interpreter, same exit code; only the location changes.
 
-**While you are at the machine, use --no-screen.** The seventeen leave
+**While you are at the machine, use --no-screen.** The sixteen leave
 the hidden desktop by design — the ask card grabs the display, the drag
 tests move the REAL mouse — so an ordinary run puts windows over what
 you are doing and takes the pointer for about fifteen seconds. With

@@ -9366,7 +9366,7 @@ def test_the_history_screen_filters_and_searches_what_it_was_given() -> None:
             board.root.update()
             return len(board.parts["list"].inner.winfo_children())
 
-        board._show("Home")
+        board._show("Said")
         assert rows() == 3, rows()
         board._filter_to("lookup")
         assert rows() == 1, rows()
@@ -9384,7 +9384,7 @@ def test_the_window_says_something_when_there_is_no_log_at_all() -> None:
     with _window([]) as board:
         if board is None:
             return
-        board._show("Home")
+        board._show("Said")
         board.root.update()
         assert board.parts["empty"].cget("text"),             "an empty history says nothing at all"
         board._show("Home")
@@ -22851,25 +22851,216 @@ def test_the_new_widgets_read_the_palette_when_they_are_built():
             pass
 
 
-def test_the_window_has_three_places_and_every_one_of_them_is_registered():
+def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
+    """His fourth reading of this window: "Home should be a summary, and
+    then maybe add more tabs… to get more information, I don't need
+    everything on my home screen."
+
+    So: at most PILE_CAP rows whatever is waiting, a line of doors under
+    them that counts the rest and CAN BE CLICKED to the place that holds
+    it, and nothing on the page that needs scrolling to be seen.
+    """
+    import dashboard as dash
+    import widgets as widgets_mod
+
+    class Fake:
+        def __init__(self, items):
+            self._items = items
+
+        def unread(self):
+            return list(self._items)
+
+        def pending(self):
+            return list(self._items)
+
+        def open(self):
+            return list(self._items)
+
+        def items(self, *_status):
+            return list(self._items)
+
+    review = [{"id": f"r{i}", "when": f"2026-09-07 20:0{i}:00",
+               "status": "pending", "proposed": "הטקסט הזה נכון עכשיו.",
+               "text": "הטקסט הזה נכן עכשיו.",
+               "changes": [{"before": "נכן", "after": "נכון",
+                            "why": "הגייה דומה"}]} for i in range(5)]
+    problems = [{"id": "p1", "when": "2026-09-07 09:00:00",
+                 "status": "open", "what": "A card stayed on the screen."}]
+    with _window() as board:
+        if board is None:
+            return
+        board._notify_store = lambda: None
+        board._review_store = lambda: Fake(review)
+        board._problems_store = lambda: Fake(problems)
+        board._show("Home")
+        board._pile_stamp = object()
+        board._poll_waiting()
+        board.root.update_idletasks()
+        rows = [w for w in board.parts["pile_list"].inner.winfo_children()
+                if isinstance(w, widgets_mod.PileRow)]
+        assert len(rows) == dash.PILE_CAP == 3, len(rows)
+        assert "Six things" in board.parts["waiting_head"].cget("text"), \
+            board.parts["waiting_head"].cget("text")
+        # Exactly one lit button on the surface, still.
+        golds = [b for row in rows for b in row.buttons.values()
+                 if isinstance(b, widgets_mod.ToneButton)]
+        assert len(golds) == 1, len(golds)
+        # The doors: what else waits, and the place that holds it.
+        said = {w.cget("text"): w
+                for w in board.parts["elsewhere"].winfo_children()}
+        assert "5 corrections" in said, sorted(said)
+        assert "1 problem" in said, sorted(said)
+        assert all(w.winfo_manager() for w in said.values())
+        board.parts["elsewhere"].update_idletasks()
+        # they are laid left to right with a separator BETWEEN them, and
+        # the last thing on the line is never a separator
+        placed = sorted(said.values(), key=lambda w: w.winfo_x())
+        assert placed[-1].cget("text") != "·", "a dangling separator"
+        # and a door is a door
+        said["5 corrections"].event_generate("<Button-1>")
+        board.root.update()
+        assert board.screen == "Corrections", board.screen
+
+
+def test_the_corrections_place_holds_every_proposal_and_one_gold() -> None:
+    """The home shows three of them; this place shows all of them, with
+    the vocabulary beside it — "the vocabulary and all the corrections it
+    does automatically", in one place because they are one story."""
+    import ui
+    import widgets as widgets_mod
+
+    class Fake:
+        def __init__(self, items):
+            self._items = items
+
+        def pending(self):
+            return list(self._items)
+
+    review = [{"id": f"r{i}", "when": f"2026-09-07 20:0{i}:00",
+               "status": "pending", "proposed": "הטקסט הזה נכון עכשיו.",
+               "text": "הטקסט הזה נכן עכשיו.",
+               "changes": [{"before": "נכן", "after": "נכון",
+                            "why": "הגייה דומה"}]} for i in range(5)]
+    with _window() as board:
+        if board is None:
+            return
+        board._review_store = lambda: Fake(review)
+        board._show("Corrections")
+        board.root.update_idletasks()
+        rows = [w for w in board.parts["corr_list"].inner.winfo_children()
+                if isinstance(w, ui.Card)]
+        assert len(rows) == 5, len(rows)
+        assert "5 proposals" in board.parts["corr_head"].cget("text")
+        assert "vocab_count" in board.parts, "the vocabulary is not here"
+        golds = []
+        for card in rows:
+            for child in card.body.winfo_children():
+                if isinstance(child, widgets_mod.PileRow):
+                    golds += [b for b in child.buttons.values()
+                              if isinstance(b, widgets_mod.ToneButton)]
+        assert len(golds) == 1, f"{len(golds)} lit buttons on one surface"
+        board._review_store = lambda: Fake([])
+        board._corr_stamp = object()
+        board._poll_corrections()
+        board.root.update_idletasks()
+        assert not [w for w in board.parts["corr_list"].inner.winfo_children()
+                    if isinstance(w, ui.Card)]
+        assert "Nothing is waiting" in board.parts["corr_head"].cget("text")
+
+
+def test_said_opens_on_a_page_of_rows_and_show_more_adds_another() -> None:
+    """"It's a lot to scroll and it's a nightmare" — so the list opens on
+    SAID_PAGE rows and grows by that much per press, and the press does
+    not throw the reader back to the top."""
+    import datetime
+
+    import dashboard as dash
+    import history as history_mod
+
+    when = datetime.datetime(2026, 9, 7, 10, 0, 0)
+    log = [history_mod.Event(when, "dictation", text=f"line {i}")
+           for i in range(dash.SAID_PAGE * 2 + 4)]
+    with _window(log) as board:
+        if board is None:
+            return
+
+        def rows() -> int:
+            while board._rows_left:
+                board.root.update()
+            board.root.update()
+            return len(board.parts["list"].inner.winfo_children())
+
+        board._show("Said")
+        assert rows() == dash.SAID_PAGE, rows()
+        more = board.parts["more"]
+        assert more.winfo_manager(), "no Show more with rows left over"
+        assert "Show" in more.cget("text"), more.cget("text")
+        board._said_more()
+        assert rows() == dash.SAID_PAGE * 2, rows()
+        board._said_more()
+        assert rows() == len(log), rows()
+        board.root.update_idletasks()
+        assert not more.winfo_manager(), "Show more outstayed its rows"
+        # A new search starts the paging again.
+        board._search("line 1")
+        assert rows() <= dash.SAID_PAGE, rows()
+
+
+def test_stop_in_the_bar_arms_before_it_quits() -> None:
+    """He asked for Stop at the top ("I only have a button to pause it")
+    and the reason it was moved to Settings still stands: 25 seconds of
+    model loading, one slip away from Pause. So the first press only
+    changes the word."""
+    def label_of(button) -> str:
+        return str(button.itemcget(button._label, "text"))
+
+    with _window() as board:
+        if board is None:
+            return
+        asked: list = []
+        saved = singleton.request_quit
+        singleton.request_quit = lambda *a, **k: asked.append(1) or True
+        try:
+            button = board.parts["stop_bar"]
+            board._stop_bar()
+            assert asked == [], "the first press quit the app"
+            assert "again" in label_of(button).lower(), label_of(button)
+            assert "press Stop again" in board._toast_text, board._toast_text
+            board._stop_bar()
+            assert asked == [1], "the second press did not quit"
+            assert label_of(button) == "Stop"
+            # Anything else disarms it: a place is a change of subject.
+            asked.clear()
+            board._stop_bar()
+            board._show("Keys")
+            board._stop_bar()
+            assert asked == [], "a screen swap left Stop armed"
+        finally:
+            singleton.request_quit = saved
+
+
+def test_the_window_has_six_places_and_every_one_of_them_is_registered():
     """A place is five registrations (NAV, ICON, _show, _refresh, and for
     a key KEY_GROUPS + NESTED_HOTKEYS); missing any one of them is a
     KeyError the first time somebody clicks.
 
-    There are THREE, in this order, and Settings is always last: Home
-    (notify + review + problems + questions in one pile, then history +
-    vocabulary, on one page that scrolls), Keys, Settings (which
-    absorbed Awake, Version and the phone). Waiting and Said were two
-    places for a day; the owner said on 2026-09-07 that only Keys and
-    Settings are places you go. Home is a new word for an old screen,
-    so NAV_GLYPH is what says whose glyph it borrows. Every place has to
-    fit along the 56 px top bar with the state chip and the two buttons,
-    which is the whole reason nine rows became three words."""
+    There are SIX, in this order, and Settings is always last: Home (a
+    summary and nothing more), Corrections (the second reading's
+    proposals and the words it has learned), Problems (his reports, the
+    routine's questions, the weekly branches), Said (transcripts.log
+    read back), Keys, Settings. It was three for one evening, with the
+    whole desk on the home; he read that home and said "Home should be a
+    summary, and then maybe add more tabs". Home, Corrections, Problems
+    and Said are new words for old screens, so NAV_GLYPH is what says
+    whose glyphs they borrow. Every place has to fit along the 56 px top
+    bar beside the state chip and the three buttons — which is why the
+    wordmark is gone and the tabs sit at a gap of 18."""
     import dashboard as dash
     import ui
 
     names = [key for key, _label in dash.NAV]
-    assert names == ["home", "keys", "settings"], names
+    assert names == ["home", "corrections", "problems", "said", "keys",
+                     "settings"], names
     assert dash.SIDE == 0, "the rail is gone"
     for key, label in dash.NAV:
         glyph = ui.ICON[dash.NAV_GLYPH.get(key, key)]
@@ -22890,8 +23081,30 @@ def test_the_window_has_three_places_and_every_one_of_them_is_registered():
         # The bar holds all four words, the state and the button, and
         # nothing in it may reach past the window: a place drawn off the
         # right edge is a place with no way to click it.
+        chip = board.parts["chip"]
+        chip.update_idletasks()
         assert board.nav.winfo_x() + board.nav.winfo_reqwidth() \
-            <= dash.W - 300, "no room for the state chip beside the places"
+            <= chip.winfo_x(), "the places run under the state chip"
+        # ...and the three buttons are in the bar, in this order, with
+        # none of them off the right edge.
+        # Screens off is only IN the bar while the app runs — the screens
+        # are the running app's to put out — so the window under test,
+        # which has nothing behind it, draws two buttons and not three.
+        board.running = True
+        board._paint_bar_screens()
+        board.root.update_idletasks()
+        buttons = [board.parts[k]
+                   for k in ("bar_screens", "run", "stop_bar")]
+        for button in buttons:
+            button.update_idletasks()
+        assert all(b.winfo_manager() for b in buttons),             "a button in the bar was never placed"
+        assert chip.winfo_x() + chip.winfo_reqwidth() \
+            <= buttons[0].winfo_x(), "the state runs under the buttons"
+        for left, right in zip(buttons, buttons[1:]):
+            assert left.winfo_x() + left.winfo_reqwidth() \
+                <= right.winfo_x(), "two buttons in the bar overlap"
+        assert buttons[-1].winfo_x() + buttons[-1].winfo_reqwidth() \
+            <= dash.W - dash.PAD + 1, "a button hangs off the bar"
         for label, (word, bar) in board.nav.items.items():
             assert word.winfo_reqheight() + 9 <= dash.TOP, label
         for key in ("chip", "run", "lamp", "state", "uptime", "hint"):
