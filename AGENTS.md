@@ -70,10 +70,18 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   used to be rail rows: Awake, the version switch, Stop, Send a test,
   the cue sounds, the files. No sentences, no "Everything" — both
   removed on the owner's word the day after they were built.
-- **The bar** carries Screens off, Pause and Stop, on every place. Stop
-  ARMS on the first press and quits on the second (`_stop_bar`), the
-  way the shelf's does: 25 seconds of model loading is not something a
-  slip beside Pause may cost him.
+- **The bar's buttons follow the state and nothing else**
+  (`_paint_bar_buttons`). Model off: ONE button, Start. Model on or
+  paused: Pause (Resume) and Stop, with Screens off between them. His
+  rule, 2026-09-07, and he gave it twice. Stop used to ARM — the first
+  press only turned the word into "Stop again" — and he read that word,
+  could not tell what it was for, and asked for it gone. Do not put a
+  confirmation back. The 25 seconds of model loading it was paying for
+  are guarded by the LAYOUT now: Pause keeps the right edge of the bar in
+  every state so the key he presses all day never moves, Stop sits 168 px
+  away at the far end of the group, and Stop is not drawn at all while
+  there is nothing to stop. The shelf's Stop still arms — see
+  `main.App._shelf_stop`, and the note there for why.
 
   It went nine rail rows -> four places -> three -> six, every step on
   his word. Do not re-litigate the count without one.

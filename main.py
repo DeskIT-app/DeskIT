@@ -3134,6 +3134,20 @@ class App:
         question and the second one quits, because there is no undo for a
         quit and this panel opens with one keystroke.
 
+        THE DASHBOARD'S STOP NO LONGER ARMS and this one still does, on
+        purpose. The bar's arming went on 2026-09-07 because he read
+        "Stop again" and could not tell what it was for; what replaced it
+        there is geometry — Stop moved 168 px away from the button he
+        presses all day and is not drawn at all while there is nothing to
+        stop. That fix has nowhere to go here. The head band is three
+        plates 8 px apart (`shelf_card.regions`: CLOSE, then STOP, then
+        PAUSE), so this Stop is one slip from Pause AND one slip from the
+        X that closes the panel, on an overlay that opens on a keystroke
+        in the corner of the screen. Its word is also legible in a way
+        the bar's was not: it turns into "Stop?" and goes red, rather
+        than adding a word. If he asks for this one too, take the arming
+        out — but move the button first.
+
         REFUSED WHILE A RECORDING IS RUNNING, out loud. The rectangle
         stays claimed either way: a button that disappears leaves a hole
         that answers HTTRANSPARENT, and in this corner the pixel

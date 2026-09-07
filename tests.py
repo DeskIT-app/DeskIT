@@ -24100,13 +24100,79 @@ def test_said_opens_on_a_page_of_rows_and_show_more_adds_another() -> None:
         assert rows() <= dash.SAID_PAGE, rows()
 
 
-def test_stop_in_the_bar_arms_before_it_quits() -> None:
-    """He asked for Stop at the top ("I only have a button to pause it")
-    and the reason it was moved to Settings still stands: 25 seconds of
-    model loading, one slip away from Pause. So the first press only
-    changes the word."""
-    def label_of(button) -> str:
-        return str(button.itemcget(button._label, "text"))
+# The four answers the control channel can give the window, as the
+# poller hands them to _refresh. BAR_OFF is None because that is what
+# "nothing answered" looks like on the wire.
+BAR_OFF = None
+BAR_ON = {"ok": True, "stage": "running", "activity": "ready"}
+BAR_PAUSED = {"ok": True, "stage": "running", "activity": "paused",
+              "paused": True}
+BAR_STARTING = {"ok": True, "stage": "starting", "activity": "starting"}
+
+
+def _bar_buttons(board) -> dict:
+    """Which of the bar's buttons are on screen, and what each says."""
+    board.root.update_idletasks()
+    out = {}
+    for key in ("stop_bar", "bar_screens", "run"):
+        button = board.parts[key]
+        if button.winfo_manager():
+            out[key] = str(button.itemcget(button._label, "text"))
+    return out
+
+
+def test_the_bar_holds_only_the_buttons_the_state_allows() -> None:
+    """His rule, verbatim (2026-09-07): "when the model is off, only one
+    button — Start. And when the model is on, two buttons — Pause and
+    Stop... And Pause and Stop should not appear when the model is
+    already off."
+
+    Screens off is the third button in the bar and it is not one of the
+    model's — it is the thing he presses every evening, asked for the day
+    before — but it now comes and goes on the same question as Stop
+    rather than on one of its own, because a button appearing 25 seconds
+    after its neighbours is the flicker he was looking at."""
+    with _window() as board:
+        if board is None:
+            return
+        board._refresh(BAR_OFF)
+        assert _bar_buttons(board) == {"run": "Start"}, _bar_buttons(board)
+        board._refresh(BAR_ON)
+        assert _bar_buttons(board) == {"stop_bar": "Stop",
+                                       "bar_screens": "Screens off",
+                                       "run": "Pause"}, _bar_buttons(board)
+        board._refresh(BAR_PAUSED)
+        assert _bar_buttons(board) == {"stop_bar": "Stop",
+                                       "bar_screens": "Screens off",
+                                       "run": "Resume"}, _bar_buttons(board)
+        # THE 25 SECONDS OF MODEL LOADING ARE PART OF "ON". The control
+        # channel answers from its first second, Stop is exactly the
+        # button somebody wants during a start they did not mean, and the
+        # alternative is two buttons arriving a pause later.
+        board._refresh(BAR_STARTING)
+        assert set(_bar_buttons(board)) == {"stop_bar", "bar_screens",
+                                            "run"}, _bar_buttons(board)
+        board._refresh(BAR_OFF)
+        assert _bar_buttons(board) == {"run": "Start"}, _bar_buttons(board)
+
+
+def test_stop_in_the_bar_quits_on_one_press() -> None:
+    """The first press used to only turn the word into "Stop again" and
+    the second one quit. He read that word, could not tell what it was
+    for, and asked twice to have it gone: "even if the model stopped...
+    there is still the button Stop, and there is the button Stop again. I
+    don't know why you put it."
+
+    The 25 seconds of model loading that the arming was paying for are
+    real, so what guards them now is where the button sits — see
+    test_the_bar_keeps_stop_away_from_the_key_he_presses_all_day."""
+    import dashboard as dash
+
+    source = inspect.getsource(dash.Dashboard)
+    assert "configure_text(\"Stop again\")" not in source, \
+        "the bar still arms itself"
+    assert not hasattr(dash.Dashboard, "_disarm_stop"), \
+        "the disarm is still there, so something still arms"
 
     with _window() as board:
         if board is None:
@@ -24115,22 +24181,47 @@ def test_stop_in_the_bar_arms_before_it_quits() -> None:
         saved = singleton.request_quit
         singleton.request_quit = lambda *a, **k: asked.append(1) or True
         try:
-            button = board.parts["stop_bar"]
-            board._stop_bar()
-            assert asked == [], "the first press quit the app"
-            assert "again" in label_of(button).lower(), label_of(button)
-            assert "press Stop again" in board._toast_text, board._toast_text
-            board._stop_bar()
-            assert asked == [1], "the second press did not quit"
-            assert label_of(button) == "Stop"
-            # Anything else disarms it: a place is a change of subject.
-            asked.clear()
-            board._stop_bar()
-            board._show("Keys")
-            board._stop_bar()
-            assert asked == [], "a screen swap left Stop armed"
+            board._refresh(BAR_ON)
+            stop = board.parts["stop_bar"]
+            stop._command()
+            assert asked == [1], "one press of Stop did not quit"
+            assert str(stop.itemcget(stop._label, "text")) == "Stop", \
+                "the word on Stop changed instead of quitting"
+            assert "Stop again" not in board._toast_text, board._toast_text
         finally:
             singleton.request_quit = saved
+
+
+def test_the_bar_keeps_stop_away_from_the_key_he_presses_all_day() -> None:
+    """What replaced the second press.
+
+    Start, Resume and Pause are ONE button in ONE place in every state,
+    so the key he presses all day never moves under his hand and Stop can
+    never appear where his finger already was. Stop is at the far end of
+    the group with the whole Screens off button between them — 168 px,
+    where the armed one sat 8 px from Pause."""
+    import dashboard as dash
+
+    with _window() as board:
+        if board is None:
+            return
+        where = []
+        for reply in (BAR_OFF, BAR_ON, BAR_PAUSED, BAR_STARTING):
+            board._refresh(reply)
+            board.root.update_idletasks()
+            run = board.parts["run"]
+            run.update_idletasks()
+            where.append((run.winfo_x(), run.winfo_reqwidth()))
+        assert len(set(where)) == 1, f"the run key moved: {where}"
+        assert where[0][0] + where[0][1] == dash.W - dash.PAD, where
+
+        board._refresh(BAR_ON)
+        board.root.update_idletasks()
+        run, stop = board.parts["run"], board.parts["stop_bar"]
+        for button in (run, stop):
+            button.update_idletasks()
+        room = run.winfo_x() - (stop.winfo_x() + stop.winfo_reqwidth())
+        assert room >= 100, f"Stop is back within a slip of Pause: {room} px"
 
 
 def test_the_window_has_six_places_and_every_one_of_them_is_registered():
@@ -24171,24 +24262,23 @@ def test_the_window_has_six_places_and_every_one_of_them_is_registered():
         assert board._problems_on, "the shipped config has it on"
         assert set(board.nav.items) == {label for _key, label in dash.NAV}, \
             sorted(board.nav.items)
-        board.root.update_idletasks()
-        # The bar holds all four words, the state and the button, and
+        # The bar holds all six words, the state and the buttons, and
         # nothing in it may reach past the window: a place drawn off the
-        # right edge is a place with no way to click it.
+        # right edge is a place with no way to click it. Measured in the
+        # state that holds the MOST buttons, which is the one that pushes
+        # the state chip furthest left.
+        board._refresh(BAR_ON)
+        board.root.update_idletasks()
         chip = board.parts["chip"]
         chip.update_idletasks()
         assert board.nav.winfo_x() + board.nav.winfo_reqwidth() \
             <= chip.winfo_x(), "the places run under the state chip"
         # ...and the three buttons are in the bar, in this order, with
-        # none of them off the right edge.
-        # Screens off is only IN the bar while the app runs — the screens
-        # are the running app's to put out — so the window under test,
-        # which has nothing behind it, draws two buttons and not three.
-        board.running = True
-        board._paint_bar_screens()
-        board.root.update_idletasks()
+        # none of them off the right edge. Stop is leftmost of the three
+        # deliberately: it is the one that costs 25 seconds to undo, and
+        # Screens off is the buffer between it and Pause.
         buttons = [board.parts[k]
-                   for k in ("bar_screens", "run", "stop_bar")]
+                   for k in ("stop_bar", "bar_screens", "run")]
         for button in buttons:
             button.update_idletasks()
         assert all(b.winfo_manager() for b in buttons),             "a button in the bar was never placed"
