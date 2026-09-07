@@ -1,4 +1,4 @@
-"""An ANSI tenkeyless keyboard, drawn once, lit from the bindings.
+"""His keyboard, drawn once, lit from the bindings.
 
 Why a picture of a keyboard rather than a list of rows: he does not
 remember that translate is F8, he remembers where his finger goes. A
@@ -7,13 +7,23 @@ thing that is already spatial. Drawn on the board, the answer to "which
 keys does this app take from me" is one glance, and the answer to "is
 that one free" is the colour of the cap.
 
-Eighty-seven caps, one PIL image, one hit table. Everything is measured
-from a single unit `u` (a 1x cap), so the board fits whatever room the
-screen has: at u=43 it is 801x298 and draws in 26-32 ms, at u=60 it is
-1111x409 and draws in 41 ms. A click redraws the whole board in ~30 ms,
-which is under a frame, so there is no partial-repaint machinery here.
+A FULL-SIZE ANSI BOARD, 104 caps, because that is what is on his desk.
+It was tenkeyless for a day and he said so on 2026-09-07: "adapt them to
+my keyboard because I also have num lock 1 to 9, 0 to 9, asterisk, and
+other things". The keypad is the same unit grid with the standard 0.25u
+gap after the navigation cluster, so nothing here is a special case
+except the two caps that are two rows tall (its + and its Enter, named
+in TALL).
 
-FOUR THINGS THIS GOT WRONG FIRST, all of them measured (spikes.md §2):
+One PIL image, one hit table. Everything is measured from a single unit
+`u` (a 1x cap), so the board fits whatever room the screen has: at u=34
+it is 781x239 and draws in 22 ms, at u=43 it is 984x298 and draws in
+28 ms (medians of five, 2026-09-07, seventeen caps wider than the
+tenkeyless board that cost 26-32 ms at u=43). A click redraws the whole
+board, which is under a frame, so there is no partial-repaint machinery
+here.
+
+FIVE THINGS THIS GOT WRONG FIRST, all of them measured (spikes.md §2):
 
 1. **One cap can carry two bindings.** `translate_hotkey = "f8"` and
    `lookup_hotkey = "ctrl+f8"` are the same cap. The map is
@@ -29,6 +39,14 @@ FOUR THINGS THIS GOT WRONG FIRST, all of them measured (spikes.md §2):
 4. **Esc is not in config.toml.** It cancels a running recording — it is
    watched by the recorder, not registered as a hotkey — so it is named
    here and drawn with a broken edge that says "only sometimes".
+5. **The keypad has its own virtual keys, and only while Num Lock is
+   on.** VK_NUMPAD0..9 are 0x60..0x69, not the digit row's 0x30..0x39,
+   and * + - . / are 0x6A/0x6B/0x6D/0x6E/0x6F. With Num Lock OFF the
+   same physical keys arrive as Insert, Delete, the arrows and
+   Home/End/PgUp/PgDn — so a press then lights THOSE caps, which is the
+   truth about what the app was handed. The one keypad cap with no code
+   of its own is its Enter: it is VK_RETURN, the same 0x0D as the main
+   one, so `enter` lights both caps and no code can tell them apart.
 
 The colours come from `ui` at call time (`palette()`), never copied into
 a constant, because the palette is being retuned in another file.
@@ -48,7 +66,9 @@ APP_DIR = Path(__file__).resolve().parent
 FONT_DIR = APP_DIR / "fonts"
 
 # --------------------------------------------------------------- layout
-# (id, label, units). A None id is dead space between clusters.
+# (id, label, units). A None id is dead space between clusters. A cap two
+# rows tall is named in TALL and the row under it leaves that column
+# empty, the way the board itself does.
 FROW = [("esc", "Esc", 1), (None, "", 1),
         ("f1", "F1", 1), ("f2", "F2", 1), ("f3", "F3", 1), ("f4", "F4", 1),
         (None, "", .5),
@@ -62,28 +82,55 @@ ROW1 = [("`", "`", 1)] + [(str(d), str(d), 1) for d in
                           (1, 2, 3, 4, 5, 6, 7, 8, 9, 0)] + \
        [("-", "-", 1), ("=", "=", 1), ("backspace", "Backspace", 2),
         (None, "", .25),
-        ("insert", "Ins", 1), ("home", "Home", 1), ("pgup", "PgUp", 1)]
+        ("insert", "Ins", 1), ("home", "Home", 1), ("pgup", "PgUp", 1),
+        (None, "", .25),
+        ("numlock", "NumLk", 1), ("numdiv", "/", 1), ("nummul", "*", 1),
+        ("numsub", "-", 1)]
 
 ROW2 = [("tab", "Tab", 1.5)] + [(c, c.upper(), 1) for c in "qwertyuiop"] + \
        [("[", "[", 1), ("]", "]", 1), ("\\", "\\", 1.5), (None, "", .25),
-        ("delete", "Del", 1), ("end", "End", 1), ("pgdn", "PgDn", 1)]
+        ("delete", "Del", 1), ("end", "End", 1), ("pgdn", "PgDn", 1),
+        (None, "", .25),
+        ("num7", "7", 1), ("num8", "8", 1), ("num9", "9", 1),
+        ("numadd", "+", 1)]
 
 ROW3 = [("caps", "Caps", 1.75)] + [(c, c.upper(), 1) for c in "asdfghjkl"] + \
-       [(";", ";", 1), ("'", "'", 1), ("enter", "Enter", 2.25)]
+       [(";", ";", 1), ("'", "'", 1), ("enter", "Enter", 2.25),
+        (None, "", 3.5),          # the keypad's + comes down from ROW2
+        ("num4", "4", 1), ("num5", "5", 1), ("num6", "6", 1)]
 
 ROW4 = [("lshift", "Shift", 2.25)] + [(c, c.upper(), 1) for c in "zxcvbnm"] + \
        [(",", ",", 1), (".", ".", 1), ("/", "/", 1),
         ("rshift", "Shift", 2.75), (None, "", 1.25),
-        ("up", "↑", 1)]
+        ("up", "↑", 1), (None, "", 1.25),
+        ("num1", "1", 1), ("num2", "2", 1), ("num3", "3", 1),
+        ("numenter", "Enter", 1)]
 
 ROW5 = [("lctrl", "Ctrl", 1.25), ("lwin", "Win", 1.25), ("lalt", "Alt", 1.25),
         ("space", "", 6.25), ("ralt", "Alt", 1.25), ("rwin", "Win", 1.25),
         ("menu", "Menu", 1.25), ("rctrl", "Ctrl", 1.25), (None, "", .25),
-        ("left", "←", 1), ("down", "↓", 1), ("right", "→", 1)]
+        ("left", "←", 1), ("down", "↓", 1), ("right", "→", 1),
+        (None, "", .25),          # the keypad's Enter comes down from ROW4
+        ("num0", "0", 2), ("numdot", ".", 1)]
 
 ROWS = [FROW, ROW1, ROW2, ROW3, ROW4, ROW5]
 
-UNITS = 18.25          # the widest row, in cap units
+# The keypad's own caps, named once rather than sniffed out of an id
+# prefix. KEYPAD_NUMLOCK is the subset Num Lock actually gates: the
+# digits and the dot send Insert / Delete / the arrows / the page keys
+# with it off, while / * - + and Enter send the same code either way.
+KEYPAD_NUMLOCK = frozenset({f"num{digit}" for digit in range(10)}
+                           | {"numdot"})
+KEYPAD = frozenset(KEYPAD_NUMLOCK | {"numlock", "numdiv", "nummul",
+                                     "numsub", "numadd", "numenter"})
+
+# The two caps that are two rows tall. They are drawn from the row they
+# START in and the row below leaves the column empty, so no rectangle in
+# the hit table ever overlaps another.
+TALL = {"numadd": 2, "numenter": 2}
+
+UNITS = 22.5           # the widest row, in cap units: 18.25 of tenkeyless,
+                       # the standard 0.25 gap, and 4 of keypad
 GRID_ROWS = 6
 
 # The Israeli standard layout, letter by letter, as his fingers type it.
@@ -127,7 +174,14 @@ CAP_NAMES = {"rctrl": "right ctrl", "lctrl": "ctrl",
              "backspace": "backspace", "enter": "enter", "tab": "tab",
              "space": "space", "esc": "esc", "left": "left",
              "right": "right", "up": "up", "down": "down", "home": "home",
-             "end": "end", "pause": "pause", "menu": "menu"}
+             "end": "end", "pause": "pause", "menu": "menu",
+             # The keypad. Its Enter is VK_RETURN like the main one — see
+             # trap 5 — so it is named "enter" too and both caps light.
+             "numlock": "num lock", "numdiv": "numpad /",
+             "nummul": "numpad *", "numsub": "numpad -",
+             "numadd": "numpad +", "numdot": "numpad .",
+             "numenter": "enter"}
+CAP_NAMES.update({f"num{digit}": f"numpad {digit}" for digit in range(10)})
 
 ARROWS = {"←": 180, "↑": 90, "→": 0, "↓": 270}
 
@@ -246,7 +300,7 @@ def bindings(keys: dict | None = None) -> tuple[dict, list]:
                     for name, _label in config_mod.HOTKEY_FIELDS}
         except Exception:                 # noqa: BLE001 — unreadable config
             keys = {}
-    by_vk = {vk: cap for cap, vk in cap_vks().items()}
+    by_vk = vk_caps()
     lit: dict[str, list] = {}
     unmapped: list = []
     for field, label in config_mod.HOTKEY_FIELDS:
@@ -258,8 +312,8 @@ def bindings(keys: dict | None = None) -> tuple[dict, list]:
         except Exception:                 # noqa: BLE001 — a typo in the file
             unmapped.append((field, raw))
             continue
-        cap = by_vk.get(bound.trigger)
-        if cap is None:
+        caps = by_vk.get(bound.trigger) or []
+        if not caps:
             unmapped.append((field, raw))
             continue
         if field in HOLD:
@@ -271,26 +325,42 @@ def bindings(keys: dict | None = None) -> tuple[dict, list]:
         else:
             state = "tap"
         caption = CAPTION.get(field) or label.split(" (")[0].lower()
-        lit.setdefault(cap, []).append((state, caption, field, raw))
+        for cap in caps:
+            lit.setdefault(cap, []).append((state, caption, field, raw))
         for mod in bound.mods:
-            target = by_vk.get(mod)
-            if target and not lit.get(target):
-                lit[target] = [("soft", "", "", "")]
+            for target in by_vk.get(mod, ()):
+                if not lit.get(target):
+                    lit[target] = [("soft", "", "", "")]
     # Esc: watched by the recorder while one is running, never registered.
     lit.setdefault("esc", []).append(("sometimes", "cancel", "", "esc"))
     return lit, unmapped
 
 
-def cap_for(raw: str) -> str | None:
-    """Which cap a binding string lands on, or None."""
+def vk_caps() -> dict[int, list[str]]:
+    """{virtual-key code: [cap id, ...]}. A LIST, because one code can be
+    two caps: the keypad's Enter is VK_RETURN, exactly like the main one,
+    and a dict of one silently lit whichever came last in ROWS."""
+    out: dict[int, list[str]] = {}
+    for cap, vk in cap_vks().items():
+        out.setdefault(vk, []).append(cap)
+    return out
+
+
+def caps_for(raw: str) -> list[str]:
+    """Every cap a binding string lands on. Two, for the two Enters."""
     try:
         bound = hotkey_mod.parse_binding(str(raw))
     except Exception:                     # noqa: BLE001
-        return None
-    for cap, vk in cap_vks().items():
-        if vk == bound.trigger:
-            return cap
-    return None
+        return []
+    return list(vk_caps().get(bound.trigger) or [])
+
+
+def cap_for(raw: str) -> str | None:
+    """Which cap a binding string lands on — the FIRST one, in the order
+    the board draws them, so `enter` is the big one under Backspace and
+    not the keypad's. `caps_for` is the honest answer for both."""
+    found = caps_for(raw)
+    return found[0] if found else None
 
 
 def cap_for_vk(vk: int) -> str | None:
@@ -299,7 +369,13 @@ def cap_for_vk(vk: int) -> str | None:
     finds its cap on the board — the owner's ask of 2026-09-07: "if I
     press R, it should tell me what it does". Modifiers come back
     unsided (0x11 is ctrl, left or right), which is how the caps are
-    named — and a sided code from a hook is folded the same way."""
+    named — and a sided code from a hook is folded the same way.
+
+    The keypad reports its OWN codes (VK_NUMPAD0..9 = 0x60..0x69, and
+    0x6A..0x6F for * + - . /), and only while Num Lock is on; with it
+    off the arrows and the navigation keys arrive from those same caps
+    and light those, which is what the app was really handed. Both
+    Enters are 0x0D and the first cap wins, which is the main one."""
     modifier = _MODIFIER_CAPS.get(int(vk))
     if modifier is not None:
         return modifier
@@ -375,7 +451,8 @@ def draw(u: int = 43, *, lit: dict, selected: str | None = None,
                 x += w
                 continue
             x0, y0 = x, y
-            x1, y1 = x + w - gap, y + u - gap
+            tall = TALL.get(cap_id, 1) * u
+            x1, y1 = x + w - gap, y + tall - gap
             rects[cap_id] = (round(x0), round(y0), round(x1), round(y1))
             on = lit.get(cap_id) or []
             bare = [b for b in on if "+" not in (b[3] or "")]
@@ -391,9 +468,14 @@ def draw(u: int = 43, *, lit: dict, selected: str | None = None,
             if dashed:
                 _dash(d, box, round(u * 0.13 * s), p["lit_edge"], 2 * s, 5 * s)
             cx = (x0 + x1) / 2 * s
+            # A cap with a caption stacks the two lines around the cap's
+            # own middle — which for the keypad's + and Enter is two rows
+            # down, not one. 0.42u and 0.73u were that middle minus
+            # 0.08u and plus 0.23u all along.
+            middle = y0 + tall / 2
             if label:
                 font = f_label if len(label) <= 2 else f_small
-                anchor_y = ((y0 + u * 0.42) * s if caption
+                anchor_y = ((middle - u * 0.08) * s if caption
                             else ((y0 + y1) / 2) * s)
                 heb = HEBREW.get(cap_id)
                 lx = cx if not heb else cx - u * 0.16 * s
@@ -407,7 +489,7 @@ def draw(u: int = 43, *, lit: dict, selected: str | None = None,
                     d.text((cx + u * 0.22 * s, anchor_y), heb, font=f_heb,
                            fill=p["heb"], anchor="mm")
             if caption:
-                d.text((cx, (y0 + u * 0.73) * s), caption, font=f_cap,
+                d.text((cx, (middle + u * 0.23) * s), caption, font=f_cap,
                        fill=p["sel_ink"] if cap_id == selected
                        else p["lit_ink"], anchor="mm")
             if also:
@@ -492,8 +574,8 @@ class Board(tk.Canvas):
 
     The whole image is redrawn when the selection moves — 26-34 ms,
     under a frame — so there is no partial-repaint machinery and no
-    per-cap widget. Eighty-seven Tk windows would be the obvious way and
-    it is the wrong one: this is one Canvas with one image on it.
+    per-cap widget. A hundred and four Tk windows would be the obvious
+    way and it is the wrong one: this is one Canvas with one image on it.
     """
 
     def __init__(self, parent, lit: dict, *, u: int = 43,

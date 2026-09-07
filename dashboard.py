@@ -77,6 +77,7 @@ import launch
 import awake as awake_mod
 import settings as settings_mod
 import singleton
+import summary
 import ui
 import widgets
 
@@ -133,18 +134,32 @@ CAPTURE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 # width a sentence needs; the panel takes what is left.
 SAID_W = CW - 320
 
-# The Keys place, top to bottom. A 40 px cap makes a 746x278 board, which
-# leaves 346 px for the panel beside it and ~190 px under it for the
-# fifteen rows — three to a line, five lines, no scrolling in the
-# ordinary case. The legend ends at 98 and the board starts at 100, so
-# nothing overlaps anything; the foot is the one faint line about the
-# safe keys, placed UP from the bottom edge (see _screen_keys).
-KEY_UNIT = 40
-KEY_COLUMNS = 4
+# The Keys place, top to bottom. THE BOARD IS THE FULL-SIZE ONE since
+# 2026-09-07 — 22.5 cap units wide against the tenkeyless 18.25, because
+# that is the keyboard on his desk — and in a window fixed at 1160 wide
+# the cap is what has to give. The room left over for the board is
+# CW - KEY_PANEL_W - KEY_BOARD_GAP = 792 px, which keyboard.unit_for
+# turns into a 34 px cap and a 781x239 board; the panel then takes the
+# 311 px that are really left. Measured 2026-09-07, which is why the
+# unit is asked for rather than typed: at the old 40 the board alone is
+# 916 wide and leaves the panel 176, against the 208 one row of it needs
+# and the 295 the widest line in the panel would want if it did not wrap
+# (the Ctrl+Alt+M cap and "Dismiss the notification" beside it — it
+# wraps, see _paint_rebind). The legend ends at 98 and the board starts
+# at 100, so nothing
+# overlaps anything; the foot is the one faint line about the safe keys,
+# placed UP from the bottom edge (see _screen_keys).
+KEY_PANEL_W = 300        # the least the panel beside the board may have
+KEY_BOARD_GAP = 20       # between the board and that panel
+KEY_BOARD_MAX_H = 247    # 487 of room under the legend, less 240 of rows
+KEY_UNIT = keyboard_mod.unit_for(CW - KEY_PANEL_W - KEY_BOARD_GAP,
+                                 KEY_BOARD_MAX_H)          # 34
+KEY_COLUMNS = 3          # the rows are as wide as the board, not the place
 KEY_LEGEND_Y = 58        # the five swatches; two lines each, ending at 98
 KEY_BOARD_Y = 100
 KEY_FOOT_GAP = 22        # ground under the last line, so it is not flush
 KEY_FOOT_LINE = 17       # one line of the 8 pt foot, measured
+KEY_ROW_H = 40           # a 30 px cap at y 4, or the cap and a note under it
 SOUND_COLUMNS = 5
 KEY_LEGEND = (
     ("held", "down the whole time it works", "hold"),
@@ -218,6 +233,21 @@ KEY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
                         "report_hotkey", "shelf_hotkey")),
 )
 
+# What a key MEANS, where its label is not enough: (three words for the
+# row under the board, one sentence for the panel beside it). Only the
+# pause key has one, and it earned it — "Pause / resume" read to the
+# owner as quitting, and his words on 2026-09-07 were "I use insert to
+# pause the model, not shut it down, just pause". This is the place
+# saying that back to him. A field with no entry here shows nothing
+# extra, which is every other key.
+KEY_NOTES: dict[str, tuple[str, str]] = {
+    "pause_hotkey": (
+        "a pause, not a stop",
+        "A pause, not a stop. Nothing is unloaded — the models stay on "
+        "the card and coming back is instant — and this is the one key "
+        "that still works while paused."),
+}
+
 # Keys that live INSIDE a config section, and the dotted path set_values
 # must write them to. The same lines are in main.py, and the comment
 # there says why they are not shared: both files are byte-identical on the
@@ -237,6 +267,14 @@ NESTED_HOTKEYS = {
 # The right-hand column of a settings row: a switch, a menu, or a field.
 CONTROL_W = 236
 ENTRY_W = 150
+# A field is drawn as a ui.Field — a rounded Pillow face with the Entry
+# flat inside it — at exactly the height ui.Dropdown is, because the two
+# alternate down the same column and a field one pixel shorter than the
+# menu above it reads as a mistake. The owner, 2026-09-07: "the boxes are
+# square in everything that is not in General, and it is not pretty."
+ENTRY_H = 30
+# The quiet line at the foot of a folded card: "7 more in this section".
+FOLD_H = 26
 # What a line of text really occupies on a settings card. Rubik's 8 pt
 # linespace is 17 and its 10 pt is 20 — measured on the hidden desktop
 # 2026-09-07, against the 15 the Segoe-era rows were drawn for. The rows
@@ -270,6 +308,17 @@ def pretty_key(name: str) -> str:
     return name.title() if name else "off"
 
 
+def cap_title(cap_id: str) -> str:
+    """What a cap is called in a sentence on the Keys place: 'num5' ->
+    'NUMPAD 5', 'pgup' -> 'PAGE UP', 'q' -> 'Q'.
+
+    The name comes from keyboard.name_for, which is the name the app
+    would BIND it by — so the sentence and the config file cannot drift
+    apart. The punctuation caps have no such name and keep their id.
+    """
+    return (keyboard_mod.name_for(cap_id) or cap_id).upper()
+
+
 def human_time(seconds: float) -> str:
     seconds = int(max(0, seconds))
     if seconds < 90:
@@ -288,6 +337,20 @@ _COUNT_WORDS = ("No", "One", "Two", "Three", "Four", "Five", "Six")
 
 def _count_word(n: int) -> str:
     return _COUNT_WORDS[n] if 0 <= n < len(_COUNT_WORDS) else str(n)
+
+
+def _first_words(text: str, most: int) -> str:
+    """The first `most` words of a run, marked when there are more.
+
+    A dropped ending can be two dozen words and the chip that shows it is
+    one line high — review_card.snippet already shortens the same run the
+    same way for the card, and the two surfaces of one feature should not
+    disagree about what they show.
+    """
+    words = str(text or "").split()
+    if len(words) <= most:
+        return " ".join(words)
+    return " ".join(words[:most]) + " …"
 
 
 def _words_learned() -> int | None:
@@ -1899,6 +1962,15 @@ class Dashboard:
             ident = item.get("id")
             who = str(item.get("label") or item.get("source") or "")
             when = ago(str(item.get("at", "")))
+            buttons = [("Go there", "quiet",
+                        lambda i=ident: self._notify_one("open", i)),
+                       ("✕", "close",
+                        lambda i=ident: self._notify_one("dismiss", i))]
+            room = self._row_room(buttons)
+            # The title is what the row is; the body's first sentence is
+            # what it is ABOUT, and the note band was empty. Both are cut
+            # at a sentence boundary rather than at the pixel the row ran
+            # out of, so neither ends mid-word.
             rows.append({
                 "at": self._stamp_of(item.get("at", ""), "%Y-%m-%dT%H:%M:%S"),
                 "kind": "notify", "mark": "notify",
@@ -1908,16 +1980,35 @@ class Dashboard:
                     getattr(ui, "COOL", ui.ACCENT_TEXT)),
                 "eyebrow": "   ·   ".join(b for b in (who, when) if b),
                 "eyebrow_right": False,
-                "text": str(item.get("title") or ""),
-                "note": "",
-                "buttons": [("Go there", "quiet",
-                             lambda i=ident: self._notify_one("open", i)),
-                            ("✕", "close",
-                             lambda i=ident: self._notify_one("dismiss", i))],
+                "text": summary.one_line(item.get("title") or "", room,
+                                         self._measure).text,
+                "note": summary.one_line(item.get("body") or "", room,
+                                         self._measure).text,
+                "buttons": buttons,
             })
         return rows
 
     def _waiting_review(self) -> list[dict]:
+        """A proposal, said as WHAT CHANGED.
+
+        The row used to draw the whole PROPOSED SENTENCE with the new
+        word on a pill, the reason in 9 pt under it, and an ellipsis
+        wherever the width ran out — so the one thing that has to be on
+        it, which word became which, was the one thing that was not. The
+        owner, looking at exactly this on 2026-09-07: "It's really hard
+        for me to understand the corrections that appear on the home
+        screen... I don't understand what's written here, the
+        corrections."
+
+        So the change leads the row, drawn by `ui.pair_pill` — the same
+        chip the vocabulary panel has always used for a learned
+        correction, which is where he already reads a pair — and the
+        sentence it happened in follows it, cut at SENTENCE boundaries
+        (his own suggestion: "display the sentence from point to point").
+        The reason stays in the note. A proposal with more than one
+        change shows the first pair and SAYS there are more rather than
+        drawing three pairs into a 72 px row.
+        """
         try:
             pending = self._review_store().pending()
         except Exception:                 # noqa: BLE001
@@ -1925,27 +2016,85 @@ class Dashboard:
         rows = []
         for item in pending:
             sid = str(item.get("id", ""))
-            text = str(item.get("proposed") or item.get("text") or "")
-            changes = item.get("changes") or []
-            word = str((changes[0].get("after") if changes else "") or "")
-            why = "   ·   ".join(c.get("why", "") for c in changes
-                                      if c.get("why"))
+            buttons = [("Yes", "gold",
+                        lambda s=sid: self._review_decide(s, "accepted")),
+                       ("No", "quiet",
+                        lambda s=sid: self._review_decide(s, "rejected"))]
+            said = self._change_bands(item, self._row_room(buttons))
             rows.append({
                 "at": self._stamp_of(item.get("when", ""),
                                      "%Y-%m-%d %H:%M:%S"),
                 "kind": "review", "mark": "check", "mark_colour": ui.GREEN,
-                "eyebrow": "Second reading   ·   it heard "
-                           f"{len(changes) or 1} word"
-                           f"{'' if len(changes) == 1 else 's'} differently",
-                "runs": self._pill_runs(text, word),
-                "text": text,
-                "note": why,
-                "buttons": [("Yes", "gold",
-                             lambda s=sid: self._review_decide(s, "accepted")),
-                            ("No", "quiet",
-                             lambda s=sid: self._review_decide(s, "rejected"))],
+                "eyebrow": said["eyebrow"],
+                "runs": said["runs"],
+                "text": said["text"],
+                "note": said["note"],
+                "buttons": buttons,
             })
         return rows
+
+    def _change_bands(self, item: dict, room: int) -> dict:
+        """One proposal as the three bands of a row: how much changed,
+        the change itself in its sentence, and why.
+
+        `room` is the pixels the words will really have (widgets.
+        row_text_room), and the context is cut to what is left after the
+        pair has taken its width — measured with `ui.pair_size`, not
+        guessed, because a pair of long Hebrew words is twice the chip a
+        pair of short ones is.
+        """
+        changes = [c for c in (item.get("changes") or [])
+                   if isinstance(c, dict)]
+        heard_text = " ".join(str(item.get("text") or "").split())
+        proposed = " ".join(str(item.get("proposed") or "").split()) \
+            or heard_text
+        if not changes:
+            return {"eyebrow": "Second reading", "runs": None, "note": "",
+                    "text": summary.one_line(proposed, room,
+                                             self._measure).text}
+        first = changes[0]
+        heard = " ".join(str(first.get("before") or "").split())
+        meant = " ".join(str(first.get("after") or "").split())
+        more = len(changes) - 1
+        # The reason first, then the count: the reason is Hebrew and the
+        # count is English, and a line takes its direction from its first
+        # strong letter — so this way a Hebrew row's note reads the same
+        # way its words do.
+        note = "   ·   ".join(b for b in (
+            " ".join(str(first.get("why") or "").split()),
+            f"and {_count_word(more).lower()} more change"
+            f"{'' if more == 1 else 's'}" if more else "") if b)
+        count = (f"{_count_word(len(changes)).lower()} word"
+                 f"{'' if len(changes) == 1 else 's'}")
+
+        if not meant or str(first.get("kind")) == "drop":
+            # An ending nobody else heard. Nothing BECAME anything, so
+            # there is no pair to draw: the words that would go are the
+            # chip, in the danger colour, and the sentence they came out
+            # of is what places them.
+            goes = _first_words(heard, 5)
+            chip = self._measure(goes) + 18 + 7
+            where = self._sentence_around(heard_text, goes.split(" …")[0])
+            return {
+                "eyebrow": f"Second reading   ·   {count} to delete",
+                "runs": [(goes, ui.RED, ui.CHIP_OFF),
+                         (summary.one_line(where, max(80, room - chip),
+                                           self._measure).text,
+                          ui.DIM, None)],
+                "text": where, "note": note}
+
+        pair = widgets.Pair(heard, meant)
+        try:
+            chip, _tall = ui.pair_size(heard, meant, ui.PT_LABEL)
+        except Exception:                 # noqa: BLE001 — no window yet
+            chip = self._measure(heard) + self._measure(meant) + 50
+        where = self._sentence_around(proposed, meant)
+        return {
+            "eyebrow": f"Second reading   ·   {count} changed",
+            "runs": [(pair, None, None),
+                     (summary.one_line(where, max(80, room - chip - 16),
+                                       self._measure).text, ui.DIM, None)],
+            "text": where, "note": note}
 
     def _waiting_problems(self) -> list[dict]:
         module, store = self._problems(), self._problems_store()
@@ -1958,23 +2107,39 @@ class Dashboard:
         rows = []
         for item in open_:
             ident = str(item.get("id", ""))
-            when = str(item.get("when", ""))
-            at = self._stamp_of(when, "%Y-%m-%d %H:%M:%S")
+            # problems.Store writes "at", in ISO. This asked for "when",
+            # in the review store's format, so every report stamped 0 and
+            # sorted to the bottom of the pile with no date on it.
+            at = (self._stamp_of(item.get("at", ""), "%Y-%m-%dT%H:%M:%S")
+                  or self._stamp_of(item.get("when", ""),
+                                    "%Y-%m-%d %H:%M:%S"))
             day = (time.strftime("%d %b", time.localtime(at)).lstrip("0")
                    if at else "")
+            buttons = [("Fixed", "quiet",
+                        lambda i=ident: self._problem_decide(i, "fixed")),
+                       ("Close", "quiet",
+                        lambda i=ident: self._problem_decide(i, "closed"))]
+            # ONE LINE THAT SAYS WHAT THE REPORT IS ABOUT. He types one
+            # long line into the box and the row drew its first ~90
+            # characters, cut mid-word: "I also don't understand the
+            # report... maybe display the sentence from point to point"
+            # (2026-09-07). The first SENTENCE, whole and with no
+            # ellipsis on it when it is whole; the full text is untouched
+            # in the store and the whole list still shows all of it.
+            said = summary.one_line(
+                item.get("what") or item.get("text") or item.get("note")
+                or "", self._row_room(buttons), self._measure)
             rows.append({
                 "at": at,
                 "kind": "problem", "mark": "alert", "mark_colour": ui.RED,
                 "eyebrow": f"You reported this on {day}" if day
                            else "You reported this",
-                "text": str(item.get("what") or item.get("text") or
-                            item.get("note") or ""),
-                "note": "",
-                "buttons": [("Fixed", "quiet",
-                             lambda i=ident: self._problem_decide(i, "fixed")),
-                            ("Close", "quiet",
-                             lambda i=ident: self._problem_decide(i,
-                                                                  "closed"))],
+                "text": said.text,
+                "note": "   ·   ".join(b for b in (
+                    " ".join(str(item.get("where") or "").split()),
+                    "" if said.whole else "the whole list has all of it")
+                    if b),
+                "buttons": buttons,
             })
         return rows
 
@@ -1992,40 +2157,64 @@ class Dashboard:
             return []
         rows = []
         for item in self._pending_questions():
+            buttons = [("Answer", "quiet", self._waiting_all)]
+            asked = summary.one_line(
+                item.get("question") or item.get("text") or "",
+                self._row_room(buttons), self._measure)
             rows.append({
                 "at": self._stamp_of(item.get("when", ""),
                                      "%Y-%m-%d %H:%M:%S"),
                 "kind": "question", "mark": "review",
                 "mark_colour": getattr(ui, "ACCENT_TEXT", ui.ACCENT),
                 "eyebrow": "Saturday's read is waiting on an answer",
-                "text": str(item.get("question") or item.get("text") or ""),
-                "note": "",
-                "buttons": [("Answer", "quiet", self._waiting_all)],
+                "text": asked.text,
+                "note": "" if asked.whole else "Answer has the rest of it",
+                "buttons": buttons,
             })
         return rows
 
     @staticmethod
-    def _pill_runs(text: str, word: str):
-        """The sentence as three runs, so the changed word can sit on a
-        pill inside it.
+    def _measure(text: str) -> int:
+        """A row's words, in pixels — the face and the size a PileRow
+        draws its body at.
 
-        Only for a right-to-left sentence, and only when the word is
-        actually in it: the ORDER BETWEEN RUNS is ours, not Windows', so
-        a line may only be cut where each piece is one direction. An
-        English proposal, or a word that is not found, comes back as
-        None and is drawn whole by DrawTextW, which is the call that
-        gets a mixed line right.
+        Tk's measurement and DrawTextW's agree here to the pixel: the
+        same Hebrew line came back 161 px wide from `ui.text_width` at
+        12 pt and 161 px wide from `ui.draw_text`, measured 2026-09-07.
+        That agreement is what lets a cut be decided while the spec is
+        built, one screen away from anything that can render. Without a
+        window there is nothing to ask, and 6 px a character (Hebrew at
+        12 pt is 5.9, Latin 7.6) is a cut that is roughly right rather
+        than a traceback in the middle of a repaint.
         """
-        if not word or not text or not ui.is_rtl(text):
-            return None
-        at = text.find(word)
-        if at < 0:
-            return None
-        head, tail = text[:at], text[at + len(word):]
-        soft = getattr(ui, "ACCENT_SOFT", None) or ui.CARD_HI
-        ink = getattr(ui, "ACCENT_TEXT", None) or ui.ACCENT
-        return [(head.rstrip(), ui.FG, None), (word, ink, soft),
-                (tail.lstrip(), ui.FG, None)]
+        try:
+            return ui.text_width(str(text), ui.TEXT, 12)
+        except Exception:                 # noqa: BLE001 — no window yet
+            return len(str(text)) * 6
+
+    @staticmethod
+    def _row_room(buttons) -> int:
+        """The pixels a pile row's words will really get, given what is
+        going to be drawn to the right of them."""
+        return widgets.row_text_room(CW - 28, buttons)
+
+    @staticmethod
+    def _sentence_around(text: str, word: str) -> str:
+        """The one sentence of `text` that holds `word`.
+
+        "Maybe display the sentence from point to point or something like
+        that" — his own words for the fix, and a far better rule than a
+        character count: what he reads is a whole sentence or a whole
+        clause, never the front half of a word. A word that is not in
+        the text verbatim (a dropped tail is not in the proposal, and a
+        repair can change the spacing around what it touched) falls back
+        to the first sentence, which still beats the first 90
+        characters.
+        """
+        for piece in summary.sentences(text):
+            if word and word in piece:
+                return piece
+        return summary.first_sentence(text)
 
     def _fill_waiting(self) -> None:
         if "pile_list" not in self.parts:
@@ -2348,10 +2537,21 @@ class Dashboard:
                           highlightthickness=0, bd=0)
         pairs.place(x=0, y=172)
         p["vocab_pairs"] = pairs
-        y = 0
-        for wrong, right in self._recent_pairs(8):
+        # THE STEP IS THE PILL'S OWN HEIGHT, asked for rather than
+        # written down. It was 30 px and `ui.PILL_H` is 36, so every row
+        # was drawn 6 px into the one above it — the overlap the owner
+        # reported on 2026-09-07 — and a taller pair (a Hebrew word set
+        # larger than the pill) would have made it worse. Whatever fits
+        # in the panel is what is asked for, so nothing is drawn past the
+        # bottom of the canvas either.
+        y, gap, room = 0, 6, 250
+        for wrong, right in self._recent_pairs(
+                max(1, (room + gap) // (ui.PILL_H + gap))):
+            _wide, tall = ui.pair_size(wrong, right)
+            if y + tall > room:
+                break
             ui.pair_pill(pairs, inner, y, wrong, right, ui.CARD)
-            y += 30
+            y += tall + gap
         if not y:
             pairs.create_text(0, 6, anchor="nw", font=(ui.UI, 9),
                               fill=ui.FAINT,
@@ -2380,7 +2580,10 @@ class Dashboard:
         for event in self.log:
             if event.kind == "learned":
                 for pair in (event.pairs or []):
-                    out.append(pair)
+                    if not (isinstance(pair, (tuple, list))
+                            and len(pair) == 2):
+                        continue      # a malformed log line is skipped
+                    out.append((str(pair[0]), str(pair[1])))
                     if len(out) >= limit:
                         return out
         if out:
@@ -4974,15 +5177,6 @@ class Dashboard:
         board.place(x=PAD, y=KEY_BOARD_Y)
         p["board"] = board
 
-        panel_x = PAD + board.size[0] + 20
-        panel_w = max(220, PAD + CW - panel_x)
-        panel = ui.Card(self.sheet, panel_w, board.size[1], fill=ui.CARD,
-                        bg=ui.BG, pad=16)
-        panel.place(x=panel_x, y=KEY_BOARD_Y)
-        p["rebind_panel"] = panel
-        p["rebind_body"] = panel.body
-        p["rebind_w"] = panel_w - 32
-        self._paint_rebind()
         # A REAL KEY PRESS answers the question the board asks. Bound on
         # the window rather than the board: the press lands wherever
         # the focus is, and it propagates up to the toplevel from any
@@ -4991,7 +5185,7 @@ class Dashboard:
         self.root.bind("<KeyPress>", self._key_pressed)
 
         # THE ROWS ARE STILL HERE, and they are not a fallback. A cap is
-        # 43 px of picture with a one-word caption on it; the row says the
+        # 34 px of picture with a one-word caption on it; the row says the
         # whole sentence config.py registered ("Report a problem (tap)"),
         # and the test that walks HOTKEY_FIELDS walks these.
         # THE ONE FAINT LINE AT THE BOTTOM IS MEASURED AND PLACED FIRST,
@@ -5018,11 +5212,34 @@ class Dashboard:
         tk.Label(self.sheet, text=said, bg=ui.BG, fg=ui.FAINT,
                  font=(ui.UI, 8), justify="left").place(x=PAD, y=safe_y)
 
+        # THE PANEL IS THE RIGHT-HAND COLUMN, not a card as tall as the
+        # board. It has to hold 289 px on a cap carrying two bindings
+        # (F8 is translate bare and look up with ctrl) — measured on the
+        # hidden desktop 2026-09-07 — and a card the board's height is
+        # 207 at this unit and was 246 at the old one. Both are short,
+        # and the way Tk is short is silent: the packer does not clip a
+        # slave that does not fit, it never maps it, so the second
+        # binding's button and the line telling you to pick which one
+        # you meant were simply absent. It runs from the board's top to
+        # the foot line now — 509 px, 477 of body — and the rows below
+        # the board take the board's width instead of the window's.
+        panel_x = PAD + board.size[0] + KEY_BOARD_GAP
+        panel_w = max(KEY_PANEL_W, PAD + CW - panel_x)
+        panel_h = max(board.size[1], safe_y - 16 - KEY_BOARD_Y)
+        panel = ui.Card(self.sheet, panel_w, panel_h, fill=ui.CARD,
+                        bg=ui.BG, pad=16)
+        panel.place(x=panel_x, y=KEY_BOARD_Y)
+        p["rebind_panel"] = panel
+        p["rebind_body"] = panel.body
+        p["rebind_w"] = panel_w - 32
+        self._paint_rebind()
+
         top = KEY_BOARD_Y + board.size[1] + 22
-        p["keys_list"] = ui.Scroller(self.sheet, CW + 10,
+        rows_w = board.size[0]
+        p["keys_list"] = ui.Scroller(self.sheet, rows_w + 10,
                                      max(60, safe_y - top - 16), bg=ui.BG)
         p["keys_list"].place(x=PAD, y=top)
-        self._key_rows(p["keys_list"], lit)
+        self._key_rows(p["keys_list"], lit, width=rows_w)
 
     def _key_legend(self, y: int) -> None:
         """The five ways a cap can look, said once."""
@@ -5045,38 +5262,61 @@ class Dashboard:
             x += 30 + max(ui.text_width(title, ui.UI, 9),
                           ui.text_width(note, ui.UI, 8)) + 26
 
-    def _key_rows(self, scroller: ui.Scroller, lit: dict) -> None:
-        """The fifteen bindings, three to a line, each with the cap that
-        opens the rebind dialog for it."""
+    def _key_rows(self, scroller: ui.Scroller, lit: dict,
+                  width: int = CW) -> None:
+        """Every binding, KEY_COLUMNS to a line, each with the cap that
+        opens the rebind dialog for it.
+
+        `width` is the room the rows have, which is the BOARD's width
+        since the panel became the place's right-hand column: 781 px,
+        three columns of 253, against the 208 the longest of them needs
+        (the Ctrl+Alt+R cap and "Report a problem" beside it).
+        """
         p = self.parts
         keys = self.status.get("keys") or self._read_keys()
         grid = tk.Frame(scroller.inner, bg=ui.BG)
         grid.pack(anchor="w")
-        column_w = (CW - 20) // KEY_COLUMNS
+        column_w = (width - 20) // KEY_COLUMNS
         for index, (field, label) in enumerate(config_mod.HOTKEY_FIELDS):
             what, how = split_label(label)
-            cell = tk.Frame(grid, bg=ui.BG, width=column_w, height=42)
+            shown = pretty_key(keys.get(field, ""))
+            said = KEY_NOTES.get(field)
+            note = (said[0] if said else
+                    how or ("chord" if "+" in str(keys.get(field, ""))
+                            else ""))
+            # A CELL IS AS WIDE AS ITS CONTENT WHEN ITS CONTENT IS WIDER
+            # THAN THE COLUMN. The cell has a fixed width and propagation
+            # off — it has to, since everything in it is `place`d and a
+            # frame of placed children asks for 1x1 — so anything past
+            # that width is simply cut. Measured 2026-09-07, with the
+            # rows narrowed to the board: fifteen of the sixteen fit 253,
+            # and "Ctrl+Alt+M  Dismiss the notification" is 259. grid
+            # gives a column its widest cell, so one wide cell widens its
+            # own column and nothing else; the whole grid then asks for
+            # 765 of the 781 the board is wide.
+            cap_w = max(74, 34 + ui.text_width(shown, ui.UI, 10))
+            # + 6: a tk.Label asks for its text plus one of padx and two
+            # of border on each side. Measured, because leaving it out is
+            # exactly six pixels of the last word, on the one row that
+            # needed the room.
+            cell_w = max(column_w, cap_w + 12 + 6 + max(
+                ui.text_width(what, ui.UI, 10),
+                ui.text_width(note, ui.UI, 8) if note else 0))
+            cell = tk.Frame(grid, bg=ui.BG, width=cell_w, height=KEY_ROW_H)
             cell.grid(row=index // KEY_COLUMNS, column=index % KEY_COLUMNS,
                       sticky="w")
             cell.pack_propagate(False)
             cell.grid_propagate(False)
-            shown = pretty_key(keys.get(field, ""))
             cap = ui.KeyCap(cell, shown,
                             lambda f=field, la=label: self._capture(f, la),
-                            bg=ui.BG,
-                            w=max(74, 34 + ui.text_width(shown, ui.UI, 10)),
-                            h=30)
+                            bg=ui.BG, w=cap_w, h=30)
             cap.place(x=0, y=4)
             p["caps"][field] = cap
             tk.Label(cell, text=what, bg=ui.BG, fg=ui.FG,
-                     font=(ui.UI, 10)).place(x=cap.winfo_reqwidth() + 12,
-                                             y=4)
-            note = how or ("chord" if "+" in str(keys.get(field, ""))
-                           else "")
+                     font=(ui.UI, 10)).place(x=cap_w + 12, y=4)
             if note:
                 tk.Label(cell, text=note, bg=ui.BG, fg=ui.FAINT,
-                         font=(ui.UI, 8)).place(
-                    x=cap.winfo_reqwidth() + 12, y=22)
+                         font=(ui.UI, 8)).place(x=cap_w + 12, y=22)
         scroller.bind_wheel(grid)
 
     def _key_pressed(self, event) -> None:
@@ -5127,15 +5367,25 @@ class Dashboard:
         for child in body.winfo_children():
             child.destroy()
         width = p.get("rebind_w", 240)
+        # WRAPLENGTH IS THE TEXT, NOT THE WIDGET. A tk.Label asks for six
+        # pixels more than the line it wraps to — one of padx and two of
+        # border on each side — so `wraplength=width` inside a body
+        # exactly `width` wide is a widget 6 px too big for it, and a
+        # packed child too big for its parent is cut, not shrunk.
+        # Measured 2026-09-07: 281 px of a 279 px panel.
+        wrap = width - 6
         tk.Label(body, text="T H I S   K E Y", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.MEDIUM, 8)).pack(anchor="w")
 
         keys = self.status.get("keys") or self._read_keys()
         labels = dict(config_mod.HOTKEY_FIELDS)
         cap_id = self._cap_selected
+        # `in caps_for`, not `== cap_for`: the keypad's Enter is VK_RETURN
+        # exactly like the main one, so a binding on `enter` belongs to
+        # both caps and the board lights both.
         on_it = [(field, raw) for field, raw in keys.items()
                  if field in labels and raw
-                 and keyboard_mod.cap_for(raw) == cap_id] if cap_id else []
+                 and cap_id in keyboard_mod.caps_for(raw)] if cap_id else []
 
         # WHILE IT IS LISTENING, THE PANEL IS ABOUT THAT AND NOTHING
         # ELSE. The card used to be packed after everything, and on a cap
@@ -5154,17 +5404,18 @@ class Dashboard:
 
         if cap_id is None:
             tk.Label(body, bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 10),
-                     wraplength=width, justify="left",
+                     wraplength=wrap, justify="left",
                      text="Press a key, or click one on the board, to see "
                           "what it does — and to change it."
                      ).pack(anchor="w", pady=(14, 0))
         elif not on_it:
-            tk.Label(body, text=cap_id.upper(), bg=ui.CARD, fg=ui.FG,
+            name = cap_title(cap_id)
+            tk.Label(body, text=name, bg=ui.CARD, fg=ui.FG,
                      font=(ui.DISPLAY, 15, "bold")).pack(anchor="w",
                                                          pady=(12, 0))
             tk.Label(body, bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9),
-                     wraplength=width, justify="left",
-                     text=f"{cap_id.upper()} is yours — the app never "
+                     wraplength=wrap, justify="left",
+                     text=f"{name} is yours — the app never "
                           "takes it. Pick a binding below and press "
                           "this key when it asks."
                      ).pack(anchor="w", pady=(6, 0))
@@ -5173,18 +5424,31 @@ class Dashboard:
                 head = tk.Frame(body, bg=ui.CARD)
                 head.pack(anchor="w", pady=(12, 0), fill="x")
                 shown = pretty_key(raw)
-                ui.KeyCap(head, shown, bg=ui.CARD,
-                          w=max(58, 34 + ui.text_width(shown, ui.UI, 10)),
+                cap_w = max(58, 34 + ui.text_width(shown, ui.UI, 10))
+                ui.KeyCap(head, shown, bg=ui.CARD, w=cap_w,
                           h=32).pack(side="left")
                 words = tk.Frame(head, bg=ui.CARD)
                 words.pack(side="left", padx=(12, 0))
                 what, how = split_label(labels[field])
+                # IT WRAPS. The cap and the name beside it are 295 px for
+                # "Ctrl+Alt+M  Dismiss the notification" and the panel's
+                # body is 279 — measured 2026-09-07 — and a packed label
+                # wider than its parent is not shrunk, it is cut at the
+                # parent's edge. A wraplength turns a name too long for
+                # the column into two lines instead of half a word.
                 tk.Label(words, text=what, bg=ui.CARD, fg=ui.FG,
-                         font=(ui.UI, 11, "bold")).pack(anchor="w")
+                         font=(ui.UI, 11, "bold"), justify="left",
+                         wraplength=max(80, wrap - cap_w - 12)
+                         ).pack(anchor="w")
                 tk.Label(words, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9),
                          text=f"{how or 'tap'}   ·   "
                               f"{'chord' if '+' in raw else 'bare key'}"
                          ).pack(anchor="w")
+                said = KEY_NOTES.get(field) if not self._capturing else None
+                if said:
+                    tk.Label(body, text=said[1], bg=ui.CARD, fg=ui.DIM,
+                             font=(ui.UI, 9), wraplength=wrap,
+                             justify="left").pack(anchor="w", pady=(8, 0))
                 # ONE gold thing on a surface. With two bindings on one
                 # cap neither of them is "the" action, so both go quiet
                 # and the line under them says to pick — and while the
@@ -5199,11 +5463,20 @@ class Dashboard:
                                                                pady=(10, 0))
             if len(on_it) > 1:
                 tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
-                         wraplength=width, justify="left",
-                         text="Two bindings live on this key — the bare one "
-                              "and the one with a modifier. Change whichever "
+                         wraplength=wrap, justify="left",
+                         text="Two bindings on this key — the bare one and "
+                              "the one with a modifier. Change whichever "
                               "you meant."
                          ).pack(anchor="w", pady=(10, 0))
+        if cap_id in keyboard_mod.KEYPAD_NUMLOCK:
+            # The one thing a picture of a keypad cannot say for itself.
+            tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                     wraplength=wrap, justify="left",
+                     text="On the keypad, and Windows only sends it while "
+                          "Num Lock is ON. With Num Lock off the same cap "
+                          "sends the navigation key printed beside the "
+                          "digit."
+                     ).pack(anchor="w", pady=(10, 0))
 
     def _listening_card(self, body, width: int) -> None:
         """The panel's own copy of what the key dialog is saying: the
@@ -5305,35 +5578,32 @@ class Dashboard:
         for child in bar.winfo_children():
             child.destroy()
         if self._settings_searching:
-            box = ui.Card(bar, CW, FIELD_H, radius=11, pad=11, bg=ui.BG)
+            # The same rounded box the rows use, at the width of the tab
+            # strip it replaces. It used to be a ui.Card with a bare Entry
+            # placed on it, which is the square-box complaint again, in
+            # the one place the eye lands first.
+            box = ui.Field(bar, self._settings_query, w=CW, h=FIELD_H,
+                           radius=11, bg=ui.BG, justify="left",
+                           icon=ui.ICON["search"], pad=14, right=30,
+                           placeholder="a word from a setting's name, its "
+                                       "sentence or the file's own comment "
+                                       "— Esc brings the tabs back")
             box.pack()
-            tk.Label(box.body, text=ui.ICON["search"], bg=ui.CARD,
-                     fg=ui.FAINT, font=(ui.ICONS, 10)).place(x=0, y=2)
-            entry = tk.Entry(box.body, bg=ui.CARD, fg=ui.FG, bd=0,
-                             highlightthickness=0, font=(ui.UI, 10),
-                             insertbackground=ui.ACCENT)
-            entry.place(x=26, y=0, width=CW - 100, height=FIELD_H - 22)
-            entry.insert(0, self._settings_query)
-            entry.bind("<KeyRelease>",
-                       lambda _e: self._settings_search_soon(entry.get()))
-            entry.bind("<Escape>", lambda _e: self._settings_close_search())
-            p["settings_search"] = entry
-            p["settings_placeholder"] = tk.Label(
-                box.body, text="a word from a setting's name, its sentence "
-                               "or the file's own comment — Esc brings the "
-                               "tabs back",
-                bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9))
-            if not self._settings_query:
-                p["settings_placeholder"].place(x=26, y=0)
-            entry.bind("<FocusIn>",
-                       lambda _e: p["settings_placeholder"].place_forget())
-            close = tk.Label(box.body, text="✕", bg=ui.CARD, fg=ui.DIM,
-                             font=(ui.UI, 10), cursor="hand2")
-            close.place(x=CW - 22 - 10, y=0, anchor="ne")
-            close.bind("<Button-1>", lambda _e: self._settings_close_search())
-            close.bind("<Enter>", lambda _e: close.configure(fg=ui.FG))
-            close.bind("<Leave>", lambda _e: close.configure(fg=ui.DIM))
-            entry.focus_set()
+            box.bind_entry("<KeyRelease>",
+                           lambda _e: self._settings_search_soon(box.get()))
+            box.bind_entry("<Escape>",
+                           lambda _e: self._settings_close_search())
+            p["settings_search"] = box
+            cross = box.create_text(CW - 16, FIELD_H / 2, text="✕",
+                                    anchor="e", fill=ui.DIM,
+                                    font=(ui.UI, 10), tags="cross")
+            box.tag_bind("cross", "<Button-1>",
+                         lambda _e: self._settings_close_search())
+            box.tag_bind("cross", "<Enter>",
+                         lambda _e: box.itemconfig(cross, fill=ui.FG))
+            box.tag_bind("cross", "<Leave>",
+                         lambda _e: box.itemconfig(cross, fill=ui.DIM))
+            box.take_focus()
             return
         p["settings_tabs"] = {}
         names = settings_mod.tab_names(p["sections"], _keys_screen_paths())
@@ -5406,8 +5676,12 @@ class Dashboard:
                 title = settings_mod.section_words(
                     section.name, section.help).label.upper()
                 pairs = [(settings_mod.words_for(s), s) for s in rows]
+                # A SEARCH NEVER FOLDS. What it found is the answer to
+                # a question that was typed; half of it behind a line
+                # saying "7 more in this section" is not an answer.
                 builders.append(lambda t=title, pr=pairs:
-                                self._friendly_card(scroller, t, pr))
+                                self._friendly_card(scroller, t, pr,
+                                                    fold=False))
         else:
             name = self._settings_tab
             # The blocks that used to be screens sit above the rows of
@@ -5463,7 +5737,7 @@ class Dashboard:
 
     # -- the cards
 
-    def _new_card(self, scroller, height: int):
+    def _new_card(self, scroller, height: int, before=None):
         """A card drawn as canvas ITEMS rather than widgets.
 
         A hundred and forty rows of two or three Labels each is four
@@ -5478,7 +5752,13 @@ class Dashboard:
         card.create_image(0, 0, anchor="nw",
                           image=ui.rounded(CW, height, 14, ui.CARD, ui.BG,
                                            ui.LINE))
-        card.pack(anchor="w", pady=(0, 14))
+        # `before` is how a fold opens IN PLACE: a Canvas cannot grow with
+        # rows already drawn on it, so the card is drawn again, taller,
+        # and packed in front of whatever followed the old one.
+        if before is None:
+            card.pack(anchor="w", pady=(0, 14))
+        else:
+            card.pack(anchor="w", pady=(0, 14), before=before)
         return card
 
     def _friendly_help(self, row) -> tuple[str, int]:
@@ -5486,17 +5766,35 @@ class Dashboard:
             return "", 0
         return ui.clamp(row.help, ui.UI, 8, CW - 36 - CONTROL_W - 12, 2)
 
-    def _friendly_card(self, scroller, title: str, pairs) -> None:
+    def _friendly_card(self, scroller, title: str, pairs, *,
+                       fold: bool = True, open_: bool = False,
+                       before=None) -> None:
+        """One section's card: the lines worth a first look, and — under
+        them, on one quiet line — how many more the section has.
+
+        The split is settings.fold, and the rule it uses is settings.
+        common: a line a tab names by hand, a switch or a menu is on the
+        face; a number, a length of time, a model name or a folder waits
+        behind the line. NOTHING IS DROPPED — the owner's two rules are
+        "show all of them" (2026-09-01) and "I do not need to know all of
+        this" (2026-09-07), and a fold is the only thing that is both. A
+        test holds every line of config.toml to being reachable exactly
+        once, folded or not.
+        """
+        shown, rest = (settings_mod.fold(pairs) if fold
+                       else (list(pairs), []))
+        drawn = shown + rest if open_ else shown
         heights = [22 + self._friendly_help(row)[1] * 15 + 8
-                   for row, _setting in pairs]
+                   for row, _setting in drawn]
         y = 18 if title else 8
         card = self._new_card(scroller, y + 18 * bool(title) + sum(heights)
-                              + (6 if title else 10))
+                              + (FOLD_H if rest else 0)
+                              + (6 if title else 10), before=before)
         if title:
             card.create_text(18, y, text=title, anchor="nw", fill=ui.FAINT,
                              font=(ui.UI, 8))
             y += 18
-        for (row, setting), height in zip(pairs, heights):
+        for (row, setting), height in zip(drawn, heights):
             card.create_text(18, y, text=row.label, anchor="nw", fill=ui.FG,
                              font=(ui.UI, 10))
             text, lines = self._friendly_help(row)
@@ -5505,7 +5803,93 @@ class Dashboard:
                                  fill=ui.FAINT, font=(ui.UI, 8))
             self._control(card, y, setting, self._menu_for(row, setting))
             y += height
+        if rest:
+            self._fold_line(scroller, card, title, pairs, y, len(rest),
+                            open_)
         scroller.bind_wheel(card)
+
+    def _fold_line(self, scroller, card, title: str, pairs, y: int,
+                   hidden: int, open_: bool) -> None:
+        """The quiet line at the foot of a folded card.
+
+        The rectangle under the words is what makes it a ROW to click on
+        rather than a run of glyphs: a canvas text item is only hit where
+        its ink is, and "7 more in this section" is 130 px of target in a
+        1112 px card. It is painted in the card's own colour, so it is a
+        hit area and nothing else.
+        """
+        card.create_rectangle(12, y - 3, CW - 12, y + FOLD_H - 7,
+                              fill=ui.CARD, outline="", tags="fold")
+        said = "Fewer" if open_ else f"{hidden} more in this section"
+        card.create_text(18, y + 2, text=said, anchor="nw",
+                         fill=ui.ACCENT_TEXT, font=(ui.UI, 9), tags="fold")
+        # The caret is drawn at PT_LABEL, not at the size of the words
+        # beside it: the ▾ Rubik gives back at 8 pt is three pixels of ink
+        # and reads as a full stop (photographed on the hidden desktop,
+        # 2026-09-07). It is the same glyph ui.Dropdown wears.
+        card.create_text(21 + ui.text_width(said, ui.UI, 9), y + 1,
+                         text="▴" if open_ else "▾", anchor="nw",
+                         fill=ui.ACCENT_TEXT, font=(ui.UI, ui.PT_LABEL),
+                         tags="fold")
+        card.tag_bind("fold", "<Button-1>", lambda _e:
+                      self._settings_fold(scroller, card, title, pairs,
+                                          not open_))
+        card.tag_bind("fold", "<Enter>",
+                      lambda _e: card.configure(cursor="hand2"))
+        card.tag_bind("fold", "<Leave>",
+                      lambda _e: card.configure(cursor=""))
+        # What _settings_unfold_first looks for. Only a CLOSED fold
+        # carries it, so "is anything still folded" is one attribute.
+        if not open_:
+            card.folded_rows = lambda: self._settings_fold(
+                scroller, card, title, pairs, True)
+
+    def _settings_fold(self, scroller, card, title: str, pairs,
+                       open_: bool) -> None:
+        """Open, or close, one card's fold — in place.
+
+        A card is a Canvas of a fixed height with its rows already drawn
+        on it (see _new_card for why it is not widgets), so there is no
+        growing it: it is drawn again at the new height and packed where
+        the old one was. The rows it registered are dropped first, or the
+        same path would sit in parts["rows"] twice and every repaint
+        would paint it twice — which the "exactly once" test would see.
+        """
+        if scroller is None or not scroller.winfo_exists():
+            return
+        kids = list(scroller.inner.pack_slaves())
+        try:
+            after = kids[kids.index(card) + 1]
+        except (ValueError, IndexError):
+            after = None
+        for _row, setting in pairs:
+            self.parts.get("rows", {}).pop(setting.path, None)
+        card.destroy()
+        self._friendly_card(scroller, title, pairs, open_=open_,
+                            before=after)
+
+    def _settings_unfold_first(self) -> bool:
+        """Open the first card on this tab that still has a fold. True if
+        there was one."""
+        scroller = self.parts.get("settings_list")
+        if scroller is None or not scroller.winfo_exists():
+            return False
+        for card in scroller.inner.pack_slaves():
+            opener = getattr(card, "folded_rows", None)
+            if opener is not None:
+                opener()
+                return True
+        return False
+
+    def _settings_unfold_all(self) -> int:
+        """Open every fold on the tab that is up; how many were opened.
+        What the "reachable exactly once" test walks the screen with."""
+        opened = 0
+        while self._settings_unfold_first():
+            opened += 1
+            if opened > 500:              # a fold that will not open
+                break
+        return opened
 
     def _microphones(self) -> list:
         """(what the file writes, a name) for every input device, the way
@@ -5591,21 +5975,18 @@ class Dashboard:
             card.create_window(right, y - 2, window=menu, anchor="ne")
             self._register_row(setting, "dropdown", menu)
         else:
-            entry = tk.Entry(card, bg=ui.EDGE, fg=ui.FG, bd=0,
-                             highlightthickness=1,
-                             highlightbackground=ui.STROKE,
-                             highlightcolor=ui.ACCENT,
-                             insertbackground=ui.ACCENT, font=(ui.UI, 10),
-                             justify="right", disabledbackground=ui.EDGE,
-                             readonlybackground=ui.EDGE)
-            card.create_window(right, y, window=entry, anchor="ne",
-                               width=ENTRY_W, height=26)
-            entry.insert(0, _shown(value))
-            entry.bind("<Return>", lambda _e, s=setting, w=entry:
-                       self._entry_done(s, w))
-            entry.bind("<FocusOut>", lambda _e, s=setting, w=entry:
-                       self._entry_done(s, w))
-            self._register_row(setting, "entry", entry)
+            # ui.Field, not a bare tk.Entry: an Entry is a hard rectangle
+            # with a one-pixel highlight, and it was the only square thing
+            # left in a window of rounded faces. ui.Field says the rest,
+            # including why its disabled colours are set.
+            field = ui.Field(card, _shown(value), w=ENTRY_W, h=ENTRY_H,
+                             bg=ui.CARD)
+            card.create_window(right, y - 1, window=field, anchor="ne")
+            field.bind_entry("<Return>", lambda _e, s=setting, f=field:
+                             self._entry_done(s, f))
+            field.bind_entry("<FocusOut>", lambda _e, s=setting, f=field:
+                             self._entry_done(s, f))
+            self._register_row(setting, "entry", field)
 
     def _register_row(self, setting, kind: str, widget) -> None:
         self.parts["rows"].setdefault(setting.path, []).append((kind, widget))
@@ -5655,6 +6036,7 @@ class Dashboard:
         cut = getattr(entry, "_cut_to", 0)
         if not cut:
             return
+        entry = getattr(entry, "entry", entry)     # a ui.Field's own Entry
         try:
             if entry.focus_get() is entry:
                 return                    # the caret is in it: say it all
@@ -5670,6 +6052,7 @@ class Dashboard:
         """The caret arrived: put the value back as the file holds it."""
         if not getattr(entry, "_cut_to", 0):
             return
+        entry = getattr(entry, "entry", entry)     # a ui.Field's own Entry
         try:
             values = self.parts.get("values") or {}
             whole = _shown(values.get(setting.path, setting.value))
@@ -5881,8 +6264,11 @@ class Dashboard:
                 elif kind == "dropdown":
                     widget.set(value)
                 elif kind == "entry":
-                    widget.delete(0, "end")
-                    widget.insert(0, _shown(value))
+                    # widget.set, not delete/insert: a ui.Field is a
+                    # Canvas, and Canvas.delete/insert are about canvas
+                    # ITEMS. `set` says it without telling anyone, the
+                    # way ui.Dropdown.set does.
+                    widget.set(_shown(value))
                     # A field that is showing its value cut goes back to
                     # cut, or the repaint would put 390 px of device name
                     # into a 264 px box again.
@@ -5917,12 +6303,8 @@ class Dashboard:
         if not self._settings_searching or text == self._settings_query:
             return
         self._settings_query = text
-        placeholder = self.parts.get("settings_placeholder")
-        if placeholder is not None:
-            if text:
-                placeholder.place_forget()
-            elif self.parts.get("settings_search") is not self.root.focus_get():
-                placeholder.place(x=26, y=1)
+        # ui.Field shows and hides its own placeholder on every keystroke
+        # and on the focus moving; there is nothing to place by hand.
         self._fill_settings()
 
     # ------------------------------------------------------------- version

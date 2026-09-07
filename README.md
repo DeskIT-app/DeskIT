@@ -383,7 +383,57 @@ for the two things a field cannot hold, a list and a Hebrew string (Tk
 has no bidi caret). A name wider than its menu is cut with an ellipsis
 rather than at the menu's edge.
 
-**Every line of `config.toml` is drawn exactly once.** `settings.TABS`
+**Every box on that place is rounded, including the fields.** The
+switches and the menus always were — they are cached Pillow faces — but
+a `tk.Entry` is a hard grey rectangle with a one-pixel highlight, and
+since General is nothing but switches and menus, the fields were the
+only square things in the window and only on the *other* six tabs. The
+owner, 2026-09-07: "the boxes are square in everything that's not in
+General, and it's not pretty." `ui.Field` is the answer, built the way
+`ui.Button` and `ui.Dropdown` are: three faces cached by `ui.rounded` at
+a 9 px radius, a borderless Entry sitting flat on the middle of the
+face, and only the OUTLINE changing between the three — `STROKE` at
+rest, `LINE_HI` under the pointer, `ACCENT` while the caret is in it.
+The fill never changes, because the Entry paints its own rectangle and
+knows nothing about the face under it, so a hover that moved the fill
+would show as a rectangle of the old colour exactly where the Entry
+sits. `disabledbackground` and `readonlybackground` are set beside `bg`,
+because `bg` is only the NORMAL state and a disabled Tk widget repaints
+itself in the platform's grey — this app has paid for that once already.
+The search box at the top of the place is the same widget at 1112x48,
+with the magnifier as its icon, the placeholder as its own canvas item
+and the cross drawn on its face.
+
+**A card shows its choices and folds its measurements.** The owner
+again, the same evening: "I would reduce some of the settings. There are
+things there that I just don't need, so maybe make it a bit smaller."
+Nothing was deleted — his other rule, from 2026-09-01, is *show all of
+them* — so each section's card shows the lines worth a first look and
+keeps the rest behind one quiet line at its foot, "**7 more in this
+section**", which opens them in place. `settings.common` decides, and it
+decides off the FILE rather than off a hand-written list of a hundred
+and ninety-nine paths:
+
+- a line one of the `TABS` names by hand is common — that table is the
+  owner's own shortlist, and General is nothing else;
+- a line that is a **choice** is common: a switch, or a menu (an
+  `a | b | c` at the front of its comment, or names the words give it);
+- everything else is a **measurement** — a number, a length of time, a
+  threshold, a model name, a folder, a list — and folds.
+
+A choice can be answered without knowing what the app does with it, and
+answering it is one click; a measurement is a number you need a reason
+to change, and every one in this file already carries the measurement
+that chose it in its comment. Because the rule is computed, a setting
+added to `config.toml` lands on the right side of the fold the moment
+the file is saved. A fold that would hide fewer than `settings.FOLD_MIN`
+= 2 lines is not drawn at all — one hidden row costs more room than it
+saves. A **search never folds**: what it found is the answer to a
+question that was typed. Across the seven tabs this took **184 rows down
+to 94**: Dictation 58 → 24, Text 28 → 9, Screen 43 → 29, Cards 34 → 14,
+The app 6 → 3, General and Phone unchanged at 12 and 3.
+
+**Every line of `config.toml` is reachable exactly once.** `settings.TABS`
 names by hand the fifty-odd lines worth a sentence and a menu, and
 `settings.TAB_SECTIONS` says which tab owns each *section* of the file —
 Dictation owns `[audio]`, `[polish]`, `[local]`, `[review]` and so on,
@@ -394,8 +444,9 @@ explained with the plain words in `settings.WORDS` rather than the
 file's own `latch_max_seconds` and its measured comment. A section no
 tab owns lands on an **Advanced** tab that only appears when it has
 something to show, so a section added to the file is on the screen the
-moment it is saved. A test holds the tabs and the Keys screen to drawing
-every line once and nothing twice.
+moment it is saved. A test holds the tabs and the Keys screen to
+reaching every line once and nothing twice — it opens every fold on
+every tab first, which is also what proves the fold hides nothing.
 
 This replaced two things from the day before, on the owner's word
 (2026-09-07): a first tab that said forty settings as *sentences* with
@@ -598,11 +649,13 @@ panel says what lives there — *Report a problem · tap · chord* for `R`,
 since `ctrl+alt+r` is on it — or that the app never takes it: *"Q is
 yours."* The owner's ask, verbatim: "if I press R, for example, it
 would tell me what it does." Tk reports the press with the Windows
-virtual-key code, `keyboard.cap_for_vk` turns it into the cap, and the
-modifiers come back unsided the way the caps are named. Never while
-the key dialog is listening for a new binding (that press is the
-dialog's), and never on another place, where a key press is typing.
-Clicking a cap does the same thing.
+virtual-key code, `keyboard.cap_for_vk` turns it into the cap, the
+modifiers come back unsided the way the caps are named, and the keypad
+comes back as its own codes (`VK_NUMPAD5` is `0x65`, not the digit
+row's `0x35`) so the 5 under your hand lights and not the 5 above the
+letters. Never while the key dialog is listening for a new binding
+(that press is the dialog's), and never on another place, where a key
+press is typing. Clicking a cap does the same thing.
 
 **Keys is a picture of a keyboard with your bindings lit on it.** It used
 to be a row per binding — "Translate (tap) `[F8]`" — in a scrolling
@@ -611,14 +664,36 @@ do not remember that translate is F8; you remember where your finger
 goes. And the question the screen actually has to answer, *which keys has
 this app taken from me*, was sixteen separate readings of that column.
 
-Eighty-seven caps, an ANSI tenkeyless board, one Pillow image and one hit
-table. Everything is measured from a single unit `u` (one 1× cap), so the
-board fits whatever room the screen has: at `u=40` it is 746×278, which
-leaves 346 px for the panel beside it and the room under it for the
-bindings, three to a line. The whole board is one image — 26–32 ms to
-draw at `u=43`, 41 ms at `u=60` — and a click redraws all of it in
-~30 ms, under a frame, which is why there is no partial-repaint
-machinery in `keyboard.py` at all.
+**It is HIS keyboard, keypad and all.** It was tenkeyless for one day,
+and his answer on 2026-09-07 was "adapt them to my keyboard because I
+also have num lock 1 to 9, 0 to 9, asterisk, and other things". So it is
+a full-size ANSI board of **104 caps**: the keypad on the same unit grid,
+after the standard 0.25u gap — `NumLk / * -`, `7 8 9` with a `+` two rows
+tall, `4 5 6`, `1 2 3` with a two-row `Enter`, a double-width `0` and the
+`.` — which is 4.25 cap units more board, 18.25 → **22.5**.
+
+One Pillow image and one hit table. Everything is measured from a single
+unit `u` (one 1× cap), so the board fits whatever room the screen has: at
+`u=34` it is 781×239 and draws in 22 ms, at `u=43` it is 984×298 and
+28 ms (medians of five). A click redraws all of it, under a frame, which
+is why there is no partial-repaint machinery in `keyboard.py` at all.
+
+**The place was re-measured around it**, because 22.5 units in a window
+fixed at 1160×720 means the cap is what gives. `keyboard.unit_for` picks
+it from the room left once the panel has its 300 px: 34, a 781×239 board,
+311 px of panel. The panel is the right-hand **column** now — from the
+board's top edge down to the foot line, 509 px — rather than a card as
+tall as the board: it has to hold 289 px on a cap carrying two bindings,
+and a card the board's height offers 207. **The way Tk is short is
+silent.** The packer does not clip a slave that will not fit, it never
+maps it, and a fixed-width frame cuts whatever is placed past its edge —
+so a panel that has outgrown its box looks like a panel with a line
+missing, and `winfo_y()` of the child that is gone reads 0. Both are
+asserted now, for every kind of cap and while the dialog is listening.
+Under the board the bindings are three to a line in the board's own
+width; one of them (`Ctrl+Alt+M`, *Dismiss the notification*) needs
+259 px against a 253 px column, so a cell that needs more takes more and
+`grid` widens that column alone.
 
 Five ways a cap can look, and the legend says all five: **held** (down the
 whole time it works), **tapped** (fires and still reaches the app
@@ -632,7 +707,14 @@ why they are the safe ones. **Click a cap** and the panel at the right
 tells you what that key does and offers to change it, through the same
 capture dialog described below.
 
-Four things this got wrong first, all of them worth writing down because
+**Insert says what it is.** `pause_hotkey` is a pause and not a stop —
+his words on 2026-09-07, "I use insert to pause the model, not shut it
+down, just pause" — so where every other row says *tap*, the pause row
+says **a pause, not a stop**, and the panel says the rest: nothing is
+unloaded, the models stay on the card, coming back is instant, and it is
+the one key that still works while paused.
+
+Five things this got wrong first, all of them worth writing down because
 they are all invisible until you look at the drawing:
 
 - **One cap can carry two bindings.** `translate_hotkey = "f8"` and
@@ -649,6 +731,18 @@ they are all invisible until you look at the drawing:
   is watched by the recorder, not registered as a hotkey — so it is named
   on the board by hand and drawn with the broken edge that says "only
   sometimes".
+- **The keypad has its own virtual keys, and only while Num Lock is on.**
+  `VK_NUMPAD0..9` are `0x60..0x69`, not the digit row's `0x30..0x39`, and
+  `* + - . /` are `0x6A/0x6B/0x6D/0x6E/0x6F`. With Num Lock **off** the
+  same physical keys arrive as Insert, Delete, the arrows and
+  Home/End/PgUp/PgDn, so a press then lights *those* caps — which is the
+  truth about what the app was handed — and a binding on `numpad 4` will
+  not fire. `hotkey.vk_for` knows them by what is printed on the cap
+  (`numpad 5`, `numpad *`, `num lock`), so they bind like any other key,
+  and the panel says the Num Lock part out loud when you pick one. The
+  one keypad cap with no code of its own is its **Enter**: it is
+  `VK_RETURN`, the same `0x0D` as the main one, so `enter` lights both
+  caps and no code anywhere can tell them apart.
 
 ### Changing the keys
 

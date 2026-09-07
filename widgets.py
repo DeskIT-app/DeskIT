@@ -30,6 +30,7 @@ was built against the real ui.py (r3/spikes/spikes.md §1):
 from __future__ import annotations
 
 import tkinter as tk
+from typing import NamedTuple
 
 import ui
 
@@ -242,44 +243,130 @@ def icon(parent, name: str, *, bg: str, colour: str | None = None,
 
 # ------------------------------------------------------------ bidi runs
 
-def rtl_run(canvas, right_x: int, y: int, pieces, bg: str, *,
+class Pair(NamedTuple):
+    """One correction as a PIECE of a line: what was heard, what is
+    proposed instead.
+
+    A line piece is normally a string. This is the one thing that is not,
+    and it exists because the second-reading row had to be redesigned
+    around the change rather than around the sentence. The owner, looking
+    at the old row on 2026-09-07: "It's really hard for me to understand
+    the corrections that appear on the home screen... I don't understand
+    what's written here." The row drew the whole proposed sentence with
+    the new word on a pill and the reason in 9 pt underneath, so the one
+    thing he needed — WHICH WORD BECAME WHICH — was the one thing not on
+    it. `ui.pair_pill` has drawn exactly that, for learned corrections,
+    since the vocabulary panel was built; putting it inside a line means
+    the row can say the change and then place it in its sentence.
+    """
+
+    heard: str
+    meant: str
+
+
+def _piece(piece) -> tuple:
+    """(text, colour, pill) out of whatever a caller passed, so a short
+    tuple is a missing pill and not a traceback in the middle of a
+    repaint."""
+    parts = tuple(piece) + (None, None, None)
+    return parts[0], parts[1], parts[2]
+
+
+def run_is_rtl(pieces) -> bool:
+    """Which way a line built out of pieces reads.
+
+    The same question `ui.is_rtl` answers for a string, asked of the
+    strings in a line — and, when a line is nothing but a pair, of the
+    two words in it. Guessing differently from the way the pieces are
+    laid out is how a sentence ends up right-aligned and left-to-right at
+    the same time.
+    """
+    words = " ".join(str(t) for t, _c, _p in map(_piece, pieces or ())
+                     if isinstance(t, str))
+    if not words.strip():
+        words = " ".join(w for t, _c, _p in map(_piece, pieces or ())
+                         if isinstance(t, Pair) for w in (t.heard, t.meant))
+    return ui.is_rtl(words)
+
+
+def rtl_run(canvas, edge_x: int, y: int, pieces, bg: str, *,
             pt: int = 12, gap: int = 7, pill_pad: int = 9,
-            radius: int = 6, keep=None) -> int:
-    """A Hebrew line laid out right to left out of SEVERAL bitmaps, so
-    one word inside it can sit on a pill.
+            radius: int = 6, keep=None, rtl: bool = True,
+            band: int | None = None, pair_pt: int | None = None,
+            pair_h: int | None = None) -> int:
+    """A line laid out of SEVERAL bitmaps, so one word inside it can
+    sit on a pill and one piece of it can be a correction pair.
 
     `pieces` is (text, colour, pill-or-None) in READING order — the
-    rightmost fragment first. Returns the width used.
+    piece read FIRST first — where `text` is a string or a `Pair`.
+    `edge_x` is the right edge for a Hebrew line and the left edge for a
+    Latin one (`rtl=`), and the return value is the width used either
+    way.
 
     THE CAVEAT, and it is the whole reason this is not one draw_text
     call: the order BETWEEN segments is mine, not Windows'. Only split a
     line at a point where each fragment is one direction; a fragment
     that mixes Hebrew and Latin still goes through `ui.draw_text` whole,
     which is what puts its runs in the right order.
+
+    `band` is the height of the strip the line sits in. Every piece is
+    centred in it, which is what lets a 25 px pair pill and a 24 px text
+    bitmap share a line without either of them hanging out of the row
+    that owns it — a Canvas item is not clipped, it is simply drawn over
+    whatever is under it. Without a band the line is as tall as its
+    tallest piece and everything sits at `y`, which is what it always
+    did.
     """
-    x = right_x
-    for text, colour, pill in pieces:
+    # A pair's words are set two points under the sentence they sit in:
+    # the pill has to fit the band with the text, and the pair is read as
+    # a chip rather than as part of the line.
+    pair_size_pt = pair_pt if pair_pt else pt - 2
+    # (kind, what to draw, pill fill, width, the box it needs, its ink height)
+    laid: list = []
+    for piece in pieces or ():
+        text, colour, pill = _piece(piece)
+        if isinstance(text, Pair):
+            if not (text.heard or text.meant):
+                continue
+            width, tall = ui.pair_size(text.heard, text.meant, pair_size_pt,
+                                       pair_h)
+            laid.append(("pair", text, None, width, tall, tall))
+            continue
         if not text:
             continue
         face = pill or bg
-        photo, height, _lines = ui.draw_text(text, pt=pt, width=None,
+        photo, height, _lines = ui.draw_text(str(text), pt=pt, width=None,
                                              max_lines=1, colour=colour,
                                              bg=face, family=ui.TEXT)
-        width = photo.width()
         if keep is not None:
             keep.append(photo)
-        if pill:
-            canvas.create_image(x - width - pill_pad * 2, y - 3, anchor="nw",
-                                image=ui.rounded(width + pill_pad * 2,
-                                                 height + 6, radius, pill,
+        laid.append(("pill" if pill else "text", photo, pill,
+                     photo.width() + (pill_pad * 2 if pill else 0),
+                     height + (6 if pill else 0), height))
+    if not laid:
+        return 0
+    room = band or max(box for _k, _o, _f, _w, box, _h in laid)
+
+    x = edge_x
+    for kind, thing, fill, width, box, inner in laid:
+        box = min(box, room)
+        box_y = y + max(0, (room - box) // 2)
+        left = x if not rtl else x - width
+        if kind == "pair":
+            ui.pair_pill(canvas, left + width, box_y, thing.heard,
+                         thing.meant, bg, size=pair_size_pt, height=box)
+        elif kind == "pill":
+            canvas.create_image(left, box_y, anchor="nw",
+                                image=ui.rounded(width, box, radius, fill,
                                                  bg))
-            canvas.create_image(x - width - pill_pad, y, anchor="nw",
-                                image=photo)
-            x -= width + pill_pad * 2 + gap
+            canvas.create_image(left + pill_pad,
+                                box_y + max(0, (box - inner) // 2),
+                                anchor="nw", image=thing)
         else:
-            canvas.create_image(x - width, y, anchor="nw", image=photo)
-            x -= width + gap
-    return right_x - x
+            canvas.create_image(left, box_y + max(0, (box - inner) // 2),
+                                anchor="nw", image=thing)
+        x += (width + gap) * (-1 if rtl else 1)
+    return abs(x - edge_x) - gap
 
 
 # --------------------------------------------------------------- buttons
@@ -333,6 +420,41 @@ def button_width(text: str, *, icon: bool = False, least: int = 74) -> int:
                + (44 if icon else 30))
 
 
+def row_text_room(width: int, buttons=()) -> int:
+    """How much room a PileRow's words will really get, worked out BEFORE
+    the row is built.
+
+    PileRow measures its own buttons — it builds them, asks the frame how
+    wide it came out and gives the text the rest — which is exact and is
+    also far too late for the thing that needs the number. A row's words
+    are now cut at a SENTENCE boundary (summary.py), and where that cut
+    falls depends on the width; the cut is made where the spec is built,
+    which is one screen away from any Tk widget. So this repeats
+    PileRow's arithmetic from the same two constants, and takes 12 px of
+    slack off the end: an estimate that comes out slightly narrow costs a
+    few characters, and one that comes out wide would put a DrawTextW
+    ellipsis on a sentence this whole exercise exists to deliver whole.
+    """
+    right = 0
+    for entry in buttons or ():
+        label, kind = (tuple(entry) + (None, None))[:2]
+        try:
+            right += (ui.text_width("\u2715", ui.UI, 11) + 14
+                      if kind == "close"
+                      else button_width(str(label), least=62) + 8)
+        except Exception:             # noqa: BLE001 — no window yet
+            # Every measurement in here is a question for Tk, and a spec
+            # can be built before there is anything to ask (a test, a
+            # first paint). Measured 2026-09-07, the pile's buttons are
+            # 70 px of row for Yes and No, 79 for Fixed and Close, 95 for
+            # Answer, 102 for Go there and 30 for the ✕ — so the guess
+            # is the WIDEST of them. An estimate that comes out too wide
+            # is the one that clips, and this is the branch that cannot
+            # check.
+            right += 30 if kind == "close" else 102
+    return max(40, width - right - PileRow.BUTTON_GAP - PileRow.MARK_W - 12)
+
+
 # ------------------------------------------------------------------ rows
 
 class PileRow(tk.Frame):
@@ -347,6 +469,19 @@ class PileRow(tk.Frame):
     """
 
     HEIGHT = 88
+
+    # The three bands, as numbers rather than as arithmetic buried in the
+    # constructor, because row_text_room repeats two of them and a
+    # duplicated constant is a constant that drifts.
+    MARK_W = 40          # the glyph's column at the reading-end edge
+    BUTTON_GAP = 22      # air between the words and the first button
+    EYEBROW_MID = 11     # a 9 pt line centred here: about 3..19
+    BAND_TOP = 21        # where the words start under an eyebrow
+    BARE_TOP = 6         # ...and where they start without one
+    FOOT = 4             # the last pixel any band may use
+    NOTE_PT = 9
+    NOTE_GAP = 3
+    LEAST_BAND = 20      # under this the note is dropped, not drawn
 
     def __init__(self, parent, width: int, *, bg: str, mark: str = "",
                  mark_colour: str | None = None, eyebrow: str = "",
@@ -387,50 +522,105 @@ class PileRow(tk.Frame):
             button.pack(side="right", padx=(8, 0))
             self.buttons[label] = button
         right.update_idletasks()
-        stop = width - right.winfo_reqwidth() - 22
+        stop = width - right.winfo_reqwidth() - self.BUTTON_GAP
 
-        canvas = tk.Canvas(self, width=max(40, stop - 40), height=height,
+        edge = max(40, stop - self.MARK_W)
+        canvas = tk.Canvas(self, width=edge, height=height,
                            bg=bg, highlightthickness=0, bd=0)
-        canvas.place(x=40, y=0)
+        canvas.place(x=self.MARK_W, y=0)
         self.canvas = canvas
-        edge = max(40, stop - 40)
+
         # THE THREE BANDS ARE MEASURED FROM THE ROW, not counted up from
         # the top. A Canvas item does not clip: the note used to be
         # drawn at body + 30, which on a 72 px row put its bitmap at
         # 66..85 and simply lost it — the "why" of every second reading
         # was being rendered off the bottom of the row that owned it
-        # (measured 2026-09-07). The note is now placed UP from the
-        # bottom edge, and the words above it get one line instead of
-        # two when there is a note to leave room for.
-        top = 8 if (eyebrow or note) else height // 2 - 10
-        if eyebrow:
-            canvas.create_text(edge if eyebrow_right else 0, top,
-                               text=eyebrow, anchor="e" if eyebrow_right
-                               else "w", font=(ui.UI, 9), fill=ui.FAINT)
-        body_y = top + (18 if eyebrow else 0)
-        if runs:
-            rtl_run(canvas, edge, body_y, runs, bg, keep=self._keep)
-        elif text:
-            photo, _h, _lines = ui.draw_text(
-                text, pt=12, width=edge, max_lines=1 if note else 2,
-                colour=ui.FG, bg=bg)
-            self._keep.append(photo)
-            canvas.create_image(edge if ui.is_rtl(text) else 0, body_y,
-                                anchor="ne" if ui.is_rtl(text) else "nw",
-                                image=photo)
+        # (measured 2026-09-07). So the note is placed UP from the bottom
+        # edge, the eyebrow down from the top, and what is left over —
+        # the BAND — is handed to the words, which are then fitted to it
+        # rather than assumed to fit. Measured on this machine, 2026-09-07:
+        # a 9 pt drawn line is 19 px and a 12 pt one is 24, so a 72 px row
+        # with all three bands leaves the words 25 px, which is why the
+        # type steps down and the pair pill is capped instead of both
+        # being written as constants that happen to work at one height.
+        top = self.BAND_TOP if eyebrow else self.BARE_TOP
+        foot = height - self.FOOT
+        note_photo = None
+        floor = foot
         if note:
-            photo, note_h, _lines = ui.draw_text(note, pt=9, width=edge,
-                                                 max_lines=1,
-                                                 colour=ui.FAINT, bg=bg)
-            note_y = height - note_h - 5
-            # A row too short to hold all three bands DROPS the note
-            # rather than drawing it past its own bottom edge: outside a
-            # canvas it is not clipped, it is invisible, and an invisible
-            # line that the layout still believes in is the bug this
-            # replaced.
-            if note_y >= body_y + 20:
-                self._keep.append(photo)
-                canvas.create_image(edge, note_y, anchor="ne", image=photo)
+            # Drawn at its NATURAL width and anchored, not drawn into a
+            # box as wide as the row: a bitmap that wide carries the line
+            # at whichever end its own direction puts it, so a Hebrew
+            # reason landed under the right edge and an English one
+            # ("and one more change   ·   ...") under the left, on rows
+            # that were otherwise identical. The note is meta about the
+            # row, so it belongs on the same edge as the eyebrow, which
+            # is the other piece of meta — whatever language it is in.
+            # `fit` is what keeps a long one inside the row, since a
+            # natural-width bitmap has nothing to be clipped by.
+            note_photo, note_h, _lines = ui.draw_text(
+                fit(note, ui.TEXT, self.NOTE_PT, edge - 2),
+                pt=self.NOTE_PT, width=None, max_lines=1,
+                colour=ui.FAINT, bg=bg)
+            note_y = foot - note_h
+            if note_y - self.NOTE_GAP - top >= self.LEAST_BAND:
+                floor = note_y - self.NOTE_GAP
+            else:
+                # A row too short to hold all three bands DROPS the note
+                # rather than drawing it past its own bottom edge: outside
+                # a canvas it is not clipped, it is invisible, and an
+                # invisible line that the layout still believes in is the
+                # bug this replaced.
+                note_photo = None
+        band = max(1, floor - top)
+        self.band = band
+
+        if eyebrow:
+            canvas.create_text(edge if eyebrow_right else 0,
+                               self.EYEBROW_MID, text=eyebrow,
+                               anchor="e" if eyebrow_right else "w",
+                               font=(ui.UI, 9), fill=ui.FAINT)
+        if runs:
+            pt = 12 if band >= 26 else (11 if band >= 24 else 10)
+            rtl = run_is_rtl(runs)
+            rtl_run(canvas, edge if rtl else 0, top, runs, bg, pt=pt,
+                    band=band, rtl=rtl, pair_pt=pt - 2,
+                    pair_h=min(band, ui.PILL_H), keep=self._keep)
+        elif text:
+            photo, drawn = self._fitted(text, edge, band,
+                                        2 if note_photo is None else 1, bg)
+            self._keep.append(photo)
+            canvas.create_image(
+                edge if ui.is_rtl(text) else 0,
+                top + (0 if note_photo is not None
+                       else max(0, (band - drawn) // 2)),
+                anchor="ne" if ui.is_rtl(text) else "nw", image=photo)
+        if note_photo is not None:
+            self._keep.append(note_photo)
+            canvas.create_image(edge if eyebrow_right else 0,
+                                foot - note_photo.height(),
+                                anchor="ne" if eyebrow_right else "nw",
+                                image=note_photo)
+
+    @staticmethod
+    def _fitted(text: str, edge: int, band: int, most: int, bg: str):
+        """The words, drawn at the largest size and the most lines that
+        fit inside `band`.
+
+        draw_text is cached on every argument, so asking it twice for the
+        same string costs one render and one dictionary lookup — which is
+        what makes trying a size and backing off cheaper than working the
+        line height out in advance and being wrong about it.
+        """
+        photo = drawn = None
+        for pt in (12, 11, 10, 9, 8):
+            for lines in range(most, 0, -1):
+                photo, drawn, _l = ui.draw_text(text, pt=pt, width=edge,
+                                                max_lines=lines,
+                                                colour=ui.FG, bg=bg)
+                if drawn <= band:
+                    return photo, drawn
+        return photo, drawn
 
 
 def quiet_row(parent, width: int, *, bg: str, label: str, when: str,
@@ -464,9 +654,12 @@ def quiet_row(parent, width: int, *, bg: str, label: str, when: str,
             row.create_image(width - meta_w, (height - text_h) / 2,
                              anchor="ne", image=photo)
         else:
-            row.create_text(200, height / 2, text=ui.clamp(
-                text, ui.UI, 11, room, 1)[0], anchor="w",
-                font=(ui.UI, 11), fill=ui.DIM)
+            # fit(), not clamp(): a single word wider than the room
+            # takes clamp's other branch, which shaves characters and
+            # says nothing about it.
+            row.create_text(200, height / 2,
+                            text=fit(text, ui.UI, 11, room), anchor="w",
+                            font=(ui.UI, 11), fill=ui.DIM)
     if command is not None:
         row.bind("<Button-1>", lambda _e: command())
     return row

@@ -9190,6 +9190,316 @@ def test_a_correction_pill_points_away_from_the_word_that_was_wrong() -> None:
         root.destroy()
 
 
+# ------------------------------------------------------------- the page
+
+
+def _scrolling(root, w: int = 300, h: int = 300, rows: int = 60):
+    """A Scroller with more in it than fits, ready to be wheeled."""
+    import tkinter as tk
+
+    import ui as ui_mod
+    scroller = ui_mod.Scroller(root, w, h, bg=ui_mod.BG)
+    for i in range(rows):
+        tk.Label(scroller.inner, text=f"row {i}", bg=ui_mod.BG,
+                 fg=ui_mod.FG).pack(anchor="w")
+    scroller.update_idletasks()
+    scroller._paint_thumb()
+    return scroller
+
+
+def _a_page(root):
+    """A root sized, placed and MAPPED — `winfo containing` answers with
+    nothing at all for a window that has never been laid out, and the
+    wheel is routed by what is under the pointer."""
+    root.geometry("900x400+0+0")
+    root.update()
+
+
+def test_the_wheel_reaches_a_row_that_arrived_after_the_page_was_built(
+) -> None:
+    """The dead zone the owner found on 2026-09-07, in one assertion.
+
+    "If we scroll down a bit, where it says 'the rest of the day one line
+    each', I can't scroll on that. That area isn't scrollable." Those
+    three rows are destroyed and rebuilt by `dashboard._paint_rest` every
+    time the log changes, and `bind_wheel` had walked the tree ONCE, at
+    build time — so the new rows carried no binding and the wheel landed
+    on nothing. Every list in this window is rebuilt like that.
+    """
+    import tkinter as tk
+
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        page = _scrolling(root)
+        page.place(x=10, y=10)
+        _a_page(root)
+        # Built now, and deliberately never handed to bind_wheel.
+        late = tk.Label(page.inner, text="a row that arrived later",
+                        bg=ui_mod.BG, fg=ui_mod.FG)
+        late.pack(anchor="w")
+        root.update()
+        assert not late.bind("<MouseWheel>"), \
+            "the test binds nothing: the point is that nobody did"
+        was = page.canvas.canvasy(0)
+        late.event_generate("<MouseWheel>", delta=-120, x=5, y=5)
+        root.update()
+        step = ui_mod.SCROLL_STEP * ui_mod.SCROLL_UNITS
+        assert page.canvas.canvasy(0) == was + step, (
+            f"a notch over a row nobody bound moved the page "
+            f"{page.canvas.canvasy(0) - was} px, not {step}")
+        # ...and exactly one notch. A widget binding that fails to say
+        # "break" hands the same event to the interpreter-wide one after
+        # it, and the page moves twice per click.
+        was = page.canvas.canvasy(0)
+        page.inner.event_generate("<MouseWheel>", delta=-120, x=5, y=5)
+        root.update()
+        assert page.canvas.canvasy(0) == was + step, (
+            "a bound widget scrolled twice: the widget binding and the "
+            "wheel-to-the-pointer binding both ran")
+    finally:
+        root.destroy()
+
+
+def test_two_scrollers_on_one_screen_scroll_the_one_under_the_pointer(
+) -> None:
+    """`bind_all` is per INTERPRETER, and this window has four Scrollers.
+
+    So the one binding there is may not belong to any of them: it is
+    routed by asking the screen which widget the pointer is over. The
+    event is generated on the ROOT here on purpose — a Scroller found by
+    walking up from `event.widget` would pass this test by accident.
+    """
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        left = _scrolling(root)
+        left.place(x=10, y=10)
+        right = _scrolling(root)
+        right.place(x=450, y=10)
+        _a_page(root)
+        step = ui_mod.SCROLL_STEP * ui_mod.SCROLL_UNITS
+        for name, x, moves, still in (("left", 60, left, right),
+                                      ("right", 500, right, left)):
+            was, other = moves.canvas.canvasy(0), still.canvas.canvasy(0)
+            root.event_generate("<MouseWheel>", delta=-120, x=x, y=60)
+            root.update()
+            assert moves.canvas.canvasy(0) == was + step, (
+                f"the wheel over the {name} page moved it "
+                f"{moves.canvas.canvasy(0) - was} px")
+            assert still.canvas.canvasy(0) == other, \
+                f"the wheel over the {name} page moved the other one"
+    finally:
+        root.destroy()
+
+
+def test_the_thumb_can_be_held_and_dragged_and_the_view_follows() -> None:
+    """"The scroll button on the right side ... if I hold it, it doesn't
+    help. Like, you can't use it."
+
+    It was a picture: `_paint_thumb` drew it and nothing took a mouse
+    press. A drag of D pixels has to move the content by D x (everything
+    that is not on screen) / (the thumb's own travel) — the standard
+    mapping, and the only one where letting go leaves the thumb under the
+    finger. It lands on a multiple of SCROLL_STEP because the canvas
+    carries a yscrollincrement, which is the tolerance below.
+    """
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        page = _scrolling(root)
+        page.place(x=10, y=10)
+        _a_page(root)
+        page.to_top()
+        root.update()
+        top, length = page._thumb
+        assert top == 0 and length >= 36, page._thumb
+        total, view = page.inner.winfo_height(), page._height
+        assert total > view, (total, view)
+        span = view - length
+        drag = 50
+        page.rail.event_generate("<Button-1>", x=3, y=top + 5)
+        assert page._grab is not None, "the press did not take the thumb"
+        page.rail.event_generate("<B1-Motion>", x=3, y=top + 5 + drag)
+        page.rail.event_generate("<ButtonRelease-1>", x=3, y=top + 5 + drag)
+        root.update()
+        want = drag * (total - view) / span
+        got = page.canvas.canvasy(0)
+        assert abs(got - want) <= ui_mod.SCROLL_STEP, (
+            f"a {drag} px drag moved the view {got} px, not {want:.1f} "
+            f"(thumb {length} px, travel {span} px, {total - view} px "
+            f"off screen)")
+        assert page._grab is None, "the thumb was never let go of"
+        assert abs(page._thumb[0] - drag) <= 4, (
+            f"the thumb ended at {page._thumb[0]} after a {drag} px drag")
+
+        # A press below the thumb pages down, a press above it pages back.
+        page.to_top()
+        root.update()
+        page.rail.event_generate("<Button-1>", x=3, y=view - 5)
+        root.update()
+        page_px = (int(view * 0.9) // ui_mod.SCROLL_STEP) * ui_mod.SCROLL_STEP
+        assert page.canvas.canvasy(0) == page_px, (
+            f"a click on the empty rail moved {page.canvas.canvasy(0)} px, "
+            f"not one page of {page_px}")
+        page.rail.event_generate("<Button-1>", x=3, y=1)
+        root.update()
+        assert page.canvas.canvasy(0) == 0, "the rail pages one way only"
+    finally:
+        root.destroy()
+
+
+def test_the_thumb_lights_under_the_pointer_without_moving_a_pixel(
+) -> None:
+    """The rail is RAIL_HIT px wide so it can be grabbed and the thumb is
+    still painted THUMB_W px wide at x=1 on it, which is where it has
+    always been: the extra width is hit area to the RIGHT of the paint,
+    past the thumb, so nothing on screen moved. And the thumb is drawn
+    INSIDE its rail — `first * height` has no floor and `length` does, so
+    a very long page used to put its last pixels past the bottom."""
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        page = _scrolling(root, rows=400)
+        page.place(x=10, y=10)
+        _a_page(root)
+        assert page.rail.winfo_width() == ui_mod.RAIL_HIT
+        item = page.rail.find_withtag("thumb")[0]
+        assert page.rail.coords(item)[0] == 1, "the paint moved"
+        image = page.rail.itemcget(item, "image")
+        # Tcl answers with a STRING; "4" == 4 is a failure with no
+        # message in it, which is a bad half-hour.
+        assert int(root.call(image, "cget", "-width")) == ui_mod.THUMB_W
+
+        page.rail.event_generate("<Motion>", x=3, y=page._thumb[0] + 5)
+        root.update()
+        assert page._hot, "the thumb does not know the pointer is on it"
+        page.rail.event_generate("<Motion>", x=3, y=page._height - 2)
+        root.update()
+        assert not page._hot
+
+        page.canvas.yview_moveto(1.0)
+        page._paint_thumb()
+        root.update()
+        top, length = page._thumb
+        assert top + length <= page._height, (
+            f"the thumb ends {top + length - page._height} px past the "
+            f"bottom of its own rail")
+    finally:
+        root.destroy()
+
+
+def test_the_way_back_to_the_top_appears_only_once_the_page_has_left_it(
+) -> None:
+    """"When you start scrolling, have an arrow pointing up, like a jump
+    to the very top, but not too intrusive." So: not there at the top,
+    not there at all when everything fits, and back to 0 when pressed."""
+    import tkinter as tk
+
+    import ui as ui_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        page = _scrolling(root)
+        page.place(x=10, y=10)
+        _a_page(root)
+        assert not page.top_showing(), "it is there before anything moved"
+        page.inner.event_generate("<MouseWheel>", delta=-120, x=5, y=5)
+        root.update()
+        assert page.top_showing(), "the page moved and there is no way back"
+        page.top_button.event_generate("<Button-1>", x=5, y=5)
+        root.update()
+        assert page.canvas.canvasy(0) == 0, "it did not go home"
+        assert not page.top_showing(), "it is still there at the top"
+
+        short = _scrolling(root, rows=2)
+        short.place(x=450, y=10)
+        root.update()
+        assert not short.top_showing(), \
+            "a page that fits on screen offers a way back to itself"
+    finally:
+        root.destroy()
+
+
+def test_the_way_home_keeps_clear_of_the_buttons_a_row_puts_at_its_edge(
+) -> None:
+    """Why the disc is bottom-LEFT and not where such a button usually is.
+
+    `widgets.PileRow` puts Yes / No / ✕ flush against the row's RIGHT
+    edge, and the ✕ that dismisses a notification is 22 px wide. Measured
+    on the built Home page, 2026-09-07: the page is 3150 px of content in
+    a 502 px viewport, and of the 71 mapped controls in it —
+
+      * the bottom-RIGHT column (x1084..1112) has twelve DISCRETE buttons
+        under it — every pile row's ✕, 348 px of the 3150 px of travel —
+        and a 28 px disc covers one whole;
+      * the bottom-LEFT column (x10..38) has exactly ONE, a 41 px filter
+        chip, 36 px of that travel. The other 26 things under it are
+        whole rows 792 to 1112 px wide, which lose 3% of their click
+        area to the disc and stay perfectly clickable.
+
+    Eleven per cent of the page against one. That is the whole argument,
+    and this test holds the half of it that can be measured without
+    standing the window up: the ✕ misses the left column and lands in the
+    right one.
+    """
+    import tkinter as tk
+
+    import ui as ui_mod
+    import widgets as widgets_mod
+
+    import dashboard as dash
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        holder = tk.Frame(root, bg=ui_mod.CARD)
+        holder.pack()
+        row = widgets_mod.PileRow(
+            holder, dash.CW - 28, bg=ui_mod.CARD, mark="notify",
+            eyebrow="A QUESTION FOR YOU", text="which one?",
+            buttons=(("Yes", "gold", lambda: None),
+                     ("No", "", lambda: None),
+                     ("✕", "close", lambda: None)),
+            height=dash.PILE_ROW_H)
+        row.pack()
+        root.update_idletasks()
+        close = row.buttons["✕"]
+        strip = close.master
+        # The pile card insets its rows by its own 14 px pad, so this is
+        # the ✕ in the page's coordinates.
+        x0 = 14 + strip.winfo_x() + close.winfo_x()
+        x1 = x0 + close.winfo_reqwidth()
+        assert x1 - x0 <= 30, f"the ✕ is {x1 - x0} px wide, not a small mark"
+        viewport = dash.CW + 10
+        left = (ui_mod.TOP_INSET, ui_mod.TOP_INSET + ui_mod.TOP_DISC)
+        right = (viewport - ui_mod.TOP_INSET - ui_mod.TOP_DISC,
+                 viewport - ui_mod.TOP_INSET)
+
+        def hits(band) -> bool:
+            return band[0] < x1 and band[1] > x0
+
+        assert not hits(left), (
+            f"the disc sits at x{left[0]}..{left[1]} and the row's ✕ at "
+            f"x{x0}..{x1} — they are on top of each other")
+        assert hits(right), (
+            f"the ✕ at x{x0}..{x1} clears the right-hand corner "
+            f"(x{right[0]}..{right[1]}) after all — say so in the "
+            f"docstring, or move the disc back where people expect it")
+        assert left[1] < right[0], "the two corners are the same corner"
+    finally:
+        root.destroy()
+
+
 # ------------------------------------------------------- the window itself
 
 
@@ -10280,8 +10590,9 @@ def test_the_keyboard_lights_every_binding_on_the_cap_it_lives_on() -> None:
 
     image, rects = kb.draw(kb.unit_for(760, 300), lit=lit)
     assert image.size == kb.board_size(kb.unit_for(760, 300))
-    assert len(rects) == 87, len(rects)
-    for cap in ("rctrl", "f8", "esc", "insert", "left", "space", "m"):
+    assert len(rects) == 104, len(rects)      # the keypad is 17 of them
+    for cap in ("rctrl", "f8", "esc", "insert", "left", "space", "m",
+                "num5", "numlock", "numadd", "num0"):
         x0, y0, x1, y1 = rects[cap]
         assert kb.hit(rects, (x0 + x1) // 2, (y0 + y1) // 2) == cap, cap
     # The gap between two caps belongs to nobody: a near miss must not
@@ -10312,6 +10623,22 @@ def test_a_real_key_press_on_the_keys_place_lights_its_cap() -> None:
     assert keyboard_mod.cap_for_vk(0x11) == "ctrl", "unsided ctrl"
     assert keyboard_mod.cap_for_vk(0) is None
 
+    # THE KEYPAD REPORTS ITS OWN CODES. VK_NUMPAD0..9 are 0x60..0x69 and
+    # not the digit row's 0x30..0x39, so a press on the 5 he actually has
+    # under his hand must not light the 5 above the letters.
+    for digit in range(10):
+        assert keyboard_mod.cap_for_vk(0x60 + digit) == f"num{digit}"
+        assert keyboard_mod.cap_for_vk(0x30 + digit) == str(digit)
+    for vk, cap in ((0x6A, "nummul"), (0x6B, "numadd"), (0x6D, "numsub"),
+                    (0x6E, "numdot"), (0x6F, "numdiv"), (0x90, "numlock")):
+        assert keyboard_mod.cap_for_vk(vk) == cap, hex(vk)
+    # VK_SEPARATOR: no cap on any keyboard sold here.
+    assert keyboard_mod.cap_for_vk(0x6C) is None
+    # Both Enters are VK_RETURN and the main one wins the press; a
+    # BINDING on it belongs to both caps, which is what the board draws.
+    assert keyboard_mod.cap_for_vk(0x0D) == "enter"
+    assert keyboard_mod.caps_for("enter") == ["enter", "numenter"]
+
     def press(board, name: str):
         board._key_pressed(types.SimpleNamespace(
             keycode=hotkey_mod.vk_for(name)))
@@ -10341,6 +10668,12 @@ def test_a_real_key_press_on_the_keys_place_lights_its_cap() -> None:
         press(board, "r")
         assert board._cap_selected == "r"
         assert "Report a problem" in said(board), said(board)
+        # A key on the keypad, and the one thing a picture of a keypad
+        # cannot say for itself.
+        press(board, "numpad 5")
+        assert board._cap_selected == "num5"
+        assert "NUMPAD 5 is yours" in said(board), said(board)
+        assert "Num Lock is ON" in said(board), said(board)
         press(board, "f8")
         assert board._cap_selected == "f8"
         assert "Translate" in said(board), said(board)
@@ -10354,6 +10687,223 @@ def test_a_real_key_press_on_the_keys_place_lights_its_cap() -> None:
         board._key_pressed(types.SimpleNamespace(
             keycode=hotkey_mod.vk_for("r")))
         assert board.screen == "Home"
+
+
+def test_the_board_is_the_full_size_one_that_is_on_his_desk() -> None:
+    """The owner, 2026-09-07: "adapt them to my keyboard because I also
+    have num lock 1 to 9, 0 to 9, asterisk, and other things."
+
+    So the board is a full-size ANSI one: the 87 caps of a tenkeyless
+    board, the standard 0.25u gap, and a 4u keypad. Everything is still
+    measured from one unit, which is what this asks — no row wider than
+    the board, no two caps sharing a pixel, the two double-height caps
+    exactly two rows tall, and board_size / unit_for still telling the
+    truth about an image nobody has drawn yet.
+    """
+    import keyboard as kb
+
+    assert kb.UNITS == 22.5, kb.UNITS
+    for index, row in enumerate(kb.ROWS):
+        wide = sum(units for _id, _label, units in row)
+        assert wide <= kb.UNITS, f"row {index} is {wide} units wide"
+    assert sum(units for _id, _l, units in kb.ROW1) == kb.UNITS
+
+    u = 40
+    image, rects = kb.draw(u, lit={})
+    assert len(rects) == 104, len(rects)
+    assert set(kb.KEYPAD) <= set(rects), set(kb.KEYPAD) - set(rects)
+
+    # The keypad, in the shape his hand knows: four across the top, then
+    # 789 / 456 / 123 / 0 . with + and Enter down the right-hand side.
+    for line in (("numlock", "numdiv", "nummul", "numsub"),
+                 ("num7", "num8", "num9"), ("num4", "num5", "num6"),
+                 ("num1", "num2", "num3"), ("num0", "numdot")):
+        tops = [rects[cap][1] for cap in line]
+        lefts = [rects[cap][0] for cap in line]
+        assert len(set(tops)) == 1, (line, tops)
+        assert lefts == sorted(lefts), (line, lefts)
+    assert rects["num7"][1] < rects["num4"][1] < rects["num1"][1]
+    assert rects["num0"][2] - rects["num0"][0] > rects["numdot"][2] \
+        - rects["numdot"][0], "the keypad's 0 is two units wide"
+    one = rects["num9"][3] - rects["num9"][1]
+    for cap in ("numadd", "numenter"):
+        x0, y0, x1, y1 = rects[cap]
+        assert y1 - y0 == one + u, f"{cap} is not two rows tall"
+        assert kb.hit(rects, (x0 + x1) // 2, y0 + 4) == cap
+        assert kb.hit(rects, (x0 + x1) // 2, y1 - 4) == cap
+
+    # NOTHING OVERLAPS. The two tall caps are drawn from the row they
+    # start in and the row below leaves their column empty; get that
+    # wrong and a click lands on whichever cap the dict happens to
+    # reach first.
+    boxes = list(rects.items())
+    for index, (name, a) in enumerate(boxes):
+        for other, b in boxes[index + 1:]:
+            assert (a[2] < b[0] or b[2] < a[0]
+                    or a[3] < b[1] or b[3] < a[1]), f"{name} over {other}"
+
+    # board_size and unit_for still describe the image draw() makes.
+    for unit in (26, 34, 43):
+        assert kb.draw(unit, lit={})[0].size == kb.board_size(unit), unit
+    wide, high = kb.board_size(34)
+    assert (wide, high) == (781, 239), (wide, high)
+    assert kb.unit_for(wide, high) == 34, kb.unit_for(wide, high)
+
+    # And a binding on a keypad key lands on the keypad's cap.
+    keys = {field: "" for field, _label in config_mod.HOTKEY_FIELDS}
+    keys.update({"pause_hotkey": "numpad 0", "translate_hotkey": "enter"})
+    lit, unmapped = kb.bindings(keys)
+    assert unmapped == [], unmapped
+    assert lit["num0"][0][1] == "pause", lit.get("num0")
+    assert "0" not in lit, "the digit row is not the keypad"
+    # One key, two caps: the keypad's Enter is VK_RETURN like the main one.
+    assert lit["enter"][0][1] == "translate", lit.get("enter")
+    assert lit["numenter"][0][1] == "translate", lit.get("numenter")
+    assert kb.cap_for("numpad 0") == "num0"
+    assert kb.cap_for("enter") == "enter", "the big one, not the keypad's"
+
+
+def test_the_pause_key_says_it_is_a_pause_and_not_a_stop() -> None:
+    """The owner, 2026-09-07: "I use insert to pause the model, not shut
+    it down, just pause."
+
+    Pausing unloads nothing — that is the whole point of it against
+    quitting, which costs ~25 s of loading two Whisper models back — and
+    the place has to SAY so, because "Pause / resume" on its own reads
+    like a way of stopping the app. The row under the board carries the
+    three words and the panel beside it the sentence.
+    """
+    import keyboard as kb
+
+    import dashboard as dash
+
+    short, long = dash.KEY_NOTES["pause_hotkey"]
+    assert "not a stop" in short, short
+    assert "not a stop" in long and "unloaded" in long, long
+
+    keys = {field: "" for field, _label in config_mod.HOTKEY_FIELDS}
+    keys["pause_hotkey"] = "insert"
+    lit, unmapped = kb.bindings(keys)
+    assert unmapped == [], unmapped
+    assert lit["insert"][0][:2] == ("tap", "pause"), lit.get("insert")
+
+    def words(widget) -> str:
+        out, stack = [], list(widget.winfo_children())
+        while stack:
+            item = stack.pop()
+            try:
+                out.append(str(item.cget("text")))
+            except Exception:
+                pass
+            stack.extend(item.winfo_children())
+        return "\n".join(out)
+
+    with _window() as board:
+        if board is None:
+            return
+        board.closing = True
+        board._show("Keys")
+        board.root.update()
+        # the row under the board
+        said = words(board.parts["keys_list"].inner)
+        assert "Pause / resume" in said, said
+        assert "a pause, not a stop" in said, said
+        # the panel beside it
+        board._cap_clicked("insert")
+        board.root.update()
+        panel = words(board.parts["rebind_body"])
+        assert "Pause / resume" in panel, panel
+        assert "not a stop" in panel and "unloaded" in panel, panel
+
+
+def test_the_keys_place_holds_the_board_the_panel_and_the_rows() -> None:
+    """The board is 4.25 cap units wider than it was and the window is
+    still 1160x720, so everything on this place was re-measured.
+
+    The failure this exists to catch is SILENT. Tk's packer does not clip
+    a slave that will not fit — it never maps it — and a frame with a
+    fixed width simply cuts what is placed past its edge, so a panel or a
+    row that has outgrown its box looks like a panel or a row with a word
+    missing, and winfo_y() of the child that is gone reads 0. Measured on
+    the hidden desktop 2026-09-07: the panel needs 289 px on a cap
+    carrying two bindings and had 207, and "Ctrl+Alt+M Dismiss the
+    notification" needs 259 px of row against a 253 px column.
+    """
+    import dashboard as dash
+    import keyboard as kb
+
+    def pad(child) -> int:
+        """What pack keeps around a child, however Tk spells it."""
+        info = child.pack_info().get("pady", 0)
+        if isinstance(info, (list, tuple)):
+            return sum(int(x) for x in info)
+        try:
+            return 2 * int(info)
+        except (TypeError, ValueError):
+            return sum(int(x) for x in str(info).split())
+
+    with _window() as board:
+        if board is None:
+            return
+        board.closing = True
+        board._show("Keys")
+        board.root.update()
+
+        drawn = board.parts["board"]
+        panel = board.parts["rebind_panel"]
+        assert drawn.size == kb.board_size(dash.KEY_UNIT)
+        assert panel.winfo_x() >= dash.PAD + drawn.size[0], "the panel is ON it"
+        right = panel.winfo_x() + panel.winfo_reqwidth()
+        assert right <= dash.W - dash.PAD, f"the panel ends at {right}"
+        assert panel.winfo_reqwidth() >= dash.KEY_PANEL_W
+
+        # THE PANEL HOLDS WHAT IT IS ASKED TO HOLD, for every kind of cap
+        # there is: nothing, a key the app never takes, one binding, two
+        # on one cap, a keypad cap with its Num Lock line, and each of
+        # those again while the dialog is listening.
+        body = board.parts["rebind_body"]
+        room = body.winfo_height()
+        for cap, listening in ((None, None), ("q", None), ("insert", None),
+                               ("f8", None), ("num5", None),
+                               ("rctrl", None), ("m", None),
+                               ("f8", "translate_hotkey"),
+                               ("insert", "pause_hotkey")):
+            board._cap_clicked(cap)
+            board._capturing = listening
+            board._paint_rebind()
+            board.root.update()
+            wants = sum(child.winfo_reqheight() + pad(child)
+                        for child in body.winfo_children())
+            assert wants <= room, \
+                f"{cap} wants {wants} px of a {room} px panel"
+            for child in body.winfo_children():
+                assert child.winfo_ismapped(), \
+                    f"{cap}: Tk left a {child.winfo_class()} unmapped"
+                # and sideways: a packed child wider than its parent is
+                # not shrunk either, it is cut at the parent's edge. The
+                # cap and the name beside it come to 295 px for
+                # Ctrl+Alt+M against a 279 px body, which is why that
+                # name wraps.
+                assert child.winfo_reqwidth() <= body.winfo_width(), \
+                    (f"{cap}: a {child.winfo_class()} is "
+                     f"{child.winfo_reqwidth()} px of a "
+                     f"{body.winfo_width()} px panel")
+            board._capturing = None
+
+        # THE ROWS, in the width the board leaves them.
+        scroller = board.parts["keys_list"]
+        grid = scroller.inner.winfo_children()[0]
+        board.root.update()
+        assert grid.winfo_reqwidth() <= scroller.canvas.winfo_width(), \
+            (grid.winfo_reqwidth(), scroller.canvas.winfo_width())
+        assert grid.winfo_reqheight() <= scroller.canvas.winfo_height(), \
+            "the sixteen rows no longer fit without scrolling"
+        for cell in grid.winfo_children():
+            for kid in cell.winfo_children():
+                ends = kid.winfo_x() + kid.winfo_reqwidth()
+                assert ends <= cell.winfo_reqwidth(), \
+                    (f"a row is cut: {ends} px of a "
+                     f"{cell.winfo_reqwidth()} px cell")
 
 
 def test_the_keys_screen_can_reach_every_key_it_lists() -> None:
@@ -17262,13 +17812,20 @@ def test_the_plain_words_say_nothing_only_a_programmer_would_say() -> None:
 
 
 def test_the_two_screens_cover_the_whole_file_between_them() -> None:
-    """Keys on the Keys screen, every other line on exactly ONE settings
-    tab, nothing in neither and nothing twice — and each tab draws
-    exactly the lines groups_for says it does. A new line in config.toml
-    is on the tab that owns its section the moment the file is saved; a
-    new section lands on Advanced; a new hotkey field has to be
-    registered in HOTKEY_FIELDS, which the Keys screen tests already
-    hold it to."""
+    """Keys on the Keys screen, every other line REACHABLE on exactly ONE
+    settings tab, nothing in neither and nothing twice — and each tab
+    reaches exactly the lines groups_for says it does. A new line in
+    config.toml is on the tab that owns its section the moment the file
+    is saved; a new section lands on Advanced; a new hotkey field has to
+    be registered in HOTKEY_FIELDS, which the Keys screen tests already
+    hold it to.
+
+    REACHABLE, not drawn: since 2026-09-07 a card shows its common lines
+    and keeps the rest behind one line that opens them in place, so the
+    screen is walked with every fold opened. That is the whole of what
+    the fold is allowed to change — nothing may become unreachable, and
+    nothing may appear twice because a card was drawn again when it
+    opened."""
     import settings as settings_mod
 
     import dashboard as dash
@@ -17280,9 +17837,12 @@ def test_the_two_screens_cover_the_whole_file_between_them() -> None:
         sections = board.parts["sections"]
         keys = dash._keys_screen_paths()
         drawn: dict = {}
+        on_top = 0                     # rows before any fold is opened
         for name in settings_mod.tab_names(sections, keys):
             board._settings_go(name)
             board._finish_settings()
+            on_top += len(board.parts["rows"])
+            board._settings_unfold_all()
             rows = set(board.parts["rows"])
             said = {row.path for group in
                     settings_mod.groups_for(name, sections, keys)
@@ -17297,6 +17857,165 @@ def test_the_two_screens_cover_the_whole_file_between_them() -> None:
             sorted(_config_paths() - set(drawn) - keys)
         assert drawn["backend"] == settings_mod.GENERAL
         assert drawn["awake.hold"] == settings_mod.APP
+        # And the fold is doing something: the tabs together show about
+        # half of what they hold. 184 lines became 94 when this was
+        # written (2026-09-07).
+        assert on_top < len(drawn) * 0.7, (on_top, len(drawn))
+
+
+def test_the_settings_show_the_choices_and_fold_the_measurements() -> None:
+    """The rule settings.common writes down, held against the file and
+    against the screen.
+
+    A line a tab names by hand is common — TABS is the owner's own
+    shortlist and General is nothing else. A CHOICE is common: a switch,
+    or a menu. Everything else is a MEASUREMENT — a number, a length of
+    time, a threshold, a model name, a folder, a list — and waits behind
+    one quiet line saying how many there are.
+
+    The owner asked for this on 2026-09-07 ("there are things there that
+    I just don't need"), against his own rule of 2026-09-01 ("show all of
+    them"), so the two things this holds are that the first screenful is
+    short AND that nothing was dropped to make it so."""
+    import settings as settings_mod
+
+    import dashboard as dash
+
+    sections = settings_mod.read(
+        Path(__file__).resolve().parent / "config.toml")
+    named = settings_mod.named_by_hand()
+    for setting in settings_mod.flatten(sections):
+        want = (setting.path in named or setting.kind == "bool"
+                or bool(setting.choices)
+                or bool((settings_mod.WORDS.get(setting.path)
+                         or settings_mod.Friendly(setting.path, "")).names))
+        assert settings_mod.common(setting) is want, setting.path
+    # The shape of the rule, said again as examples, so a change to it
+    # has to be a deliberate one.
+    by_path = {s.path: s for s in settings_mod.flatten(sections)}
+    for path in ("backend", "punctuate.auto", "min_seconds"):
+        assert settings_mod.common(by_path[path]), path       # named
+    for path in ("notify.cue", "shelf.enabled"):
+        assert settings_mod.common(by_path[path]), path       # a switch
+    for path in ("notify.corner", "lookup.prefer"):
+        assert settings_mod.common(by_path[path]), path       # a menu
+    for path in ("local.beam_size", "notify.stack_max", "vocab.max_terms",
+                 "polish.groq_model", "gemini.timeout_s"):
+        assert not settings_mod.common(by_path[path]), path   # a number
+    # A fold that would hide ONE line is not worth a line of its own: it
+    # costs the room it saves. So a card like that shows everything.
+    def pair(*paths):
+        return [(settings_mod.words_for(by_path[p]), by_path[p])
+                for p in paths]
+
+    shown, rest = settings_mod.fold(pair("notify.enabled",
+                                         "notify.stack_max"))
+    assert not rest and len(shown) == 2, (shown, rest)
+    shown, rest = settings_mod.fold(pair("notify.enabled",
+                                         "notify.stack_max",
+                                         "notify.remind_every_s"))
+    assert len(shown) == 1 and len(rest) == 2, (shown, rest)
+
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Settings")
+        sections = board.parts["sections"]
+        keys = dash._keys_screen_paths()
+        for name in settings_mod.tab_names(sections, keys):
+            board._settings_go(name)
+            board._finish_settings()
+            said = _settings_words(board)
+            first = set(board.parts["rows"])
+            want, hidden = set(), 0
+            for group in settings_mod.groups_for(name, sections, keys):
+                pairs = [(row, s) for row in group.rows
+                         if (s := settings_mod.find(sections, row.path))
+                         is not None]
+                shown, rest = settings_mod.fold(pairs)
+                want |= {s.path for _row, s in shown}
+                if rest:
+                    hidden += len(rest)
+                    assert f"{len(rest)} more in this section" in said, \
+                        (name, group.title, len(rest))
+            assert first == want, (name, first ^ want)
+            assert board._settings_unfold_all() >= bool(hidden)
+            after = set(board.parts["rows"])
+            assert len(after) == len(first) + hidden, (name, len(after))
+            assert first <= after, (name, first - after)
+            assert all(len(v) == 1 for v in board.parts["rows"].values())
+            assert "Fewer" in _settings_words(board) or not hidden
+        # A search answers with everything it found: no fold line at all.
+        board._settings_open_search()
+        board._settings_search("model")
+        board._finish_settings()
+        assert "more in this section" not in _settings_words(board)
+        assert board._settings_unfold_all() == 0
+
+
+def test_no_field_on_the_settings_place_is_a_square_one() -> None:
+    """The owner, 2026-09-07: "the boxes are square in everything that is
+    not in General, and it is not pretty."
+
+    General is switches and menus, which are rounded Pillow faces; every
+    other tab carries fields, and a bare tk.Entry is a hard rectangle with
+    a one-pixel highlight. So every field on that place — the rows and the
+    search — is a ui.Field: a cached rounded face with a borderless Entry
+    sitting flat inside it. The disabled and read-only colours are
+    asserted because `bg` is only the NORMAL state, and a disabled Tk
+    widget repaints itself in the PLATFORM's grey; that one has already
+    been paid for once here (AGENTS.md), and it was found in a
+    screenshot, because nothing else asserts colour."""
+    import tkinter as tk
+
+    import settings as settings_mod
+
+    import dashboard as dash
+    import ui
+
+    def entries(widget, out):
+        if isinstance(widget, tk.Entry):
+            out.append(widget)
+        for child in widget.winfo_children():
+            entries(child, out)
+        return out
+
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Settings")
+        sections = board.parts["sections"]
+        keys = dash._keys_screen_paths()
+        fields = 0
+        for name in settings_mod.tab_names(sections, keys):
+            board._settings_go(name)
+            board._finish_settings()
+            board._settings_unfold_all()
+            for path, controls in board.parts["rows"].items():
+                for kind, widget in controls:
+                    if kind != "entry":
+                        continue
+                    fields += 1
+                    assert isinstance(widget, ui.Field), (path, widget)
+            # Nothing bare underneath either: every Entry on this place
+            # belongs to a Field.
+            for entry in entries(board.parts["settings_list"].inner, []):
+                assert isinstance(entry.master, ui.Field), (name, entry)
+                assert int(str(entry.cget("bd"))) == 0
+                assert int(str(entry.cget("highlightthickness"))) == 0
+                assert str(entry.cget("disabledbackground")) == ui.EDGE
+                assert str(entry.cget("readonlybackground")) == ui.EDGE
+                assert str(entry.cget("bg")) == ui.EDGE
+        assert fields > 30, fields
+        # And the search field, which is the first box the eye lands on.
+        board._settings_open_search()
+        box = board.parts["settings_search"]
+        assert isinstance(box, ui.Field), box
+        for entry in entries(board.parts["settings_bar"], []):
+            assert isinstance(entry.master, ui.Field), entry
+            assert str(entry.cget("disabledbackground")) == ui.EDGE
+        box.set("hello")
+        assert box.get() == "hello"
 
 
 def _settings_words(board) -> str:
@@ -17491,20 +18210,21 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
             assert "must be one of" in board._toast_text
 
             # A field: what was typed has to parse as what the file holds.
+            # `field.set` is the typing — a field is a ui.Field, a rounded
+            # face with the Entry inside it, and a Canvas's own delete and
+            # insert are about canvas ITEMS.
             board._settings_go("Cards")
             board._finish_settings()
             after = settings_mod.find(sections, "hint.after_ms")
             [(kind, entry)] = board.parts["rows"]["hint.after_ms"]
             assert kind == "entry"
-            entry.delete(0, "end")
-            entry.insert(0, "abc")
+            entry.set("abc")
             board._entry_done(after, entry)
             assert entry.get() == "400", entry.get()
             assert "not an int" in board._toast_text, board._toast_text
             board._ask = ask
             asked.clear()
-            entry.delete(0, "end")
-            entry.insert(0, "650")
+            entry.set("650")
             board._entry_done(after, entry)
             assert asked == [("option", {"name": "hint.after_ms",
                                          "value": 650})], asked
@@ -18476,10 +19196,10 @@ def test_an_accepted_reading_shows_up_in_the_history_as_learned() -> None:
 
 def test_the_waiting_pile_lists_what_the_second_reading_waits_on() -> None:
     """The Review screen is gone; a proposal is a row in the pile, with
-    the changed word on a pill inside the sentence and the same Yes / No
-    writing the same verdict to the same store. A decided one has stopped
-    waiting, so it leaves the pile altogether — which is the whole
-    difference between a backlog and a log."""
+    the CHANGE on it and the same Yes / No writing the same verdict to
+    the same store. A decided one has stopped waiting, so it leaves the
+    pile altogether — which is the whole difference between a backlog
+    and a log."""
     import shutil
     import dashboard as dash
     import review as review_mod
@@ -18511,12 +19231,16 @@ def test_the_waiting_pile_lists_what_the_second_reading_waits_on() -> None:
                         if isinstance(w, widgets_mod.PileRow)]
             assert len(rows()) == 1, len(rows())
             assert "One thing" in board.parts["waiting_head"].cget("text")
-            # The changed word is its own run, so it can carry a pill:
-            # everything else in the line is Hebrew on either side of it.
+            # The change LEADS the row: the pair the owner already
+            # reads on the vocabulary panel, then the sentence it
+            # happened in. The old row drew the whole proposal with the
+            # new word on a pill and he could not tell what had changed.
             spec = board._waiting_review()[0]
-            assert [text for text, _c, _p in spec["runs"]] == \
-                ["הלכתי לאכול", "מנטוס", ""], spec["runs"]
-            assert spec["runs"][1][2], "the changed word has no pill"
+            first = spec["runs"][0][0]
+            assert isinstance(first, widgets_mod.Pair), spec["runs"]
+            assert (first.heard, first.meant) == ("מטוס", "מנטוס"), first
+            assert spec["runs"][1][0] == "הלכתי לאכול מנטוס", spec["runs"]
+            assert "one word changed" in spec["eyebrow"], spec["eyebrow"]
             board._review_decide("p", "accepted")
             assert store.pending() == [] and store.get("p")["by"] == "dashboard"
             assert rows() == [], "a decided proposal is no longer waiting"
@@ -18575,6 +19299,376 @@ def test_a_row_in_the_pile_draws_its_note_inside_the_row_that_owns_it():
             root.destroy()
         except Exception:
             pass
+
+
+def test_a_summary_is_the_first_sentence_and_nothing_it_did_not_have():
+    """summary.one_line is the answer to "I don't understand the report".
+
+    He types one long line into the report box; the row drew its first
+    ~90 characters, cut wherever the pixels ran out, which is almost
+    always mid-word. His own suggestion for the fix, 2026-09-07: "maybe
+    display the sentence from point to point". So the line is the first
+    SENTENCE — whole, and with no ellipsis on it, because an ellipsis
+    after a finished sentence is a lie about there being a cut.
+
+    The two rules that keep the splitter honest without a dictionary of
+    abbreviations are what most of this asserts: a stop needs a space
+    after it, and what it ends needs two words in it.
+    """
+    import summary as summary_mod
+
+    assert summary_mod.sentences("שלום עולם. מה נשמע? הכל טוב") == \
+        ["שלום עולם.", "מה נשמע?", "הכל טוב"]
+    # a decimal, a version and an address are not three sentences
+    assert summary_mod.sentences("It froze for 12.5 s on 127.0.0.1") == \
+        ["It froze for 12.5 s on 127.0.0.1"]
+    # a numbered line and an initial are not sentences either
+    assert summary_mod.sentences("1. do the thing. then rest.") == \
+        ["1. do the thing.", "then rest."]
+    assert summary_mod.sentences("") == []
+    assert summary_mod.sentences("?!") == ["?!"]
+
+    whole = summary_mod.one_line("One short line.", 90)
+    assert whole == ("One short line.", True, False), whole
+    assert not whole.text.endswith("…"), "a whole sentence wears no mark"
+
+    two = summary_mod.one_line("First one here. And a second one.", 90)
+    assert two.text == "First one here.", two
+    assert not two.whole and not two.cut, two   # whole sentence, more behind
+
+    long = summary_mod.one_line(
+        "The dashboard froze for twelve seconds when I pressed the "
+        "button, and then the window came back empty.", 70)
+    assert long.cut and long.text.endswith(" …"), long
+    assert long.text == "The dashboard froze for twelve seconds when I "\
+        "pressed the button …", long          # cut at the comma, not a word
+    assert " butto…" not in long.text, "cut in the middle of a word"
+
+    # No clause boundary to cut at: the last whole word that fits.
+    words = summary_mod.one_line("one two three four five six seven", 22)
+    assert words.text.endswith(" …") and " ".join(
+        words.text.split()[:-1]) in "one two three four five six seven"
+    # and one word wider than the box is still marked, not silently shaved
+    single = summary_mod.one_line("supercalifragilistic", 12)
+    assert single.text.endswith(" …") and len(single.text) < 20, single
+
+    # the room is in whatever unit the caller measures in
+    pixels = summary_mod.one_line("First one here. And a second one.", 400,
+                                  lambda s: len(s) * 8)
+    assert pixels.text == "First one here.", pixels
+
+
+def test_a_second_reading_row_says_which_word_became_which():
+    """The row is built around the change, and a row with more than one
+    change says so rather than drawing three pairs into 72 px.
+
+    "It's really hard for me to understand the corrections that appear
+    on the home screen... I don't understand what's written here, the
+    corrections" — the owner, 2026-09-07, looking at a row that drew the
+    whole proposed sentence with the new word on a pill and the reason
+    in 9 pt underneath.
+    """
+    import dashboard as dash
+    import ui as ui_mod
+    import widgets as widgets_mod
+
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        one = {"id": "a", "when": "2026-09-07 21:04:11",
+               "text": "כל היום אני מכתיר את הטקסט הזה. זה עובד יפה.",
+               "proposed": "כל היום אני מכתיב את הטקסט הזה. זה עובד יפה.",
+               "changes": [{"before": "מכתיר", "after": "מכתיב",
+                            "kind": "replace", "why": "הגייה דומה"}]}
+        bands = dash.Dashboard._change_bands(dash.Dashboard, one, 800)
+        pair, context = bands["runs"][0][0], bands["runs"][1][0]
+        assert isinstance(pair, widgets_mod.Pair)
+        assert (pair.heard, pair.meant) == ("מכתיר", "מכתיב"), pair
+        # THE CONTEXT IS A WHOLE SENTENCE — from point to point. The
+        # proposal is two sentences and the change is in the first, so
+        # the second one is not on the row at all.
+        assert context == "כל היום אני מכתיב את הטקסט הזה.", context
+        assert "זה עובד יפה" not in context
+        assert bands["eyebrow"].endswith("one word changed"), bands
+        assert bands["note"] == "הגייה דומה", bands
+
+        two = dict(one, changes=one["changes"] + [
+            {"before": "הזה", "after": "ההוא", "kind": "replace",
+             "why": "איות"}])
+        bands = dash.Dashboard._change_bands(dash.Dashboard, two, 800)
+        assert bands["eyebrow"].endswith("two words changed"), bands
+        assert "one more change" in bands["note"], bands
+        assert sum(1 for piece, _c, _p in bands["runs"]
+                   if isinstance(piece, widgets_mod.Pair)) == 1, \
+            "two pairs would not fit a 72 px row and the row says so"
+
+        # A dropped ending has no pair — nothing became anything — so the
+        # words that would go are the chip, in the danger colour.
+        gone = {"id": "c", "when": "2026-09-07 21:04:11",
+                "text": "תעצור זהו כבר יש קובץ שאלות",
+                "proposed": "תעצור זהו כבר יש קובץ",
+                "changes": [{"before": "שאלות", "after": "", "kind": "drop",
+                             "why": "אף פענוח אחר לא שמע את הסוף"}]}
+        bands = dash.Dashboard._change_bands(dash.Dashboard, gone, 800)
+        assert not any(isinstance(p, widgets_mod.Pair)
+                       for p, _c, _p2 in bands["runs"]), bands["runs"]
+        assert bands["runs"][0][0] == "שאלות", bands["runs"]
+        assert bands["runs"][0][1] == ui_mod.RED, bands["runs"]
+        assert "to delete" in bands["eyebrow"], bands
+
+        # A proposal with no changes at all is still one readable line.
+        none = {"id": "d", "when": "", "text": "שלום", "proposed": "שלום",
+                "changes": []}
+        bands = dash.Dashboard._change_bands(dash.Dashboard, none, 800)
+        assert bands["runs"] is None and bands["text"] == "שלום", bands
+    finally:
+        root.destroy()
+
+
+def test_a_report_row_leads_with_the_first_sentence_of_the_report():
+    """And it knows what day the report was filed.
+
+    Two things, and the second one was invisible: problems.Store writes
+    "at", in ISO, and this row asked for "when" in the review store's
+    format — so every report stamped 0.0, sorted to the bottom of the
+    pile and drew "You reported this" with no date on it.
+    """
+    import time as time_mod
+
+    import dashboard as dash
+    import problems as problems_mod
+
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        report = {
+            "id": "1", "at": "2026-09-05T20:11:03", "status": "open",
+            "where": "Chrome",
+            "text": "הדשבורד נתקע לשתים עשרה שניות כשלחצתי על הכפתור. "
+                    "זה קרה פעמיים היום, גם אחרי שהפעלתי מחדש."}
+
+        class Store:
+            def items(self, _status=None):
+                return [report]
+
+        class Desk(dash.Dashboard):
+            def __init__(self):
+                pass
+
+            def _problems(self):
+                return problems_mod
+
+            def _problems_store(self):
+                return Store()
+
+        spec = Desk()._waiting_problems()[0]
+        assert spec["text"] == \
+            "הדשבורד נתקע לשתים עשרה שניות כשלחצתי על הכפתור.", spec
+        assert not spec["text"].endswith("…"), "a whole sentence, unmarked"
+        assert "the whole list has all of it" in spec["note"], spec
+        assert spec["note"].startswith("Chrome"), spec
+        assert spec["at"] == time_mod.mktime(
+            time_mod.strptime("2026-09-05 20:11:03", "%Y-%m-%d %H:%M:%S"))
+        assert "5 Sep" in spec["eyebrow"], spec["eyebrow"]
+
+        # One sentence and nothing behind it: no note about a rest that
+        # does not exist.
+        report["text"] = "הדשבורד נתקע."
+        spec = Desk()._waiting_problems()[0]
+        assert spec["text"] == "הדשבורד נתקע." and spec["note"] == "Chrome", \
+            spec
+    finally:
+        root.destroy()
+
+
+def test_a_row_knows_how_much_room_its_words_will_get():
+    """The cut is decided where the spec is built, one screen away from
+    any widget, so the estimate has to be no wider than the canvas the
+    row really gives its words — a wide estimate puts a DrawTextW
+    ellipsis on the sentence this whole thing exists to deliver whole."""
+    import ui as ui_mod
+    import widgets as widgets_mod
+
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        for buttons in (
+                [("Yes", "gold", None), ("No", "quiet", None)],
+                [("Go there", "quiet", None), ("✕", "close", None)],
+                [("Answer", "quiet", None)],
+                []):
+            row = widgets_mod.PileRow(root, 1084, bg=ui_mod.CARD,
+                                      eyebrow="x", text="y", buttons=buttons,
+                                      height=72)
+            row.pack()
+            root.update_idletasks()
+            real = int(row.canvas.cget("width"))
+            guess = widgets_mod.row_text_room(1084, buttons)
+            assert guess <= real, (buttons, guess, real)
+            assert guess >= real - 40, (buttons, guess, real)
+            row.destroy()
+    finally:
+        root.destroy()
+
+
+def test_a_column_of_correction_pills_steps_by_the_height_they_need():
+    """The vocabulary panel drew a pair every 30 px and ui.PILL_H is 36,
+    so every row was drawn 6 px into the one above it. The owner saw it
+    ("the vocabulary pills overlap", 2026-09-07); no test could, because
+    nothing asked how tall a pill is.
+
+    So `ui.pair_size` says, and the panel steps by the answer. This walks
+    the finished canvas: the items must fall into as many separate
+    vertical clusters as there are pairs, and none may hang below the
+    canvas that holds them.
+    """
+    import tkinter as tk
+
+    import ui as ui_mod
+
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        wide, tall = ui_mod.pair_size("מטוס", "מנטוס")
+        assert tall >= ui_mod.PILL_H, (wide, tall)
+        assert tall > 30, "the old step was 30 and this is why it collided"
+
+        pairs = [("מטוס", "מנטוס"), ("היוזר", "ה-user"),
+                 ("גיטאהאב", "גיטהאב"), ("there", "their"),
+                 ("קלוד קוד", "Claude Code")]
+        canvas = tk.Canvas(root, width=268, height=250, bg=ui_mod.CARD,
+                           highlightthickness=0, bd=0)
+        canvas.pack()
+        y, gap = 0, 6
+        drawn = 0
+        for wrong, right in pairs:
+            _w, step = ui_mod.pair_size(wrong, right)
+            if y + step > 250:
+                break
+            ui_mod.pair_pill(canvas, 268, y, wrong, right, ui_mod.CARD)
+            y += step + gap
+            drawn += 1
+        root.update_idletasks()
+        boxes = [canvas.bbox(i) for i in canvas.find_all()]
+        assert boxes and drawn >= 5, (drawn, len(boxes))
+        assert max(b[3] for b in boxes) <= 250, max(b[3] for b in boxes)
+        assert min(b[1] for b in boxes) >= 0, min(b[1] for b in boxes)
+        clusters: list = []
+        for top, bottom in sorted((b[1], b[3]) for b in boxes):
+            if clusters and top <= clusters[-1][1]:
+                clusters[-1][1] = max(clusters[-1][1], bottom)
+            else:
+                clusters.append([top, bottom])
+        assert len(clusters) == drawn, (clusters, drawn)
+    finally:
+        root.destroy()
+
+
+def test_a_row_lays_a_mixed_line_out_the_way_windows_lays_it_out():
+    """A row's words are one ui.draw_text bitmap per fragment, and a
+    fragment that mixes Hebrew and Latin must come out in WINDOWS' run
+    order — Tk lays the two Hebrew halves of this line around the English
+    one backwards. Eyeballing an RTL screenshot has misread the order in
+    here twice, so this asks DrawTextW + DT_RTLREADING itself and
+    compares ink per column, the way the history screen's own reference
+    test does.
+
+    The second half is the order BETWEEN pieces, which is ours and not
+    Windows': a Hebrew row reads from the right, so the pair the row
+    leads with must sit to the RIGHT of the sentence that places it, and
+    a Latin row the other way about.
+    """
+    import ctypes
+    import ctypes.wintypes as cw
+    import tkinter as tk
+
+    from PIL import Image, ImageTk
+
+    import ui as ui_mod
+    import widgets as widgets_mod
+
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        LINE = "תתפרע, אני רוצה שהאתר הזה יהיה sick אתה יודע"
+        canvas = tk.Canvas(root, width=900, height=60, bg=ui_mod.CARD,
+                           highlightthickness=0, bd=0)
+        keep: list = []
+        widgets_mod.rtl_run(canvas, 880, 8, [(LINE, ui_mod.FG, None)],
+                            ui_mod.CARD, pt=12, keep=keep)
+        ours_photo = keep[0]
+        width, height = ours_photo.width(), ours_photo.height()
+
+        user, gdi = ctypes.windll.user32, ctypes.windll.gdi32
+        px = ui_mod._px(12)
+        hdc_screen = user.GetDC(0)
+        hdc = gdi.CreateCompatibleDC(hdc_screen)
+        bmp = gdi.CreateCompatibleBitmap(hdc_screen, width, height)
+        gdi.SelectObject(hdc, bmp)
+        rect = cw.RECT(0, 0, width, height)
+        user.FillRect(hdc, ctypes.byref(rect),
+                      gdi.CreateSolidBrush(ui_mod._colorref(ui_mod.CARD)))
+        font = gdi.CreateFontW(-px, 0, 0, 0, 400, 0, 0, 0, 0, 0, 0, 5, 0,
+                               ui_mod.TEXT)
+        gdi.SelectObject(hdc, font)
+        gdi.SetTextColor(hdc, ui_mod._colorref(ui_mod.FG))
+        gdi.SetBkMode(hdc, 1)
+        DT = 0x2 | 0x20 | 0x800 | 0x20000   # RIGHT|SINGLELINE|NOPREFIX|RTL
+        user.DrawTextW(hdc, LINE, -1, ctypes.byref(rect), DT)
+
+        class Header(ctypes.Structure):
+            _fields_ = [("size", cw.DWORD), ("w", cw.LONG), ("h", cw.LONG),
+                        ("planes", cw.WORD), ("bits", cw.WORD),
+                        ("comp", cw.DWORD), ("imgsize", cw.DWORD),
+                        ("xppm", cw.LONG), ("yppm", cw.LONG),
+                        ("used", cw.DWORD), ("important", cw.DWORD)]
+        info = Header(ctypes.sizeof(Header), width, -height, 1, 32,
+                      0, 0, 0, 0, 0, 0)
+        raw = ctypes.create_string_buffer(width * height * 4)
+        gdi.GetDIBits(hdc, bmp, 0, height, raw, ctypes.byref(info), 0)
+        gdi.DeleteObject(bmp)
+        gdi.DeleteDC(hdc)
+        user.ReleaseDC(0, hdc_screen)
+        reference = np.array(Image.frombuffer(
+            "RGBA", (width, height), raw.raw, "raw", "BGRA", 0,
+            1).convert("L"), dtype=float)
+        ours = np.array(ImageTk.getimage(ours_photo).convert("L"),
+                        dtype=float)
+        a = np.clip(reference - 40, 0, None).sum(axis=0)
+        b = np.clip(ours - 40, 0, None).sum(axis=0)
+        a, b = a - a.mean(), b - b.mean()
+        denominator = np.sqrt((a * a).sum() * (b * b).sum())
+        similarity = float((a * b).sum() / denominator) if denominator else 0
+        assert similarity > 0.98, f"run order drifted ({similarity:.3f})"
+
+        # ...and the order between the pieces of a line.
+        for rtl, line in ((True, "הלכתי לאכול מנטוס"),
+                          (False, "I went to eat a Mentos")):
+            canvas.delete("all")
+            keep.clear()
+            runs = [(widgets_mod.Pair("מטוס", "מנטוס"), None, None),
+                    (line, ui_mod.DIM, None)]
+            assert widgets_mod.run_is_rtl(runs) is rtl, line
+            widgets_mod.rtl_run(canvas, 880 if rtl else 0, 8, runs,
+                                ui_mod.CARD, pt=12, band=25, rtl=rtl,
+                                pair_pt=10, pair_h=25, keep=keep)
+            root.update_idletasks()
+            boxes = [canvas.bbox(i) for i in canvas.find_all()]
+            pair_right = max(b[2] for b in boxes[:4])   # the pill and its ink
+            words_left = min(b[0] for b in boxes[4:])
+            if rtl:
+                assert words_left < pair_right, (words_left, pair_right)
+            else:
+                assert words_left > pair_right, (words_left, pair_right)
+            for box in boxes:
+                assert box[1] >= 7 and box[3] <= 8 + 25 + 2, box
+    finally:
+        root.destroy()
 
 
 # ----------------------------------------------------------------- awake

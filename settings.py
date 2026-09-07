@@ -25,6 +25,18 @@ reconciled by key, and tests.py asserts that every key tomllib found is
 one the scan found too — so a line the scan misreads is a red test and
 not a setting that silently vanished from the screen.
 
+WHAT IS ON TOP, AND WHAT IS BEHIND ONE LINE. The owner, 2026-09-07:
+"I would reduce some of the settings. There are things there that I just
+don't need." Nothing may be deleted — his other rule, from 2026-09-01, is
+"show all of them" — so every card shows its COMMON lines and folds the
+rest behind one quiet line at its foot ("7 more in this section") that
+opens them in place. `common()` decides, off the file rather than off a
+list of paths: a line a tab names by hand is common, and so is a line
+that is a CHOICE — a switch, or a menu; everything else is a
+MEASUREMENT — a number, a length of time, a model name, a folder — and
+folds. `fold()` is the split, and it refuses to fold fewer than
+FOLD_MIN lines, because one hidden row costs more room than it saves.
+
 WHAT COUNTS AS A COMMENT, HERE. The file has three kinds and all three
 are read. The block right under a `[section]` header describes the
 section. An unindented block directly above a key, with no blank line
@@ -684,6 +696,84 @@ def tab_names(sections, skip=()) -> list[str]:
     if groups_for(ADVANCED, sections, skip):
         names.insert(names.index(APP), ADVANCED)
     return names
+
+
+# ------------------------------------------------------------- the fold
+#
+# The owner asked twice, and the two asks pull opposite ways. 2026-09-01:
+# "show all of them", so that a setting one person uses and another does
+# not never quietly drops off. 2026-09-07, looking at the result:
+# "I would reduce some of the settings. There are things there that I
+# just don't need, so maybe make it a bit smaller." Nothing is deleted
+# and nothing is hidden; the second screenful is folded into one line.
+
+# One line behind a fold costs a whole row to say "1 more in this
+# section" and gives nothing back, so a card with fewer than this many
+# lines to hide simply shows them.
+FOLD_MIN = 2
+
+_NAMED: frozenset | None = None
+
+
+def named_by_hand() -> frozenset:
+    """Every path TABS names, as a set. Computed once: friendly_paths()
+    walks every group of every tab and `common` is asked per row."""
+    global _NAMED
+    if _NAMED is None:
+        _NAMED = frozenset(friendly_paths())
+    return _NAMED
+
+
+def common(setting) -> bool:
+    """Is this line on the face of its card, or behind the card's one
+    quiet line?
+
+    THE RULE, and it is read off the file rather than off a list of a
+    hundred and ninety-nine paths:
+
+      * a line one of the TABS names by hand is common. That table IS
+        the owner's own shortlist — General is nothing but that table —
+        and a line he wrote a sentence for by hand is not one to hide;
+      * a line that is a CHOICE is common: a switch (`kind == "bool"`),
+        or a menu — an `a | b | c` at the front of its comment, or the
+        names the words give it;
+      * everything else is a MEASUREMENT, and folds: a number, a length
+        of time, a threshold, a model name, a folder, a list.
+
+    The reasoning, so the rule can be argued with rather than guessed
+    at. A choice is a thing a person can answer without knowing what the
+    app does with it — yes or no, this or that — and answering it is one
+    click. A measurement is a number you need a reason to change, and
+    every one in this file already carries, in its comment, the
+    measurement that chose it; the owner's word for that page was "I do
+    not need to know all of this". And because it is COMPUTED, a setting
+    added to config.toml lands on the right side of the fold the moment
+    the file is saved, with no second list to remember.
+    """
+    if setting.path in named_by_hand():
+        return True
+    if setting.kind == "bool":
+        return True
+    row = WORDS.get(setting.path)
+    if row is not None and row.names:
+        return True
+    return bool(setting.choices)
+
+
+def fold(pairs):
+    """One card's rows, split in two: what it shows, and what waits
+    behind its quiet line.
+
+    `pairs` is what the screen draws — (Friendly, Setting) — and every
+    pair comes back in one list or the other, never in neither and never
+    in both. That is the promise the "reachable exactly once" test
+    stands on.
+    """
+    pairs = list(pairs)
+    rest = [pair for pair in pairs if not common(pair[1])]
+    if len(rest) < FOLD_MIN:
+        return pairs, []
+    return [pair for pair in pairs if common(pair[1])], rest
 
 
 # ------------------------------------------------- the words for the rest

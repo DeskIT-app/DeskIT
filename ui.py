@@ -731,6 +731,149 @@ class Dropdown(tk.Canvas):
                 pass
 
 
+class Field(tk.Canvas):
+    """One line of type in this palette: a rounded face with a borderless
+    Entry sitting flat on the middle of it.
+
+    A bare `tk.Entry` is a hard rectangle with a one-pixel highlight, and
+    beside a Switch, a Dropdown and a Button — every one of them a cached
+    Pillow face with a 9 px radius — it is the only square thing left in
+    the window. The owner said so of the settings tabs on 2026-09-07:
+    "the boxes are square in everything that is not in General, and it is
+    not pretty". So a field is built the way those three are: three faces
+    cached by `rounded`, swapped on hover and on focus, and no widget
+    border anywhere.
+
+    ONLY THE BORDER DIFFERS BETWEEN THE THREE FACES. The Entry paints its
+    own rectangle in `EDGE` and knows nothing about the face under it, so
+    a hover state that changed the FILL would show as a rectangle of the
+    old colour exactly where the Entry sits — the very shape this class
+    exists to hide. Hover and focus move the outline: STROKE, LINE_HI,
+    ACCENT.
+
+    `disabledbackground` and `readonlybackground` are set next to `bg`
+    because `bg` is only the NORMAL state: Tk repaints a disabled Entry in
+    the PLATFORM's colours, so a dark field goes white the instant it is
+    disabled. This app has paid for that once already (AGENTS.md), on the
+    ask card, and it was found in a screenshot because nothing asserts
+    colour.
+
+    The pointer is asked for with `winfo_containing` rather than read off
+    the event, because an embedded Entry is a window of its own: moving
+    the mouse from the face onto the Entry raises Leave on the canvas, and
+    a face swapped on that alone flickers under a stationary hand.
+    """
+
+    def __init__(self, parent, value: str = "", *, w: int = 150,
+                 h: int = 30, radius: int = 9, bg: str = CARD,
+                 justify: str = "right", icon: str | None = None,
+                 placeholder: str = "", pt: int = PT_BODY, pad: int = 11,
+                 right: int = 0, command=None):
+        super().__init__(parent, width=w, height=h, bg=bg,
+                         highlightthickness=0, bd=0)
+        # NOT self._w / self._h: tkinter keeps the widget's own Tcl path
+        # name in Misc._w (ui.Button says the same, and for the same bug).
+        self._width, self._height = w, h
+        self._faces = [rounded(w, h, radius, EDGE, bg, edge)
+                       for edge in (STROKE, LINE_HI, ACCENT)]
+        self._image = self.create_image(0, 0, anchor="nw",
+                                        image=self._faces[0])
+        self._focused = False
+        self._over = False
+        self._command = command
+        left = pad
+        if icon:
+            self.create_text(pad, h / 2, text=icon, anchor="w",
+                             font=(ICONS, pt), fill=FAINT)
+            left = pad + 22
+        inner = max(24, w - left - pad - right)
+        self.entry = tk.Entry(
+            self, bg=EDGE, fg=FG, bd=0, highlightthickness=0,
+            font=(UI, pt), justify=justify, insertbackground=ACCENT,
+            selectbackground=ACCENT_SOFT, selectforeground=FG,
+            disabledbackground=EDGE, disabledforeground=FAINT,
+            readonlybackground=EDGE)
+        self.entry.insert(0, str(value))
+        self.create_window(left, h / 2 + 1, window=self.entry, anchor="w",
+                           width=inner, height=min(h - 8, 4 * pt // 3 + 10))
+        self._hint = None
+        if placeholder:
+            self._hint = self.create_text(left + 2, h / 2 + 1, anchor="w",
+                                          text=placeholder, fill=FAINT,
+                                          font=(UI, PT_LABEL))
+        self._show_hint()
+        for widget in (self, self.entry):
+            widget.bind("<Enter>", self._entered, add="+")
+            widget.bind("<Leave>", self._left, add="+")
+        self.entry.bind("<FocusIn>", self._took, add="+")
+        self.entry.bind("<FocusOut>", self._gave, add="+")
+        self.entry.bind("<KeyRelease>", self._typed, add="+")
+        # A click anywhere on the face is a click in the field.
+        self.bind("<Button-1>", lambda _e: self.entry.focus_set())
+
+    # -- the face
+
+    def _paint(self) -> None:
+        index = 2 if self._focused else (1 if self._over else 0)
+        self.itemconfig(self._image, image=self._faces[index])
+
+    def _entered(self, _event=None) -> None:
+        self._over = True
+        self._paint()
+
+    def _left(self, _event=None) -> None:
+        try:
+            under = self.winfo_containing(self.winfo_pointerx(),
+                                          self.winfo_pointery())
+        except tk.TclError:
+            under = None
+        if under in (self, self.entry):
+            return
+        self._over = False
+        self._paint()
+
+    def _took(self, _event=None) -> None:
+        self._focused = True
+        self._paint()
+        self._show_hint()
+
+    def _gave(self, _event=None) -> None:
+        self._focused = False
+        self._paint()
+        self._show_hint()
+
+    def _typed(self, _event=None) -> None:
+        self._show_hint()
+        if self._command:
+            self._command(self.get())
+
+    def _show_hint(self) -> None:
+        if self._hint is None:
+            return
+        blank = not self.entry.get() and not self._focused
+        self.itemconfigure(self._hint,
+                           state="normal" if blank else "hidden")
+
+    # -- the value. `set` never tells anyone, the way Dropdown.set does
+    #    not: it is what a repaint calls.
+
+    def get(self) -> str:
+        return self.entry.get()
+
+    def set(self, value) -> None:
+        self.entry.delete(0, "end")
+        self.entry.insert(0, "" if value is None else str(value))
+        self._show_hint()
+
+    def take_focus(self) -> None:
+        self.entry.focus_set()
+
+    def bind_entry(self, sequence: str, func) -> None:
+        """Bind on the Entry rather than the canvas — Return and FocusOut
+        happen to the widget that has the keyboard, not to its face."""
+        self.entry.bind(sequence, func, add="+")
+
+
 class KeyCap(tk.Canvas):
     """What a hotkey should look like: a key. The old window showed them
     as grey rectangles identical to every other button, which is why
@@ -778,6 +921,98 @@ class KeyCap(tk.Canvas):
 SCROLL_STEP = 16          # one wheel unit, in pixels
 SCROLL_UNITS = 3          # units per notch: 48 px, about one row
 
+RAIL_PAINT = 6            # the rail the thumb is DRAWN on
+RAIL_HIT = 14             # ...and the width a hand may grab it by
+THUMB_W = 4               # the thumb itself, unchanged
+THUMB_MIN = 36            # the shortest it is allowed to get
+TOP_DISC = 28             # the "back to the top" button
+TOP_INSET = 10            # how far it floats off the two edges it hugs
+
+
+def _wheel_to_the_pointer(event):
+    """ONE wheel binding for the whole interpreter, routed by the pointer.
+
+    The wheel used to reach a Scroller only where `bind_wheel` had walked,
+    and it walks ONCE, at build time. Everything drawn afterwards was a
+    dead zone: the owner's report on 2026-09-07 was the three "rest of the
+    day" rows, which `dashboard._paint_rest` destroys and rebuilds every
+    time the log changes, so their bindings were gone the first time a
+    dictation landed. The same held for every row of the pile, the Said
+    list and the vocabulary panel between a rebuild and the next call.
+
+    `bind_all` fixes that and brings its own problem: the "all" bindtag is
+    one per INTERPRETER, and two Scrollers on one screen cannot each own
+    it. So the binding is installed once, on the ROOT (a binding
+    registered against a Scroller dies with that Scroller and takes the
+    whole interpreter's wheel with it), it is this module-level function
+    so it holds no Tk object of its own, and it decides who scrolls by
+    asking the SCREEN which widget is under the pointer and walking up
+    from there. The innermost Scroller wins, which is also the right
+    answer for one nested inside another.
+
+    Ordering makes the old per-widget bindings harmless rather than
+    doubling them: a widget binding runs first and `_wheel` returns
+    "break", so the "all" tag never sees the event. `bind_wheel` is
+    therefore still a real thing to call — it just stopped being the only
+    way the wheel arrives.
+    """
+    widget = getattr(event, "widget", None)
+    if not isinstance(widget, tk.Misc):
+        return None
+    target = None
+    try:
+        path = widget.tk.call("winfo", "containing",
+                              event.x_root, event.y_root)
+        if path:
+            target = widget.nametowidget(path)
+    except Exception:                     # noqa: BLE001 — off our windows
+        target = None
+    if target is None:
+        target = widget
+    for _step in range(64):               # a cycle here would be a hang
+        if isinstance(target, Scroller):
+            return target._wheel(event)
+        target = getattr(target, "master", None)
+        if target is None:
+            return None
+    return None
+
+
+def _arrow_disc(size: int, fill: str, bg: str, border: str,
+                ink: str) -> ImageTk.PhotoImage:
+    """The round "back to the top" button, drawn at 4x and shrunk.
+
+    Pillow anti-aliases nothing and Tk anti-aliases less, so the arrow is
+    drawn four times over and resized with LANCZOS like every other shape
+    in this file. It is a bar with an arrow under it — the ⤒ shape and not
+    a bare ↑ — because a lone up arrow in a page that scrolls reads as
+    "up a bit", and this one goes all the way home.
+
+    `bg` fills the corners the circle does not: a Tk widget is an opaque
+    rectangle, forever (AGENTS.md), so a disc floating over a card shows
+    four small triangles of the page's own ground. That is the cheapest
+    honest version of a shadow and it is the only one this toolkit has.
+    """
+    key = ("top-disc", size, fill, bg, border, ink)
+    if key not in _cache:
+        s = 4
+        px = size * s
+        image = Image.new("RGB", (px, px), bg)
+        draw = ImageDraw.Draw(image)
+        draw.ellipse((0, 0, px - 1, px - 1), fill=fill, outline=border,
+                     width=s)
+        stroke = max(s, round(px * 0.055))
+        cx = px / 2
+        bar, tip, barb, foot = px * 0.31, px * 0.40, px * 0.55, px * 0.71
+        wing = px * 0.15
+        draw.line((cx - wing, bar, cx + wing, bar), fill=ink, width=stroke)
+        draw.line((cx, tip, cx, foot), fill=ink, width=stroke)
+        draw.line(((cx - wing, barb), (cx, tip), (cx + wing, barb)),
+                  fill=ink, width=stroke, joint="curve")
+        _cache[key] = ImageTk.PhotoImage(image.resize((size, size),
+                                                      Image.LANCZOS))
+    return _cache[key]
+
 
 class Scroller(tk.Frame):
     """A scrolling column with a thin thumb beside it.
@@ -793,6 +1028,27 @@ class Scroller(tk.Frame):
     glide, it jumped. Now a notch is SCROLL_UNITS x SCROLL_STEP px,
     about one row, and a high-resolution wheel that sends smaller
     deltas still moves at least one unit rather than rounding to none.
+
+    Three things the owner asked for the same evening, after using it:
+
+    1. **The wheel works over every pixel**, whatever is drawn there and
+       whenever it was drawn — see `_wheel_to_the_pointer`.
+    2. **The thumb is a handle.** It was a picture: press it and nothing
+       happened at all ("if I hold it, it doesn't help ... you can only
+       use the scroll wheel"). It is now dragged, the rail above and
+       below it pages, and it lights under the pointer. The rail is
+       RAIL_HIT px wide to be grabbable and the thumb is still painted
+       THUMB_W px wide at the same place on it, so nothing moved on
+       screen: the extra width is hit area to the RIGHT of the paint,
+       past where the thumb has always been.
+    3. **A way home.** Once the view has left the top a small disc
+       appears in the bottom-LEFT corner and takes it back. Left, and not
+       the customary right, because the right is where the work is:
+       `widgets.PileRow` places its Yes/No/✕ flush against the row's
+       right edge, and the pile is taller than the viewport, so a disc in
+       the bottom-right corner would sit on an answer button every time
+       the button is visible. The left 40 px of a row carries a mark
+       icon, a time, or nothing — and it is the far side of the rail.
     """
 
     def __init__(self, parent, w: int, h: int, bg: str = PANE):
@@ -801,16 +1057,91 @@ class Scroller(tk.Frame):
                                 highlightthickness=0, bd=0,
                                 yscrollincrement=SCROLL_STEP)
         self.canvas.pack(side="left")
-        self.rail = tk.Canvas(self, width=6, height=h, bg=bg,
+        self.rail = tk.Canvas(self, width=RAIL_HIT, height=h, bg=bg,
                               highlightthickness=0, bd=0)
         self.rail.pack(side="right", fill="y")
         self._height = h
+        self._thumb = (0, 0)             # (top, length) of what is painted
+        self._grab = None                # (pressed at, first, fraction)
+        self._hot = False
         self.inner = tk.Frame(self.canvas, bg=bg)
         self.canvas.create_window(0, 0, anchor="nw", window=self.inner,
                                   width=w)
         self.inner.bind("<Configure>", self._resized)
         for widget in (self.canvas, self.inner):
             widget.bind("<MouseWheel>", self._wheel)
+
+        self.rail.bind("<Button-1>", self._rail_press)
+        self.rail.bind("<B1-Motion>", self._rail_drag)
+        self.rail.bind("<ButtonRelease-1>", self._rail_release)
+        self.rail.bind("<Motion>", self._rail_hover)
+        self.rail.bind("<Leave>", self._rail_left)
+        self.rail.bind("<MouseWheel>", self._wheel)
+
+        # The way home. Built now and shown only once the view has left
+        # the top, so it costs one cached bitmap and never a rebuild.
+        self.top_button = tk.Canvas(self, width=TOP_DISC, height=TOP_DISC,
+                                    bg=bg, highlightthickness=0, bd=0,
+                                    cursor="hand2")
+        self._top_face = self.top_button.create_image(
+            0, 0, anchor="nw", image=self._disc(False))
+        self.top_button.bind("<Button-1>", lambda _e: self.to_top())
+        self.top_button.bind("<Enter>", lambda _e: self._light_disc(True))
+        self.top_button.bind("<Leave>", lambda _e: self._light_disc(False))
+        self.top_button.bind("<MouseWheel>", self._wheel)
+        self._catch_the_wheel()
+
+    # ------------------------------------------------------------ the wheel
+
+    def _catch_the_wheel(self) -> None:
+        """Install the interpreter's one wheel binding, once.
+
+        On the ROOT and not on `self`: `bind_all` registers its Tcl
+        command against the widget it was called on and `destroy()`
+        deletes that widget's commands, so a binding installed by a
+        Scroller stops working — for every Scroller — the moment the
+        dashboard rebuilds the screen it was on.
+        """
+        root = self._root()
+        if getattr(root, "_deskit_wheel", False):
+            return
+        root.bind_all("<MouseWheel>", _wheel_to_the_pointer)
+        root._deskit_wheel = True
+
+    def _wheel(self, event) -> str:
+        delta = getattr(event, "delta", 0) or 0
+        if not delta:
+            return "break"
+        units = -delta * SCROLL_UNITS / 120.0
+        units = int(math.copysign(max(1, round(abs(units))), units))
+        try:
+            self.canvas.yview_scroll(units, "units")
+            self._paint_thumb()
+        except tk.TclError:
+            pass                          # the page went away under us
+        # "break", so a widget that `bind_wheel` reached does not then
+        # hand the same notch to the interpreter-wide binding as well.
+        # It has to be RETURNED, and that means nothing above may raise:
+        # a handler that dies returns None, the Tcl `if {... == "break"}`
+        # tkinter wraps it in never fires, and the notch is delivered a
+        # second time to the "all" tag. 48 px became 96.
+        return "break"
+
+    def bind_wheel(self, widget) -> None:
+        """Bind the wheel to a widget and everything under it.
+
+        Since `_wheel_to_the_pointer` this is no longer what makes the
+        page scroll — it is a shortcut that saves the dispatcher a
+        `winfo containing` — and it is kept because four files call it
+        and because a widget binding is the only way to be sure a nested
+        scrolling widget (a tk.Text) does not scroll itself AND the page
+        on one notch.
+        """
+        widget.bind("<MouseWheel>", self._wheel)
+        for child in widget.winfo_children():
+            self.bind_wheel(child)
+
+    # ------------------------------------------------------------- the rail
 
     def _resized(self, _event=None) -> None:
         self.canvas.config(scrollregion=self.canvas.bbox("all"))
@@ -825,21 +1156,120 @@ class Scroller(tk.Frame):
             return
         self.rail.delete("thumb")
         if last - first >= 0.999:
-            return                       # everything fits: no thumb at all
-        length = max(36, int((last - first) * self._height))
-        self.rail.create_image(1, int(first * self._height), anchor="nw",
-                               tags="thumb",
-                               image=rounded(4, length, 2, THUMB,
-                                             self.rail["bg"]))
-
-    def _wheel(self, event) -> None:
-        delta = getattr(event, "delta", 0) or 0
-        if not delta:
+            self._thumb = (0, 0)         # everything fits: no thumb at all
+            self._show_top(False)
             return
-        units = -delta * SCROLL_UNITS / 120.0
-        units = int(math.copysign(max(1, round(abs(units))), units))
-        self.canvas.yview_scroll(units, "units")
+        length = max(THUMB_MIN, int((last - first) * self._height))
+        # Clamped, because `length` has a floor and `first * height` does
+        # not: a very long page put the last few pixels of its thumb past
+        # the bottom of its own rail, which is also where a drag would
+        # have run out of room.
+        top = max(0, min(int(first * self._height), self._height - length))
+        self._thumb = (top, length)
+        lit = self._hot or self._grab is not None
+        # Centred in RAIL_PAINT and not in RAIL_HIT: the extra width is
+        # hit area, and it was added to the RIGHT of the paint so that
+        # nothing on screen moved when the rail grew.
+        self.rail.create_image((RAIL_PAINT - THUMB_W) // 2, top,
+                               anchor="nw", tags="thumb",
+                               image=rounded(THUMB_W, length, THUMB_W // 2,
+                                             FAINT if lit else THUMB,
+                                             self.rail["bg"]))
+        self._show_top(first > 0.001)
+
+    def _on_thumb(self, y: int) -> bool:
+        top, length = self._thumb
+        return bool(length) and top <= y < top + length
+
+    def _rail_press(self, event) -> str:
+        top, length = self._thumb
+        if not length:
+            return "break"               # nothing to scroll: nothing to do
+        if self._on_thumb(event.y):
+            first, last = self.canvas.yview()
+            self._grab = (event.y, first, last - first)
+        else:
+            # Above or below the thumb: a page, in whole wheel units so
+            # the answer does not depend on how Tk reads "pages" when a
+            # yscrollincrement is set.
+            page = max(1, int(self._height * 0.9) // SCROLL_STEP)
+            self.canvas.yview_scroll(-page if event.y < top else page,
+                                     "units")
         self._paint_thumb()
+        return "break"
+
+    def _rail_drag(self, event) -> str:
+        if self._grab is None:
+            return "break"
+        pressed, first, fraction = self._grab
+        top, length = self._thumb
+        span = max(1, self._height - length)
+        room = max(0.0, 1.0 - fraction)
+        where = first + (event.y - pressed) / span * room
+        self.canvas.yview_moveto(max(0.0, min(room, where)))
+        self._paint_thumb()
+        return "break"
+
+    def _rail_release(self, _event=None) -> str:
+        self._grab = None
+        self._paint_thumb()
+        return "break"
+
+    def _rail_hover(self, event) -> None:
+        hot = self._on_thumb(event.y)
+        if hot != self._hot:
+            self._hot = hot
+            self._paint_thumb()
+
+    def _rail_left(self, _event=None) -> None:
+        if self._hot:
+            self._hot = False
+            self._paint_thumb()
+
+    # --------------------------------------------------------- the way home
+
+    def _disc(self, lit: bool) -> ImageTk.PhotoImage:
+        ground = self["bg"]
+        if lit:
+            return _arrow_disc(TOP_DISC, EDGE_HI, ground, TILE_EDGE, FG)
+        return _arrow_disc(TOP_DISC, CARD_HI, ground, STROKE, DIM)
+
+    def _light_disc(self, lit: bool) -> None:
+        try:
+            self.top_button.itemconfig(self._top_face, image=self._disc(lit))
+        except tk.TclError:
+            pass
+
+    def _show_top(self, on: bool) -> None:
+        button = getattr(self, "top_button", None)
+        if button is None or not button.winfo_exists():
+            return
+        if on:
+            # Placed every time rather than once: `resize()` moves the
+            # bottom edge it hangs off.
+            button.place(x=TOP_INSET, y=self._height - TOP_INSET,
+                         anchor="sw")
+            # `tk.Misc.tkraise(button)` and not `button.tkraise()`:
+            # tkinter's Canvas rebinds BOTH `lift` and `tkraise` to
+            # `tag_raise`, which wants an item id and raises TclError
+            # without one. And an exception in a <MouseWheel> handler is
+            # not just noise, it is a notch that scrolls TWICE — tkinter
+            # turns "break" into a Tcl break only when the callback
+            # RETURNS it, so a handler that dies never stops the
+            # interpreter-wide binding from running after it. Measured on
+            # the probe: 96 px a notch instead of 48.
+            tk.Misc.tkraise(button)
+        elif button.winfo_manager():
+            button.place_forget()
+
+    def top_showing(self) -> bool:
+        """Is the way home on screen? For the tests, and for a caller
+        that wants to know whether the page has been left."""
+        button = getattr(self, "top_button", None)
+        return bool(button is not None and button.winfo_exists()
+                    and button.winfo_manager())
+
+    # ------------------------------------------------------------- the rest
 
     def resize(self, h: int) -> None:
         """A new height for the viewport. The canvas and the rail were
@@ -850,13 +1280,6 @@ class Scroller(tk.Frame):
         self.canvas.configure(height=self._height)
         self.rail.configure(height=self._height)
         self.after_idle(self._paint_thumb)
-
-    def bind_wheel(self, widget) -> None:
-        """The wheel has to be bound to every child: a Canvas does not see
-        an event that landed on a Label sitting on top of it."""
-        widget.bind("<MouseWheel>", self._wheel)
-        for child in widget.winfo_children():
-            self.bind_wheel(child)
 
     def to_top(self) -> None:
         self.canvas.yview_moveto(0)
@@ -1020,9 +1443,48 @@ def draw_text(text: str, *, pt: int, width: int | None, max_lines: int,
     return result
 
 
+PAIR_GAP, PAIR_PAD = 24, 13
+
+
+def pair_size(wrong: str, correct: str, size: int = PT_LABEL,
+              height: int | None = None) -> tuple[int, int]:
+    """How wide and how TALL one correction pill is, before it is drawn.
+
+    The height used to be assumed rather than asked for, and the
+    assumption was wrong on the one screen that lays these out in a
+    column: the vocabulary panel stepped 30 px a row because 30 was the
+    number in the design, and PILL_H is 36. So every pair was drawn 6 px
+    into the one above it — the overlap the owner reported on
+    2026-09-07. A caller that stacks pills asks here now, and steps by
+    what it is told.
+
+    The words are their own bitmaps and they can be taller than the pill
+    they sit in (draw_text is 20 px at pt 10 and 24 at pt 12 on this
+    machine), and they are centred on the pill's middle — so the pill
+    grows to hold them instead of letting them hang out of both ends. An
+    explicit `height` is honoured as given: a row with three bands to
+    fit knows better than this function does how much it can spare, and
+    it picks `size` small enough for the words to fit inside it.
+    """
+    wrong_img, wrong_h, _l = draw_text(wrong, pt=size, width=None,
+                                       max_lines=1, colour=DIM, bg=CHIP_OFF)
+    right_img, right_h, _l = draw_text(correct, pt=size, width=None,
+                                       max_lines=1, colour=FG, bg=CHIP_OFF)
+    width = (PAIR_PAD * 2 + wrong_img.width() + right_img.width()
+             + PAIR_GAP)
+    return width, (height or max(PILL_H, wrong_h, right_h))
+
+
 def pair_pill(canvas, x: int, y: int, wrong: str, correct: str,
-              bg: str, size: int = PT_LABEL) -> int:
+              bg: str, size: int = PT_LABEL,
+              height: int | None = None) -> int:
     """One correction — what was heard, what it should have been.
+
+    Drawn right-aligned at `x`, downwards from `y`, and it stays inside
+    `x - width .. x` by `y .. y + height`: `pair_size` is what both this
+    and its callers measure with, so a column of them cannot overlap.
+    Returns the width, which is what a caller laying a line out needs;
+    the height comes from `pair_size`.
 
     Both words are DrawTextW bitmaps (a corrected word is often mixed,
     "ה-user", and a mixed word split into runs comes out of Tk backwards
@@ -1037,19 +1499,17 @@ def pair_pill(canvas, x: int, y: int, wrong: str, correct: str,
                                   colour=DIM, bg=CHIP_OFF)
     right_img, _h, _l = draw_text(correct, pt=size, width=None,
                                   max_lines=1, colour=FG, bg=CHIP_OFF)
-    gap, pad = 24, 13
-    a, b = wrong_img.width(), right_img.width()
-    width = pad * 2 + a + b + gap
+    width, tall = pair_size(wrong, correct, size, height)
     canvas.create_image(x - width, y, anchor="nw",
-                        image=rounded(width, PILL_H, PILL_H // 2,
+                        image=rounded(width, tall, tall // 2,
                                       CHIP_OFF, bg, CHIP_OFF_EDGE))
-    start, mid = x - width, y + PILL_H / 2
+    start, mid = x - width, y + tall / 2
     first, second = (wrong_img, right_img) if not rtl else (right_img,
                                                             wrong_img)
-    canvas.create_image(start + pad, mid, anchor="w", image=first)
-    canvas.create_image(x - pad, mid, anchor="e", image=second)
+    canvas.create_image(start + PAIR_PAD, mid, anchor="w", image=first)
+    canvas.create_image(x - PAIR_PAD, mid, anchor="e", image=second)
     arrow = "←" if rtl else "→"
-    canvas.create_text(start + pad + first.width() + gap / 2, mid,
+    canvas.create_text(start + PAIR_PAD + first.width() + PAIR_GAP / 2, mid,
                        text=arrow, font=(UI, size + 1), fill=FAINT)
     return width
 

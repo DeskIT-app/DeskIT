@@ -58,6 +58,24 @@ for _c in "abcdefghijklmnopqrstuvwxyz":
 for _d in "0123456789":
     _VK[_d] = 0x30 + ord(_d) - ord("0")
 
+# THE NUMERIC KEYPAD HAS ITS OWN VIRTUAL KEYS, and they are not the digit
+# row's: VK_NUMPAD0..9 are 0x60..0x69 against 0x30..0x39, and the four
+# operators and the decimal point are 0x6A..0x6F. Named after what is
+# printed on the cap, so "numpad 0" in config.toml is the key with 0 on
+# it and "0" is still the one above the letters.
+#
+# TWO THINGS TO KNOW BEFORE BINDING ONE. These codes only arrive while
+# NUM LOCK IS ON — with it off Windows delivers Insert, Delete, the
+# arrows and Home/End/PgUp/PgDn from the same physical keys, and a
+# binding written here simply will not fire. And the keypad's ENTER has
+# no code of its own: it is VK_RETURN, the same 0x0D as the main one,
+# distinguishable only by an lParam bit nothing here reads — so it is
+# not named, and "enter" means both.
+for _d in range(10):
+    _VK[f"numpad {_d}"] = 0x60 + _d
+_VK.update({"numpad *": 0x6A, "numpad +": 0x6B, "numpad -": 0x6D,
+            "numpad .": 0x6E, "numpad /": 0x6F})
+
 _VK_NAMES = {vk: name for name, vk in _VK.items()}  # last write wins — fine
 
 # Keys whose scan code needs KEYEVENTF_EXTENDEDKEY when synthesized.
@@ -164,7 +182,8 @@ def vk_for(name: str) -> int:
         raise ValueError(
             f"unknown key name {name!r}. Use one of: right ctrl, left ctrl, "
             f"right shift, right alt, f1..f24, a..z, 0..9, insert, home, "
-            f"page up/down, caps lock, scroll lock, pause, ...")
+            f"page up/down, caps lock, scroll lock, num lock, pause, "
+            f"numpad 0..9, numpad + - * / . , ...")
     return _VK[key]
 
 
