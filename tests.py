@@ -17708,8 +17708,9 @@ def test_the_shelf_section_parses_and_is_bounded() -> None:
 def test_the_dot_section_decides_the_corner_for_every_card_beside_it(
 ) -> None:
     """ONE PLACE DECIDES THE CORNER. `[dot] corner` says where the status
-    dot sits (bottom-right of the work area since 2026-09-07; top-right
-    is the corner it used to keep). The shelf and the key card ship with
+    dot sits — either of the two corners, whichever he last chose; the
+    default is bottom-right of the work area since 2026-09-07, top-right
+    is the corner it used to keep and the one he can pick again. The shelf and the key card ship with
     `corner = "dot"`, which load() resolves to the dot's corner — so a
     Config never carries the word, every card reads a real corner, and
     the three tables that name the dot's corners agree. A section may
@@ -17730,10 +17731,19 @@ def test_the_dot_section_decides_the_corner_for_every_card_beside_it(
     assert config_mod.corner_for("dot", "top-right") == "top-right"
     assert config_mod.corner_for("bottom-left", "top-right") == "bottom-left"
 
+    # THE LIVE FILE IS HIS, NOT THE SUITE'S. This used to demand
+    # "bottom-right" of config.toml itself, and it went red the evening he
+    # moved the dot to the other corner from the Settings screen — a
+    # choice the file offers him in the same breath. What the test is
+    # actually about is that ONE place decides, so ask that instead: the
+    # corner he has chosen is a real one, and both cards followed it
+    # there. The shipped default is a property of the dataclass, and that
+    # is where it is now pinned.
+    assert config_mod.DotConfig.corner == "bottom-right"
     shipped = config_mod.load(Path(sys.path[0]) / "config.toml")
-    assert shipped.dot.corner == "bottom-right", shipped.dot
-    assert shipped.hint.corner == "bottom-right", shipped.hint.corner
-    assert shipped.shelf.corner == "bottom-right", shipped.shelf.corner
+    assert shipped.dot.corner in config_mod.DOT_CORNERS, shipped.dot
+    assert shipped.hint.corner == shipped.dot.corner, shipped.hint.corner
+    assert shipped.shelf.corner == shipped.dot.corner, shipped.shelf.corner
     text = (Path(sys.path[0]) / "config.toml").read_text("utf-8")
     assert "[dot]" in text and text.index("[dot]") < text.index("[hint]")
 
