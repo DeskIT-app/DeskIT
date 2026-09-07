@@ -304,20 +304,48 @@ places — the title bar says DeskIT one line above it), the six places
 in the middle with a 2 px gold underline on the one you are on, and at
 the right the state as a sentence — the dot in its live colour, the word
 (*Off*, *Starting*, *Listening*, *Recording*, *Locked on*,
-*Transcribing*, *Paused*), the uptime — and **three** buttons:
-**Screens off** (Screens on while they are dark; only while the app
-runs, since the screens are the running app's to put out), **Pause**
-(Resume when it is paused, Start when it is off), and **Stop**. Screens
-off was a small gold link in the home's footer and he could not find
-it; Stop was on Settings → The app and he could not find that either
-(*"I don't have a button to shut down the model, I only have a button
-to pause it"*). The reason Stop was buried has not gone away — it costs
-25 seconds of model loading to undo — so **it arms before it fires**:
-the first press says *Stop again*, the second one quits, and anything
-else disarms it. "Is it on?" is the question this window exists to
-answer, and it is answered on every place rather than on one of them.
-The window is 1160×720 (it was 940×648) and still fixed, which is what
-lets every bitmap be cached.
+*Transcribing*, *Paused*), the uptime — and **whichever buttons the
+state allows**. That last part is his rule and he gave it twice:
+*"when the model is off, only one button — Start. And when the model is
+on, two buttons — Pause and Stop… And Pause and Stop should not appear
+when the model is already off."* So:
+
+| the app is | the bar holds |
+| --- | --- |
+| off | **Start** |
+| starting, listening, recording, transcribing | **Stop**, **Screens off**, **Pause** |
+| paused | **Stop**, **Screens off**, **Resume** |
+
+Screens off (Screens on while they are dark) was a small gold link in
+the home's footer and he could not find it; Stop was on Settings → The
+app and he could not find that either (*"I don't have a button to shut
+down the model, I only have a button to pause it"*). Both are in the bar
+now, and both come and go on the same question — is there an app there
+at all — rather than on schedules of their own: Screens off used to
+arrive about 25 seconds after its neighbours, once the models had
+finished loading, which is a third button flickering in and out of a bar
+he had just said was saying too much.
+
+**Stop quits in ONE press.** It used to arm: the first press turned the
+word into *Stop again* and the second one quit. He read that word, could
+not tell what it was for, and asked for it gone — *"even if the model
+stopped… there is still the button Stop, and there is the button 'Stop
+again'. I don't know why you put it."* The cost it was paying for is
+real (stopping unloads the models; coming back is about 25 seconds and
+there is no undo), so what guards it now is the **layout**: Start,
+Resume and Pause are one button in one place in **every** state, so the
+key he presses all day never moves under his hand and Stop can never
+appear where his finger already was; Stop is at the far end of the group
+with the whole Screens off button between them, 168 px from Pause where
+the armed one sat 8; and Stop is not drawn at all while there is nothing
+to stop. The shelf's Stop still arms — that panel opens on one keystroke
+in the corner and its Stop is 8 px from both Pause and the X that closes
+it, with no room to move.
+
+"Is it on?" is the question this window exists to answer, and it is
+answered on every place rather than on one of them. The window is
+1160×720 (it was 940×648) and still fixed, which is what lets every
+bitmap be cached.
 
 **The home is the window's whole job, said in one sentence.** *"Five
 things want an answer."* — or *"Nothing is waiting."*, with "Nothing else

@@ -94,9 +94,22 @@ APP_ID = "Yoav.DeskIT.Dashboard"
 
 W, H = 1160, 720         # fixed, which is what lets every bitmap be cached
 SIDE = 0                 # the rail is gone; the places are along the top
-TOP = 56                 # the bar: the mark, four places, the state, one key
+TOP = 56                 # the bar: the mark, six places, the state, and
+                         # whichever buttons the state allows
 PAD = 24
 CW = W - PAD * 2         # 1112 — the usable width of a screen
+
+# THE RIGHT END OF THE BAR, in pixels. Stop used to sit 8 px from Pause
+# and arm itself to make up for it; the arming is gone and these numbers
+# are part of what took its place — see _paint_bar_buttons. BAR_GAP is
+# ordinary spacing between two things that belong together; BAR_KEEP is
+# the empty bar between Stop and the button next to it, and it is the one
+# number here that is not taste.
+BAR_RUN_W = 104          # Pause / Resume / Start — the key he presses all
+                         # day, and the only one that is in every state
+BAR_STOP_W = 84
+BAR_GAP = 12
+BAR_KEEP = 24
 
 # activity -> (dot colour, the word for it). The colours are asked of
 # `ui` when the chip is painted, not here, so a repainted palette lands
@@ -1395,8 +1408,8 @@ class Dashboard:
         self._show("Home")
 
     def _topbar(self) -> None:
-        """The mark, the three places, the state, and two buttons — one
-        56 px strip.
+        """The mark, the six places, the state, and whichever buttons the
+        state allows — one 56 px strip.
 
         THE RAIL IS GONE, and the reason is arithmetic as much as taste.
         A 212 px rail took 18% of the window to say four words, and the
@@ -1407,10 +1420,12 @@ class Dashboard:
         right of the bar where it is read as a sentence rather than as a
         card in a corner.
 
-        The one BUTTON here is Pause / Resume / Start: the state and the
-        single thing you would do about it, side by side. Stop moved to
-        Settings › The app, where a thing that costs 25 seconds to undo
-        belongs — the old rail put it one slip away from Pause.
+        THE RIGHT END IS BUILT HERE AND PLACED SOMEWHERE ELSE. The state
+        and the buttons are one group, and `_paint_bar_buttons` lays that
+        whole group out from the right edge every time the state changes,
+        because which buttons exist depends on the state — his rule, and
+        the reason for it, are written out there. A position written down
+        in two places is a button that ends up in two places.
         """
         bar = tk.Frame(self.root, bg=ui.BG, width=W, height=TOP)
         bar.place(x=0, y=0)
@@ -1431,39 +1446,37 @@ class Dashboard:
         # Six words now, so the bar is measured rather than guessed: the
         # places start after the mark and have to end before the state
         # chip. 24 + 26 mark + 14 air = 64; six words at gap 18 come to
-        # 471 px, so they end at 535 and the chip's left edge is 592.
+        # 471 px, so they end at 535. The chip is furthest left in the
+        # state that holds the most buttons, and its left edge there is
+        # 576 — the 41 px of clearance a test holds us to.
         self.nav.place(x=PAD + 40, y=17)
 
-        # The state chip and the button are placed from the RIGHT edge, so
+        # The state chip and the buttons are placed from the RIGHT edge, so
         # a longer word ("Transcribing") grows leftwards into empty bar
-        # rather than pushing the button off the window.
-        # STOP IS IN THE BAR, and it arms before it fires. He asked for
-        # it there ("I don't have a button to shut down the model, I
-        # only have a button to pause it") and the reason it was moved
-        # to Settings still stands — it costs 25 seconds of model
-        # loading to undo and it would sit one slip from Pause. So the
-        # first press only changes the word, the way the shelf's Stop
-        # does, and the second one quits. Anything else disarms it.
+        # rather than pushing a button off the window.
+        # STOP IS IN THE BAR because he asked for it there ("I don't have
+        # a button to shut down the model, I only have a button to pause
+        # it"), and it does the same thing Settings › The app's Stop does,
+        # in one press.
         self.parts["stop_bar"] = ui.Button(
-            bar, "Stop", self._stop_bar, w=84, h=32, bg=ui.BG,
+            bar, "Stop", self._stop, w=BAR_STOP_W, h=32, bg=ui.BG,
             quiet=True)
-        self.parts["stop_bar"].place(x=W - PAD, y=12, anchor="ne")
         self.parts["run"] = ui.Button(bar, "Pause", self._toggle_pause,
-                                      w=104, h=32, bg=ui.BG, quiet=True)
-        self.parts["run"].place(x=W - PAD - 92, y=12, anchor="ne")
+                                      w=BAR_RUN_W, h=32, bg=ui.BG,
+                                      quiet=True)
         # SCREENS OFF is in the bar, on every place. It was a small gold
         # link in the home's footer and the owner could not find it
         # (2026-09-07: "it would have been good to understand where it
         # was"); a button beside Pause is where a thing pressed every
-        # evening belongs. Placed by _paint_bar_screens, and only while
-        # the app runs — the screens are the running app's to put out.
-        wide = widgets.button_width("Screens off", icon=True)
+        # evening belongs. Its width is measured once and kept, so that
+        # "Screens on" does not shuffle its neighbours when the screens
+        # go dark.
+        self._screens_w = widgets.button_width("Screens off", icon=True)
         self.parts["bar_screens"] = ui.Button(
-            bar, "Screens off", lambda: self._screens("toggle"), w=wide,
-            h=32, bg=ui.BG, quiet=True, icon=ui.ICON["awake"])
+            bar, "Screens off", lambda: self._screens("toggle"),
+            w=self._screens_w, h=32, bg=ui.BG, quiet=True,
+            icon=ui.ICON["awake"])
         chip = widgets.StateChip(bar, bg=ui.BG, size=15)
-        chip.place(x=W - PAD - 92 - 104 - wide - 24, y=TOP // 2,
-                   anchor="e")
         self.parts["chip"] = chip
         # The three names the rest of the window has always used for the
         # state, kept: _refresh writes the word and the uptime through
@@ -1471,6 +1484,7 @@ class Dashboard:
         self.parts["lamp"] = chip.lamp
         self.parts["state"] = chip.word
         self.parts["uptime"] = chip.meta
+        self._paint_bar_buttons()
         # The dictation-key hint used to live under the wordmark in the
         # rail. It is one line of chrome that repeated what the Keys
         # place says in full, so it is now the bar's tooltip-of-record:
@@ -1489,7 +1503,6 @@ class Dashboard:
         """Swap screens. Everything the old one registered goes with it, so
         _refresh has to ask for a widget rather than assume one."""
         self.screen = name
-        self._disarm_stop()
         self._paint_nav()
         self._stop_rows()
         if self._slide_after is not None:
@@ -1791,19 +1804,77 @@ class Dashboard:
         self._said_shown = getattr(self, "_said_shown", SAID_PAGE) + SAID_PAGE
         self._fill_history(keep_place=True)
 
-    def _paint_bar_screens(self) -> None:
-        """The Screens off button in the bar: its word follows the
-        screens, and it is only there while the app runs."""
-        button = self.parts.get("bar_screens")
-        if button is None or not button.winfo_exists():
+    def _paint_bar_buttons(self) -> None:
+        """The right end of the bar — the state, and the buttons the state
+        allows.
+
+        HIS RULE, and it is the whole of this method (2026-09-07): "when
+        the model is off, only one button — Start. And when the model is
+        on, two buttons — Pause and Stop... And Pause and Stop should not
+        appear when the model is already off." So there is ONE question
+        here — is there an app there at all — and every button in the bar
+        answers it together. Screens off used to answer a second question
+        of its own (it appeared only once the models had finished
+        loading, about 25 seconds after the other two), which is a third
+        button coming and going on its own schedule in a bar he had just
+        told us was saying too much.
+
+        "Is there an app there" is `self.status`, not `self.running`: the
+        control channel answers "starting" from its first second, and
+        through those 25 seconds Stop is exactly the button somebody
+        wants. Pause and Screens off are there too and the app refuses
+        them out loud — "still starting up, try again in a moment" — the
+        way it always has.
+
+        THE SAFETY IS THE LAYOUT NOW, not a second press. Stopping
+        unloads the models and starting again costs him about 25 seconds,
+        and there is no undo, which is why Stop used to arm itself: the
+        first press only turned the word into "Stop again" and the second
+        one quit. He read that word, did not know what it was for, and
+        asked twice to have it gone. Three things replace it, and none of
+        them is a confirmation:
+
+        - Pause keeps the right edge of the bar in EVERY state. Start,
+          Resume and Pause are one button and one place, so the key he
+          presses all day never moves under his hand — and Stop never
+          appears where his finger already was.
+        - Stop is at the far end of the group, with the whole Screens off
+          button and BAR_KEEP of empty bar between them: 168 px from
+          Pause, where it used to be 8.
+        - Stop is not there at all while there is nothing to stop.
+        """
+        chip = self.parts.get("chip")
+        run = self.parts.get("run")
+        stop = self.parts.get("stop_bar")
+        screens = self.parts.get("bar_screens")
+        if not all(w is not None and w.winfo_exists()
+                   for w in (chip, run, stop, screens)):
             return
+        # ONE BUTTON, THREE WORDS. Start, Resume and Pause are never
+        # available at the same moment, so three buttons would be two
+        # lies — and it is the same key in the same pixels either way.
+        run.configure_text("Start" if not self.status else
+                           "Resume" if self.status.get("paused")
+                           else "Pause")
+        # `awake` only ever comes back from a running app, so the word is
+        # "Screens off" through a startup whatever the screens are doing.
         awake = (self.status.get("awake") or {}) if self.running else {}
-        button.configure_text("Screens on" if awake.get("dark")
-                              else "Screens off")
-        if self.running:
-            button.place(x=W - PAD - 92 - 104 - 12, y=12, anchor="ne")
+        screens.configure_text("Screens on" if awake.get("dark")
+                               else "Screens off")
+        # Right to left off the window's edge, so that a longer state word
+        # grows into empty bar instead of pushing a button off the screen.
+        x = W - PAD
+        run.place(x=x, y=12, anchor="ne")
+        x -= BAR_RUN_W + BAR_GAP
+        if self.status:
+            screens.place(x=x, y=12, anchor="ne")
+            x -= self._screens_w + BAR_KEEP
+            stop.place(x=x, y=12, anchor="ne")
+            x -= BAR_STOP_W + BAR_GAP
         else:
-            button.place_forget()
+            screens.place_forget()
+            stop.place_forget()
+        chip.place(x=x, y=TOP // 2, anchor="e")
 
     def _screen_corrections(self) -> None:
         """What the second reading proposes, and what it has learned.
@@ -6135,9 +6206,12 @@ class Dashboard:
             wraplength=CW - 260, justify="left")
         self.parts["ver_status"].place(x=0, y=112)
 
-        # Stop lives HERE and nowhere else. It costs 25 seconds of model
-        # loading to undo, and the old rail put it one slip away from
-        # Pause, which costs nothing in either direction.
+        # THE SAME DOOR AS THE BAR'S STOP, in one press, and it is here
+        # as well because this is where the 25 seconds are written down —
+        # the line under it says what stopping costs before anybody finds
+        # out. Stop lived only here for one evening, until he said "I
+        # don't have a button to shut down the model, I only have a
+        # button to pause it".
         stop = ui.Button(body, "Stop the app", self._stop, h=32,
                          w=widgets.button_width("Stop the app", icon=True),
                          quiet=True, icon=ui.ICON["stop"])
@@ -6470,6 +6544,17 @@ class Dashboard:
             self._note("could not launch main.py — see app.log")
 
     def _stop(self) -> None:
+        """Quitting, in ONE press — the bar's Stop and Settings › The
+        app's Stop are the same door.
+
+        It used to take two from the bar: the first press turned the word
+        into "Stop again" and only the second one quit. That guarded a
+        real cost — the models unload and coming back takes about 25
+        seconds — but he read the word, could not tell what it was for,
+        and said so twice, so what guards the cost now is where the
+        button sits rather than how many times it has to be hit. See
+        _paint_bar_buttons.
+        """
         self._busy_until = time.monotonic() + 1.5
         # The named event, not the pipe: this has to work even if the
         # control channel never came up.
@@ -6479,33 +6564,11 @@ class Dashboard:
         else:
             self._note("nothing to stop")
 
-    def _stop_bar(self) -> None:
-        """Stop, from the bar. The first press arms it and says so; the
-        second one quits. Twenty-five seconds of model loading is not
-        something a slip beside Pause may cost him.
-        """
-        button = self.parts.get("stop_bar")
-        if not getattr(self, "_stop_armed", False):
-            self._stop_armed = True
-            if button is not None and button.winfo_exists():
-                button.configure_text("Stop again")
-            self._note("press Stop again to quit — the models unload, so starting again takes about 25 seconds")
-            self.root.after(6000, self._disarm_stop)
-            return
-        self._disarm_stop()
-        self._stop()
-
-    def _disarm_stop(self) -> None:
-        self._stop_armed = False
-        button = self.parts.get("stop_bar")
-        if button is not None and button.winfo_exists():
-            button.configure_text("Stop")
-
     def _toggle_pause(self) -> None:
-        """The one button in the bar. Start when nothing is running,
-        Resume when it is paused, Pause when it is listening — three
-        words on one key, because they are never available at the same
-        time and three buttons would be two lies."""
+        """The button that is in the bar in every state. Start when
+        nothing is running, Resume when it is paused, Pause when it is
+        listening — three words on one key, because they are never
+        available at the same time and three buttons would be two lies."""
         if not self.status:
             self._start()
             return
@@ -6853,13 +6916,10 @@ class Dashboard:
         self.parts["hint"].config(text=f"hold {dictate}" if dictate != "off"
                                   else "no dictation key set")
 
-        run = self.parts.get("run")
-        if run is not None and run.winfo_exists():
-            run.configure_text("Start" if not self.status else
-                               "Resume" if self.status.get("paused")
-                               else "Pause")
-
-        self._paint_bar_screens()
+        # Which buttons the bar holds and what each of them says are ONE
+        # decision — the word on the run key is the only thing that tells
+        # Start's state from Pause's — so both live in one method.
+        self._paint_bar_buttons()
         {"Home": self._poll_waiting,
          "Corrections": self._poll_corrections,
          "Problems": self._poll_problems,
