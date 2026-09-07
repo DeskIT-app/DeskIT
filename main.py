@@ -64,6 +64,45 @@ transcript_log = logging.getLogger("transcripts")
 # pythonw.exe (the windowless launcher) gives the process no stdout at all.
 HAS_CONSOLE = sys.stdout is not None
 
+# Any string, as long as it is OURS and stays put. It is the same shape as
+# the one dashboard.py carries and deliberately NOT the same value: the
+# dashboard is the control window, this is the app itself, and one identity
+# across both would let the shell fold them into a single taskbar button
+# whose relaunch command opens whichever of the two it saw first.
+APP_ID = "Yoav.DeskIT"
+
+
+def claim_app_identity() -> None:
+    """Say who this process is, before it puts anything on screen.
+
+    Without it the process inherits pythonw.exe's identity: Windows groups
+    whatever it shows under the interpreter and hands it pythonw's generic
+    icon, which reads as "some script is running" rather than as this
+    program. dashboard.py has claimed an identity since it first had a
+    window (_claim_taskbar_identity there); the background app never has,
+    and the background app is the half of DeskIT that is ALWAYS up.
+
+    It has to happen before the first window exists, because the identity
+    is read when the taskbar button is made and setting it afterwards
+    changes nothing. That is why it is called here at the top of main()
+    and not from overlay.py, which does not run until there is already
+    something to show — and why it is not conditional on which mode the
+    arguments ask for: --lookup puts a popup on screen too.
+
+    What this does NOT do is repaint Task Manager's process list. That
+    column draws the EXECUTABLE's icon, and the executable is pythonw.exe
+    until the day this ships as an .exe of its own. Measured 2026-09-07:
+    pythonw.exe's FileDescription is the literal string "Python", which is
+    the name that list prints beside it.
+    """
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    except Exception as e:
+        # Older Windows, or no shell at all: nothing here is worth
+        # refusing to start over, but a silent miss is indistinguishable
+        # from never having asked.
+        log.debug("could not claim the app identity: %r", e)
+
 # Keys that live INSIDE a config section, and where set_values must write
 # them. config.toml keeps one spelling of each key, so the dotted path is
 # section plus the key's own name — which is not always the dataclass field
@@ -5229,6 +5268,11 @@ def is_elevated() -> bool:
 
 
 def main() -> int:
+    # Before argparse, because every mode below can end up showing a
+    # window — the splash, a lookup popup, the setup wizard, a fatal
+    # message box — and the identity is only read once, when the first
+    # one is made.
+    claim_app_identity()
     parser = argparse.ArgumentParser(
         description="Hebrew push-to-talk dictation (hold hotkey, speak, "
                     "release).")

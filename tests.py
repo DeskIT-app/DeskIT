@@ -4953,6 +4953,35 @@ def test_the_window_carries_the_real_icon() -> None:
             pass
 
 
+def test_the_background_app_says_who_it_is_before_it_shows_anything() -> None:
+    """The dashboard has claimed an app identity since it first had a
+    window; main.py — the half of DeskIT that is ALWAYS up — never did, so
+    everything it put on screen was grouped under the interpreter and wore
+    pythonw's generic icon.
+
+    Asserted against the source rather than by calling it, and that is on
+    purpose: SetCurrentProcessExplicitAppUserModelID takes only ONCE per
+    process, so in a suite that also stands up a Dashboard the answer you
+    read back depends on which test ran first. The two things worth
+    pinning are that the call exists and that it is early enough — the
+    identity is read when the FIRST window is made, and by the time
+    argparse has chosen a mode, --lookup or --setup may already have one.
+    """
+    import dashboard as dash
+    import main as main_mod
+
+    source = (Path(__file__).resolve().parent / "main.py").read_text("utf-8")
+    assert "SetCurrentProcessExplicitAppUserModelID" in source, \
+        "the background app never tells Windows who it is"
+    assert main_mod.APP_ID, "the app has no identity string"
+    assert main_mod.APP_ID != dash.APP_ID, \
+        ("the app and its control window must not share one identity — the "
+         "shell would fold them into one button with one relaunch command")
+    body = source[source.index("def main() -> int:"):]
+    assert body.index("claim_app_identity()") < body.index("ArgumentParser"), \
+        "the identity is claimed too late — a window may already exist"
+
+
 def test_the_key_dialog_always_undoes_its_own_pause() -> None:
     """It pauses the app to listen for a key. Closing the MAIN window
     destroys the dialog as a child WITHOUT running its close handler, so

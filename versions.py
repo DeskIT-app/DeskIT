@@ -307,6 +307,22 @@ def _gui() -> int:
     root.attributes("-topmost", True)
     root.configure(bg="#1e1f22")
 
+    # This is a plain Tk window with a real taskbar button, opened from
+    # Versions.vbs as its own pythonw process — so with no icon hung on it
+    # the button wore the interpreter's generic Python face, the same thing
+    # dashboard.py fixed for itself. Guarded and optional, like pick_face
+    # above: dashboard.py is nothing but constants and functions at import
+    # time, but this dialog opens whether or not that stays true.
+    # update_idletasks first, because WM_SETICON on an unrealised window
+    # reports success and does nothing (dashboard._set_window_icon says so).
+    try:
+        import dashboard
+        root.update_idletasks()
+        dashboard._set_window_icon(root)
+        dashboard._dark_caption(root)
+    except Exception:
+        pass                      # cosmetic: never a reason not to choose
+
     chosen = tk.StringVar(value=current_branch())
     status = tk.StringVar(value="")
 
