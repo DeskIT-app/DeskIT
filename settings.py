@@ -828,6 +828,13 @@ _MORE: tuple[Friendly, ...] = (
     Friendly("pause_hotkey", "The pause key",
              "Tap it and every key here goes quiet; tap it again and they "
              "all come back."),
+    # -- [dot]
+    Friendly("dot.x", "Where you last dragged the dot, across",
+             "Set by the Move the dot button above, not by hand. Counted "
+             "from the left edge of the screen."),
+    Friendly("dot.y", "Where you last dragged the dot, down",
+             "Set by the Move the dot button above, not by hand. Counted "
+             "from the top edge of the screen."),
     # -- [hint]
     Friendly("hint.x", "Where you last dragged the card, across",
              "Counted from the left edge of the screen."),

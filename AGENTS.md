@@ -44,7 +44,17 @@ screens and one door to the window. **It opens only on the key press; the
 same press or Esc closes it; never on hover, never on passing the
 corner** — that is the owner's rule, verbatim, and it is what the corner
 being predictable depends on. Settings, the keys and the history are
-deliberately not on it: those are things you sit down to.
+deliberately not on it: those are things you sit down to. Since
+2026-09-07 there is a fifth door out of it: **a press of a mouse button
+anywhere outside the panel closes it** — his ask, verbatim, "if I press
+outside of it, like on Google or something, the small tab that opens
+when I press the dot will disappear, so I will not need to press the dot
+again or the X". Two things about how that is done are load-bearing and
+both are in shelf.py's docstring: the window is `WS_EX_NOACTIVATE` and
+never has the focus to lose, so it is a GetAsyncKeyState poll and not a
+focus event; and the STATUS DOT'S OWN SQUARE is spared, because the dot
+is already a toggle and letting the watch see that press would close the
+panel and let the dot reopen it in the same click.
 
 **The dashboard** (`dashboard.py` + `ui.py` + `widgets.py`) is four
 places along a 56 px top bar — no rail, since 2026-09-07:
@@ -712,14 +722,50 @@ back.
   `test_the_dot_glows_to_nothing_inside_its_own_window` walks the whole
   border of every state) — and check it by rendering, never by the
   radius alone: `Dither=True` and antialiasing both reach past a number.
-  Related, and the trap that is easy to re-arm: **the dot's corner is
-  decided ONCE, in `[dot] corner`**, and three other things follow it —
-  `skin\dot.place` (the window), `skin\boot._landing` (where the reveal's
-  light lands), and `overlay.HintCard.origin` with `dot_corner=` (where
-  the shelf and the key card stop short of it). `[hint]` and `[shelf]`
-  say `corner = "dot"` and `config.load` resolves the word, so a Config
-  never carries it. Hard-coding "top-right" anywhere in that chain puts a
-  card on the dot or lands the light in an empty corner.
+  Related, and the trap that is easy to re-arm: **where the dot is has
+  ONE answer and three followers.** The answer used to be `[dot] corner`
+  alone, read once at startup; since 2026-09-07 it is `[dot] x/y` when
+  they are set (`-100000` in both means "never dragged, use the corner")
+  and the corner otherwise, and the one function that says so is
+  `skin\dot.spot` — which is `overlay.dot_spot`, the same arithmetic
+  given a different box, so the glass dot and the Tk fallback cannot
+  disagree. `skin\dot.place` is still the corner HALF of it and is what
+  a caller with no saved position to consider asks for. The three
+  followers: `skin\dot.spot` (the window itself), `skin\boot._landing`
+  (where the reveal's light lands — pass it `x, y` or the light arrives
+  in a corner the dot has left), and `overlay.HintCard.origin` with
+  `dot_corner=` (where the shelf and the key card stop short of it).
+  `[hint]` and `[shelf]` say `corner = "dot"` and `config.load` resolves
+  the word, so a Config never carries it. Hard-coding "top-right"
+  anywhere in that chain puts a card on the dot or lands the light in an
+  empty corner.
+
+  **The cards still follow the CORNER, not the dragged dot** — known,
+  and left that way on purpose. Drag the dot into the middle of the
+  screen and the shelf still opens in `[dot] corner`, because
+  `HintCard.origin` reserves `DOT_ROOM` in a CORNER and there is no
+  agreed answer yet for "beside a dot that is nowhere near an edge". The
+  shelf remembers its own dragged position (`[shelf] x/y`), so the
+  workaround is to drag it too. Anything that changes this has to answer
+  the placement question for all four cards at once.
+- **Moving the dot is a LIVE command, and the two gestures on the disc
+  live on different Windows messages.** "Move the dot" (Settings ›
+  Cards) goes down `control.py` as `dot` / `do = move`, the app arms
+  `overlay.StatusDot.move()` for `DOT_MOVE_S` seconds, and the dot's
+  own painter picks that up on its next frame — nothing restarts, which
+  is the whole of the owner's complaint. While it is armed the disc
+  answers **HTCAPTION** instead of HTCLIENT, so Windows runs the drag
+  and the press arrives as `WM_NCLBUTTONDOWN`; the shelf's toggle is on
+  `WM_LBUTTONDOWN`, which Windows never sends for a caption pixel. That
+  is why "a drag must not fire the click" needed no travelled-far-enough
+  test here, unlike the notify card. The glow answers HTTRANSPARENT in
+  BOTH modes — a temporary mode does not get to make the light take
+  clicks away from the window underneath. Move mode is a DEADLINE and
+  not a flag because the dashboard hides itself for it: something has to
+  end the wait when he presses the button and walks away, or he is left
+  with a dot that will not open the shelf and a control window he cannot
+  see. The dashboard has its own longer backstop (`DOT_WAIT_S`) for an
+  app that stops answering mid-drag.
 - **A glass hook is named `<thing>_run`.** The shelf's is
   `skin.shelf_run(card)`, registered in `skin\__init__.py` exactly the
   way `notify_run` is; `tests.py:14791` enforces the naming rule, and a

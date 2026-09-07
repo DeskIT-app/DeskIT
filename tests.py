@@ -3187,6 +3187,166 @@ d.stop(); print('ok')
     assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
 
 
+def test_the_real_dot_window_moves_while_the_app_keeps_running() -> None:
+    """The whole of bug one, asked of the REAL window.
+
+    "The dot — I want it to be movable, and without needing to open and
+    close the app" (2026-09-07). So nothing here restarts anything: one
+    StatusDot is started ONCE and then, on the live window, this checks
+    that a saved position is where the window actually is; that arming
+    move mode turns the disc's WM_NCHITTEST answer from HTCLIENT into
+    HTCAPTION while every other pixel stays HTTRANSPARENT; that a click
+    on the disc cannot open the shelf while it is armed; that "back to
+    the corner" walks the same window home without a restart; and that
+    the dot reports its own rectangle, which is the square the shelf must
+    not close for.
+
+    In a subprocess like every other window test here: the dot owns a
+    long-lived thread, and burying one from the suite's main thread is
+    the Tcl_AsyncDelete abort those tests exist to avoid.
+    """
+    import subprocess
+    here = Path(__file__).resolve().parent
+    script = r"""
+import ctypes, ctypes.wintypes as w, time, overlay
+clicks = []
+saved = []
+d = overlay.StatusDot(x=520, y=340, on_change=saved.append)
+d.on_click = lambda: clicks.append(1)
+d.start(); time.sleep(1.0)
+u = ctypes.WinDLL('user32')
+u.SendMessageW.restype = ctypes.c_longlong
+u.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t,
+                           ctypes.c_longlong]
+class R(ctypes.Structure):
+    _fields_ = [('l',ctypes.c_int),('t',ctypes.c_int),
+                ('r',ctypes.c_int),('b',ctypes.c_int)]
+hits = []
+def cb(h, l):
+    if u.IsWindowVisible(h):
+        rc = R(); u.GetWindowRect(h, ctypes.byref(rc))
+        if 10 < rc.r-rc.l < 60 and 10 < rc.b-rc.t < 60:
+            hits.append((h, rc.l, rc.t, rc.r, rc.b))
+    return True
+u.EnumWindows(ctypes.WINFUNCTYPE(
+    ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)(cb), None)
+assert hits, 'no dot window'
+hwnd, left, top, right, bottom = hits[0]
+assert (left, top) == (520, 340), ('a saved position was ignored', left, top)
+assert d.rect == (left, top, right, bottom), ('the dot does not say where '
+                                              'it is', d.rect)
+def lp(x, y): return (int(y) & 0xFFFF) << 16 | (int(x) & 0xFFFF)
+cx, cy = (left + right) // 2, (top + bottom) // 2
+def hit(x, y): return u.SendMessageW(hwnd, 0x0084, 0, lp(x, y))
+assert hit(cx, cy) == 1, ('the disc is not a button', hit(cx, cy))
+# ARM IT — no restart, no new window, the same hwnd throughout
+assert d.move(seconds=20) is True
+time.sleep(0.3)
+assert hit(cx, cy) == 2, ('the disc does not hand the drag to Windows',
+                          hit(cx, cy))
+assert hit(cx + 14, cy) == -1, 'the glow took the drag'
+assert hit(left + 1, top + 1) == -1, 'the corner took the drag'
+u.SendMessageW(hwnd, 0x0201, 1, lp(cx - left, cy - top)); time.sleep(.2)
+assert clicks == [], ('a press mid-move opened the shelf', clicks)
+# THE RELEASE. WM_NCLBUTTONUP is what Windows sends when its move loop
+# lets go, and it sends it whether or not the window went anywhere: this
+# is the press he thought better of, so nothing is written - and move
+# mode is over either way, because he asked for ONE move and a disc left
+# armed is a disc that cannot open the shelf.
+#
+# WHERE THE DRAG ITSELF IS TESTED, AND WHY NOT HERE. The drag is
+# Windows' own modal loop and it needs real mouse input; and this window
+# is a layered one whose position is re-applied by every
+# UpdateLayeredWindow, so a SetWindowPos standing in for a drag is undone
+# by the next frame before the message can arrive. What that would have
+# covered is covered without a window instead:
+# test_the_dot_can_be_dropped_anywhere_and_is_remembered has the clamp
+# and test_move_mode_expires_and_a_drop_writes_one_pair_of_lines has
+# placed() and the write. What is checked HERE is the wiring - that the
+# message reaches the dot at all, and what it does when it does.
+u.SendMessageW(hwnd, 0x00A2, 2, lp(cx, cy)); time.sleep(.4)
+assert saved == [], ('a press that moved nothing was saved', saved)
+assert d.moving() is False, 'a release has to disarm it'
+assert d.rect[:2] == (520, 340), ('the dot wandered on a release that '
+                                  'moved nothing', d.rect)
+u.SendMessageW(hwnd, 0x0201, 1, lp(cx - left, cy - top)); time.sleep(.2)
+assert clicks == [1], ('the disc stopped being a button', clicks)
+# and home again, live
+d.to_corner(); time.sleep(0.4)
+rc = R(); u.GetWindowRect(hwnd, ctypes.byref(rc))
+work = w.RECT(); u.SystemParametersInfoW(0x0030, 0, ctypes.byref(work), 0)
+assert rc.r in (work.right - 8, work.right - 10), ('not back at the right '
+                                                   'margin', rc.r, work.right)
+assert rc.b in (work.bottom - 4, work.bottom - 6), ('not back above the '
+                                                    'taskbar', rc.b)
+assert saved == [{'x': -100000, 'y': -100000}], saved
+d.stop()
+assert d.rect is None, 'a dot with no window still claims a square'
+print('ok')
+"""
+    out = subprocess.run([sys.executable, "-c", script], cwd=str(here),
+                         capture_output=True, encoding="utf-8",
+                         errors="replace", timeout=90)
+    assert out.returncode == 0, (out.returncode, out.stdout, out.stderr)
+    assert "ok" in out.stdout, out.stdout
+    assert "Tcl_AsyncDelete" not in (out.stderr or ""), out.stderr
+
+
+def test_the_dot_still_moves_with_the_skin_folder_gone() -> None:
+    """skin\\'s promise for the dot, and it is not only about pixels.
+
+    Delete the folder and the dot comes back as a chroma-keyed Tk oval —
+    which is a different window, a different size and a different way of
+    taking the mouse. What must NOT change is where it sits: a position
+    dropped on the glass path is honoured here too (overlay.dot_spot is
+    one arithmetic with two boxes), the disc still opens the shelf, and
+    while it is waiting to be dragged that same press starts a drag
+    instead of opening anything.
+
+    HD_SKIN=0 takes exactly that road, in a subprocess like every other
+    window test here.
+    """
+    _run_window_script('''
+import os, time
+os.environ["HD_SKIN"] = "0"
+
+import skin
+skin.reset()
+assert skin.on() is False, "HD_SKIN=0 must switch the skin off"
+
+import overlay
+
+clicks = []
+saved = []
+d = overlay.StatusDot(x=430, y=260, on_change=saved.append)
+d.on_click = lambda: clicks.append(1)
+d.start()
+for _ in range(150):
+    if d.rect is not None:
+        break
+    time.sleep(0.02)
+assert d.rect is not None, "the flat dot never mapped"
+assert d.rect[:2] == (430, 260), ("a saved position was ignored", d.rect)
+box = d.rect[2] - d.rect[0]
+assert 10 < box < 40, ("the fallback dot changed size", box)
+# and home again, live, with no restart
+d.to_corner()
+for _ in range(150):
+    if d.rect[:2] != (430, 260):
+        break
+    time.sleep(0.02)
+assert d.rect[:2] != (430, 260), "Back to the corner did not move it"
+assert saved == [{"x": -100000, "y": -100000}], saved
+assert d.moving() is False
+d.move(seconds=20)
+assert d.moving() is True
+d.stop()
+assert d.rect is None and d.moving() is False, \\
+    "a dot with no window still claims a square, or is still armed"
+print("ok")
+''')
+
+
 def test_the_dot_is_a_button_only_on_its_disc() -> None:
     """The arithmetic behind the probe above, checked without a window:
     HTCLIENT inside the disc plus two pixels, HTTRANSPARENT at 14 px and
@@ -17618,10 +17778,314 @@ def test_the_dot_section_decides_the_corner_for_every_card_beside_it(
     # main.py hands the dot's corner to the dot and to both cards, and
     # points the dot's click at the shelf's toggle
     src = (Path(__file__).resolve().parent / "main.py").read_text("utf-8")
-    assert "StatusDot(corner=self._dot_corner)" in src
+    assert "corner=self._dot_corner," in src
     assert "self.dot.on_click = self._tap_shelf" in src
     assert src.count("dot_corner=self._dot_corner") >= 3, \
         "a card is built without the dot's corner"
+    # The cards keep following the CORNER even after the dot has been
+    # dragged out of it: `[dot] x/y` moves the dot and nothing else, so
+    # `corner` is still the one word the shelf and the key card read.
+    moved_dot = config_mod.load(Path(sys.path[0]) / "config.toml")
+    moved_dot = dataclasses.replace(
+        moved_dot, dot=dataclasses.replace(moved_dot.dot, x=40, y=40))
+    assert moved_dot.hint.corner == moved_dot.dot.corner
+    assert moved_dot.shelf.corner == moved_dot.dot.corner
+
+
+def test_the_dot_can_be_dropped_anywhere_and_is_remembered() -> None:
+    """`[dot] x/y` beats `[dot] corner`, and it is the same arithmetic on
+    both paint paths.
+
+    The owner, 2026-09-07: "the dot — I want it to be movable, and
+    without needing to open and close the app". The remembering half of
+    that is here — the corner is what a dot that has never been dragged
+    gets, a dropped position wins, and the whole 38 px square is kept on
+    the desktop, because unlike a card there is no corner of a dot you
+    can grab when the rest of it is off screen.
+    """
+    import shutil
+
+    work = (0, 0, 2560, 1392)               # this machine: a 48 px taskbar
+    desktop = (-1920, 0, 4480, 1440)        # a second screen on the LEFT
+    box, margin = (38, 38), (8, 4)
+    # never dragged: the corner, with the dot's own margins
+    assert overlay_mod.dot_spot("bottom-right", work, box, margin) == \
+        (2560 - 38 - 8, 1392 - 38 - 4)
+    assert overlay_mod.dot_spot("top-right", work, box, margin) == \
+        (2560 - 38 - 8, 4)
+    # dropped: exactly there, negatives included — the monitor on the
+    # left is a real place and -1 was never a safe sentinel
+    for at in ((1000, 500), (-1900, 12), (-1, 0), (0, 0), (-1920, 1402)):
+        assert overlay_mod.dot_spot("bottom-right", work, box, margin,
+                                    at[0], at[1], desktop) == at, at
+    # dropped somewhere that is no longer there, or half off an edge:
+    # back where he can reach it, and the WHOLE square, not sixty pixels
+    # of it — there is no corner of a 38 px dot to grab
+    for at, want in (((9999, 9999), (-1920 + 4480 - 38, 1440 - 38)),
+                     ((-4000, -50), (-1920, 0)),
+                     ((-1, -1), (-1, 0))):
+        got = overlay_mod.dot_spot("bottom-right", work, box, margin,
+                                   at[0], at[1], desktop)
+        assert got == want, (at, got, want)
+    # half a position is no position: both have to be past the sentinel
+    unset = overlay_mod.HINT_UNSET
+    assert overlay_mod.dot_spot("top-right", work, box, margin, 900, unset,
+                                desktop) == (2560 - 38 - 8, 4)
+
+    skin = _skin_or_skip()
+    if skin is not None and skin.on():
+        from skin import dot as skin_dot
+        assert skin_dot.UNSET == overlay_mod.HINT_UNSET == \
+            config_mod.HINT_UNSET
+        # `place` is still the corner half and is what boot.py asks for a
+        # landing; `spot` is the whole rule and they agree when nothing
+        # was ever dragged
+        assert skin_dot.spot("bottom-right", work) == \
+            skin_dot.place("bottom-right", work)
+        assert skin_dot.spot("bottom-right", work, 1000, 500, desktop) == \
+            (1000, 500, 38, 38)
+        d = skin_dot.Dot("bottom-right", x=640, y=210)
+        assert (d.x, d.y) == (640, 210) and d.moving is False
+        # and the boot light lands on the dot wherever the dot is
+        from skin import boot as boot_mod
+        layer = (0, 0, 1920, 1080)
+        assert boot_mod._landing("bottom-right", layer, work, 640, 210,
+                                 desktop) == (640 + 19.0, 210 + 19.0)
+        assert boot_mod._landing("bottom-right", layer, work) == \
+            boot_mod._landing("bottom-right", layer, work, None, None)
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-dot-move-"))
+    try:
+        path = tmp / "config.toml"
+        # the shipped file must not carry somebody's dragged dot
+        shipped = config_mod.load(Path(sys.path[0]) / "config.toml")
+        assert shipped.dot.x == shipped.dot.y == config_mod.HINT_UNSET
+        assert shipped.dot.moved() is False
+        path.write_text("[dot]\nx = 1204\ny = 388\n", "utf-8")
+        cfg = config_mod.load(path)
+        assert (cfg.dot.x, cfg.dot.y) == (1204, 388) and cfg.dot.moved()
+        # one of the two set is refused, and said as such
+        for line in ("x = 1204\n", "y = 388\n"):
+            path.write_text(f"[dot]\n{line}", "utf-8")
+            try:
+                config_mod.load(path)
+                assert False, f"[dot] {line.strip()} alone was accepted"
+            except config_mod.ConfigError as e:
+                assert "dot.x" in str(e) and "dot.y" in str(e), (line, e)
+        # and the drop is written with the line editor that keeps the
+        # comments — this file's comments are the measurements in it
+        base = (Path(__file__).resolve().parent / "config.toml"
+                ).read_text("utf-8")
+        path.write_text(base, "utf-8")
+        before = base.count("#")
+        config_mod.set_values(path, {"dot.x": -369, "dot.y": 438})
+        assert path.read_text("utf-8").count("#") == before, "comments lost"
+        assert config_mod.load(path).dot.x == -369
+        config_mod.set_values(path, {"dot.x": config_mod.HINT_UNSET,
+                                     "dot.y": config_mod.HINT_UNSET})
+        assert config_mod.load(path).dot.moved() is False, \
+            "back to the corner has to clear both lines"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_dot_is_dragged_by_its_disc_and_never_by_its_glow() -> None:
+    """Move mode changes ONE pixel's answer and nothing else.
+
+    The disc says HTCAPTION instead of HTCLIENT, which is what makes
+    Windows do the drag — and, because that press arrives as
+    WM_NCLBUTTONDOWN, it is also what makes it impossible for one drag to
+    also open the shelf. Every other pixel answers HTTRANSPARENT in BOTH
+    modes: the glow, the ring and the corners let the mouse through to
+    whatever is underneath, which is the rule the top-right corner taught
+    this app and which a temporary mode does not get to suspend.
+
+    And the window still ends at alpha 0 all the way round while it is
+    waiting to be dragged, because the ring that says so is drawn wider:
+    a lit border IS the square the owner complained about.
+    """
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    from skin import dot as skin_dot
+    from skin.glass import HTCAPTION, HTCLIENT, HTTRANSPARENT
+
+    d = skin_dot.Dot()
+    c = skin_dot.BOX / 2
+    assert d.moving is False, "a dot nobody armed is a button"
+    assert d.hit(c, c) == HTCLIENT
+    d.moving = True
+    assert d.hit(c, c) == HTCAPTION, "the disc does not hand over the drag"
+    assert d.hit(c + 7, c) == HTCAPTION and d.hit(c, c - 7) == HTCAPTION
+    for x, y in ((c + 8, c), (c + 14, c), (0, 0), (0, 37), (37, 0),
+                 (37, 37)):
+        assert d.hit(x, y) == HTTRANSPARENT, (
+            f"the glow took the drag at {x}, {y} — it is click-through in "
+            f"both modes or the window underneath loses clicks")
+    d.moving = False
+    assert d.hit(c, c) == HTCLIENT, "and it is a button again afterwards"
+
+    try:
+        import skia
+    except Exception:
+        return
+    B = skin_dot.BOX
+    for moving in (False, True):
+        shown = skin_dot.Dot()
+        shown.moving = moving
+        surface = skia.Surface(B, B)
+        canvas = surface.getCanvas()
+        for frame in range(14):
+            shown.draw(canvas, frame * 22.0)
+        alpha = surface.makeImageSnapshot().toarray(
+            colorType=skia.kRGBA_8888_ColorType)[:, :, 3]
+        border = [int(alpha[0].max()), int(alpha[B - 1].max()),
+                  int(alpha[:, 0].max()), int(alpha[:, B - 1].max())]
+        assert border == [0, 0, 0, 0], (
+            f"waiting to be dragged, the dot paints its own edge {border}")
+    # the ring that says "waiting" is at the grab radius, not out in the
+    # glow: what lights up has to be what can actually be pressed
+    assert skin_dot.MOVE_W > 1.0
+    assert skin_dot.CORE * 0.5 + 3.0 + skin_dot.MOVE_W / 2 < skin_dot.HALO_R
+
+
+def test_move_mode_expires_and_a_drop_writes_one_pair_of_lines() -> None:
+    """The dot's half of "the desk disappears".
+
+    move() is a DEADLINE, not a flag, because the window that hid itself
+    to let him drag is in another process: if he presses the button and
+    walks away, something has to end the wait, and this is it. A drop
+    writes x and y together — config.load refuses half a position — and
+    "Back to the corner" writes the sentinel back into both.
+    """
+    saved: list = []
+    d = overlay_mod.StatusDot(on_change=saved.append)
+    assert d.moving() is False and d.dragged() is False
+    assert d.move() is False, "there is nothing to drag before it starts"
+    d._thread = threading.current_thread()          # pretend it is up
+    assert d.move(seconds=30) is True and d.moving() is True
+    d.rest()
+    assert d.moving() is False, "rest() ends it at once"
+    # It is a deadline on the monotonic clock, so it runs out by itself —
+    # checked by moving the deadline rather than by sleeping through it,
+    # since the floor is a whole second and a suite does not need to wait
+    # one out to know what a deadline is.
+    d.move(seconds=0.01)
+    assert d.moving() is True
+    assert d._move_until - time.monotonic() > 0.5, \
+        "a deadline shorter than a second is not one anybody could use"
+    d._move_until = time.monotonic() - 0.01
+    assert d.moving() is False, "move mode has to expire on its own"
+
+    d.placed(1204, 388)
+    assert (d.x, d.y) == (1204, 388) and d.dragged()
+    assert d._replace.is_set(), "the painter is told to go there"
+    d._replace.clear()
+    d.placed(1204, 388)                             # the same drop again
+    assert saved == [{"x": 1204, "y": 388}], (
+        "a release arrives as more than one message and this writes a file")
+    assert d._replace.is_set() is False
+    d.to_corner()
+    assert d.dragged() is False and d.state()["dragged"] is False
+    assert saved[-1] == {"x": overlay_mod.HINT_UNSET,
+                         "y": overlay_mod.HINT_UNSET}, saved
+    d.to_corner()                                   # already home
+    assert len(saved) == 2, saved
+    # a config.toml that cannot be written must never kill the painter
+    boom = overlay_mod.StatusDot(
+        on_change=lambda _f: (_ for _ in ()).throw(OSError("read-only")))
+    boom.placed(10, 20)
+    assert (boom.x, boom.y) == (10, 20)
+
+    # main.py: the command, the save, and the state on the status poll
+    import main as main_mod
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg = config_mod.load(Path(sys.path[0]) / "config.toml")
+    app.config_path = Path(sys.path[0]) / "config.toml"
+    app.dot = overlay_mod.StatusDot(on_change=app._save_dot)
+    app.dot._thread = threading.current_thread()
+    app._say = lambda *a, **k: None
+    written: list = []
+    real = config_mod.set_values
+    main_mod.config_mod.set_values = lambda path, updates: written.append(
+        dict(updates))
+    try:
+        reply = app.control_command("dot", {"do": "move"})
+        assert reply["ok"] and reply["dot"]["moving"] is True, reply
+        app.dot.placed(640, 210)
+        assert written == [{"dot.x": 640, "dot.y": 210}], written
+        assert app.cfg.dot.x == 640, "the live Config has to move too"
+        reply = app.control_command("dot", {"do": "corner"})
+        assert reply["ok"] and reply["dot"]["dragged"] is False, reply
+        assert written[-1] == {"dot.x": config_mod.HINT_UNSET,
+                               "dot.y": config_mod.HINT_UNSET}, written
+        bad = app.control_command("dot", {"do": "sideways"})
+        assert bad["ok"] is False and "sideways" in bad["error"], bad
+    finally:
+        main_mod.config_mod.set_values = real
+    # a [dot] with nowhere to put x and y keeps the drag for this run
+    # rather than raising on the dot's own thread
+    plain = dataclasses.make_dataclass("PlainDot", [("corner", str)],
+                                       frozen=True)
+    app.cfg = dataclasses.replace(app.cfg, dot=plain("bottom-right"))
+    app._save_dot({"x": 1, "y": 2})              # must not raise
+
+
+def test_the_shelf_closes_when_he_presses_somewhere_else() -> None:
+    """The fifth door, and the trap it had to be written around.
+
+    The owner, 2026-09-07: "when I press the dot and the screen opens — I
+    want that if I press outside of it, like on Google or something, the
+    small tab that opens when I press the dot will disappear, so I will
+    not need to press the dot again or the X."
+
+    A press on the DOT is a press outside the panel and the dot is
+    already a toggle, so seeing it as away would close the panel and let
+    the dot reopen it in the same gesture. The panel's own buttons need
+    no exception at all — they are inside its rect.
+    """
+    import shelf as shelf_mod
+
+    panel = (100, 200, 400, 700)
+    dot = (2514, 1350, 2552, 1388)
+    # the panel itself, and every button on it, is not away
+    for at in ((100, 200), (250, 450), (400, 700), (390, 690)):
+        assert shelf_mod.away_from(at, panel, [dot]) is False, at
+    # the dot is spared by name
+    for at in ((2514, 1350), (2533, 1369), (2552, 1388)):
+        assert shelf_mod.away_from(at, panel, [dot]) is False, at
+    # and everything else is away — including the shadow margin just
+    # outside the panel, which is click-through anyway
+    for at in ((99, 200), (401, 700), (960, 540), (-1200, 300)):
+        assert shelf_mod.away_from(at, panel, [dot]) is True, at
+        assert shelf_mod.away_from(at, panel) is True, at
+    # nothing on screen: nothing to close. That is also what a HUSHED
+    # panel looks like — the screenshot selector is up and the press is
+    # somebody dragging a selection.
+    assert shelf_mod.away_from((960, 540), None, [dot]) is False
+    assert shelf_mod.away_from((960, 540), panel, [None]) is True
+
+    # the watcher is armed on start and asks about the two buttons that
+    # mean "I am doing something over there"
+    assert shelf_mod.AWAY_BUTTONS == (0x01, 0x02), shelf_mod.AWAY_BUTTONS
+    assert 0 < shelf_mod.AWAY_S <= 0.05, shelf_mod.AWAY_S
+    closed: list = []
+    card = shelf_mod.ShelfCard(on_away=lambda: closed.append("away"),
+                               spare=lambda: [dot])
+    assert card._on_away is not None and card._spare() == [dot]
+
+    # main.py wires it to the same door the key, Esc and the X use, and
+    # spares the dot's own square
+    import main as main_mod
+    src = (Path(__file__).resolve().parent / "main.py").read_text("utf-8")
+    assert src.count("on_away=self._shelf_close") == 2, \
+        "both places that build the shelf have to arm the fifth door"
+    assert src.count("spare=self._dot_squares") == 2
+    app = main_mod.App.__new__(main_mod.App)
+    app.dot = overlay_mod.StatusDot()
+    assert app._dot_squares() == [], "no dot on screen, nothing to spare"
+    app.dot.rect = dot
+    assert app._dot_squares() == [dot]
 
 
 def test_a_saved_card_position_keeps_every_comment_in_the_config() -> None:
@@ -18315,6 +18779,109 @@ def test_every_tab_says_it_in_plain_words() -> None:
         board._finish_settings()
         assert "latch_max_seconds" in board.parts["rows"], \
             "the search no longer reads the file's own words"
+
+
+def test_the_cards_page_has_the_button_that_moves_the_dot() -> None:
+    """"Put a marker, like a button, and then I press 'set'" — and this
+    is where it went: Settings › Cards, over the [dot] rows, because the
+    two lines it writes (`dot.x`, `dot.y`) are folded away on that same
+    card and a button he can find beats a number he would have to type.
+
+    It needs the RUNNING app — the dot is a window that process owns — so
+    with nothing running both buttons are disabled and the card says why
+    rather than looking broken. Pressing it sends `dot` / `do = move`
+    down the control pipe, and this window hides itself only once the app
+    has ANSWERED, so a refusal never costs him a window that vanished for
+    nothing.
+    """
+    import control as control_mod
+
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Settings")
+        board._settings_go("Cards")
+        board._finish_settings()
+        said = _settings_words(board)
+        assert "dot" in said.lower() or "Move the dot" in said, said[:400]
+        button = board.parts.get("dot_move")
+        assert button is not None, "no Move the dot button on the Cards page"
+        assert board.parts["dot_home"] is not None
+        # A ui.Card's body is `h - 2 * pad`, and a widget placed past
+        # that is simply not on screen — which is invisible in a test
+        # that only asks whether the widget exists, and invisible to
+        # anyone building the card on a desktop nobody is looking at.
+        board.root.update()
+        for name in ("dot_where", "dot_hint", "dot_move", "dot_home"):
+            part = board.parts[name]
+            body = part.master
+            bottom = part.winfo_y() + part.winfo_reqheight()
+            assert bottom <= body.winfo_height(), (
+                f"{name} ends {bottom - body.winfo_height()} px past the "
+                f"bottom of the card it is on")
+            right = part.winfo_x() + part.winfo_reqwidth()
+            assert right <= body.winfo_width(), (
+                f"{name} ends {right - body.winfo_width()} px past the "
+                f"right edge of the card it is on")
+        # nothing running: both off, and the card says so instead of
+        # pretending the button would do something
+        assert button._enabled is False, "it offered to move a dot that " \
+                                         "is not there"
+        assert board.parts["dot_home"]._enabled is False
+        assert "NOT RUNNING" in board.parts["dot_where"].cget("text")
+        board._move_dot()
+        assert "start dictation first" in board._toast_text, board._toast_text
+
+        # and with the app answering: the command, then the window hides
+        sent: list = []
+        real = control_mod.send
+
+        def fake(command, timeout_ms=2000, **args):
+            sent.append((command, args))
+            return {"ok": True, "dot": {"corner": "bottom-right",
+                                        "x": -100000, "y": -100000,
+                                        "dragged": False, "moving": True}}
+
+        control_mod.send = fake
+        try:
+            board.status = {"stage": "running",
+                            "dot": {"corner": "bottom-right", "x": -100000,
+                                    "y": -100000, "dragged": False,
+                                    "moving": False}}
+            board.running = True
+            board._paint_dot()
+            assert button._enabled is True
+            assert board.parts["dot_home"]._enabled is False, \
+                "there is nothing to send home before it has been dragged"
+            assert "bottom-right corner" in board.parts["dot_where"].cget(
+                "text")
+            board._move_dot()
+            for _ in range(60):
+                board.root.update()
+                if sent:
+                    break
+                time.sleep(0.02)
+            assert sent == [("dot", {"do": "move"})], sent
+            for _ in range(60):               # the reply comes back on the
+                board.root.update()           # pump, 80 ms at a time
+                if board._dot_waiting:
+                    break
+                time.sleep(0.02)
+            assert board._dot_waiting > 0, "the window is not waiting"
+            assert board.root.state() == "withdrawn", \
+                "the desk did not disappear"
+            # the drag ends: the next status brings the window back and
+            # says where the dot went
+            board._refresh({"stage": "running",
+                            "dot": {"corner": "bottom-right", "x": 640,
+                                    "y": 210, "dragged": True,
+                                    "moving": False}})
+            assert board._dot_waiting == 0.0
+            assert board.root.state() != "withdrawn", "it never came back"
+            assert "640, 210" in board._toast_text, board._toast_text
+            assert board.parts["dot_home"]._enabled is True
+        finally:
+            control_mod.send = real
 
 
 def test_the_settings_screen_can_reach_its_last_row() -> None:

@@ -576,12 +576,23 @@ class App:
         # the app is alive, and what it is doing. Its corner ([dot]
         # corner, bottom-right of the work area since 2026-09-07) is the
         # one every card beside it is placed against — getattr, so a
-        # config.py without [dot] (classic) gets the default. Read once,
-        # here; the dot is not re-placed while the app runs.
-        self._dot_corner = str(getattr(getattr(cfg, "dot", None), "corner",
-                                       "bottom-right"))
-        self.dot = (overlay_mod.StatusDot(corner=self._dot_corner)
-                    if cfg.indicator else overlay_mod.StatusDot.off())
+        # config.py without [dot] (classic) gets the default.
+        #
+        # THE CORNER IS STILL READ ONCE; WHERE THE DOT SITS IS NOT. `[dot]
+        # x/y` is where it was dragged to, and the dashboard's "Move the
+        # dot" arms another drag down the control pipe while the app runs
+        # — which is the whole of the owner's complaint on 2026-09-07,
+        # "without needing to open and close the app". The cards beside it
+        # go on using the CORNER, so dragging the dot into the middle of
+        # the screen does not send the shelf there with it.
+        dcfg = getattr(cfg, "dot", None)
+        self._dot_corner = str(getattr(dcfg, "corner", "bottom-right"))
+        self.dot = (overlay_mod.StatusDot(
+            corner=self._dot_corner,
+            x=getattr(dcfg, "x", overlay_mod.HINT_UNSET),
+            y=getattr(dcfg, "y", overlay_mod.HINT_UNSET),
+            on_change=self._save_dot)
+            if cfg.indicator else overlay_mod.StatusDot.off())
         # THE DISC IS A BUTTON. A click on it does exactly what ctrl+alt+d
         # does — _tap_shelf reads one flag and starts a thread, which is
         # the whole reason it may be called from the dot's own thread.
@@ -700,6 +711,8 @@ class App:
                     on_change=self._save_shelf_card,
                     on_press=self._shelf_pressed,
                     on_refresh=self._shelf_refresh,
+                    on_away=self._shelf_close,
+                    spare=self._dot_squares,
                     dot_corner=self._dot_corner)
             except Exception:                    # noqa: BLE001
                 log.info("the shelf would not build — its key will say so "
@@ -1362,6 +1375,37 @@ class App:
         log.info("hint card: %s",
                  ", ".join(f"{k}={v}" for k, v in fields.items()))
 
+    def _save_dot(self, fields: dict) -> None:
+        """The status dot's twin of _save_hint: where it was dropped,
+        written into [dot] through the same comment-keeping line edit.
+
+        Called from the dot's own thread, the moment Windows' move loop
+        lets go — and from the control thread for "Back to the corner",
+        which writes the sentinel back into both lines. `x` and `y` are
+        always written as a PAIR, because config.load refuses half a
+        position, and they always are: the only caller is
+        overlay.StatusDot._changed, which sends both.
+
+        The guard is _save_problem_card's, for its reason: a config.py
+        without x and y on DotConfig would make dataclasses.replace raise
+        on a field the dataclass has not got, and a drag that cannot be
+        remembered should still work for the rest of the run.
+        """
+        dcfg = getattr(self.cfg, "dot", None)
+        known = {f.name for f in dataclasses.fields(dcfg)} if dcfg else set()
+        missing = sorted(set(fields) - known)
+        if missing:
+            log.info("the dot: [dot] has no %s to save a drag in yet — it "
+                     "stays where you put it for this run only",
+                     ", ".join(missing))
+            return
+        self.cfg = dataclasses.replace(
+            self.cfg, dot=dataclasses.replace(dcfg, **fields))
+        config_mod.set_values(self.config_path,
+                              {f"dot.{k}": v for k, v in fields.items()})
+        log.info("the dot: %s", ", ".join(f"{k}={v}" for k, v in
+                                          fields.items()))
+
     def _save_review_card(self, fields: dict) -> None:
         """The review card's twin of _save_hint: where it was dragged to,
         written into [review] through the same comment-keeping line edit."""
@@ -1667,6 +1711,15 @@ class App:
                                    if self.cfg.vocab.enabled else 0)},
             "pending": len(self.spool.pending()),
             "phone": (self.phone.url or "") if self.phone else "",
+            # Where the dot is and whether it is waiting to be dragged.
+            # The dashboard hides itself for a move and has to know when
+            # the move is over; this poll is how it finds out, which is
+            # also what puts the window back if the move times out
+            # instead of ending in a drop.
+            "dot": (self.dot.state()
+                    if hasattr(getattr(self, "dot", None), "state")
+                    else {"corner": "bottom-right", "dragged": False,
+                          "moving": False}),
             # getattr: the test suite builds half-initialised Apps.
             "awake": (self.awake.state()
                       if getattr(self, "awake", None) is not None
@@ -2167,6 +2220,37 @@ class App:
                             "items": engine.recent(max(1, min(100, n)))}
                 return {"ok": False, "error": f"unknown notify action "
                                               f"{do!r}"}
+            if command == "dot":
+                # move | corner. The road the owner asked for on
+                # 2026-09-07: "I press 'set' and then the desk
+                # disappears and I drag the dot wherever I want it —
+                # and without needing to open and close the app". This
+                # is the "without": the dashboard is a separate process
+                # and the dot lives in this one, so "become draggable"
+                # has to travel, and it travels the same pipe every
+                # other live command does.
+                #
+                # Both answers are one float or two ints written on this
+                # thread — nothing waits, nothing paints, and the dot's
+                # own painter picks the change up on its next frame,
+                # which is 22 ms away. The reply carries the fresh state
+                # so the dashboard knows at once whether to hide itself.
+                do = str(args.get("do", "move")).strip().lower()
+                if do == "move":
+                    if not self.dot.move():
+                        return {"ok": False,
+                                "error": "there is no dot to move "
+                                         "(indicator = false)"}
+                    self._say("drag the dot where you want it")
+                    log.info("the dot: waiting to be dragged")
+                    return {"ok": True, "dot": self.dot.state(),
+                            "message": "drag the dot where you want it"}
+                if do == "corner":
+                    self.dot.to_corner()
+                    self._say("the dot is back in its corner")
+                    return {"ok": True, "dot": self.dot.state(),
+                            "message": "the dot is back in its corner"}
+                return {"ok": False, "error": f"unknown dot action {do!r}"}
             if command == "quit":
                 singleton.request_quit()
                 return {"ok": True}
@@ -2773,11 +2857,31 @@ class App:
             log.exception("the shelf would not open — dictation is "
                           "unaffected")
 
+    def _dot_squares(self) -> list:
+        """The screen rectangles a press may land on without closing the
+        shelf — which is the status dot's window and nothing else.
+
+        The dot is a TOGGLE, so a press on it is already a close: letting
+        the shelf's watch on the mouse see that press as "away" would
+        close the panel and let the dot's own handler open it again in
+        the same gesture. The rect comes from whichever painter is
+        drawing the dot and is None while there is no dot on screen.
+        """
+        rect = getattr(getattr(self, "dot", None), "rect", None)
+        return [rect] if rect is not None else []
+
     def _shelf_close(self) -> None:
         """Down, and the corner given back to whoever else wants it.
 
-        Safe from the hook thread: every call in here only sets an Event
-        or puts something on a queue.
+        The fifth door leads here too. The key, Esc, the X on the head
+        band, a second click on the dot and now a press anywhere outside
+        the panel all end in this one method, because closing the shelf
+        is more than hiding a window: the notification column comes back,
+        the key card comes back and Stop is disarmed.
+
+        Safe from the hook thread, from the control thread and from the
+        shelf's own watcher: every call in here only sets an Event or
+        puts something on a queue.
         """
         card = getattr(self, "shelf", None)
         if card is not None:
@@ -3242,6 +3346,8 @@ class App:
                         on_change=self._save_shelf_card,
                         on_press=self._shelf_pressed,
                         on_refresh=self._shelf_refresh,
+                        on_away=self._shelf_close,
+                        spare=self._dot_squares,
                         dot_corner=getattr(self, "_dot_corner",
                                            "bottom-right"))
                 except Exception:                # noqa: BLE001
@@ -5545,9 +5651,14 @@ def main() -> int:
     # real startup instead of just spinning.
     splash = overlay_mod.Splash() if cfg.splash else overlay_mod.Splash.off()
     # The release's last beat lands its light IN the status dot, so the
-    # splash has to know which corner the dot will be in (skin\boot.py).
-    splash.dot_corner = str(getattr(getattr(cfg, "dot", None), "corner",
-                                    "bottom-right"))
+    # splash has to know where the dot will be (skin\boot.py) — the
+    # corner, and, since the dot can be dragged out of its corner,
+    # where it was dropped. Sending only the corner is how the light
+    # would end up arriving in an empty one.
+    _dot = getattr(cfg, "dot", None)
+    splash.dot_corner = str(getattr(_dot, "corner", "bottom-right"))
+    splash.dot_x = int(getattr(_dot, "x", overlay_mod.HINT_UNSET))
+    splash.dot_y = int(getattr(_dot, "y", overlay_mod.HINT_UNSET))
     splash.start()
     splash_log = SplashLog(splash)
     log.addHandler(splash_log)

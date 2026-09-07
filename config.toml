@@ -220,11 +220,28 @@ indicator = true              # small dot in the corner ([dot] below): blue = ru
 # it - exactly what ctrl+alt+d does - click it again and the shelf
 # closes. Only the disc takes the click: the glow around it lets the
 # mouse through to whatever is underneath, so it never blocks anything.
-corner = "top-right"       # bottom-right | top-right. Which corner of the
-                              # main screen's work area the dot sits in. The
-                              # shelf and the key card open beside it there
-                              # unless their own `corner` says otherwise.
-                              # Read once, when the app starts
+#
+# YOU CAN PUT IT WHERE YOU LIKE, without stopping and starting the app.
+# "Move the dot", on the Cards page of Settings, hides this window, waits
+# for you to drag the disc anywhere on any screen, and writes where you
+# dropped it into `x` and `y` below. "Back to the corner" clears them
+# again. Both happen while the app is running; nothing has to restart.
+corner = "top-right"          # bottom-right | top-right. Which corner of the
+                              # main screen's work area the dot sits in, until
+                              # you drag it somewhere else. The shelf and the
+                              # key card open beside it there unless their own
+                              # `corner` says otherwise, and they keep using
+                              # this corner even after the dot has been dragged
+x = -100000                   # the top-left of the dot's own little window
+y = -100000                   # where you last dragged it to, in screen pixels.
+                              # -100000 = never dragged: use `corner`. It has
+                              # to be a number no desktop can reach, because a
+                              # monitor to the LEFT of your main one has real
+                              # negative coordinates (this one starts at
+                              # x = -1920), so -1 would throw away a dot
+                              # dropped over there. Set one and leave the other
+                              # at -100000 and the app refuses to start: half a
+                              # position is not a position
 
 [hint]
 # The card that appears while you are still holding the key. It says what
