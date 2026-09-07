@@ -450,7 +450,15 @@ class Wizard:
         # `index` is only ever shown, because two rows can carry the same
         # name and the number is how a person tells them apart.
         chosen = key == self.device
-        width = W - PAD * 2 - 10
+        # Ten narrower than it used to be, because `ui.Scroller` now
+        # keeps ui.GUTTER px of its canvas clear on the right for the way
+        # home. This row is the one list in the app that is packed
+        # `fill="x"`, so it is exactly as wide as the page lets it be
+        # whatever this says — but the two lines are drawn at
+        # `width - 16`, and a `width` that no longer matches the canvas
+        # is a device name sitting 6 px off the row's edge instead of 16.
+        # The only list that was not already leaving the strip alone.
+        width = W - PAD * 2 - 10 - ui.GUTTER
         row = tk.Canvas(parent, width=width, height=40, bd=0,
                         highlightthickness=0, cursor="hand2",
                         bg=ui.ACCENT_SOFT if chosen else ui.CARD)
