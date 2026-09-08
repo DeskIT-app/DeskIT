@@ -794,7 +794,13 @@ Q_WELL_INSET = 3
 # without the flag ALLOCATES A CONSOLE — visible flicker and hundreds of
 # milliseconds, on whichever thread asked. capture.py:1683 says the same
 # where it opens explorer.
-TRUNK = "fast"                 # where the routine's work goes home to
+# WHERE THE ROUTINE'S WORK GOES HOME TO. It was "fast" until 2026-09-08,
+# and that name was a leftover: `fast` meant "the fast one OF THE TWO",
+# against a `classic` that no longer exists. With one version the word
+# said nothing true, and the owner asked for it to go - "you can also
+# change the name to classic or whatever you want". "main" carries no
+# claim about a repair pass, which is the point.
+TRUNK = "main"
 WEEKLY = "weekly/"             # ...from branches named weekly/<DATE>
 GIT_READ_S = 20                # a local read
 GIT_NET_S = 180                # a push, over his connection

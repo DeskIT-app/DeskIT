@@ -19390,11 +19390,11 @@ def test_a_week_that_is_pushed_leaves_the_list_and_waits_behind_a_line(
         board._weekly_row = lambda parent, scroller, info: drawn.append(
             info["branch"])
         board._weekly = [
-            {"branch": "weekly/2026-09-05-2", "commits": 11, "trunk": "fast",
+            {"branch": "weekly/2026-09-05-2", "commits": 11, "trunk": "main",
              "files": ["dashboard.py"], "on_origin": True, "merged": False,
              "subject": "still his to press"},
             {"branch": "weekly/2026-09-05", "commits": 0, "files": [],
-             "trunk": "fast", "on_origin": True, "merged": True,
+             "trunk": "main", "on_origin": True, "merged": True,
              "subject": "up on GitHub and in fast"},
         ]
         board._fill_problems()
