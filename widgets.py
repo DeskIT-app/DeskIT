@@ -214,6 +214,24 @@ class StateChip(tk.Frame):
         self.word.configure(text=word)
         self.meta.configure(text=meta)
 
+    def show_meta(self, on: bool) -> None:
+        """The uptime, or nothing at all where it was.
+
+        FORGOTTEN, not blanked. A label with no text still costs its own
+        padding, and the caller asking for this is asking for the WIDTH
+        back rather than for an empty space: measured 2026-09-08 on the
+        top bar, blanking the text left the chip 8 px too wide to fit
+        beside the places and forgetting the label gave back 17 more,
+        which was the whole difference. Packed last, which is where it
+        was, so turning it back on puts it back where it was.
+        """
+        if bool(on) == bool(self.meta.winfo_manager()):
+            return
+        if on:
+            self.meta.pack(side="left", padx=(11, 0))
+        else:
+            self.meta.pack_forget()
+
 
 # ----------------------------------------------------------------- icons
 

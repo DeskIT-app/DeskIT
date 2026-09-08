@@ -1090,6 +1090,40 @@ class ServerConfig:
 
 
 @dataclass(frozen=True)
+class TestsConfig:
+    """The nightly run of the app's own test suite — see nightly.py.
+
+    Sixteen tests need the real screen and the real mouse, so every run
+    made while he is at the desk skips them and they had gone days
+    without running. A Windows scheduled task fires at 02:55, a card
+    asks, and NO ANSWER MEANS RUN — he rejected an idle check because
+    anything that moves in the night looks like him being there and
+    would have cancelled the run in silence.
+
+    `nightly = false` is the whole switch: the task still fires, reads
+    this and goes back to sleep. Nothing else in the app changes, because
+    nothing else in the app is involved — the trigger is deliberately
+    outside it, so that the night DeskIT crashed is still a night the
+    tests run.
+    """
+    nightly: bool = True
+    # How long the card waits for an answer before it runs anyway. Five
+    # minutes: long enough to walk back to the desk, short enough that
+    # the run is over before morning. Bounded by TESTS_WAIT_MIN /
+    # TESTS_WAIT_MAX below.
+    wait_seconds: float = 300.0
+
+
+# What [tests] wait_seconds may be. The floor is not taste: the card is
+# the only thing standing between a sleeping man and a suite that takes
+# the mouse, and under half a minute nobody who walked in on it could
+# read it, let alone press No. The ceiling is an hour, past which the
+# card is no longer asking about tonight.
+TESTS_WAIT_MIN = 30.0
+TESTS_WAIT_MAX = 3600.0
+
+
+@dataclass(frozen=True)
 class Config:
     hotkey: str = "right ctrl"
     # A dedicated key that declares "this one is English". Redundant once
@@ -1176,6 +1210,7 @@ class Config:
     notify: NotifyConfig = field(default_factory=NotifyConfig)
     problems: ProblemsConfig = field(default_factory=ProblemsConfig)
     shelf: ShelfConfig = field(default_factory=ShelfConfig)
+    tests: TestsConfig = field(default_factory=TestsConfig)
 
     @property
     def capture_hotkey(self) -> str:
@@ -1442,6 +1477,7 @@ def load(path: Path) -> Config:
     notify = data.get("notify", {})
     problems = data.get("problems", {})
     shelf = data.get("shelf", {})
+    tests = data.get("tests", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -1837,6 +1873,11 @@ def load(path: Path) -> Config:
             hush_notifications=bool(shelf.get(
                 "hush_notifications", ShelfConfig.hush_notifications)),
         ),
+        tests=TestsConfig(
+            nightly=bool(tests.get("nightly", TestsConfig.nightly)),
+            wait_seconds=float(tests.get("wait_seconds",
+                                         TestsConfig.wait_seconds)),
+        ),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
         splash=bool(data.get("splash", Config.splash)),
@@ -2162,6 +2203,14 @@ def load(path: Path) -> Config:
             f"problems.keep_resolved must be 0-{PROBLEMS_KEEP_RESOLVED_MAX} "
             "(how many ANSWERED reports to keep; open ones are never "
             f"dropped), got {cfg.problems.keep_resolved!r}")
+    # [tests]. The switch itself cannot be wrong; the wait can, and a
+    # card nobody could read in time is the same as no card at all.
+    if not (TESTS_WAIT_MIN <= cfg.tests.wait_seconds <= TESTS_WAIT_MAX):
+        raise ConfigError(
+            f"tests.wait_seconds must be {TESTS_WAIT_MIN:.0f}-"
+            f"{TESTS_WAIT_MAX:.0f} (how long the nightly card waits for an "
+            "answer before it runs the suite anyway), got "
+            f"{cfg.tests.wait_seconds!r}")
     if cfg.review.max_changes < 1:
         raise ConfigError("review.max_changes must be >= 1")
     if not (0 <= cfg.review.witness <= 3):

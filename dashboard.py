@@ -75,6 +75,7 @@ import hotkey as hotkey_mod
 import keyboard as keyboard_mod
 import launch
 import awake as awake_mod
+import nightly as nightly_mod
 import settings as settings_mod
 import singleton
 import summary
@@ -110,6 +111,9 @@ BAR_RUN_W = 104          # Pause / Resume / Start — the key he presses all
 BAR_STOP_W = 84
 BAR_GAP = 12
 BAR_KEEP = 24
+# The nightly run's own Stop, which is in the bar only while a nightly
+# test run is going — see _paint_bar_buttons for what pays for it.
+BAR_TESTS_W = 96
 
 # activity -> (dot colour, the word for it). The colours are asked of
 # `ui` when the chip is painted, not here, so a repainted palette lands
@@ -1421,6 +1425,13 @@ class Dashboard:
         # the key you want" at the same moment the dialog does.
         self._capturing = None
         self._cap_selected = None
+        # Is a nightly test run going right now? Re-asked once a poll and
+        # answered by a file on disk, because the run is a process this
+        # window did not start and cannot see any other way — see
+        # nightly.py's contract. False until the first poll says so, so
+        # the bar never opens holding a button for a run that ended
+        # while the window was closed.
+        self._tests_running = False
 
         self._build()
         # After _build: LoadImage/WM_SETICON need a realised window, and on
@@ -1535,6 +1546,15 @@ class Dashboard:
         self.parts["run"] = ui.Button(bar, "Pause", self._toggle_pause,
                                       w=BAR_RUN_W, h=32, bg=ui.BG,
                                       quiet=True)
+        # STOP TESTS is in the bar for exactly as long as there is a
+        # nightly test run to stop, and not one poll longer — the rule
+        # the Push button and Stop already follow. It answers a question
+        # neither of its neighbours does: at three in the morning the
+        # suite takes the real mouse for about fifteen seconds, and if
+        # he is awake and using the machine he wants it to let go now.
+        self.parts["tests_stop"] = ui.Button(
+            bar, "Stop tests", self._stop_tests, w=BAR_TESTS_W, h=32,
+            bg=ui.BG, quiet=True)
         # SCREENS OFF is in the bar, on every place. It was a small gold
         # link in the home's footer and the owner could not find it
         # (2026-09-07: "it would have been good to understand where it
@@ -1586,7 +1606,7 @@ class Dashboard:
             child.destroy()
         keep = {k: self.parts[k] for k in
                 ("hint", "lamp", "state", "uptime", "chip", "run",
-                 "bar_screens", "stop_bar")
+                 "bar_screens", "stop_bar", "tests_stop")
                 if k in self.parts}
         self.parts = keep
         self._hide_toast()
@@ -1955,13 +1975,36 @@ class Dashboard:
           button and BAR_KEEP of empty bar between them: 168 px from
           Pause, where it used to be 8.
         - Stop is not there at all while there is nothing to stop.
+
+        STOP TESTS ANSWERS THE SAME QUESTION ABOUT A DIFFERENT THING —
+        is there a nightly test run to stop — and it is the one button
+        here that does not care whether the app is up: the nightly run
+        is started by a scheduled task and not by DeskIT, on purpose, so
+        that the night DeskIT crashed is still a night the tests run.
+
+        THE UPTIME STEPS ASIDE FOR IT, and that is arithmetic rather
+        than taste. Measured 2026-09-08 on this machine, in the widest
+        state the bar has ("Transcribing", which is the longest word the
+        chip ever holds): the six places end at 523 px and the chip's
+        left edge is 559, so there are 36 px of slack — and a fourth
+        button costs 108 (96 for the pill, 12 for the gap). The uptime
+        is worth 81 of those, which is enough: with it forgotten the
+        chip starts at 532 and the places still clear it by 9 px, and by
+        34 to 330 px in every other state. It is also the right thing to
+        spend, not merely the only thing: how long the app has been up
+        is a fact, and "Stop tests" is a control with something to do,
+        which is the rule that decides whether a button is in this bar
+        at all. It comes back the moment the run ends — FORGOTTEN and
+        not blanked, because an empty label still costs its padding
+        (widgets.StateChip.show_meta says how much).
         """
         chip = self.parts.get("chip")
         run = self.parts.get("run")
         stop = self.parts.get("stop_bar")
         screens = self.parts.get("bar_screens")
+        tests = self.parts.get("tests_stop")
         if not all(w is not None and w.winfo_exists()
-                   for w in (chip, run, stop, screens)):
+                   for w in (chip, run, stop, screens, tests)):
             return
         # ONE BUTTON, THREE WORDS. Start, Resume and Pause are never
         # available at the same moment, so three buttons would be two
@@ -1987,6 +2030,13 @@ class Dashboard:
         else:
             screens.place_forget()
             stop.place_forget()
+        if self._tests_running:
+            tests.place(x=x, y=12, anchor="ne")
+            x -= BAR_TESTS_W + BAR_GAP
+        else:
+            tests.place_forget()
+            tests.configure_text("Stop tests")
+        chip.show_meta(not self._tests_running)
         chip.place(x=x, y=TOP // 2, anchor="e")
 
     def _screen_corrections(self) -> None:
@@ -7211,6 +7261,43 @@ class Dashboard:
         else:
             self._note("nothing to stop")
 
+    def _nightly_running(self) -> bool:
+        """Is the nightly test suite going right now?
+
+        A file on disk and not the control channel, because the run is
+        not the app's: a scheduled task starts it so that a crashed
+        DeskIT is still a tested DeskIT, and this window has to be able
+        to see a run that DeskIT knows nothing about. nightly.running
+        asks two things — the marker exists AND somebody still holds the
+        lock — so a run that was killed leaves no button behind.
+
+        It never raises. A missing folder, a missing module, a disk that
+        will not answer: all of those mean "no run", which is the same
+        bar he has had all along.
+        """
+        try:
+            return bool(nightly_mod.running(APP_DIR))
+        except Exception:                 # noqa: BLE001
+            return False
+
+    def _stop_tests(self) -> None:
+        """End the nightly run. One press, and no arming — there is
+        nothing to be sorry about: a stopped run is written down as
+        stopped and files nothing, and the next night runs as usual.
+
+        The button stays where it is and says "Stopping…" until the run
+        actually lets go, because the suite may be inside a test that
+        takes a second to come out of, and a button that vanished on the
+        press would leave him wondering whether it took."""
+        button = self.parts.get("tests_stop")
+        if nightly_mod.ask_stop(APP_DIR):
+            if button is not None and button.winfo_exists():
+                button.configure_text("Stopping…")
+            self._note("stopping the nightly test run — it is recorded as "
+                       "stopped, not as a failure")
+        else:
+            self._note("could not ask the test run to stop")
+
     def _toggle_pause(self) -> None:
         """The button that is in the bar in every state. Start when
         nothing is running, Resume when it is paused, Pause when it is
@@ -7568,6 +7655,11 @@ class Dashboard:
         self.parts["hint"].config(text=f"hold {dictate}" if dictate != "off"
                                   else "no dictation key set")
 
+        # Is a nightly test run going? Asked here, once a poll, and NOT
+        # inside the painter: the painter is also called from a screen
+        # swap and from the breathing loop, and a question that touches
+        # the disk belongs on the poll that already does.
+        self._tests_running = self._nightly_running()
         # Which buttons the bar holds and what each of them says are ONE
         # decision — the word on the run key is the only thing that tells
         # Start's state from Pause's — so both live in one method.

@@ -4370,6 +4370,8 @@ for `מבשרים`, all of which the local model got right.
 | `[problems] y` | `-100000` | the top edge of that same card |
 | `[problems] card_x` | `-100000` | the left edge of the **dashboard's** report box, which keeps its own pair: it opens centred over the dashboard window, so sharing the floating card's desktop position would fling it off the window it belongs to |
 | `[problems] card_y` | `-100000` | the top edge of the dashboard's report box |
+| `[tests] nightly` | `true` | the nightly run of the whole test suite (see [The nightly run](#the-nightly-run--the-whole-suite-at-0255-while-nobody-is-here)). `false` = the scheduled task still fires, reads this and goes back to sleep — no card, no run, no report. Nothing else in the app changes, because nothing else in the app is involved: the trigger is a Windows scheduled task and not a timer inside DeskIT, so that the night DeskIT crashed is still a night the tests run |
+| `[tests] wait_seconds` | `300` | how long the 02:55 card waits for an answer before it runs the suite anyway (`30` to `3600`). **No answer means run** — an idle check was rejected because anything that moves in the night, a bottle landing on the keyboard, looks exactly like you being here and would cancel the run in silence. Say **No** and nothing happens |
 
 ## Design notes
 
@@ -4416,3 +4418,136 @@ from the desk, and it will have finished those sixteen by the time you
 are back. `.venv\Scripts\python.exe tests.py` is the same suite with
 nothing hidden; it is safe to run while dictation is live, but every
 window it opens is one you will watch it open.
+## The nightly run — the whole suite, at 02:55, while nobody is here
+
+The sixteen tests above are the problem this solves. They are skipped
+every time you are at the desk, and you are at the desk every day, so
+they had gone days without running once — which means the parts of the
+app they cover (the ask card, the drags) were being shipped untested.
+
+So there is a **Windows scheduled task, daily at 02:55**, which runs
+`nightly_tests.ps1`, which runs `nightly.py`, which runs the whole suite
+— `tests_quiet.py` with **no** `--no-screen`, so the sixteen run in the
+open at the end, at an hour when the open is empty.
+
+**The alarm clock is deliberately not inside DeskIT.** A timer in
+`main.py` would have been less to install and it would have been wrong:
+on the night DeskIT had crashed there would be no test run, and that is
+exactly the night you would want one. The task fires whether the app is
+up or not, and neither breaks the other.
+
+**It asks first, and no answer means run.** At 02:55 a small card
+appears — *Run the whole test suite now?*, **Yes, run it** and **No, not
+tonight**, and a line under the buttons that says *No answer in 5 minutes
+and it runs anyway.* Five minutes later, it runs.
+
+Running is the default rather than skipping, and that is the whole
+design. The obvious alternative was an idle check — do not run if the
+computer was touched recently — and it was rejected in these words:
+
+> "מישהו יקום באמצע הלילה לשתות והבקבוק ייפול לי על המקלדת ואז היא תחשוב
+> שאני כאן"
+
+Someone gets up in the night for a drink, the bottle falls on the
+keyboard, and the machine decides you are here. Anything that moves in
+the night looks like your being there, and an idle check would silently
+cancel the run — silently being the worst part, because you would find
+out weeks later. A question that runs by default cannot be beaten that
+way: the worst an accident can do is answer *yes* to something that was
+going to happen anyway. **The card disappears the moment the run starts**
+— there is no leftover window sitting there while the suite is moving
+your actual pointer.
+
+**Your screens are not woken for it, and they do not need to be.** They
+are usually off at that hour (you blank them with `ctrl+alt+n`, and they
+blank themselves after five minutes), and showing a window does not power
+a monitor back on. If you are awake you see the card; if you are asleep
+you do not, and it runs, which is what you asked for. The screen tests
+work in the dark: measured 2026-09-08 with the screens off via the key
+for 31 seconds (`app.log`: `screens off (key)` 20:15:31 →
+`screens on (key)` 20:16:02), a probe sampling `ImageGrab.grab()` every
+two seconds took 16 samples inside that blackout and every one came back
+a real 2560×1440 picture with a full brightness range of 0..255 — no
+exception, and never an all-black frame. That measurement is the reason
+there is no wake-the-monitors step anywhere in this feature, and there
+must not be one.
+
+**What comes out of it — and it is not a report every morning.**
+
+- **A clean night files nothing.** No card, no document, no row. You
+  should not wake up to a receipt.
+- **A night with real failures files ONE report** into the problems store
+  (`problems.py`), so it is waiting on the **Problems** place exactly like
+  a report you filed yourself — and so the Saturday routine
+  (`.claude\commands\weekly-reports.md`) picks it up and rules on it with
+  the rest, instead of becoming a second pile nobody reads. The report is
+  the evidence and nothing else: which tests failed, the one command that
+  re-runs one of them, and the path to the whole transcript.
+- **The machine's one known flake does not count on its own.**
+  `test_the_process_list_sees_the_processes_it_cannot_open` compares a
+  sum of per-process memory against a machine total read a moment later,
+  so anything that starts or exits in between moves the number; it fails
+  on nearly every run. It is named in `nightly.KNOWN_FLAKES` **with its
+  reason**, a night whose only failures are named there files nothing —
+  and `run.log` still names every failure out loud, because a filter
+  nobody can see is a lie. One real failure alongside it and the report is
+  filed as normal.
+- **A run you stopped is recorded as stopped**, never as a failure. A
+  killed suite is full of failures that only mean it was killed.
+
+**Stopping it.** While a nightly run is going — and only then — a **Stop
+tests** button appears in the dashboard's top bar beside Stop, Screens off
+and Pause: the same rule the Push button follows, a control exists only
+while there is something for it to do. Pressing it ends the run. The bar
+has 36 px of slack in its widest state and the button costs 108, so the
+uptime beside the state word steps aside while the button is there and
+comes back when the run ends.
+
+**Where the state lives**, because two processes share it — the runner,
+which the app knows nothing about, and the dashboard, which has to know
+whether to draw the button. Everything is in `problems\nightly\`
+(gitignored with the rest of `problems\`):
+
+| file | what it is |
+| --- | --- |
+| `run.log` | what every run did, appended, one previous generation kept — `problems\weekly\run.log`'s shape |
+| `run.lock` | an **OS-held byte lock**, taken for the whole of one invocation, question and suite together. It is what stops two runs overlapping, and it cannot wedge the feature: Windows drops the lock however the process ended — cleanly, on a crash, on a kill, on a power cut — so there is no such thing as a stale lock here and no override is needed. The file is left behind on purpose; the lock is the handle, never the file's existence |
+| `running.json` | the marker the dashboard polls: written when the suite starts, deleted when it ends. Never trusted alone — `nightly.running()` also asks whether the lock is held, so a marker left behind by a killed run does not leave a dead button in the bar |
+| `stop` | what **Stop tests** writes. The runner clears it before the suite starts and watches for it once a second while it runs |
+| `<stamp>-tests.txt` | one run's transcript, which the report points at. The last fourteen are kept |
+
+**Installing the task.** It is not installed by running anything in this
+repo, on purpose — it changes the machine, so you do it yourself, after
+reading it:
+
+```
+powershell -ExecutionPolicy Bypass -File .\install_nightly_task.ps1 -WhatIf
+powershell -ExecutionPolicy Bypass -File .\install_nightly_task.ps1
+```
+
+It registers **DeskIT Nightly Tests**, modelled line for line on the
+weekly review's task: `powershell.exe -NoProfile -NonInteractive
+-ExecutionPolicy Bypass -WindowStyle Hidden -File "<repo>\nightly_tests.ps1"`
+with the repo as its working directory, as you, at Interactive logon type
+(a session-0 task could not draw the card or move the mouse),
+`MultipleInstances = IgnoreNew`, and a two-hour execution limit as a
+backstop — the whole suite takes about four minutes.
+
+One setting is deliberately **off** where the weekly task has it on:
+`StartWhenAvailable`. A review that catches up at nine in the morning is
+still a review; a **test run** that catches up at nine in the morning
+takes your mouse. If the machine was off at 02:55, the night is simply
+skipped. `WakeToRun` ships on, matching the weekly task and because
+DeskIT holds the machine awake anyway; `-NoWake` turns it off, and
+`-Remove` takes the task off the machine again.
+
+To see it work without staying up:
+
+```
+powershell -ExecutionPolicy Bypass -File .\nightly_tests.ps1 -Now
+```
+
+which skips the question and runs the suite — so do that when you are not
+using the machine, because it will take the pointer for about fifteen
+seconds. `.venv\Scripts\python.exe nightly.py` is the same thing with the
+card and its five-minute clock.

@@ -653,7 +653,12 @@ TAB_SECTIONS: dict[str, tuple[str, ...]] = {
     "Screen": ("visual_qa", "capture", "camera"),
     "Cards": ("hint", "notify", "problems", "shelf"),
     "Phone": ("server",),
-    APP: ("awake",),
+    # [tests] IS ON "The app" beside [awake], because they are the same
+    # kind of thing: what the app does to the machine while nobody is
+    # asking it to do anything. Holding the computer awake and checking
+    # itself at three in the morning both belong on the page about the
+    # app rather than about dictation.
+    APP: ("awake", "tests"),
 }
 
 
@@ -1286,6 +1291,17 @@ _MORE: tuple[Friendly, ...] = (
              "Ask the model on this computer when the cloud refuses",
              "Off, because the proposals it made on its own were wrong "
              "more often than they were right."),
+    # -- the nightly self-check. Two lines, and the second one is the
+    #    only place on the screen that says what happens if he walks
+    #    away from the card, which is the decision the whole feature
+    #    turns on.
+    Friendly("tests.nightly", "Check itself at night",
+             "At five to three in the morning a card asks whether to run "
+             "the app's own checks, and then it runs them."),
+    Friendly("tests.wait_seconds",
+             "How long that card waits for you, in seconds",
+             "Say no and nothing happens; say nothing at all and it runs "
+             "anyway, because that is safer than guessing you are here."),
 )
 
 # Every section of the file, said the way the owner would point at it.
@@ -1360,6 +1376,9 @@ SECTION_WORDS: dict[str, Friendly] = {
         Friendly("review", "The second reading",
                  "The moment a dictation lands, the recording is read "
                  "again and a card offers back any word it doubts."),
+        Friendly("tests", "Checking itself at night",
+                 "Once a night, while nobody is here, the app runs its "
+                 "own checks — including the ones that need the screen."),
     )
 }
 

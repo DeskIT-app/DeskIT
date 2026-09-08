@@ -26015,6 +26015,615 @@ def test_the_readme_and_agents_document_problems() -> None:
     assert "| `problems.py` |" in where, "problems.py is not on the map"
 
 
+# ---------------------------------------------------------------------------
+# the nightly run of the whole suite (nightly.py)
+#
+# THE CLOCK IS NOT WHAT IS WORTH TESTING; THE DECISIONS ARE. Nothing below
+# waits five minutes or looks at the time of day. What every one of these
+# holds is a choice the owner made and would notice being reversed: that no
+# answer means RUN, that "No" means skip, that the card is gone before the
+# suite takes the mouse, that a clean night files nothing, that the machine's
+# one known flake files nothing on its own and is still named out loud, that a
+# real failure files exactly one report the Saturday routine can read, that a
+# run he stopped is a stop and not a breakage, and that two runs can never
+# overlap while a dead one blocks nothing.
+# ---------------------------------------------------------------------------
+
+CLEAN_RUN = ("running 711 tests\n  PASS  test_a\n\n"
+             "all tests passed (quietly)\n")
+FLAKE_RUN = ("running 711 tests\n"
+             "  FAIL  test_the_process_list_sees_the_processes_it_cannot_open"
+             ": per-process sum 235564 vs machine total 244414\n\n"
+             "1 FAILED: "
+             "test_the_process_list_sees_the_processes_it_cannot_open\n")
+BROKEN_RUN = ("running 711 tests\n  FAIL  test_the_dot_stays_put: nope\n\n"
+              "2 FAILED: test_the_dot_stays_put, "
+              "test_the_process_list_sees_the_processes_it_cannot_open\n")
+
+
+def _nightly_dir():
+    """A repo-shaped temp folder with nothing in it but a problems store."""
+    return Path(tempfile.mkdtemp(prefix="nightly-"))
+
+
+def _fake_suite(text: str, code: int = 0, stopped: bool = False, seen=None):
+    """A stand-in for run_suite: writes the transcript and says how it
+    went, so a test can pose any night in a millisecond."""
+    def launch(app_dir, transcript, **kw):
+        if seen is not None:
+            seen.append("ran")
+        Path(transcript).write_text(text, "utf-8")
+        return code, stopped
+    return launch
+
+
+def test_nobody_answering_the_nightly_card_means_the_tests_run() -> None:
+    """THE DECISION THE WHOLE FEATURE TURNS ON. He rejected an idle check
+    in these words: "מישהו יקום באמצע הלילה לשתות והבקבוק ייפול לי על
+    המקלדת ואז היא תחשוב שאני כאן" — someone gets up in the night for a
+    drink, the bottle lands on the keyboard, and the machine decides he
+    is here. So the card runs by default, and a card that could not be
+    drawn at all, or fell over while it was up, runs too: no answer is
+    not a no.
+
+    The real card is put up with a 50 ms clock rather than 300 s, because
+    what is being tested is which way it falls, not how long it waits.
+    """
+    import shutil
+    import tkinter as tk
+
+    import nightly as nightly_mod
+
+    tmp = _nightly_dir()
+    try:
+        # 1. the real thing, timing out.
+        before = tk._default_root
+        try:
+            answer = nightly_mod.ask_on_screen(0.05)
+        except Exception as e:                            # noqa: BLE001
+            print(f"    (skipped the real card: no Tk — {e})")
+        else:
+            assert answer is True, "the card that ran out of time said no"
+            # AND IT IS GONE. He asked for that specifically: no leftover
+            # window while the suite is moving the real mouse.
+            assert tk._default_root is before, \
+                "the card left a Tk root behind it"
+
+        # 2. a card that cannot be drawn, and a card that throws.
+        seen: list = []
+        got = nightly_mod.run(tmp, enabled=True, wait=1,
+                              ask=lambda _s: (_ for _ in ()).throw(
+                                  RuntimeError("no screen")),
+                              launch=_fake_suite(CLEAN_RUN, seen=seen))
+        assert seen == ["ran"], "a broken card stopped the run"
+        assert got["result"] == nightly_mod.CLEAN, got
+        log = (nightly_mod.folder(tmp) / nightly_mod.LOG_NAME).read_text(
+            "utf-8")
+        assert "which is the default" in log, log
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_saying_no_to_the_nightly_card_costs_the_night_and_nothing_else():
+    """No is a real answer: nothing runs, nothing is filed, and the next
+    night is untouched. It is also the ONLY thing that stops a run once
+    the task has fired — which is why the card says so under the
+    buttons."""
+    import shutil
+
+    import nightly as nightly_mod
+    import problems as problems_mod
+
+    tmp = _nightly_dir()
+    try:
+        seen: list = []
+        got = nightly_mod.run(tmp, enabled=True, wait=1,
+                              ask=lambda _s: False,
+                              launch=_fake_suite(BROKEN_RUN, 1, seen=seen))
+        assert got["result"] == nightly_mod.SKIPPED, got
+        assert seen == [], "it ran the suite after he said no"
+        assert got["report"] is None
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        assert store.items() == [], "a skipped night filed a report"
+        assert nightly_mod.CARD_NO and nightly_mod.CARD_YES
+        assert "runs anyway" in nightly_mod.default_line(300), \
+            "the card does not say what happens if he walks away"
+        assert nightly_mod.default_line(300).startswith("No answer in 5")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_nightly_card_is_gone_before_the_suite_takes_the_mouse() -> None:
+    """His ask, and the two halves of keeping it.
+
+    `ask` returns only once its window is destroyed (the test above holds
+    that), and `run` writes the marker — the thing the dashboard's Stop
+    button hangs off — only AFTER `ask` has returned. So the card and the
+    button can never be on screen together, and no window is left over
+    the suite while it is moving the real pointer.
+    """
+    import shutil
+
+    import nightly as nightly_mod
+
+    tmp = _nightly_dir()
+    try:
+        order: list = []
+
+        def ask(_seconds):
+            order.append("asked")
+            # While he is being asked there is nothing to stop yet, so the
+            # bar must not be offering to stop it.
+            assert not nightly_mod.running(tmp), \
+                "the Stop button was up while the card was still asking"
+            return True
+
+        def launch(app_dir, transcript, **kw):
+            order.append("ran")
+            assert nightly_mod.running(app_dir), \
+                "the run is going and the bar has no Stop button"
+            Path(transcript).write_text(CLEAN_RUN, "utf-8")
+            return 0, False
+
+        nightly_mod.run(tmp, enabled=True, wait=1, ask=ask, launch=launch)
+        assert order == ["asked", "ran"], order
+        assert not nightly_mod.running(tmp), \
+            "the button outlived the run it belongs to"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_clean_night_files_nothing_at_all() -> None:
+    """"A clean run files nothing. He should not wake up to a receipt."
+    So: no report, no problems.md, nothing on the Problems place — and
+    the run.log still says the night happened, because the log is the
+    trace and the store is the news."""
+    import shutil
+
+    import nightly as nightly_mod
+    import problems as problems_mod
+
+    tmp = _nightly_dir()
+    try:
+        got = nightly_mod.run(tmp, enabled=True, wait=1,
+                              ask=lambda _s: True,
+                              launch=_fake_suite(CLEAN_RUN))
+        assert got["result"] == nightly_mod.CLEAN, got
+        assert got["report"] is None
+        assert not (tmp / problems_mod.STORE_NAME).exists(), \
+            "a clean night wrote to the bug list"
+        assert not (tmp / problems_mod.DIGEST_NAME).exists()
+        log = (nightly_mod.folder(tmp) / nightly_mod.LOG_NAME).read_text(
+            "utf-8")
+        assert "clean" in log and "nothing filed" in log, log
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_known_flake_alone_files_nothing_and_is_still_named() -> None:
+    """A NAMED EXCEPTION, NOT A SILENT FILTER.
+
+    test_the_process_list_sees_the_processes_it_cannot_open fails on
+    nearly every run of this machine for a reason that is not the code's,
+    and a false alarm every single morning is a report he stops reading.
+    So a night whose ONLY failures are known flakes files nothing — and
+    the run.log names every one of them anyway, because a filter nobody
+    can see is a lie. Add a second, real failure and the report is filed
+    after all.
+    """
+    import shutil
+
+    import nightly as nightly_mod
+    import problems as problems_mod
+
+    flake = "test_the_process_list_sees_the_processes_it_cannot_open"
+    assert flake in nightly_mod.KNOWN_FLAKES, \
+        "the machine's one known flake is not written down"
+    assert nightly_mod.KNOWN_FLAKES[flake], "a flake with no reason given"
+
+    tmp = _nightly_dir()
+    try:
+        got = nightly_mod.run(tmp, enabled=True, wait=1,
+                              ask=lambda _s: True,
+                              launch=_fake_suite(FLAKE_RUN, 1))
+        assert got["result"] == nightly_mod.FLAKY, got
+        assert got["failed"] == [flake] and got["real"] == [], got
+        assert got["report"] is None, "the known flake woke him up"
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        assert store.items() == []
+        log = (nightly_mod.folder(tmp) / nightly_mod.LOG_NAME).read_text(
+            "utf-8")
+        assert flake in log, "the flake was hidden rather than excused"
+        assert "known flake" in log, log
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_real_nightly_failure_files_one_report_saturday_can_read() -> None:
+    """ONE report, in the shape .claude\\commands\\weekly-reports.md acts
+    on: an OPEN item in problems.json with a kind out of problems.KINDS,
+    a `where` saying which surface it came from, and a text that is
+    evidence — which tests failed, the one command that re-runs one, and
+    where the whole transcript is. That is his own idea: the nightly run
+    files a report and the Saturday routine fixes it like any other
+    problem, instead of a second pile nobody reads.
+
+    The known flake rides along in the same run and must not be what the
+    report is about."""
+    import shutil
+
+    import nightly as nightly_mod
+    import problems as problems_mod
+
+    tmp = _nightly_dir()
+    try:
+        got = nightly_mod.run(tmp, enabled=True, wait=1,
+                              ask=lambda _s: True,
+                              launch=_fake_suite(BROKEN_RUN, 1))
+        assert got["result"] == nightly_mod.FAILED, got
+        assert got["real"] == ["test_the_dot_stays_put"], got
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        open_items = store.items(problems_mod.OPEN)
+        assert len(open_items) == 1, open_items
+        item = open_items[0]
+        assert item["id"] == got["report"]
+        assert item["kind"] in problems_mod.KINDS and item["kind"] != "idea"
+        assert item["where"] == nightly_mod.REPORT_WHERE
+        assert item["by"] == nightly_mod.REPORT_BY
+        assert item["status"] == problems_mod.OPEN, \
+            "a report nobody has answered must stay open"
+        text = item["text"]
+        assert "test_the_dot_stays_put" in text, text
+        assert "tests.py test_the_dot_stays_put" in text, \
+            "no command that re-runs the failing test"
+        assert "problems/nightly/" in text, "the transcript is not pointed at"
+        assert "nightly.py" in text, "the report does not say who filed it"
+        assert len(text) <= problems_mod.TEXT_MAX
+        assert "…" not in text, \
+            "the report was cut mid-word instead of counting the rest"
+        assert item["env"].get("python"), "no evidence about the machine"
+        # The transcript it points at is really there, and problems.md was
+        # rewritten so the weekly read sees the report at all.
+        assert Path(got["transcript"]).exists()
+        digest = (tmp / problems_mod.DIGEST_NAME).read_text("utf-8")
+        assert nightly_mod.REPORT_WHERE in digest and item["id"] in digest
+
+        # A second bad night is a second report, not an edit of the first:
+        # the routine rules on rows, and a row that changed under it is a
+        # row it already read.
+        nightly_mod.run(tmp, enabled=True, wait=1, ask=lambda _s: True,
+                        launch=_fake_suite(BROKEN_RUN, 1))
+        assert len(store.items(problems_mod.OPEN)) == 2
+
+        # A run that never printed a verdict and did not exit 0 is a real
+        # failure with no test name on it, and worth a report too.
+        crashed = nightly_mod.verdict(transcript="Traceback…", code=1)
+        assert crashed["result"] == nightly_mod.FAILED, crashed
+        assert "did not finish" in nightly_mod.report_text(crashed)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_nightly_run_he_stopped_is_recorded_as_stopped() -> None:
+    """His words, and obviously right: pressing Stop is not a bug. A
+    killed suite is full of failures that only mean it was killed, so
+    `stopped` is checked before any of them are read, nothing is filed,
+    and the log says the word."""
+    import shutil
+
+    import nightly as nightly_mod
+    import problems as problems_mod
+
+    tmp = _nightly_dir()
+    try:
+        got = nightly_mod.run(
+            tmp, enabled=True, wait=1, ask=lambda _s: True,
+            launch=_fake_suite(BROKEN_RUN, 1, stopped=True))
+        assert got["result"] == nightly_mod.STOPPED, got
+        assert got["failed"] == [] and got["real"] == [], got
+        assert got["report"] is None
+        assert problems_mod.Store(tmp / problems_mod.STORE_NAME).items() == []
+        log = (nightly_mod.folder(tmp) / nightly_mod.LOG_NAME).read_text(
+            "utf-8")
+        assert "STOPPED" in log and "not a failure" in log, log
+
+        # The ask itself: a file the dashboard writes and the runner
+        # clears, so a stop asked for last night cannot end tonight's run
+        # a second after it starts.
+        assert not nightly_mod.stop_asked(tmp)
+        assert nightly_mod.ask_stop(tmp)
+        assert nightly_mod.stop_asked(tmp)
+        nightly_mod.clear_stop(tmp)
+        assert not nightly_mod.stop_asked(tmp)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_two_nightly_runs_cannot_overlap_and_a_dead_one_blocks_nothing():
+    """The lock is an OS-held handle, which buys two things at once.
+
+    Two runs cannot overlap: the second one does not even ask, because
+    asking is part of the run. And a crashed run cannot wedge every
+    future night — Windows drops the handle however the process ended, so
+    a leftover marker on disk with nobody holding the lock reads as "no
+    run", which is also what keeps a dead button out of his bar.
+    """
+    import shutil
+
+    import nightly as nightly_mod
+
+    tmp = _nightly_dir()
+    try:
+        with nightly_mod.hold(tmp) as mine:
+            assert mine, "could not take the lock at all"
+            asked: list = []
+            got = nightly_mod.run(tmp, enabled=True, wait=1,
+                                  ask=lambda _s: asked.append(1) or True,
+                                  launch=_fake_suite(CLEAN_RUN))
+            assert got["result"] == nightly_mod.BUSY, got
+            assert asked == [], "the second run put a second card up"
+            assert got["report"] is None
+
+        # THE CRASHED RUN. Its marker is still on disk and nobody holds
+        # the lock: no run, no button, and tonight starts clean.
+        nightly_mod.mark_running(tmp)
+        assert (nightly_mod.folder(tmp) / nightly_mod.MARKER_NAME).exists()
+        assert not nightly_mod.running(tmp), \
+            "a killed run left a Stop button that stops nothing"
+        got = nightly_mod.run(tmp, enabled=True, wait=1,
+                              ask=lambda _s: True,
+                              launch=_fake_suite(CLEAN_RUN))
+        assert got["result"] == nightly_mod.CLEAN, got
+        assert not (nightly_mod.folder(tmp) / nightly_mod.MARKER_NAME).exists()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_nightly_runner_really_starts_and_really_stops_a_suite() -> None:
+    """The plumbing under the decisions, exercised for real — a
+    `tests_quiet.py` of two lines standing in for the one that takes four
+    minutes and the mouse, in a folder shaped like the repo.
+
+    Three things that can only be checked by actually launching something:
+    the transcript is what the child printed, the stop file ends the run
+    within a poll, and what comes back is (exit code, stopped) with
+    `stopped` true — which is what keeps a killed suite from being read
+    as a broken one.
+    """
+    import shutil
+
+    import nightly as nightly_mod
+
+    tmp = _nightly_dir()
+    try:
+        (tmp / "tests_quiet.py").write_text(
+            "print('running 711 tests')\nprint('all tests passed "
+            "(quietly)')\n", "utf-8")
+        out = nightly_mod.folder(tmp) / "run-one.txt"
+        code, stopped = nightly_mod.run_suite(tmp, out, poll=0.05)
+        assert (code, stopped) == (0, False), (code, stopped)
+        assert "all tests passed" in out.read_text("utf-8")
+        assert nightly_mod.verdict(transcript=out.read_text("utf-8"),
+                                   code=code)["result"] \
+            == nightly_mod.CLEAN
+
+        # ...and one that would run all night. The stop file is written
+        # before it starts, so the first poll finds it.
+        (tmp / "tests_quiet.py").write_text(
+            "import time\nprint('running 711 tests', flush=True)\n"
+            "time.sleep(120)\n", "utf-8")
+        out = nightly_mod.folder(tmp) / "run-two.txt"
+        started = time.monotonic()
+        import threading
+        threading.Timer(0.2, lambda: nightly_mod.ask_stop(tmp)).start()
+        code, stopped = nightly_mod.run_suite(tmp, out, poll=0.05)
+        took = time.monotonic() - started
+        assert stopped is True, (code, stopped)
+        assert took < 30, f"the stop took {took:.0f}s to land"
+        assert not nightly_mod.stop_asked(tmp), \
+            "the ask was left behind to end tomorrow's run too"
+        assert nightly_mod.verdict(transcript=out.read_text("utf-8"),
+                                   code=code,
+                                   stopped=stopped)["result"] \
+            == nightly_mod.STOPPED
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_nightly_setting_turns_the_whole_thing_off() -> None:
+    """One line in config.toml, and the scheduled task still fires, reads
+    it and goes back to sleep — no card, no run, no report. And the wait
+    is bounded, because a card nobody could read in time is the same as
+    no card at all."""
+    import shutil
+
+    import nightly as nightly_mod
+
+    cfg = config_mod.load(REPO / "config.toml")
+    assert cfg.tests.nightly is True, "the shipped config has it on"
+    assert cfg.tests.wait_seconds == 300.0 \
+        == nightly_mod.ASK_SECONDS, cfg.tests
+    assert (config_mod.TESTS_WAIT_MIN, config_mod.TESTS_WAIT_MAX) \
+        == (30.0, 3600.0)
+    # Refused AT LOAD, like every other value that can be wrong here: a
+    # card that has already gone by the time he walks over is the same as
+    # no card at all, and the app must not start believing in one.
+    room = Path(tempfile.mkdtemp(prefix="nightly-config-"))
+    try:
+        base = (REPO / "config.toml").read_text("utf-8")
+        assert "wait_seconds = 300" in base
+        for bad in ("5", "0", "99999"):
+            path = room / "config.toml"
+            path.write_text(base.replace("wait_seconds = 300",
+                                         f"wait_seconds = {bad}"), "utf-8")
+            try:
+                config_mod.load(path)
+            except config_mod.ConfigError as e:
+                assert "wait_seconds" in str(e), e
+            else:
+                raise AssertionError(f"wait_seconds {bad} was accepted")
+        path.write_text(base.replace("nightly = true", "nightly = false"),
+                        "utf-8")
+        assert config_mod.load(path).tests.nightly is False
+    finally:
+        import shutil as _shutil
+        _shutil.rmtree(room, ignore_errors=True)
+
+    tmp = _nightly_dir()
+    try:
+        asked: list = []
+        got = nightly_mod.run(tmp, enabled=False, wait=300,
+                              ask=lambda _s: asked.append(1) or True,
+                              launch=_fake_suite(BROKEN_RUN, 1))
+        assert got["result"] == nightly_mod.OFF, got
+        assert asked == [], "it asked even though the setting is off"
+        assert got["report"] is None
+        lock = nightly_mod.folder(tmp) / nightly_mod.LOCK_NAME
+        assert not lock.exists(), \
+            "a run that is switched off still took the lock"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_bar_holds_stop_tests_only_while_a_run_is_going() -> None:
+    """The rule the Push card and Stop already follow: a control exists
+    only while there is something for it to do.
+
+    It is the one button in the bar that does not care whether the app is
+    running, because the nightly run is not the app's — a scheduled task
+    starts it so that a crashed DeskIT is still a tested DeskIT. Pressing
+    it writes the ask down where the runner will find it, and the places
+    still clear the state chip in every state, which is what the uptime
+    steps aside for.
+    """
+    import dashboard as dash
+
+    saved = dash.nightly_mod.running
+    try:
+        dash.nightly_mod.running = lambda *a, **k: False
+        with _window() as board:
+            if board is None:
+                return
+            for reply in (BAR_OFF, BAR_ON, BAR_STARTING):
+                board._refresh(reply)
+                board.root.update_idletasks()
+                assert not board.parts["tests_stop"].winfo_manager(), \
+                    "Stop tests is in the bar with no run to stop"
+            # A run starts, and the button turns up on the next poll.
+            dash.nightly_mod.running = lambda *a, **k: True
+            for reply in (BAR_OFF, BAR_ON, BAR_PAUSED, BAR_STARTING,
+                          {"ok": True, "stage": "running",
+                           "activity": "busy", "uptime_s": 11532}):
+                board._refresh(reply)
+                board.root.update_idletasks()
+                tests = board.parts["tests_stop"]
+                tests.update_idletasks()
+                assert tests.winfo_manager(), "no Stop tests during a run"
+                chip, nav = board.parts["chip"], board.nav
+                chip.update_idletasks()
+                nav.update_idletasks()
+                assert nav.winfo_x() + nav.winfo_reqwidth() \
+                    <= chip.winfo_x(), \
+                    "the places run under the state chip during a run"
+                assert chip.winfo_x() + chip.winfo_reqwidth() \
+                    <= tests.winfo_x(), "the state runs under Stop tests"
+                assert not chip.meta.winfo_manager(), \
+                    "the uptime did not step aside for the button"
+                for left, right in ((tests, board.parts["stop_bar"]),
+                                    (board.parts["stop_bar"],
+                                     board.parts["bar_screens"]),
+                                    (board.parts["bar_screens"],
+                                     board.parts["run"])):
+                    if not (left.winfo_manager() and right.winfo_manager()):
+                        continue
+                    left.update_idletasks()
+                    right.update_idletasks()
+                    assert left.winfo_x() + left.winfo_reqwidth() \
+                        <= right.winfo_x(), "two buttons in the bar overlap"
+
+            # The press: it writes the ask where the runner reads it, and
+            # says so on the button rather than vanishing.
+            asked: list = []
+            saved_ask = dash.nightly_mod.ask_stop
+            try:
+                dash.nightly_mod.ask_stop = lambda *a: asked.append(1) or True
+                board.parts["tests_stop"]._command()
+            finally:
+                dash.nightly_mod.ask_stop = saved_ask
+            assert asked == [1], "Stop tests did not ask for a stop"
+            word = board.parts["tests_stop"]
+            assert str(word.itemcget(word._label, "text")) == "Stopping…", \
+                "the button gave no sign it had taken the press"
+            assert "stopped, not as a failure" in board._toast_text, \
+                board._toast_text
+
+            # ...and when the run ends, the button and its word go, and
+            # the uptime comes back.
+            dash.nightly_mod.running = lambda *a, **k: False
+            board._refresh(BAR_ON)
+            board.root.update_idletasks()
+            assert not word.winfo_manager()
+            assert str(word.itemcget(word._label, "text")) == "Stop tests"
+            assert board.parts["chip"].meta.winfo_manager(), \
+                "the uptime never came back"
+    finally:
+        dash.nightly_mod.running = saved
+
+
+def test_the_nightly_scripts_say_what_they_will_do_before_they_do_it():
+    """The two PowerShell files, which are the only things in this repo
+    that change the MACHINE rather than the app.
+
+    nightly_tests.ps1 is what the task runs and it is shaped like
+    weekly_review.ps1 — the repo found from $PSScriptRoot rather than a
+    typed path, a log outside the repo for the one message that cannot go
+    in it, and exit 0 whatever happened. install_nightly_task.ps1 is read
+    before it is run, so it has to SAY what it will register, and it must
+    not turn on StartWhenAvailable: a test run that catches up at nine in
+    the morning takes his mouse, which is the one thing this feature
+    exists to avoid.
+    """
+    runner = (REPO / "nightly_tests.ps1").read_text(encoding="utf-8-sig")
+    assert "$PSScriptRoot" in runner, "the repo path is typed rather than read"
+    assert "nightly.py" in runner
+    assert "--no-screen" not in runner, \
+        "the nightly run must not skip the sixteen"
+    assert runner.rstrip().endswith("exit 0"), \
+        "a bad night must not leave a red icon in Task Scheduler"
+    assert "-NoNewWindow" in runner, "a console would flash on his screen"
+
+    setup = (REPO / "install_nightly_task.ps1").read_text(
+        encoding="utf-8-sig")
+    assert "Register-ScheduledTask" in setup
+    assert "'02:55'" in setup, "the hour is not the one he asked for"
+    assert "StartWhenAvailable = $false" in setup, \
+        "a missed night would be caught up on while he is at the desk"
+    assert "-NoProfile -NonInteractive -ExecutionPolicy Bypass " \
+           "-WindowStyle Hidden -File" in setup, \
+        "not the same six switches the weekly task uses"
+    assert "LogonType Interactive" in setup, \
+        "a session-0 task cannot draw the card or move the mouse"
+    assert "-Remove" in setup, "no way to take it off the machine again"
+
+
+def test_the_readme_and_agents_document_the_nightly_tests() -> None:
+    """A routine nobody can find is a routine nobody trusts: the README
+    has a section for it with every [tests] key in the Config reference,
+    and AGENTS.md names nightly.py on its map."""
+    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    heads = [ln for ln in readme.splitlines() if ln.startswith("## ")]
+    assert any("night" in h.lower() for h in heads), \
+        "no README section for the nightly test run"
+    table = readme[readme.index("## Config reference"):]
+    for key in ("nightly", "wait_seconds"):
+        assert f"| `[tests] {key}` |" in table, key
+    assert "nightly_tests.ps1" in readme and "install_nightly_task.ps1" \
+        in readme, "the two scripts are never named"
+    agents = (REPO / "AGENTS.md").read_text(encoding="utf-8")
+    where = agents[agents.index("## Where things live"):]
+    assert "| `nightly.py`" in where, "nightly.py is not on the map"
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

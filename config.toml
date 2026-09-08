@@ -1713,3 +1713,43 @@ local_model = false           # ask the local repair model when Groq refuses.
                               # clip and both of its proposals were wrong;
                               # a reading without a model still finds the
                               # invented endings on its own
+[tests]
+# THE WHOLE SUITE, ONCE A NIGHT, WHILE NOBODY IS HERE.
+# Sixteen of the app's own tests need the real screen and the real
+# mouse - one of them photographs the display, the others move the
+# pointer across it - so every run made while you are sitting here skips
+# them, and they had gone days without running once. At five to three in
+# the morning a small card asks whether to run the whole suite, this
+# time including those sixteen. Say No and nothing happens. Say Yes, or
+# say nothing at all, and it runs.
+#
+# NO ANSWER MEANS RUN, and that is the decision this whole block turns
+# on. The alternative was to look at whether the computer had been
+# touched recently and stay quiet if it had - but anything that moves in
+# the night, a bottle falling on the keyboard, looks exactly like you
+# being here, and would have cancelled the run in silence. A question
+# that runs by default cannot be beaten that way: the worst an accident
+# can do is say yes to something that was going to happen anyway. Your
+# screens are usually dark at that hour and showing a card does not turn
+# them on; that is fine, and nothing here ever wakes them.
+#
+# A clean night writes nothing at all - you should not wake up to a
+# receipt. A night that finds something wrong leaves ONE report waiting
+# on the Problems page, exactly like a report you wrote yourself, and
+# the Saturday review picks it up there with the rest. A run you stop
+# from the button in the window is written down as stopped, never as a
+# failure.
+#
+# The alarm clock is a Windows scheduled task rather than this app, on
+# purpose: on a night the app had crashed there would be no test run,
+# and that is exactly the night you would want one. See nightly.py.
+nightly = true                 # false = the scheduled task still fires,
+                               # finds this and goes back to sleep
+                               # without asking anything or running
+                               # anything. Nothing else changes
+wait_seconds = 300             # how long the card waits for an answer
+                               # before it runs anyway, in seconds
+                               # (30 .. 3600). Five minutes is long
+                               # enough to walk back to the desk and
+                               # short enough that the run is over
+                               # before morning

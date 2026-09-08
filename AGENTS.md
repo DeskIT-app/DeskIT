@@ -216,6 +216,20 @@ exactly what classic did.
    PrintWindow gave back a dashboard half-painted with the screen it had
    been dragged over (2026-09-08).
 
+   **The sixteen have their own hour now, and you do not have to ask him
+   for it.** `--no-screen` was days old before anyone noticed that the
+   sixteen it skips had therefore not run at all, so there is a Windows
+   scheduled task at 02:55 (`nightly.py`, `nightly_tests.ps1`) that runs
+   the WHOLE suite — `tests_quiet.py` with no flag — while nobody is
+   here. It asks on screen first and **no answer means RUN**: he
+   rejected an idle check because "מישהו יקום באמצע הלילה לשתות והבקבוק
+   ייפול לי על המקלדת ואז היא תחשוב שאני כאן", a bottle on the keyboard
+   looking exactly like him being present and cancelling the run in
+   silence. A clean night files nothing; a failing one leaves one report
+   on the Problems place for Saturday. None of that changes what YOU
+   type while he is at the desk: that is still `--no-screen`, every
+   time.
+
 ## The machine
 
 - Windows 11, Python 3.11 venv at `.venv\` (stdlib-first: cloud APIs go
@@ -1022,6 +1036,8 @@ exactly what classic did.
 | `problems.py` | the owner's own bug list, which is one typed line plus everything the app can attach without being asked: the store (`problems.json`, `problems.lock` beside it so the app and the dashboard cannot write over each other, open reports NEVER trimmed and answered ones aged out at `keep_resolved`; `resolve()` moves a report to fixed/closed and BACK to open, and `remove()` is the only thing that loses one — the surface calling it must ask first, and it never touches the pinned wav or screenshot), the context collection (the last dictation and its `recent\` sidecar, a copy of the wav and the screenshot pinned into `problems\` so they outlive that ring, the settings that explain a bad transcript), the screenshot thumbnails the Problems tab redraws off (cached on path+mtime+size: 35.8 ms cold vs 0.170 ms warm, 2026-09-04) and the weekly digest (`problems.md`, regenerated from scratch on every write, open items first) |
 | `problem_card.py` | the report card's words, geometry and picture — pure Python plus Pillow, no Tk, no window, so the whole card can be rendered to a PNG and looked at without pressing the hotkey (it was wrong for a week because it could not be). Third painter-plus-window pair in here, after hint.py / `HintCard` and review_card.py / `ReviewCard`; `dashboard.py` imports its field metrics, its hint and its keys line so the two surfaces of one feature cannot drift apart |
 | `weekly_review.ps1` + `.claude/commands/weekly-reports.md` | the Saturday 08:00 review of the bug list: a scheduled task runs the wrapper, the wrapper runs the local `claude.exe` on the project command, and the command reads `problems.json`, writes the summary, the plan and the archive into `problems\weekly\`, closes only what it understood, regenerates `problems.md` and posts a card through notify_hook.py. It FIXES NOTHING by design, and it asks rather than guesses — a report it cannot explain stays open with a question against it. The command is committed (it is the routine); everything it writes is gitignored (it is his) |
+| `nightly.py` + `nightly_tests.ps1` + `install_nightly_task.ps1` | the 02:55 run of the WHOLE suite, the sixteen screen tests included — which is the only time they ever run, because `--no-screen` skips them every day he is at the desk. A Windows scheduled task fires the wrapper and the wrapper runs `nightly.py`: a card asks, and **no answer means RUN** (he rejected an idle check — a bottle falling on the keyboard in the night looks exactly like him being there and would cancel the run in silence). The trigger is outside the app on purpose, so that the night DeskIT crashed is still a night the tests run, and the monitors are never woken: measured 2026-09-08, `ImageGrab.grab()` returns a real 2560×1440 picture with the screens off. A clean night files NOTHING; a night with real failures files ONE report into `problems.json` for the Saturday routine to rule on; the machine's one known flake is named in `KNOWN_FLAKES` and files nothing on its own; a run he stopped is recorded as stopped. State lives in `problems
+ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedges nothing, a marker the dashboard polls for its **Stop tests** button, and a `stop` file that button writes. `install_nightly_task.ps1` is NOT run by anything here; it changes the machine, so he runs it himself |
 | `server.py` | the loopback HTTP door on the `[server]` port: phone dictation, translate, punctuate, notify — every POST route bearer-token gated |
 | `control.py` | the named pipe between the dashboard and the app: status, commands, replies; handlers must never block |
 | `overlay.py` | every window this app paints by hand: the splash, the status dot, the hint card, the correction and report box (`WordPrompt` — `fill()` puts a dictated line IN the box without sending it, which is the only way a transcript reaches one of OUR windows, `injector` refusing by design to paste into this process), `ProblemCard(WordPrompt)` — a SUBCLASS and not a mode flag, so the review pencil's one-line box is provably untouched; it overrides only `ask` and `_run` — and the review and notify cards on top of `HintCard` |
