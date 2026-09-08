@@ -9409,12 +9409,14 @@ def test_the_thumb_can_be_held_and_dragged_and_the_view_follows() -> None:
     finger. It lands on a multiple of SCROLL_STEP because the canvas
     carries a yscrollincrement, which is the tolerance below.
 
-    THE THUMB'S TRAVEL IS `_rail_room()` AND NOT THE VIEWPORT: since the
-    way home was parked at the foot of the rail (2026-09-07) the bottom
-    TOP_FOOT px of it belong to that button, the way a native scrollbar's
-    thumb stops above the arrow at its end. Asked of the page rather than
-    worked out here, because a test that recomputes the reservation is a
-    test that agrees with itself.
+    THE THUMB'S TRAVEL IS `_rail_room()`, AND SINCE 2026-09-08 THAT IS
+    THE WHOLE VIEWPORT AGAIN. The rail gave up its bottom TOP_FOOT px for
+    one night, while the way home was parked at its foot; the way home is
+    at the top middle of the page now and nothing else is on the rail, so
+    a thumb that stopped short of the end would be stopping for a button
+    that is not there. Asked of the page rather than worked out here,
+    because a test that recomputes the rule is a test that agrees with
+    itself.
     """
     import ui as ui_mod
     root = _tk_or_skip()
@@ -9431,9 +9433,9 @@ def test_the_thumb_can_be_held_and_dragged_and_the_view_follows() -> None:
         total, view = page.inner.winfo_height(), page._height
         assert total > view, (total, view)
         room = page._rail_room()
-        assert room == view - ui_mod.TOP_FOOT, (
-            f"the rail keeps {view - room} px for the way home, not "
-            f"{ui_mod.TOP_FOOT}")
+        assert room == view, (
+            f"the rail keeps {view - room} px of its foot back from the "
+            f"thumb, and there is nothing down there to keep it for")
         span = room - length
         drag = 50
         page.rail.event_generate("<Button-1>", x=3, y=top + 5)
@@ -9505,21 +9507,34 @@ def test_the_thumb_lights_under_the_pointer_without_moving_a_pixel(
         assert top + length <= page._rail_room(), (
             f"the thumb ends {top + length - page._rail_room()} px past "
             f"the bottom of its own rail")
-        # ...and the foot of the rail is the way home's, so the two never
-        # share a pixel however far down the page has gone.
-        assert top + length <= page._height - ui_mod.TOP_FOOT, (
-            f"at the end of the page the thumb reaches y{top + length} "
-            f"and the disc starts at y"
-            f"{page._height - ui_mod.TOP_INSET - ui_mod.TOP_DISC}")
+        # ...and at the end of a page it reaches the END of the rail,
+        # which it did not while the way home was parked down there.
+        assert top + length >= page._height - 1, (
+            f"at the end of the page the thumb stops at y{top + length} "
+            f"and the rail ends at y{page._height}")
     finally:
         root.destroy()
 
 
-def test_the_way_back_to_the_top_appears_only_once_the_page_has_left_it(
-) -> None:
-    """"When you start scrolling, have an arrow pointing up, like a jump
-    to the very top, but not too intrusive." So: not there at the top,
-    not there at all when everything fits, and back to 0 when pressed."""
+def test_the_way_back_to_the_top_waits_until_he_scrolls_back_up() -> None:
+    """His rule, 2026-09-08, and it replaces "once the page has left the
+    top".
+
+    "And maybe let the arrow appear only if I scroll up. Okay, so I
+    scroll down and I stayed on something, then only when I'm starting to
+    scroll up there will appear — and it will stay there. Okay, so if I
+    stop scrolling it, it will also be there."
+
+    So four things, in the order he said them: scrolling DOWN never shows
+    it however far it goes; the first notch back UP does; it is still
+    there after the page has been left alone; and it goes away when the
+    view arrives at the top, because there is then nowhere to jump to.
+    Pressing it is one of the ways of arriving.
+
+    Scrolling back down is deliberately NOT one of the ways it goes away
+    — "and it will stay there" — and that is asserted here so that
+    changing it later is a decision somebody makes on purpose.
+    """
     import tkinter as tk
 
     import ui as ui_mod
@@ -9531,16 +9546,51 @@ def test_the_way_back_to_the_top_appears_only_once_the_page_has_left_it(
         page.place(x=10, y=10)
         _a_page(root)
         assert not page.top_showing(), "it is there before anything moved"
+        for _ in range(4):
+            page.inner.event_generate("<MouseWheel>", delta=-120, x=5, y=5)
+        root.update()
+        assert page.canvas.canvasy(0) > 0, "nothing moved: nothing to test"
+        assert not page.top_showing(), \
+            "scrolling DOWN put the arrow on screen, which is the one " \
+            "thing he asked it not to do"
+
+        page.inner.event_generate("<MouseWheel>", delta=120, x=5, y=5)
+        root.update()
+        assert page.top_showing(), "he scrolled back up and there is no arrow"
+        was = page.canvas.canvasy(0)
+        assert was > 0, "one notch up went the whole way home by itself"
+
+        # "If I stop scrolling it, it will also be there." Nothing here is
+        # on a timer, so the test for that is that nothing takes it away.
+        for _ in range(20):
+            root.update()
+        assert page.top_showing(), "it went away while he sat still"
+
+        # ...and going back down leaves it alone as well.
         page.inner.event_generate("<MouseWheel>", delta=-120, x=5, y=5)
         root.update()
-        assert page.top_showing(), "the page moved and there is no way back"
+        assert page.canvas.canvasy(0) > was, "the page did not go back down"
+        assert page.top_showing(), \
+            "it vanished when he scrolled down again, and he said it " \
+            "would stay"
+
         page.top_button.event_generate("<Button-1>", x=5, y=5)
         root.update()
         assert page.canvas.canvasy(0) == 0, "it did not go home"
         assert not page.top_showing(), "it is still there at the top"
 
+        # ...and the latch is properly off: a scroll DOWN from the top
+        # does not bring it straight back.
+        page.inner.event_generate("<MouseWheel>", delta=-120, x=5, y=5)
+        root.update()
+        assert not page.top_showing(), \
+            "pressing it left the arrow armed, so the next notch down " \
+            "showed it again"
+
         short = _scrolling(root, rows=2)
         short.place(x=450, y=10)
+        root.update()
+        short.inner.event_generate("<MouseWheel>", delta=120, x=5, y=5)
         root.update()
         assert not short.top_showing(), \
             "a page that fits on screen offers a way back to itself"
@@ -9548,32 +9598,180 @@ def test_the_way_back_to_the_top_appears_only_once_the_page_has_left_it(
         root.destroy()
 
 
-def test_the_way_home_is_the_one_column_of_a_page_nothing_is_drawn_in(
-) -> None:
-    """Why the disc is at the foot of the rail and not in a corner.
+def test_the_way_home_hears_an_upward_move_however_it_was_made() -> None:
+    """The wheel is not the only way up.
 
-    It was in the bottom-left corner for a day and the owner sent two
-    photographs of it on 2026-09-07. "You can see it's a bit cut, because
-    you made it like a circle but also square" — a Tk widget is an opaque
-    rectangle, so the eleven per cent of the tile the circle leaves over
-    was the page's #14110c ground drawn on top of a #24201a row, seven
-    L* apart and plainly a square. And "the arrow covers the Show more,
-    so please move it" — the disc sat at x10..38 y404..432 of the Said
-    page and the Show 25 more line at x8..224 y383..409, measured on the
-    built window.
+    The thumb can be dragged and the empty rail pages, and "only when I'm
+    starting to scroll up" is about the VIEW moving up, not about which
+    control did it. All three routes end in `_paint_thumb`, which is
+    where the latch lives, so this walks each one on a page of its own
+    and asks the same question three times.
 
-    BOTH ARE THE SAME FACT: no corner of a scrolling page is free, so a
-    tile floating in one covers something and shows the wrong ground
-    under it. The only part of a page that is nothing but ground is the
-    column down its right-hand side — GUTTER px the canvas keeps clear of
-    the content, and the rail beside it, which paints a 4 px thumb in a
-    14 px strip. TOP_DISC is the two of them, and this holds the geometry
-    that argument rests on.
+    It also pins the one thing that must NOT read as an upward move: the
+    page growing under a still view. A press of Show more on the Said
+    adds twenty-five rows, and the fraction the thumb is drawn from drops
+    without the view having moved a pixel — which is why the latch is
+    measured in `canvasy` and not in that fraction.
     """
     import tkinter as tk
 
     import ui as ui_mod
-    import widgets as widgets_mod
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        # 1. the thumb, dragged.
+        page = _scrolling(root)
+        page.place(x=10, y=10)
+        _a_page(root)
+        page.canvas.yview_moveto(0.6)
+        page._paint_thumb()
+        root.update()
+        assert not page.top_showing(), (
+            "a jump straight to the middle is not a scroll up")
+        top, _length = page._thumb
+        page.rail.event_generate("<Button-1>", x=3, y=top + 5)
+        page.rail.event_generate("<B1-Motion>", x=3, y=top - 40)
+        page.rail.event_generate("<ButtonRelease-1>", x=3, y=top - 40)
+        root.update()
+        assert page.top_showing(), \
+            "the thumb was dragged up and the arrow did not come"
+        page.destroy()
+
+        # 2. the rail, paged.
+        page = _scrolling(root)
+        page.place(x=10, y=10)
+        root.update()
+        page.canvas.yview_moveto(0.6)
+        page._paint_thumb()
+        root.update()
+        assert not page.top_showing()
+        page.rail.event_generate("<Button-1>", x=3, y=1)
+        root.update()
+        assert page.top_showing(), \
+            "a press on the rail above the thumb paged up and the arrow " \
+            "did not come"
+        page.destroy()
+
+        # 3. a page that GROWS under a view that did not move.
+        page = _scrolling(root)
+        page.place(x=10, y=10)
+        root.update()
+        page.canvas.yview_moveto(0.6)
+        page._paint_thumb()
+        root.update()
+        where, (first, _last) = page.canvas.canvasy(0), page.canvas.yview()
+        for i in range(40):
+            tk.Label(page.inner, text=f"later row {i}", bg=ui_mod.BG,
+                     fg=ui_mod.FG).pack(anchor="w")
+        root.update()
+        page.update_idletasks()
+        page._paint_thumb()
+        root.update()
+        assert page.canvas.canvasy(0) == where, \
+            "the view moved when the rows arrived; this is measuring the " \
+            "wrong thing"
+        assert page.canvas.yview()[0] < first, \
+            "the page did not get longer, so the fraction did not drop"
+        assert not page.top_showing(), \
+            "twenty-five more rows read as a scroll up and the arrow " \
+            "appeared out of nowhere"
+    finally:
+        root.destroy()
+
+
+def test_the_way_home_is_big_enough_to_press_and_leaves_no_square() -> None:
+    """The size, and the halo — the two things he said about the button.
+
+    "The arrow is very small so I don't know if I like it." (2026-09-08.)
+    It was TOP_DISC = GUTTER * 2 = 20 px, and 20 was not a judgement about
+    buttons: it was the width of the one column of a page with nothing
+    drawn in it, which is where the button was parked. It is in the middle
+    of the page now, so the rail has stopped being what decides its size
+    and the window's own controls decide instead — which is what the two
+    bounds below are.
+
+    And the halo. A Tk widget is an opaque rectangle: whatever the shape
+    leaves over gets painted with the tile's background, and a circle
+    leaves a fifth of its tile over. Counted off the real bitmap on
+    2026-09-07, at the 28 px the button was then: 84 of 784 pixels were
+    still PURE ground colour, and over a card face those 84 are seven L*
+    darker than what is behind them — "you can see it's a bit cut,
+    because you made it like a circle but also square". This counts the
+    same pixels on the shape that replaced it. No Tk: `_arrow_tile_pil`
+    is split out of `_arrow_tile` exactly so this can be asked without a
+    window, the way `rounded_pil` is split out of `rounded`.
+    """
+    import ui as ui_mod
+
+    # Against the rest of the window, and not against the rail. The
+    # floor is the 32 px square Windows' own guidance calls a comfortable
+    # pointer target — and the 20 px one he called very small was well
+    # under it. The ceiling is a chip, because past that a button that
+    # floats over his rows stops being small and starts being in the way.
+    assert ui_mod.TOP_TILE >= 32, (
+        f"the way home is {ui_mod.TOP_TILE} px, under the 32 px square "
+        f"that is the smallest comfortable pointer target — and he has "
+        f"already said the 20 px one was too small to like")
+    assert ui_mod.TOP_TILE <= ui_mod.PILL_H, (
+        f"the way home is {ui_mod.TOP_TILE} px, bigger than the "
+        f"{ui_mod.PILL_H} px chips it sits under and the 30 px buttons "
+        f"beside them: it has stopped being a small control")
+
+    ground = tuple(int(ui_mod.CARD[i:i + 2], 16) for i in (1, 3, 5))
+    tile = ui_mod._arrow_tile_pil(ui_mod.TOP_TILE, ui_mod.TOP_ROUND,
+                                  ui_mod.CARD_HI, ui_mod.CARD,
+                                  ui_mod.STROKE, ui_mod.DIM)
+    assert tile.size == (ui_mod.TOP_TILE, ui_mod.TOP_TILE), tile.size
+    pixels = tile.load()
+    left = sum(1 for y in range(ui_mod.TOP_TILE)
+               for x in range(ui_mod.TOP_TILE)
+               if pixels[x, y] == ground)
+    whole = ui_mod.TOP_TILE ** 2
+    # The circle it replaced, at the same size, for the comparison the
+    # number only means anything against: a radius of half the side IS a
+    # circle, so this is the old shape drawn by the new function.
+    circle = ui_mod._arrow_tile_pil(ui_mod.TOP_TILE, ui_mod.TOP_TILE // 2,
+                                    ui_mod.CARD_HI, ui_mod.CARD,
+                                    ui_mod.STROKE, ui_mod.DIM)
+    round_px = circle.load()
+    was = sum(1 for y in range(ui_mod.TOP_TILE)
+              for x in range(ui_mod.TOP_TILE)
+              if round_px[x, y] == ground)
+    assert was > 100, (
+        f"a circle in a {ui_mod.TOP_TILE} px tile left only {was} pixels "
+        f"of its own background over, which means this measurement stopped "
+        f"measuring what it thinks it does")
+    assert left * 2 <= was, (
+        f"the shape leaves {left} of {whole} pixels showing its own "
+        f"background, against a circle's {was} — it was supposed to leave "
+        f"less than half as much, and that leftover is the square he "
+        f"photographed")
+    assert left <= whole // 16, (
+        f"{left} of {whole} pixels of the tile are its own background, "
+        f"which is over a sixteenth of it and starts being visible")
+
+
+def test_the_way_home_sits_at_the_top_middle_of_the_column_of_rows(
+) -> None:
+    """Where the button is, on a page with nothing else going on.
+
+    "I think put it in on the middle is good. Or maybe, I don't know, or
+    on the up side, like on the up middle — up." (2026-09-08, with a
+    photograph of the Said page carrying two drawn arrows, one at the top
+    middle of the list and one at the bottom.) The top was chosen: the
+    button moves the page UP, the bottom middle is where the Show more
+    line and the button under the page already live, and — measured — the
+    top middle floats over a painted card face far more of the time,
+    which is what decides whether the tile's own corners lie about their
+    colour.
+
+    MIDDLE OF THE CONTENT, NOT OF THE FRAME. The canvas holds everything
+    packed into it to `_width - GUTTER` and the rail is another RAIL_HIT
+    px to the right of that, so centring on the frame would sit the
+    button to the right of the column of rows it belongs to.
+    """
+    import ui as ui_mod
 
     import dashboard as dash
     root = _tk_or_skip()
@@ -9587,78 +9785,64 @@ def test_the_way_home_is_the_one_column_of_a_page_nothing_is_drawn_in(
         page.canvas.yview_moveto(0.5)
         page._paint_thumb()
         root.update()
+        assert not page.top_showing(), "a jump down is not a scroll up"
+        page.canvas.yview_scroll(-1, "units")
+        page._paint_thumb()
+        root.update()
         assert page.top_showing(), "nothing to measure: no way home"
-        disc = (page.top_button.winfo_x(), page.top_button.winfo_y())
-        size = (page.top_button.winfo_width(),
-                page.top_button.winfo_height())
-        assert size == (ui_mod.TOP_DISC, ui_mod.TOP_DISC), size
-        # It straddles the seam: the content's right edge is its left
-        # edge, and it stops GUTTER px into the rail.
-        assert disc[0] == page.canvas.winfo_width() - ui_mod.GUTTER, (
-            f"the disc starts at x{disc[0]} and the canvas keeps its "
-            f"strip clear from x{page.canvas.winfo_width() - ui_mod.GUTTER}")
-        assert (disc[0] + size[0]
-                <= page.canvas.winfo_width() + ui_mod.RAIL_HIT), \
-            "the disc hangs off the right of the page it belongs to"
-        # Nothing packed into the page may reach it. `inner` is held to
-        # the strip by the canvas, so this is true by construction — and
-        # it is asserted because construction is one edit away from not
-        # being true any more.
-        for child in page.inner.winfo_children():
-            right = child.winfo_x() + child.winfo_width()
-            assert right <= disc[0], (
-                f"a row reaches x{right} and the way home starts at "
-                f"x{disc[0]}")
 
-        # ...and the ✕ that used to be the argument for the other corner.
-        # `widgets.PileRow` puts Yes / No / ✕ flush against the row's
-        # right edge; the disc clears them now by being further right
-        # than the row goes at all.
-        holder = tk.Frame(root, bg=ui_mod.CARD)
-        holder.pack()
-        row = widgets_mod.PileRow(
-            holder, dash.CW - 28, bg=ui_mod.CARD, mark="notify",
-            eyebrow="A QUESTION FOR YOU", text="which one?",
-            buttons=(("Yes", "gold", lambda: None),
-                     ("No", "", lambda: None),
-                     ("✕", "close", lambda: None)),
-            height=dash.PILE_ROW_H)
-        row.pack()
-        root.update_idletasks()
-        close = row.buttons["✕"]
-        strip = close.master
-        # The pile card insets its rows by its own 14 px pad, so this is
-        # the ✕ in the page's coordinates.
-        x0 = 14 + strip.winfo_x() + close.winfo_x()
-        x1 = x0 + close.winfo_reqwidth()
-        assert x1 - x0 <= 30, f"the ✕ is {x1 - x0} px wide, not a small mark"
-        assert x1 <= disc[0], (
-            f"the row's ✕ ends at x{x1} and the way home starts at "
-            f"x{disc[0]} — they are on top of each other")
+        x, y = page.top_button.winfo_x(), page.top_button.winfo_y()
+        w, h = (page.top_button.winfo_width(),
+                page.top_button.winfo_height())
+        assert (w, h) == (ui_mod.TOP_TILE, ui_mod.TOP_TILE), (w, h)
+        middle = (page.canvas.winfo_width() - ui_mod.GUTTER) / 2
+        assert abs((x + w / 2) - middle) <= 1, (
+            f"the button is centred on x{x + w / 2} and the column of "
+            f"rows on x{middle}")
+        assert y == ui_mod.TOP_INSET, (
+            f"it hangs {y} px below the top of the page, not "
+            f"{ui_mod.TOP_INSET}")
+        assert y + h < page.winfo_height(), \
+            "it hangs off the bottom of the page it belongs to"
+        # The thumb is on the rail, past the right edge of the canvas,
+        # and at the top of a long page it is level with the button — so
+        # the rail is the one thing the button could have collided with.
+        assert page._thumb[1], "no thumb: this proves nothing"
+        assert x + w < page.canvas.winfo_width(), (
+            f"the button reaches x{x + w} and the rail begins at "
+            f"x{page.canvas.winfo_width()}")
     finally:
         root.destroy()
 
 
-def test_the_way_home_covers_nothing_on_any_of_the_six_places() -> None:
+def test_the_way_home_lands_the_same_way_on_all_of_the_six_places(
+) -> None:
     """The other half of it, on the real window rather than a stand-in.
 
-    "What more — 'Show more' — covers... the arrow covers the 'Show
-    more', so please move it." (2026-09-07.) One screen is not the test:
-    the disc is the Scroller's and every place has one, so this walks all
-    six, forces each page off its top, and asks the same question of each
-    — does the disc's box touch ANYTHING that page has drawn, or the
-    thumb beside it?
+    One screen is not the test: the button is the Scroller's and every
+    place has one, so this walks all six, forces each page to have been
+    scrolled back up, and asks the same questions of each — is it the
+    right size, is it centred on that page's own column of rows, is it
+    inside the viewport, is it clear of the thumb, and is it clear of
+    everything the SHEET has put beside the page (the vocabulary panel
+    that stands next to Said, Corrections and Keys, the row of filter
+    chips over the Said list, the footer under it).
 
-    Said is then scrolled to its very end on purpose, because that is the
-    one moment the two controls he complained about are both on screen
-    and it is exactly the moment he wants to press Show more.
+    Said is then taken to its very end on purpose, because the bottom of
+    that list is where his first complaint came from — "the arrow covers
+    the 'Show more', so please move it" — and it is the spot the button
+    would have gone back to if the bottom middle had been chosen.
 
     Corrections and Problems are given proposals and reports of their
     own, because on this machine both are empty and an empty page has
-    nothing to scroll and so nothing to cover — which would leave this
-    test passing while measuring two places out of six.
+    nothing to scroll. Home and Keys are given a long filler instead:
+    neither of them scrolls with a real day's load — the Home is a
+    summary that is built to fit exactly and the Keys place is a board
+    with a short list under it — so on those two the button never appears
+    at all, and the filler is the only way to ask where it WOULD land.
     """
     import datetime as dt
+    import tkinter as tk
 
     import ui as ui_mod
 
@@ -9728,6 +9912,35 @@ def test_the_way_home_covers_nothing_on_any_of_the_six_places() -> None:
                 leaves(child, out, cx, cy)
             return out
 
+        def under(child, page):
+            """Is `child` inside `page`? Walked, and not asked of the
+            widget PATH: `.!frame2` is a prefix of `.!frame22`, which
+            would quietly excuse a sibling from being measured."""
+            node = child
+            while node is not None:
+                if node is page:
+                    return True
+                node = node.master
+            return False
+
+        def scrolled_back_up(page):
+            """Take the page to its end and then one notch back up —
+            which is the only thing that puts the button on screen."""
+            page.canvas.yview_moveto(1.0)
+            page._paint_thumb()
+            root.update()
+            first, last = page.canvas.yview()
+            if last - first >= 0.999:
+                tk.Frame(page.inner, bg=ui_mod.BG, width=10,
+                         height=900).pack()
+                root.update()
+                page.canvas.yview_moveto(1.0)
+                page._paint_thumb()
+                root.update()
+            page.canvas.yview_scroll(-1, "units")
+            page._paint_thumb()
+            root.update()
+
         seen = []
         for _key, name in dash.NAV:
             board._show(name)
@@ -9738,51 +9951,58 @@ def test_the_way_home_covers_nothing_on_any_of_the_six_places() -> None:
             for _ in range(60):
                 root.update()
             for page in pages(board.sheet):
-                page.canvas.yview_moveto(1.0)
-                page._paint_thumb()
-                root.update()
-                if not page.top_showing():
-                    continue      # this place has nothing to scroll today
+                scrolled_back_up(page)
+                assert page.top_showing(), (
+                    f"on {name} the page was taken to its end and scrolled "
+                    f"back up and no way home appeared")
                 seen.append(name)
                 bx, by = page.top_button.winfo_x(), page.top_button.winfo_y()
                 bw, bh = (page.top_button.winfo_width(),
                           page.top_button.winfo_height())
-                top = page.canvas.canvasy(0)
-                for child, cx, cy, cw, ch in leaves(page.inner, []):
-                    cy -= top                      # into the viewport
-                    if not (cx < bx + bw and cx + cw > bx
-                            and cy < by + bh and cy + ch > by):
+                assert (bw, bh) == (ui_mod.TOP_TILE, ui_mod.TOP_TILE), (
+                    f"on {name} the way home is {bw}x{bh}")
+                middle = (page.canvas.winfo_width() - ui_mod.GUTTER) / 2
+                assert abs((bx + bw / 2) - middle) <= 1, (
+                    f"on {name} the button is centred on x{bx + bw / 2} "
+                    f"and that page's rows on x{middle}")
+                assert by == ui_mod.TOP_INSET, (
+                    f"on {name} it hangs {by} px below the top of the page")
+                assert by + bh < page.winfo_height(), (
+                    f"on {name} it reaches y{by + bh} of a "
+                    f"{page.winfo_height()} px page")
+                assert bx + bw < page.canvas.winfo_width(), (
+                    f"on {name} it reaches x{bx + bw} and the rail begins "
+                    f"at x{page.canvas.winfo_width()}")
+                # Nothing the SHEET put beside the page may be under it.
+                sx = page.winfo_x() + bx
+                sy = page.winfo_y() + by
+                for child, cx, cy, cw, ch in leaves(board.sheet, []):
+                    if under(child, page):
+                        continue          # the page's own insides
+                    if not (cx < sx + bw and cx + cw > sx
+                            and cy < sy + bh and cy + ch > sy):
                         continue
                     label = (child.cget("text")[:40]
                              if "text" in child.keys() else
                              child.__class__.__name__)
                     raise AssertionError(
-                        f"on {name} the way home (x{bx}..{bx + bw} "
-                        f"y{by}..{by + bh}) sits on {label!r} at "
+                        f"on {name} the way home (sheet x{sx}..{sx + bw} "
+                        f"y{sy}..{sy + bh}) sits on {label!r} at "
                         f"x{cx}..{cx + cw} y{cy}..{cy + ch}")
-                thumb_top, thumb_len = page._thumb
-                assert thumb_top + thumb_len <= by, (
-                    f"on {name} the thumb reaches y{thumb_top + thumb_len} "
-                    f"and the way home starts at y{by}")
-        # The Home is a summary that is meant to fit and the Keys place
-        # is a board with a short list under it, so those two need not
-        # scroll at all. The four that hold lists must: Said above all,
-        # because it is the page he photographed.
-        for must in ("Said", "Corrections", "Problems", "Settings"):
+        for must in ("Home", "Corrections", "Problems", "Said", "Keys",
+                     "Settings"):
             assert must in seen, (
                 f"the {must} page had no way home to measure — only "
                 f"{seen} did, so this test proved almost nothing")
 
-        # Said, at the end, where he photographed it.
+        # Said, at its end, where he photographed the collision.
         board._show("Said")
         for _ in range(80):
             root.update()
         page, more = board.parts["page"], board.parts["more"]
         assert more.winfo_manager(), \
             "a hundred rows and no Show more: the list stopped paging"
-        page.canvas.yview_moveto(1.0)
-        page._paint_thumb()
-        root.update()
+        scrolled_back_up(page)
         top = page.canvas.canvasy(0)
         mx, my = more.winfo_x(), more.winfo_y() - top
         mw, mh = more.winfo_width(), more.winfo_height()
@@ -9796,6 +10016,11 @@ def test_the_way_home_covers_nothing_on_any_of_the_six_places() -> None:
                     and my < by + bh and my + mh > by), (
             f"the way home (x{bx}..{bx + bw} y{by}..{by + bh}) is on top "
             f"of Show more (x{mx}..{mx + mw} y{my}..{my + mh}) again")
+        # ...and not merely missing it: it is a page above it, which is
+        # the whole reason the top middle was taken over the bottom one.
+        assert my - (by + bh) > 200, (
+            f"Show more is only {my - (by + bh)} px below the way home; "
+            f"the top of the page was chosen to be nowhere near it")
 
 
 # ------------------------------------------------------- the window itself
