@@ -36,6 +36,16 @@ open one is a question nobody has answered, and dropping it to save a
 kilobyte would make the store lie about what is wrong with the app. That
 is review.py's KEEP_DECIDED rule with the same reasoning behind it.
 
+THE ONE THING THAT CAN TAKE A REPORT OFF THE LIST IS HIM. remove()
+throws one away for good — and no surface may call it on a single press.
+The dashboard's ✕ asks first ("Delete this report?") and deletes only on
+the second, deliberate press, because this store has already lost two of
+his real reports to a cleanup that did not ask (2026-09-04) and he asked
+for the guard in the same breath as the button: "I don't want the
+reports to be deleted instantly". A resolution is not a delete either:
+resolve() moves a report to FIXED or CLOSED and back to OPEN as often as
+he likes, and Reopen on the row is that call.
+
 NOTHING HERE MAY TAKE DICTATION DOWN. The store is the shape review.py
 settled on — a lock file beside the json so the app and the dashboard do
 not write over each other, a per-process temp name and one rename so a
@@ -717,6 +727,41 @@ class Store:
         except OSError as e:
             log.warning("problems: could not resolve %s (%s)", ident, e)
             return False
+
+    def remove(self, ident: str) -> dict | None:
+        """Throw one report away, and hand back what was thrown.
+
+        None means nothing changed: no such id, or the file could not be
+        written — resolve()'s contract, for resolve()'s reason (a
+        dashboard button is the caller and a traceback there is a dead
+        window). The item comes back rather than a bool so the surface
+        that asked can say what it just deleted, and so a caller that
+        wants an undo has the row in its hand.
+
+        THE EVIDENCE STAYS ON DISK. The screenshot and the copied wav
+        pinned into problems\\ are left exactly where they are, which is
+        already what happens when _trim ages an answered report out. A
+        row leaving the list is him tidying a list; making a recording of
+        his own voice unrecoverable is a different act, and it is not one
+        a ✕ on a row should be able to do.
+
+        ASKING IS THE CALLER'S JOB, and it is not optional — see the
+        module docstring. This method deletes.
+        """
+        try:
+            with self._locked():
+                data = self._load()
+                found = next((i for i in data["items"]
+                              if i.get("id") == ident), None)
+                if found is None:
+                    return None
+                data["items"] = [i for i in data["items"]
+                                 if i.get("id") != ident]
+                self._save(data)
+                return found
+        except OSError as e:
+            log.warning("problems: could not delete %s (%s)", ident, e)
+            return None
 
 
 # ---------------------------------------------------------------------------

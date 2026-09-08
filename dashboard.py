@@ -1400,6 +1400,7 @@ class Dashboard:
         # rebuilds every row a second, and a question that dies with its
         # row is a ✕ that deletes on one press after all.
         self._problem_asking = ""
+        self._asking_row = None     # ...and the row it is drawn on now
         # The routine's branches, as git last answered. None is "nobody
         # has asked yet", which is not the same as "there are none".
         self._weekly = None
@@ -3409,7 +3410,7 @@ class Dashboard:
         # again after a push. Never on the poll: five spawns a second for
         # a list that changes once a week.
         self._scan_weekly()
-        self._fill_problems()
+        self._fill_problems(home=True)
 
     def _waiting_all(self) -> None:
         """The old door to the backlog. It is a place now."""
@@ -3427,7 +3428,18 @@ class Dashboard:
                 != getattr(self, "_questions_stamp", None)):
             self._fill_problems()
 
-    def _fill_problems(self) -> None:
+    def _fill_problems(self, *, home: bool = False) -> None:
+        """Draw the whole list again.
+
+        `home` only when the TAB is being opened. Every other caller —
+        the poll that sees another process write the store, a Fixed, a
+        Reopen, a ✕ — leaves the view exactly where he was reading,
+        because this rebuilds every row from scratch and taking him back
+        to the top is taking the list away from him. His words on
+        2026-09-08, pressing ✕ on a report far down the page: "it makes
+        the screen jump up and then I just scroll down and then press
+        delete".
+        """
         if "problems_list" not in self.parts:
             return
         self._problems_stamp = self._problems_stat()
@@ -3461,9 +3473,13 @@ class Dashboard:
         else:
             head.place(x=PAD, y=66)
         scroller = self.parts["problems_list"]
+        # Measured BEFORE the rows go: clear() empties the page and the
+        # view drops to the top with it.
+        place = scroller.keep_place()
         scroller.clear()
         self._q_fields = {}
         self._push_buttons = {}
+        self._asking_row = None
         empty = self.parts["problems_empty"]
         empty.place_forget()
         if module is None:
@@ -3514,7 +3530,16 @@ class Dashboard:
             self._problem_row(scroller, module, item, open_=False)
             self._question_block(scroller, qmodule,
                                  homed.get(str(item.get("id", "")), []), "")
-        scroller.to_top()
+        if home:
+            scroller.to_top()
+        else:
+            scroller.go_back_to(place)
+        # And if a row grew where it stands — the "are you sure" opening
+        # under the last report on the page — the least scroll that puts
+        # its two answers on screen. Nothing at all when they already
+        # are, which is the usual case.
+        if self._asking_row is not None:
+            scroller.bring_into_view(self._asking_row)
         # The echo poll runs only while there is a field to read, and it
         # stops itself the moment the screen goes.
         if self._q_fields and self._q_after is None and not self.closing:
@@ -3675,6 +3700,9 @@ class Dashboard:
             row.create_image(edge - shot_w, 32 + text_h, anchor="ne",
                              image=heard)
         if asking:
+            # _fill_problems scrolls to this one if it grew off the
+            # bottom edge of the page.
+            self._asking_row = row
             row.create_text(14, height - 62, anchor="nw", font=(ui.UI, 9),
                             fill=ui.FG,
                             text="Delete this report? It does not come "

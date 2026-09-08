@@ -1478,6 +1478,81 @@ class Scroller(tk.Frame):
         self.canvas.yview_moveto(0)
         self._paint_thumb()
 
+    def keep_place(self) -> tuple:
+        """Where the view is, so a page rebuilt underneath it can be put
+        back. Hand what comes out of here to `go_back_to`.
+
+        IN PIXELS, and with the way home's latch beside it. A list that
+        is rebuilt is a list that has probably changed length, so the
+        FRACTION the thumb is drawn from means something different
+        afterwards — the same reason `_asked_for_the_way_home` measures
+        `canvasy(0)` and not `yview()[0]`. The latch travels with it
+        because `clear()` drops the view to the top for as long as the
+        page is empty, and a rebuild that read that as "he scrolled up"
+        would pop the arrow tile out of nowhere every time a row moved.
+        """
+        try:
+            return (float(self.canvas.canvasy(0)), bool(self._armed))
+        except tk.TclError:
+            return (0.0, False)
+
+    def go_back_to(self, place: tuple) -> None:
+        """Put the view back where `keep_place` found it.
+
+        The rows are packed by the time this is called and the canvas
+        does not know how tall they are yet — the scrollregion is set
+        from the inner frame's `<Configure>`, which has not happened —
+        so the pending geometry is flushed here first. Without that the
+        scroll clamps to a page that is still empty and lands at the top,
+        which is the bug this exists to fix.
+
+        Scrolled in UNITS because the canvas carries a
+        `yscrollincrement`: a unit is SCROLL_STEP px, `yview_moveto`
+        would snap to one anyway, and counting from the top is the one
+        arithmetic that does not care how long the page has become. Tk
+        clamps at the end of a page that got shorter.
+        """
+        where, armed = place
+        try:
+            self.update_idletasks()
+            self.canvas.yview_moveto(0)
+            steps = int(round(float(where) / SCROLL_STEP))
+            if steps > 0:
+                self.canvas.yview_scroll(steps, "units")
+            # Both of these BEFORE _paint_thumb, which reads them: the
+            # arrow is his latch and this move is not his.
+            self._armed = armed
+            self._was_at = self.canvas.canvasy(0)
+            self._paint_thumb()
+        except tk.TclError:
+            pass                          # the page went away under us
+
+    def bring_into_view(self, widget) -> None:
+        """Scroll the LEAST that puts all of `widget` on screen, and
+        nothing at all when it already is.
+
+        For a row that grew where it stands — an "are you sure" opening
+        under the last report on the page — whose new bottom edge would
+        otherwise be the one thing he has to go looking for.
+        """
+        try:
+            self.update_idletasks()
+            top = widget.winfo_y()
+            bottom = top + widget.winfo_height()
+            view = self.canvas.canvasy(0)
+            if bottom > view + self._height:
+                steps = math.ceil((bottom - view - self._height)
+                                  / SCROLL_STEP)
+            elif top < view:
+                steps = -math.ceil((view - top) / SCROLL_STEP)
+            else:
+                return
+            self.canvas.yview_scroll(int(steps), "units")
+            self._was_at = self.canvas.canvasy(0)
+            self._paint_thumb()
+        except tk.TclError:
+            pass
+
     def clear(self) -> None:
         for child in self.inner.winfo_children():
             child.destroy()

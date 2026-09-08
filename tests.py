@@ -19407,6 +19407,233 @@ def test_a_week_that_is_pushed_leaves_the_list_and_waits_behind_a_line(
         assert drawn == ["weekly/2026-09-05-2"], drawn
 
 
+def test_an_answered_report_reopens_and_the_x_asks_before_it_deletes(
+) -> None:
+    """The two things he asked for on 2026-09-08, on the row itself.
+
+    He found four of his own reports closed and did not close them: "open
+    them again... and if I close something I should be able to open it
+    again, because right now I cannot". So an ANSWERED row carries
+    Reopen, and pressing it puts the report back on the list with no
+    resolution date and nobody's name on it.
+
+    And the delete: "add an X, and when I'm pressing the X a question
+    will jump — are you sure — because I don't want the reports to be
+    deleted instantly". So the ✕ writes NOTHING. It grows the row into a
+    question with Delete and Keep it under it, Keep it takes the question
+    away and leaves the report, and only Delete reaches the store. That
+    is the whole point of the test: the press that used to be the delete
+    is asserted here to have deleted nothing.
+
+    The store is a temp one. It is never his — see the cleanup that ate
+    two real reports while screenshotting this very screen.
+    """
+    import shutil
+    import tkinter as tk
+
+    import ui as ui_mod
+
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="problems-"))
+    try:
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        ident = store.add({"text": "the recordings tab shows yesterday",
+                           "kind": "wrong", "where": "recordings"})["id"]
+        assert store.resolve(ident, problems_mod.CLOSED, by="dashboard")
+
+        with _window() as board:
+            if board is None:
+                return
+            board.closing = True
+            board._scan_weekly = lambda: None   # git is not the subject
+            board._write_digest = lambda: None  # nor is his problems.md
+            board._problems_store = lambda: store
+            board._show("Problems")
+            board.root.update()
+
+            def controls() -> dict:
+                """Every pressable thing on the list, by its label."""
+                found: dict = {}
+                stack = list(board.parts["problems_list"]
+                             .inner.winfo_children())
+                while stack:
+                    widget = stack.pop()
+                    if isinstance(widget, ui_mod.Button):
+                        found[widget.itemcget(widget._label, "text")] = widget
+                    elif isinstance(widget, tk.Label):
+                        found.setdefault(str(widget.cget("text")), widget)
+                    stack.extend(widget.winfo_children())
+                return found
+
+            def words() -> str:
+                out = []
+                stack = list(board.parts["problems_list"]
+                             .inner.winfo_children())
+                while stack:
+                    widget = stack.pop()
+                    if isinstance(widget, tk.Canvas):
+                        for item in widget.find_all():
+                            if widget.type(item) == "text":
+                                out.append(str(widget.itemcget(item, "text")))
+                    try:
+                        out.append(str(widget.cget("text")))
+                    except Exception:
+                        pass
+                    stack.extend(widget.winfo_children())
+                return "\n".join(out)
+
+            def press(label: str) -> None:
+                widget = controls().get(label)
+                assert widget is not None, f"no {label!r} on the row: " \
+                                           f"{sorted(controls())}"
+                if isinstance(widget, ui_mod.Button):
+                    widget._released(None)
+                else:
+                    widget.event_generate("<Button-1>")
+                board.root.update()
+
+            # ANSWERED, and offering the way back.
+            assert "Reopen" in controls(), sorted(controls())
+            assert "closed" in words(), words()
+            press("Reopen")
+            back = store.get(ident)
+            assert back["status"] == problems_mod.OPEN, back
+            assert back["resolved"] is None and back["by"] == "", back
+            assert "Reopen" not in controls(), "it is open — nothing to undo"
+            assert "Fixed" in controls() and "Close" in controls()
+
+            # THE ✕ WRITES NOTHING.
+            before = json.loads((tmp / problems_mod.STORE_NAME)
+                                .read_text("utf-8"))
+            press("✕")
+            assert json.loads((tmp / problems_mod.STORE_NAME)
+                              .read_text("utf-8")) == before, \
+                "the ✕ touched the store before he had answered"
+            assert board._problem_asking == ident
+            said = words()
+            assert "Delete this report?" in said, said
+            assert "Delete" in controls() and "Keep it" in controls()
+            assert "✕" not in controls(), "it has already been asked"
+
+            # Keep it: the question goes, the report stays.
+            press("Keep it")
+            assert board._problem_asking == ""
+            assert "Delete this report?" not in words()
+            assert store.get(ident) is not None
+            assert "✕" in controls()
+
+            # And the second, deliberate press is the one that deletes.
+            press("✕")
+            press("Delete")
+            assert store.get(ident) is None, "Delete did not delete"
+            assert store.items() == []
+            assert board._problem_asking == ""
+            assert "Nothing reported yet" in str(
+                board.parts["problems_empty"].cget("text"))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_pressing_the_x_on_a_report_keeps_the_page_where_he_was_reading(
+) -> None:
+    """His words on 2026-09-08, the day after the ✕ was built: "when I'm
+    pressing the X button to delete the problem it makes the screen jump
+    up and then I just scroll down and then press delete".
+
+    _fill_problems rebuilds every row from scratch and ended in
+    to_top(), so the ✕ — which writes nothing and is a redraw and
+    nothing else — threw the whole list back to the beginning and left
+    him to find the row again. Every redraw but the one that OPENS the
+    tab now puts the view back where it was, in pixels, and the answer he
+    has to press is on screen when it lands.
+
+    Twenty reports, because the bug cannot exist on a page that does not
+    scroll. The store is a temp one, never his.
+    """
+    import shutil
+    import tkinter as tk
+
+    import ui as ui_mod
+
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="problems-"))
+    try:
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        for n in range(20):
+            store.add({"text": f"report number {n} of a list long enough "
+                               f"to have somewhere to be lost in",
+                       "kind": "wrong", "where": "recordings"})
+
+        with _window() as board:
+            if board is None:
+                return
+            board.closing = True
+            board._scan_weekly = lambda: None
+            board._write_digest = lambda: None
+            board._problems_store = lambda: store
+            board._show("Problems")
+            board.root.update()
+
+            page = board.parts["problems_list"]
+            page.canvas.yview_scroll(12, "units")
+            page._paint_thumb()
+            board.root.update()
+            where = page.canvas.canvasy(0)
+            assert where > 0, "the page did not scroll: nothing to lose"
+
+            def cross_on_screen():
+                """The ✕ of a row he can see, with room under it for the
+                question the press opens."""
+                view = page.canvas.canvasy(0)
+                for row in page.inner.winfo_children():
+                    top = row.winfo_y()
+                    if not view + 8 <= top <= view + page._height - 160:
+                        continue
+                    for child in row.winfo_children():
+                        if (isinstance(child, tk.Label)
+                                and child.cget("text") == "✕"):
+                            return row, child
+                return None, None
+
+            row, cross = cross_on_screen()
+            assert cross is not None, "no ✕ on screen to press"
+            cross.event_generate("<Button-1>")
+            board.root.update()
+            assert board._problem_asking, "the ✕ did not ask"
+            landed = page.canvas.canvasy(0)
+            assert landed > 0, "the ✕ threw the page back to the top"
+            assert abs(landed - where) <= ui_mod.SCROLL_STEP * 3, \
+                f"the page moved {landed - where} px under him"
+            # And the two answers are ON SCREEN, not below the fold.
+            asked = board._asking_row
+            assert asked is not None and asked.winfo_exists()
+            bottom = asked.winfo_y() + asked.winfo_height()
+            assert bottom <= page.canvas.canvasy(0) + page._height + 1, \
+                "the question opened off the bottom of the page"
+
+            # The same again for the press that does delete.
+            gone = None
+            for child in asked.winfo_children():
+                if (isinstance(child, ui_mod.Button)
+                        and child.itemcget(child._label, "text") == "Delete"):
+                    gone = child
+            assert gone is not None, "no Delete on the row that asked"
+            gone._released(None)
+            board.root.update()
+            assert len(store.items()) == 19, "Delete did not delete"
+            assert page.canvas.canvasy(0) > 0, \
+                "deleting threw the page back to the top"
+
+            # Opening the tab, and only that, goes home.
+            board._show("Problems")
+            board.root.update()
+            assert board.parts["problems_list"].canvas.canvasy(0) == 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
     """The write is config.set_values with the dotted path and nothing
     else — the line editor that keeps the comments. A refused value
@@ -24089,6 +24316,56 @@ def test_a_corrupt_problems_json_does_not_stop_a_report() -> None:
         md = problems_mod.digest(problems_mod.Store(path),
                                 tmp / problems_mod.DIGEST_NAME)
         assert md.is_file() and "Nothing open." in md.read_text("utf-8")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_report_he_deletes_leaves_the_list_and_keeps_its_evidence(
+) -> None:
+    """remove() is the only thing in this store that loses a report, and
+    it loses ONLY the report.
+
+    The wav copied into problems\\ and the screenshot pinned beside it
+    are left where they are — the same as when _trim ages an answered
+    report out — because a row leaving a list and a recording of his
+    voice becoming unrecoverable are not the same act, and this store has
+    already paid for the second one once (2026-09-04, a cleanup that did
+    not ask).
+
+    What comes back is the item, not a bool: the surface that deleted it
+    has to be able to say what it just deleted.
+    """
+    import shutil
+
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="problems-"))
+    try:
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        folder = tmp / problems_mod.FOLDER_NAME
+        folder.mkdir()
+        (folder / "shot.jpg").write_bytes(b"not really a jpeg")
+        keep = store.add({"text": "this one stays", "kind": "wrong"})["id"]
+        drop = store.add({"text": "and this one goes", "kind": "idea",
+                          "shot": f"{problems_mod.FOLDER_NAME}/shot.jpg"})
+
+        assert store.remove("no-such-report") is None, \
+            "an id that is not there must change nothing"
+        assert len(store.items()) == 2
+
+        gone = store.remove(drop["id"])
+        assert gone is not None and gone["id"] == drop["id"]
+        assert gone["text"] == "and this one goes", gone
+        assert [i["id"] for i in store.items()] == [keep], store.items()
+        assert store.get(drop["id"]) is None
+        assert store.summary()["total"] == 1
+        assert (folder / "shot.jpg").is_file(), \
+            "deleting a report took its screenshot with it"
+        # And it is gone off the disk, not just out of this handle.
+        assert [i["id"] for i in
+                problems_mod.Store(tmp / problems_mod.STORE_NAME).items()] \
+            == [keep]
+        assert store.remove(drop["id"]) is None, "deleted twice"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
