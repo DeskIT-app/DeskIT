@@ -746,17 +746,39 @@ exactly what classic did.
   anywhere in that chain puts a card on the dot or lands the light in an
   empty corner.
 
-  **The cards still follow the CORNER, not the dragged dot** — known,
-  and left that way on purpose. Drag the dot into the middle of the
-  screen and the shelf still opens in `[dot] corner`, because
-  `HintCard.origin` reserves `DOT_ROOM` in a CORNER and there is no
-  agreed answer yet for "beside a dot that is nowhere near an edge". The
-  shelf remembers its own dragged position (`[shelf] x/y`), so the
-  workaround is to drag it too. Anything that changes this has to answer
-  the placement question for all four cards at once.
+  **The cards follow the DOT, not only the corner — since 2026-09-08.**
+  This paragraph used to say the opposite and called it permanent; the
+  owner then asked for it in as many words ("I want it to be able to
+  move where the dot is"), so the question it left open — "beside a dot
+  that is nowhere near an edge" — has an answer now, and the answer is
+  `overlay.beside_dot`: ABOVE the dot when the whole card fits above it,
+  BELOW when it does not, centred on the dot and slid back inside the
+  WORK AREA OF THE MONITOR THE DOT IS ON (`overlay._monitor_work`, not
+  the primary's — the screen on the left starts at x = -1920), clamped
+  last against the whole virtual desktop, and never sharing a pixel with
+  the dot. A card taller than the room above and below goes beside it,
+  on the side with more room.
+
+  The three rules that decide it, in `HintCard.origin` and in this
+  order: a position HE dragged this card to wins; then the dot, if this
+  card FOLLOWS the dot and the dot has been dragged out of its corner;
+  then the corner, exactly as before. "Follows the dot" is `corner =
+  "dot"` in the file and it is carried past `corner_for` — which erases
+  the word — as `HintConfig/ShelfConfig.follow_dot` (`config.follows_dot`),
+  because a card that NAMED the dot's corner must keep it while a
+  follower moves. main.py hands a follower `dot_at=self._dot_beside`, a
+  callable and not a number: the dot moves and the cards are built once,
+  at startup. It answers None while the dot is still in its corner, and
+  None means the corner rule — which is why every corner test written
+  before this still passes unchanged.
+
+  Changing it still has to answer the placement question for all four
+  cards at once; the notification and review cards are NOT followers
+  (`[notify]`/`[review] corner` never says "dot") and were left alone.
 - **Moving the dot is a LIVE command, and the two gestures on the disc
   live on different Windows messages.** "Move the dot" (Settings ›
-  Cards) goes down `control.py` as `dot` / `do = move`, the app arms
+  General, beside the corner menu) goes down `control.py` as `dot` /
+  `do = move`, the app arms
   `overlay.StatusDot.move()` for `DOT_MOVE_S` seconds, and the dot's
   own painter picks that up on its next frame — nothing restarts, which
   is the whole of the owner's complaint. While it is armed the disc
@@ -772,6 +794,26 @@ exactly what classic did.
   with a dot that will not open the shelf and a control window he cannot
   see. The dashboard has its own longer backstop (`DOT_WAIT_S`) for an
   app that stops answering mid-drag.
+
+  **NEITHER PAINT PATH'S DRAG CAN BE DRIVEN WITHOUT A REAL MOUSE, and
+  the second half of that was measured on 2026-09-08.** The glass path
+  is Windows' own modal move loop, which wants real input, and the
+  window's position is re-applied by every `UpdateLayeredWindow`, so a
+  `SetWindowPos` standing in for a drag is undone before the message
+  lands. The Tk fallback looks like the way round it — it tracks the
+  drag with its own `<Button-1>` / `<B1-Motion>` bindings — and it is
+  not: Tk builds a mouse event's position from `GetMessagePos`, which
+  reports the last message taken OFF THE QUEUE, and `SendMessage` never
+  goes near the queue. Probed on the hidden desktop, every synthetic
+  press arrived at the real pointer's coordinates, outside the disc, and
+  `press` returned having done nothing. Everything AROUND the drag is
+  covered headlessly — the pipe
+  (`test_the_move_button_reaches_the_running_app_down_the_real_pipe`),
+  the arming and the HTCAPTION answer
+  (`test_the_real_dot_window_moves_while_the_app_keeps_running`), the
+  deadline, the clamp and the write — so what is left for a hand on the
+  mouse is the drag itself and nothing else. Do not spend an evening on
+  it again.
 - **A glass hook is named `<thing>_run`.** The shelf's is
   `skin.shelf_run(card)`, registered in `skin\__init__.py` exactly the
   way `notify_run` is; `tests.py:14791` enforces the naming rule, and a

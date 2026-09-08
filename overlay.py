@@ -593,6 +593,147 @@ def _virtual_screen():
     return None
 
 
+def _monitor_work(x: int, y: int):
+    """(x, y, w, h) of the WORK AREA of the MONITOR that point is on, or
+    None if Windows will not say.
+
+    `_work_area` is the primary monitor's and that is what the corners
+    are measured from, which is right while the dot is in a corner.
+    Once he has dragged the dot it can be on any screen, and "the panel
+    stays fully on the screen it is on" is a question about THAT
+    monitor: on this machine the second one starts at x = -1920, so the
+    primary's work area says nothing useful about a dot over there.
+    MONITOR_DEFAULTTONEAREST, so a point in the gap between two screens
+    still answers with a real monitor rather than nothing.
+
+    A private WinDLL handle and no import of `capture`, which has the
+    same call: this module is the path that still runs with skin\\
+    deleted and it keeps its own ctypes.
+    """
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+
+        class _MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.wintypes.DWORD),
+                        ("rcMonitor", ctypes.wintypes.RECT),
+                        ("rcWork", ctypes.wintypes.RECT),
+                        ("dwFlags", ctypes.wintypes.DWORD)]
+
+        user32.MonitorFromPoint.restype = ctypes.c_void_p
+        user32.MonitorFromPoint.argtypes = [ctypes.wintypes.POINT,
+                                            ctypes.wintypes.DWORD]
+        user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p,
+                                           ctypes.POINTER(_MONITORINFO)]
+        point = ctypes.wintypes.POINT(int(x), int(y))
+        handle = user32.MonitorFromPoint(point, 2)   # DEFAULTTONEAREST
+        if not handle:
+            return None
+        info = _MONITORINFO()
+        info.cbSize = ctypes.sizeof(_MONITORINFO)
+        if not user32.GetMonitorInfoW(handle, ctypes.byref(info)):
+            return None
+        r = info.rcWork
+        if r.right > r.left and r.bottom > r.top:
+            return (int(r.left), int(r.top),
+                    int(r.right - r.left), int(r.bottom - r.top))
+    except Exception:
+        _log.debug("could not read the monitor under %r, %r", x, y,
+                   exc_info=True)
+    return None
+
+
+# How much daylight a card leaves between itself and a dot it opens
+# beside. HintCard.DOT_ROOM is the CORNER version of this number — 46 px,
+# the dot's 38 px window plus the 4 px it keeps from the screen's edge,
+# which with the card's own 14 px margin leaves 18 px between the two
+# pictures. Away from an edge there is no margin to fold into it, so the
+# 18 is written down here and used as it is.
+DOT_GAP = 18
+
+
+def _slide(at: int, size: int, edge: int, span: int) -> int:
+    """`at`, moved the LEAST it can be to put a `size`-long thing inside
+    the span that starts at `edge`. Something longer than the span is
+    left against the near edge — something has to give, and the near edge
+    is the one he can reach."""
+    return int(max(int(edge), min(int(at), int(edge) + int(span) - int(size))))
+
+
+def _overlaps(a, b) -> bool:
+    """Do two (left, top, right, bottom) rectangles share a pixel?"""
+    return not (a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1])
+
+
+def beside_dot(dot, size, field, gap: int = DOT_GAP,
+               bounds=None) -> tuple[int, int]:
+    """Where a card's VISIBLE top-left goes beside a dot that is nowhere
+    near a corner. The answer to the question this app left open until
+    2026-09-08.
+
+    THE OWNER'S ASK, in his words: "I reopened the app so I don't know
+    about the tab that opens when I'm pressing the dot — I want it to be
+    able to move where the dot is." Until today `[dot] corner` decided
+    where the shelf and the key card opened, so dragging the dot into the
+    middle of the screen left the panel opening in a corner, detached
+    from the thing that opened it.
+
+    `dot` is the dot's own window, (left, top, right, bottom) — which is
+    exactly `StatusDot.rect`. `size` is the card you can SEE, (w, h),
+    with any shadow inset already taken off. `field` is the rectangle the
+    card must stay inside, (x, y, w, h): the work area of the monitor the
+    dot is on, so a card beside a dot near the taskbar is not under it.
+    `bounds` is the whole virtual desktop and is the last clamp, for the
+    same reason `dot_spot` clamps against it — the monitor to the left of
+    this machine's primary has genuinely negative coordinates.
+
+    THE RULE, in the order it is applied, so it can be argued with:
+
+      1. ABOVE the dot, because that is where the panel has always
+         opened over a bottom-right dot and it is the direction a tall
+         panel has the most room in. BELOW it when the whole card will
+         not fit above.
+      2. Sideways, the card is CENTRED on the dot and then slid back
+         inside the field, so a dot near an edge does not push half the
+         panel off the screen it is on.
+      3. If the card fits neither above nor below — a panel taller than
+         the screen it is on — it goes BESIDE the dot instead, on the
+         side with more room, with its top slid into the field.
+      4. And it never covers the dot: whatever the clamps did, a card
+         that still shares a pixel with the dot is pushed off it.
+
+    Pure arithmetic, so a test can ask it about any dot on any desktop
+    without a screen. The impure half — which monitor the dot is on — is
+    `_monitor_work`, and it is the caller's to answer.
+    """
+    dl, dt, dr, db = (int(v) for v in dot)
+    w, h = int(size[0]), int(size[1])
+    fx, fy, fw, fh = (int(v) for v in field)
+    gap = max(0, int(gap))
+
+    x = _slide(int(round((dl + dr) / 2.0 - w / 2.0)), w, fx, fw)
+    y = dt - gap - h
+    if y < fy:
+        y = db + gap
+        if y + h > fy + fh:
+            y = _slide(dt, h, fy, fh)
+            x = (dl - gap - w if (dl - fx) >= (fx + fw - dr) else dr + gap)
+            x = _slide(x, w, fx, fw)
+    if bounds:
+        bx, by, bw, bh = (int(v) for v in bounds)
+        x, y = _slide(x, w, bx, bw), _slide(y, h, by, bh)
+    if _overlaps((x, y, x + w, y + h), (dl, dt, dr, db)):
+        # A clamp put it back on the dot, which only happens when the
+        # card is nearly as big as the screen it is on. Take the side of
+        # the dot with more room and stay on the desktop; if even that
+        # leaves them touching there is no room left to find, and a panel
+        # over the dot beats a panel nobody can read.
+        x = dl - gap - w if (dl - fx) >= (fx + fw - dr) else dr + gap
+        if bounds:
+            bx, by, bw, bh = (int(v) for v in bounds)
+            x = _slide(x, w, bx, bw)
+    return int(x), int(y)
+
+
 def dot_spot(corner: str, work, box, margin,
              x: int = HINT_UNSET, y: int = HINT_UNSET,
              bounds=None) -> tuple[int, int]:
@@ -1053,16 +1194,30 @@ class HintCard:
     dot's square — beside it at the top, ABOVE it at the bottom. The
     corner itself defaults to the dot's in config.py (`corner = "dot"`),
     so both usually arrive here as the same word.
+
+    `dot_at` is the other half of that, and it is what the owner asked
+    for on 2026-09-08: "I want it to be able to move where the dot is."
+    A corner is only where the dot STARTS; once he has dragged it the
+    card has to follow it to a point. So a card whose file said
+    `corner = "dot"` is handed a callable returning the dot's own window
+    rect while it is somewhere other than its corner, and `origin` puts
+    the card beside THAT (`beside_dot`). None — which is a card that
+    named a corner of its own, and every card built before this — is the
+    corner rule exactly as it was.
     """
 
     def __init__(self, after_ms: int = 400, corner: str = "bottom-right",
                  margin: int = 14, x: int = HINT_UNSET, y: int = HINT_UNSET,
                  scale: float = 1.0, on_change=None,
-                 dot_corner: str = "bottom-right") -> None:
+                 dot_corner: str = "bottom-right", dot_at=None) -> None:
         self._q: queue.Queue = queue.Queue()
         self._after = max(0, int(after_ms)) / 1000.0
         self._corner = corner
         self._dot_corner = dot_corner
+        # A CALLABLE and not a number, because the dot moves while the
+        # app runs and this card is built once at startup. main.py points
+        # it at the running dot; a test points it at a tuple.
+        self._dot_at = dot_at
         self._margin = margin
         # Where the owner dragged it to and how big they made it. -1 means
         # never moved: `corner` decides. Written from the overlay thread
@@ -1226,10 +1381,40 @@ class HintCard:
     # plus the card's own margin leaves 18 px of daylight between them.
     DOT_ROOM = 46
 
+    # And the same daylight, for a dot that is not in a corner at all.
+    DOT_GAP = DOT_GAP
+
     UNSET = HINT_UNSET
 
     def moved(self) -> bool:
         return self.x > self.UNSET and self.y > self.UNSET
+
+    def dot_now(self):
+        """The dot's own window as (left, top, right, bottom) when this
+        card should open BESIDE THE DOT ITSELF rather than in a corner —
+        None when it should use the corner, which is every card that
+        named a corner of its own and every dot still sitting in one.
+
+        The decision is the caller's, not this card's: main.py hands a
+        `dot_at` only to the cards whose file says `corner = "dot"`, and
+        its callable answers None while the dot has not been dragged.
+        Wrapped, because it runs inside a paint and a dot that cannot say
+        where it is must cost a corner rather than a card.
+        """
+        at = self._dot_at
+        if at is None:
+            return None
+        try:
+            rect = at()
+            if rect is None:
+                return None
+            left, top, right, bottom = (int(v) for v in rect)
+        except Exception:                            # noqa: BLE001
+            _log.debug("could not ask the dot where it is", exc_info=True)
+            return None
+        if right <= left or bottom <= top:
+            return None                              # not a square
+        return (left, top, right, bottom)
 
     def origin(self, width: int, height: int, screen: tuple[int, int],
                inset: int = 0, bounds: tuple[int, int, int, int] | None = None,
@@ -1257,19 +1442,39 @@ class HintCard:
         card dragged onto a monitor that is no longer plugged in must not
         come back somewhere nobody can reach it.
 
-        Pure arithmetic, so a test can check every corner and every saved
-        position without a screen.
+        THE THREE ANSWERS, in the order they are asked, since 2026-09-08:
+        a position HE dragged this card to; then the dot itself, if this
+        card follows the dot and the dot has been dragged out of its
+        corner (`dot_now`, `beside_dot`); then the corner. His own drag
+        still wins over the dot — he moved two things and meant both.
+
+        Pure arithmetic but for one call: which monitor a dragged dot is
+        on has to be asked of Windows (`_monitor_work`), and a test that
+        wants that decided for it calls `beside_dot` directly.
         """
         sw, sh = screen
         m = self._margin
+        card_w, card_h = width - inset * 2, height - inset * 2
         if self.moved():
             # Saved as the CARD's top-left (see placed); the window starts
             # `inset` above and left of it.
             vx, vy, vw, vh = bounds if bounds else (0, 0, sw, sh)
             keep = 60                      # this much must stay reachable
-            card_w, card_h = width - inset * 2, height - inset * 2
             x = max(vx + keep - card_w, min(self.x, vx + vw - keep))
             y = max(vy + keep - card_h, min(self.y, vy + vh - keep))
+            return int(x - inset), int(y - inset)
+        dot = self.dot_now()
+        if dot is not None:
+            # The monitor the DOT is on, not the primary: he drags it onto
+            # the left-hand screen and the panel belongs over there with
+            # it. The primary's work area is only the fallback for a
+            # Windows that would not say, and the whole desktop the one
+            # after that.
+            field = (_monitor_work((dot[0] + dot[2]) // 2,
+                                   (dot[1] + dot[3]) // 2)
+                     or work or bounds or (0, 0, sw, sh))
+            x, y = beside_dot(dot, (card_w, card_h), field, self.DOT_GAP,
+                              bounds)
             return int(x - inset), int(y - inset)
         wx, wy, ww, wh = work if work else (0, 0, sw, sh)
         # Beside the dot, not under it: in the dot's own corner the card
@@ -1319,9 +1524,14 @@ class HintCard:
         def draw(card: dict) -> None:
             w, h = _hint_paint(canvas, card, self.scale)
             canvas.configure(width=w, height=h)
+            # The whole desktop as well as the work area: without it a
+            # card following a dot he dragged onto the left-hand monitor
+            # would be clamped to the primary and walk back onto this
+            # one. The glass path has always passed it; this is the path
+            # with skin\ deleted, and the two must not disagree.
             x, y = self.origin(w, h, (root.winfo_screenwidth(),
                                       root.winfo_screenheight()),
-                               work=_work_area())
+                               bounds=_virtual_screen(), work=_work_area())
             root.geometry(f"{w}x{h}+{x}+{y}")
             root.deiconify()
             root.update_idletasks()

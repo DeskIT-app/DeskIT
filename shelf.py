@@ -163,13 +163,19 @@ class ShelfCard(overlay.HintCard):
                  scale: float = 1.0, rows: int = sc.PILE_MAX,
                  on_change=None, on_press=None, on_refresh=None,
                  on_away=None, spare=None,
-                 dot_corner: str = "bottom-right") -> None:
-        # `dot_corner` is where the status dot is: the panel opens BESIDE
-        # it — above a bottom-right dot, to the left of a top-right one —
-        # and never over it (overlay.HintCard.origin, DOT_ROOM).
+                 dot_corner: str = "bottom-right", dot_at=None) -> None:
+        # `dot_corner` is where the status dot STARTS: the panel opens
+        # BESIDE it — above a bottom-right dot, to the left of a
+        # top-right one — and never over it (overlay.HintCard.origin,
+        # DOT_ROOM). `dot_at` is where the dot actually IS once he has
+        # dragged it somewhere that is not a corner at all, which is the
+        # thing he asked for on 2026-09-08: "I want it to be able to move
+        # where the dot is." Both are the base class's; this panel adds
+        # nothing to the rule, which is the point — the shelf and the key
+        # card cannot disagree about where "beside the dot" is.
         super().__init__(after_ms=0, corner=corner, margin=margin, x=x, y=y,
                          scale=scale, on_change=on_change,
-                         dot_corner=dot_corner)
+                         dot_corner=dot_corner, dot_at=dot_at)
         self.rows = max(sc.ROWS_MIN, min(sc.ROWS_MAX, int(rows)))
         self._on_press = on_press
         self._on_refresh = on_refresh
@@ -453,8 +459,13 @@ class ShelfCard(overlay.HintCard):
             if st["card"] is None:
                 return
             w, h = sc.measure(st["card"], self.scale)
+            # bounds as well as work: a panel that follows a dot onto
+            # the monitor to the left has to be clamped against the whole
+            # desktop, not the primary. overlay.HintCard._build_and_loop
+            # says the rest.
             x, y = self.origin(w, h, (root.winfo_screenwidth(),
                                       root.winfo_screenheight()),
+                               bounds=overlay._virtual_screen(),
                                work=overlay._work_area())
             paint()
             root.geometry(f"{w}x{h}+{x}+{y}")
