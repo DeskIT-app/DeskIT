@@ -5598,11 +5598,14 @@ def main() -> int:
         try:
             import study as study_mod
         except ImportError:
-            print("The study engine is not part of this version — switch "
-                  "to fast (Versions.vbs) to use it.")
+            # There is one version now (2026-09-08), so this can no
+            # longer be answered with "switch to the other one" — the
+            # module is simply absent from the folder.
+            print("study.py is not in this folder, so there is no study "
+                  "engine to run.")
             return 2
         if getattr(cfg, "study", None) is None:
-            print("This version's config has no [study] section.")
+            print("config.toml has no [study] section.")
             return 2
         return study_mod.study_all(cfg, APP_DIR)
 
@@ -5610,11 +5613,11 @@ def main() -> int:
         try:
             import review as review_mod
         except ImportError:
-            print("The second reading is not part of this version — switch "
-                  "to fast (Versions.vbs) to use it.")
+            print("review.py is not in this folder, so there is no "
+                  "second reading to run.")
             return 2
         if getattr(cfg, "review", None) is None:
-            print("This version's config has no [review] section.")
+            print("config.toml has no [review] section.")
             return 2
         return review_mod.review_all(cfg, APP_DIR)
 

@@ -3930,105 +3930,17 @@ def test_the_repair_pass_ships_its_backend_choice_in_the_real_config(
     assert cfg.polish.when in ("never", "known", "always")
 
 
-def _committed_on(branch: str, path: str) -> bytes | None:
-    """`path` as `branch` committed it, or None when git cannot say.
-
-    None covers every honest reason a checkout has no answer — a shallow
-    or single-branch clone, no git on PATH, not a repository at all — and
-    the callers skip rather than fail. A test that goes red on someone
-    else's clone teaches them to ignore it.
-
-    CREATE_NO_WINDOW because the suite is meant to be runnable while
-    dictation is live and this app runs under pythonw: without the flag
-    every git spawn allocates a console and freezes the UI thread. Same
-    trap as versions.py and dashboard.py.
-    """
-    import subprocess
-    try:
-        out = subprocess.run(
-            ["git", "show", f"{branch}:{path}"],
-            cwd=str(Path(__file__).resolve().parent),
-            capture_output=True, creationflags=0x08000000)
-    except (OSError, ValueError):
-        return None
-    return out.stdout if out.returncode == 0 else None
-
-
-def test_both_versions_commit_the_same_settings_file() -> None:
-    """THE INVARIANT versions.py is built on, and it has been broken once.
-
-    Switching versions is a `git checkout` of this very folder. config.toml
-    survives it only because versions.py saves the live bytes and writes
-    them back — which works no matter what the branches committed, and is
-    exactly why the divergence is silent. What it cannot save you from is
-    MEANING: a key whose value is safe on one branch and not on the other.
-
-    That is not hypothetical. lookup.max_chars went 5000 -> 20000 on fast
-    together with the chunking in lookup.translate_chunked that makes the
-    larger number safe; carried to a classic that had no chunking, the same
-    line would have fed 20000 characters to one local request and had them
-    silently truncated past the context window. The commit that raised it
-    shipped to one branch alone, and nothing here noticed.
-
-    So: byte-identical, or the branches are two programs.
-    """
-    here = Path(__file__).resolve().parent
-    live = (here / "config.toml").read_bytes()
-    seen = {}
-    for branch in ("fast", "classic"):
-        blob = _committed_on(branch, "config.toml")
-        if blob is not None:
-            seen[branch] = blob
-    if len(seen) < 2:
-        return                      # single-branch clone: nothing to compare
-    (a, one), (b, two) = seen.items()
-    assert one == two, (
-        f"{a} and {b} commit different config.toml — versions.py promises "
-        f"they never do. Mirror the change across before pushing; a "
-        f"setting that means one thing on one version and another thing "
-        f"on the other is how a version switch loses your work.")
-    # And the file on disk should be one of the two, give or take whatever
-    # the owner has edited since. Only its SHAPE is checked: a live config
-    # missing a section the branches ship means a stale hand-edit.
-    for section in (b"[polish]", b"[lookup]", b"[local]", b"[vocab]"):
-        assert section in live, f"config.toml has lost {section!r}"
-
-
-def test_the_shared_half_of_the_app_is_one_file_on_both_versions() -> None:
-    """What may differ between the versions is the REPAIR PASS and nothing
-    else. Everything here is a file that a version switch would otherwise
-    delete a feature out of.
-
-    The owner's rule, in his words: both versions stay "the same
-    application, with the same history and the same hot words". The lookup
-    box, the paste path and the switcher itself are not part of the
-    experiment, so they are not allowed to drift into it — a resizer
-    committed to fast alone is a resizer you lose by pressing a button
-    labelled "use classic".
-
-    The list is deliberately short and explicit rather than "everything
-    except polish.py": a NEW file that belongs to the repair pass should
-    not have to be excluded here, and a new shared file should have to be
-    added on purpose.
-    """
-    shared = ("popup.py", "lookup.py", "main.py", "versions.py",
-              "injector.py", "hotkey.py", "vocab.py", "singleton.py",
-              "settings.py", "config.toml")
-    drifted = []
-    for name in shared:
-        one = _committed_on("fast", name)
-        two = _committed_on("classic", name)
-        if one is None or two is None:
-            return                  # single-branch clone: nothing to compare
-        if one != two:
-            drifted.append(name)
-    assert not drifted, (
-        "these are shared between the versions and have drifted apart: "
-        + ", ".join(drifted)
-        + ". Mirror the change to the other branch (see versions.py) — "
-          "switching versions is a checkout, so whatever is missing there "
-          "is a feature the owner loses by switching.")
-
+# THE TWO-VERSION TESTS LIVED HERE, and they went with the two versions.
+# `_committed_on`, `test_both_versions_commit_the_same_settings_file` and
+# `test_the_shared_half_of_the_app_is_one_file_on_both_versions` guarded a
+# promise versions.py made: that `fast` and `classic` committed a
+# byte-identical config.toml and shared every file but the repair pass, so
+# that flipping between them could never lose a setting or a feature. The
+# switcher was removed on 2026-09-08 and there is nothing left to compare -
+# `classic` had already been absent from this machine for a fortnight,
+# which is exactly why these two returned early and guarded nothing at all
+# for the whole of that time. Kept as a note rather than as skipping tests,
+# because a test that cannot fail is worse than no test: it reads as cover.
 
 def test_local_backend_is_configured_and_unlimited() -> None:
     """Guards the switch to the local backend: it is the only one without a
@@ -17867,10 +17779,20 @@ def test_the_dot_can_be_dropped_anywhere_and_is_remembered() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="dictation-dot-move-"))
     try:
         path = tmp / "config.toml"
-        # the shipped file must not carry somebody's dragged dot
+        # THE LIVE FILE IS HIS. This asked config.toml to prove nobody had
+        # ever dragged the dot, and it went red the afternoon he found
+        # "Move the dot" and used it - the feature working as designed
+        # failed the test written for it, the second time in two days that
+        # a test read his settings as if they were a fixture (the other
+        # was the corner). The shipped default belongs to the dataclass,
+        # so ask it there. Of the live file, ask only what is actually
+        # true of every valid file: both numbers together or neither,
+        # never half a position.
+        assert config_mod.DotConfig.x == config_mod.DotConfig.y ==             config_mod.HINT_UNSET
+        assert config_mod.DotConfig().moved() is False
         shipped = config_mod.load(Path(sys.path[0]) / "config.toml")
-        assert shipped.dot.x == shipped.dot.y == config_mod.HINT_UNSET
-        assert shipped.dot.moved() is False
+        assert (shipped.dot.x == config_mod.HINT_UNSET) ==             (shipped.dot.y == config_mod.HINT_UNSET), shipped.dot
+        assert shipped.dot.moved() is (shipped.dot.x != config_mod.HINT_UNSET)
         path.write_text("[dot]\nx = 1204\ny = 388\n", "utf-8")
         cfg = config_mod.load(path)
         assert (cfg.dot.x, cfg.dot.y) == (1204, 388) and cfg.dot.moved()

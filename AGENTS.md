@@ -82,7 +82,7 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   (settings.py: TABS names lines by hand, TAB_SECTIONS gives each tab the
   rest of its sections, WORDS says every line plainly; every line drawn
   exactly once, a test holds it). The app carries the three blocks that
-  used to be rail rows: Awake, the version switch, Stop, Send a test,
+  used to be rail rows: Awake, Stop, Send a test,
   the cue sounds, the files. No sentences, no "Everything" — both
   removed on the owner's word the day after they were built.
 - **The bar's buttons follow the state and nothing else**
@@ -104,21 +104,21 @@ places along a 56 px top bar — no rail, since 2026-09-07:
 Everything is documented, with measurements, in `README.md` and
 `config.toml`.
 
-**Two whole versions of the app live here as git branches**, switched with
-`Versions.vbs` / the dashboard's Settings › The app / `versions.py`:
+**There is ONE version of the app.** There were two — `classic` (local
+gemma3:12b repair, ~5 s) and `fast` (repair sent to Groq's free API first,
+~0.3–0.6 s) — switched by a `Versions.vbs` launcher, the dashboard, or `versions.py`.
+All of that was removed on 2026-09-08 on the owner's word: "I want only to
+be on this version that is already running." `classic` had been absent
+from the machine for a fortnight and the trunk sat BEHIND the branch he
+ran, so the only trip left was backwards. `versions.py` is now one
+function returning the branch name.
 
-- `classic` — frozen behavior (local Whisper + local gemma3:12b repair).
-- `fast` — current development: repair pass goes to **Groq's free API**
-  first (`openai/gpt-oss-120b`, reasoning_effort=low, ~0.3–0.6 s), falling
-  back to the identical local path.
-
-Switching carries `config.toml` across untouched because BOTH branches
-commit byte-identical settings. **Invariant: never commit a config.toml
-that differs between branches.** Tooling files (`versions.py`,
-`Versions.vbs`, `dashboard.py`, `ui.py`, `singleton.py`, test fixes) exist
-identically on BOTH branches on purpose — additive changes to those get
-mirrored to `classic`, or switching would delete the tools needed to come
-back.
+The old invariant — both branches committing a byte-identical
+`config.toml`, and every shared file mirrored across — is retired with the
+switcher. **Do not restore it, and do not mirror anything to `classic`.**
+The fast repair pass survives as a setting, not a version:
+`[polish] prefer = "groq" | "cerebras" | "ollama"`, where `"ollama"` is
+exactly what classic did.
 
 ## House rules — what the owner actually wants
 
@@ -662,17 +662,11 @@ back.
   only thing the owner has to go on.
 - **Hebrew in console output** shows as garbage unless
   `$env:PYTHONIOENCODING='utf-8'` — display-only, data is fine.
-- **Mirror to `classic` with a git WORKTREE, never by checking it out.** The shared files
-  (config.toml, main.py, dashboard.py, cues.py, .gitignore) have to land on both branches in the
-  same change or `test_both_versions_commit_the_same_settings_file` and
-  `test_the_shared_half_of_the_app_is_one_file_on_both_versions` go red — and both compare
-  COMMITTED blobs, so leaving the work uncommitted is also green. Checking `classic` out swaps the
-  working tree under the app the owner is using. A worktree does not:
-  `git worktree add <tmp> classic`, copy the shared files in, commit there, run that branch's own
-  `tests.py` from the worktree, `git worktree remove <tmp>`. Done on 2026-08-26 with the app live
-  and never touched. Note `.gitignore` is in that set even though no test checks it: `versions.py`
-  refuses a switch when `git status --porcelain` is dirty, and untracked files count — a
-  `captures\` folder ignored on one branch only would block the switch.
+- **There is no `classic` to mirror to any more** (removed 2026-09-08).
+  The rule used to be: land shared files on both branches in one change,
+  and never by checking `classic` out — a checkout swaps the working tree
+  under the app the owner is using. If two versions are ever wanted again,
+  that worktree rule is the one to bring back with them.
 - **The 2026-09-07 redesign is UNCOMMITTED on purpose.** LAMPLIGHT, the
   four places, the drawn keyboard, the settings sentences and the shelf
   are all in the working tree and none of it is staged or committed: the
@@ -989,7 +983,7 @@ back.
 | `control.py` | the named pipe between the dashboard and the app: status, commands, replies; handlers must never block |
 | `overlay.py` | every window this app paints by hand: the splash, the status dot, the hint card, the correction and report box (`WordPrompt` — `fill()` puts a dictated line IN the box without sending it, which is the only way a transcript reaches one of OUR windows, `injector` refusing by design to paste into this process), `ProblemCard(WordPrompt)` — a SUBCLASS and not a mode flag, so the review pencil's one-line box is provably untouched; it overrides only `ask` and `_run` — and the review and notify cards on top of `HintCard` |
 | `hint.py` | what the hint card says while the key is held: one row per bound key, read off the live Config under the same condition `main.App._bindings` registers it under, so a rebind moves the row and a feature switched off takes its row away. Pure Python, no Tk — the tests read every row |
-| `dashboard.py` + `ui.py` | the control window: four places along a top bar (Waiting, Said, Keys, Settings), the merged Waiting pile and "the whole list" behind it that answers the bug list and the routine's questions, the generated Settings place with the version switch / Stop / cue sounds in it, and the frameless **Report a problem** card the button beside the Waiting title opens |
+| `dashboard.py` + `ui.py` | the control window: four places along a top bar (Waiting, Said, Keys, Settings), the merged Waiting pile and "the whole list" behind it that answers the bug list and the routine's questions, the generated Settings place with Stop / cue sounds in it, and the frameless **Report a problem** card the button beside the Waiting title opens |
 | `widgets.py` | the pieces the window needs that `ui.py` does not have: the tab strip, a hairline, the state chip, an icon-in-a-label, a row whose text stops where its buttons start, `rtl_run()` for a pill inside a Hebrew sentence, and a toned Button. Every colour is read as `ui.NAME` INSIDE the call, so a repainted palette lands on the next screen drawn |
 | `keyboard.py` | the Keys place's board: 87 caps, one Pillow image and one hit table, everything measured from a single cap unit; the bindings are read from `config.HOTKEY_FIELDS` + `hotkey.parse_binding` and lit on it |
 | `prose.py` | the settings said as sentences with the controls inside the words — a hand-flowed Canvas at a fixed 34 px line. Every `Bit` names a real path in `config.toml` and a test walks them |
@@ -997,6 +991,6 @@ back.
 | `fonts.py` | hands this process its own copy of Rubik (`AddFontResourceExW`, `FR_PRIVATE`) at the import of `ui.py` and `visual_qa.py`, before anything asks for a face |
 | `shelf.py` + `shelf_card.py` + `skin\shelf.py` | the panel beside the dot: the window/thread/queue class (modelled on `overlay.HintCard`), the pure painter (words, geometry, hit test, `INK`) and the glass. Every answer it offers calls the same `App` method the matching card does; nothing goes through `control.py` |
 | `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |
-| `versions.py` | whole-app version switching |
+| `versions.py` | reads the branch name, and nothing else |
 | `tests.py` | the suite itself — hundreds of plain-assert test functions. Not the file you run |
 | `tests_quiet.py` | how the suite is run: `tests.py` on a hidden Windows desktop, `--no-screen` while he is at the machine (house rule 8). `run_hidden()` is importable, for anything else that must not be seen |

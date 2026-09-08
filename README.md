@@ -179,47 +179,42 @@ pipeline with a canned Hebrew string instead of the API — good for testing
 paste behavior in a new target app. `--stop` from anywhere asks a running
 background instance to quit.
 
-## Two versions: classic and fast
+## One version, and why there used to be two
 
-This folder carries **two whole versions of the app**, kept as git
-branches, and you choose between them by double-clicking **`Versions`**
-(`Versions.vbs` here):
+This folder used to carry **two whole versions of the app** as git
+branches, with a `Versions` launcher and a row of buttons in Settings to
+flip between them:
 
-- **classic** — the app exactly as it was when this system was added:
-  local Whisper + the ~5 s `gemma3:12b` repair pass. Frozen.
-- **fast** — the same dictation pipeline with the repair pass sent to
-  **Groq's free API first** (~sub-second instead of ~5 s), falling back to
-  the identical local path classic uses. Also adds knobs:
-  `[polish] prefer = "groq" | "cerebras" | "ollama"` and
-  `[local] beam_size`.
+- **classic** — local Whisper plus the ~5 s `gemma3:12b` repair pass.
+- **fast** — the same pipeline with the repair pass sent to **Groq's free
+  API first** (~sub-second instead of ~5 s), falling back to the identical
+  local path.
 
-Switching stops the running instance, flips the branch, restarts the app,
-and **carries your `config.toml` across untouched** — both versions commit
-byte-identical settings, so your keys, seeds and vocabulary never change
-underneath you. `.env`, `vocab.json`, `transcripts.log`, `recent\` are
-gitignored and simply shared. A switch refuses if any *other* tracked file
-has uncommitted edits, rather than guessing what to keep.
+**That is over as of 2026-09-08.** There is one version now: this one. The
+owner settled it in his own words — "I want only to be on this version
+that is already running" — and the facts on the ground agreed with him.
+`classic` had not existed on this machine for a fortnight, and the trunk
+the button offered had fallen behind the branch he was actually running,
+so pressing "Switch" would have quietly undone days of work rather than
+changing anything about how the app dictates. The switcher, its window and
+its two dormant tests are gone; `versions.py` is now one function that
+reads the branch name for the reports.
 
-From a terminal instead of the window:
+What is NOT gone is the fast repair pass — it was never the switcher, it
+is a setting. `[polish] prefer = "groq" | "cerebras" | "ollama"` still
+chooses where a dictation gets repaired, and `"ollama"` still gives you
+exactly what classic did, locally, with no network at all. The old
+version switch was a heavier way of turning one knob.
 
-```
-.venv\Scripts\python.exe versions.py list
-.venv\Scripts\python.exe versions.py switch classic
-```
+Settings → **The app** still names the branch that is running, beside
+Stop and the cue sounds, and the foot of **Home** says it too, so "which
+code am I on?" never needs a click.
 
-**Or from the dashboard.** Settings → **The app** names what is running
-and offers one *Use this* button per other version. Switching from there
-is the same stop–flip–restart, with progress shown in the window, and the
-running version's name is on the foot of **Waiting** so "which one am I
-on?" never needs a click. It used to be a screen of its own, one of nine
-in a rail; ten days of logs hold **not one line about switching**, so it
-is now three rows in the block that also holds Stop and the cue sounds.
-
-### What fast costs and needs
+### What the Groq repair pass costs and needs
 
 - **A key.** Put `GROQ_API_KEY=...` in `.env` (console.groq.com — free,
   no credit card, thousands of requests a day). Without a key the fast
-  version runs the repair pass locally, exactly like classic — the setting
+  app runs the repair pass locally, the way classic did — the setting
   costs nothing until the key exists.
 - **Why not Cerebras?** It was the first choice here, on published free-
   tier terms. Measured live 2026-08-22 with a fresh account: balance
@@ -229,7 +224,7 @@ is now three rows in the block that also holds Stop and the cue sounds.
 - **Privacy, stated plainly:** the repair pass sends the *transcript
   text* to Groq under their free-tier terms. Your audio never leaves
   this machine. If even text-in-the-cloud is unacceptable, set
-  `[polish] prefer = "ollama"` — that IS classic's behavior.
+  `[polish] prefer = "ollama"` — that IS what classic did.
 - **The safety check is unchanged.** Every repaired reply still goes
   through `_is_safe()` (word-level diff, ±15% growth cap); a model that
   rewrites instead of repairing gets thrown out exactly as before. Replies
@@ -444,7 +439,7 @@ rather than at the menu's edge.
 
 **Three tabs open with a block that is not a row**, because the thing
 they are about cannot be typed: **Phone** has the link the keyboard
-talks to, **The app** has the version switch, the sounds and the files,
+talks to, **The app** names the running branch, the sounds and the files,
 and **Cards** has **the dot** — where it is now, **Move the dot**, and
 **Back to the corner**. That last one is there rather than on Home
 because the two lines it writes (`[dot] x` and `[dot] y`) are on the
@@ -3728,7 +3723,7 @@ version, `[polish] prefer` chooses which backend repairs first:
 |---|---|---|
 | **`groq`** *(default on fast)* | Groq's free API — no credit card, ~1,000 requests a day, **its own bucket** that nothing else in this app draws on, so it cannot starve `Ctrl+F9` or `F2` the way Gemini would | ~0.3–0.6 s |
 | `cerebras` | the *former* first choice. Their free tier is gone — verified live 2026-08-22 on a fresh account: HTTP 402 on every model, cheapest plan $1,500+/month. Kept working rather than deleted, for whoever holds quota there | ~0.5 s |
-| `ollama` | local `gemma3:12b`, no cloud ever. **This is exactly what classic runs** | ~4.7–5.5 s |
+| `ollama` | local `gemma3:12b`, no cloud ever. **This is exactly what classic did** | ~4.7–5.5 s |
 
 Whichever you name goes first and **the others follow underneath it**, the
 local model always among them — so a missing key, a rate limit or a dead

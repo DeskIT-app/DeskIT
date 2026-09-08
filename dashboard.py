@@ -1304,9 +1304,6 @@ class Dashboard:
         self.status: dict = {}
         self.running = False
         self.closing = False
-        # A whole-app version switch in flight: while it runs, the Version
-        # screen's buttons are dead and a second press must do nothing.
-        self._switching = False
         # The branch this folder is on, for the Overview meta line and the
         # Version screen. Resolved OFF this thread by the warm-up below —
         # asking git synchronously here delayed the whole window opening,
@@ -1324,8 +1321,8 @@ class Dashboard:
         # '_events'" on the warm-up thread, swallowed with the thread,
         # and the branch label silently stayed "?" for the life of the
         # window. Seen eight times in one run of the suite.
-        threading.Thread(target=self._warm_versions, daemon=True,
-                         name="versions-warmup").start()
+        threading.Thread(target=self._warm_branch, daemon=True,
+                         name="branch-warmup").start()
         self._busy_until = 0.0     # ignore polls right after a command, so a
                                    # stale status cannot flicker the buttons
                                    # back for one frame
@@ -6682,28 +6679,21 @@ class Dashboard:
         tk.Label(body, text="T H E   A P P", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.MEDIUM, 8)).place(x=0, y=0)
 
-        here, others, registry = self._versions()
-        label = (registry.get(here) or {}).get("label", here)
-        tk.Label(body, text=label, bg=ui.CARD,
+        # ONE VERSION, AND NOTHING HERE THAT CHANGES IT. There were two -
+        # classic and fast - and a row of "Switch to ..." buttons sat on
+        # this card to flip between them. He closed it on 2026-09-08: "I
+        # want only to be on this version that is already running." By
+        # then the second version had stopped existing on this machine
+        # anyway, so the only trip the button still offered was one
+        # backwards, into code older than what he was looking at. What is
+        # left is the plain fact of which code is running, because that is
+        # the line he needs when he files a report against it.
+        tk.Label(body, text="DeskIT", bg=ui.CARD,
                  fg=getattr(ui, "ACCENT_TEXT", ui.ACCENT),
                  font=(ui.DISPLAY, 17, "bold")).place(x=0, y=20)
-        tk.Label(body, text=f"branch '{here}' — running now", bg=ui.CARD,
-                 fg=ui.FAINT, font=(ui.UI, 8)).place(x=0, y=50)
-        x = 0
-        for name in others:
-            info = registry.get(name) or {"label": name}
-            button = ui.Button(body, f"Switch to {info['label']}",
-                               lambda t=name: self._use_version(t),
-                               w=max(150, 40 + ui.text_width(
-                                   f"Switch to {info['label']}", ui.UI, 10)),
-                               h=32, quiet=True, icon=ui.ICON["version"])
-            button.place(x=x, y=76)
-            self.parts[f"use_{name}"] = button
-            x += button.winfo_reqwidth() + 10
-        self.parts["ver_status"] = tk.Label(
-            body, text="", bg=ui.CARD, fg=ui.AMBER, font=(ui.UI, 8),
-            wraplength=CW - 260, justify="left")
-        self.parts["ver_status"].place(x=0, y=112)
+        tk.Label(body, text=f"branch '{self.branch}' - running now",
+                 bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 8)).place(x=0, y=50)
 
         # THE SAME DOOR AS THE BAR'S STOP, in one press, and it is here
         # as well because this is where the 25 seconds are written down —
@@ -6741,19 +6731,6 @@ class Dashboard:
                 tk.Label(body, text=kind, bg=ui.CARD, fg=ui.DIM,
                          font=(ui.UI, 9)).place(x=cx + 38, y=cy + 4)
         scroller.bind_wheel(card)
-
-    def _versions(self):
-        """(the branch we are on, the others, the registry) — never
-        raising: no git on the machine must not blank a settings block."""
-        try:
-            import versions as versions_mod
-            here = (self.branch if self.branch not in ("", "?")
-                    else versions_mod.current_branch())
-            known = versions_mod.known_versions()
-            registry = versions_mod.VERSIONS
-        except Exception:                 # noqa: BLE001
-            return (self.branch or "?"), [], {}
-        return here, [n for n in known if n != here], registry
 
     def _play_cue(self, kind: str) -> None:
         """One sound, from THIS process. The app has its own cue player
@@ -6890,8 +6867,8 @@ class Dashboard:
 
     # ------------------------------------------------------------- version
 
-    def _warm_versions(self) -> None:
-        """Fill the branch caches before anyone clicks Version.
+    def _warm_branch(self) -> None:
+        """Find out which branch this is, off the Tk thread.
 
         versions.py spawns git, and git under pythonw allocates a console
         per spawn unless suppressed — hundreds of ms each, fatal on the UI
@@ -6904,71 +6881,9 @@ class Dashboard:
         try:
             import versions as versions_mod
             here = versions_mod.current_branch()
-            versions_mod.known_versions()
         except Exception:
             return
         self._events.put(lambda: setattr(self, "branch", here))
-
-    # The Version SCREEN is gone. Which whole app is running, and the
-    # one button that changes it, are three lines in Settings > The app
-    # (_app_block) — versions.py still owns every mechanic, and
-    # _use_version below is still the door into it.
-
-    def _use_version(self, target: str) -> None:
-        """Switch whole-app version, entirely off the Tk thread.
-
-        versions.switch stops the running instance, waits for it to exit,
-        flips the branch and restarts it — tens of seconds, all of it
-        blocking, none of it allowed near the UI loop. The poller keeps
-        asking its question throughout and watches the app vanish and come
-        back on its own; completion arrives through _events like every
-        other off-thread answer.
-        """
-        if self._switching:
-            return
-        try:
-            import versions as versions_mod
-        except Exception as e:
-            self._note(f"cannot switch: {e}")
-            return
-
-        self._switching = True
-        for key, widget in list(self.parts.items()):
-            if key.startswith("use_"):
-                widget.enable(False)
-        if "ver_status" in self.parts:
-            self.parts["ver_status"].config(
-                text=f"switching to {target} — stopping, flipping, "
-                     "restarting…")
-
-        def work() -> None:
-            error: str | None = None
-            try:
-                versions_mod.switch(target)
-            except Exception as e:      # SwitchError, git failures, timeouts
-                error = str(e)
-            self._events.put(
-                lambda: self._switch_done(target, error))
-
-        threading.Thread(target=work, daemon=True,
-                         name="version-switch").start()
-
-    def _switch_done(self, target: str, error: str | None) -> None:
-        self._switching = False
-        if error:
-            if "ver_status" in self.parts:
-                self.parts["ver_status"].config(
-                    text=f"NOT switched — {error}")
-            for key, widget in list(self.parts.items()):
-                if key.startswith("use_"):
-                    widget.enable(True)
-            return
-        self.branch = target
-        self._note(f"now running {target}")
-        # Rebuild the screen rather than patching it: the running-version
-        # card and the rows under it are laid out from who IS current.
-        if self.screen == "Version":
-            self._show("Version")
 
     # ------------------------------------------------- talking to the app
 
