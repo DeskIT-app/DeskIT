@@ -882,7 +882,7 @@ def _first_line(text: str) -> str:
 
 
 def _trunk_ref() -> str:
-    """`fast` if this repo has it, `origin/fast` if only the remote does,
+    """`main` if this repo has it, `origin/main` if only the remote does,
     "" for a repo with neither — a one-branch clone, or no git at all.
     Everything a weekly branch is measured against is measured against
     this, and "" means the row says so instead of guessing."""
@@ -933,8 +933,8 @@ def weekly_branches() -> list[dict]:
         code, out, _err = _git("rev-parse", "--verify", "--quiet",
                                f"refs/remotes/origin/{name}")
         row["on_origin"] = code == 0 and bool(out.strip())
-        # "Merged" is measured against GitHub's fast, not the local one:
-        # the local fast is often behind (the button may not move the
+        # "Merged" is measured against GitHub's main, not the local one:
+        # the local main is often behind (the button may not move the
         # branch this tree stands on), and what he is asking is whether
         # the work is safely up and in, not what this checkout thinks.
         target = f"origin/{TRUNK}" if _git(
@@ -947,7 +947,7 @@ def weekly_branches() -> list[dict]:
 
 
 def weekly_pushed(info: dict) -> bool:
-    """Is this branch finished business — up on GitHub, and in `fast`?
+    """Is this branch finished business — up on GitHub, and in `main`?
 
     The one test two places have to agree on: the card, which offers a
     Push button only while there is something to push, and the block,
@@ -957,21 +957,21 @@ def weekly_pushed(info: dict) -> bool:
 
 
 def _foreign_on_trunk() -> tuple[bool, list[str]]:
-    """(could git tell us, what is on `fast` that is not the routine's).
+    """(could git tell us, what is on `main` that is not the routine's).
 
-    `origin/fast..fast` — and every commit in it is somebody else's.
+    `origin/main..fast` — and every commit in it is somebody else's.
     That is not a guess and not a heuristic: THE ROUTINE NEVER COMMITS
-    TO `fast`. It cuts weekly/<DATE>, commits there, goes back to the
+    TO `main`. It cuts weekly/<DATE>, commits there, goes back to the
     branch it started on and pushes nothing, by its own rule; and the
-    only way one of its commits can reach the local `fast` at all is the
+    only way one of its commits can reach the local `main` at all is the
     fast-forward at the end of this file, which happens after origin has
     already taken the same commit — so it is never unpushed. A commit
-    sitting on `fast` that GitHub has not seen was made by one of the
+    sitting on `main` that GitHub has not seen was made by one of the
     other sessions that share this branch.
 
-    Why that matters here: a weekly branch is cut FROM `fast`, so it
+    Why that matters here: a weekly branch is cut FROM `main`, so it
     carries whatever was unpushed on it, and publishing the branch onto
-    `fast` would take that half-finished commit up under the routine's
+    `main` would take that half-finished commit up under the routine's
     name. His rule after dbf9b55 is that a session pushes its own work
     and nothing else — this is that rule, mechanised.
 
@@ -997,7 +997,7 @@ def _foreign_on_trunk() -> tuple[bool, list[str]]:
 
 
 def _merge_elsewhere(branch: str) -> dict:
-    """The merge `fast` needs once it has moved on, done where this
+    """The merge `main` needs once it has moved on, done where this
     folder cannot be hurt by it.
 
     `git worktree add --detach` gives the merge its own tree and its own
@@ -1077,12 +1077,12 @@ def push_weekly(branch: str) -> dict:
        off the machine is the half of this that must not wait for a merge
        to be safe. If the merge is then refused, the work is still on
        GitHub — which is the whole reason the branch goes first.
-    2. Then `fast`: anything on it that origin has not got and the
+    2. Then `main`: anything on it that origin has not got and the
        routine did not write is another session's work, and publishing
-       the branch onto `fast` would take that with it. Refuse, and name
+       the branch onto `main` would take that with it. Refuse, and name
        the commit.
     3. A fast-forward is published as one — `git push origin
-       <branch>:fast`, which touches no local branch and no file in this
+       <branch>:main`, which touches no local branch and no file in this
        folder. Anything else is a real merge, and a real merge happens in
        a throwaway worktree (see _merge_elsewhere).
 
@@ -1101,7 +1101,7 @@ def push_weekly(branch: str) -> dict:
                         f"({_first_line(err or out) or 'no reason given'}). "
                         f"Nothing changed. Check your connection and press "
                         f"Push again."}
-    # origin/fast as it is NOW, not as it was last week: every check
+    # origin/main as it is NOW, not as it was last week: every check
     # below is about what is on GitHub at this moment.
     code, _out, err = _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
     if code != 0:
@@ -1137,7 +1137,7 @@ def push_weekly(branch: str) -> dict:
     # And the local branch, IF git will let us: a fetch into a ref is
     # fast-forward-only without a +, and it refuses outright to write the
     # branch a working tree is standing on. That refusal is the guard we
-    # want rather than an obstacle — moving `fast` out from under this
+    # want rather than an obstacle — moving `main` out from under this
     # tree would leave every file the routine wrote looking like an
     # uncommitted revert to whichever session next ran `git status`.
     moved = _git("fetch", ".", f"{branch}:{TRUNK}")[0] == 0
@@ -1394,6 +1394,12 @@ class Dashboard:
         self._q_focus = None        # whose field had the caret last
         self._q_after = None        # the echo poll
         self._questions_stamp = None
+        # Which report has been asked "delete this?" and has not answered
+        # yet — at most one at a time, and it lives out here for the same
+        # reason the half-typed answers do: _fill_problems destroys and
+        # rebuilds every row a second, and a question that dies with its
+        # row is a ✕ that deletes on one press after all.
+        self._problem_asking = ""
         # The routine's branches, as git last answered. None is "nobody
         # has asked yet", which is not the same as "there are none".
         self._weekly = None
@@ -3378,9 +3384,11 @@ class Dashboard:
                                        wraplength=CW - 80, justify="center")
         tk.Label(self.sheet,
                  text="Report a problem is on the home as well, and on "
-                      "Ctrl+Alt+R wherever you are. Fixed and Closed both "
-                      "take a report off this list; nothing open is ever "
-                      "thrown away.",
+                      "Ctrl+Alt+R wherever you are. Fixed and Closed move "
+                      "a report down to Answered and Reopen brings it "
+                      "back, as often as you like. ✕ throws one away — it "
+                      "asks first, and it never touches the picture or "
+                      "the recording.",
                  bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
                  wraplength=CW - 190, justify="left").place(x=PAD, y=620)
         wide = widgets.button_width("Open problems.md", icon=True)
@@ -3389,6 +3397,9 @@ class Dashboard:
                   icon=ui.ICON["page"]).place(x=PAD + CW - wide, y=616)
         self._problems_stamp = None
         self._questions_stamp = None
+        # A "delete this?" does not survive leaving the tab and coming
+        # back to it: he answered it by walking away.
+        self._problem_asking = ""
         # Opening the tab is the cue: the weekly read wants problems.md
         # current, and this is the moment it is known to be looked at.
         self._write_digest()
@@ -3471,6 +3482,12 @@ class Dashboard:
         # because a question is the routine waiting on him and there is
         # no such thing as one with nowhere to answer it.
         shown = {str(i.get("id", "")) for i in waiting + done}
+        # An "are you sure" whose row is not on the screen any more — the
+        # report was answered in the other window, or aged out — is not a
+        # question, and it must not be waiting on the next report that
+        # happens to be drawn under the pointer.
+        if self._problem_asking and self._problem_asking not in shown:
+            self._problem_asking = ""
         homed: dict = {}
         loose: list = []
         for item in asked:
@@ -3578,8 +3595,22 @@ class Dashboard:
         faster than the line he typed about it. The text column gives up
         that width and the row gets tall enough to hold the picture,
         which is why both are measured before the canvas exists.
+
+        NOTHING HERE IS A ONE-WAY DOOR. An answered row carries Reopen,
+        because Fixed and Closed were being pressed by accident and there
+        was no way back — he found four of his own reports closed and
+        said so: "open them again because I did not close them, and if I
+        close something I should be able to open it again". And the ✕
+        that deletes a report asks before it does: pressing it grows the
+        row by one line — "Delete this report?" with Delete and Keep it
+        under it — and only Delete calls the store. Both answers are on
+        the LEFT of the strip, at the far end of the row from the ✕ he
+        just pressed, which is the same reason Stop sits where it does on
+        the bar: the safety is the layout, not a word that changes.
         """
         text = str(item.get("text") or "")
+        ident = str(item.get("id", ""))
+        asking = bool(ident) and ident == self._problem_asking
         left, edge = 106, CW - 14
         shot = self._row_photo(module, item)
         shot_w = shot.width() + 12 if shot is not None else 0
@@ -4338,7 +4369,7 @@ class Dashboard:
         the reason the questions are in one.
 
         ONLY THE ONES THAT STILL WANT SOMETHING ARE ON THE FACE. A branch
-        that is on GitHub and in `fast` has no button, no decision and
+        that is on GitHub and in `main` has no button, no decision and
         nothing left to read; it is a receipt. There is one Saturday a
         week, so a year of receipts would be fifty cards stacked on top
         of the reports he opened this tab for — his words on 2026-09-08,
@@ -4479,7 +4510,7 @@ class Dashboard:
             row.create_image(Q_PAD, y_note, anchor="nw", image=note)
         if done:
             # Nothing left to push: the branch is on GitHub and GitHub's
-            # `fast` already holds every commit on it. A blue Push here is
+            # `main` already holds every commit on it. A blue Push here is
             # what sent him to the wrong card twice on 2026-09-06 — the
             # old week's button sat under the new week's, looking
             # identical, and both presses answered "Everything up-to-date"
@@ -4532,7 +4563,7 @@ class Dashboard:
         self._pushing = None
         self._push_said[branch] = str(result.get("said") or "")
         self._note(self._push_said[branch])
-        # The facts moved — the branch is on origin now, and `fast` may
+        # The facts moved — the branch is on origin now, and `main` may
         # have it — so they are asked for again rather than patched.
         self._scan_weekly()
         if self.screen == "Problems":

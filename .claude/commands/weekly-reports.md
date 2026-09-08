@@ -752,7 +752,7 @@ he has not yet dealt with is the signal to stop.
 
 **Do not test that with the upstream ref.** That was the test here until
 2026-09-05 and it is wrong on this machine: DeskIT's Push runs
-`git push origin <branch>` and `git push origin <branch>:fast` with no `-u`
+`git push origin <branch>` and `git push origin <branch>:main` with no `-u`
 (`dashboard.py:834`, `dashboard.py:865`, and `problems/weekly/push.log` shows
 both), so a branch he HAS pushed keeps an empty `[%(upstream)]` for ever. Read
 literally it jammed the gate shut permanently — every future run declining to
@@ -892,7 +892,19 @@ go back where you came from:
 
 ```
 git checkout <the starting branch>
+git rev-parse --abbrev-ref HEAD
 ```
+
+**Read that second line and check it.** Do not assume the checkout worked
+because it printed nothing — say in your summary which branch the folder is
+standing on, by name. This is not ceremony. On 2026-09-06 at 20:49 the folder
+went from the trunk onto `weekly/2026-09-05-2` and never came back, and nobody
+noticed for three days: every session after that committed onto a branch that
+exists to be reviewed and thrown away, the trunk fell behind the code he was
+actually running, and the Push card in his dashboard reappeared after every
+single push because the branch kept racing ahead of the trunk again. He asked
+on 2026-09-08 who had done it, which is a question nobody should have to ask.
+The folder ends a run where it started, and the run says so out loud.
 
 If that checkout fails, **stop touching git.** Say so in the summary and in
 your output, leave the tree exactly as it is, and let him sort it out — a
