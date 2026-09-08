@@ -959,7 +959,7 @@ def weekly_pushed(info: dict) -> bool:
 def _foreign_on_trunk() -> tuple[bool, list[str]]:
     """(could git tell us, what is on `main` that is not the routine's).
 
-    `origin/main..fast` — and every commit in it is somebody else's.
+    `origin/main..main` — and every commit in it is somebody else's.
     That is not a guess and not a heuristic: THE ROUTINE NEVER COMMITS
     TO `main`. It cuts weekly/<DATE>, commits there, goes back to the
     branch it started on and pushes nothing, by its own rule; and the
@@ -3383,12 +3383,13 @@ class Dashboard:
                                        fg=ui.FAINT, font=(ui.UI, 10),
                                        wraplength=CW - 80, justify="center")
         tk.Label(self.sheet,
+                 # ONE LINE. There is room under the list for exactly
+                 # one at this width, and the second wraps off the
+                 # bottom edge of the window where nobody will read it.
                  text="Report a problem is on the home as well, and on "
-                      "Ctrl+Alt+R wherever you are. Fixed and Closed move "
-                      "a report down to Answered and Reopen brings it "
-                      "back, as often as you like. ✕ throws one away — it "
-                      "asks first, and it never touches the picture or "
-                      "the recording.",
+                      "Ctrl+Alt+R wherever you are. Reopen puts an "
+                      "answered one back; ✕ throws one away, and asks "
+                      "first.",
                  bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
                  wraplength=CW - 190, justify="left").place(x=PAD, y=620)
         wide = widgets.button_width("Open problems.md", icon=True)
@@ -3626,7 +3627,12 @@ class Dashboard:
                                               max_lines=2, colour=ui.FAINT,
                                               bg=ui.CARD)
         bottom = 32 + text_h + (heard_h + 8 if heard is not None else 0)
-        height = max(84, bottom + (46 if open_ else 30))
+        # 46 is a strip with buttons in it, and an answered row has them
+        # now (Reopen) where it used to have one line of text. 70 is that
+        # strip with the question standing above the two answers, so a
+        # row asking whether it may be deleted VISIBLY grows — which is
+        # the "are you sure" jumping out at him, without a second window.
+        height = max(84, bottom + (70 if asking else 46))
         if shot is not None:
             height = max(height, shot.height() + 26)
         row = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.BG,
@@ -3668,8 +3674,22 @@ class Dashboard:
             # evidence line straight across the picture.
             row.create_image(edge - shot_w, 32 + text_h, anchor="ne",
                              image=heard)
-        if open_:
-            ident = str(item.get("id", ""))
+        if asking:
+            row.create_text(14, height - 62, anchor="nw", font=(ui.UI, 9),
+                            fill=ui.FG,
+                            text="Delete this report? It does not come "
+                                 "back. Its picture and its recording "
+                                 "stay in the problems folder.")
+            wide = widgets.button_width("Keep it", least=62)
+            gone = ui.Button(row, "Delete", lambda i=ident:
+                             self._problem_delete(i),
+                             w=wide, h=26, quiet=True, fg=ui.RED)
+            keep = ui.Button(row, "Keep it", self._problem_keep,
+                             w=wide, h=26, quiet=True, fg=ui.FG)
+            row.create_window(14, height - 38, window=gone, anchor="nw")
+            row.create_window(22 + wide, height - 38, window=keep,
+                              anchor="nw")
+        elif open_:
             fixed = ui.Button(row, "Fixed", lambda i=ident:
                               self._problem_decide(i, module.FIXED),
                               w=58, h=26, quiet=True, fg=ui.GREEN)
@@ -3681,30 +3701,106 @@ class Dashboard:
         else:
             status = str(item.get("status") or "")
             by = str(item.get("by") or "")
-            row.create_text(14, height - 24, anchor="nw", font=(ui.UI, 8),
+            wide = widgets.button_width("Reopen", least=62)
+            back = ui.Button(row, "Reopen", lambda i=ident:
+                             self._problem_decide(i, module.OPEN),
+                             w=wide, h=26, quiet=True, fg=ui.ACCENT_TEXT)
+            row.create_window(14, height - 38, window=back, anchor="nw")
+            # Centred on the button beside it, not sat on the row's floor:
+            # the line and the pill are one strip and they read as one.
+            row.create_text(22 + wide, height - 25, anchor="w",
+                            font=(ui.UI, 8),
                             fill=ui.GREEN if status == module.FIXED
                             else ui.FAINT,
                             text=status + (f"  ·  {by}" if by else ""))
+        if not asking and ident:
+            # The far corner of the strip, and LEFT of the picture when
+            # there is one: the thumbnail owns the right edge from y13
+            # down, and a ✕ under it would be a delete drawn on top of a
+            # screenshot. Same label, same hover and same 11 pt as the ✕
+            # on a pile row (widgets.PileRow), because it is the same
+            # gesture — except that this one asks.
+            cross = tk.Label(row, text="✕", bg=ui.CARD, fg=ui.FAINT,
+                             font=(ui.UI, 11), cursor="hand2", padx=6)
+            cross.bind("<Button-1>",
+                       lambda _e, i=ident: self._problem_ask_delete(i))
+            cross.bind("<Enter>", lambda _e, w=cross: w.config(fg=ui.RED))
+            cross.bind("<Leave>", lambda _e, w=cross: w.config(fg=ui.FAINT))
+            row.create_window(edge - shot_w, height - 25, window=cross,
+                              anchor="e")
         scroller.bind_wheel(row)
 
     def _problem_decide(self, ident: str, status: str) -> None:
-        """Fixed or Closed on a row, written to problems.json here.
+        """Fixed, Closed or Reopen on a row, written to problems.json
+        here.
 
         `by` is why resolve() takes the argument at all: a report can be
         answered from this window or from wherever else the store grows a
-        surface, and the digest says which.
+        surface, and the digest says which. REOPENING CLEARS IT, because
+        the field is who answered the report and a reopened one has not
+        been answered — leaving "dashboard" there would put this window's
+        name on a resolution it had just taken away.
         """
+        store = self._problems_store()
+        module = self._problems()
+        if store is None or module is None:
+            self._note("problems.py is not here")
+            return
+        back = status == module.OPEN
+        try:
+            saved = store.resolve(ident, status, by="" if back
+                                  else "dashboard")
+        except Exception as e:            # noqa: BLE001
+            self._note(f"could not save that: {e}")
+            return
+        if not saved:
+            self._note("that one is not in the list any more")
+        else:
+            self._note("open again — it is back on the list and on the "
+                       "home" if back else f"marked {status}")
+        self._write_digest()
+        self._fill_problems()
+
+    def _problem_ask_delete(self, ident: str) -> None:
+        """The ✕, pressed. Nothing is deleted here — the row is asked.
+
+        His own words for why there is a step at all: "when I'm pressing
+        the X, a question mark will jump, or a message that says are you
+        sure, because I don't want the reports to be deleted instantly".
+        One at a time, so a second ✕ moves the question rather than
+        leaving two rows open with a Delete on each.
+        """
+        self._problem_asking = str(ident)
+        self._fill_problems()
+
+    def _problem_keep(self) -> None:
+        """Keep it: the answer that is not a delete, and the one the row
+        goes back to on its own if he opens another tab."""
+        self._problem_asking = ""
+        self._fill_problems()
+
+    def _problem_delete(self, ident: str) -> None:
+        """Delete, pressed on a row that has already asked. The report
+        leaves problems.json for good; the screenshot and the copied
+        recording stay in problems\\, which is what the note says out
+        loud so he is never guessing what he just did."""
+        self._problem_asking = ""
         store = self._problems_store()
         if store is None:
             self._note("problems.py is not here")
             return
         try:
-            saved = store.resolve(ident, status, by="dashboard")
+            gone = store.remove(ident)
         except Exception as e:            # noqa: BLE001
-            self._note(f"could not save that: {e}")
+            self._note(f"could not delete that: {e}")
             return
-        self._note(f"marked {status}" if saved
-                   else "that one is not in the list any more")
+        if gone is None:
+            self._note("that one is not in the list any more")
+        elif gone.get("shot") or gone.get("dictation"):
+            self._note("deleted — its picture and its recording are still "
+                       "in the problems folder")
+        else:
+            self._note("deleted")
         self._write_digest()
         self._fill_problems()
 
