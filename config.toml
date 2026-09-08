@@ -232,8 +232,8 @@ corner = "top-right"          # bottom-right | top-right. Which corner of the
                               # key card open beside it there unless their own
                               # `corner` says otherwise, and they keep using
                               # this corner even after the dot has been dragged
-x = -100000                   # the top-left of the dot's own little window
-y = -100000                   # where you last dragged it to, in screen pixels.
+x = 1294                   # the top-left of the dot's own little window
+y = 15                   # where you last dragged it to, in screen pixels.
                               # -100000 = never dragged: use `corner`. It has
                               # to be a number no desktop can reach, because a
                               # monitor to the LEFT of your main one has real
@@ -1662,8 +1662,8 @@ card_seconds = 20             # how long the card stays on screen before it
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
-x = -1450                   # the top-left of the CARD where you last
-y = 1030                   # dragged it, in screen pixels. -100000 = never
+x = 903                   # the top-left of the CARD where you last
+y = 865                   # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a
                               # monitor to the left of the primary
 scale = 1.0                   # how big it is drawn (0.6 .. 1.4)
