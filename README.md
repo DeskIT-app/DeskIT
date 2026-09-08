@@ -445,11 +445,14 @@ rather than at the menu's edge.
 **Three tabs open with a block that is not a row**, because the thing
 they are about cannot be typed: **Phone** has the link the keyboard
 talks to, **The app** has the version switch, the sounds and the files,
-and **Cards** has **the dot** — where it is now, **Move the dot**, and
-**Back to the corner**. That last one is there rather than on Home
-because the two lines it writes (`[dot] x` and `[dot] y`) are on the
-same card, folded behind "2 more in this section": a button you can find
-beats a pair of numbers you would have to measure and type.
+and **General** opens with **the dot** — where it is now, the corner it
+sits in, **Move the dot** and **Back to the corner**, all in one row.
+That card was on **Cards** until 2026-09-08 and it was the wrong page:
+the corner menu was named by hand on General, so the owner went there
+looking for the dot, found only two corners and reported that he could
+not move it at all. The dot is now on ONE page, and it is the page he
+opened; the two lines the button writes (`[dot] x` and `[dot] y`) are on
+it too, folded behind "2 more in this section". Cards has no dot on it.
 
 **Every box on that place is rounded, including the fields.** The
 switches and the menus always were — they are cached Pillow faces — but
@@ -1008,18 +1011,27 @@ hand on the mouse, could have it.
   `[dot] corner = "top-right"` puts it back, button and all. Turn it off
   with `indicator = false`.
 - **And you can put the dot wherever you like, while the app is
-  running.** Settings › Cards › **Move the dot**: the control window
-  hides itself, the disc turns into something you drag — its ring goes
-  white to say so — and wherever you drop it is where it stays. The
-  window comes back by itself when you let go, and says where the dot
-  ended up. Nothing restarts, and nothing has to be typed into
-  `config.toml`: the drop is written to `[dot] x` and `[dot] y`, and
-  **Back to the corner** clears them again. If you press the button and
-  then change your mind, move mode runs out after 45 seconds and the
-  disc goes back to being the shelf's button. The panel and the key card
-  still open in `[dot] corner` — drag the dot across the screen and they
-  do not follow it; each of them remembers its own place if you drag it
-  too.
+  running.** Settings › General › **Move the dot**, beside the two
+  corners on the same card: the control window hides itself, the disc
+  turns into something you drag — its ring goes white to say so — and
+  wherever you drop it is where it stays. The window comes back by
+  itself when you let go, and says where the dot ended up. Nothing
+  restarts, and nothing has to be typed into `config.toml`: the drop is
+  written to `[dot] x` and `[dot] y`, and **Back to the corner** clears
+  them again. Picking one of the two corners from the menu beside the
+  button moves it just as live. If you press the button and then change
+  your mind, move mode runs out after 45 seconds and the disc goes back
+  to being the shelf's button.
+- **And the panel opens beside the dot, wherever the dot is.** Since
+  2026-09-08 the shelf and the key card follow the dot to a POINT and
+  not only to a corner: drag the dot into the middle of the screen and
+  the panel opens above it, or below it when there is no room above,
+  centred on it and slid back onto whichever monitor the dot is on. It
+  never covers the dot. Both cards ship with `corner = "dot"`, which is
+  what makes them followers; give one a corner of its own (`[shelf]
+  corner = "bottom-left"`) and it stays in that corner instead, and drag
+  a card by hand and it keeps the place you dragged it to — your own
+  drag beats the dot.
 - **Two `pythonw.exe` processes in Task Manager is normal** — a venv's
   `python.exe` is a launcher stub that runs the real interpreter as a
   child. It is one app; the single-instance guard is what proves it.

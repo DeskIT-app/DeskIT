@@ -412,6 +412,13 @@ def run(status_dot) -> None:
                 # window by the destination point it is handed, so the
                 # move costs nothing beyond the frame we were painting.
                 status_dot._replace.clear()
+                # The CORNER as well as the position, since 2026-09-08:
+                # picking the other corner from Settings is live now
+                # (main.App._dot_power), and this painter keeps its own
+                # copy of it — left unread, a dot that had never been
+                # dragged would not move at all.
+                want = str(getattr(status_dot, "corner", dot.corner))
+                dot.corner = want if want in CORNERS else dot.corner
                 dot.x = int(getattr(status_dot, "x", UNSET))
                 dot.y = int(getattr(status_dot, "y", UNSET))
                 at_x, at_y, _w, _h = dot.placement()

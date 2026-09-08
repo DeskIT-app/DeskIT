@@ -6040,16 +6040,20 @@ class Dashboard:
                 builders.append(lambda: self._files_card(scroller))
             elif name == "Phone":
                 builders.append(lambda: self._phone_block(scroller))
-            elif name == "Cards":
-                # Above the rows of [dot], because "Move the dot" is the
-                # only way to set `dot.x` and `dot.y` and those two lines
-                # are folded away behind "2 more in this section" — a
-                # button he can find beats a number he would have to type.
+            elif name == settings_mod.GENERAL:
+                # FIRST ON GENERAL, because that is where he went looking
+                # for it: "I'm going to General and then 'which corner the
+                # dot sits' — there is only bottom right or top right. So
+                # please solve the problem that I cannot move the dot"
+                # (2026-09-08). The corner menu and the button are one
+                # card now, side by side, and Cards has no dot on it at
+                # all — see settings.TAB_SECTIONS.
                 builders.append(lambda: self._dot_block(scroller))
             for group in settings_mod.groups_for(name, sections, elsewhere):
                 pairs = [(row, s) for row in group.rows
                          if (s := settings_mod.find(sections, row.path))
-                         is not None]
+                         is not None
+                         and s.path not in self._block_paths(name)]
                 if pairs:
                     builders.append(lambda g=group, pr=pairs:
                                     self._friendly_card(scroller, g.title,
@@ -6064,6 +6068,21 @@ class Dashboard:
         self._settings_left = builders
         self._draw_settings()
         scroller.to_top()
+
+    # What a block ABOVE the rows already draws for itself, per tab, so
+    # the rows below it do not draw it a second time. The one rule of
+    # this screen is that every line of config.toml is reachable exactly
+    # once, and a block is another way of drawing a line, not an
+    # exception to it: `dot.corner` is a real settings row with a real
+    # menu, registered in parts["rows"] like any other — it is simply
+    # drawn beside the button that goes with it instead of ten rows above
+    # it. `_keys_screen_paths` is the same idea for another SCREEN.
+    BLOCK_PATHS: dict[str, frozenset] = {
+        settings_mod.GENERAL: frozenset({"dot.corner"}),
+    }
+
+    def _block_paths(self, tab: str) -> frozenset:
+        return self.BLOCK_PATHS.get(tab, frozenset())
 
     def _draw_settings(self) -> None:
         """One card per tick, until the queue is empty."""
@@ -6418,7 +6437,8 @@ class Dashboard:
     # -- the three blocks that used to be screens
 
     def _dot_block(self, scroller) -> None:
-        """Where the status dot sits, and the button that moves it.
+        """Where the status dot sits: the two corners, and the button
+        that puts it anywhere else. ONE CARD, on General.
 
         THE OWNER'S ASK, 2026-09-07, verbatim: "the dot — I want it to be
         movable, and without needing to open and close the app. Like, put
@@ -6434,23 +6454,37 @@ class Dashboard:
         if he presses the button and then changes his mind. Nothing
         restarts and nothing has to be typed into config.toml.
 
-        It lives on the Cards page, over the [dot] rows, because that is
-        where the dot's other decision (`corner`) already is. The two
-        lines it writes — `dot.x` and `dot.y` — are on this same page,
-        folded behind "2 more in this section", so the button and the
-        numbers it sets are never in two different places.
+        AND HE COULD NOT FIND IT. 2026-09-08, having used it: "I cannot
+        move the dot. Like, in the settings, I'm going to General and
+        then 'which corner the dot sits' — there is only bottom right or
+        top right. So please solve the problem that I cannot move the
+        dot, and put like two default places, the top right and the
+        bottom right, AND a button to set it wherever I want it." The
+        card was on Cards and the corner menu was on General, so he
+        opened the page the dot's corner was on and the button was on
+        another one. That is what this card is now: his two default
+        places and the button that beats them, in one row, on the page he
+        opened. The menu is the real `dot.corner` settings row — the same
+        widget, the same write, registered in parts["rows"] like every
+        other line — so "drawn exactly once" still holds; see
+        BLOCK_PATHS.
 
         The buttons need the RUNNING app: the dot is a window that
         process owns, and there is nothing to drag when it is not there.
         Disabled and said plainly, the way the awake block says the same
-        thing about its own switch.
+        thing about its own switch. The MENU does not: a corner written
+        to config.toml with nothing running is honoured the next time it
+        starts, which is what every other settings row on this screen
+        does.
         """
-        # 172 and not 148: ui.Card's body is `h - 2 * pad`, so the two
-        # buttons at y=98 need 130 px of body and 148 would have clipped
-        # them by eighteen. Measured against ui.Card's own arithmetic
+        # 186 and not 172: ui.Card's body is `h - 2 * pad`, so the row of
+        # controls at y=110 needs 142 px of body, and the sentence above
+        # it has to be able to wrap onto a second line without landing on
+        # the word "Corner". Measured against ui.Card's own arithmetic
         # rather than eyeballed, because this card is built on a hidden
-        # desktop where nobody can see it come out short.
-        card = ui.Card(scroller.inner, CW, 172, bg=ui.BG, pad=18)
+        # desktop where nobody can see it come out short — a test walks
+        # every part of it against the body it is on.
+        card = ui.Card(scroller.inner, CW, 186, bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
         tk.Label(body, text="T H E   D O T", bg=ui.CARD, fg=ui.FAINT,
@@ -6463,23 +6497,49 @@ class Dashboard:
             body, text="", bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
             wraplength=CW - 72, justify="left", anchor="w")
         self.parts["dot_hint"].place(x=0, y=52)
+        # The corner FIRST and the button beside it, in that order,
+        # because that is the order he said them in: "two default places
+        # ... AND a button to set it wherever I want it".
+        at = 0
+        setting = settings_mod.find(self.parts.get("sections") or [],
+                                    "dot.corner")
+        if setting is not None:
+            tk.Label(body, text="Corner", bg=ui.CARD, fg=ui.FAINT,
+                     font=(ui.UI, 8)).place(x=0, y=92)
+            row = settings_mod.words_for(setting)
+            value = self.parts["values"].setdefault(setting.path,
+                                                    setting.value)
+            menu = ui.Dropdown(body, self._menu_for(row, setting), value,
+                               command=lambda v, s=setting:
+                               self._apply_setting(s, v),
+                               bg=ui.CARD, w=CONTROL_W)
+            menu.place(x=0, y=110)
+            self._register_row(setting, "dropdown", menu)
+            self.parts["dot_corner"] = menu
+            at = CONTROL_W + 12
         wide = widgets.button_width("Move the dot")
         self.parts["dot_move"] = ui.Button(body, "Move the dot",
                                            self._move_dot, w=wide, h=32,
                                            primary=True)
-        self.parts["dot_move"].place(x=0, y=98)
+        self.parts["dot_move"].place(x=at, y=110)
         home = widgets.button_width("Back to the corner")
         self.parts["dot_home"] = ui.Button(body, "Back to the corner",
                                            self._dot_to_corner, w=home,
                                            h=32, quiet=True)
-        self.parts["dot_home"].place(x=wide + 12, y=98)
+        self.parts["dot_home"].place(x=at + wide + 12, y=110)
         scroller.bind_wheel(card)
         self._paint_dot()
 
     def _paint_dot(self) -> None:
         """Say where the dot is now, and which of the two buttons is
         worth pressing. Called when the card is built and on every status
-        poll while the Settings screen is up."""
+        poll while the Settings screen is up.
+
+        The corner MENU is never disabled here — a corner written with
+        nothing running is honoured at the next start, like every other
+        line on this screen — and it is repainted by _paint_settings,
+        which is what repaints every settings row.
+        """
         p = self.parts
         if "dot_where" not in p or not p["dot_where"].winfo_exists():
             return
@@ -6488,8 +6548,9 @@ class Dashboard:
         if not self.running:
             where = "NOT RUNNING"
             said = ("The dot is a window the running app owns, so there is "
-                    "nothing to drag while it is stopped. Start dictation "
-                    "and this button moves it.")
+                    "nothing to drag while it is stopped. The corner is "
+                    "saved either way; start dictation and the button "
+                    "moves it anywhere you like.")
         elif info.get("moving"):
             where = "WAITING FOR YOU"
             said = ("Drag the disc where you want it and let go. If you "
@@ -6497,15 +6558,18 @@ class Dashboard:
                     "back to being a button.")
         elif moved:
             where = f"at {info.get('x')}, {info.get('y')}"
-            said = ("Where you dropped it. Move the dot picks it up "
-                    "again; Back to the corner sends it home to the "
+            said = ("Where you dropped it, and the panel opens beside it "
+                    "there. Move the dot picks it up again; Back to the "
+                    "corner sends it home to the "
                     f"{info.get('corner', 'bottom-right')} of your main "
                     "screen.")
         else:
             where = f"in the {info.get('corner', 'bottom-right')} corner"
-            said = ("Move the dot hides this window and waits for you to "
+            said = ("Pick either corner, or press Move the dot: this "
+                    "window steps out of the way and waits for you to "
                     "drag the disc — anywhere, on any screen. Let go and "
-                    "it stays there, and it is remembered.")
+                    "it stays there, the panel opens beside it, and it "
+                    "is remembered.")
         p["dot_where"].config(text=where,
                               fg=ui.FG if self.running else ui.FAINT)
         p["dot_hint"].config(text=said)

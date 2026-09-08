@@ -135,7 +135,14 @@ NESTED_HOTKEYS = {
 # line edit, and answered with "applies the next time it starts".
 LIVE_SECTIONS = {"punctuate": "_punctuator", "translate": "_translator",
                  "polish": "_polisher", "feedback": None, "vocab": None,
-                 "hint": None, "review": None, "shelf": None}
+                 "hint": None, "review": None, "shelf": None,
+                 # "dot" since 2026-09-08. The corner used to be read once
+                 # at startup, so the menu wrote a line and nothing on
+                 # screen moved — and that menu now sits on the same card
+                 # as "Move the dot" and "Back to the corner", which both
+                 # act at once. A control beside two honest ones has to be
+                 # honest too. See App._dot_power.
+                 "dot": None}
 LIVE_TOP_LEVEL = ("auto_pause_fullscreen", "paste_chord", "restore_delay_ms")
 
 # THE WEEKLY ROUTINE'S QUESTION, and the three numbers that decide when it
@@ -582,9 +589,14 @@ class App:
         # x/y` is where it was dragged to, and the dashboard's "Move the
         # dot" arms another drag down the control pipe while the app runs
         # — which is the whole of the owner's complaint on 2026-09-07,
-        # "without needing to open and close the app". The cards beside it
-        # go on using the CORNER, so dragging the dot into the middle of
-        # the screen does not send the shelf there with it.
+        # "without needing to open and close the app".
+        #
+        # AND SINCE 2026-09-08 THE CARDS BESIDE IT GO WITH IT. "I want it
+        # to be able to move where the dot is", said of the panel the dot
+        # opens, so a card whose file said `corner = "dot"` is handed
+        # `_dot_beside` and opens beside the dot wherever it actually is;
+        # a card that named a corner of its own keeps that corner. The
+        # corner is still what both use until the dot has been dragged.
         dcfg = getattr(cfg, "dot", None)
         self._dot_corner = str(getattr(dcfg, "corner", "bottom-right"))
         self.dot = (overlay_mod.StatusDot(
@@ -605,7 +617,9 @@ class App:
         self.hint = (overlay_mod.HintCard(
             cfg.hint.after_ms, cfg.hint.corner, x=cfg.hint.x, y=cfg.hint.y,
             scale=cfg.hint.scale, on_change=self._save_hint,
-            dot_corner=self._dot_corner)
+            dot_corner=self._dot_corner,
+            dot_at=self._dot_beside
+            if getattr(cfg.hint, "follow_dot", True) else None)
             if cfg.hint.enabled else overlay_mod.HintCard.off())
         # And the second reading's card (review.py): one proposal, three
         # buttons, a clock. Off by config, and off by construction until a
@@ -713,7 +727,9 @@ class App:
                     on_refresh=self._shelf_refresh,
                     on_away=self._shelf_close,
                     spare=self._dot_squares,
-                    dot_corner=self._dot_corner)
+                    dot_corner=self._dot_corner,
+                    dot_at=self._dot_beside
+                    if getattr(scfg, "follow_dot", True) else None)
             except Exception:                    # noqa: BLE001
                 log.info("the shelf would not build — its key will say so "
                          "and nothing else changes", exc_info=True)
@@ -1904,6 +1920,8 @@ class App:
                 self._hint_power(fresh.hint)
             if section == "shelf":
                 self._shelf_power(getattr(fresh, "shelf", None))
+            if section == "dot":
+                self._dot_power(fresh)
             live = True
         message = (f"{name} saved" if live
                    else f"{name} saved — it applies the next time it starts")
@@ -2416,7 +2434,9 @@ class App:
             new = (overlay_mod.HintCard(
                 hcfg.after_ms, hcfg.corner, x=hcfg.x, y=hcfg.y,
                 scale=hcfg.scale, on_change=self._save_hint,
-                dot_corner=self._dot_corner)
+                dot_corner=self._dot_corner,
+                dot_at=self._dot_beside
+                if getattr(hcfg, "follow_dot", True) else None)
                 if hcfg.enabled else overlay_mod.HintCard.off())
             old.stop()
             self.hint = new
@@ -2869,6 +2889,82 @@ class App:
         """
         rect = getattr(getattr(self, "dot", None), "rect", None)
         return [rect] if rect is not None else []
+
+    def _dot_power(self, fresh) -> None:
+        """`[dot]` changed from the dashboard — take it live.
+
+        The corner was read once, at startup, so picking the other one
+        from Settings wrote a line and nothing on screen moved until the
+        app was restarted. That was survivable while the menu was alone
+        on a page; since 2026-09-08 it stands beside "Move the dot" and
+        "Back to the corner" on one card (dashboard._dot_block), and both
+        of those act in the same second. A menu that quietly deferred
+        next to them would read as the same bug he reported: "I cannot
+        move the dot."
+
+        So it goes down the road the drop and "Back to the corner"
+        already use: the fields are written and `_replace` is set, and
+        whichever painter is running picks it up on its next frame — 22
+        ms away, nothing restarts. x and y come with it, because they are
+        editable rows on the same page and a number typed there should
+        move the dot for the same reason the button does.
+
+        The cards beside the dot are told too. They are built once and
+        hold the dot's corner to keep out of its square; left alone they
+        would go on avoiding a corner the dot has left, and a card that
+        follows the dot (`corner = "dot"`) would still open in the old
+        one. Rebuilding them is not needed and would cost their windows.
+        """
+        dcfg = getattr(fresh, "dot", None)
+        dot = getattr(self, "dot", None)
+        if dcfg is None or dot is None:
+            return
+        corner = str(getattr(dcfg, "corner", self._dot_corner))
+        self._dot_corner = corner
+        dot.corner = corner
+        dot.x = int(getattr(dcfg, "x", dot.x))
+        dot.y = int(getattr(dcfg, "y", dot.y))
+        dot._replace.set()
+        for card in (getattr(self, "hint", None),
+                     getattr(self, "shelf", None)):
+            if card is None:
+                continue
+            card._dot_corner = corner
+            if getattr(card, "_dot_at", None) is not None:
+                # It FOLLOWS the dot, so its own corner is the dot's —
+                # config.load resolved the word "dot" against the corner
+                # that was in the file a moment ago, and that is the one
+                # this card is still holding.
+                card._corner = corner
+        log.info("the dot: corner=%s, x=%s, y=%s", corner, dot.x, dot.y)
+
+    def _dot_beside(self):
+        """The dot's own square for a card that opens BESIDE it — but
+        only once he has DRAGGED the dot out of its corner.
+
+        The owner, 2026-09-08: "I want it to be able to move where the
+        dot is." Handed to the cards whose file says `corner = "dot"`
+        (overlay.HintCard.dot_at), and called on every paint, because the
+        dot can be dragged at any moment and the cards are built once at
+        startup.
+
+        None while the dot is still in its corner, and that is not
+        laziness: the corner rule is what every card and every test has
+        always used there, it puts the panel against the screen's edge
+        rather than eighteen pixels off it, and there is nothing to
+        improve about a dot that has not moved. None as well with no dot
+        at all (`indicator = false`) — then there is nothing to open
+        beside.
+        """
+        dot = getattr(self, "dot", None)
+        if dot is None:
+            return None
+        try:
+            if not dot.dragged():
+                return None
+        except Exception:                        # noqa: BLE001
+            return None
+        return getattr(dot, "rect", None)
 
     def _shelf_close(self) -> None:
         """Down, and the corner given back to whoever else wants it.
@@ -3349,7 +3445,9 @@ class App:
                         on_away=self._shelf_close,
                         spare=self._dot_squares,
                         dot_corner=getattr(self, "_dot_corner",
-                                           "bottom-right"))
+                                           "bottom-right"),
+                        dot_at=self._dot_beside
+                        if getattr(scfg, "follow_dot", True) else None)
                 except Exception:                # noqa: BLE001
                     log.info("the shelf would not rebuild", exc_info=True)
                     new = None

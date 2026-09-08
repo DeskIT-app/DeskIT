@@ -102,6 +102,13 @@ class HintConfig:
     x: int = -100000
     y: int = -100000
     scale: float = 1.0
+    # Did the file say "dot"? load() answers it with `follows_dot` and
+    # keeps the answer, because `corner` above cannot: by then the word
+    # has been resolved into a real corner and a card that FOLLOWS the
+    # dot reads identically to one that named the dot's corner by hand.
+    # The difference matters since 2026-09-08 — a follower goes where he
+    # DRAGGED the dot, a card that named a corner stays in it.
+    follow_dot: bool = True
 
 
 HINT_CORNERS = ("top-right", "top-left", "bottom-right", "bottom-left")
@@ -165,6 +172,21 @@ def corner_for(own: str, dot: str) -> str:
     return str(dot).strip().lower() if own == FOLLOW_DOT else own
 
 
+def follows_dot(own: str) -> bool:
+    """Did the file say "dot" for this card's corner?
+
+    `corner_for` deliberately erases the word — nothing downstream ever
+    sees "dot", every card reads a real corner — and that was enough
+    while the dot only ever sat in one of two corners. Since 2026-09-08
+    it does not: he drags it, and a card that said "dot" follows it to
+    the POINT rather than to the corner (`overlay.beside_dot`). A card
+    that named a corner of its own stays in that corner even when the
+    dot happens to have started in the same one, which is the difference
+    the resolved word cannot carry on its own.
+    """
+    return str(own or "").strip().lower() == FOLLOW_DOT
+
+
 @dataclass(frozen=True)
 class ShelfConfig:
     """The panel beside the status dot that one key opens — see shelf.py.
@@ -197,6 +219,13 @@ class ShelfConfig:
     x: int = HINT_UNSET
     y: int = HINT_UNSET
     scale: float = 1.0
+    # Did the file say "dot"? load() answers it with `follows_dot` and
+    # keeps the answer, because `corner` above cannot: by then the word
+    # has been resolved into a real corner and a card that FOLLOWS the
+    # dot reads identically to one that named the dot's corner by hand.
+    # The difference matters since 2026-09-08 — a follower goes where he
+    # DRAGGED the dot, a card that named a corner stays in it.
+    follow_dot: bool = True
     # While the panel is up, the notification column steps aside. The
     # same cards are listed on the panel with the same two answers, and
     # two piles in one corner is one too many; nothing is marked seen and
@@ -1499,6 +1528,7 @@ def load(path: Path) -> Config:
             after_ms=int(hint.get("after_ms", HintConfig.after_ms)),
             corner=corner_for(hint.get("corner", HintConfig.corner),
                               dot_corner),
+            follow_dot=follows_dot(hint.get("corner", HintConfig.corner)),
             x=int(hint.get("x", HintConfig.x)),
             y=int(hint.get("y", HintConfig.y)),
             scale=float(hint.get("scale", HintConfig.scale)),
@@ -1799,6 +1829,8 @@ def load(path: Path) -> Config:
             rows=int(shelf.get("rows", ShelfConfig.rows)),
             corner=corner_for(shelf.get("corner", ShelfConfig.corner),
                               dot_corner),
+            follow_dot=follows_dot(shelf.get("corner",
+                                             ShelfConfig.corner)),
             x=int(shelf.get("x", ShelfConfig.x)),
             y=int(shelf.get("y", ShelfConfig.y)),
             scale=float(shelf.get("scale", ShelfConfig.scale)),

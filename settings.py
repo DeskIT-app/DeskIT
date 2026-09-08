@@ -425,8 +425,9 @@ DOT = Friendly(
     "is writing your words down. Click it and the panel opens beside it.")
 DOT_CORNER = Friendly(
     "dot.corner", "Which corner the dot sits in",
-    "A corner of the main screen above the taskbar. The panel and the key "
-    "card open beside it there.", _DOT_CORNERS)
+    "A corner of the main screen above the taskbar — or press Move the dot "
+    "and put it anywhere you like. The panel and the key card open beside "
+    "it wherever it ends up.", _DOT_CORNERS)
 LEARNED = Friendly(
     "vocab.enabled", "Use the words it has learned",
     "Corrections you taught it with the correction key are applied to "
@@ -634,11 +635,23 @@ TABS: tuple[Tab, ...] = (
 # saved — and the test that every line is drawn exactly once is what
 # keeps this table and TABS from disagreeing.
 TAB_SECTIONS: dict[str, tuple[str, ...]] = {
+    # [dot] IS ON GENERAL AND NOWHERE ELSE, since 2026-09-08. The owner
+    # went looking for it there and found half of it: "in the settings,
+    # I'm going to General and then 'which corner the dot sits' — there
+    # is only bottom right or top right. So please solve the problem that
+    # I cannot move the dot." The corner was named by hand on General
+    # (TABS, DOT_CORNER) and the section was owned by Cards, so "Move the
+    # dot" — the button that is the ONLY way to set `dot.x` and `dot.y` —
+    # was drawn on a page he never opened. Owning the section here puts
+    # the two lines the button writes on the same page as the button, and
+    # takes the dot out of Cards entirely, which is correct: the dot is
+    # not a card, it is the app's one permanent mark on the screen.
+    GENERAL: ("dot",),
     "Dictation": ("", "audio", "feedback", "polish", "vocab", "study",
                   "local", "review", "setup"),
     "Text": ("punctuate", "translate", "lookup", "gemini"),
     "Screen": ("visual_qa", "capture", "camera"),
-    "Cards": ("dot", "hint", "notify", "problems", "shelf"),
+    "Cards": ("hint", "notify", "problems", "shelf"),
     "Phone": ("server",),
     APP: ("awake",),
 }

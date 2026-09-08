@@ -3264,6 +3264,15 @@ assert clicks == [], ('a press mid-move opened the shelf', clicks)
 # and test_move_mode_expires_and_a_drop_writes_one_pair_of_lines has
 # placed() and the write. What is checked HERE is the wiring - that the
 # message reaches the dot at all, and what it does when it does.
+#
+# AND THE Tk FALLBACK CANNOT STAND IN FOR IT EITHER, measured 2026-09-08.
+# That path tracks the drag with its own <Button-1>/<B1-Motion> bindings
+# rather than handing it to Windows, so it looks drivable by SendMessage
+# - and it is not: Tk builds a mouse event's position from GetMessagePos,
+# which reports the last message taken OFF THE QUEUE, and SendMessage
+# never goes near the queue. Probed on the hidden desktop, every synthetic
+# press arrived at the real pointer's coordinates, i.e. outside the disc,
+# so `press` returned before it did anything. Both paths need a real hand.
 u.SendMessageW(hwnd, 0x00A2, 2, lp(cx, cy)); time.sleep(.4)
 assert saved == [], ('a press that moved nothing was saved', saved)
 assert d.moving() is False, 'a release has to disarm it'
@@ -17046,6 +17055,122 @@ def test_the_cards_open_above_a_bottom_right_dot_and_beside_a_top_right_one(
     assert plain.origin(300, 400, (1920, 1080)) == (12, 12)
 
 
+def test_the_panel_opens_beside_the_dot_wherever_he_dragged_it() -> None:
+    """THE OTHER HALF OF MOVING THE DOT, and it was left undone on
+    purpose for one night.
+
+    The owner, 2026-09-08: "I reopened the app so I don't know about the
+    tab that opens when I'm pressing the dot — I want it to be able to
+    move where the dot is. Okay, so please code it like that." Until
+    today `[dot] corner` decided where the shelf and the key card opened,
+    so a dot dragged into the middle of the screen left the panel opening
+    in the bottom-right corner, detached from the thing that opened it.
+    The note in AGENTS.md that called that permanent asked for an answer
+    to "beside a dot that is nowhere near an edge"; this is the answer,
+    and it is `overlay.beside_dot`.
+
+    ABOVE when there is room above, BELOW when there is not, centred on
+    the dot and slid back onto the screen the dot is on, and never on the
+    dot. Clamped last against the whole virtual desktop, because the
+    monitor to the left of this machine's primary starts at x = -1920 and
+    a panel following a dot over there must not be walked home.
+    """
+    import shelf as shelf_mod
+
+    work = (0, 0, 2560, 1392)                 # the primary, above a taskbar
+    desktop = (-1920, 0, 4480, 1440)          # and a screen on the left
+    left_screen = (-1920, 0, 1920, 1080)
+    w, h = 392, 528
+    box = 38
+
+    def dot_at(x, y):
+        return (x, y, x + box, y + box)
+
+    # ABOVE, centred on the dot, with real daylight between the two
+    x, y = overlay_mod.beside_dot(dot_at(1200, 700), (w, h), work,
+                                  overlay_mod.DOT_GAP, desktop)
+    assert y + h == 700 - overlay_mod.DOT_GAP, (y, h)
+    assert x + w / 2 == 1200 + box / 2, (x, "not centred on the dot")
+
+    # BELOW, when the dot is too near the top for the panel to fit above
+    x, y = overlay_mod.beside_dot(dot_at(1200, 60), (w, h), work,
+                                  overlay_mod.DOT_GAP, desktop)
+    assert y == 60 + box + overlay_mod.DOT_GAP, y
+    assert y + h <= work[1] + work[3], "below the screen it is on"
+
+    # SLID BACK ON, for a dot near an edge — and still not on the dot
+    for at in ((2540, 700), (4, 700), (2540, 40), (4, 1340)):
+        x, y = overlay_mod.beside_dot(dot_at(*at), (w, h), work,
+                                      overlay_mod.DOT_GAP, desktop)
+        assert work[0] <= x and x + w <= work[0] + work[2], (at, x)
+        assert work[1] <= y and y + h <= work[1] + work[3], (at, y)
+        assert not overlay_mod._overlaps((x, y, x + w, y + h),
+                                         dot_at(*at)), at
+
+    # THE MONITOR ON THE LEFT, whose coordinates are genuinely negative
+    x, y = overlay_mod.beside_dot(dot_at(-1900, 700), (w, h), left_screen,
+                                  overlay_mod.DOT_GAP, desktop)
+    assert x == -1920, x
+    assert x < 0 and x + w < 0, "the panel was walked back onto the primary"
+
+    # A PANEL TALLER THAN THE ROOM ON EITHER SIDE goes beside the dot, on
+    # the side with more room, and still never over it.
+    x, y = overlay_mod.beside_dot(dot_at(1200, 700), (w, 1380), work,
+                                  overlay_mod.DOT_GAP, desktop)
+    assert x == 1200 + box + overlay_mod.DOT_GAP, x
+    assert not overlay_mod._overlaps((x, y, x + w, y + 1380),
+                                     dot_at(1200, 700))
+
+    # ...and the same answer for the shelf and the key card, from the one
+    # place that decides it. `dot_at` is a callable because the dot moves
+    # while the app runs and the cards are built once, at startup.
+    screen, inset, m = (2560, 1440), 26, 14
+    win_w, win_h = w + inset * 2, h + inset * 2
+    here = lambda: dot_at(1200, 700)                             # noqa: E731
+    beside = overlay_mod.beside_dot(here(), (w, h), work,
+                                    overlay_mod.DOT_GAP, desktop)
+    for card in (overlay_mod.HintCard(corner="bottom-right", margin=m,
+                                      dot_corner="bottom-right",
+                                      dot_at=here),
+                 shelf_mod.ShelfCard(corner="bottom-right", margin=m,
+                                     dot_corner="bottom-right",
+                                     dot_at=here)):
+        at = card.origin(win_w, win_h, screen, inset, desktop, work)
+        assert (at[0] + inset, at[1] + inset) == beside, (type(card), at)
+
+    # AND WHAT STILL WORKS. A dot that has not been dragged is None from
+    # main.App._dot_beside, and then the corner rule decides exactly as
+    # it did before this existed; a card he dragged HIMSELF keeps its own
+    # position, dot or no dot; and a dot that cannot say where it is
+    # costs a corner rather than a card.
+    plain = overlay_mod.HintCard(corner="bottom-right", margin=m,
+                                 dot_corner="bottom-right")
+    corner = plain.origin(win_w, win_h, screen, inset, desktop, work)
+    for at in (lambda: None, lambda: 1 / 0, lambda: (0, 0, 0, 0)):
+        same = overlay_mod.HintCard(corner="bottom-right", margin=m,
+                                    dot_corner="bottom-right", dot_at=at)
+        assert same.origin(win_w, win_h, screen, inset, desktop,
+                           work) == corner, at
+    his = overlay_mod.HintCard(corner="bottom-right", margin=m, x=400,
+                               y=250, dot_corner="bottom-right", dot_at=here)
+    assert his.origin(win_w, win_h, screen, inset, desktop, work) == (
+        400 - inset, 250 - inset), "his own drag has to beat the dot"
+
+    # main.py: only a DRAGGED dot is offered, and only to the cards that
+    # follow it — the corner rule is what a dot sitting in its corner
+    # gets, because it puts the panel against the screen's edge rather
+    # than eighteen pixels off it.
+    import main as main_mod
+    app = main_mod.App.__new__(main_mod.App)
+    app.dot = overlay_mod.StatusDot()
+    app.dot.rect = (1200, 700, 1238, 738)
+    assert app._dot_beside() is None, "an undragged dot is the corner rule"
+    app.dot.x, app.dot.y = 1200, 700
+    assert app._dot_beside() == (1200, 700, 1238, 738)
+    app.dot = None
+    assert app._dot_beside() is None, "no dot, nothing to open beside"
+
+
 def test_the_shadow_margin_does_not_move_the_visible_edge() -> None:
     """The glass card leaves room around itself for its own shadow and the
     Tk one does not, so the same corner has to put the same PICTURE in the
@@ -17792,14 +17917,40 @@ def test_the_dot_section_decides_the_corner_for_every_card_beside_it(
     assert "self.dot.on_click = self._tap_shelf" in src
     assert src.count("dot_corner=self._dot_corner") >= 3, \
         "a card is built without the dot's corner"
-    # The cards keep following the CORNER even after the dot has been
-    # dragged out of it: `[dot] x/y` moves the dot and nothing else, so
-    # `corner` is still the one word the shelf and the key card read.
+    # The corner is still the one word both cards read while the dot is
+    # in a corner — and since 2026-09-08 it is no longer the WHOLE story:
+    # a card whose file said "dot" follows the dot to wherever he dragged
+    # it (`follows_dot`, overlay.beside_dot), and one that named a corner
+    # of its own stays in that corner even when the dot started there.
+    # `corner_for` cannot carry that difference, because by the time it
+    # has run the two read identically.
     moved_dot = config_mod.load(Path(sys.path[0]) / "config.toml")
     moved_dot = dataclasses.replace(
         moved_dot, dot=dataclasses.replace(moved_dot.dot, x=40, y=40))
     assert moved_dot.hint.corner == moved_dot.dot.corner
     assert moved_dot.shelf.corner == moved_dot.dot.corner
+    assert moved_dot.hint.follow_dot and moved_dot.shelf.follow_dot
+    assert config_mod.follows_dot("dot") is True
+    assert config_mod.follows_dot("bottom-right") is False
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-follow-"))
+    try:
+        path = tmp / "config.toml"
+        # the same resolved corner from two different words, and only one
+        # of them is a follower
+        path.write_text('[dot]\ncorner = "top-right"\n'
+                        '[hint]\ncorner = "top-right"\n'
+                        '[shelf]\ncorner = "dot"\n', "utf-8")
+        cfg = config_mod.load(path)
+        assert cfg.hint.corner == cfg.shelf.corner == "top-right"
+        assert cfg.hint.follow_dot is False, "a named corner is not a follow"
+        assert cfg.shelf.follow_dot is True
+        # and main.py only hands the live dot to the cards that follow it
+        src = (Path(__file__).resolve().parent / "main.py").read_text("utf-8")
+        assert src.count("dot_at=self._dot_beside") == 4, \
+            "a card is built without the live dot"
+        assert 'if getattr(cfg.hint, "follow_dot", True) else None' in src
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_the_dot_can_be_dropped_anywhere_and_is_remembered() -> None:
@@ -17957,6 +18108,85 @@ def test_the_dot_is_dragged_by_its_disc_and_never_by_its_glow() -> None:
     # glow: what lights up has to be what can actually be pressed
     assert skin_dot.MOVE_W > 1.0
     assert skin_dot.CORE * 0.5 + 3.0 + skin_dot.MOVE_W / 2 < skin_dot.HALO_R
+
+
+def test_the_move_button_reaches_the_running_app_down_the_real_pipe() -> None:
+    """THE WHOLE ROAD, end to end, with a real named pipe in the middle.
+
+    The dashboard is a separate process, so "become draggable" has to
+    travel: the button calls control.send("dot", do="move"), a listener
+    thread in the app hands it to App.control_command, and that arms the
+    dot. Every other test of this either fakes control.send (the Settings
+    screen's) or calls control_command directly (the deadline's), so the
+    pipe itself — the piece the owner is actually pressing a button on —
+    was never crossed. It is crossed here.
+
+    Four things, in the order he would meet them: the command reaches the
+    app and arms the disc; the reply carries the state the window needs
+    to decide whether to hide itself; the mode EXPIRES on its own if he
+    walks away, and the app then says so on the very next status poll,
+    which is what puts the dashboard back; and a drop writes both lines
+    at once and "Back to the corner" writes the sentinel back into both.
+
+    What is NOT here, and cannot be: the drag. Windows' move loop wants
+    real mouse input, and the dot is a layered window whose position is
+    re-applied by every UpdateLayeredWindow, so a SetWindowPos standing
+    in for a drag is undone before the message arrives.
+    test_the_real_dot_window_moves_while_the_app_keeps_running sends the
+    real messages to the real window instead — HTCAPTION, the press that
+    must not open the shelf, the release that disarms — and that is the
+    closest anything gets without a hand on the mouse.
+    """
+    import control as control_mod
+    import main as main_mod
+
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg = config_mod.load(Path(sys.path[0]) / "config.toml")
+    app.config_path = Path(sys.path[0]) / "config.toml"
+    written: list = []
+    app.dot = overlay_mod.StatusDot(on_change=written.append)
+    app.dot._thread = threading.current_thread()      # pretend it is up
+    app._say = lambda *a, **k: None
+
+    restore = _private_pipe(control_mod, "dotmove")
+    server = control_mod.ControlServer(app.control_command)
+    assert server.start(), "the control channel did not come up"
+    try:
+        reply = control_mod.send("dot", do="move")
+        assert reply is not None, "the button never reached the app"
+        assert reply["ok"] and reply["dot"]["moving"] is True, reply
+        assert "drag the dot" in reply["message"], reply
+        assert app.dot.moving() is True, "the disc was never armed"
+
+        # He pressed it and walked away. The deadline is the app's, and
+        # the dashboard reads it off the next status rather than keeping
+        # its own clock — moved here rather than slept through, because a
+        # suite does not need to wait out forty-five seconds to know what
+        # a deadline is.
+        app.dot._move_until = time.monotonic() - 0.01
+        again = control_mod.send("dot", do="state") or {}
+        assert again.get("ok") is False, "state is not an action it knows"
+        assert app.dot.state()["moving"] is False, \
+            "a dashboard hidden for this would never come back"
+
+        # The drop, and then home again — both lines, both times.
+        control_mod.send("dot", do="move")
+        app.dot.placed(1204, 388)
+        assert written == [{"x": 1204, "y": 388}], written
+        home = control_mod.send("dot", do="corner")
+        assert home["ok"] and home["dot"]["dragged"] is False, home
+        assert written[-1] == {"x": overlay_mod.HINT_UNSET,
+                               "y": overlay_mod.HINT_UNSET}, written
+
+        # ...and with no dot to drag, it says so instead of hiding a
+        # window in front of nothing.
+        app.dot = overlay_mod.StatusDot.off()
+        refused = control_mod.send("dot", do="move")
+        assert refused["ok"] is False and "no dot" in refused["error"], \
+            refused
+    finally:
+        server.stop()
+        restore()
 
 
 def test_move_mode_expires_and_a_drop_writes_one_pair_of_lines() -> None:
@@ -18791,20 +19021,37 @@ def test_every_tab_says_it_in_plain_words() -> None:
             "the search no longer reads the file's own words"
 
 
-def test_the_cards_page_has_the_button_that_moves_the_dot() -> None:
-    """"Put a marker, like a button, and then I press 'set'" — and this
-    is where it went: Settings › Cards, over the [dot] rows, because the
-    two lines it writes (`dot.x`, `dot.y`) are folded away on that same
-    card and a button he can find beats a number he would have to type.
+def test_the_general_page_holds_the_two_corners_and_the_button_together(
+) -> None:
+    """THE ONE PLACE THE DOT LIVES, and it is the page he opened.
 
-    It needs the RUNNING app — the dot is a window that process owns — so
-    with nothing running both buttons are disabled and the card says why
-    rather than looking broken. Pressing it sends `dot` / `do = move`
+    The owner, 2026-09-08, having used what was built the night before:
+    "I cannot move the dot. Like, in the settings, I'm going to General
+    and then 'which corner the dot sits' — there is only bottom right or
+    top right. So please solve the problem that I cannot move the dot,
+    and put like two default places, the top right and the bottom right,
+    AND a button to set it wherever I want it."
+
+    He was not wrong about any of it. `dot.corner` was named by hand on
+    General (settings.TABS) and the [dot] SECTION was owned by Cards, so
+    the card carrying "Move the dot" — the only way to set `dot.x` and
+    `dot.y` — was built on a page he never opened. This holds the fix:
+    the two corners and both buttons are on ONE card, in ONE row, on
+    General; the menu is the real `dot.corner` settings row, registered
+    like every other line so "drawn exactly once" still stands; and the
+    Cards page has no dot on it at all.
+
+    The BUTTONS need the RUNNING app — the dot is a window that process
+    owns — so with nothing running both are disabled and the card says
+    why rather than looking broken. The MENU does not: a corner written
+    with nothing running is honoured at the next start, like every other
+    line on this screen. Pressing Move the dot sends `dot` / `do = move`
     down the control pipe, and this window hides itself only once the app
     has ANSWERED, so a refusal never costs him a window that vanished for
     nothing.
     """
     import control as control_mod
+    import settings as settings_mod
 
     with _window() as board:
         if board is None:
@@ -18812,17 +19059,56 @@ def test_the_cards_page_has_the_button_that_moves_the_dot() -> None:
         board._show("Settings")
         board._settings_go("Cards")
         board._finish_settings()
+        board._settings_unfold_all()
+        left = [p for p in board.parts["rows"] if p.startswith("dot.")]
+        assert not left, ("the dot is still on Cards — it is meant to be "
+                          "in ONE place", left)
+        # `parts` outlives a tab (the values cache is the point of it), so
+        # the question is whether the WIDGET is on this page, not whether
+        # the key is in the dict: Settings opens on General, which built
+        # one, and switching tabs destroyed it.
+        gone = board.parts.get("dot_move")
+        assert gone is None or not gone.winfo_exists(), \
+            "the Move the dot button was drawn on Cards"
+
+        board._settings_go(settings_mod.GENERAL)
+        board._finish_settings()
         said = _settings_words(board)
         assert "dot" in said.lower() or "Move the dot" in said, said[:400]
         button = board.parts.get("dot_move")
-        assert button is not None, "no Move the dot button on the Cards page"
+        assert button is not None, "no Move the dot button on General"
         assert board.parts["dot_home"] is not None
+        # HIS TWO DEFAULT PLACES, on the same card and in the same row as
+        # the button that beats them. The menu is the settings row for
+        # `dot.corner`: one entry in parts["rows"], the file's own two
+        # corners, and nothing else on the screen draws it.
+        [(kind, menu)] = board.parts["rows"]["dot.corner"]
+        assert kind == "dropdown", kind
+        assert menu is board.parts["dot_corner"]
+        assert [v for v, _n in menu._choices] == \
+            list(config_mod.DOT_CORNERS), menu._choices
+        assert menu.master is button.master, \
+            "the corner and the button are on different cards"
+        board.root.update()
+        assert menu.winfo_y() == button.winfo_y(), \
+            "the corner and the button are not side by side"
+        assert menu.winfo_x() < button.winfo_x(), \
+            "he said the corners first, then the button"
+        # and the lines the button writes are on this page too, folded
+        # behind one quiet line. Opening a fold redraws only the card the
+        # fold was on, so the block above it — and `button` and `menu` —
+        # are the same widgets afterwards.
+        board._settings_unfold_all()
+        assert {"dot.x", "dot.y"} <= set(board.parts["rows"]), \
+            sorted(board.parts["rows"])
+        assert board.parts["dot_move"] is button and button.winfo_exists()
         # A ui.Card's body is `h - 2 * pad`, and a widget placed past
         # that is simply not on screen — which is invisible in a test
         # that only asks whether the widget exists, and invisible to
         # anyone building the card on a desktop nobody is looking at.
         board.root.update()
-        for name in ("dot_where", "dot_hint", "dot_move", "dot_home"):
+        for name in ("dot_where", "dot_hint", "dot_corner", "dot_move",
+                     "dot_home"):
             part = board.parts[name]
             body = part.master
             bottom = part.winfo_y() + part.winfo_reqheight()
@@ -19161,10 +19447,15 @@ def test_a_search_narrows_the_settings_to_the_lines_that_match() -> None:
         assert board.parts["rows"] == {}
         # The cross: the tabs come back, on the tab that was up — which
         # is the first one, General, since that is where Settings opens.
+        # Unfolded, because General has owned the [dot] section since
+        # 2026-09-08 and `dot.x` / `dot.y` are measurements: they wait
+        # behind the card's one quiet line, like every other measurement
+        # on every other tab. Reachable is the promise, not drawn.
         board._settings_close_search()
         board._finish_settings()
         assert not board._settings_searching and not board._settings_query
         assert board._settings_tab == settings_mod.GENERAL
+        board._settings_unfold_all()
         assert set(board.parts["rows"]) == {
             row.path for group in settings_mod.groups_for(
                 settings_mod.GENERAL, board.parts["sections"],
