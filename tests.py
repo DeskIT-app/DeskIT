@@ -18935,6 +18935,45 @@ def test_the_settings_screen_can_reach_its_last_row() -> None:
             pass
 
 
+def test_a_week_that_is_pushed_leaves_the_list_and_waits_behind_a_line(
+) -> None:
+    """His words on 2026-09-08, looking at last week's branch still sitting
+    on the Problems tab under this week's: it should disappear the moment
+    he presses, "because if it stays here after five weeks, there will be
+    a lot and it is not convenient".
+
+    So the face carries only the branches with something left to do, and
+    the finished ones wait behind the fold line — reachable, never
+    dropped, which is the rule the settings fold is held to as well.
+    """
+    with _window() as board:
+        if board is None:
+            return
+        board.closing = True
+        board._scan_weekly = lambda: None       # git is not the subject
+        board._write_digest = lambda: None      # nor is his problems.md
+        board._show("Problems")
+        drawn: list = []
+        board._weekly_row = lambda parent, scroller, info: drawn.append(
+            info["branch"])
+        board._weekly = [
+            {"branch": "weekly/2026-09-05-2", "commits": 11, "trunk": "fast",
+             "files": ["dashboard.py"], "on_origin": True, "merged": False,
+             "subject": "still his to press"},
+            {"branch": "weekly/2026-09-05", "commits": 0, "files": [],
+             "trunk": "fast", "on_origin": True, "merged": True,
+             "subject": "up on GitHub and in fast"},
+        ]
+        board._fill_problems()
+        assert drawn == ["weekly/2026-09-05-2"], drawn
+        drawn.clear()
+        board._weekly_toggle()                  # the line, pressed
+        assert drawn == ["weekly/2026-09-05-2", "weekly/2026-09-05"], drawn
+        drawn.clear()
+        board._weekly_toggle()                  # and pressed again
+        assert drawn == ["weekly/2026-09-05-2"], drawn
+
+
 def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
     """The write is config.set_values with the dotted path and nothing
     else — the line editor that keeps the comments. A refused value

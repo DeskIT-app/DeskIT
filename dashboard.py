@@ -940,6 +940,16 @@ def weekly_branches() -> list[dict]:
     return rows
 
 
+def weekly_pushed(info: dict) -> bool:
+    """Is this branch finished business — up on GitHub, and in `fast`?
+
+    The one test two places have to agree on: the card, which offers a
+    Push button only while there is something to push, and the block,
+    which decides whether the card is worth his screen at all.
+    """
+    return bool(info.get("on_origin")) and bool(info.get("merged"))
+
+
 def _foreign_on_trunk() -> tuple[bool, list[str]]:
     """(could git tell us, what is on `fast` that is not the routine's).
 
@@ -1385,6 +1395,11 @@ class Dashboard:
         # has asked yet", which is not the same as "there are none".
         self._weekly = None
         self._weekly_scanning = False
+        # Whether the weeks that are already pushed are open. Closed is
+        # the resting state: a branch folds itself away the moment its
+        # push lands, and only the line under the live ones brings it
+        # back.
+        self._weekly_open = False
         self._push_buttons: dict = {}
         self._push_said: dict = {}  # what the last press did, per branch
         self._pushing = None        # the branch a push is in flight for
@@ -4318,14 +4333,71 @@ class Dashboard:
         Above the reports, because a branch sitting here is work that is
         already DONE and that nobody has looked at — and in a frame, for
         the reason the questions are in one.
+
+        ONLY THE ONES THAT STILL WANT SOMETHING ARE ON THE FACE. A branch
+        that is on GitHub and in `fast` has no button, no decision and
+        nothing left to read; it is a receipt. There is one Saturday a
+        week, so a year of receipts would be fifty cards stacked on top
+        of the reports he opened this tab for — his words on 2026-09-08,
+        after the second week appeared under the first. So a branch
+        leaves this list the moment its push lands, and the quiet line
+        where it went opens every one of them downward again.
         """
+        live = [info for info in rows if not weekly_pushed(info)]
+        pushed = [info for info in rows if weekly_pushed(info)]
         block = tk.Frame(scroller.inner, bg=ui.BG)
         block.pack(anchor="w", fill="x", pady=(0, 2))
-        tk.Label(block, text="THE ROUTINE'S WORK — READ IT, THEN PUSH",
-                 bg=ui.BG, fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
-            anchor="w", pady=(0, 6))
-        for info in rows:
-            self._weekly_row(block, scroller, info)
+        if live:
+            tk.Label(block, text="THE ROUTINE'S WORK — READ IT, THEN PUSH",
+                     bg=ui.BG, fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
+                anchor="w", pady=(0, 6))
+            for info in live:
+                self._weekly_row(block, scroller, info)
+        if pushed:
+            self._weekly_fold(block, scroller, len(pushed))
+            if self._weekly_open:
+                for info in pushed:
+                    self._weekly_row(block, scroller, info)
+
+    def _weekly_fold(self, parent, scroller: ui.Scroller,
+                     hidden: int) -> None:
+        """The quiet line the pushed weeks are folded behind.
+
+        _fold_line's shape, off a card: the same accent words, the same
+        caret in the same face at PT_LABEL (Rubik's ▾ at the size of the
+        words beside it is three pixels of ink and reads as a full stop),
+        and a rectangle in the background's own colour under all of it,
+        because a canvas text item is only hit where its ink is and
+        "2 weeks already pushed" is 140 px of target in a 1112 px row.
+
+        It repaints the tab rather than growing in place. A settings card
+        cannot do that — its rows are painted ON it — but these rows are
+        separate canvases in a frame, and _fill_problems is how every
+        other change to this screen already arrives.
+        """
+        weeks = f"{hidden} week" + ("" if hidden == 1 else "s")
+        said = "Fewer" if self._weekly_open else f"{weeks} already pushed"
+        line = tk.Canvas(parent, width=CW, height=FOLD_H, bg=ui.BG,
+                         highlightthickness=0, bd=0)
+        line.pack(anchor="w", pady=(0, 8))
+        line.create_rectangle(0, 0, CW, FOLD_H, fill=ui.BG, outline="",
+                              tags="fold")
+        line.create_text(Q_PAD, FOLD_H / 2, text=said, anchor="w",
+                         fill=ui.ACCENT_TEXT, font=(ui.UI, 9), tags="fold")
+        line.create_text(Q_PAD + 3 + ui.text_width(said, ui.UI, 9),
+                         FOLD_H / 2 - 1, tags="fold", anchor="w",
+                         text="▴" if self._weekly_open else "▾",
+                         fill=ui.ACCENT_TEXT, font=(ui.UI, ui.PT_LABEL))
+        line.tag_bind("fold", "<Button-1>", lambda _e: self._weekly_toggle())
+        line.tag_bind("fold", "<Enter>",
+                      lambda _e: line.configure(cursor="hand2"))
+        line.tag_bind("fold", "<Leave>",
+                      lambda _e: line.configure(cursor=""))
+        scroller.bind_wheel(line)
+
+    def _weekly_toggle(self) -> None:
+        self._weekly_open = not self._weekly_open
+        self._fill_problems()
 
     def _weekly_row(self, parent, scroller: ui.Scroller,
                     info: dict) -> None:
@@ -4379,7 +4451,7 @@ class Dashboard:
         # One plain sentence about where the work is, in the words he
         # asked for on 2026-09-06: not "4 commits · 3 files · not on
         # GitHub yet", but what that means and what to do about it.
-        done = bool(info.get("on_origin")) and bool(info.get("merged"))
+        done = weekly_pushed(info)
         amount = (f"{commits} commit" + ("" if commits == 1 else "s")
                   + f", {len(files)} file" + ("" if len(files) == 1 else "s"))
         if not info.get("trunk"):

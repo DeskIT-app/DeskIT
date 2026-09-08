@@ -198,10 +198,22 @@ back.
    happen once before shipping: when he is away from the desk, and only
    after saying so. `.venv\Scripts\python.exe tests.py` is the entire
    suite in the open — never reach for it while he is sitting there.
+
    The rule is not only about the suite: `tests_quiet.run_hidden(command,
    cwd, desktop=...)` is importable, and any probe, screenshot or
    throwaway script that would put a window on his screen goes through
-   it.
+   it. **AND IT MAKES NO SOUND.** He said both halves again on
+   2026-09-08, after a screenshot driver put a second dashboard on his
+   screen: "when you're testing the app, please do it only in a
+   different monitor, like in a hidden monitor, so it will not appear on
+   my screen — if you can, also mute it". A hidden desktop hides the
+   WINDOW and not the beep, so a driver silences itself at the source,
+   before it imports anything of the app's: `winsound.PlaySound` and
+   `winsound.Beep` to no-ops (`cues.play` is winsound), and
+   `tk.Misc.bell` with them. And moving the window off-screen is not a
+   substitute for the hidden desktop — it does not even photograph:
+   PrintWindow gave back a dashboard half-painted with the screen it had
+   been dragged over (2026-09-08).
 
 ## The machine
 
