@@ -1583,11 +1583,18 @@ def _icon(kind: str, size: int = 21, colour=INK, width: int = 2):
         d.line([(n * .80, n * .40), (n * .32, n * .88)], fill=c, width=lw)
         d.polygon([(n * .18, n * .92), (n * .34, n * .87), (n * .23, n * .76)],
                   fill=c)
-    elif kind == "mic":
+    elif kind in ("mic", "mic_off"):
         d.rounded_rectangle((n * .38, n * .14, n * .62, n * .58), n * .12,
                             outline=c, width=lw)
         d.arc((n * .26, n * .34, n * .74, n * .76), 0, 180, fill=c, width=lw)
         d.line([(n * .5, n * .76), (n * .5, n * .90)], fill=c, width=lw)
+        if kind == "mic_off":
+            # The same microphone with a line through it — the clip
+            # bar's "off", the way echo_off strikes its field. The
+            # owner asked for exactly this shape (2026-09-12): "צורה של
+            # מיקרופון וקו באלכסון עליו כשאין מיקרופון".
+            d.line([(n * .18, n * .84), (n * .82, n * .16)], fill=c,
+                   width=lw)
     elif kind in ("echo", "echo_off"):
         # A field with a line of text in it: WHERE WHAT YOU SAY ALSO
         # LANDS. Not a muted microphone, which is what was asked for and

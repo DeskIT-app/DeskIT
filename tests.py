@@ -13886,10 +13886,31 @@ def test_the_region_picker_carries_the_sound_switches() -> None:
     assert w.sound == {"system": False, "mic": True}
     w._flip_sound("nope")
     assert w.sound == {"system": False, "mic": True}, "unknown key: nothing"
+    # A click on a switch is spent on the switch: the release that follows
+    # must NOT close the window the way a tap on the dimmed screen does
+    # (that is what happened on 2026-09-12 11:07 — Microphone closed the
+    # picker instead of lighting up).
+    closed: list[bool] = []
+    w.close = lambda: closed.append(True)
+    w.phase = "select"
+    w._start = None
+    w._spent = False
+    w._switch_hover = None
+    press = type("E", (), {"x": (sx0 + sx1) // 2, "y": (sy0 + sy1) // 2,
+                           "x_root": 0, "y_root": 0, "state": 0})()
+    w._plan_hint(960, 60)
+    w._on_press(press)
+    assert w.sound["mic"] is False, "clicked: mic flipped back off"
+    assert w._spent is True
+    w._on_release(press)
+    assert closed == [], "the switch's release does not close the picker"
+    assert w._spent is False, "…and the next tap is an ordinary tap again"
+    w._on_release(press)
+    assert closed == [True], "a tap with no drag still cancels"
     # dropped for the drag: the boxes go, the choice stays
     w._drop_hint = lambda: (w._switches.clear(), w._chips.clear())
     w._drop_hint()
-    assert w._switches == {} and w.sound == {"system": False, "mic": True}
+    assert w._switches == {} and w.sound == {"system": False, "mic": False}
     # a screenshot's picker has no switches at all
     shot = cap.ShotWindow.__new__(cap.ShotWindow)
     shot.mode = "shot"

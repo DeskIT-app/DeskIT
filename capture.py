@@ -2618,7 +2618,7 @@ class Camera:
 # ------------------------------------------------------------------ icons
 
 _SHARED_ICONS = ("pencil", "undo", "trash", "close", "copy", "send",
-                 "keyboard", "mic", "pin", "speak")
+                 "keyboard", "mic", "mic_off", "pin", "speak")
 
 
 def icon(kind: str, size: int = 20, colour=INK, width: int = 2):
@@ -2951,6 +2951,7 @@ class ShotWindow:
         self._chip_hover: str | None = None
         self._switches: dict = {}
         self._switch_hover: str | None = None
+        self._spent = False              # a press a switch already used
         # PAINTED ON THE FIRST TICK, not here. The card is 31 ms of glass
         # and text, and nothing about starting a drag needs it — putting it
         # on the path between the key and a usable overlay only made the
@@ -3190,6 +3191,11 @@ class ShotWindow:
         if flipped is not None:
             # A sound switch. The click is spent here, no drag starts,
             # and the card stays up with the switch now lit (or not).
+            # _on_release reads `_spent`: without it a press that started
+            # no drag is "a tap to change your mind" and CLOSES the
+            # window — which is exactly what the first version did the
+            # moment he clicked Microphone (2026-09-12 11:07).
+            self._spent = True
             return self._flip_sound(flipped)
         chosen = self._chip_under(event.x, event.y)
         if chosen is not None:
@@ -3228,6 +3234,9 @@ class ShotWindow:
     def _on_release(self, event) -> None:
         if self.phase == "edit":
             return self._edit_release(event)
+        if self._spent:
+            self._spent = False          # the switch took this click
+            return
         if self._start is None:
             return self.close()
         if self._free is not None:
@@ -4288,7 +4297,8 @@ class ClipBar:
             plate = _vq.rr_layer((x1 - x0, y1 - y0), (x1 - x0) // 2, fill,
                                  (255, 255, 255, 46))
             glyph = {"stop": "stop", "pause": "play" if recorder.paused
-                     else "pause", "mic": "mic", "discard": "trash"}[name]
+                     else "pause", "discard": "trash",
+                     "mic": "mic" if live_mic else "mic_off"}[name]
             colour = INK if (name != "mic" or live_mic) else INK_FAINT
             plate.alpha_composite(icon(glyph, 15, colour=colour, width=2),
                                   ((x1 - x0 - 15) // 2, (y1 - y0 - 15) // 2))
