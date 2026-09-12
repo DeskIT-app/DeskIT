@@ -16,9 +16,9 @@ Two consequences, and they shape the whole file:
   front of him (§2). You are not restricted to prose he has to answer somewhere
   else.
 - **He is asleep while you work.** So nothing may *wait* on him mid-run. Every
-  build, every document, every close happens first; the asking is the last
-  thing the run does (§8b), and by then there is nothing left undone that his
-  silence could hold up.
+  build, every document, every store write happens first; the asking is the
+  last thing the run does (§8b), and by then there is nothing left undone that
+  his silence could hold up.
 
 Everything else you need is below or on disk. Working directory is the repo
 root; every path below is relative to it.
@@ -77,16 +77,23 @@ its own dead end before the next one starts:
 1. **Gather its evidence and rule on it** (§1).
 2. Then exactly one of three ends:
    - **His answer to it is already on disk → build it** (§3), test it, commit
-     it, and move on.
-   - **It is settled and needs nothing from him and nothing built** — the cause
-     is established and an existing commit already covers it, or it is
-     `understood, cause not yet established` with the measurement written into
-     the plan → **close it** (§7b) and move on.
+     it, and move on. (If the answer was to a `Fixed?` question, there is
+     nothing to build: act on it as §7b says, and move on.)
+   - **The evidence shows a change already fixed it** — a commit made after
+     the report that handles exactly what he described → **mark it `Fixed?`
+     and write the question into the store** (§7b). No code, no closing; he
+     says whether it is fixed.
    - **It is blocked on something only he can decide → write the question into
-     the store, set it aside, and move on** (§2). No code for this report, and
-     **no waiting.**
-3. Only when every report has had its turn: the documents, the closes, the
-   card, and then **all the collected questions asked together** (§8b).
+     the store, set it aside, and move on** (§2). This includes a report whose
+     cause is still open and where the question is which measurement to take
+     first. No code for this report, and **no waiting.**
+3. Only when every report has had its turn: the documents, the store writes
+   of §7, the card, and then **all the collected questions asked together**
+   (§8b).
+
+There is no fourth end where the run settles a report by itself. **The routine
+closes nothing** (§7): every report keeps its row and its place in the Problems
+tab until he says what happened to it.
 
 Three rules fall out of that, and they are not negotiable:
 
@@ -98,9 +105,12 @@ Three rules fall out of that, and they are not negotiable:
   from the report before it is the commonest way two unrelated reports get the
   same wrong cause.
 - **Build everything that can be built, not one thing.** Each build is its own
-  commit on the same `weekly/<DATE>` branch, with the tests gate run *before*
-  each commit (§3d), so one report's failure cannot discard another report's
-  work.
+  commit on `main`, in the app folder, with the tests gate run *before* each
+  commit (§3d), so one report's failure cannot discard another report's work.
+  Nothing is pushed. He tries the commits with **Restart** in the Problems
+  tab — the card there lists the changes on this computer that GitHub does
+  not have yet — and then presses **Push** to send them or **Undo** to drop
+  them. There is no side branch and no checkout (§3a, §3b say why).
 
 ---
 
@@ -347,7 +357,7 @@ different dictations with different evidence are two problems.
 
 ### The verdict — exactly one per report or group
 
-Every report gets one of these three, named in both documents:
+Every report gets one of these four, named in both documents:
 
 - **`understood, cause established`** — you can name the cause and quote the
   code or the data that shows it. This report is ready to be built the moment
@@ -361,10 +371,25 @@ Every report gets one of these three, named in both documents:
   report, or you understand it and could not find the thing he describes, or
   the evidence contradicts it. **Write no root cause and no fix.** The plan
   entry says what you looked at and what you ruled out, and then stops.
+- **`looks fixed already — Fixed? and ask him`** — a change made *after* the
+  report handles exactly what he described: a commit on `main` (this
+  routine's own from an earlier run, or another session's) or one already on
+  GitHub. What counts as evidence: **name the commit, and then either quote
+  the code path it left behind** — the lines that now handle his case, not
+  the file they are in — **or show a measurement**: the pinned recording run
+  through the current code, a test that asserts the behaviour he wanted, the
+  number that was wrong now right. A commit whose subject matches the
+  complaint is a lead, not evidence. On 2026-09-12 the 04:12 run closed three
+  reports from 4 and 5 September on exactly that reasoning, over changes he
+  had pushed but never said had fixed anything, and he saw three problems
+  closed without being fixed. So this verdict builds nothing and closes
+  nothing: it marks the report `Fixed?` and puts the question to him (§7b),
+  and his answer is the only thing that makes it Fixed. "He pushed it" is not
+  "he tried it and agreed".
 
 A report of kind `idea` is the one exception: there is no bug to diagnose, so
 it gets the verdict **`an idea — needs your decision`** instead of one of the
-three. Confirm the feature does not already exist (grep for it and say so), lay
+four. Confirm the feature does not already exist (grep for it and say so), lay
 out what building it would take, and stop there. Do not design it in detail
 before he has said yes.
 
@@ -375,10 +400,14 @@ identical and correct while he says the output was wrong; the screenshot shows
 a different surface than `where` claims; or you simply cannot tell what he
 means. Those are all reasons to ask, not to theorise.
 
-**Anything waiting on him stays `OPEN`** — questions, undecided ideas, and
-anything you built and he has not yet reviewed. An idea closed on his behalf is
-a feature request you deleted, and the whole point of the Problems tab is that
-it holds what still needs him.
+**Everything stays `OPEN` — the routine closes nothing.** Questions, undecided
+ideas, reports you built, reports you believe are already fixed: every one of
+them keeps its row and its place in the Problems tab until he says otherwise,
+and the only status change this run may make to a report is the `Fixed?` mark
+and, on his recorded answer, Fixed (§7b). An idea closed on his behalf is a
+feature request you deleted; a bug closed because a commit looked right is a
+bug he now has to report twice. The whole point of the Problems tab is that it
+holds what still needs him.
 
 ---
 
@@ -686,15 +715,16 @@ there is no cap on how many.
 
 There used to be a cap of one per run, and it was the wrong instrument for the
 right worry. The worry is unreviewed work piling up where he cannot see it, and
-the thing that hides work from him is **an unreviewed branch**, not a second
-commit on a branch he is already going to read. Three answers he wrote a week
-ago, all buildable, all sitting unbuilt because the run stopped after the
-first, is the same waste as stopping at the first question — and it is worse,
-because those three he had already decided.
+what hid work from him was never a second commit — it was **where the commits
+went** (§3a tells that story). Three answers he wrote a week ago, all
+buildable, all sitting unbuilt because the run stopped after the first, is the
+same waste as stopping at the first question — and it is worse, because those
+three he had already decided.
 
-So: **one branch per run (§3a, §3b), one commit per report (§3d, §3e), the
-tests gate before every commit.** He opens one branch and reads a commit per
-report, each with the answer it came from in its message.
+So: **one commit per report, on `main` (§3b, §3e), the tests gate before every
+commit (§3d).** Nothing is pushed. He restarts the app from the Problems tab,
+tries the changes, and reads a commit per report, each with the answer it came
+from in its message; then he presses Push or Undo on the same card.
 
 ### Read the whole answer — the choice AND the text
 
@@ -744,77 +774,93 @@ Whatever you build, **quote the whole answer in the plan** — the option's text
 and his typed words, both, verbatim from the store — so the diff can be read
 against exactly what authorised it.
 
-### 3a. The gate: is an earlier build still waiting on him?
+### 3a. The gate: is the same thing already built and waiting for him?
 
-Work lands on a branch named `weekly/<YYYY-MM-DD>`, and it is **never pushed**.
-He reviews it and presses Push in the dashboard himself. So a `weekly/*` branch
-he has not yet dealt with is the signal to stop.
+Work lands on `main`, in the app folder, and it is **never pushed**. He tries
+it with Restart in the Problems tab and then presses Push or Undo there. So
+the commits on `main` that GitHub does not have yet are this routine's
+unreviewed work, and the gate's question is not *"is anything waiting?"* but
+*"is THIS report's fix already among them?"* — his rule, paraphrased: if
+something from last week was not pushed, check whether a report from this week
+is REALLY similar to what was not pushed; if so, skip only that one; every
+other report gets fixed by the normal protocol.
 
-**Do not test that with the upstream ref.** That was the test here until
-2026-09-05 and it is wrong on this machine: DeskIT's Push runs
-`git push origin <branch>` and `git push origin <branch>:main` with no `-u`
-(`dashboard.py:834`, `dashboard.py:865`, and `problems/weekly/push.log` shows
-both), so a branch he HAS pushed keeps an empty `[%(upstream)]` for ever. Read
-literally it jammed the gate shut permanently — every future run declining to
-build, on a branch already published and already merged. Ask instead whether
-the work is still only local:
+**Why it is this narrow, and why there is no branch.** Until 2026-09-12 the
+work went on a `weekly/<DATE>` branch and one unreviewed branch stopped every
+build. The branch went because the app runs from the folder, and the folder
+stands on `main`, so he could not see or try a build without pushing it first;
+and when local `main` was moved onto the branch so that he could, the Push
+button refused — it assumed this routine never commits to `main`. A commit on
+`main` he can try, push or undo from one card; a branch he could only push
+blind. The all-or-nothing gate went with it: it turned one untried change into
+a week of nothing for every other report, and the thing it protected — that he
+can see all the routine's work at once — is now the card itself.
+
+Once, at the start of the build phase:
 
 ```
-git for-each-ref --format="%(refname:short)" refs/heads/weekly
+git fetch origin main
+git log --format=%h%x09%s origin/main..main
 ```
 
-For each branch it names, it is **dealt with** if EITHER of these says so:
+If the fetch fails (no network at 4 AM is ordinary), use the `origin/main` you
+already have and **say so** in the plan and in your output: the list may then
+include commits he has in fact pushed, and a skip on stale information is the
+cheaper of the two mistakes.
 
-```
-git rev-parse --verify --quiet refs/remotes/origin/<branch>       # he pushed it
-git merge-base --is-ancestor <branch> <the branch this run started on>
-```
+For each answered report you are about to build, compare it with two things:
+the **subjects of those unpushed commits**, and **§2 of the previous plan(s)
+under `problems/weekly/`** — each subsection there names a commit and the
+report id it was built for (§4). The report is **the same thing** when:
 
-On `origin`, or already contained in the branch this run started from, is
-finished business and stops nothing. Only a branch that is neither is still
-waiting on him.
+- an unpushed commit was built for **that very report id** — the plan's §2
+  says so, or the commit message names the id (§3e puts it there); or
+- it is about **the same surface and the same complaint** as one of the
+  unpushed commits — the same tab, card, key or step, and the same thing going
+  wrong on it. Two reports about "wrong text" on different surfaces are not
+  the same thing; the same surface with a different complaint is not either.
 
-**If today's `weekly/<DATE>` already exists and is dealt with, do not force it
-anywhere and do not delete it.** Branch from where you are onto the next free
-name — `weekly/<DATE>-2`, then `-3`. A second run in a day is ordinary (the
-runner re-fires whenever an answer arrives) and the Push panel globs
-`refs/heads/weekly/`, so the new branch appears there beside the old one.
+Then **skip only that report**: leave its question `ANSWERED` so a later run
+picks it up, build nothing for it, and say in the summary and in your output
+which report waited and which unpushed change it is waiting behind — in his
+terms, *waiting for you to try and push …*, naming the change by what it does,
+not by its hash. Its line in the summary's `🔨` block is a waiting line, not a
+missing one.
 
-If any branch is still waiting, **build nothing this run** — not one
-report, not any of them. Say in the summary and in your output which branch is
-waiting and which report it belongs to, then carry on with the rest of the run
-exactly as normal: every report still gets its turn, every blocked one still
-gets its question, and the questions are still asked at the end. A waiting
-branch stops the *building*; it does not stop the run.
+**Everything else is built. When in doubt, it is NOT the same thing — build
+it.** The cost of a duplicate is one more commit in the batch he can Undo from
+the tab; the cost of a wrongly skipped report is a week. A skip is the
+exception this gate allows, not its default.
 
-**This gate survives the removal of the one-report cap, and it is the reason
-the cap was safe to remove.** One unreviewed branch at a time is the real
-constraint: two of them is how he loses track of what the routine has done to
-his repo, and the whole arrangement rests on him being able to see all of it at
-once. Many commits on one branch he is going to read anyway costs him nothing;
-a second branch behind one he has not opened costs him the thread.
+Build the rest in order of **oldest answer date** first, among those whose
+report is still `OPEN`. First answered, first built — so a slow week cannot
+bury an answer he wrote a fortnight ago.
 
-If nothing is waiting, build the answered reports in order of **oldest answer
-date** first, among those whose report is still `OPEN`. First answered, first
-built — so a slow week cannot bury an answer he wrote a fortnight ago.
+### 3b. Where the folder stands, before you touch a file
 
-### 3b. The branch, before you touch a file
-
+The run works on whatever the folder is standing on, and it must be `main`.
 Once per run, not once per build:
 
 ```
 git rev-parse --abbrev-ref HEAD
-git checkout -b weekly/<DATE>
 ```
 
-Record the starting branch name — you will return to it when every build is
-done. The name matters: `git branch --list 'weekly/*'` finds every branch this
-routine has ever made, which is what keeps its work from being confused with
-the other unpushed branches in this repo.
+**If that does not print `main`, build nothing this run** — not one report,
+not any of them. Say so in the card and in your output, naming what it did
+print, and carry on with the rest of the run exactly as normal: every report
+still gets its turn, every blocked one still gets its question, and the
+questions are still asked at the end. The folder standing on another branch is
+a sign that somebody is mid-work in it, and the one thing worse than a week
+without builds is a week's builds landing on a branch nobody meant to keep.
 
-**Stay on the branch for the whole build phase.** Do not check out and back
-between reports; there is nothing to gain and a checkout is the one git command
-here that can touch another session's files.
+**There is no checkout in this run, and that is the reason there is none:** a
+checkout is the one git command here that can touch another session's files.
+The old shape had one, and on 2026-09-06 at 20:49 it left the folder on
+`weekly/2026-09-05-2` with nobody noticing for three days — every session after
+that committed onto a branch that existed to be reviewed and thrown away, the
+trunk fell behind the code he was actually running, and he asked on 2026-09-08
+who had done it, which is a question nobody should have to ask. A run that
+never leaves `main` cannot do that.
 
 ### 3c. The precondition that makes reverting safe
 
@@ -832,7 +878,7 @@ looked like, and let next Saturday have it — **and go on to the next report.**
 One dirty file blocks one build, not the run.
 
 **Run this check per build, not once for the run**, and note what it means once
-several builds share a branch: your own committed work does not show up here.
+several builds land in one run: your own committed work does not show up here.
 A file you edited and committed for report one is clean again when report three
 needs it, and that is correct — the precondition is *"no uncommitted work that
 is not mine"*, and yours is no longer uncommitted. What it still catches, which
@@ -867,58 +913,53 @@ tell a pre-existing break from one you caused at 4 AM with nobody to ask.
 **The gate runs before every commit, and that ordering is what makes several
 builds per run safe.** Uncommitted work is what a revert can reach; a commit is
 what it cannot. So each report's changes are proved green *while they are still
-the only uncommitted thing on the branch*, and then sealed. Run the suite once
-at the end instead and a single bad build would put every other report's work
-in question with no way to tell which one broke it.
+the only uncommitted thing of yours in the tree*, and then sealed. Run the
+suite once at the end instead and a single bad build would put every other
+report's work in question with no way to tell which one broke it.
 
 ### 3e. Commit only your own files, by path
 
-One commit per report:
+One commit per report, on `main`:
 
 ```
 git add -- <exactly the files you edited for this report>
 git commit -m "<one line in the repo's voice, then the report id and the answer it came from>"
 ```
 
+The report id in the message is not decoration: it is what next Saturday's
+gate (§3a) reads to tell *this report, already built and waiting for him* from
+*a new report about something nearby*.
+
 **Never `git add -A`, never `git add .`, never `git commit -a`.** His rule, and
-the reason for it is on the branch you are standing on: the tree carries other
+the reason for it is in the tree you are standing in: it carries other
 sessions' changes, and a sweep would commit their unfinished work under your
 message. Stage by path or do not stage. With several builds in a run this rule
 does double duty — a sweep on report three's commit would also swallow anything
 report four has half-written.
 
-Then go on to the next report. **Only when the whole loop is finished** do you
-go back where you came from:
+Then go on to the next report. **When the whole loop is finished**, prove where
+things stand and print it:
 
 ```
-git checkout <the starting branch>
 git rev-parse --abbrev-ref HEAD
+git log --format=%h%x09%s origin/main..main
 ```
 
-**Read that second line and check it.** Do not assume the checkout worked
-because it printed nothing — say in your summary which branch the folder is
-standing on, by name. This is not ceremony. On 2026-09-06 at 20:49 the folder
-went from the trunk onto `weekly/2026-09-05-2` and never came back, and nobody
-noticed for three days: every session after that committed onto a branch that
-exists to be reviewed and thrown away, the trunk fell behind the code he was
-actually running, and the Push card in his dashboard reappeared after every
-single push because the branch kept racing ahead of the trunk again. He asked
-on 2026-09-08 who had done it, which is a question nobody should have to ask.
-The folder ends a run where it started, and the run says so out loud.
-
-If that checkout fails, **stop touching git.** Say so in the summary and in
-your output, leave the tree exactly as it is, and let him sort it out — a
-forced checkout would take another session's work with it.
+**Read both and check them.** The first must still say `main`; the second is
+what his card is about to show him — the commits on this computer that GitHub
+does not have, yours from this run among them. Say in your output how many
+there are and which are this run's, by hash and subject. The folder ends a run
+where it started, on `main`, and the run says so out loud.
 
 ### 3f. Reverting one build, when the tests say no
 
-**Only the build that failed is reverted. Every commit already on the branch
-stands.** This is the case the design is for, so take it concretely: four
-answered reports, the third one's build turns the suite red. Reports one and
-two are already committed and green and **they stay**; report three's
-uncommitted changes go; report four then gets its turn as if nothing happened,
-on the same branch, with its own gate and its own commit. He ends the week with
-three good commits and one report marked blocked — not with nothing.
+**Only the build that failed is reverted. Every commit already made stands.**
+This is the case the design is for, so take it concretely: four answered
+reports, the third one's build turns the suite red. Reports one and two are
+already committed and green and **they stay**; report three's uncommitted
+changes go; report four then gets its turn as if nothing happened, with its own
+gate and its own commit. He ends the week with three good commits and one
+report marked blocked — not with nothing.
 
 The failed build's changes are not committed yet, so:
 
@@ -926,14 +967,12 @@ The failed build's changes are not committed yet, so:
 git checkout -- <the files you edited for this report>
 ```
 
-That is safe precisely because §3c proved those files were clean before you
-started this build, so restoring them restores the branch as report two left it
-and nothing of anyone else's. **Do not delete the branch and do not check out
-the starting branch here** — earlier commits live on that branch and later
-reports still need it. `git branch -D weekly/<DATE>` is right only in the one
-case where **nothing was committed at all**: every build in the run failed or
-was skipped, so the branch holds no work and an empty `weekly/*` branch with no
-upstream would trip §3a's gate next Saturday for nothing.
+That is the only form of `git checkout` in this file, it takes paths and never
+a branch, and it is safe precisely because §3c proved those files were clean
+before you started this build — restoring them restores the tree as report two
+left it and nothing of anyone else's. **Never reach for `git reset` here, in any
+form:** the commits before this one stand, and a commit that should not have
+been made is his to drop with the Undo button, not yours.
 
 Then leave that report `OPEN`, leave its question `ANSWERED` so next Saturday
 tries again, and write down in the plan **what broke, which test, and the exact
@@ -947,20 +986,24 @@ silently is worse than none.
 - **`git push`, in any form, ever. No force-push, no `--set-upstream`, no
   pushing a tag.** Pushing is his button, and it is the only thing standing
   between an autonomous routine and a public mistake.
-- **No `git stash`, no `git reset --hard`, no `git checkout .`, no
-  `git clean`.** Each of those reaches past your own files into other
-  sessions' work.
+- **`main` itself.** No `git reset` in any form, no `git checkout <branch>`,
+  no `git branch -f`, no rebase, nothing that moves `main` or moves the folder
+  off it. Your commits go on top of it and stay there; dropping them is the
+  Undo button, which is his.
+- **No `git stash`, no `git checkout .`, no `git clean`.** Each of those
+  reaches past your own files into other sessions' work.
 - **`config.toml`.** Never edited by this routine, whatever the answer says. It
   is his live configuration and the app reads it while running.
 - **No file deletions.** Not a wav, not a screenshot, not a log, not a backup.
 - **`problems.json` as data.** Do not seed it, do not clear it, do not rewrite
-  a report's text. The only writes allowed are `Store.resolve` in §7.
+  a report's text. The only writes allowed are the three in §7b — `suggest`,
+  `unsuggest`, and `resolve(…, FIXED, by="owner")` on his recorded answer —
+  and never `resolve(…, CLOSED, …)`.
 - **This file.** `.claude/commands/weekly-reports.md` is your own instructions;
   a routine that edits them is a routine nobody can predict.
 - **The running app.** Do not stop, restart or `--stop` DeskIT to try your
-  change. A recording may be open at that moment. If the change needs a
-  restart to be visible, say so in the summary as a step for him:
-  *`Stop DeskIT.vbs` ואז `DeskIT.vbs`*.
+  change. A recording may be open at that moment. Restarting is what the
+  Restart button on his card is for, and the summary tells him so (§5).
 
 ---
 
@@ -986,13 +1029,15 @@ Required sections:
 
 Goal, in the owner's words: **"<quote from his report>"**
 
-Verdicts: <n> cause established · <n> cause open · <n> waiting on his answer.
-Built this run: <b> on weekly/<DATE> — <report id>, <report id>, … — or
-"nothing, and why". Blocked builds: <report id> — <which test broke>.
+Verdicts: <n> cause established · <n> cause open · <n> waiting on his answer ·
+<n> look fixed already (Fixed?).
+Built this run: <b> commits on main, not pushed — <report id>, <report id>, …
+— or "nothing, and why". Waiting behind an unpushed change: <report id> behind
+<hash> <subject>. Blocked builds: <report id> — <which test broke>.
 
 ## 0. What the evidence says (per problem)
 ## 1. The rules this lands on
-## 2. What was BUILT this run — the diff, the tests, the branch
+## 2. What was BUILT this run — the diff, the tests, the commits on main
 ## 3. The work, file by file (for the rest)
 ## 4. What the evidence does not establish
 ## 5. Open questions — no code until answered
@@ -1001,19 +1046,26 @@ Built this run: <b> on weekly/<DATE> — <report id>, <report id>, … — or
 ```
 
 §2 is the accountability section, and it has **one subsection per build, in the
-order the commits were made**, so the section reads down the branch. For each
-one: the answer you built against, **quoted from the store — the option he
-picked and the words he typed, both, even when one of them is empty**; its
-commit subject; every file and function you changed; the `tests_quiet.py`
-result verbatim for *that* build, including the one known failure by name; and
-what a reader should look at first when he opens the diff. The branch is named
-once at the top of §2, since every build shares it.
+order the commits were made**, so the section reads down `main`. Each
+subsection's heading carries **the commit hash and the report id** — next
+Saturday's gate (§3a) reads exactly that to know which report each unpushed
+commit belongs to. For each one: the answer you built against, **quoted from
+the store — the option he picked and the words he typed, both, even when one
+of them is empty**; its commit subject; every file and function you changed;
+the `tests_quiet.py` result verbatim for *that* build, including the one known
+failure by name; and what a reader should look at first when he opens the
+diff. §2 opens with the state of `main`: the range this run added
+(`<first hash>..<last hash>`), that none of it is pushed, and the whole
+`origin/main..main` list as §3e printed it — whether the fetch behind it
+succeeded, too.
 
 A build you reverted gets its own subsection in the same place, marked
 **blocked**, with the failing test and the exact failure line — and it says
 plainly that the commits before it stand. Do not move it to the end or fold it
-into §4; a reader walking the branch needs to know that the report between
-commit two and commit three exists and why it is not there.
+into §4; a reader walking the commits needs to know that the report between
+commit two and commit three exists and why it is not there. A report the gate
+(§3a) held back gets a subsection too, marked **waiting**, naming the unpushed
+commit it is waiting behind and why you judged it the same thing.
 
 If his typed words changed what the picked option said, **say so in one line
 and say what you built instead** — that sentence is the whole audit trail for
@@ -1033,13 +1085,16 @@ For each problem with verdict `understood, *` that was not built, four things:
 4. **The verdict**, repeated, so a reader of §3 alone cannot mistake a
    `cause not yet established` entry for a settled one.
 
-**§5 is where the honesty rule lands.** One entry per report waiting on him,
+**§5 is where the honesty rule lands.** One entry per report waiting on him —
+the `Fixed?` questions of §7b included, since they wait on him like any other —
 and each entry has exactly these five parts and no sixth:
 
 - **What he reported** — quoted in full.
 - **What was checked, and what it ruled out** — the wav, the sidecar, the
   screenshot, the review join, the greps, each with what it showed. This is the
-  part that proves the question is not laziness.
+  part that proves the question is not laziness. For a `Fixed?` entry this is
+  where the commit is named and the code path or measurement quoted (§1) —
+  the plan carries the hash; the note he sees on the tab does not.
 - **The question**, in one sentence, identical to the store's — **including its
   three-word tag at the front** (§2), and the `header` you gave it beside it in
   brackets, so a reader can match the entry to the chip he clicked.
@@ -1067,14 +1122,16 @@ a week with a bare one-line report is a lie, and he will catch it.
 
 **This is the only document he actually reads. It must be skimmable in under a
 minute.** Write it in **Hebrew**; keep file names, symbol names, model names,
-paths, branch names and ids in English. (The repo's docs are English; this is
-his personal weekly note.)
+paths and ids in English. (The repo's docs are English; this is his personal
+weekly note.) **No git words in it** — not branch, not commit, not hash, not
+checkout: what he did with a change is *tried it*, *sent it*, *dropped it*, and
+the three buttons on his card are named as buttons, Restart, Push, Undo.
 
 **The open questions come first, at the top.** They are the thing that needs
 him; everything else is only ready to read. Lead with the count. If there are
 no questions, say so in one line — that is good news and he should see it
 immediately. What was built comes second, because it also needs him, but it
-needs a look rather than a decision.
+needs a try rather than a decision: Restart, look, then Push or Undo.
 
 Then one line per report or group, each saying two things and no more: **what he
 reported, and what is planned about it** — plus its verdict as a short marker.
@@ -1086,7 +1143,7 @@ Shape:
 ```
 # סיכום שבועי — <DATE>
 
-<N> דיווחים · <k> קבוצות · <q> ממתינים לתשובה שלך · <b> נבנה · פירוט מלא ב-<DATE>-plan.md
+<N> דיווחים · <k> קבוצות · <q> ממתינים לתשובה שלך · <b> נבנה · <f> נראה שכבר תוקן — תבדוק · פירוט מלא ב-<DATE>-plan.md
 
 ## ❓ צריך תשובה ממך (<q>)
 
@@ -1094,30 +1151,36 @@ Shape:
   1. הכתבתי לחלון אחר.  2. המקש לא נתפס.  3. דיברתי והמיקרופון לא קלט.
 - **<id>** · **הדיווח על הבעיות בכרטיסיות התראה** · "<what he reported>" — <a two-option question, and two lines is a finished entry>
   1. <option>.  2. <option>.
+- **<id>** · **הדיווח על הקלטות בלי סאונד** · "<what he reported>" — נראה שכבר תוקן: השינוי מ-12 בספטמבר (המיקרופון המת מזוהה אחרי עשר שניות). תבדוק?
+  1. כן, תוקן.  2. לא, עדיין קורה.  3. עוד לא בדקתי.
 - **<id>** · **<tag>** · (נשאל ב-12 Sep, עוד ממתין) "<the same question and options, verbatim>"
 - <a question not asked with the tool this run — say so in half a line: "לא הוצגה כשאלה בסשן (חמישית בתור) — מחכה לך בכרטיסייה">
 
-## 🔨 נבנה השבוע — צריך שתסתכל ותדחוף  (הכל על weekly/<DATE>)
+## 🔨 נבנה השבוע — תנסה, ואז Push או Undo  (<b> נבנה · <u> שינויים במחשב הזה שעוד לא נשלחו)
 
+- איך: בטאב Problems, בכרטיס של השינויים במחשב הזה — **Restart** כדי לנסות, ואז **Push** אם טוב או **Undo** אם לא.
 - **<id>** · "<what he reported>" → <n> קבצים · הטסטים עברו (חוץ מהכשל המוכר של process list)
 - **<id>** · "<what he reported>" → <n> קבצים · הטסטים עברו (חוץ מהכשל המוכר של process list)
-- **<id>** · "<what he reported>" → נחסם: <test name> נכשל, השינוי הוחזר. שאר ה-commits עומדים.
-- להפעלה: `Stop DeskIT.vbs` ואז `DeskIT.vbs`   ← רק אם השינוי דורש הפעלה מחדש
+- **<id>** · "<what he reported>" → נחסם: <test name> נכשל, השינוי הוחזר. מה שנבנה לפניו עומד.
+- **<id>** · "<what he reported>" → מחכה: <the unpushed change, in plain words> עדיין לא נוסה ולא נשלח — תנסה ותלחץ Push או Undo, ובשבוע הבא זה ייבנה.
 
 ## הדיווחים
 
 - ✅ **wrong** · הסוף של המשפט המציא מילים → מבטלים hotwords מה-prompt של המפענח ומודדים שוב
 - 🔍 **slow** · ההדבקה נתקעת → מקור לא אושר; מודדים את זמן ה-clipboard לפני שנוגעים בקוד
 - ❓ **other** · <report waiting on an answer, one line, no plan>
+- ❓ **broken** · הקלטות בלי סאונד → נראה שכבר תוקן — תבדוק ותענה
 - 💡 **idea** · לחיצה אוטומטית על try again → צריך החלטה שלך לפני שמתכננים
 
 ## מה צריך ממך
 - <the one or two decisions only he can make, beyond the questions above,
-  or "רק התשובות למעלה ולחיצה על Push">
+  or "רק התשובות למעלה, ולנסות את מה שנבנה — Restart, ואז Push או Undo">
 ```
 
 Markers: `✅` cause established, `🔍` understood but cause open, `❓` waiting on
-his answer, `💡` an idea that needs his decision, `🔨` built this run.
+his answer — a `Fixed?` report is one of these, with *נראה שכבר תוקן* on its
+line so he can tell it from a question about a bug, `💡` an idea that needs his
+decision, `🔨` built this run.
 
 **Every question line opens with its three-word tag** (§2), bolded, before his
 quoted words — the same tag that was in the `question` text and the same idea
@@ -1135,29 +1198,46 @@ A carry-over question is marked with the date it was first asked and repeated
 this shape. Its tag goes on the summary line only — never edited into the
 stored text (§2).
 
-If **all** building was skipped because an earlier branch is still waiting, say
-that in one line where the `🔨` block would have been, naming the branch. The
-`🔨` block otherwise lists every build, one line each, **including the ones that
-were reverted** — a reverted build is a line in the block naming the test that
-failed, not a missing line. He must be able to count the reports in this
-document and get the same number he filed.
+If **all** building was skipped because the folder was not on `main` (§3b),
+say that in one line where the `🔨` block would have been — in his words, that
+the folder was in the middle of somebody's work and nothing was built into it.
+The `🔨` block otherwise lists every build, one line each, **including the ones
+that were reverted and the ones the gate held back** — a reverted build is a
+line in the block naming the test that failed, and a held-back one is a line
+naming the change it is waiting behind, not a missing line. He must be able to
+count the reports in this document and get the same number he filed.
+
+The `🔨` block's first line tells him what to do, every time it appears, even
+for one build: Restart to try, then Push or Undo. He should never have to
+remember the procedure from last week or go looking for it in the plan. `<b>`
+is what this run built; `<u>` is the whole `origin/main..main` count §3e
+printed — the number his card shows, which may include earlier weeks' changes
+he has not dealt with yet, and the two are shown side by side so he is not
+surprised by the card.
 
 ---
 
 ## 6. Write `problems/weekly/<DATE>-reports.md` — the archive
 
-Every report you are about to close, **in full**, so the record survives
-independently of `problems.json`. This is the reason closing is safe.
+Every open report whose id does not yet appear in any earlier
+`problems/weekly/<date>-reports.md` — grep the folder for the id — **in
+full**, so the record survives independently of `problems.json`. The routine
+closes nothing (§7), but rows do leave the store: he marks a report Fixed from
+the tab or by answering a `Fixed?` question, and a resolved row ages out of the
+store after `problems.KEEP_RESOLVED` later resolutions. This file is what
+outlives that, and it is written **before** anything can happen to the row —
+which is why a report is archived the first time this routine sees it and not
+when it is on its way out.
 
-**Reports waiting on an answer, and reports you built, are NOT closed, so they
-are not archived here.** They stay in the store, which is where their record
-already lives. Note them at the bottom of the archive as carried over, with
-their ids and — for a built one — its branch, so a reader of this file knows
-the week had more in it than what was archived.
+**A report archived by an earlier run is not copied again.** Note it at the
+bottom of this file as carried over, with its id, the file that holds it, and
+what this run did with it — still waiting on his answer, built (with the commit
+subject), marked `Fixed?`, or waiting behind an unpushed change — so a reader
+of this file knows the week had more in it than what was archived.
 
 Per archived report:
 
-- `id`, `at`, `where`, `kind`, `status` as they were before closing, and the
+- `id`, `at`, `where`, `kind`, `status` as they were at the time, and the
   verdict this run gave it.
 - His text, complete and unedited. Never trim it.
 - The full `dictation` block including `raw`, `text`, `seconds`, `backend`,
@@ -1174,66 +1254,142 @@ The test of this file: **could someone reconstruct the report from it with
 
 ---
 
-## 7. Record, then close only what you understood
+## 7. Record — and close nothing
 
 ### 7a. The questions store
 
 - A new question → `ask(report_id, question, options)`. It lands `PENDING`.
   Call it during the report's turn, not at the end (§2).
 - **Each one you built** → `mark_built(ident, branch, note)`, where `branch` is
-  `weekly/<DATE>` and `note` says in one line what was changed and that the
-  tests passed. It moves to `BUILT`. One call per build; a run with three
-  builds makes three calls, all naming the same branch.
+  the literal `"main"` — the parameter keeps its name, and `main` is the only
+  value this routine ever passes — and `note` says in one line, in plain
+  Hebrew, what was changed and that the tests passed (he reads it on the tab).
+  It moves to `BUILT`. One call per build; a run with three builds makes three
+  calls.
 - A build you reverted → **leave it `ANSWERED`.** `mark_built` would be a lie
   and the store would take it, because it only checks the status, not the
   truth. `ANSWERED` is what makes next Saturday try again.
+- A build the gate held back (§3a) → **leave it `ANSWERED`** for the same
+  reason: once he has pushed or undone the change it is waiting behind, the
+  next run builds it.
 - A question whose report is no longer open, or which the week made
   meaningless → `drop`. Say in your output which and why.
+- An answered `Fixed?` question, once you have acted on his answer (§7b) →
+  `drop`, with his answer as the `why`. It is finished; `ANSWERED` would have
+  every later run act on it again.
 - **`answer(...)` is never called by this run.** See rule 2 at the top of this
   file. If you find yourself reaching for it, you have already gone wrong.
 
-### 7b. Close, in this order, and only these reports
+### 7b. `Fixed?` — mark it, ask him, and let his answer settle it
 
-**Order matters and this is the step that can lose him a week.** Write all the
-documents first. Then verify they are on disk and non-empty — actually stat
-them, do not assume the Write succeeded. Only then close.
+**The routine never closes a report and never marks one Fixed on its own.**
+Not a report whose cause it established, not one whose measurement is in the
+plan, not one it built, not one a commit plainly covers. On 2026-09-12 the
+04:12 run closed three reports from 4 and 5 September because changes from the
+previous week — which he had pushed — looked to it like fixes; it took "he
+pushed" for "he checked and agreed", and he found three problems closed without
+being fixed. `resolve(…, CLOSED, …)` is not called by this run, ever, and there
+is deliberately no one-liner for it in this file.
 
-If any write failed, **stop and leave every report `OPEN`.** A failed Saturday
-that leaves the reports open costs him nothing; one that closes them and then
+What it does instead, for each report with the verdict `looks fixed already`
+(§1), is two calls **during the report's turn** — the same moment §2 writes an
+ordinary question:
+
+- **`Store.suggest(ident, by="weekly", note="…")`** on the problems store marks
+  the `OPEN` report **`Fixed?`**. `note` is one line of plain Hebrew saying
+  which change it thinks fixed it and when — *נראה שתוקן ב-12 בספטמבר: מיקרופון
+  מת מזוהה אחרי עשר שניות והכרטיס מודיע* — because it is shown to him on the
+  Problems tab under the report, in amber. No hash, no file name, no git word;
+  the plan's §5 entry carries those (§4). It returns `False` for an unknown id
+  or a report that is not `OPEN`: check it, and `False` means there is nothing
+  to ask — say so in your output and write no question for it.
+
+  ```
+  .venv\Scripts\python.exe -c "import pathlib,sys,json,problems;s=problems.Store(pathlib.Path('problems.json'));a=json.load(open(sys.argv[1],encoding='utf-8'));print(s.suggest(a['id'],by='weekly',note=a['note']))" <a json file you wrote>
+  ```
+
+- **`ask(report_id, question, options)`** on the questions store, the same call
+  as for any other report, so the question survives the session and reaches
+  his card (§2). The question opens with the report's three-word tag, names the
+  change in plain words, and asks whether it is fixed. Its options are these
+  three, in this order, and each is a fact about him with its own consequence
+  below — not a fourth, and no line about the box (§2):
+
+  1. כן, תוקן.
+  2. לא, עדיין קורה.
+  3. עוד לא בדקתי.
+
+  Three sits inside `OPTIONS_MIN`..`OPTIONS_MAX` with room to spare; read the
+  constants anyway (§0b). The `header` is `תוקן?` plus the report's noun, kept
+  distinct within a call like any other header (§2). Worked example:
+
+  ```
+  header:   תוקן? סאונד
+  question: הדיווח על הקלטות בלי סאונד — נראה שכבר תוקן: השינוי מ-12 בספטמבר מקליט גם את הסאונד של המחשב. תבדוק?
+  options:  [ "כן, תוקן", "לא, עדיין קורה", "עוד לא בדקתי" ]
+  ```
+
+At the end of the run it rides in the one `AskUserQuestion` call with
+everything else (§8b), and it goes into the summary's questions block and the
+plan's §5 like any other question.
+
+**His answer is acted on the way every answer is: from the store, on the next
+wake.** The card records it through `answer(...)`, the runner re-fires, and the
+next run finds an `ANSWERED` `Fixed?` question during that report's turn:
+
+- **כן, תוקן** → `resolve(ident, problems.FIXED, by="owner")`. This is the
+  ONLY call that makes a report Fixed from this routine, and it is made only on
+  his explicit recorded answer that it is fixed — his words are in the store
+  first, verbatim, like any other answer, and the plan quotes them. `resolve`
+  clears the mark itself. Then `drop` the question (§7a).
+- **לא, עדיין קורה** → `Store.unsuggest(ident)` takes the mark off, and the
+  question is dropped. The report is an ordinary open report again and goes
+  back through §1 in this same turn, with one new piece of evidence the plan
+  states in as many words: *the change named in the note did NOT fix it.*
+  Whatever question §1 then produces is a fresh one, asked like any other.
+- **עוד לא בדקתי** → leave the mark, `drop` the answered question, and `ask`
+  it again with the same text, so the tag is stable and his card carries it
+  into next week.
+- `choice` is `null` and there is only `text` → read it the way §3 reads an
+  answer: words that say it is fixed are the first case, words that say it
+  still happens are the second, and words you cannot read either way mean ask
+  again, quoting them in the plan.
+
+If he clicks one of these chips **live in the session**, quote it verbatim in
+your output and do nothing else with it — rule 2 at the top of this file, and
+the same latency it buys for builds: the row stays `PENDING`, his card carries
+it, and the next run acts on his recorded answer.
+
+**Order matters, and this is the step that can lose him a week.** `suggest`,
+`ask` and `unsuggest` happen during the report's turn — none of them takes a
+report away from him. `resolve(…, FIXED, …)` does, so it waits: write all the
+documents first, verify they are on disk and non-empty — actually stat them, do
+not assume the Write succeeded — and only then resolve. If any write failed,
+**stop and leave every report as it is.** A failed Saturday that leaves the
+reports where they were costs him nothing; one that resolves them and then
 fails costs him the week, and the reports are the only place some of that
 information exists.
 
-**Close only reports whose verdict was `understood, *`, which have no
-unanswered question, and which you did not build.** A report with a pending
-question is not resolved, and neither is an undecided idea, so both stay `OPEN`
-and stay in the dashboard's Problems tab — otherwise he would lose the tab
-entry for exactly the reports that still need him. `understood, cause not yet
-established` **is** closed: the plan carries the measurement, and nothing is
-waiting on him.
-
-**A report you built stays `OPEN` too, and it is not marked `FIXED`.**
-`problems.py` has a `FIXED` status and this routine does not use it: "fixed" is
-a claim that a change was reviewed and kept, and a routine cannot review its
-own work. The branch is unpushed, so nothing has been kept yet. He closes it
-when he presses Push, or he tells you next Saturday that it was wrong.
-
 ```
-.venv\Scripts\python.exe -c "import pathlib,sys,problems;s=problems.Store(pathlib.Path('problems.json'));print([(i,s.resolve(i,problems.CLOSED,by='weekly')) for i in sys.argv[1:]]);problems.digest(s,pathlib.Path('problems.md'))" <id> <id> ...
+.venv\Scripts\python.exe -c "import pathlib,sys,problems;s=problems.Store(pathlib.Path('problems.json'));print([(i,s.resolve(i,problems.FIXED,by='owner')) for i in sys.argv[1:]]);problems.digest(s,pathlib.Path('problems.md'))" <id> <id> ...
 ```
 
 `resolve` returns `False` when nothing changed — no such id, an unknown status,
 or the file could not be written. Check every returned value and report any
 `False` rather than assuming it worked. `problems.digest` then regenerates
-`problems.md` from the store, so the digest and the tab agree.
+`problems.md` from the store, so the digest and the tab agree; run it once at
+the end of the run even when nothing was resolved, so the `Fixed?` marks reach
+the digest too.
 
-**Why closing is safe, and say this in your own output so a future reader is
-not frightened by it:** `Store._trim` only ever drops JSON rows, and only
-resolved ones — open reports are never trimmed (`problems.KEEP_RESOLVED` is
-200). It never unlinks anything, so a pinned `.wav` or `.jpg` under `problems/`
-survives the close, and survives the row aging out of the store 200
-resolutions later. Nothing is deleted by this routine, ever. The archive plus
-the pinned files are the permanent record; the store row is only what makes the
-Problems tab show it as open.
+**A report you built this run is not marked `Fixed?` in the same run.** He has
+not tried it yet, and the summary's job is to get him to (§5). Next Saturday
+the commit is on `main` or on GitHub, it is evidence, and §1 gives the report
+the fourth verdict — unless he has already marked it Fixed from the tab
+himself, in which case it is no longer open and there is nothing to ask.
+
+This routine deletes nothing and closes nothing, ever: the only rows that leave
+the store are the ones he resolved, and the archive (§6) holds every report
+before that can happen.
 
 ---
 
@@ -1244,7 +1400,7 @@ first, because it is what reaches him when he is nowhere near this machine, and
 it must not be held up behind a dialog nobody is awake to answer. The
 `AskUserQuestion` call is the last act of the run, because it is the one thing
 that may sit there until he wakes up — and by then everything is built, tested,
-committed, written and closed, so his silence holds up nothing at all.
+committed, written and recorded, so his silence holds up nothing at all.
 
 ### 8a. The card
 
@@ -1254,18 +1410,27 @@ posts to `POST /notify` and **exits 0 in silence when the app is not running**,
 so calling it is always safe.
 
 One card, and it leads with the thing that needs him most. Questions outrank a
-branch, because a question blocks next Saturday and a branch only waits.
+build, because a question blocks next Saturday and a build only waits for him
+to try it. The `Fixed?` questions count as questions here. The card, like the
+summary, carries no git word: what was built is *on this computer* and *not
+sent yet*, and what he does with it is Restart, then Push or Undo.
 
 Questions pending:
 
 ```
-.venv\Scripts\python.exe notify_hook.py --source weekly --kind input --title "הסקירה השבועית — <q> שאלות מחכות לך" --body "<N> דיווחים · <b> נבנה על weekly/<DATE> · problems/weekly/<DATE>-summary.md"
+.venv\Scripts\python.exe notify_hook.py --source weekly --kind input --title "הסקירה השבועית — <q> שאלות מחכות לך" --body "<N> דיווחים · <b> נבנה, במחשב הזה — תנסה ואז Push או Undo · problems/weekly/<DATE>-summary.md"
 ```
 
 Nothing pending but something was built:
 
 ```
-.venv\Scripts\python.exe notify_hook.py --source weekly --kind input --title "נבנה משהו — צריך שתסתכל ותדחוף" --body "weekly/<DATE> · problems/weekly/<DATE>-summary.md"
+.venv\Scripts\python.exe notify_hook.py --source weekly --kind input --title "נבנה משהו — תנסה, ואז Push או Undo" --body "<b> נבנה · <u> שינויים במחשב הזה שעוד לא נשלחו · problems/weekly/<DATE>-summary.md"
+```
+
+Nothing built because the folder was not on `main` (§3b):
+
+```
+.venv\Scripts\python.exe notify_hook.py --source weekly --kind input --title "הסקירה השבועית — לא נבנה כלום" --body "התיקייה באמצע עבודה של מישהו, לא נגעתי בקוד · <q> שאלות · problems/weekly/<DATE>-summary.md"
 ```
 
 Nothing waiting on him at all:
@@ -1282,15 +1447,24 @@ And the one failure worth a card of its own, from §0b:
 
 `--kind` must be one of `done`, `input`, `error`, `info` (`notify.KINDS`);
 `input` is the one that means the card is waiting for him. Send the card only
-after the documents are written and the closes are done — a card that arrives
-before the document exists sends him to an empty folder.
+after the documents are written and the store writes of §7 are done — a card
+that arrives before the document exists sends him to an empty folder.
 
 ### 8b. Then ask him — all of it, in one call
 
 Every report has had its turn. Every build is committed, every document is on
-disk, every close is done, the card is sent. **Now** put the collected
+disk, every store write is done, the card is sent. **Now** put the collected
 questions to him, with `AskUserQuestion`, in **one call** (§2 has the shape,
 the 12-character `header`, and the three-word tag).
+
+**The `Fixed?` questions (§7b) ride in this same call**, ordered with the rest
+by how much is blocked behind them — a report that is in fact fixed is the
+cheapest thing on the list for him to settle, and it is still one chip, not a
+second dialog. What each answer does is fixed by §7b and happens on the next
+run, from the store: *כן, תוקן* makes the report Fixed, *לא, עדיין קורה* takes
+the mark off and sends the report back through §1, *עוד לא בדקתי* keeps the
+mark and asks again. A live click on one of them is quoted like any other live
+answer and acted on by nobody in this run.
 
 **One call, not one per question.** Four separate dialogs is the queue he
 objected to, arriving four times over; one call is four chips he answers in a
@@ -1352,20 +1526,30 @@ make him scroll a run report to find the one thing he has to decide.
 The log has to carry all of this:
 
 - **Every report's turn and how it ended** — one line each, in the order you
-  took them, and **every open report appears**. Built, closed, or blocked on a
-  question. This list is the proof the loop actually ran; a report missing from
-  it is a report the run silently skipped.
+  took them, and **every open report appears**. Built, marked `Fixed?`,
+  resolved Fixed on his answer, put back to open on his answer, waiting behind
+  an unpushed change, or blocked on a question. This list is the proof the
+  loop actually ran; a report missing from it is a report the run silently
+  skipped.
 - **What it built** — **one entry per build**, each with the report id, the
   answer it was built against with **both halves quoted, the option he picked
   and the words he typed**, the files it edited, and the one-line commit
   subject. If the typed words changed what the option said, say what you built
   instead of the option. For each build **not** made, which of the reasons: no
-  answered question, an earlier `weekly/*` branch still waiting (name it), a
-  file already dirty from another session (name it), an answer whose pick and
-  typed words could not be reconciled (quote both and name the new question you
-  asked), or a revert (name the test).
-- **Which branch** — `weekly/<DATE>`, how many commits are on it, that it was
-  NOT pushed, and the branch you returned to.
+  answered question, the same thing already built and not yet pushed (name the
+  commit and say why you judged it the same), the folder not on `main` (say
+  what it was on), a file already dirty from another session (name it), an
+  answer whose pick and typed words could not be reconciled (quote both and
+  name the new question you asked), or a revert (name the test).
+- **What `main` now holds** — the commits this run added, by hash and
+  subject; that none of them was pushed; the whole `origin/main..main` list as
+  §3e printed it and whether the fetch behind it succeeded; and that the
+  folder is still on `main`, read from `git rev-parse --abbrev-ref HEAD`.
+- **What it marked `Fixed?`** — each report id, the commit it named as the
+  fix and the evidence beyond the subject line, the note it gave `suggest`,
+  and what `suggest` returned. And each `Fixed?` answer it acted on: his words
+  verbatim, and which of the three things §7b did with them, with `resolve`'s
+  return value where it was called.
 - **Which tests ran** — the `tests_quiet.py` result **per build**, with the
   known `test_the_process_list_sees_the_processes_it_cannot_open` failure named
   explicitly each time, so a reader does not mistake green for red. If a run
@@ -1379,11 +1563,15 @@ The log has to carry all of this:
   the numbered form). If he answered any of them live, **quote his answers
   verbatim** and say that nothing was built from them.
 - **What it deliberately left alone** — the reports it did not build and why,
-  and the standing list: no push, no `config.toml`, no deletions, no
-  `problems.json` edits beyond `resolve`, no `git add -A`, no `answer(...)`, no
-  restart of the running app.
+  and the standing list: no push, no `git reset`, nothing that moved `main`,
+  no `config.toml`, no deletions, no closing, no `problems.json` edits beyond
+  `suggest` / `unsuggest` / `resolve(FIXED)` on his answer, no `git add -A`,
+  no `answer(...)`, no restart of the running app.
 - **Counts and paths** — how many reports, how many groups, how many of each
-  verdict, how many built, how many blocked, and the three document paths.
+  verdict, how many built, how many waiting behind an unpushed change, how
+  many blocked, how many marked `Fixed?`, how many resolved Fixed on his
+  answer, and the three document paths. There is no "closed" count, because
+  there is nothing to count.
 - **Anything it could not gather evidence for**, named. This is the part a
   future reader needs, because it is what next week has to capture.
 
