@@ -14153,6 +14153,36 @@ def test_the_indicator_sits_in_a_corner_of_the_work_area() -> None:
     assert "off" in cap.CORNERS, "there has to be a way to have no pill"
 
 
+def test_the_clip_bar_keeps_out_of_the_dots_square() -> None:
+    """2026-09-12: the pill sat under the status dot's 38 px window, and
+    the dot's halo takes the mouse for every thread but its own — so
+    hovering the pill's right end did nothing and a shake (a drag out
+    from under it) was the only way to open the bar. Sharing the dot's
+    corner, the pill moves sideways by DOT_ROOM_X and clears the square
+    the dot painter puts there (skin\\dot.place: 8 px in, 38 px wide)."""
+    import capture as cap
+
+    class _Rec:
+        box = (0, 0, 2560, 1392)
+
+    bar = cap.ClipBar.__new__(cap.ClipBar)
+    bar.recorder = _Rec()
+    bar._anchor = lambda: (0, 0, 2560, 1392)
+    width = cap.timer_width("0:12  mic off")
+    bar.corner, bar.dot_corner = "bottom-right", "bottom-right"
+    x, _y = bar._corner_xy((width, cap.TIMER_H))
+    dot_left = 2560 - 8 - 38                         # skin\dot.place
+    assert x + width < dot_left, (x + width, dot_left)
+    bar.dot_corner = "top-right"                     # different corner
+    assert bar._corner_xy((width, cap.TIMER_H)) == \
+        cap.corner_at((0, 0, 2560, 1392), (width, cap.TIMER_H), "bottom-right")
+    bar.dot_corner = None                            # no dot known
+    assert bar._corner_xy((width, cap.TIMER_H)) == \
+        cap.corner_at((0, 0, 2560, 1392), (width, cap.TIMER_H), "bottom-right")
+    bar.corner, bar.dot_corner = "bottom-left", "bottom-left"
+    assert bar._corner_xy((width, cap.TIMER_H))[0] == 18 + cap.DOT_ROOM_X
+
+
 def test_the_clip_bar_announces_itself_and_then_gets_out_of_the_way(
 ) -> None:
     """The failure mode of a screen recorder is not knowing whether it is

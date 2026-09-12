@@ -309,6 +309,19 @@ CLIP_BAR_RADIUS = 14
 TIMER_RADIUS = TIMER_H // 2
 CORNER_MARGIN = 18           # from the WORK area, so never under a taskbar
 CORNERS = ("top-left", "top-right", "bottom-left", "bottom-right", "off")
+# THE DOT'S SQUARE IS A WALL TO THE MOUSE. The status dot is a 38 px
+# layered window (skin\dot.BOX) 8 px in from the right edge and 4 px up
+# from the work area's bottom (skin\dot.MARGIN_X/Y), and since 2026-09-07
+# it takes the mouse: it answers HTTRANSPARENT outside the disc, but
+# HTTRANSPARENT only hands a message on to windows of the SAME THREAD,
+# and the clip bar lives on another one — so every pixel of the pill
+# under the dot's halo never sees a hover. The pill sat exactly there
+# (2026-09-12: pill x 2392-2542, dot x 2514-2552, same bottom row), which
+# is why "standing on it does nothing, shaking it opens it": the shake
+# dragged the pill out from under the square. A bar sharing the dot's
+# corner keeps this much clear of it, sideways, so the whole pill is
+# reachable. 38 + 8 + a gap, minus the margin the corner already gives.
+DOT_ROOM_X = 52
 CLIP_FRAME_W = 3             # the marching border around what is recorded
 
 FLASH_MS = 1400              # popup.py's confirmation dwell, same number
@@ -3978,7 +3991,8 @@ class ClipBar:
 
     def __init__(self, recorder: ScreenRecorder, *, on_stop=None,
                  on_discard=None, on_mic=None, corner: str = "bottom-right",
-                 announce: bool = True, stop_key: str = ""):
+                 announce: bool = True, stop_key: str = "",
+                 dot_corner: str | None = None):
         import tkinter as tk
         self.tk = tk
         self.recorder = recorder
@@ -3986,6 +4000,9 @@ class ClipBar:
         self.on_discard = on_discard
         self.on_mic = on_mic
         self.corner = corner if corner in CORNERS else "bottom-right"
+        # Where the status dot is ([dot] corner), so the pill can keep out
+        # of its square when the two share a corner — see DOT_ROOM_X.
+        self.dot_corner = dot_corner
         self.announce = announce
         self.stop_key = stop_key
         self.root = tk.Tk()
@@ -4001,6 +4018,14 @@ class ClipBar:
         self._build()
 
     # -- construction --
+
+    def _corner_xy(self, size: tuple[int, int]) -> tuple[int, int]:
+        """Where a `size` bar goes in its corner — beside the dot, never
+        under it (DOT_ROOM_X), when the dot lives in the same corner."""
+        x, y = corner_at(self._anchor(), size, self.corner)
+        if self.dot_corner and self.dot_corner == self.corner:
+            x += DOT_ROOM_X if self.corner.endswith("left") else -DOT_ROOM_X
+        return x, y
 
     def _anchor(self) -> tuple[int, int, int, int]:
         """The WORK area the pill is cornered in.
@@ -4153,7 +4178,7 @@ class ClipBar:
             if self.corner.startswith("bottom"):
                 y += previous[2] - height
         else:
-            x, y = corner_at(self._anchor(), (width, height), self.corner)
+            x, y = self._corner_xy((width, height))
         self.root.geometry(f"{width}x{height}+{x}+{y}")
         self.canvas.config(width=width, height=height)
         self.root.update_idletasks()
@@ -6557,11 +6582,13 @@ class Controller:
                       (False, False): " (no sound)"}[
                          (recorder.system_wanted, recorder.mic_wanted)],
                      cfg.record_hotkey)
+            dot_cfg = getattr(self._cfg_of(), "dot", None)
             bar = ClipBar(recorder, on_stop=self._stop_clip.set,
                           on_discard=lambda: setattr(recorder, "discard", True),
                           on_mic=recorder.toggle_mute,
                           corner=cfg.timer_corner, announce=cfg.announce,
-                          stop_key=cfg.record_hotkey)
+                          stop_key=cfg.record_hotkey,
+                          dot_corner=getattr(dot_cfg, "corner", None))
             bar.run(self._stop_clip)
             bar = None
             gc.collect()
