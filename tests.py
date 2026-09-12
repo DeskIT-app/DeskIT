@@ -20526,6 +20526,48 @@ def test_the_review_card_is_measured_from_its_rows_and_pressed_where_drawn(
     assert rc.flat(card, 1.2, 1.0).size == rc.measure(card, 1.2)
 
 
+def test_an_english_row_runs_left_to_right_and_a_hebrew_row_does_not(
+        ) -> None:
+    """Report 20260907-230149: "you can" corrected at the START of an
+    English sentence was drawn at its END, because every row was laid
+    out from the right edge. Now the sentence's own direction decides:
+    the pill of a change at word 0 sits at the LEFT of an English row and
+    at the RIGHT of a Hebrew one, and the card's chrome does not move."""
+    import review as review_mod
+    import review_card as rc
+    en = review_mod.snippet(
+        "Canrout send around five agents or seven agent to do the work",
+        {"before": "Canrout", "after": "you can", "kind": "replace",
+         "span": [0, 1], "why": "x"})
+    he = review_mod.snippet(
+        "מטוס עם החברים ואחר כך חזרנו הביתה",
+        {"before": "מטוס", "after": "מנטוס", "kind": "replace",
+         "span": [0, 1], "why": "x"})
+    assert en["rtl"] is False and he["rtl"] is True, (en, he)
+    assert en["right"] == "" and en["left"].startswith("send around"), en
+    assert rc.row_rtl({}) is True, "a row without the key is the old, RTL one"
+
+    def pill_centre(row):
+        card = {"title": rc.TITLE, "sub": "", "rows": [row], "more": 0,
+                "keys": {rc.ACCEPT: "V", rc.REJECT: "X", rc.LATER: "L",
+                         rc.EDIT: "E"}}
+        img = rc.compose(card, 1.0, 1.0, cache={})
+        # the fill is ACCENT_SOFT at alpha 230; compositing onto the
+        # transparent ground rounds each channel by one
+        xs = [x for x in range(img.width) for y in range(img.height)
+              if (lambda p: p[3] == 230 and all(
+                  abs(a - b) <= 2 for a, b in zip(p[:3], rc.ACCENT_SOFT)))(
+                  img.getpixel((x, y)))]
+        assert xs, "the pill is the only thing painted ACCENT_SOFT"
+        return (min(xs) + max(xs)) / 2 / img.width
+
+    assert pill_centre(en) < 0.4, "English: the first word is on the left"
+    assert pill_centre(he) > 0.6, "Hebrew: the first word is on the right"
+    # the chrome is Hebrew whatever the row says: the buttons do not move
+    assert rc.regions({"rows": [en], "more": 0}) == \
+        rc.regions({"rows": [he], "more": 0})
+
+
 def test_the_pencil_asks_and_the_typed_word_is_what_is_learned() -> None:
     """The fourth answer: neither yes nor no but "this". The card hands
     the row and its own rect to on_edit; the store swaps the proposal for

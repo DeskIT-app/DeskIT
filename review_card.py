@@ -20,8 +20,14 @@ RIGHT-TO-LEFT, IN THREE PIECES. Every string goes through
 visual_qa.text_pil (DrawTextW + DT_RTLREADING — the one bidi path in this
 repo that was checked glyph by glyph), and a row is three separate
 images laid out from the right edge leftwards: what is read BEFORE the
-change sits to its RIGHT, what is read after it to its LEFT. The
-context is trimmed word by word from the far ends until the three fit
+change sits to its RIGHT, what is read after it to its LEFT. That is
+the HEBREW row. An English dictation reads the other way, and the same
+three pieces are laid out from the left edge rightwards, each rendered
+LTR — review.snippet decides per sentence (`rtl`), the card's own
+chrome (title, buttons, the note line) stays Hebrew and right-to-left
+whatever the row says. Before this, "you can" corrected at the START
+of an English sentence was drawn at its END (report 20260907-230149).
+The context is trimmed word by word from the far ends until the three fit
 the card, so a long dictation never wraps or clips — a row is always one
 line, and the card never grows past three rows (the rest is counted).
 
@@ -237,15 +243,29 @@ def _rr(size, radius: float, fill=None, outline=None, width: float = 1.0,
     return big.resize((w, h), Image.LANCZOS)
 
 
+def row_rtl(row: dict) -> bool:
+    """Which way one row's sentence reads. review.snippet writes `rtl`;
+    a row without it (an older queue entry, a test's bare dict) reads
+    right to left, which is what every row did before the key existed."""
+    return bool(row.get("rtl", True))
+
+
 def _fit(cache: dict, row: dict, avail: float, pt: float, s: float):
     """The three images of a sentence line, trimmed until they fit.
 
     The pill and the changed word are never trimmed; the contexts lose
     one word at a time from their FAR ends (the start of `right`, the end
     of `left`), the longer one first, and grow an ellipsis where they
-    were cut."""
+    were cut.
+
+    The three pieces are rendered in the ROW'S direction (`row["rtl"]`,
+    which review.snippet decides from the sentence), so an English
+    sentence is shaped left to right and its ellipsis and punctuation
+    stay at the ends they belong to."""
+    rtl = row_rtl(row)
     word = _text(cache, row.get("word") or " ", pt, colour=(
-        RED if row.get("kind") == "drop" else ACCENT_TEXT), weight=600)
+        RED if row.get("kind") == "drop" else ACCENT_TEXT), weight=600,
+        rtl=rtl)
     pill_w = word.width + 16 * s
     right_words = (row.get("right") or "").split()
     left_words = (row.get("left") or "").split()
@@ -259,8 +279,8 @@ def _fit(cache: dict, row: dict, avail: float, pt: float, s: float):
             r = "…" + r
         if cut_l and lft and not lft.endswith("…"):
             lft = lft + "…"
-        ri = _text(cache, r, pt) if r else None
-        li = _text(cache, lft, pt, colour=INK) if lft else None
+        ri = _text(cache, r, pt, rtl=rtl) if r else None
+        li = _text(cache, lft, pt, colour=INK, rtl=rtl) if lft else None
         total = pill_w + (ri.width + gap if ri else 0) + (li.width + gap
                                                           if li else 0)
         return ri, li, total
@@ -325,28 +345,42 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
                     colour=INK if hover == f"{EDIT}{index}" else INK_FAINT)
         img.alpha_composite(pen, (int(pad + (PENCIL_W * s - pen.width) / 2),
                                   int(cy - pen.height / 2)))
-        x = right
+        # The sentence runs in ITS direction: a Hebrew row from the right
+        # edge leftwards, an English row from the pencil's column
+        # rightwards. Either way the order is before, pill, after — the
+        # cursor `x` is the edge the next piece lands against, and
+        # `place` moves it by the piece's width in the reading direction.
+        rtl = row_rtl(row)
+        x = right if rtl else pad + (PENCIL_W + 8) * s
+
+        def place(w: float) -> float:
+            """The left edge for a piece `w` wide at the cursor, and the
+            cursor advanced past it (plus the gap)."""
+            nonlocal x
+            left_edge = x - w if rtl else x
+            x = x - (w + 8 * s) if rtl else x + w + 8 * s
+            return left_edge
+
         if ri is not None:
-            img.alpha_composite(ri, (int(x - ri.width),
+            img.alpha_composite(ri, (int(place(ri.width)),
                                      int(cy - ri.height / 2)))
-            x -= ri.width + 8 * s
         pill_h = word.height + 6 * s
         drop = row.get("kind") == "drop"
         pill = _rr((pill_w, pill_h), 7 * s,
                    fill=(RED_SOFT if drop else ACCENT_SOFT) + (230,),
                    outline=(RED if drop else ACCENT_TEXT) + (110,), width=1)
-        img.alpha_composite(pill, (int(x - pill_w), int(cy - pill_h / 2)))
-        img.alpha_composite(word, (int(x - pill_w + 8 * s),
+        px = place(pill_w)
+        img.alpha_composite(pill, (int(px), int(cy - pill_h / 2)))
+        img.alpha_composite(word, (int(px + 8 * s),
                                    int(cy - word.height / 2)))
         if drop:
             # struck through: the words are the ones to go
             d = ImageDraw.Draw(img)
-            d.line((int(x - pill_w + 6 * s), int(cy),
-                    int(x - 6 * s), int(cy)),
+            d.line((int(px + 6 * s), int(cy),
+                    int(px + pill_w - 6 * s), int(cy)),
                    fill=RED + (230,), width=max(1, int(round(2 * s))))
-        x -= pill_w + 8 * s
         if li is not None:
-            img.alpha_composite(li, (int(x - li.width),
+            img.alpha_composite(li, (int(place(li.width)),
                                      int(cy - li.height / 2)))
         y += line_h + 4 * s
         note = _text(cache, note_for(row), 8.5 * s, colour=INK_FAINT)

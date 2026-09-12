@@ -148,6 +148,19 @@ def apply_changes(text: str, changes: list[dict]) -> str:
     return re.sub(r"\s+([,.!?:;])", r"\1", out).strip()
 
 
+def is_rtl(text: str) -> bool:
+    """Which way the sentence reads, decided the way Windows decides it:
+    by the first strong character. The same rule as ui.is_rtl, spelled
+    out here because ui imports tkinter at module level and this module
+    is reached without a screen (tests, the shelf, the dashboard)."""
+    for ch in text:
+        if 0x0590 <= ord(ch) <= 0x06FF:
+            return True
+        if ch.isalpha():
+            return False
+    return False
+
+
 def snippet(text: str, change: dict, side: int = 5) -> dict:
     """The sentence around one change, as three parts for the card.
 
@@ -155,6 +168,13 @@ def snippet(text: str, change: dict, side: int = 5) -> dict:
     after it — named for where they land on a right-to-left card, so the
     painter cannot get them backwards. `word` is the corrected form (or
     the words to drop), `was` the pasted form.
+
+    `rtl` is the sentence's own direction. An English dictation reads
+    left to right, and a card that laid its three parts out from the
+    right edge showed "…send around five agents or [you can]" for a
+    change at the START of the sentence (report 20260907-230149). On an
+    LTR row the painter mirrors the layout: `right` still means BEFORE
+    and `left` still means AFTER, they just land on the other sides.
     """
     tw = words(text)
     i1, i2 = int(change["span"][0]), int(change["span"][1])
@@ -176,6 +196,7 @@ def snippet(text: str, change: dict, side: int = 5) -> dict:
         "kind": change.get("kind", "replace"),
         "why": str(change.get("why", "")),
         "support": int(change.get("support", 0)),
+        "rtl": is_rtl(text),
     }
 
 
