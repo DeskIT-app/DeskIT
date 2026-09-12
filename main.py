@@ -54,7 +54,7 @@ import hotkey as hotkey_mod
 from hotkey import (HookThread, PTTStateMachine, parse_binding,
                     parse_chord, vk_for)
 from launch import open_dashboard
-from recorder import Recorder
+from recorder import Recorder, SILENT_AFTER_S, SILENT_PEAK
 from spool import Spool
 from transcribers import RateLimitError, TranscriptionError, get_transcriber
 
@@ -415,6 +415,11 @@ class App:
         self._local = None       # lazily built local fallback, if enabled
         self.recorder = Recorder(cfg.audio.sample_rate, cfg.audio.device,
                                  cfg.max_seconds, self._on_overflow)
+        # A dead microphone ten seconds into a dictation, and the
+        # all-clear when sound arrives — both from the PortAudio callback,
+        # both handed to the dot (see _on_silent). recorder.SILENT_PEAK.
+        self.recorder.on_silent = self._on_silent
+        self.recorder.on_sound = self._on_sound
         # The cap in force right now: max_seconds while held, lifted by a
         # latch. Kept here purely so the log lines name the real number.
         self._cap = cfg.max_seconds
@@ -2538,6 +2543,7 @@ class App:
         # means one piece and the old path exactly.
         wav, pieces, seconds = self.recorder.end_pieces()
         self._set_state("busy")
+        self.dot.alarm(False)          # whatever it was doing, it is over
         if wav is None:
             # overflowed at the cap — beep already fired at cap time
             log.info("discarded: hit the %.0f s cap", self._cap)
@@ -2573,6 +2579,15 @@ class App:
         extra = {"pieces": pieces} if len(pieces) > 1 else {}
         if self._to_prompt:
             extra["to_prompt"] = True
+        if self.recorder.silent():
+            # Nothing above recorder.SILENT_PEAK from start to end: a
+            # dead microphone, not a dictation. The worker still runs it
+            # — the alarm never stops a recording — but keeps it out of
+            # recent\, so the labelled set and the Recordings tab do not
+            # fill with silence (report 20260910-190110).
+            extra["silent"] = True
+            log.warning("the whole recording was silent (peak %.4f) — it "
+                        "will not be kept in recent\\", self.recorder.peak())
         self.queue.put((wav, seconds, hwnd, language, self._to_card, extra))
         log.info("captured %.1f s of %s -> transcribing (%s)...", seconds,
                  language_label(language),
@@ -2594,6 +2609,7 @@ class App:
 
     def _on_abort(self, reason: str) -> None:
         self._set_state("ready")
+        self.dot.alarm(False)
         self.recorder.abort()
         log.info("aborted, nothing recorded — %s", reason)
 
@@ -3982,6 +3998,25 @@ class App:
                     "Tap the latch key to clear it."
                     if self._latched else "Release the key.")
 
+    def _on_silent(self) -> None:  # PortAudio callback thread
+        """Ten seconds in and the microphone has heard nothing above
+        recorder.SILENT_PEAK: a headset on mute, or unplugged. The dot
+        blinks red and slides to the middle of the screen — where he is
+        looking — and the recording goes on; the alarm is information,
+        not a decision (report 20260910-190110, in his words: "רק שתתריע
+        לי על זה שאני אדע"). Once per recording; the recorder sees to
+        that. Nothing here blocks: alarm() writes one float."""
+        self.dot.alarm(True)
+        log.warning("no sound for %.0f s into this recording (peak %.4f "
+                    "< %.2f) — is the microphone muted or unplugged?",
+                    SILENT_AFTER_S, self.recorder.peak(), SILENT_PEAK)
+
+    def _on_sound(self) -> None:  # PortAudio callback thread
+        """Sound arrived after the alarm: the dot goes back to its corner.
+        Once per recording, like the alarm it answers."""
+        self.dot.alarm(False)
+        log.info("sound arrived — the microphone is live after all")
+
     # ---- worker thread ----
 
     def _local_backend(self):
@@ -4941,7 +4976,7 @@ class App:
                 to_card: bool | None = None,
                 sliced: bool = False, in_stream: bool = False,
                 pieces: list | None = None,
-                to_prompt: bool = False) -> None:
+                to_prompt: bool = False, silent: bool = False) -> None:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
@@ -5201,7 +5236,10 @@ class App:
         # recording transcribed in pieces has several, so it carries none.
         words = ([] if (pieces and len(pieces) > 1)
                  else list(getattr(self, "_last_words", []) or []))
-        if self.recent is not None:
+        # A silent recording (a dead microphone, see _on_stop) is not
+        # kept: recent\ is the labelled set every measurement in this repo
+        # is made against, and a wav with nobody in it is not a label.
+        if self.recent is not None and not silent:
             try:
                 kept = self.recent.save(
                     wav, seconds, "",

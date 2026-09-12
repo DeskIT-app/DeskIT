@@ -22,6 +22,23 @@ IDLE = "idle"
 ACTIVE = "active"
 OVERFLOWED = "overflowed"
 
+# A DEAD MICROPHONE, NOTICED WHILE HE IS STILL TALKING. A headset on mute
+# or unplugged captures nothing, and the owner found out at the END of a
+# three-minute dictation, every time (report 20260910-190110). So the
+# recorder watches the loudest sample since begin(): SILENT_AFTER_S in
+# with nothing above SILENT_PEAK and `on_silent` fires — ONCE per
+# recording, whatever happens after — and the first louder buffer after
+# that fires `on_sound`, once, so the alarm can stand down. The recording
+# itself is never stopped: the alarm is information, not a decision.
+#
+# The threshold was measured, not guessed. Across the last sixty
+# recordings in recent\ (2026-09-12) the first ten seconds of every one
+# peaked at 0.105 or more; the open-microphone noise floor sat at
+# 0.0001-0.0075; a muted headset reads 0.0000. 0.02 (-34 dBFS) is five
+# times the loudest floor and a fifth of the quietest speech.
+SILENT_PEAK = 0.02
+SILENT_AFTER_S = 10.0
+
 
 def wasapi_auto_convert():
     """WASAPI's own sample-rate converter, or None where there is none.
@@ -48,6 +65,15 @@ def frames_to_wav(chunks: list[np.ndarray], sample_rate: int) -> bytes:
 
 
 class Recorder:
+    # The dead-microphone alarm's fields, with class-level defaults so a
+    # Recorder built around __init__ (the tests do, to skip the stream)
+    # still has them: no hooks, no alarm, the callback exactly as before.
+    on_silent: Callable[[], None] | None = None
+    on_sound: Callable[[], None] | None = None
+    _peak = 0.0
+    _silent_told = False
+    _sound_told = False
+
     def __init__(self, sample_rate: int, device: int | str | None,
                  max_seconds: float, on_overflow: Callable[[], None]):
         self._on_overflow = on_overflow
@@ -68,6 +94,15 @@ class Recorder:
         # what lets the ask card draw a wave that is actually YOUR voice
         # rather than a decorative animation pretending to be.
         self._level = 0.0
+        # The loudest sample since begin(), and the two hooks a dead
+        # microphone drives — see SILENT_PEAK. Plain attributes, set by
+        # main.py after construction, so a Recorder built the old way
+        # (every test does) has no alarm and behaves exactly as before.
+        self._peak = 0.0
+        self._silent_told = False     # on_silent fired for this recording
+        self._sound_told = False      # on_sound fired after it
+        self.on_silent: Callable[[], None] | None = None
+        self.on_sound: Callable[[], None] | None = None
         try:
             self._stream = self._open(device, sample_rate)
         except (sd.PortAudioError, ValueError) as e:
@@ -174,8 +209,21 @@ class Recorder:
             self._excluded = []
             self._questions = []
             self._samples = 0
+            self._peak = 0.0
+            self._silent_told = self._sound_told = False
             self._max_samples = self._default_max_samples  # undo any lift
             self._state = ACTIVE
+
+    def peak(self) -> float:
+        """The loudest sample since begin(), 0..1. Survives end(), so the
+        worker can ask whether the recording it was just handed had a
+        voice in it at all (`silent()`)."""
+        return self._peak
+
+    def silent(self) -> bool:
+        """Whether nothing since begin() rose above SILENT_PEAK — a muted
+        or unplugged microphone, not a quiet room (see the constant)."""
+        return self._peak < SILENT_PEAK
 
     def set_cap(self, seconds: float | None) -> None:
         """Change the runaway cap for the recording in progress. None or 0
@@ -353,6 +401,19 @@ class Recorder:
                 self._chunks.append(indata.copy())
                 self._samples += len(indata)
                 self._level = float(np.abs(indata).max()) / 32768.0
+                self._peak = max(self._peak, self._level)
+                # The dead-microphone alarm, once; the all-clear, once.
+                # Decided on the sample count, not the clock, so a test
+                # can drive it by feeding buffers.
+                if (not self._silent_told and self._peak < SILENT_PEAK
+                        and self._samples >= SILENT_AFTER_S
+                        * self.sample_rate):
+                    self._silent_told = True
+                    notify = self.on_silent
+                elif (self._silent_told and not self._sound_told
+                        and self._level >= SILENT_PEAK):
+                    self._sound_told = True
+                    notify = self.on_sound
                 if self._samples >= self._max_samples:
                     # Runaway recording (e.g. key-up swallowed by an elevated
                     # window): drop the buffer, remember the duration.

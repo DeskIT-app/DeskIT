@@ -2689,6 +2689,81 @@ def test_latched_recording_is_not_capped_and_the_cap_comes_back() -> None:
     assert r.end()[0] is None, "an overflowed recording must be discarded"
 
 
+def test_a_dead_microphone_is_told_once_and_the_all_clear_once() -> None:
+    """Report 20260910-190110: a muted headset, three minutes of talking,
+    and nothing captured. Ten seconds of nothing above SILENT_PEAK fires
+    on_silent ONCE; the first loud buffer after it fires on_sound ONCE;
+    a recording with a voice in its first ten seconds fires neither; and
+    silent() says whether the whole recording was a dead microphone."""
+    import recorder as rec
+    told: list[str] = []
+    r = _bare_recorder(400.0, lambda: told.append("overflow"))
+    r.on_silent = lambda: told.append("silent")
+    r.on_sound = lambda: told.append("sound")
+    quiet = np.full(16000, int(0.005 * 32768), dtype=np.int16)   # room noise
+    loud = np.full(16000, int(0.2 * 32768), dtype=np.int16)      # a voice
+
+    r.begin()
+    for _ in range(9):
+        r._callback(quiet, len(quiet), None, None)
+    assert told == [], "nine seconds is not yet an alarm"
+    r._callback(quiet, len(quiet), None, None)
+    assert told == ["silent"], told
+    for _ in range(20):
+        r._callback(quiet, len(quiet), None, None)
+    assert told == ["silent"], "another twenty seconds do not repeat it"
+    assert r.silent() and r.peak() < rec.SILENT_PEAK
+    r._callback(loud, len(loud), None, None)
+    r._callback(loud, len(loud), None, None)
+    assert told == ["silent", "sound"], "the all-clear, once"
+    assert not r.silent(), "a voice arrived, so the recording is not silent"
+    assert r.end()[0] is not None, "the alarm never stops a recording"
+
+    told.clear()
+    r.begin()                              # a normal dictation
+    r._callback(loud, len(loud), None, None)
+    for _ in range(15):
+        r._callback(quiet, len(quiet), None, None)
+    assert told == [], "a voice in the first second: no alarm, ever"
+    assert not r.silent()
+
+    told.clear()
+    r.begin()                              # fully silent, short
+    for _ in range(3):
+        r._callback(np.zeros(16000, dtype=np.int16), 16000, None, None)
+    assert told == [] and r.silent(), "too short to alarm, still silent"
+
+
+def test_the_dot_alarm_travels_to_the_centre_and_comes_back() -> None:
+    """His words: "הנקודה מהבהבת באדום ונעה לכיוון מרכז המסך עד שנקלט
+    סאונד... חוזרת לפינה". The geometry is one pure function both
+    painters share; the StatusDot keeps the clock."""
+    rest, box, work = (1900, 1040, ), 20, (0, 0, 1920, 1080)
+    assert overlay_mod.dot_alarm_spot(rest, box, work, 0.0) == rest
+    centre = overlay_mod.dot_alarm_spot(rest, box, work, 1.0)
+    assert centre == (950, 530), centre
+    half = overlay_mod.dot_alarm_spot(rest, box, work, 0.5)
+    assert rest[0] > half[0] > centre[0] and rest[1] > half[1] > centre[1]
+
+    dot = overlay_mod.StatusDot.off()
+    assert dot.alarming() is None
+    assert dot.alarm_frame(rest, box, work) == (rest, None), "no alarm: rest"
+    dot.alarm(True)
+    since = dot._alarm_since
+    assert since > 0 and dot.alarming() is not None
+    dot.alarm(True)
+    assert dot._alarm_since == since, "a second alarm does not restart it"
+    at, fill = dot.alarm_frame(rest, box, work)
+    assert fill in (overlay_mod.DOT_ALARM_FILL, overlay_mod.DOT_ALARM_DIM)
+    dot._alarm_since = time.monotonic() - overlay_mod.DOT_ALARM_TRAVEL_S * 2
+    assert dot.alarming() == 1.0
+    assert dot.alarm_frame(rest, box, work)[0] == centre, "arrived"
+    dot.alarm(False)
+    assert dot.alarming() is None
+    assert dot.alarm_frame(rest, box, work) == (rest, None), "back home"
+    dot.alarm(False)                        # idempotent
+
+
 def test_real_config_has_a_reachable_latch_key() -> None:
     """Guards the shipped config: without this the app is back to "a long
     dictation means a long hold"."""
@@ -4772,6 +4847,37 @@ def test_a_recording_is_kept_and_the_correction_is_attached_to_it() -> None:
         assert kept[0].read() == wav, "the audio must still be replayable"
         assert ("restore", "whatever the user had") in fake.calls, \
             "grab() leaves text on the clipboard — it must be put back"
+    finally:
+        main_mod.injector = real_inj
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_silent_recording_is_pasted_but_not_kept() -> None:
+    """Report 20260910-190110: "לא לשמור הקלטות בהיסטוריות הקלטות שהן בלי
+    סאונד". A dead microphone's recording still goes through the worker
+    — the alarm never stops a dictation — but recent\\ is the labelled set
+    and a wav with nobody in it is not a label."""
+    import shutil
+    import tempfile
+
+    import main as main_mod
+    from recorder import frames_to_wav
+    from spool import Spool
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-silent-"))
+    fake = _FakeInjector()
+    real_inj = main_mod.injector
+    try:
+        main_mod.injector = fake
+        app = _worker_app(_Flaky(fail_times=0, text="תודה"), tmp)
+        app.recent = Spool(tmp / "recent", keep=10)
+        wav = frames_to_wav([np.zeros(1600, dtype=np.int16)], 16000)
+        app._handle(wav, 12.0, hwnd=fake.focus, silent=True)
+        assert app._last and app._last["final"] == "תודה", app._last
+        assert app._last["wav"] == "", "a silent recording is not kept"
+        assert app.recent.pending() == [], app.recent.pending()
+        app._handle(wav, 12.0, hwnd=fake.focus)
+        assert app._last["wav"], "an ordinary one still is"
     finally:
         main_mod.injector = real_inj
         shutil.rmtree(tmp, ignore_errors=True)

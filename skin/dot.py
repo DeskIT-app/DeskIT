@@ -210,7 +210,8 @@ class Dot:
             return HTCAPTION if self.moving else HTCLIENT
         return HTTRANSPARENT
 
-    def draw(self, canvas, clock_ms: float) -> None:
+    def draw(self, canvas, clock_ms: float,
+             alarm_fill: str | None = None) -> None:
         skia = self._skia
         canvas.clear(0x00000000)
         cx = cy = BOX / 2.0
@@ -226,6 +227,13 @@ class Dot:
         fill = tuple(int(a + (b - a) * k)
                      for a, b in zip(rgb(fill_a), rgb(fill_b)))
         pulses = pulse_b if k > 0.5 else pulse_a
+        if alarm_fill is not None:
+            # The dead-microphone alarm (overlay.StatusDot.alarm): the
+            # blink is decided by the StatusDot's clock and handed in as
+            # a colour, so this painter and the Tk one blink alike. It
+            # overrides the state's fill and its breath — the alarm is
+            # the one thing the dot has to say right now.
+            fill, pulses = rgb(alarm_fill), False
 
         # A slow breath, so a recording you walked away from still reads as
         # live rather than as a frozen red dot. 0.16 Hz: nowhere near the
@@ -340,6 +348,7 @@ def run(status_dot) -> None:
                       exc_info=True)
 
     placed_at = [0, 0]
+    alarming = [False]
 
     def dropped() -> None:
         """The press on the disc was let go, and Windows' move loop has
@@ -425,7 +434,20 @@ def run(status_dot) -> None:
                 glass.move(at_x, at_y)
                 placed_at[0], placed_at[1] = at_x, at_y
                 status_dot.rect = (at_x, at_y, at_x + BOX, at_y + BOX)
-            dot.draw(glass.canvas, (time.perf_counter() - start) * 1000.0)
+            # The dead-microphone alarm travels the window toward the
+            # middle of the work area and blinks; the frame the alarm
+            # ends, the window goes back to where it rests (`alarming`
+            # remembers that there was one to put back).
+            alarm_fill = None
+            if status_dot.alarming() is not None or alarming[0]:
+                rest_x, rest_y, _w, _h = dot.placement()
+                at, alarm_fill = status_dot.alarm_frame(
+                    (rest_x, rest_y), BOX, work_area())
+                glass.move(at[0], at[1])
+                status_dot.rect = (at[0], at[1], at[0] + BOX, at[1] + BOX)
+            alarming[0] = alarm_fill is not None
+            dot.draw(glass.canvas, (time.perf_counter() - start) * 1000.0,
+                     alarm_fill)
             glass.flush()
             glass.pump()
             time.sleep(FRAME_S)

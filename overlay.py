@@ -552,6 +552,35 @@ DOT_MOVE_S = 45.0
 # NotifyCard's rule and its number, kept the same everywhere.
 DOT_CLICK_PX = 4
 
+# THE ALARM: a dead microphone ten seconds into a dictation (recorder.
+# SILENT_PEAK). The owner's words for what he wants to see: "הנקודה
+# מהבהבת באדום ונעה לכיוון מרכז המסך עד שנקלט סאונד... חוזרת לפינה" —
+# the dot blinks red and TRAVELS toward the middle of the screen, where
+# he is looking, and goes back to its corner the moment sound arrives.
+# It travels because a colour change in a corner is exactly what he was
+# not seeing for three minutes at a time; a red thing sliding into the
+# middle of the window he is typing in is not ignorable. The blink is a
+# hard on/off at DOT_ALARM_BLINK_HZ — distinct from "locked"'s slow
+# breath, which is the same red and means nothing is wrong.
+DOT_ALARM_TRAVEL_S = 1.4       # corner → centre, eased
+DOT_ALARM_BLINK_HZ = 2.5
+DOT_ALARM_FILL = "#ff2e1f"     # brighter than "recording", so the two read
+DOT_ALARM_DIM = "#5a1a14"      # apart even when the blink is on its "off"
+
+
+def dot_alarm_spot(rest: tuple[int, int], box: int,
+                   work: tuple[int, int, int, int],
+                   progress: float) -> tuple[int, int]:
+    """Where an alarming dot is, `progress` of the way (0..1, eased) from
+    its resting spot to the centre of the work area. Pure, and shared by
+    both painters so the two paths travel the same line."""
+    k = max(0.0, min(1.0, float(progress)))
+    k = k * k * (3.0 - 2.0 * k)                 # smoothstep
+    cx = (work[0] + work[2]) / 2.0 - box / 2.0
+    cy = (work[1] + work[3]) / 2.0 - box / 2.0
+    return (int(round(rest[0] + (cx - rest[0]) * k)),
+            int(round(rest[1] + (cy - rest[1]) * k)))
+
 
 def _work_area():
     """(x, y, w, h) of the primary monitor's work area — the taskbar
@@ -839,6 +868,10 @@ class StatusDot:
         # Move mode's deadline on the monotonic clock. 0.0 is "not
         # moving", which is also what it reads as before the app starts.
         self._move_until = 0.0
+        # The alarm's start on the monotonic clock, or 0.0 for "no
+        # alarm". One float, written from the PortAudio callback and read
+        # by the painter's next frame — see alarm().
+        self._alarm_since = 0.0
         # "the position changed under you — go there". Set by placed()
         # and to_corner(); the painter clears it and moves the window.
         self._replace = threading.Event()
@@ -882,6 +915,48 @@ class StatusDot:
         """Move mode over — because it was dropped, or because it ran
         out. Idempotent; the painter and the clock both call it."""
         self._move_until = 0.0
+
+    # -- the dead-microphone alarm --
+
+    def alarm(self, on: bool) -> None:
+        """Start or stop the alarm: red blink, travel to the centre of the
+        screen, back to the corner when it ends (DOT_ALARM_*).
+
+        Safe from the PortAudio callback, which is where recorder.py
+        calls it from: one float written, nothing waited for. Idempotent
+        in both directions — a second `on` does not restart the travel,
+        and `off` with no alarm running is nothing.
+        """
+        if on:
+            if not self._alarm_since:
+                self._alarm_since = time.monotonic()
+        else:
+            self._alarm_since = 0.0
+
+    def alarming(self) -> float | None:
+        """None when there is no alarm; otherwise how far along the travel
+        is, 0..1 — a clock the painter reads, so the picture is a function
+        of time and not of how many frames it happened to draw."""
+        if not self._alarm_since:
+            return None
+        return min(1.0, (time.monotonic() - self._alarm_since)
+                   / DOT_ALARM_TRAVEL_S)
+
+    def alarm_frame(self, rest: tuple[int, int], box: int,
+                    work: tuple[int, int, int, int]
+                    ) -> tuple[tuple[int, int], str | None]:
+        """One frame of the dot's position and alarm colour: where the
+        window goes, and the fill to paint if the alarm is on (None when
+        it is not, and the state's own colour applies). The blink is
+        computed from the clock, so both painters blink in step with
+        each other and with themselves after a dropped frame."""
+        k = self.alarming()
+        if k is None:
+            return rest, None
+        at = dot_alarm_spot(rest, box, work, k)
+        phase = (time.monotonic() - self._alarm_since) * DOT_ALARM_BLINK_HZ
+        return at, (DOT_ALARM_FILL if int(phase * 2) % 2 == 0
+                    else DOT_ALARM_DIM)
 
     def placed(self, x: int, y: int) -> None:
         """Remember where a drag left it, and write it down.
@@ -1094,6 +1169,7 @@ class StatusDot:
         self._alive.set()
 
         state = {"name": "ready", "phase": 0.0}
+        alarm = {"was": False}
 
         def paint() -> None:
             fill, ring_col, pulses = STATES[state["name"]]
@@ -1103,6 +1179,18 @@ class StatusDot:
                 state["phase"] = (state["phase"] + 0.06) % 6.283
                 k = 0.55 + 0.45 * (0.5 + 0.5 * math.cos(state["phase"]))
                 fill = _mix(fill, _CHROMA, k)
+            # The dead-microphone alarm: the window itself travels toward
+            # the middle of the work area and the fill blinks. Off, the
+            # window is put back where it rests — once, on the frame the
+            # alarm ends, which is what `alarm["was"]` remembers.
+            alarm_fill = None
+            if self.alarming() is not None or alarm["was"]:
+                at, alarm_fill = self.alarm_frame(where(), box, work)
+                root.geometry(f"+{at[0]}+{at[1]}")
+                self.rect = (at[0], at[1], at[0] + box, at[1] + box)
+                if alarm_fill is not None:
+                    fill = alarm_fill
+            alarm["was"] = alarm_fill is not None
             canvas.itemconfig(dot, fill=fill)
             # WHILE IT IS WAITING TO BE DRAGGED, the containing ring goes
             # white. The control window has hidden itself by then, so the
