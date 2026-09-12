@@ -250,8 +250,9 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
 #   Corrections  the second reading's proposals, and the words it has
 #                learned from them (his: "the vocabulary and all the
 #                corrections it does automatically")
-#   Problems     what he reported, the routine's questions, the weekly
-#                branches — everything that needs more than a line
+#   Problems     what he reported, the routine's questions, what is on
+#                this computer and not on GitHub — everything that needs
+#                more than a line
 #   Said         transcripts.log read back, with the search
 #   Keys         every binding, lit on a drawn keyboard
 #   Settings     config.toml, on tabs
@@ -785,30 +786,57 @@ Q_POLL_MS = 80           # how often the field is read (the card uses 60)
 Q_WELL_INSET = 3
 
 # ---------------------------------------------------------------------------
-# git, for the branches the weekly routine leaves behind
+# git, for what is on this computer and not on GitHub
 # ---------------------------------------------------------------------------
 #
-# The routine builds what he has already answered, commits it to
-# weekly/<YYYY-MM-DD> and NEVER pushes: pushing is his button, and it is
-# the only thing standing between an autonomous routine and a public
-# mistake. This is that button's plumbing.
+# Every change to this app — the Saturday routine's and any Claude
+# session's — is committed straight onto `main` in this folder, and
+# whoever made it NEVER pushes it. The folder always stands on `main`.
+# He restarts, tries the change, and then either pushes it or throws it
+# away, and each of those is a button on the Problems tab. This is the
+# plumbing under the three buttons. His decision, 2026-09-12.
+#
+# THE OLD SHAPE, AND WHY ITS GUARD WAS WRONG. Until that day the routine
+# built on a branch, weekly/<DATE>, this block listed those branches, and
+# Push sent the branch up and then merged it into `main` — behind a guard
+# that refused the merge if `main` held any commit GitHub lacked. The
+# guard reasoned that THE ROUTINE NEVER COMMITS TO `main`, so such a
+# commit had to be another session's half-finished work, and publishing
+# the branch onto `main` would carry it up. True of the routine; false of
+# how he actually works. To TRY a change he has to run it, the app runs
+# out of this folder, and this folder stands on `main` — so the moment a
+# session moved the work onto `main` so that he could try it (his need,
+# and the only way to meet it), the guard saw a commit GitHub lacked and
+# the button refused the very work he was trying to push. A guard that
+# fires on the ordinary case is not a guard. What replaces it is simpler
+# and true: everything on `main` that GitHub lacks IS the work, all of it
+# his to push or to undo, and the one refusal left is the one that keeps
+# `git push` from ever wanting --force (see push_main).
 #
 # CREATE_NO_WINDOW on every call, for the reason versions.py measured:
 # git is a console program, this window runs under pythonw, and a spawn
 # without the flag ALLOCATES A CONSOLE — visible flicker and hundreds of
 # milliseconds, on whichever thread asked. capture.py:1683 says the same
 # where it opens explorer.
-# WHERE THE ROUTINE'S WORK GOES HOME TO. It was "fast" until 2026-09-08,
-# and that name was a leftover: `fast` meant "the fast one OF THE TWO",
-# against a `classic` that no longer exists. With one version the word
-# said nothing true, and the owner asked for it to go - "you can also
-# change the name to classic or whatever you want". "main" carries no
-# claim about a repair pass, which is the point.
+# WHERE EVERYTHING GOES HOME TO. It was "fast" until 2026-09-08, and that
+# name was a leftover: `fast` meant "the fast one OF THE TWO", against a
+# `classic` that no longer exists. With one version the word said nothing
+# true, and the owner asked for it to go - "you can also change the name
+# to classic or whatever you want". "main" carries no claim about a
+# repair pass, which is the point.
 TRUNK = "main"
-WEEKLY = "weekly/"             # ...from branches named weekly/<DATE>
 GIT_READ_S = 20                # a local read
-GIT_NET_S = 180                # a push, over his connection
+GIT_NET_S = 180                # a push or a fetch, over his connection
 _CREATE_NO_WINDOW = 0x08000000
+# How many of the commits the card lists before "+N more". Eight lines
+# is a week of the routine's work with room to spare; past that the
+# list is not being read, it is being scrolled past.
+CHANGES_SHOWN = 8
+# How long Restart waits for the app to let go of its mutex before it
+# gives up. The models unload in a second or two; twenty is for a paste
+# or a recording that is still finishing, and past twenty the app is not
+# stopping and a second copy would only be refused by the mutex anyway.
+APP_QUIT_WAIT_S = 20.0
 # Beside the routine's own run.log, and not beside app.log, for a reason
 # that is not tidiness: problems\ is gitignored and the repo root is not,
 # so a log file up there would show as an untracked path in every other
@@ -885,277 +913,229 @@ def _first_line(text: str) -> str:
     return ""
 
 
-def _trunk_ref() -> str:
-    """`main` if this repo has it, `origin/main` if only the remote does,
-    "" for a repo with neither — a one-branch clone, or no git at all.
-    Everything a weekly branch is measured against is measured against
-    this, and "" means the row says so instead of guessing."""
-    for ref in (TRUNK, f"origin/{TRUNK}"):
-        code, out, _err = _git("rev-parse", "--verify", "--quiet",
-                               f"{ref}^{{commit}}")
-        if code == 0 and out.strip():
-            return ref
-    return ""
+# The sentence Push and Undo both open with when the fetch fails. One
+# string, because the two buttons fail the same way for the same reason
+# and he should not have to learn two wordings for "no network".
+_UNREACHABLE = ("GitHub could not be reached. Nothing changed. Try again "
+                "in a moment.")
 
 
-def weekly_branches() -> list[dict]:
-    """Every weekly/* branch and what is on it, newest name first.
+def local_changes() -> dict:
+    """What is on this computer and not on GitHub: `origin/main..main`,
+    with origin/main AS IT WAS LAST FETCHED.
 
-    EVERY one of them, not the newest. A Saturday he never got round to
-    reviewing leaves its branch behind, and a list showing only this
-    week's would quietly bury it — the routine's own gate reads the same
-    list to decide whether it may build at all.
+    LOCAL READS ONLY, no fetch. This is asked for every time the
+    Problems tab opens and after every one of its buttons (off the Tk
+    thread, but still), and a fetch is somebody else's server on his
+    connection — that belongs under a button, and Push and Undo both
+    fetch first. The cost of reading a stale origin/main is one number
+    being a little old, and the moment either button is pressed the
+    fetch under it makes the number current.
 
-    [] for a repo with no weekly branch, no git and no repository: each
-    of those is a block with nothing in it, never an error.
+    Returns {"commits": [{"sha", "subject", "when"}, ...] newest first,
+    "files": [...] what those commits changed, "behind": how many
+    commits GitHub has that this computer does not, "told": bool}.
+    `told` is False when git could not answer — no repo, no origin/main,
+    no git on PATH — and every one of those is an empty block on the
+    tab, never an error: a computer with no git still has a Problems
+    tab.
     """
-    code, out, _err = _git("for-each-ref", "--format=%(refname:short)",
-                           f"refs/heads/{WEEKLY}")
-    names = [ln.strip() for ln in out.splitlines() if ln.strip()] \
-        if code == 0 else []
-    if not names:
-        return []
-    trunk = _trunk_ref()
-    rows: list[dict] = []
-    for name in sorted(names, reverse=True):
-        row = {"branch": name, "commits": 0, "files": [], "trunk": trunk,
-               "on_origin": False, "subject": ""}
-        if trunk:
-            code, out, _err = _git("rev-list", "--count", f"{trunk}..{name}")
-            if code == 0 and out.strip().isdigit():
-                row["commits"] = int(out.strip())
-            # Three dots: what the branch changed since it left the
-            # trunk, not what the trunk has done since. He is being
-            # shown what HE is about to push.
-            code, out, _err = _git("diff", "--name-only", f"{trunk}...{name}")
-            if code == 0:
-                row["files"] = [ln.strip() for ln in out.splitlines()
-                                if ln.strip()]
-        code, out, _err = _git("log", "-1", "--format=%s", name)
-        if code == 0:
-            row["subject"] = _first_line(out)
-        code, out, _err = _git("rev-parse", "--verify", "--quiet",
-                               f"refs/remotes/origin/{name}")
-        row["on_origin"] = code == 0 and bool(out.strip())
-        # "Merged" is measured against GitHub's main, not the local one:
-        # the local main is often behind (the button may not move the
-        # branch this tree stands on), and what he is asking is whether
-        # the work is safely up and in, not what this checkout thinks.
-        target = f"origin/{TRUNK}" if _git(
-            "rev-parse", "--verify", "--quiet",
-            f"origin/{TRUNK}^{{commit}}")[0] == 0 else trunk
-        row["merged"] = bool(target) and _git(
-            "merge-base", "--is-ancestor", name, target)[0] == 0
-        rows.append(row)
-    return rows
-
-
-def weekly_pushed(info: dict) -> bool:
-    """Is this branch finished business — up on GitHub, and in `main`?
-
-    The one test two places have to agree on: the card, which offers a
-    Push button only while there is something to push, and the block,
-    which decides whether the card is worth his screen at all.
-    """
-    return bool(info.get("on_origin")) and bool(info.get("merged"))
-
-
-def _foreign_on_trunk() -> tuple[bool, list[str]]:
-    """(could git tell us, what is on `main` that is not the routine's).
-
-    `origin/main..main` — and every commit in it is somebody else's.
-    That is not a guess and not a heuristic: THE ROUTINE NEVER COMMITS
-    TO `main`. It cuts weekly/<DATE>, commits there, goes back to the
-    branch it started on and pushes nothing, by its own rule; and the
-    only way one of its commits can reach the local `main` at all is the
-    fast-forward at the end of this file, which happens after origin has
-    already taken the same commit — so it is never unpushed. A commit
-    sitting on `main` that GitHub has not seen was made by one of the
-    other sessions that share this branch.
-
-    Why that matters here: a weekly branch is cut FROM `main`, so it
-    carries whatever was unpushed on it, and publishing the branch onto
-    `main` would take that half-finished commit up under the routine's
-    name. His rule after dbf9b55 is that a session pushes its own work
-    and nothing else — this is that rule, mechanised.
-
-    And identity cannot be the test, however much it looks like it
-    should be: every commit in this repo is authored by him with a Claude
-    trailer, so author, committer and trailer are identical across all of
-    them. Where a commit LIVES is the only thing that separates one
-    session's from another's.
-
-    A False first value means git could not answer, and that refuses the
-    merge as well: not knowing is not the same as clean.
-    """
-    code, out, _err = _git("log", "--format=%H%x09%s",
+    silent = {"commits": [], "files": [], "behind": 0, "told": False}
+    code, out, _err = _git("log", "--format=%H%x09%ad%x09%s",
+                           "--date=format:%Y-%m-%d %H:%M",
                            f"origin/{TRUNK}..{TRUNK}")
     if code != 0:
-        return False, []
-    foreign: list[str] = []
+        return silent
+    commits: list[dict] = []
     for line in out.splitlines():
-        sha, _tab, subject = line.partition("\t")
+        sha, _tab, rest = line.partition("\t")
+        when, _tab, subject = rest.partition("\t")
         if sha.strip():
-            foreign.append(f"{sha.strip()[:7]} {subject.strip()}"[:120])
-    return True, foreign
+            commits.append({"sha": sha.strip()[:7],
+                            "subject": subject.strip(),
+                            "when": when.strip()})
+    # Two dots, not three: `main` is measured against what GitHub has,
+    # and what GitHub did meanwhile is the `behind` count, not a diff.
+    code, out, _err = _git("diff", "--name-only", f"origin/{TRUNK}..{TRUNK}")
+    files = [ln.strip() for ln in out.splitlines() if ln.strip()] \
+        if code == 0 else []
+    code, out, _err = _git("rev-list", "--count", f"{TRUNK}..origin/{TRUNK}")
+    behind = int(out.strip()) if code == 0 and out.strip().isdigit() else 0
+    return {"commits": commits, "files": files, "behind": behind,
+            "told": True}
 
 
-def _merge_elsewhere(branch: str) -> dict:
-    """The merge `main` needs once it has moved on, done where this
-    folder cannot be hurt by it.
-
-    `git worktree add --detach` gives the merge its own tree and its own
-    index in a temp folder: this repo's working tree — which carries
-    three other sessions' unfinished work most hours of the day — is
-    neither read nor written. That is why there is no `git stash`, no
-    `git checkout` and no `git reset` anywhere on this path, and why a
-    merge that would need one of them is a merge this button refuses.
-
-    A conflict is ABORTED and handed back. His repo, his conflict; a
-    resolution invented by a button at 4 AM is the one thing worse than
-    a branch that waits.
-    """
-    import shutil
-    import tempfile
-
-    # A worktree left behind by a process that died mid-merge would
-    # refuse the next one by name; pruning first costs nothing.
-    _git("worktree", "prune")
-    tmp = Path(tempfile.mkdtemp(prefix="deskit-merge-"))
-    work = tmp / "tree"
-    code, _out, err = _git("worktree", "add", "--detach", str(work),
-                           f"origin/{TRUNK}", timeout=GIT_NET_S)
-    if code != 0:
-        shutil.rmtree(tmp, ignore_errors=True)
-        return {"pushed": True, "merged": False,
-                "said": f"The branch is on GitHub, but it could not be "
-                        f"merged into {TRUNK}: git failed to set up the "
-                        f"merge ({_first_line(err) or 'no reason given'}). "
-                        f"Press Push again in a moment."}
-    try:
-        code, out, err = _git("merge", "--no-edit", branch, cwd=work,
-                              timeout=GIT_NET_S)
-        if code != 0:
-            # The names BEFORE the abort: aborting is what makes them
-            # unreadable, and the names are the whole message.
-            _c, clashes, _e = _git("diff", "--name-only", "--diff-filter=U",
-                                   cwd=work)
-            names = [ln.strip() for ln in clashes.splitlines() if ln.strip()]
-            _git("merge", "--abort", cwd=work)
-            return {"pushed": True, "merged": False,
-                    "said": f"The branch is on GitHub, but merging it into "
-                            f"{TRUNK} runs into a conflict"
-                            + (f" in {', '.join(names[:4])}" if names
-                               else f" ({_first_line(out + err)})")
-                            + ". Nothing was changed — that conflict needs "
-                              "you to resolve it by hand."}
-        sha = _git("rev-parse", "HEAD", cwd=work)[1].strip()
-        code, out, err = _git("push", "origin", f"{sha}:refs/heads/{TRUNK}",
-                              timeout=GIT_NET_S)
-        if code != 0:
-            return {"pushed": True, "merged": False,
-                    "said": f"The branch is on GitHub, but GitHub refused "
-                            f"the merged {TRUNK} ({_first_line(err or out)}). "
-                            f"Nothing was forced. Press Push again in a "
-                            f"moment."}
-        _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
-        return {"pushed": True, "merged": True,
-                "said": f"Successfully pushed. {TRUNK} on GitHub now includes "
-                        f"this work (merge commit {sha[:7]}). Your local "
-                        f"{TRUNK} is still on the older commit — run git pull "
-                        f"when you're done working."}
-    finally:
-        # The one --force in this file, and it is on a TEMP FOLDER, not
-        # on a ref: `worktree remove` refuses a tree with anything in it,
-        # and a half-merged scratch tree always has. Nothing about this
-        # reaches a branch, a remote or this repo's working tree.
-        _git("worktree", "remove", "--force", str(work))
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-def push_weekly(branch: str) -> dict:
+def push_main() -> dict:
     """His Push button, in order, with the reason for each step.
 
-    1. `git push origin <branch>` FIRST, before anything is checked. The
-       routine's work has been on one disk since Saturday, and getting it
-       off the machine is the half of this that must not wait for a merge
-       to be safe. If the merge is then refused, the work is still on
-       GitHub — which is the whole reason the branch goes first.
-    2. Then `main`: anything on it that origin has not got and the
-       routine did not write is another session's work, and publishing
-       the branch onto `main` would take that with it. Refuse, and name
-       the commit.
-    3. A fast-forward is published as one — `git push origin
-       <branch>:main`, which touches no local branch and no file in this
-       folder. Anything else is a real merge, and a real merge happens in
-       a throwaway worktree (see _merge_elsewhere).
+    1. `git fetch origin main` first, so that every check below is about
+       what is on GitHub at this moment and not as of last Saturday.
+       No network is a sentence and nothing else happens.
+    2. Is origin/main an ancestor of main? If GitHub has a commit this
+       computer lacks, a plain push would be refused as non-fast-forward
+       and the only ways past that are a merge or --force. Neither is a
+       button's to take: a merge is a session's job (a conflict resolved
+       by a button at 4 AM is worse than a push that waits), and --force
+       would throw GitHub's commit away. So it refuses, and says whom to
+       ask. Nothing changed.
+    3. `git push origin main`, no flags. GitHub's answer is quoted back
+       to him if it says no.
 
-    Never --force, never -f, no conflict resolved here, and the working
-    tree is never touched. ONE BUTTON: he asked whether two would be
-    safer and the honest answer was no — the safety is the check, not a
-    second thing for him to choose between.
-
-    Returns {"pushed": bool, "merged": bool, "said": str}. `said` is the
-    sentence the row shows him, and it says which of the three happened.
+    Never --force, never -f, never a merge, and the working tree is not
+    touched at any step — the folder stands on `main`, and pushing a
+    branch by name moves no file. Returns {"pushed": bool, "said": str};
+    `said` is the sentence the card shows him.
     """
-    code, out, err = _git("push", "origin", branch, timeout=GIT_NET_S)
+    code, _out, _err = _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
     if code != 0:
-        return {"pushed": False, "merged": False,
-                "said": f"Push failed — GitHub did not take the branch "
+        return {"pushed": False, "said": _UNREACHABLE}
+    if _git("merge-base", "--is-ancestor", f"origin/{TRUNK}", TRUNK)[0] != 0:
+        return {"pushed": False,
+                "said": "GitHub has changes this computer does not have "
+                        "yet. Ask Claude to bring them in first, then "
+                        "press Push again. Nothing changed."}
+    code, out, err = _git("push", "origin", TRUNK, timeout=GIT_NET_S)
+    if code != 0:
+        return {"pushed": False,
+                "said": f"GitHub did not take the changes "
                         f"({_first_line(err or out) or 'no reason given'}). "
-                        f"Nothing changed. Check your connection and press "
-                        f"Push again."}
-    # origin/main as it is NOW, not as it was last week: every check
-    # below is about what is on GitHub at this moment.
-    code, _out, err = _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
+                        f"Nothing changed. Press Push again."}
+    return {"pushed": True,
+            "said": "Sent. GitHub now has everything on this computer."}
+
+
+_KEEP_REFUSED = re.compile(r"Entry '([^']+)'")
+
+
+def undo_main() -> dict:
+    """His Undo button: `main` goes back to what GitHub has, and the
+    commits that were only here are gone.
+
+    1. `git fetch origin main`, for the same reason Push fetches: the
+       thing being gone back TO has to be GitHub's main now, not a
+       remembered one.
+    2. Nothing ahead is nothing to undo, said in those words rather than
+       a reset that changes nothing and a sentence claiming it did.
+    3. The folder has to be standing on `main` — it always is, by the
+       rule at the top of this section, but `reset` moves WHATEVER HEAD
+       is, and a session that left the folder on a branch would have
+       that branch thrown back to origin/main by a button that said
+       "main". One rev-parse buys that never happening.
+    4. `git reset --keep origin/main`. --keep AND NOT --hard, and the
+       difference is the whole reason this button is safe to have:
+       --hard throws away every uncommitted edit in the folder, and
+       config.toml is his, edited by hand and modified most of the time;
+       --keep carries uncommitted edits across untouched, leaves
+       untracked files (questions.json, problems.json, the logs) alone,
+       and REFUSES — changing nothing — when a file with uncommitted
+       edits is one the undone commits also changed, because there is
+       no way to take the commit out of that file and keep his edit in
+       it without a merge. That refusal comes back as a sentence naming
+       the file. It is the one outcome that wants a session, so the
+       sentence says so.
+
+    The app in memory does not notice any of this: it loaded its code at
+    start and runs the newer version until it is restarted, which is
+    why the success sentence ends with Restart. Never --hard, never a
+    clean, never a checkout of a path. Returns {"undone": bool, "said":
+    str}.
+    """
+    code, _out, _err = _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
     if code != 0:
-        return {"pushed": True, "merged": False,
-                "said": f"The branch is on GitHub, but it was not merged "
-                        f"into {TRUNK}: GitHub's {TRUNK} could not be read "
-                        f"({_first_line(err) or 'the fetch failed'}). Press "
-                        f"Push again in a moment."}
-    told, foreign = _foreign_on_trunk()
-    if not told:
-        return {"pushed": True, "merged": False,
-                "said": f"The branch is on GitHub, but it was not merged "
-                        f"into {TRUNK}: git could not tell whether {TRUNK} "
-                        f"holds unpushed work from another session, so the "
-                        f"merge was skipped to be safe. Press Push again in "
-                        f"a moment."}
-    if foreign:
-        return {"pushed": True, "merged": False,
-                "said": f"The branch is on GitHub, but it was not merged "
-                        f"into {TRUNK}: {TRUNK} has {len(foreign)} commit(s) "
-                        f"from another session that are not on GitHub yet "
-                        f"({'; '.join(foreign[:3])}). Push that work from "
-                        f"its own session first, then press Push here again."}
-    if _git("merge-base", "--is-ancestor", f"origin/{TRUNK}", branch)[0] != 0:
-        return _merge_elsewhere(branch)
-    code, out, err = _git("push", "origin", f"{branch}:{TRUNK}",
-                          timeout=GIT_NET_S)
-    if code != 0:
-        return {"pushed": True, "merged": False,
-                "said": f"The branch is on GitHub, but GitHub refused to "
-                        f"update {TRUNK} ({_first_line(err or out)}). Nothing "
-                        f"was forced. Press Push again in a moment."}
-    # And the local branch, IF git will let us: a fetch into a ref is
-    # fast-forward-only without a +, and it refuses outright to write the
-    # branch a working tree is standing on. That refusal is the guard we
-    # want rather than an obstacle — moving `main` out from under this
-    # tree would leave every file the routine wrote looking like an
-    # uncommitted revert to whichever session next ran `git status`.
-    moved = _git("fetch", ".", f"{branch}:{TRUNK}")[0] == 0
+        return {"undone": False, "said": _UNREACHABLE}
+    code, out, _err = _git("rev-list", "--count", f"origin/{TRUNK}..{TRUNK}")
+    if code != 0 or not out.strip().isdigit():
+        return {"undone": False,
+                "said": f"Undo refused: git could not tell what is on this "
+                        f"computer and not on GitHub. Nothing changed. Ask "
+                        f"Claude."}
+    if int(out.strip()) == 0:
+        return {"undone": False,
+                "said": "Nothing to undo — everything on this computer is "
+                        "already on GitHub."}
     head = _git("rev-parse", "--abbrev-ref", "HEAD")[1].strip()
-    trailer = ""
-    if not moved:
-        trailer = (f" Your local {TRUNK} is still on the older commit"
-                   + (" (git won't move the branch this working tree is "
-                      "standing on)" if head == TRUNK else "")
-                   + " — run git pull when you're done working.")
-    _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
-    return {"pushed": True, "merged": True,
-            "said": f"Successfully pushed. {TRUNK} on GitHub now includes "
-                    f"this work." + trailer}
+    if head != TRUNK:
+        return {"undone": False,
+                "said": f"Undo refused: this folder is standing on "
+                        f"{head or 'no branch'}, not {TRUNK}. Nothing "
+                        f"changed. Ask Claude."}
+    code, out, err = _git("reset", "--keep", f"origin/{TRUNK}")
+    if code != 0:
+        names = _KEEP_REFUSED.findall(err + out)
+        return {"undone": False,
+                "said": f"Undo refused: {', '.join(names) or 'a file'} has "
+                        f"unsaved edits and one of these changes touched "
+                        f"it. Nothing changed. Ask Claude."}
+    return {"undone": True,
+            "said": "Undone. The changes are gone from this computer "
+                    "(GitHub never had them). Restart to run the older "
+                    "version again."}
+
+
+def restart_app(wait_s: float = APP_QUIT_WAIT_S,
+                step_s: float = 0.25) -> dict:
+    """The app half of Restart: stop it if it is running, wait until it
+    has really gone, start it again. Off the Tk thread — the wait is up
+    to twenty seconds of polling.
+
+    The two halves are the bar's own Stop and Start, at the level of the
+    calls they make: singleton.request_quit sets the named event main.py
+    waits on, and launch.start_app spawns pythonw main.py detached. What
+    the bar cannot do and this can is the wait BETWEEN them: is_running
+    reads the mutex, and the mutex is the last thing the app lets go of,
+    so a start issued while it still answers True would be a second copy
+    refused at its own door. An app that was not running is simply
+    started — there is nothing to wait for.
+
+    Returns {"ok": bool, "said": str}; `said` is empty on success,
+    because a restart that worked is about to replace the window that
+    would show it.
+    """
+    if singleton.is_running():
+        if not singleton.request_quit():
+            return {"ok": False,
+                    "said": "The app is running but did not answer the "
+                            "request to stop, so nothing was restarted. "
+                            "Try Stop in the bar."}
+        deadline = time.monotonic() + wait_s
+        while singleton.is_running():
+            if time.monotonic() >= deadline:
+                return {"ok": False,
+                        "said": f"The app did not stop in "
+                                f"{int(wait_s)} seconds, so nothing was "
+                                f"restarted. Try Stop in the bar, wait for "
+                                f"the state to say stopped, then Start."}
+            time.sleep(step_s)
+    if not launch.start_app():
+        return {"ok": False,
+                "said": "The app could not be started again — see app.log. "
+                        "This window was left as it is."}
+    return {"ok": True, "said": ""}
+
+
+def _relaunch_dashboard() -> bool:
+    """Open a fresh copy of this window, the way the taskbar pin does:
+    wscript + Dashboard.vbs, the launcher the shortcut and the pin both
+    run (_set_taskbar_relaunch teaches the pin that exact command).
+
+    Detached, as launch.spawn detaches the app: this process is on its
+    way out and the child must not go with it. It is called from main()
+    AFTER the instance mutex is released — see main for why the order
+    is the whole trick.
+    """
+    import subprocess
+
+    wscript = str(Path(os.environ.get("SystemRoot", r"C:\Windows"))
+                  / "System32" / "wscript.exe")
+    try:
+        subprocess.Popen([wscript, str(APP_DIR / "Dashboard.vbs")],
+                         cwd=str(APP_DIR), creationflags=launch._DETACHED,
+                         close_fds=True, stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except OSError as e:
+        _push_log(f"relaunch: the window could not be opened again ({e})")
+        return False
 
 
 def _wrap(widths, limit: int, gap: int = 6,
@@ -1405,18 +1385,17 @@ class Dashboard:
         # row is a ✕ that deletes on one press after all.
         self._problem_asking = ""
         self._asking_row = None     # ...and the row it is drawn on now
-        # The routine's branches, as git last answered. None is "nobody
-        # has asked yet", which is not the same as "there are none".
-        self._weekly = None
-        self._weekly_scanning = False
-        # Whether the weeks that are already pushed are open. Closed is
-        # the resting state: a branch folds itself away the moment its
-        # push lands, and only the line under the live ones brings it
-        # back.
-        self._weekly_open = False
-        self._push_buttons: dict = {}
-        self._push_said: dict = {}  # what the last press did, per branch
-        self._pushing = None        # the branch a push is in flight for
+        # What is on this computer and not on GitHub, as git last
+        # answered. None is "nobody has asked yet", which is not the same
+        # as "there is nothing".
+        self._changes = None
+        self._changes_scanning = False
+        self._push_said: dict = {}  # what the last press did, by TRUNK
+        self._pushing = None        # "push", "undo" or "restart" while
+        #                             one of them is in flight
+        # Restart asked for this window to come back as a new process.
+        # Read by run() after the window is gone — see _restart_all.
+        self._relaunch = False
         # Which of the Home place's two views is up: the calm home, or
         # the whole backlog behind it.
         self._waiting_view = "home"
@@ -3382,13 +3361,14 @@ class Dashboard:
 
     def _screen_problems(self) -> None:
         """A place of its own: every report, every question the routine
-        asked, every branch it left behind.
+        asked, every change committed here and not yet on GitHub.
 
         The pile on the home says WHAT is waiting in one line each; this
         is where a thing that needs more than a line gets it — a question
         with two to five answers to press and a box to dictate into, a
-        report with its evidence, a weekly branch with the one button
-        that publishes it. It was a view hiding behind the home until he
+        report with its evidence, the changes on this computer with the
+        three buttons that try, push or undo them. It was a view hiding
+        behind the home until he
         asked for it as a tab: "The report problem, I would like that to
         be in tabs."
 
@@ -3455,11 +3435,11 @@ class Dashboard:
         # Opening the tab is the cue: the weekly read wants problems.md
         # current, and this is the moment it is known to be looked at.
         self._write_digest()
-        # The branches are git, and git is a process spawn per question —
+        # The changes are git, and git is a process spawn per question —
         # so they are asked for off this thread when the tab opens, and
-        # again after a push. Never on the poll: five spawns a second for
-        # a list that changes once a week.
-        self._scan_weekly()
+        # again after each button. Never on the poll: five spawns a
+        # second for a list that changes when a session commits.
+        self._scan_changes()
         self._fill_problems(home=True)
 
     def _waiting_all(self) -> None:
@@ -3506,7 +3486,8 @@ class Dashboard:
                 waiting, done, summary = [], [], {}
         qmodule = self._questions()
         asked = self._pending_questions()
-        weekly = self._weekly or []
+        changes = self._changes or {}
+        ahead = bool(changes.get("commits"))
         head = self.parts["problems_head"]
         asking = self.parts["questions_head"]
         head.config(text=f"{summary.get('open', 0)} open   ·   "
@@ -3528,7 +3509,6 @@ class Dashboard:
         place = scroller.keep_place()
         scroller.clear()
         self._q_fields = {}
-        self._push_buttons = {}
         self._asking_row = None
         empty = self.parts["problems_empty"]
         empty.place_forget()
@@ -3536,7 +3516,7 @@ class Dashboard:
             empty.config(text="problems.py is not here, so nothing can be "
                               "reported or read back.")
             empty.place(x=PAD + CW / 2, y=300, anchor="center")
-        elif not waiting and not done and not asked and not weekly:
+        elif not waiting and not done and not asked and not ahead:
             empty.config(text="Nothing reported yet — when something is "
                               "wrong, say so from the sidebar and the app "
                               "attaches the rest.")
@@ -3566,8 +3546,8 @@ class Dashboard:
         if loose:
             self._question_block(scroller, qmodule, loose,
                                  "A QUESTION, NOT ABOUT ONE REPORT")
-        if weekly:
-            self._weekly_block(scroller, weekly)
+        if changes.get("told"):
+            self._changes_block(scroller, changes)
         for item in waiting:
             self._problem_row(scroller, module, item, open_=True)
             self._question_block(scroller, qmodule,
@@ -4503,145 +4483,173 @@ class Dashboard:
         _push_log("wake: started weekly_review.ps1 -Answered")
         return True
 
-    # ------------------------------------------- the routine's own branches
+    # ------------------------------------ what is here and not on GitHub
 
-    def _scan_weekly(self) -> None:
-        """Ask git what the routine has left behind, off the Tk thread.
+    def _scan_changes(self) -> None:
+        """Ask git what is on this computer and not on GitHub, off the
+        Tk thread.
 
-        Five spawns a branch, and a spawn is milliseconds this window may
-        not spend: the Version screen froze solid asking git the same
-        kind of question on the UI thread, which is the measurement in
+        Three spawns, and a spawn is milliseconds this window may not
+        spend: the Version screen froze solid asking git the same kind
+        of question on the UI thread, which is the measurement in
         versions.py. The answer arrives through _events like every other
-        off-thread reply.
+        off-thread reply. Asked when the tab opens and after each of the
+        three buttons — never on the poll: five spawns a second for a
+        list that changes when a session commits.
         """
-        if self._weekly_scanning:
+        if self._changes_scanning:
             return
-        self._weekly_scanning = True
+        self._changes_scanning = True
 
         def work() -> None:
             try:
-                rows = weekly_branches()
+                info = local_changes()
             except Exception:             # noqa: BLE001 — never a traceback
-                rows = []                 #                out of a thread
-            self._events.put(lambda r=rows: self._weekly_arrived(r))
+                info = {"commits": [], "files": [], "behind": 0,
+                        "told": False}    #                out of a thread
+            self._events.put(lambda i=info: self._changes_arrived(i))
 
         threading.Thread(target=work, daemon=True,
-                         name="weekly-scan").start()
+                         name="changes-scan").start()
 
-    def _weekly_arrived(self, rows: list[dict]) -> None:
-        self._weekly_scanning = False
-        self._weekly = rows
+    def _changes_arrived(self, info: dict) -> None:
+        self._changes_scanning = False
+        self._changes = info
         if self.screen == "Problems":
             self._fill_problems()
 
-    def _weekly_block(self, scroller: ui.Scroller,
-                      rows: list[dict]) -> None:
-        """The branches the routine committed to and never pushed.
+    def _changes_block(self, scroller: ui.Scroller, info: dict) -> None:
+        """What is committed here and not on GitHub, above the reports.
 
-        Above the reports, because a branch sitting here is work that is
-        already DONE and that nobody has looked at — and in a frame, for
-        the reason the questions are in one.
+        Above them because a change sitting here is work that is already
+        DONE and waiting on him — and in a frame, for the reason the
+        questions are in one.
 
-        ONLY THE ONES THAT STILL WANT SOMETHING ARE ON THE FACE. A branch
-        that is on GitHub and in `main` has no button, no decision and
-        nothing left to read; it is a receipt. There is one Saturday a
-        week, so a year of receipts would be fifty cards stacked on top
-        of the reports he opened this tab for — his words on 2026-09-08,
-        after the second week appeared under the first. So a branch
-        leaves this list the moment its push lands, and the quiet line
-        where it went opens every one of them downward again.
+        ONE CARD, OR ONE LINE. The card is drawn only while something is
+        ahead of GitHub; the moment a push or an undo lands there is
+        nothing to read, nothing to decide and no button worth his
+        screen, so the block collapses to a faint line saying so. His
+        words on 2026-09-08, after a second finished week stacked under
+        the first: "if it stays here after five weeks, there will be a
+        lot and it is not convenient". The line keeps Restart, quietly,
+        because "nothing ahead" is also what the folder looks like after
+        Claude has brought GitHub's newer changes in — and those want a
+        restart to be run. The last button's sentence stays under the
+        line for the same reason: "Undone… Restart to run the older
+        version again" is an instruction, and it must not vanish with
+        the card it was about.
         """
-        live = [info for info in rows if not weekly_pushed(info)]
-        pushed = [info for info in rows if weekly_pushed(info)]
         block = tk.Frame(scroller.inner, bg=ui.BG)
         block.pack(anchor="w", fill="x", pady=(0, 2))
-        if live:
-            tk.Label(block, text="THE ROUTINE'S WORK — READ IT, THEN PUSH",
+        if info.get("commits"):
+            tk.Label(block, text="CHANGES ON THIS COMPUTER — TRY THEM, "
+                                 "THEN PUSH",
                      bg=ui.BG, fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
                 anchor="w", pady=(0, 6))
-            for info in live:
-                self._weekly_row(block, scroller, info)
-        if pushed:
-            self._weekly_fold(block, scroller, len(pushed))
-            if self._weekly_open:
-                for info in pushed:
-                    self._weekly_row(block, scroller, info)
-
-    def _weekly_fold(self, parent, scroller: ui.Scroller,
-                     hidden: int) -> None:
-        """The quiet line the pushed weeks are folded behind.
-
-        _fold_line's shape, off a card: the same accent words, the same
-        caret in the same face at PT_LABEL (Rubik's ▾ at the size of the
-        words beside it is three pixels of ink and reads as a full stop),
-        and a rectangle in the background's own colour under all of it,
-        because a canvas text item is only hit where its ink is and
-        "2 weeks already pushed" is 140 px of target in a 1112 px row.
-
-        It repaints the tab rather than growing in place. A settings card
-        cannot do that — its rows are painted ON it — but these rows are
-        separate canvases in a frame, and _fill_problems is how every
-        other change to this screen already arrives.
-        """
-        weeks = f"{hidden} week" + ("" if hidden == 1 else "s")
-        said = "Fewer" if self._weekly_open else f"{weeks} already pushed"
-        line = tk.Canvas(parent, width=CW, height=FOLD_H, bg=ui.BG,
+            self._changes_row(block, scroller, info)
+            return
+        behind = int(info.get("behind") or 0)
+        said = "Everything on this computer is on GitHub."
+        if behind:
+            said += (f" GitHub also has {behind} newer change"
+                     f"{'' if behind == 1 else 's'} this computer does not "
+                     f"have yet.")
+        note = str(self._push_said.get(TRUNK, ""))
+        note_img, note_h = None, 0
+        if note:
+            note_img, note_h, _l = ui.draw_text(note, pt=8,
+                                                width=CW - 2 * Q_PAD,
+                                                max_lines=3, colour=ui.AMBER,
+                                                bg=ui.BG)
+        height = FOLD_H + (note_h + 4 if note_img is not None else 0)
+        line = tk.Canvas(block, width=CW, height=height, bg=ui.BG,
                          highlightthickness=0, bd=0)
         line.pack(anchor="w", pady=(0, 8))
-        line.create_rectangle(0, 0, CW, FOLD_H, fill=ui.BG, outline="",
-                              tags="fold")
+        line.keep = [note_img]
         line.create_text(Q_PAD, FOLD_H / 2, text=said, anchor="w",
-                         fill=ui.ACCENT_TEXT, font=(ui.UI, 9), tags="fold")
-        line.create_text(Q_PAD + 3 + ui.text_width(said, ui.UI, 9),
-                         FOLD_H / 2 - 1, tags="fold", anchor="w",
-                         text="▴" if self._weekly_open else "▾",
-                         fill=ui.ACCENT_TEXT, font=(ui.UI, ui.PT_LABEL))
-        line.tag_bind("fold", "<Button-1>", lambda _e: self._weekly_toggle())
-        line.tag_bind("fold", "<Enter>",
-                      lambda _e: line.configure(cursor="hand2"))
-        line.tag_bind("fold", "<Leave>",
-                      lambda _e: line.configure(cursor=""))
+                         fill=ui.FAINT, font=(ui.UI, 9))
+        if note_img is not None:
+            line.create_image(Q_PAD, FOLD_H + 2, anchor="nw", image=note_img)
+        again = ui.Button(line, "Restart", self._restart_all,
+                          w=self._changes_button_w(), h=30, quiet=True,
+                          bg=ui.BG, icon=ui.ICON["power"])
+        line.create_window(CW - Q_PAD, FOLD_H / 2, anchor="e", window=again)
+        if self._pushing is not None:
+            again.enable(False)
         scroller.bind_wheel(line)
 
-    def _weekly_toggle(self) -> None:
-        self._weekly_open = not self._weekly_open
-        self._fill_problems()
+    @staticmethod
+    def _changes_button_w() -> int:
+        """One width for the three buttons, so they read as a set. 96 is
+        what the old card's Push had; wider only if Rubik needs it for
+        "Restart", which is the longest of the three words."""
+        return max(96, *(widgets.button_width(word, icon=True)
+                         for word in ("Restart", "Push", "Undo")))
 
-    def _weekly_row(self, parent, scroller: ui.Scroller,
-                    info: dict) -> None:
-        """One branch, and everything he needs to decide before he
-        presses: which branch, how many commits, which files, what the
-        last one said, and what the last press did.
+    def _changes_row(self, parent, scroller: ui.Scroller,
+                     info: dict) -> None:
+        """One card, and everything he needs to decide before he presses:
+        how many changes, what each one said and when, which files, and
+        what the last press did.
 
-        A button that pushes an unknown quantity is not reviewable, which
-        is why the file list is on the card and not in a log.
+        A button that pushes an unknown quantity is not reviewable,
+        which is why the commits and the file list are on the card and
+        not in a log. Three buttons in a row at the top right — the
+        card's height comes from the list under them, so a column would
+        have cost a tall card for one commit — with Undo set apart from
+        Push by a wider gap: they are neighbours that do opposite things
+        and neither asks "are you sure".
         """
-        branch = str(info.get("branch", ""))
-        commits = int(info.get("commits") or 0)
+        commits = list(info.get("commits") or [])
         files = [str(f) for f in (info.get("files") or [])]
+        behind = int(info.get("behind") or 0)
         inner = CW - 2 * Q_PAD
-        subject, sub_h = None, 0
-        if info.get("subject"):
-            subject, sub_h, _l = ui.draw_text(str(info["subject"]), pt=9,
-                                              width=inner - 118, max_lines=2,
-                                              colour=ui.DIM, bg=ui.CARD)
+        wide = self._changes_button_w()
+        buttons = 3 * wide + 8 + 18
+        room = inner - buttons - 12
+        # One plain sentence about where the work is, in the words he
+        # asked for on 2026-09-06: not "4 commits · 3 files · not on
+        # GitHub yet", but what that means and what to do about it.
+        n = len(commits)
+        them = "it" if n == 1 else "them"
+        status = (f"{n} change{'' if n == 1 else 's'} exist"
+                  f"{'s' if n == 1 else ''} only on this computer. Restart "
+                  f"to try {them}, then Push to send {them} to GitHub — or "
+                  f"Undo to throw {them} away.")
+        if behind:
+            status += (f" GitHub also has {behind} newer change"
+                       f"{'' if behind == 1 else 's'} this computer does "
+                       f"not have yet.")
+        status, status_lines = ui.clamp(status, ui.UI, 8, room, 3)
+        # The commits, one per line, newest first: the date in the faint
+        # face and the subject in the dim one, each subject cut to its
+        # line — a subject is a sentence in this repo, and two of them
+        # wrapping would push the file list off the card.
+        lines: list[tuple[str, str]] = []
+        for commit in commits[:CHANGES_SHOWN]:
+            when = str(commit.get("when", ""))
+            subject, _n = ui.clamp(str(commit.get("subject", "")), ui.UI, 9,
+                                   inner - 110, 1)
+            lines.append((when, subject))
+        if n > CHANGES_SHOWN:
+            lines.append(("", f"+{n - CHANGES_SHOWN} more"))
         listed, name_lines = "", 0
         if files:
             shown = "   ·   ".join(files[:8])
             if len(files) > 8:
                 shown += f"   ·   +{len(files) - 8} more"
             listed, name_lines = ui.clamp(shown, ui.UI, 8, inner, 2)
-        said = str(self._push_said.get(branch, ""))
+        said = str(self._push_said.get(TRUNK, ""))
         note, note_h = None, 0
         if said:
             note, note_h, _l = ui.draw_text(said, pt=8, width=inner,
                                             max_lines=3, colour=ui.AMBER,
                                             bg=ui.CARD)
-        # 50, not 38: the facts line is drawn at 31 in an 8 pt face, and
-        # a subject starting at 38 lay straight across it.
-        y = 50
-        y_subject = y
-        y += sub_h + (6 if subject is not None else 0)
+        # 31 is where the status starts, under a 10 pt title at 13; each
+        # 8 pt line is 14 px and each 9 pt commit line 16.
+        y = 31 + status_lines * 14 + 8
+        y_commits = y
+        y += len(lines) * 16 + (6 if lines else 0)
         y_files = y
         y += name_lines * 14 + (6 if name_lines else 0)
         y_note = y
@@ -4653,93 +4661,133 @@ class Dashboard:
         row.pack(anchor="w", pady=(0, 8))
         row.create_image(0, 0, anchor="nw", image=ui.rounded(
             CW, height, 12, ui.CARD, ui.BG, ui.TILE_EDGE))
-        row.keep = [subject, note]
+        row.keep = [note]
         row.create_text(Q_PAD, 13, anchor="nw", font=(ui.MEDIUM, 10),
-                        fill=ui.FG, text=branch)
-        # One plain sentence about where the work is, in the words he
-        # asked for on 2026-09-06: not "4 commits · 3 files · not on
-        # GitHub yet", but what that means and what to do about it.
-        done = weekly_pushed(info)
-        amount = (f"{commits} commit" + ("" if commits == 1 else "s")
-                  + f", {len(files)} file" + ("" if len(files) == 1 else "s"))
-        if not info.get("trunk"):
-            status = (f"Can't tell what's pushed — this repo has no {TRUNK} "
-                      f"branch to compare against.")
-        elif done:
-            status = f"Successfully pushed — it's on GitHub and in {TRUNK}."
-        elif info.get("on_origin"):
-            status = (f"On GitHub, but not in {TRUNK} yet ({amount}). "
-                      f"Press Push to merge it.")
-        else:
-            status = (f"Not pushed yet — {amount} exist only on this "
-                      f"computer. Press Push to send them to GitHub.")
+                        fill=ui.FG, text="Changes on this computer")
         row.create_text(Q_PAD, 31, anchor="nw", font=(ui.UI, 8),
-                        fill=ui.GREEN if done else ui.FAINT, text=status)
-        if subject is not None:
-            row.create_image(Q_PAD, y_subject, anchor="nw", image=subject)
+                        fill=ui.FAINT, justify="left", text=status)
+        for index, (when, subject) in enumerate(lines):
+            top = y_commits + index * 16
+            if when:
+                row.create_text(Q_PAD, top, anchor="nw", font=(ui.UI, 8),
+                                fill=ui.FAINT, text=when)
+            row.create_text(Q_PAD + (110 if when else 0), top, anchor="nw",
+                            font=(ui.UI, 9), fill=ui.DIM, text=subject)
         if name_lines:
             row.create_text(Q_PAD, y_files, anchor="nw", font=(ui.UI, 8),
                             fill=ui.FAINT, justify="left", text=listed)
         if note is not None:
             row.create_image(Q_PAD, y_note, anchor="nw", image=note)
-        if done:
-            # Nothing left to push: the branch is on GitHub and GitHub's
-            # `main` already holds every commit on it. A blue Push here is
-            # what sent him to the wrong card twice on 2026-09-06 — the
-            # old week's button sat under the new week's, looking
-            # identical, and both presses answered "Everything up-to-date"
-            # while the new work stayed local. So a finished branch says
-            # so in the status line and offers nothing to press.
-            row.create_text(CW - Q_PAD, 20, anchor="e", font=(ui.MEDIUM, 9),
-                            fill=ui.GREEN, text="✓ Pushed")
-        else:
-            push = ui.Button(row, "Push",
-                             lambda b=branch: self._push_branch(b),
-                             w=96, h=30, primary=True, bg=ui.CARD,
-                             icon=ui.ICON["link"])
-            row.create_window(CW - Q_PAD, 13, anchor="ne", window=push)
-            self._push_buttons[branch] = push
-            if self._pushing is not None:
-                # One push at a time: the second press would be racing
-                # the first for the same two refs.
-                push.enable(False)
+        # Right to left, so the primary one lands where the old Push did
+        # and Undo is the outermost thing on the card.
+        undo = ui.Button(row, "Undo", self._undo_main, w=wide, h=30,
+                         quiet=True, bg=ui.CARD, icon=ui.ICON["discarded"])
+        row.create_window(CW - Q_PAD, 13, anchor="ne", window=undo)
+        push = ui.Button(row, "Push", self._push_main, w=wide, h=30,
+                         primary=True, bg=ui.CARD, icon=ui.ICON["link"])
+        row.create_window(CW - Q_PAD - wide - 18, 13, anchor="ne",
+                          window=push)
+        again = ui.Button(row, "Restart", self._restart_all, w=wide, h=30,
+                          quiet=True, bg=ui.CARD, icon=ui.ICON["power"])
+        row.create_window(CW - Q_PAD - 2 * wide - 18 - 8, 13, anchor="ne",
+                          window=again)
+        if self._pushing is not None:
+            # One thing at a time: a second press would be racing the
+            # first for the same branch, and Restart is about to take the
+            # window away from under all three.
+            for button in (undo, push, again):
+                button.enable(False)
         scroller.bind_wheel(row)
 
-    def _push_branch(self, branch: str) -> None:
-        """His button, entirely off the Tk thread.
+    def _run_git_button(self, doing: str, saying: str, work) -> None:
+        """Push and Undo share one shape: mark the button in flight, say
+        so on the card, run the git steps off the Tk thread, and hand
+        the sentence back through _events. A push is his connection and
+        a fetch is somebody's server — tens of seconds in the worst
+        case, none of it allowed near the event loop, exactly like the
+        version switch."""
+        if self._pushing is not None:
+            return
+        self._pushing = doing
+        self._push_said[TRUNK] = saying
+        self._note(f"{doing}…")
 
-        A push is his connection and a fetch is somebody's server — tens
-        of seconds in the worst case, none of it allowed near the event
-        loop, exactly like the version switch. What it does and why it
-        may refuse is in push_weekly.
+        def run() -> None:
+            try:
+                result = work()
+            except Exception as e:        # noqa: BLE001 — a failure is a
+                result = {"said": f"{doing.capitalize()} failed before it "
+                                  f"started ({e}). Nothing changed."}
+            self._events.put(lambda r=result: self._git_done(r))
+
+        threading.Thread(target=run, daemon=True,
+                         name=f"changes-{doing}").start()
+        self._fill_problems()             # the card says it is going
+
+    def _push_main(self) -> None:
+        """His Push. What it does and why it may refuse is in push_main."""
+        self._run_git_button("push", "Pushing… sending the changes to "
+                                     "GitHub.", push_main)
+
+    def _undo_main(self) -> None:
+        """His Undo. What it does and why it may refuse is in undo_main."""
+        self._run_git_button("undo", "Undoing… putting this computer back "
+                                     "to what GitHub has.", undo_main)
+
+    def _git_done(self, result: dict) -> None:
+        self._pushing = None
+        self._push_said[TRUNK] = str(result.get("said") or "")
+        self._note(self._push_said[TRUNK])
+        # The facts moved — GitHub has the commits now, or this folder
+        # no longer does — so they are asked for again rather than
+        # patched.
+        self._scan_changes()
+        if self.screen == "Problems":
+            self._fill_problems()
+
+    def _restart_all(self) -> None:
+        """His Restart: the app, then this window, so that both run what
+        is on the disk now — the changes he is about to try, or the
+        older version after an Undo.
+
+        The app half is restart_app, off the Tk thread because it waits.
+        The window half cannot be done from inside the window: main()
+        holds the single-instance mutex until run() returns, and a fresh
+        copy started before that would meet the mutex, poke this window
+        to the front and exit — leaving no dashboard at all once this
+        one closed. So the window only ASKS (self._relaunch) and closes
+        itself; main() releases the mutex and then opens the new copy.
+        A restart that failed keeps the window and says why on the card,
+        because a new window would not know the sentence.
         """
         if self._pushing is not None:
             return
-        self._pushing = branch
-        self._push_said[branch] = (f"Pushing… sending the branch to GitHub "
-                                   f"first, then merging it into {TRUNK}.")
-        self._note(f"pushing {branch}…")
+        self._pushing = "restart"
+        self._push_said[TRUNK] = ("Restarting — the app takes about 25 "
+                                  "seconds to load.")
+        self._note("restarting — the app takes about 25 seconds to load")
 
         def work() -> None:
             try:
-                result = push_weekly(branch)
+                result = restart_app()
             except Exception as e:        # noqa: BLE001 — a failure is a
-                result = {"pushed": False, "merged": False,    # sentence,
-                          "said": f"Push failed before it started ({e}). "
-                                  f"Nothing changed. Press Push again."}
-            self._events.put(lambda r=result: self._push_done(branch, r))
+                result = {"ok": False,    #                sentence
+                          "said": f"Restart failed before it started "
+                                  f"({e}). Nothing changed."}
+            self._events.put(lambda r=result: self._restart_done(r))
 
         threading.Thread(target=work, daemon=True,
-                         name="weekly-push").start()
-        self._fill_problems()             # the row says it is going
+                         name="changes-restart").start()
+        self._fill_problems()             # the card says it is going
 
-    def _push_done(self, branch: str, result: dict) -> None:
+    def _restart_done(self, result: dict) -> None:
         self._pushing = None
-        self._push_said[branch] = str(result.get("said") or "")
-        self._note(self._push_said[branch])
-        # The facts moved — the branch is on origin now, and `main` may
-        # have it — so they are asked for again rather than patched.
-        self._scan_weekly()
+        if result.get("ok"):
+            self._relaunch = True
+            self._close()
+            return
+        self._push_said[TRUNK] = str(result.get("said") or "")
+        self._note(self._push_said[TRUNK])
         if self.screen == "Problems":
             self._fill_problems()
 
@@ -7727,25 +7775,32 @@ class Dashboard:
             ui.forget_images()
         except Exception:
             pass
-        # Two survivors, and only two. The poller and the reopen watcher
-        # are daemon threads that notice they should stop by reading
-        # self.closing, and they post into self._events on their way out;
-        # take those away and they die on an AttributeError instead of
-        # ending. Neither a bool nor an empty queue holds a widget, so
-        # the tree is still unreachable and the collect below still frees
-        # the interpreter.
-        keep = {"closing": True, "_events": queue.Queue(), "_looping": False}
+        # Three survivors, and only three. The poller and the reopen
+        # watcher are daemon threads that notice they should stop by
+        # reading self.closing, and they post into self._events on their
+        # way out; take those away and they die on an AttributeError
+        # instead of ending. And _relaunch is Restart's one word to
+        # main(), read after this window is gone. Neither a bool nor an
+        # empty queue holds a widget, so the tree is still unreachable
+        # and the collect below still frees the interpreter.
+        keep = {"closing": True, "_events": queue.Queue(), "_looping": False,
+                "_relaunch": bool(getattr(self, "_relaunch", False))}
         self.__dict__.clear()
         self.__dict__.update(keep)
         gc.collect()
 
-    def run(self) -> None:
+    def run(self) -> bool:
+        """The window, until it closes. True when it closed because
+        Restart asked for a new copy of it — main() acts on that only
+        once the instance mutex is released, which is why the answer is
+        returned rather than acted on here."""
         self._looping = True
         try:
             self.root.mainloop()
         finally:
             self._looping = False
             self._bury()
+        return bool(self.__dict__.get("_relaunch"))
 
 
 def main() -> int:
@@ -7759,6 +7814,12 @@ def main() -> int:
     A second launch signals the first and exits, so clicking the icon
     behaves the way clicking a taskbar button does: it brings the window
     you already have to the front.
+
+    And that is exactly why Restart's new copy is opened HERE, after the
+    mutex is released, and not by the window before it closes: a copy
+    started while this process still held the mutex would be that
+    second launch — it would poke a window that is on its way out and
+    exit, and he would be left with no dashboard at all.
     """
     try:
         lock = singleton.InstanceLock(singleton.DASHBOARD_MUTEX)
@@ -7766,9 +7827,11 @@ def main() -> int:
         singleton.signal(singleton.DASHBOARD_SHOW)
         return 0
     try:
-        Dashboard().run()
+        again = Dashboard().run()
     finally:
         lock.release()
+    if again:
+        _relaunch_dashboard()
     return 0
 
 

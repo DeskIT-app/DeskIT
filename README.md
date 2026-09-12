@@ -420,8 +420,9 @@ key has been pressed **zero times** — two separate counts of the logs,
 about ten days each, and zero in both; if the window is going to keep the
 button, it can at least teach the key. "The whole list" at the bottom right opens the things that need
 more than a line — a question with its two-to-five answers and its box, a
-report with its evidence and its screenshot, a weekly branch with the one
-button that publishes it.
+report with its evidence and its screenshot, and the changes committed on
+this computer that GitHub has not got, with the three buttons that try
+them (Restart), send them (Push) or throw them away (Undo).
 
 **Settings is the file, on tabs a person can find things on.** Seven of
 them: **General** (the dozen things you actually change — where speech

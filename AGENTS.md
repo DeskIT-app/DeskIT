@@ -73,8 +73,9 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   things or more than fit are waiting (a test holds all three).
 - **Corrections** — every pending proposal of the second reading, with
   the vocabulary panel beside it.
-- **Problems** — his reports, the routine's questions and the weekly
-  branches: everything that needs more than a line.
+- **Problems** — his reports, the routine's questions and what is
+  committed on this computer but not on GitHub (Restart / Push / Undo):
+  everything that needs more than a line.
 - **Said** — `transcripts.log` read back (history.py), search, filters,
   SAID_PAGE rows at a time behind a Show more.
 - **Keys** — the bindings lit on a drawn keyboard (keyboard.py); click a
