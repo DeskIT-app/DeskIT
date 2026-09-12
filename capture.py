@@ -4014,6 +4014,8 @@ class ClipBar:
         self._frame = None
         self._hovering = False
         self._left_at = 0.0
+        self._over_since = 0.0       # see _watch_for_a_wall
+        self._wall_told = False
         self._shape: tuple[str, int, int] | None = None
         self._build()
 
@@ -4247,6 +4249,7 @@ class ClipBar:
         if self._hovering and time.monotonic() - self._left_at > 0.28:
             if not self._pointer_inside():
                 self._hovering = False
+        self._watch_for_a_wall()
         self._apply_shape()
         phase, width, height, spots = self._layout()
         if phase == "hidden":
@@ -4263,6 +4266,54 @@ class ClipBar:
                     and wy <= y <= wy + self.root.winfo_height())
         except Exception:
             return False
+
+    def _watch_for_a_wall(self) -> None:
+        """Say WHO is between the pointer and the pill, once per clip.
+
+        2026-09-12: standing on the pill did nothing while a dictation
+        ran, and only a shake opened it — and nothing in this file could
+        say why, because a hover that never arrives leaves no trace. So
+        when the pointer has sat inside the pill's rectangle for half a
+        second without an <Enter>, this asks Windows which window is at
+        that point and writes its class, process and rectangle to the
+        log. One line per clip; nothing on screen changes. Evidence for
+        the next fix, not the fix.
+        """
+        if self._hovering or self._wall_told:
+            self._over_since = 0.0
+            return
+        try:
+            if not self._pointer_inside():
+                self._over_since = 0.0
+                return
+            now = time.monotonic()
+            if not self._over_since:
+                self._over_since = now
+                return
+            if now - self._over_since < 0.5:
+                return
+            self._wall_told = True
+            pt = w.POINT(self.root.winfo_pointerx(), self.root.winfo_pointery())
+            hwnd = _user32.WindowFromPoint(pt)
+            cls = ctypes.create_unicode_buffer(128)
+            _user32.GetClassNameW(hwnd, cls, 128)
+            pid = w.DWORD()
+            _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            rect = w.RECT()
+            _user32.GetWindowRect(hwnd, ctypes.byref(rect))
+            mine = int(self.root.winfo_id())
+            log.warning("clip bar: the pointer sat on the pill at %d,%d for "
+                        "half a second and no hover arrived — Windows says "
+                        "the window there is %s (class %r, pid %d, rect %s); "
+                        "the pill is %s",
+                        pt.x, pt.y,
+                        "OURS" if hwnd == mine or _user32.GetParent(hwnd)
+                        == mine else "SOMEBODY ELSE'S",
+                        cls.value, pid.value,
+                        (rect.left, rect.top, rect.right, rect.bottom),
+                        hex(mine))
+        except Exception:
+            log.debug("clip bar: the wall probe failed", exc_info=True)
 
     def _dot(self, x: int, y: int, size: int = 12) -> None:
         """The red dot, blinking while it records and steady while paused.
