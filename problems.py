@@ -46,6 +46,24 @@ reports to be deleted instantly". A resolution is not a delete either:
 resolve() moves a report to FIXED or CLOSED and back to OPEN as often as
 he likes, and Reopen on the row is that call.
 
+AND ONLY HE MAY SAY "FIXED". A routine, or a session, that BELIEVES a
+change it made has fixed a report does not resolve it: it marks it —
+suggest() puts a "fixed?" on the report, with who thinks so, when, and
+one line saying what to try. The report stays OPEN, stays on the tab and
+in the digest and in every count of open reports, and the mark is drawn
+beside it in a colour that is not the green of Fixed. He tries it, and
+HIS press on Fixed (or his word in the chat, and a session pressing it
+for him) is what turns the mark into FIXED. The weekly routine got this
+wrong on 2026-09-12 at 04:12: it CLOSED three reports because changes
+pushed the week before looked like they fixed them — "he pushed" taken
+for "he checked" — and he found three problems closed that were not
+fixed. His decision, in his words: when the routine identifies such
+things, "instead of writing 'fix' it writes 'fix?' in a different
+colour, not green like now", and it asks him; if he confirms, the status
+changes to Fixed. So resolve() is the only way to FIXED or CLOSED, and
+whatever it moves a report to it takes the mark off — a reopened report
+starts clean, and a fixed one has nothing left to ask.
+
 NOTHING HERE MAY TAKE DICTATION DOWN. The store is the shape review.py
 settled on — a lock file beside the json so the app and the dashboard do
 not write over each other, a per-process temp name and one rename so a
@@ -84,6 +102,14 @@ OPEN, FIXED, CLOSED = "open", "fixed", "closed"
 RESOLVED = (FIXED, CLOSED)
 STATUSES = (OPEN, FIXED, CLOSED)
 
+# The "fixed?" mark: NOT a status, so nothing that counts or lists open
+# reports has to know it exists. It is a key on an OPEN report holding
+# {"by", "at", "note"} — who believes a change fixed it, when, and one
+# line saying what to try — and it is absent, never empty, on a report
+# nobody has made that claim about. See the module docstring for why a
+# claim is a mark and not a resolution.
+MAYBE = "maybe"
+
 # What kind of problem it is, as a closed set: something came out WRONG,
 # something is BROKEN, something is SLOW, it is an IDEA, or it is none of
 # those and OTHER is the escape hatch. Order is the order he reads them
@@ -101,6 +127,13 @@ KEEP_RESOLVED = 200
 TEXT_MAX = 600
 WHERE_MAX = 60
 BY_MAX = 40
+
+# The note on a "fixed?" mark. One line, not a report: it says what was
+# changed and what he should try, and it is drawn on the row under his
+# own text in a smaller face — so it gets a third of TEXT_MAX rather than
+# all of it, which is a sentence or two of Hebrew and not a paragraph
+# that would push the buttons off the row.
+MAYBE_MAX = 200
 
 # The long side of a screenshot thumbnail, in pixels. 220 is what a card
 # row can give a picture without pushing the typed line off it, and it is
@@ -178,6 +211,29 @@ def clean(report: dict) -> dict:
     return {"where": _line(report.get("where"), WHERE_MAX),
             "kind": kind if kind in KINDS else KINDS[0],
             "text": text}
+
+
+def suggested(item) -> dict | None:
+    """The "fixed?" mark on a stored report, as {"by", "at", "note"} with
+    text in every field — or None, which is the ordinary answer, because
+    most reports have nobody claiming to have fixed them.
+
+    Read through here rather than off the key so the digest and the
+    dashboard agree on what a mark looks like, and so a hand-edited
+    problems.json with `"maybe": true` in it is a report without a mark
+    and not a traceback into a redraw. Only an OPEN report can carry
+    one: resolve() takes it off, so a mark on an answered row is a file
+    somebody edited, and it is not shown."""
+    if not isinstance(item, dict):
+        return None
+    mark = item.get(MAYBE)
+    if not isinstance(mark, dict) or not mark:
+        return None
+    if (item.get("status") or OPEN) != OPEN:
+        return None
+    return {"by": _line(mark.get("by"), BY_MAX),
+            "at": _line(mark.get("at"), 40),
+            "note": _line(mark.get("note"), MAYBE_MAX)}
 
 
 # ---------------------------------------------------------------------------
@@ -617,8 +673,13 @@ class Store:
 
     def summary(self) -> dict:
         """What a header says: how many in each state, how many per
-        surface, and how long the oldest open one has been waiting."""
-        out: dict = {OPEN: 0, FIXED: 0, CLOSED: 0, "total": 0,
+        surface, how many of the open ones carry a "fixed?" mark, and
+        how long the oldest open one has been waiting.
+
+        "maybe" is a count WITHIN "open", not beside it: a marked report
+        is still open, so `open` alone is still the number of reports
+        that need him."""
+        out: dict = {OPEN: 0, FIXED: 0, CLOSED: 0, MAYBE: 0, "total": 0,
                      "where": {}, "oldest_open": "", "oldest_open_id": ""}
         oldest = None
         for item in self.items():
@@ -626,6 +687,8 @@ class Store:
             out[status] = out.get(status, 0) + 1
             out["total"] += 1
             if status == OPEN:
+                if suggested(item) is not None:
+                    out[MAYBE] += 1
                 where = str(item.get("where") or "?")
                 out["where"][where] = out["where"].get(where, 0) + 1
                 at = str(item.get("at", ""))
@@ -651,7 +714,12 @@ class Store:
         """Store one report and hand back what was stored, with `id` and
         `at` filled in. `report` is expected to have been through clean()
         and context(); anything missing is defaulted here, so a caller
-        that only has a line of text still gets a well-formed item."""
+        that only has a line of text still gets a well-formed item.
+
+        A new report never carries the "fixed?" mark, whatever `report`
+        says: the item is built from named fields and MAYBE is not one of
+        them. Nobody can have tried to fix a report that did not exist a
+        moment ago, and the only way onto a report is suggest()."""
         item = {
             "id": "",
             "at": _iso(),
@@ -706,7 +774,13 @@ class Store:
 
         False means nothing changed: no such id, an unknown status, or the
         file could not be written. It never raises, because the dashboard
-        calls this from a request handler."""
+        calls this from a request handler.
+
+        Whatever the new status, the "fixed?" mark comes off. To FIXED it
+        has been answered — by him, which is the only way it gets
+        answered. To CLOSED the question is moot. Back to OPEN the report
+        starts clean: a claim made before it was reopened is a claim
+        about a report he has since said is not fixed."""
         if status not in STATUSES:
             log.warning("problems: unknown status %r — nothing resolved",
                         status)
@@ -721,11 +795,65 @@ class Store:
                 found["status"] = status
                 found["resolved"] = None if status == OPEN else _iso()
                 found["by"] = _line(by, BY_MAX)
+                found.pop(MAYBE, None)
                 self._trim(data)
                 self._save(data)
                 return True
         except OSError as e:
             log.warning("problems: could not resolve %s (%s)", ident, e)
+            return False
+
+    def suggest(self, ident: str, by: str = "", note: str = "") -> bool:
+        """Put the "fixed?" mark on one OPEN report: `by` believes a
+        change fixed it, and `note` is the one line telling him what to
+        try. The status does not move — see the module docstring for the
+        three reports that were closed on 2026-09-12 by a routine that
+        believed and did not ask.
+
+        False means nothing changed: no such id, a report that is not
+        open (there is nothing to suggest about an answered one), or the
+        file could not be written. Never raises, resolve()'s contract.
+        Suggesting twice replaces the mark, because the newer claim is
+        the one about the code as it is now."""
+        try:
+            with self._locked():
+                data = self._load()
+                found = next((i for i in data["items"]
+                              if i.get("id") == ident), None)
+                if found is None:
+                    return False
+                if (found.get("status") or OPEN) != OPEN:
+                    log.info("problems: %s is %s — nothing to suggest",
+                             ident, found.get("status"))
+                    return False
+                found[MAYBE] = {"by": _line(by, BY_MAX), "at": _iso(),
+                                "note": _line(note, MAYBE_MAX)}
+                self._save(data)
+                return True
+        except OSError as e:
+            log.warning("problems: could not mark %s fixed? (%s)", ident, e)
+            return False
+
+    def unsuggest(self, ident: str) -> bool:
+        """Take the "fixed?" mark off without answering anything — the
+        report is exactly as open as it was. For a claim withdrawn: the
+        change was reverted, or he said in the chat that it is not fixed
+        and the row should stop saying it might be.
+
+        False means nothing changed: no such id, no mark to take off, or
+        the file could not be written."""
+        try:
+            with self._locked():
+                data = self._load()
+                found = next((i for i in data["items"]
+                              if i.get("id") == ident), None)
+                if found is None or MAYBE not in found:
+                    return False
+                found.pop(MAYBE, None)
+                self._save(data)
+                return True
+        except OSError as e:
+            log.warning("problems: could not unmark %s (%s)", ident, e)
             return False
 
     def remove(self, ident: str) -> dict | None:
@@ -842,13 +970,36 @@ def _env_line(row: dict) -> str:
     return "  - env: " + ", ".join(bits) if bits else ""
 
 
+def _maybe_line(mark: dict | None) -> str:
+    """The "fixed?" mark as one bullet: who thinks so, since when, and
+    what to try. Empty for a report nobody has made that claim about.
+    The word is `fixed?` and not `maybe` because it is what the tab
+    says, and the agent reading this file and the owner reading the tab
+    must be talking about the same thing."""
+    if mark is None:
+        return ""
+    facts = [b for b in (mark.get("by"), mark.get("at")) if b]
+    who = f" ({', '.join(facts)})" if facts else ""
+    note = mark.get("note") or ""
+    return f"  - fixed?{who}" + (f": {note}" if note else "") \
+        + " — waiting for his word"
+
+
 def _item_lines(item: dict) -> list[str]:
+    mark = suggested(item)
     head = (f"- **{item.get('at', '')}** · {item.get('kind', '')} · "
-            f"`{item.get('id', '')}`")
+            f"`{item.get('id', '')}`"
+            # On the head line too, so a reader skimming the headings
+            # sees which open reports are waiting on him and not on the
+            # code — the same word the tab draws beside the kind.
+            + (" · **fixed?**" if mark is not None else ""))
     out = [head, ""]
     for line in str(item.get("text", "")).split("\n"):
         out.append(f"  {line}" if line else "")
     out.append("")
+    maybe_line = _maybe_line(mark)
+    if maybe_line:
+        out.append(maybe_line)
     out.extend(_dict_line(item.get("dictation") or {}))
     if item.get("shot"):
         out.append(f"  - shot: `{item['shot']}`")
@@ -869,10 +1020,16 @@ def digest(store: Store, path: Path) -> Path:
     and a report must not take dictation down."""
     path = Path(path)
     counts = store.summary()
+    # "fixed?" is named only when there is one, and between open and
+    # fixed — the same line the tab's header draws — because it is a
+    # part of open that is waiting on him rather than a state of its own.
+    maybe = counts.get(MAYBE, 0)
     lines = [
         "# Problems",
         "",
-        f"{counts.get(OPEN, 0)} open · {counts.get(FIXED, 0)} fixed · "
+        f"{counts.get(OPEN, 0)} open · "
+        + (f"{maybe} fixed? · " if maybe else "")
+        + f"{counts.get(FIXED, 0)} fixed · "
         f"{counts.get(CLOSED, 0)} closed · written "
         f"{time.strftime('%Y-%m-%d %H:%M:%S')}",
         "",

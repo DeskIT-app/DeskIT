@@ -3509,8 +3509,16 @@ class Dashboard:
         weekly = self._weekly or []
         head = self.parts["problems_head"]
         asking = self.parts["questions_head"]
+        # "fixed?" only when there is one, and between open and fixed:
+        # it is the part of open that is waiting on HIM to try something,
+        # not a fourth state. The line is one Label in one colour, so
+        # the count is not amber here the way the tag on the row is —
+        # colouring one word would mean a second label placed by
+        # measuring the first, for a number that is usually zero.
+        maybe = summary.get("maybe", 0)
         head.config(text=f"{summary.get('open', 0)} open   ·   "
-                         f"{summary.get('fixed', 0)} fixed   ·   "
+                         + (f"{maybe} fixed?   ·   " if maybe else "")
+                         + f"{summary.get('fixed', 0)} fixed   ·   "
                          f"{summary.get('closed', 0)} closed")
         head.place_forget()
         asking.place_forget()
@@ -3630,6 +3638,21 @@ class Dashboard:
         return "   ·   ".join(bits)
 
     @staticmethod
+    def _problem_hint(mark: dict) -> str:
+        """The amber line under a report somebody believes is fixed: the
+        mark's note, and what he does about it — "try it, then press
+        Fixed". The trailer is left off when the note already says so,
+        because a Hebrew note that ends in "ולחץ Fixed" followed by the
+        same instruction in English is the row nagging. A mark with no
+        note at all still gets the instruction, capitalised, because the
+        line has to say SOMETHING about why the tag is there."""
+        note = " ".join(str(mark.get("note") or "").split())
+        if "fixed" in note.lower():
+            return note
+        return f"{note} — try it, then press Fixed" if note \
+            else "Try it, then press Fixed"
+
+    @staticmethod
     def _row_photo(module, item: dict):
         """The screenshot filed with a report, small enough for a row.
 
@@ -3683,6 +3706,17 @@ class Dashboard:
         the LEFT of the strip, at the far end of the row from the ✕ he
         just pressed, which is the same reason Stop sits where it does on
         the bar: the safety is the layout, not a word that changes.
+
+        AND NOBODY BUT HIM CLOSES A ROW FROM HERE. An open report that a
+        routine (or a session) believes it has fixed is still an open
+        row with the same Fixed and Close on it; what it gains is a
+        FIXED? tag beside the kind, in amber and not in the green of the
+        Fixed button, and one amber line under his text saying what to
+        try. The weekly routine closed three of his reports on
+        2026-09-12 because a push looked like a fix, and his answer was
+        "instead of writing 'fix' it writes 'fix?' in a different colour,
+        not green like now" — and asks him. Pressing Fixed on such a row
+        is the answer: resolve() takes the mark off with the status.
         """
         text = str(item.get("text") or "")
         ident = str(item.get("id", ""))
@@ -3701,7 +3735,19 @@ class Dashboard:
             heard, heard_h, _l = ui.draw_text(evidence, pt=8, width=width,
                                               max_lines=2, colour=ui.FAINT,
                                               bg=ui.CARD)
-        bottom = 32 + text_h + (heard_h + 8 if heard is not None else 0)
+        # The "fixed?" line, through draw_text like the two above it: the
+        # routine writes the note in Hebrew for him, and a Label would
+        # lay a mixed line out backwards. Two lines, not one — the note
+        # is the sentence that tells him what to try, and an ellipsis on
+        # it is the one cut this row must not make.
+        mark = module.suggested(item) if open_ else None
+        hint, hint_h = None, 0
+        if mark is not None:
+            hint, hint_h, _l = ui.draw_text(self._problem_hint(mark), pt=8,
+                                            width=width, max_lines=2,
+                                            colour=ui.AMBER, bg=ui.CARD)
+        bottom = 32 + text_h + (heard_h + 8 if heard is not None else 0) \
+            + (hint_h + 8 if hint is not None else 0)
         # 46 is a strip with buttons in it, and an answered row has them
         # now (Reopen) where it used to have one line of text. 70 is that
         # strip with the question standing above the two answers, so a
@@ -3737,10 +3783,33 @@ class Dashboard:
                         fill=ui.FAINT)
         kind = str(item.get("kind") or "")
         where = str(item.get("where") or "")
-        row.create_text(left, 13, anchor="nw", font=(ui.MEDIUM, 8),
-                        fill=ui.AMBER if open_ else ui.FAINT,
-                        text="  ·  ".join(p for p in (kind.upper(),
-                                                      where.upper()) if p))
+        tagline = "  ·  ".join(p for p in (kind.upper(), where.upper())
+                               if p)
+        tags = row.create_text(left, 13, anchor="nw", font=(ui.MEDIUM, 8),
+                               fill=ui.AMBER if open_ else ui.FAINT,
+                               text=tagline)
+        if mark is not None:
+            # FIXED? after the kind and the surface, in their small caps
+            # and their amber — ui.AMBER, the colour this window already
+            # gives a note that wants his attention — and deliberately
+            # not the green of the Fixed button beside it, because green
+            # would say it is done. A hairline of the
+            # same amber round it is what makes it read as a mark somebody
+            # put on the row rather than a third tag; drawn AFTER the
+            # word so the box is measured off the word at whatever DPI
+            # this screen is, and sent under it.
+            box = row.bbox(tags) if tagline else None
+            x = box[2] + 10 if box else left
+            label = row.create_text(x + 7, 13, anchor="nw",
+                                    font=(ui.MEDIUM, 8), fill=ui.AMBER,
+                                    text="FIXED?")
+            x0, y0, x1, y1 = row.bbox(label)
+            wide, tall = x1 - x0 + 12, y1 - y0 + 2
+            frame = row.create_image(x, y0 - 1, anchor="nw",
+                                     image=ui.rounded(wide, tall, tall // 2,
+                                                      ui.CARD, ui.CARD,
+                                                      ui.AMBER))
+            row.tag_lower(frame, label)
         row.create_image(left, 30, anchor="nw", image=photo)
         if heard is not None:
             # Flush right of the TEXT COLUMN, not of the row: with a
@@ -3749,6 +3818,12 @@ class Dashboard:
             # evidence line straight across the picture.
             row.create_image(edge - shot_w, 32 + text_h, anchor="ne",
                              image=heard)
+        if hint is not None:
+            # Under the evidence when there is any, flush right of the
+            # same column, for the same reason.
+            row.create_image(edge - shot_w, 32 + text_h
+                             + (heard_h + 8 if heard is not None else 0),
+                             anchor="ne", image=hint)
         if asking:
             # _fill_problems scrolls to this one if it grew off the
             # bottom edge of the page.

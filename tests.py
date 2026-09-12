@@ -24706,6 +24706,130 @@ def test_a_report_he_deletes_leaves_the_list_and_keeps_its_evidence(
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_a_report_the_routine_thinks_is_fixed_stays_open_and_says_fixed_maybe(
+) -> None:
+    """The weekly routine closed three of his reports on 2026-09-12 at
+    04:12 because changes pushed the week before looked like they fixed
+    them — "he pushed" taken for "he checked". His decision: it writes
+    "fix?" in a different colour and asks; only his confirmation makes it
+    Fixed.
+
+    So suggest() is a MARK and not a resolution. The report stays OPEN —
+    the same open count, the same open list — and carries who thinks so,
+    when, and one line saying what to try. It refuses an answered report
+    and an unknown one, a second claim replaces the first, unsuggest()
+    takes it off, and resolve() takes it off whatever it moves the
+    report to, so a reopened report starts clean. A new report never has
+    one, whatever its caller put in the dict. The digest names it, with
+    the note, because the agent reading problems.md and the owner
+    reading the tab must be talking about the same thing.
+    """
+    import shutil
+
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="problems-"))
+    try:
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        # A caller cannot smuggle a mark onto a new report.
+        planted = store.add({"text": "the recordings tab shows yesterday",
+                             "kind": "wrong", "where": "recordings",
+                             problems_mod.MAYBE: {"by": "me", "note": "x"}})
+        ident = planted["id"]
+        assert problems_mod.MAYBE not in planted, planted
+        assert problems_mod.MAYBE not in store.get(ident)
+        assert problems_mod.suggested(planted) is None
+        other = store.add({"text": "another one, still plain",
+                           "kind": "slow"})["id"]
+        shut = store.add({"text": "answered already"})["id"]
+        assert store.resolve(shut, problems_mod.CLOSED, by="dashboard")
+
+        # Refused where there is nothing to suggest about.
+        assert store.suggest(shut, by="weekly", note="n") is False, \
+            "a closed report took a fixed? mark"
+        assert store.suggest("no-such-report", by="weekly") is False
+        assert problems_mod.MAYBE not in store.get(shut)
+        assert store.summary()[problems_mod.MAYBE] == 0
+
+        # The mark, cleaned like every other line, with the status
+        # exactly where it was.
+        assert store.suggest(ident, by="weekly " + "x" * 60,
+                             note="  הכרטיס\x1b  עודכן,\n נסה   שוב  ")
+        marked = store.get(ident)
+        assert marked["status"] == problems_mod.OPEN, marked
+        assert marked["resolved"] is None and marked["by"] == ""
+        mark = marked[problems_mod.MAYBE]
+        assert mark["note"] == "הכרטיס עודכן, נסה שוב", mark
+        assert mark["by"].startswith("weekly x") and \
+            len(mark["by"]) == problems_mod.BY_MAX, mark
+        assert mark["at"][:4].isdigit() and "T" in mark["at"], mark
+        assert problems_mod.suggested(marked) == mark
+        assert len(store.get(ident)[problems_mod.MAYBE]["note"]) \
+            <= problems_mod.MAYBE_MAX
+        assert store.suggest(ident, by="w", note="a" * 500)
+        assert len(store.get(ident)[problems_mod.MAYBE]["note"]) \
+            == problems_mod.MAYBE_MAX, "the note is not cut"
+        summary = store.summary()
+        assert summary[problems_mod.OPEN] == 2, "a marked report left open"
+        assert summary[problems_mod.MAYBE] == 1, summary
+        assert summary[problems_mod.FIXED] == 0, "a mark counted as fixed"
+        assert [i["id"] for i in store.items(problems_mod.OPEN)] \
+            == [other, ident], "a marked report left the open list"
+
+        # A second claim replaces the first: the newer one is about the
+        # code as it is now.
+        assert store.suggest(ident, by="session", note="second look")
+        assert store.get(ident)[problems_mod.MAYBE]["by"] == "session"
+        assert store.get(ident)[problems_mod.MAYBE]["note"] == "second look"
+        assert store.summary()[problems_mod.MAYBE] == 1, "counted twice"
+
+        # The digest says it, on the head line and under the text.
+        md = problems_mod.digest(store, tmp / problems_mod.DIGEST_NAME)
+        text = md.read_text("utf-8")
+        assert "2 open · 1 fixed? · 0 fixed · 1 closed" in text, text
+        head = next(ln for ln in text.splitlines() if f"`{ident}`" in ln)
+        assert "fixed?" in head, head
+        assert "  - fixed? (session, " in text and "second look" in text, text
+        plain = next(ln for ln in text.splitlines() if f"`{other}`" in ln)
+        assert "fixed?" not in plain, plain
+
+        # Withdrawn, and nothing else about the report moved.
+        assert store.unsuggest(ident) is True
+        assert problems_mod.MAYBE not in store.get(ident)
+        assert store.get(ident)["status"] == problems_mod.OPEN
+        assert store.unsuggest(ident) is False, "nothing left to take off"
+        assert store.unsuggest("no-such-report") is False
+        assert store.summary()[problems_mod.MAYBE] == 0
+        text = problems_mod.digest(store, tmp / problems_mod.DIGEST_NAME) \
+            .read_text("utf-8")
+        assert "fixed?" not in text, text
+
+        # resolve() clears it, whichever way it goes.
+        for status in (problems_mod.FIXED, problems_mod.CLOSED,
+                       problems_mod.OPEN):
+            assert store.resolve(ident, problems_mod.OPEN)
+            assert store.suggest(ident, by="weekly", note="try it")
+            assert store.resolve(ident, status, by="dashboard"), status
+            after = store.get(ident)
+            assert after["status"] == status, after
+            assert problems_mod.MAYBE not in after, (status, after)
+            assert problems_mod.suggested(after) is None
+        assert store.summary()[problems_mod.MAYBE] == 0
+
+        # And a mark somebody typed into the file by hand, on an answered
+        # report or in the wrong shape, is a report without a mark.
+        assert problems_mod.suggested({"status": problems_mod.CLOSED,
+                                       problems_mod.MAYBE: {"by": "x"}}) \
+            is None
+        assert problems_mod.suggested({problems_mod.MAYBE: True}) is None
+        assert problems_mod.suggested({problems_mod.MAYBE: {}}) is None
+        assert problems_mod.suggested("not a report") is None
+        loose = problems_mod.suggested({problems_mod.MAYBE: {"note": 7}})
+        assert loose == {"by": "", "at": "", "note": "7"}, loose
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_another_process_reads_the_problems_json_this_one_wrote() -> None:
     """The lock file and the one rename, which is what lets the app file a
     report while the dashboard answers one. Four threads through two
@@ -25168,6 +25292,137 @@ def test_the_problems_list_draws_a_report_with_and_without_a_picture(
         board._poll_problems()
         assert "problems.py is not here" in \
             board.parts["problems_empty"].cget("text")
+
+
+def test_a_row_the_routine_thinks_is_fixed_says_fixed_maybe_in_amber_and_waits(
+) -> None:
+    """His words, after the routine closed three reports on 2026-09-12
+    that were not fixed: "instead of writing 'fix' it writes 'fix?' in a
+    different colour, not green like now" — and asks him.
+
+    So a marked report is still an OPEN row: the same Fixed, Close and ✕
+    on it, in the same place, and the counts line still counts it as
+    open. What it gains is a FIXED? tag beside the kind, in the tab's
+    amber and not the Fixed button's green, and an amber line under his
+    text carrying the routine's note — drawn through ui.draw_text, like
+    every other line here that may be Hebrew — and telling him what to
+    do about it. The counts line says how many are waiting like that,
+    and only when any are. Pressing Fixed is his answer: the report
+    resolves exactly as it always did and the mark goes with it.
+
+    The store is a temp one, never his.
+    """
+    import shutil
+    import tkinter as tk
+
+    import ui as ui_mod
+
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="problems-"))
+    drawn: list[tuple[str, str]] = []
+    real_draw = ui_mod.draw_text
+
+    def spy_draw(text, **kw):
+        drawn.append((text, kw.get("colour", "")))
+        return real_draw(text, **kw)
+
+    try:
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        plain = store.add({"text": "the dot sits on the wrong screen",
+                           "kind": "broken", "where": "overlay"})["id"]
+        ident = store.add({"text": "the recordings tab shows yesterday",
+                           "kind": "wrong", "where": "recordings"})["id"]
+        note = "הכרטיס נבנה מחדש ומראה את הספירה של היום"
+        assert store.suggest(ident, by="weekly", note=note)
+        ui_mod.draw_text = spy_draw
+
+        with _window() as board:
+            if board is None:
+                return
+            board.closing = True
+            board._scan_weekly = lambda: None   # git is not the subject
+            board._write_digest = lambda: None  # nor is his problems.md
+            board._problems_store = lambda: store
+            board._show("Problems")
+            board.root.update()
+
+            def rows() -> list:
+                return [w for w in board.parts["problems_list"]
+                        .inner.winfo_children() if isinstance(w, tk.Canvas)]
+
+            def texts(row) -> dict:
+                """Every text item on a row canvas, by its words."""
+                return {str(row.itemcget(i, "text")): i
+                        for i in row.find_all() if row.type(i) == "text"}
+
+            def buttons(row) -> dict:
+                return {w.itemcget(w._label, "text"): w
+                        for w in row.winfo_children()
+                        if isinstance(w, ui_mod.Button)}
+
+            # Two open rows, newest first: the marked one on top.
+            assert len(rows()) == 2, len(rows())
+            marked, other = rows()
+            assert "FIXED?" in texts(marked), sorted(texts(marked))
+            assert "FIXED?" not in texts(other), sorted(texts(other))
+            tag = texts(marked)["FIXED?"]
+            assert marked.itemcget(tag, "fill") == ui_mod.AMBER, \
+                marked.itemcget(tag, "fill")
+            assert ui_mod.AMBER != ui_mod.GREEN
+            # The tag stands to the right of the kind and the surface, on
+            # their line, and inside a frame drawn under it.
+            kinds = texts(marked)["WRONG  ·  RECORDINGS"]
+            assert marked.bbox(tag)[0] > marked.bbox(kinds)[2], \
+                (marked.bbox(tag), marked.bbox(kinds))
+            assert abs(marked.bbox(tag)[1] - marked.bbox(kinds)[1]) <= 2
+            order = list(marked.find_all())
+            frame = order[order.index(tag) - 1]
+            assert marked.type(frame) == "image", marked.type(frame)
+            fx0, fy0, fx1, fy1 = marked.bbox(frame)
+            tx0, ty0, tx1, ty1 = marked.bbox(tag)
+            assert fx0 <= tx0 and fx1 >= tx1 and fy0 <= ty0 and fy1 >= ty1, \
+                (marked.bbox(frame), marked.bbox(tag))
+            # The note, in amber, through the Hebrew-capable path, with
+            # what he does about it — and the row grew to hold it.
+            hint = [t for t, c in drawn if note in t]
+            assert hint, [t for t, _c in drawn]
+            assert hint[-1] == f"{note} — try it, then press Fixed", hint[-1]
+            assert (hint[-1], ui_mod.AMBER) in drawn, \
+                [c for t, c in drawn if t == hint[-1]]
+            assert int(marked.cget("height")) > int(other.cget("height"))
+            # His buttons are exactly what an open row has.
+            assert sorted(buttons(marked)) == ["Close", "Fixed"], \
+                sorted(buttons(marked))
+            assert sorted(buttons(other)) == ["Close", "Fixed"]
+            head = str(board.parts["problems_head"].cget("text"))
+            assert "2 open" in head and "1 fixed?" in head, head
+            assert "0 fixed   " in head and "0 closed" in head, head
+
+            # And pressing Fixed is his word.
+            buttons(marked)["Fixed"]._released(None)
+            board.root.update()
+            done = store.get(ident)
+            assert done["status"] == problems_mod.FIXED, done
+            assert done["by"] == "dashboard" and done["resolved"], done
+            assert problems_mod.MAYBE not in done, done
+            assert store.get(plain)["status"] == problems_mod.OPEN
+            assert all("FIXED?" not in texts(r) for r in rows()), \
+                "the tag outlived the mark"
+            head = str(board.parts["problems_head"].cget("text"))
+            assert "1 open" in head and "1 fixed" in head, head
+            assert "fixed?" not in head, head
+
+        # The line itself, with and without a note that already says it.
+        import dashboard as dash
+        hint = dash.Dashboard._problem_hint
+        assert hint({"note": "נסה שוב ולחץ Fixed"}) == "נסה שוב ולחץ Fixed"
+        assert hint({"note": ""}) == "Try it, then press Fixed"
+        assert hint({"note": "  the  count is  today's "}) \
+            == "the count is today's — try it, then press Fixed"
+    finally:
+        ui_mod.draw_text = real_draw
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_the_report_cards_painter_puts_every_control_where_it_draws_it(
