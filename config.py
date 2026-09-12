@@ -607,10 +607,21 @@ class CaptureConfig:
     # recording without one is a recording where nobody can tell what is
     # being pointed at.
     cursor: bool = True
-    # off | mic. Default off, see the class docstring. The clip bar has a
-    # mute switch for a recording that HAS a track: an mp4 declares its
-    # streams when the container opens, so a track cannot be added later.
+    # off | mic — whether the MICROPHONE goes into a clip, and only the
+    # default: the region picker shows both sound switches for every
+    # recording and what you set there is what that clip gets. Default
+    # off, see the class docstring. The clip bar's mic button turns the
+    # microphone on and off mid-clip whenever the clip has a sound track
+    # at all (see system_sound); it is a mute, not a way to add a track,
+    # because an mp4 declares its streams when the container opens.
     audio: str = "off"
+    # THE COMPUTER'S OWN SOUND — what the speakers are playing — into the
+    # clip, through WASAPI loopback (capture.SystemSound). On by default,
+    # the owner's choice on 2026-09-12 after two silent clips: a screen
+    # recording of a video with no sound is missing half of what it was
+    # made for, and unlike the microphone this opens nothing in the
+    # room. Also only the default; the picker's switch decides per clip.
+    system_sound: bool = True
     # A backstop, not a budget: a key tapped by accident should not fill
     # the disk overnight. 0 = no cap.
     max_minutes: int = 30
@@ -1777,6 +1788,8 @@ def load(path: Path) -> Config:
             cursor=bool(capture.get("cursor", CaptureConfig.cursor)),
             audio=str(capture.get(
                 "audio", CaptureConfig.audio)).strip().lower(),
+            system_sound=bool(capture.get(
+                "system_sound", CaptureConfig.system_sound)),
             max_minutes=int(capture.get("max_minutes",
                                         CaptureConfig.max_minutes)),
             timer_corner=str(capture.get(

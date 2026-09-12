@@ -13792,6 +13792,116 @@ def test_the_recorder_declares_its_streams_before_the_first_frame() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_a_clip_has_two_sound_sources_and_the_mic_switches_both_ways(
+        ) -> None:
+    """Report 20260910-190110, his spec: two choices at ctrl+F12 —
+    computer sound and microphone — computer on and mic off by default,
+    and a mic button on the bar that un-mutes as well as mutes. Either
+    source opens the track; a clip that starts without the mic starts
+    muted so the button reads "off" and pressing it opens the mic."""
+    import shutil
+    import tempfile
+
+    import capture as cap
+
+    tmp = Path(tempfile.mkdtemp(prefix="capture-sound-"))
+    try:
+        system_only = cap.ScreenRecorder((0, 0, 64, 48), tmp / "a.mp4",
+                                         audio=False, system=True)
+        assert system_only.has_audio is True, "computer sound is a track"
+        assert system_only.system_wanted and not system_only.mic_wanted
+        assert system_only.muted is True, "no mic chosen: the button reads off"
+        assert system_only.toggle_mute() is False, "…and un-mutes it"
+        both = cap.ScreenRecorder((0, 0, 64, 48), tmp / "b.mp4",
+                                  audio=True, system=True)
+        assert both.muted is False and both.has_audio
+        none = cap.ScreenRecorder((0, 0, 64, 48), tmp / "c.mp4",
+                                  audio=False, system=False)
+        assert none.has_audio is False and none.audio_rate == 0
+        # The defaults, as config.py ships them and as the picker reads
+        # them: computer sound on, microphone off.
+        assert config_mod.CaptureConfig.system_sound is True
+        assert config_mod.CaptureConfig.audio == "off"
+        here = Path(__file__).resolve().parent
+        cfg = config_mod.load(here / "config.toml")
+        assert cfg.capture.system_sound is True, \
+            "system_sound is not in the shipped file, so the default rules"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_system_sound_always_answers_in_full() -> None:
+    """A loopback stream carries nothing while the desktop is quiet. The
+    mixer's clock is the sample count, so read() pads with zeros to the
+    length asked for, hands a late packet out on the next read, and drops
+    a backlog of more than a second rather than letting it grow."""
+    import capture as cap
+
+    sound = cap.SystemSound(48000)
+    fed: list = []
+    sound._drain = lambda: fed.pop(0) if fed else None      # no COM here
+    quiet = sound.read(4800)
+    assert quiet.shape == (4800,) and not quiet.any(), "zeros while quiet"
+    fed.append(np.full(3000, 1000, dtype=np.int16))
+    part = sound.read(4800)
+    assert part[:3000].tolist() == [1000] * 3000 and not part[3000:].any(), \
+        "what arrived, then zeros"
+    fed.append(np.full(9600, 7, dtype=np.int16))
+    first = sound.read(4800)
+    assert first.tolist() == [7] * 4800
+    second = sound.read(4800)
+    assert second.tolist() == [7] * 4800, "the rest comes on the next read"
+    fed.append(np.full(48000 * 3, 5, dtype=np.int16))
+    sound.read(4800)
+    assert sound._carry is None and sound._dropped > 48000, \
+        "three seconds behind the picture is dropped, not kept"
+
+
+def test_the_region_picker_carries_the_sound_switches() -> None:
+    """The two switches live on the hint card in region mode only, start
+    from the config's defaults, flip by click or by S / M, survive the
+    card being dropped for the drag, and ride out in the result."""
+    import capture as cap
+
+    w = cap.ShotWindow.__new__(cap.ShotWindow)
+    w.mode = "region"
+    w.sound = {"system": True, "mic": False}
+    w._chips, w._switches = {}, {}
+    w._chip_hover = w._switch_hover = None
+    w._vx = w._vy = 0
+    w._hint_line = "x"
+    w._hint_id = None
+    w._hint_box = None
+    w.canvas = None
+    calls: list[str] = []
+    w._paint_hint = lambda: calls.append("paint")
+    w._plan_hint(960, 60)
+    assert set(w._switches) == {"system", "mic"}, w._switches
+    sx0, sy0, sx1, sy1 = w._switches["mic"]["box"]
+    assert w._switch_under((sx0 + sx1) // 2, (sy0 + sy1) // 2) == "mic"
+    assert w._switch_under(0, 0) is None
+    w._flip_sound("mic")
+    assert w.sound == {"system": True, "mic": True} and calls == ["paint"]
+    w._flip_sound("system")
+    assert w.sound == {"system": False, "mic": True}
+    w._flip_sound("nope")
+    assert w.sound == {"system": False, "mic": True}, "unknown key: nothing"
+    # dropped for the drag: the boxes go, the choice stays
+    w._drop_hint = lambda: (w._switches.clear(), w._chips.clear())
+    w._drop_hint()
+    assert w._switches == {} and w.sound == {"system": False, "mic": True}
+    # a screenshot's picker has no switches at all
+    shot = cap.ShotWindow.__new__(cap.ShotWindow)
+    shot.mode = "shot"
+    shot.sound = {"system": False, "mic": False}
+    shot._chips, shot._switches = {}, {}
+    shot._chip_hover = shot._switch_hover = None
+    shot._vx = shot._vy = 0
+    shot._hint_line = "x"
+    shot._plan_hint(960, 60)
+    assert shot._switches == {}, shot._switches
+
+
 def test_a_paused_recording_holds_its_clock_still() -> None:
     """A pause has to be a CUT, not a freeze-frame: the wall clock that
     stamps every frame must not run while nothing is being captured, or

@@ -179,11 +179,15 @@ instant the shutter fires rather than when the editor closes. `[camera]
 enabled = false` unregisters the key, and then nothing here can open it
 at all.
 
-The microphone is OFF by default in a recording (`[capture] audio =
-"off"`) and there is a switch on the clip bar to turn it on for the clip
-you are recording. A screen recorder that quietly opens the mic is a
-surprise, and this app's rule is that audio does not travel — a recording
-you make on purpose is you choosing otherwise, once, visibly.
+A recording's sound is chosen when it is framed. The region picker
+carries two switches — "Computer sound" (WASAPI loopback, what the
+speakers play; `[capture] system_sound`, on by default) and "Microphone"
+(`[capture] audio`, off by default) — and the clip bar's mic button turns
+the microphone on and off mid-clip whenever the clip has a sound track at
+all. A screen recorder that quietly opens the mic is a surprise, and this
+app's rule is that audio does not travel — a recording you make on purpose
+is you choosing otherwise, once, visibly; the computer's own sound opens
+nothing in the room, which is why it may default on.
 """
 from __future__ import annotations
 
@@ -278,6 +282,13 @@ HINT_PAD = 18
 HINT_RADIUS = 20
 CHIP_W, CHIP_H = 134, 72
 CHIP_GAP = 10
+# The two sound switches under the screen chips when a RECORDING is being
+# framed: "Computer sound" and "Microphone". Pills, not tiles — a switch
+# is on or off and needs no picture of itself.
+SWITCH_W, SWITCH_H = 150, 34
+SWITCH_GAP = 10
+SOUND_SWITCHES = (("system", "Computer sound", "s"),
+                  ("mic", "Microphone", "m"))
 CROP_BACK = 0.42             # how far the area you already cut away is
                              # brought back toward its real pixels while
                              # the crop tool is up. Not all the way: it
@@ -1812,6 +1823,188 @@ class Clip:
         return self.path
 
 
+class SystemSound:
+    """What the speakers are playing, as int16 mono at a rate you choose.
+
+    WASAPI LOOPBACK, straight through COM. PortAudio's build in this venv
+    lists no "[Loopback]" devices (checked 2026-09-12: sounddevice 0.5.5,
+    PortAudio V19.7.0-devel, the WASAPI list holds inputs and outputs and
+    nothing else), and PyAV's dshow has no system-audio source without a
+    third-party filter. pycaw is already installed for audio_check.py
+    and carries IAudioClient with Initialize/GetMixFormat/GetService;
+    the one interface it lacks, IAudioCaptureClient, is three methods and
+    is declared here. No new package.
+
+    Measured on this machine the day it was written: the default render
+    endpoint (Arctis 7 Game) mixes at 48 kHz, stereo, 32-bit float; two
+    seconds of loopback delivered 198 packets, 95 040 frames, i.e. the
+    stream is continuous while something is rendering.
+
+    THE SILENCE PROBLEM, and how it is handled: a loopback stream only
+    carries data while some application is rendering. When the desktop
+    goes quiet, GetNextPacketSize answers 0 and no frames arrive at all
+    — so a mixer that only appended what it was given would let the clip's
+    audio clock fall behind the picture by exactly the length of every
+    quiet stretch. `read(frames)` therefore always answers the number of
+    frames asked for: what the endpoint delivered, then ZEROS for the
+    rest, so the sample clock advances at the wall's pace whether or not
+    anyone is playing anything. A packet that arrives late is not lost —
+    it is queued and comes out on the next read — and a backlog beyond
+    ~1 s is dropped rather than allowed to grow, because by then it is
+    audio from a second the picture has already left.
+
+    One COM apartment per thread: `open()` calls CoInitialize on the
+    thread it runs on and the rest of the object is only ever touched
+    from that same thread (ScreenRecorder._listen).
+    """
+
+    AUDCLNT_SHAREMODE_SHARED = 0
+    AUDCLNT_STREAMFLAGS_LOOPBACK = 0x00020000
+    AUDCLNT_BUFFERFLAGS_SILENT = 0x2
+    WAVE_FORMAT_IEEE_FLOAT = 0x0003
+    WAVE_FORMAT_EXTENSIBLE = 0xFFFE
+    BACKLOG_S = 1.0
+
+    def __init__(self, rate: int) -> None:
+        self.rate = int(rate)
+        self.mix_rate = 0
+        self.channels = 0
+        self.label = ""
+        self._client = None
+        self._capture = None
+        self._fmt = None
+        self._floats = True
+        self._carry = None          # int16 mono not yet handed out
+        self._dropped = 0
+
+    def open(self) -> None:
+        import comtypes
+        from comtypes import COMMETHOD, GUID, IUnknown
+        from ctypes import POINTER, c_uint32, c_uint64
+        from ctypes.wintypes import BYTE, DWORD
+        from pycaw.api.audioclient import IAudioClient
+        from pycaw.pycaw import AudioUtilities
+
+        class IAudioCaptureClient(IUnknown):
+            _iid_ = GUID("{C8ADBD64-E71E-48a0-A4DE-185C395CD317}")
+            _methods_ = (
+                COMMETHOD([], ctypes.HRESULT, "GetBuffer",
+                          (["out"], POINTER(POINTER(BYTE)), "ppData"),
+                          (["out"], POINTER(c_uint32), "pNumFramesToRead"),
+                          (["out"], POINTER(DWORD), "pdwFlags"),
+                          (["out"], POINTER(c_uint64), "pu64DevicePosition"),
+                          (["out"], POINTER(c_uint64), "pu64QPCPosition")),
+                COMMETHOD([], ctypes.HRESULT, "ReleaseBuffer",
+                          (["in"], c_uint32, "NumFramesRead")),
+                COMMETHOD([], ctypes.HRESULT, "GetNextPacketSize",
+                          (["out"], POINTER(c_uint32),
+                           "pNumFramesInNextPacket")),
+            )
+
+        comtypes.CoInitialize()
+        speakers = AudioUtilities.GetSpeakers()
+        # pycaw wraps the endpoint in an AudioDevice since 2023; the raw
+        # IMMDevice is what Activate lives on.
+        device = getattr(speakers, "_dev", speakers)
+        self.label = str(getattr(speakers, "FriendlyName", "") or "speakers")
+        raw = device.Activate(IAudioClient._iid_, comtypes.CLSCTX_ALL, None)
+        client = raw.QueryInterface(IAudioClient)
+        fmt_p = client.GetMixFormat()
+        fmt = fmt_p.contents
+        self.mix_rate = int(fmt.nSamplesPerSec)
+        self.channels = max(1, int(fmt.nChannels))
+        self._floats = (fmt.wBitsPerSample == 32 and fmt.wFormatTag in (
+            self.WAVE_FORMAT_IEEE_FLOAT, self.WAVE_FORMAT_EXTENSIBLE))
+        self._fmt = fmt
+        client.Initialize(self.AUDCLNT_SHAREMODE_SHARED,
+                          self.AUDCLNT_STREAMFLAGS_LOOPBACK,
+                          10_000_000, 0, fmt_p, None)
+        self._capture = client.GetService(
+            IAudioCaptureClient._iid_).QueryInterface(IAudioCaptureClient)
+        client.Start()
+        self._client = client
+        log.info("system sound: loopback on %s (%d Hz, %d ch, %s) -> "
+                 "%d Hz mono", self.label, self.mix_rate, self.channels,
+                 "float" if self._floats else "int16", self.rate)
+
+    def _drain(self):
+        """Every packet the endpoint has right now, as int16 mono at
+        self.rate, or None when there is nothing."""
+        import numpy as np
+        parts = []
+        while True:
+            frames_next = self._capture.GetNextPacketSize()
+            if not frames_next:
+                break
+            data, frames, flags, _dpos, _qpos = self._capture.GetBuffer()
+            try:
+                if frames:
+                    raw = ctypes.string_at(data, frames * self._fmt.nBlockAlign)
+                    if flags & self.AUDCLNT_BUFFERFLAGS_SILENT:
+                        mono = np.zeros(frames, dtype=np.float32)
+                    else:
+                        arr = np.frombuffer(
+                            raw, dtype=np.float32 if self._floats
+                            else np.int16).reshape(-1, self.channels)
+                        mono = arr.astype(np.float32).mean(axis=1)
+                        if not self._floats:
+                            mono /= 32768.0
+                    parts.append(mono)
+            finally:
+                self._capture.ReleaseBuffer(frames)
+        if not parts:
+            return None
+        mono = np.concatenate(parts)
+        if self.mix_rate != self.rate and mono.size > 1:
+            # Linear interpolation is enough for a screen recording's
+            # soundtrack, and it keeps av's resampler for the one job the
+            # Clip already gives it.
+            n = int(round(mono.size * self.rate / self.mix_rate))
+            mono = np.interp(np.linspace(0.0, mono.size - 1, num=max(1, n)),
+                             np.arange(mono.size), mono)
+        return (np.clip(mono, -1.0, 1.0) * 32767.0).astype(np.int16)
+
+    def read(self, frames: int):
+        """Exactly `frames` int16 mono samples: what arrived, then zeros.
+        Never blocks and never answers short — see the class docstring."""
+        import numpy as np
+        fresh = self._drain()
+        if fresh is not None:
+            self._carry = (fresh if self._carry is None
+                           else np.concatenate([self._carry, fresh]))
+        have = self._carry.size if self._carry is not None else 0
+        if have >= frames:
+            out, self._carry = self._carry[:frames], self._carry[frames:]
+            backlog = self._carry.size
+            if backlog > self.BACKLOG_S * self.rate:
+                # A second behind the picture already: what is left is
+                # sound from a moment the video has moved past.
+                self._dropped += backlog
+                self._carry = None
+                if self._dropped == backlog:
+                    log.info("system sound fell %.1f s behind the picture "
+                             "— dropping the backlog", backlog / self.rate)
+            return out
+        out = np.zeros(frames, dtype=np.int16)
+        if have:
+            out[:have] = self._carry
+            self._carry = None
+        return out
+
+    def close(self) -> None:
+        try:
+            if self._client is not None:
+                self._client.Stop()
+        except Exception:
+            pass
+        self._capture = self._client = None
+        try:
+            import comtypes
+            comtypes.CoUninitialize()
+        except Exception:
+            pass
+
+
 class ScreenRecorder:
     """Region -> mp4, on two threads with a bounded queue between them.
 
@@ -1829,7 +2022,8 @@ class ScreenRecorder:
     def __init__(self, box: tuple[int, int, int, int], path: Path, *,
                  fps: int = 30, quality: str = "balanced",
                  cursor: bool = True, audio: bool = False, audio_device=None,
-                 audio_rate: int = 48000, max_seconds: float = 0.0):
+                 audio_rate: int = 48000, max_seconds: float = 0.0,
+                 system: bool = False):
         self.box = even_box(box)
         self.path = Path(path)
         self.fps = max(5, min(60, int(fps)))
@@ -1839,15 +2033,31 @@ class ScreenRecorder:
         # (sounddevice reads it as "the system default input") and would
         # otherwise be indistinguishable from "no sound wanted".
         self.audio_device = audio_device
-        self.audio_rate = audio_rate if audio else 0
+        # TWO SOURCES, ONE TRACK. `audio` is the microphone and `system`
+        # is what the speakers play (SystemSound); either one opens the
+        # clip's sound track, and _listen mixes whatever is on into it.
+        # The owner's spec, 2026-09-12: two switches at ctrl+F12, computer
+        # sound on and microphone off by default, and a mic button on the
+        # bar that works both ways mid-clip.
+        self.mic_wanted = bool(audio)
+        self.system_wanted = bool(system)
+        self.audio_rate = audio_rate if (audio or system) else 0
         self.max_seconds = max_seconds
         self.started_at = 0.0
         self.error: str | None = None
-        self.audio_on = False
+        self.audio_on = False           # the track is being written
+        self.mic_on = False             # the microphone stream is open
+        self.system_on = False          # the loopback stream is open
         self.discard = False
         self._stop = threading.Event()
         self._paused = threading.Event()
+        # The microphone's switch. A clip that starts without the mic
+        # starts MUTED, and the bar's button un-mutes it — which opens the
+        # microphone then and there (_listen), since the track already
+        # exists and only the source was missing.
         self._muted = threading.Event()
+        if not self.mic_wanted:
+            self._muted.set()
         self._paused_ms = 0.0
         self._pause_started = 0.0
         self._queue: queue.Queue = queue.Queue(maxsize=8)
@@ -1920,15 +2130,20 @@ class ScreenRecorder:
         return self._paused.is_set()
 
     def toggle_mute(self) -> bool:
-        """Silence the microphone without removing the track.
+        """The microphone, on or off, mid-clip, both ways.
 
         An mp4 declares its streams when the container opens, which is at
         the FIRST FRAME — adding a track later means remuxing the file. So
-        the button on the bar cannot add sound to a silent recording, and
-        pretending otherwise would be a lie in the shape of a switch. What
-        it can do is feed SILENCE instead of the microphone, which keeps
-        the sample clock advancing and therefore keeps the picture in sync
-        with whatever comes after the muted stretch.
+        this cannot add sound to a clip that has NO track (neither switch
+        was on at ctrl+F12; the bar shows no mic button then). With a
+        track — computer sound, the mic, or both — it switches the
+        microphone's contribution: muted feeds nothing from the mic while
+        the sample clock keeps advancing, so the picture stays in sync
+        with whatever comes after the muted stretch; un-muted opens the
+        microphone if it was never opened (_listen does that on its next
+        block) and mixes it in from there. That second half is what the
+        owner asked for on 2026-09-12: "בחרתי להשתיק את המיקרופון... שאין
+        לי אופציה לבטל את זה באמצע".
         """
         if self._muted.is_set():
             self._muted.clear()
@@ -2016,69 +2231,128 @@ class ScreenRecorder:
             log.exception("the screen recorder's encoder stopped")
             self._stop.set()
 
-    def _listen(self) -> None:
-        """The microphone, when the user asked for it.
+    def _open_mic(self):
+        """The microphone stream, or None with the reason logged.
 
         A SECOND stream on the same device as dictation's, opened only for
         the length of the clip. Verified on this machine 2026-08-25: two
         simultaneous 16 kHz shared-mode InputStreams on the Arctis 7 both
-        deliver audio, so a recording does not cost you the hotkey. If the
-        driver ever refuses, the clip loses its sound and keeps its
-        picture — never the other way round.
+        deliver audio, so a recording does not cost you the hotkey. The
+        rate is NOT negotiable here the way it is for dictation: the
+        container declared its audio stream at this rate when the first
+        frame went in (Clip._open), so audio arriving at another rate
+        would drift against the picture. When the driver refuses it, ask
+        WASAPI to convert instead of giving up — the same rung recorder.py
+        grew on 2026-09-05, against the same class of driver (the Arctis 7
+        Chat refuses shared-mode rates it does not natively hold).
         """
-        try:
-            import numpy as np
-            import sounddevice as sd
+        import sounddevice as sd
 
-            from recorder import wasapi_auto_convert
-            block = self.audio_rate // 10
-            # The rate is NOT negotiable here the way it is for dictation:
-            # the container declared its audio stream at this rate when the
-            # first frame went in (Clip.open), so audio arriving at another
-            # rate would drift against the picture. When the driver refuses
-            # it, ask WASAPI to convert instead of giving up — the same
-            # rung recorder.py grew on 2026-09-05, against the same class
-            # of driver (the Arctis 7 Chat refuses shared-mode rates it
-            # does not natively hold). Without it, a refused rate landed in
-            # the broad except below and shipped a MUTE clip.
-            rungs = [{}]
-            wasapi = wasapi_auto_convert()
-            if wasapi is not None:
-                rungs.append({"extra_settings": wasapi})
-            stream = None
-            refused: Exception | None = None
-            for rung in rungs:
-                try:
-                    stream = sd.InputStream(
-                        samplerate=self.audio_rate, channels=1,
-                        dtype="int16", device=self.audio_device,
-                        blocksize=block, **rung)
-                    break
-                except sd.PortAudioError as e:
-                    refused = e
-            if stream is None:
-                raise refused
-            with stream:
-                self.audio_on = True
-                while not self._stop.is_set():
-                    data, _overflow = stream.read(block)
-                    if self._paused.is_set():
-                        continue
-                    if self._muted.is_set():
-                        # SILENCE, not nothing. Skipping the write would
-                        # stop the sample clock and slide everything after
-                        # the mute earlier than the picture it belongs to.
-                        self._clip.add_audio(np.zeros(data.shape[0],
-                                                      dtype="int16"))
-                        continue
-                    self._clip.add_audio(np.ascontiguousarray(data[:, 0]))
-        except Exception as e:
+        from recorder import wasapi_auto_convert
+        block = self.audio_rate // 10
+        rungs = [{}]
+        wasapi = wasapi_auto_convert()
+        if wasapi is not None:
+            rungs.append({"extra_settings": wasapi})
+        refused: Exception | None = None
+        for rung in rungs:
+            try:
+                stream = sd.InputStream(
+                    samplerate=self.audio_rate, channels=1, dtype="int16",
+                    device=self.audio_device, blocksize=block, **rung)
+                stream.start()
+                return stream
+            except Exception as e:                   # noqa: BLE001
+                refused = e
+        log.warning("the microphone could not be opened for the clip (%s) "
+                    "— the recording goes on without it", refused)
+        return None
+
+    def _listen(self) -> None:
+        """The clip's sound track: the computer's sound, the microphone,
+        or both, mixed into one mono stream at audio_rate.
+
+        ONE THREAD, ONE CLOCK. Every 100 ms block is exactly audio_rate/10
+        samples, whatever the sources did: SystemSound.read always answers
+        in full (zeros where the desktop was quiet), the microphone's
+        blocking read paces the loop when it is open, and the wall clock
+        paces it when it is not. So the sample count stays the time, which
+        is the whole reason Clip.add_audio trusts it.
+
+        The microphone is opened when it is first wanted — at the start
+        if the picker's switch was on, or the moment the bar's button
+        un-mutes it — and never before: a recorder that opens the mic
+        "just in case" is the surprise [capture] audio's default exists to
+        prevent. If either source fails, the clip keeps the other and the
+        picture; it never loses the picture to a sound problem.
+        """
+        import numpy as np
+
+        block = self.audio_rate // 10
+        system = None
+        if self.system_wanted:
+            try:
+                system = SystemSound(self.audio_rate)
+                system.open()
+                self.system_on = True
+            except Exception as e:                   # noqa: BLE001
+                system = None
+                log.warning("the computer's sound could not be captured "
+                            "(%s) — the clip goes on without it", e)
+        mic = None
+        mic_refused = False
+        try:
+            self.audio_on = True
+            due = time.monotonic()
+            while not self._stop.is_set():
+                want_mic = not self._muted.is_set()
+                if want_mic and mic is None and not mic_refused:
+                    mic = self._open_mic()
+                    mic_refused = mic is None
+                    self.mic_on = mic is not None
+                    if mic_refused:
+                        self._muted.set()
+                if mic is not None:
+                    data, _overflow = mic.read(block)     # paces the loop
+                    voice = np.ascontiguousarray(data[:, 0])
+                else:
+                    due += block / self.audio_rate
+                    rest = due - time.monotonic()
+                    if rest > 0:
+                        time.sleep(rest)
+                    else:
+                        due = time.monotonic()
+                    voice = None
+                room = system.read(block) if system is not None else None
+                if self._paused.is_set():
+                    # A pause is a cut: what arrived during it is thrown
+                    # away, and the clock is held by not writing.
+                    due = time.monotonic()
+                    continue
+                mixed = np.zeros(block, dtype=np.int32)
+                if room is not None:
+                    mixed += room
+                if voice is not None and want_mic:
+                    mixed += voice
+                self._clip.add_audio(
+                    np.clip(mixed, -32768, 32767).astype(np.int16))
+        except Exception as e:                       # noqa: BLE001
             self.audio_on = False
             # WARNING, not INFO. A silent recording is not a detail: the
             # clip looks finished, plays, and is missing half of what was
             # in the room, and the person who made it finds out later.
             log.warning("the recording has no sound (%s) — the picture is "
                         "unaffected, but this clip is mute", e)
+        finally:
+            if mic is not None:
+                try:
+                    mic.stop()
+                    mic.close()
+                except Exception:
+                    pass
+            if system is not None:
+                system.close()
+            self.mic_on = self.system_on = False
 
 
 # ----------------------------------------------------------- the webcam
@@ -2576,11 +2850,18 @@ class ShotWindow:
                  folder: str = "captures", copy: bool = True,
                  edit: bool = True, on_saved=None, on_ask=None,
                  kind: str = "shot", start_box=None, start_shape=None,
-                 saved=None, save: bool = True):
+                 saved=None, save: bool = True, sound: dict | None = None):
         import tkinter as tk
         self.tk = tk
         self.full = full
         self.mode = mode                 # "shot" | "region"
+        # A RECORDING'S TWO SOUND SWITCHES, drawn on the hint card in
+        # region mode and handed back in the result: {"system": bool,
+        # "mic": bool}. What comes in is the config's default; what goes
+        # out is this clip's choice. His spec, 2026-09-12: "ברגע שאני עושה
+        # Ctrl F12 שיהיה לי 2 בחירות — סאונד של המחשב, סאונד של המיקרופון".
+        self.sound = dict(sound) if sound else {"system": False,
+                                                 "mic": False}
         self.cfg = cfg
         self.folder = folder
         self.copy = copy
@@ -2668,6 +2949,8 @@ class ShotWindow:
         self._hint_id = None
         self._chips: dict = {}
         self._chip_hover: str | None = None
+        self._switches: dict = {}
+        self._switch_hover: str | None = None
         # PAINTED ON THE FIRST TICK, not here. The card is 31 ms of glass
         # and text, and nothing about starting a drag needs it — putting it
         # on the path between the key and a usable overlay only made the
@@ -2680,6 +2963,11 @@ class ShotWindow:
         canvas.bind("<Motion>", self._on_move)
         root.bind_all("<Return>", self._on_enter)
         root.bind_all("<KP_Enter>", self._on_enter)
+        if self.mode == "region":
+            for key, _label, letter in SOUND_SWITCHES:
+                for sym in (letter, letter.upper()):
+                    root.bind_all(f"<KeyPress-{sym}>",
+                                  lambda _e, k=key: self._flip_sound(k))
 
     def _text_ink(self, text: str, pt: float, colour, weight: int = 400,
                   width: int = 900):
@@ -2714,6 +3002,8 @@ class ShotWindow:
         else:
             line = "Drag a box   ·   Shift-drag to lasso"
         self._hint_line = f"{line}   ·   Enter for this screen   ·   Esc cancels"
+        if self.mode == "region":
+            self._hint_line += "   ·   S / M toggle sound"
         hl, ht, hr, hb = work_area_near(px, py)
         self._plan_hint((hl + hr) // 2 - self._vx, ht + 52 - self._vy)
         self._paint_hint()
@@ -2740,6 +3030,10 @@ class ShotWindow:
         row = len(entries) * CHIP_W + (len(entries) - 1) * CHIP_GAP
         width = max(row, hint.width) + HINT_PAD * 2
         height = HINT_PAD + hint.height + 14 + CHIP_H + HINT_PAD
+        switches = (SOUND_SWITCHES
+                    if getattr(self, "mode", "shot") == "region" else ())
+        if switches:
+            height += SWITCH_H + 14
         left = max(8, centre_x - width // 2)
         self._hint_box = (left, top_y, left + width, top_y + height)
         self._hint_at = (left + (width - hint.width) // 2, top_y + HINT_PAD)
@@ -2753,6 +3047,17 @@ class ShotWindow:
                 "size": f"{pixels[0]} × {pixels[1]}", "primary": primary,
                 "aspect": pixels[0] / max(1, pixels[1]), "panes": panes}
             x += CHIP_W + CHIP_GAP
+        # The sound switches, a row of their own under the screens.
+        self._switches = {}
+        if switches:
+            srow = len(switches) * SWITCH_W + (len(switches) - 1) * SWITCH_GAP
+            x = left + (width - srow) // 2
+            y += CHIP_H + 14
+            for key, label, hotkey in switches:
+                self._switches[key] = {
+                    "box": (x, y, x + SWITCH_W, y + SWITCH_H),
+                    "label": label, "key": hotkey}
+                x += SWITCH_W + SWITCH_GAP
 
     def _paint_hint(self) -> None:
         from PIL import Image, ImageTk
@@ -2774,6 +3079,9 @@ class ShotWindow:
         for label, chip in self._chips.items():
             self._draw_chip(plate, label, chip,
                             (self._hint_box[0], self._hint_box[1]))
+        for key, switch in self._switches.items():
+            self._draw_switch(plate, key, switch,
+                              (self._hint_box[0], self._hint_box[1]))
         under = self.dark.crop(box).convert("RGBA")
         under.alpha_composite(plate)
         self._keep["hint"] = ImageTk.PhotoImage(under.convert("RGB"),
@@ -2813,12 +3121,64 @@ class ShotWindow:
             tile.alpha_composite(dot, (width - 12, 8))
         plate.alpha_composite(tile, (x, y))
 
+    def _draw_switch(self, plate, key: str, switch: dict, origin) -> None:
+        """One sound switch: a pill with a lamp at its left end.
+
+        ON is the lit blue the chips use for hover, so a lit switch and a
+        chip under the hand read as the same family of "this one";
+        OFF is the plain glass of an idle chip. The lamp is the state at
+        a glance — the same dot the primary screen's chip carries — and
+        the key letter sits at the right end so the hint line's "S / M"
+        has something to point at.
+        """
+        sx0, sy0, sx1, sy1 = switch["box"]
+        x, y = sx0 - origin[0], sy0 - origin[1]
+        width, height = sx1 - sx0, sy1 - sy0
+        on = bool(self.sound.get(key))
+        hot = (key == self._switch_hover)
+        fill = ((110, 160, 235, 118) if on and hot
+                else (110, 160, 235, 92) if on
+                else (255, 255, 255, 34) if hot
+                else (255, 255, 255, 20))
+        edge = (150, 195, 255, 210) if on else (255, 255, 255, 46)
+        tile = _vq.rr_layer((width, height), height // 2, fill, edge)
+        lamp = _vq.rr_layer((8, 8), 4, (150, 195, 255, 235) if on
+                            else (255, 255, 255, 60))
+        tile.alpha_composite(lamp, (14, (height - 8) // 2))
+        name = self._text_ink(switch["label"], 9.0,
+                              INK if on else INK_DIM, weight=600)
+        tile.alpha_composite(name, (30, (height - name.height) // 2))
+        letter = self._text_ink(switch["key"].upper(), 7.8,
+                                INK if on else INK_FAINT)
+        tile.alpha_composite(letter, (width - 14 - letter.width,
+                                      (height - letter.height) // 2))
+        plate.alpha_composite(tile, (x, y))
+
+    def _switch_under(self, x: int, y: int) -> str | None:
+        for key, switch in self._switches.items():
+            x0, y0, x1, y1 = switch["box"]
+            if x0 <= x <= x1 and y0 <= y <= y1:
+                return key
+        return None
+
+    def _flip_sound(self, key: str) -> None:
+        """Toggle one switch and repaint the card it sits on. The choice
+        outlives the card: _drop_hint clears the switches' boxes and not
+        self.sound, so a drag that started after the flip still carries
+        it out."""
+        if key not in self.sound:
+            return
+        self.sound[key] = not self.sound[key]
+        if self._switches:
+            self._paint_hint()
+
     def _drop_hint(self) -> None:
         if self._hint_id is not False:
             self.canvas.delete("hint")
             self.canvas.delete("chips")
             self._hint_id = False
             self._chips = {}
+            self._switches = {}
             self._hint_box = None
 
     # -- the selection phase --
@@ -2826,6 +3186,11 @@ class ShotWindow:
     def _on_press(self, event) -> None:
         if self.phase == "edit":
             return self._edit_press(event)
+        flipped = self._switch_under(event.x, event.y)
+        if flipped is not None:
+            # A sound switch. The click is spent here, no drag starts,
+            # and the card stays up with the switch now lit (or not).
+            return self._flip_sound(flipped)
         chosen = self._chip_under(event.x, event.y)
         if chosen is not None:
             # A whole screen, chosen by name. No drag ever starts, so the
@@ -2896,9 +3261,11 @@ class ShotWindow:
     def _on_move(self, event) -> None:
         if self.phase == "select":
             hot = self._chip_under(event.x, event.y)
-            if hot != self._chip_hover:
-                self._chip_hover = hot
-                self.canvas.config(cursor="hand2" if hot else "crosshair")
+            hot_switch = self._switch_under(event.x, event.y)
+            if hot != self._chip_hover or hot_switch != self._switch_hover:
+                self._chip_hover, self._switch_hover = hot, hot_switch
+                self.canvas.config(cursor="hand2" if (hot or hot_switch)
+                                   else "crosshair")
                 self._paint_hint()
             return
         if self.phase != "edit" or self._bar_at is None:
@@ -3000,7 +3367,7 @@ class ShotWindow:
         self._start = None
         self._free = None
         if self.mode == "region":
-            self.result = {"box": self.box}
+            self.result = {"box": self.box, "sound": dict(self.sound)}
             return self.close()
         self._first_save()
         if not self.edit:
@@ -3723,7 +4090,7 @@ class ClipBar:
         if self.recorder.paused:
             label += "  paused"
         elif self.recorder.has_audio and self.recorder.muted:
-            label += "  muted"
+            label += "  mic off"
         return label
 
     def _layout(self) -> tuple[str, int, int, dict]:
@@ -3894,7 +4261,9 @@ class ClipBar:
         self._dot(20, height // 2 - 6)
         left, top, right, bottom = self.recorder.box
         detail = f"{right - left} × {bottom - top}"
-        if self.recorder.has_audio:
+        if self.recorder.system_wanted:
+            detail += "   ·   computer sound"
+        if self.recorder.mic_wanted:
             detail += "   ·   mic on"
         if self.stop_key:
             detail += f"   ·   {self.stop_key} to stop"
@@ -6152,7 +6521,9 @@ class Controller:
             cfg = self._cfg()
             full = ImageGrab.grab(all_screens=True).convert("RGB")
             window = ShotWindow(full, mode="region", cfg=cfg,
-                                folder=cfg.folder)
+                                folder=cfg.folder,
+                                sound={"system": bool(cfg.system_sound),
+                                       "mic": cfg.audio == "mic"})
             chosen = window.run()
             window = None
             gc.collect()                 # the selector's interpreter, freed
@@ -6161,14 +6532,20 @@ class Controller:
             box = even_box(chosen["box"])                     # made it
             if box[2] - box[0] < 16 or box[3] - box[1] < 16:
                 return self.say_small()
-            recorder = self._new_recorder(box, cfg)
+            recorder = self._new_recorder(box, cfg,
+                                          sound=chosen.get("sound"))
             with self._lock:
                 self._recorder = recorder
             recorder.start()
             self._cue("recording")
             log.info("recording %d×%d to %s%s — tap '%s' again to stop",
                      box[2] - box[0], box[3] - box[1], recorder.path.name,
-                     " with the microphone" if recorder.has_audio else "",
+                     {(True, True): " with the computer's sound and the "
+                                    "microphone",
+                      (True, False): " with the computer's sound",
+                      (False, True): " with the microphone",
+                      (False, False): " (no sound)"}[
+                         (recorder.system_wanted, recorder.mic_wanted)],
                      cfg.record_hotkey)
             bar = ClipBar(recorder, on_stop=self._stop_clip.set,
                           on_discard=lambda: setattr(recorder, "discard", True),
@@ -6217,19 +6594,24 @@ class Controller:
             gc.collect()
             self._free_screen()
 
-    def _new_recorder(self, box, cfg) -> ScreenRecorder:
+    def _new_recorder(self, box, cfg, sound: dict | None = None
+                      ) -> ScreenRecorder:
         directory = capture_dir(cfg.clip_folder or cfg.folder)
         taken = {p.name for p in directory.glob("clip *.mp4")}
         path = directory / capture_name("clip", taken=taken)
-        # The SAME microphone dictation uses, when the owner asked for
-        # sound at all. Two shared-mode input streams on one device were
-        # verified working on this machine (2026-08-25), so a recording
-        # does not cost you the hotkey — and if a driver ever refuses,
-        # _listen loses the sound and keeps the picture.
+        # `sound` is what the picker's two switches said for THIS clip;
+        # without it (a caller that skipped the picker) the config's
+        # defaults stand. The microphone is the SAME one dictation uses:
+        # two shared-mode input streams on one device were verified
+        # working on this machine (2026-08-25), so a recording does not
+        # cost you the hotkey — and if a driver ever refuses, _listen
+        # loses that source and keeps the picture.
+        sound = sound or {"system": bool(cfg.system_sound),
+                          "mic": cfg.audio == "mic"}
         audio_cfg = getattr(self._cfg_of(), "audio", None)
         return ScreenRecorder(
             box, path, fps=cfg.fps, quality=cfg.quality, cursor=cfg.cursor,
-            audio=(cfg.audio == "mic"),
+            audio=bool(sound.get("mic")), system=bool(sound.get("system")),
             audio_device=getattr(audio_cfg, "device", None),
             max_seconds=cfg.max_minutes * 60)
 
