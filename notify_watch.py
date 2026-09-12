@@ -82,9 +82,14 @@ bundle agrees:
     cu-lock-cse_…           Cowork: done using your computer
     idle-local_<uuid>       a Claude Code session in the app went idle
     ask-question-<uuid>     a Claude Code session is asking something
+    scheduled-local_<uuid>  a SCHEDULED Claude Code session finished a turn
+                            ("Scheduled task completed" / the task's name;
+                            group is the literal "Notifications", not the
+                            session — the session is only in the tag)
 
 `Group` carries the session for the Code ones (`session-local_<uuid>`)
-and the literal "Notifications" for Cowork's. That `local_<uuid>` is the
+and the literal "Notifications" for Cowork's — and for the scheduled one,
+which is why `scheduled-` is read from the tag like Cowork's ids are. That `local_<uuid>` is the
 app's OWN session id — the thing `claude://resume?session=` wants, which
 notify_hook.session_link has to dig out of the app's store and which is
 written on the notification here for free — so a Code card from this
@@ -105,9 +110,21 @@ unrecognised Claude toast is still shown, as `claude` / `info`.
 WHY IT DOES NOT DOUBLE UP. The app only toasts a session you are NOT
 looking at (`isUserViewingSession`, same bundle), and Claude Code's Stop
 hook has already put a card up for every finished turn. So `[notify]
-watch = "cowork"` — the default — ignores the `idle-` and `ask-question-`
-tags and takes everything else; "all" takes those too, which is worth it
-only with the hook uninstalled; "off" never opens the file.
+watch = "cowork"` — the default — ignores the `idle-`, `ask-question-`
+and `scheduled-` tags and takes everything else; "all" takes those too,
+which is worth it only with the hook uninstalled; "off" never opens the
+file.
+
+THE SCHEDULED ONE WAS THE CARD THAT NEVER CAME DOWN. Measured in
+notify.log on 2026-09-12: nineteen "Scheduled task completed" cards, each
+landing within a second of the hook's own "Claude finished" for the same
+turn of the weekly-review session, and every one of the nineteen
+dismissed by hand — because its tag was not in PREFIXES, `session_of`
+found no session, and a card with no session is one the arrival watch
+(notify.py) can never take down. That is the report of 2026-09-04
+("the notify message … is not disappearing when I'm opening … the thing
+that is notified") still happening a week after arrival was built: the
+hook's card came down when he reached the session, and its twin stayed.
 """
 from __future__ import annotations
 
@@ -143,6 +160,7 @@ PREFIXES = (("cowork-awaiting-", "input"),
             ("cowork-idle-", "input"),
             ("ask-question-", "input"),
             ("cu-lock-", "info"),
+            ("scheduled-", "done"),
             ("idle-", "done"))
 GROUP = "session-"             # ...<the app's own session id>
 CODE = "local_"                # a session the desktop app owns
@@ -515,13 +533,15 @@ class Watcher:
         """Does this toast get a card? "cowork" — the default — drops
         the desktop app's Claude Code sessions, because notify_hook.py
         has already carded every one of their turns and two cards for
-        one turn is worse than none."""
+        one turn is worse than none. A scheduled session's turn is one of
+        those — its toast just wears a different tag (module docstring)."""
         if self.mode == "all":
             return True
         if self.mode != "cowork":
             return False
         tag = str(tag or "")
-        return not (tag.startswith("idle-") or tag.startswith("ask-question-"))
+        return not (tag.startswith("idle-") or tag.startswith("ask-question-")
+                    or tag.startswith("scheduled-"))
 
     # -- one pass --
 

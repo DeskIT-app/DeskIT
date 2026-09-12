@@ -24056,6 +24056,42 @@ def test_the_watcher_leaves_claude_codes_own_turns_to_the_hook() -> None:
         assert off._thread is None, "and never starts a thread"
 
 
+def test_a_scheduled_sessions_toast_is_left_to_the_hook_and_knows_its_session() -> None:
+    """The desktop app toasts "Scheduled task completed" for every turn
+    of a scheduled Claude Code session, tagged `scheduled-local_<uuid>`
+    with the literal "Notifications" as its group. notify.log for
+    2026-09-12: nineteen of them, each a second behind the hook's own
+    card for the same turn, all nineteen dismissed by hand, because a
+    card that names no session never comes down by arrival. So the
+    default mode leaves it to the hook like `idle-`, and when "all" does
+    take it, it is a Claude Code card that knows its session."""
+    session = "local_486f5288-f37f-4a5f-9748-0ec7d4f3fb15"
+    rows = [
+        (31, CLAUDE_APP, f"scheduled-{session}", "Notifications",
+         _toast("Scheduled task completed", "Deskit weekly review")),
+        (32, CLAUDE_APP, "cowork-idle-cse_b", "Notifications",
+         _toast("A cowork session", "Claude is waiting for your input")),
+    ]
+    with tempfile.TemporaryDirectory() as d:
+        w, seen, db = _watcher(d, [(1, CLAUDE_APP, "cowork-idle-cse_a",
+                                    "Notifications", _toast("first"))],
+                               mode="cowork")
+        _wpn_add(db, rows)
+        assert w.once() == 1, seen
+        assert seen[0]["source"] == "cowork", "only the Cowork one got through"
+    with tempfile.TemporaryDirectory() as d:
+        w, seen, db = _watcher(d, [(1, CLAUDE_APP, "cowork-idle-cse_a",
+                                    "Notifications", _toast("first"))],
+                               mode="all")
+        _wpn_add(db, rows)
+        assert w.once() == 2, seen
+        card = seen[0]
+        assert card["session"] == session, card
+        assert card["source"] == "claude-code" and card["kind"] == "done", card
+        assert card["link"] == f"claude://resume?session={session[6:]}", card
+        assert card["title"] == "Scheduled task completed", card
+
+
 def test_a_toast_the_watcher_cannot_read_is_not_a_card() -> None:
     """It is reading another program's file, so every answer it might
     get has to be an answer: torn XML, a toast with no words, a missing
