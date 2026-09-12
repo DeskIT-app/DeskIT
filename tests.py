@@ -14183,6 +14183,33 @@ def test_the_clip_bar_keeps_out_of_the_dots_square() -> None:
     assert bar._corner_xy((width, cap.TIMER_H))[0] == 18 + cap.DOT_ROOM_X
 
 
+def test_the_clip_bar_opens_by_where_the_pointer_is_not_by_tk_enter() -> None:
+    """Measured 2026-09-12 11:36:33 with the dictation key latched: the
+    pointer sat inside the pill's own window (WindowFromPoint said so)
+    and Tk never delivered <Enter>, so the bar stayed shut until a drag
+    jolted it. The poll that closes the bar now opens it too."""
+    import capture as cap
+
+    bar = cap.ClipBar.__new__(cap.ClipBar)
+    bar._hovering = False
+    bar._left_at = 0.0
+    inside = [True]
+    bar._pointer_inside = lambda: inside[0]
+    bar._poll_hover()
+    assert bar._hovering is True, "inside the pill IS the hover"
+    inside[0] = False
+    bar._left_at = time.monotonic()          # Tk's Leave, just now
+    bar._poll_hover()
+    assert bar._hovering is True, "not collapsed on the spot — a resize " \
+        "under the pointer sends its own Leave"
+    bar._left_at = time.monotonic() - 1.0
+    bar._poll_hover()
+    assert bar._hovering is False, "gone for a while: closed"
+    inside[0] = True
+    bar._poll_hover()
+    assert bar._hovering is True, "back on it: open again, no Enter needed"
+
+
 def test_the_clip_bar_announces_itself_and_then_gets_out_of_the_way(
 ) -> None:
     """The failure mode of a screen recorder is not knowing whether it is
