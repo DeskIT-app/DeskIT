@@ -19662,43 +19662,593 @@ def test_the_settings_screen_can_reach_its_last_row() -> None:
             pass
 
 
-def test_a_week_that_is_pushed_leaves_the_list_and_waits_behind_a_line(
-) -> None:
-    """His words on 2026-09-08, looking at last week's branch still sitting
-    on the Problems tab under this week's: it should disappear the moment
-    he presses, "because if it stays here after five weeks, there will be
-    a lot and it is not convenient".
+class _FakeGit:
+    """A stand-in for dashboard._git: answers each command from a table
+    keyed on its first words and writes down every call, so a test can
+    say both what a button said and — the part that matters more — which
+    git commands it ran, in which order, and which it never ran."""
 
-    So the face carries only the branches with something left to do, and
-    the finished ones wait behind the fold line — reachable, never
-    dropped, which is the rule the settings fold is held to as well.
+    def __init__(self, answers: dict) -> None:
+        self.answers = answers
+        self.calls: list[tuple[str, ...]] = []
+
+    def __call__(self, *args, cwd=None, timeout=None):
+        self.calls.append(tuple(args))
+        for length in range(len(args), 0, -1):
+            if args[:length] in self.answers:
+                answer = self.answers[args[:length]]
+                return answer if isinstance(answer, tuple) else (0, answer, "")
+        return 1, "", f"fake git has no answer for {' '.join(args)}"
+
+    def ran(self, *words: str) -> list[tuple[str, ...]]:
+        return [c for c in self.calls if c[:len(words)] == words]
+
+
+def _with_fake_git(answers: dict):
+    """dashboard._git swapped for a _FakeGit and given back."""
+    import dashboard as dash
+
+    fake = _FakeGit(answers)
+    real = dash._git
+    dash._git = fake
+
+    def restore() -> None:
+        dash._git = real
+    return fake, restore
+
+
+def test_the_changes_card_lists_what_is_ahead_newest_first_and_hides_when_nothing_is(
+) -> None:
+    """What replaced the weekly branches on 2026-09-12: every change is
+    committed onto `main` in this folder and never pushed by whoever
+    made it, so the tab shows what is here and not on GitHub — one card,
+    the commits newest first with their dates, the files, and three
+    buttons, Restart, Push and Undo.
+
+    And when nothing is ahead there is NO card: the block is one faint
+    line, keeping only Restart, because "nothing ahead" is also what the
+    folder looks like right after Claude brought GitHub's newer changes
+    in — and those want a restart to be run. His words on 2026-09-08
+    about the finished weeks: "if it stays here after five weeks, there
+    will be a lot and it is not convenient".
+
+    Drawn for real, offscreen, so the card's geometry is exercised: the
+    three buttons are on the card, in a row at its top right, and the
+    status sentence stops short of them.
     """
+    import tkinter as tk
+
+    import ui as ui_mod
+
+    import dashboard as dash
+
+    def canvases(board):
+        """Every canvas on the list, in the order they were packed."""
+        found = []
+        stack = list(reversed(board.parts["problems_list"]
+                              .inner.winfo_children()))
+        while stack:
+            widget = stack.pop()
+            if isinstance(widget, tk.Canvas) and not isinstance(
+                    widget, ui_mod.Button):
+                found.append(widget)
+            stack.extend(reversed(widget.winfo_children()))
+        return found
+
+    def texts(canvas) -> list[str]:
+        return [canvas.itemcget(i, "text") for i in canvas.find_all()
+                if canvas.type(i) == "text"]
+
+    def buttons(canvas) -> dict:
+        return {w.itemcget(w._label, "text"): w
+                for w in canvas.winfo_children()
+                if isinstance(w, ui_mod.Button)}
+
     with _window() as board:
         if board is None:
             return
         board.closing = True
-        board._scan_weekly = lambda: None       # git is not the subject
+        board._scan_changes = lambda: None      # git is not the subject
         board._write_digest = lambda: None      # nor is his problems.md
         board._show("Problems")
-        drawn: list = []
-        board._weekly_row = lambda parent, scroller, info: drawn.append(
-            info["branch"])
-        board._weekly = [
-            {"branch": "weekly/2026-09-05-2", "commits": 11, "trunk": "main",
-             "files": ["dashboard.py"], "on_origin": True, "merged": False,
-             "subject": "still his to press"},
-            {"branch": "weekly/2026-09-05", "commits": 0, "files": [],
-             "trunk": "main", "on_origin": True, "merged": True,
-             "subject": "up on GitHub and in fast"},
-        ]
+        board._changes = {
+            "told": True, "behind": 2,
+            "commits": [
+                {"sha": "aaaaaaa", "when": "2026-09-12 10:30",
+                 "subject": "The newest one"},
+                {"sha": "bbbbbbb", "when": "2026-09-11 22:05",
+                 "subject": "The one before it"},
+                {"sha": "ccccccc", "when": "2026-09-11 09:00",
+                 "subject": "The oldest one"},
+            ],
+            "files": ["dashboard.py", "tests.py"],
+        }
+        board._push_said[dash.TRUNK] = "The last press said this."
         board._fill_problems()
-        assert drawn == ["weekly/2026-09-05-2"], drawn
-        drawn.clear()
-        board._weekly_toggle()                  # the line, pressed
-        assert drawn == ["weekly/2026-09-05-2", "weekly/2026-09-05"], drawn
-        drawn.clear()
-        board._weekly_toggle()                  # and pressed again
-        assert drawn == ["weekly/2026-09-05-2"], drawn
+        board.root.update()
+        cards = [c for c in canvases(board)
+                 if "Changes on this computer" in texts(c)]
+        assert len(cards) == 1, "no card for the changes, or two"
+        card = cards[0]
+        # A wrapped sentence is one text item with newlines in it, and a
+        # break may fall anywhere in it: flattened before it is read.
+        words = [" ".join(w.split()) for w in texts(card)]
+        order = [words.index(s) for s in ("The newest one",
+                                          "The one before it",
+                                          "The oldest one")]
+        assert order == sorted(order), "the commits are not newest first"
+        assert "2026-09-12 10:30" in words, "a commit without its date"
+        assert any("3 changes exist only on this computer" in w
+                   for w in words), words
+        assert any("Restart to try them, then Push" in w for w in words)
+        assert any("GitHub also has 2 newer changes" in w for w in words), \
+            "behind is not said"
+        assert any("dashboard.py" in w and "tests.py" in w for w in words), \
+            "the file list is missing"
+        assert card.keep[0] is not None, "the last sentence is not drawn"
+        pressable = buttons(card)
+        assert set(pressable) == {"Restart", "Push", "Undo"}, set(pressable)
+        assert pressable["Push"]._primary and not pressable["Undo"]._primary
+        assert all(b._enabled for b in pressable.values())
+        # Geometry: all three sit at the top right of the card, in a row,
+        # and the status line does not run under them.
+        windows = {card.itemcget(i, "window"): card.bbox(i)
+                   for i in card.find_all() if card.type(i) == "window"}
+        boxes = {name: windows[str(b)] for name, b in pressable.items()}
+        assert all(box[1] == 13 for box in boxes.values()), boxes
+        assert boxes["Restart"][2] <= boxes["Push"][0] <= boxes["Undo"][0]
+        assert boxes["Undo"][2] <= dash.CW - dash.Q_PAD
+        status = next(i for i in card.find_all() if card.type(i) == "text"
+                      and "exist only on this computer"
+                      in card.itemcget(i, "text"))
+        assert card.bbox(status)[2] <= boxes["Restart"][0], \
+            "the status sentence runs under the buttons"
+        assert card.bbox("all")[3] <= int(card.cget("height")), \
+            "the card is shorter than what is drawn on it"
+
+        # More than eight: the ninth and after fold into "+N more".
+        board._changes["commits"] = [
+            {"sha": f"{n:07d}", "when": "2026-09-12 10:00",
+             "subject": f"change number {n}"} for n in range(11)]
+        board._fill_problems()
+        board.root.update()
+        card = next(c for c in canvases(board)
+                    if "Changes on this computer" in texts(c))
+        words = [" ".join(w.split()) for w in texts(card)]
+        assert "+3 more" in words, words
+        assert not any("change number 8" in w for w in words), \
+            "the ninth commit is listed as well as folded"
+
+        # While a button is in flight all three are flat.
+        board._pushing = "push"
+        board._fill_problems()
+        board.root.update()
+        card = next(c for c in canvases(board)
+                    if "Changes on this computer" in texts(c))
+        assert not any(b._enabled for b in buttons(card).values()), \
+            "a press while one is running would race it"
+        board._pushing = None
+
+        # Nothing ahead: no card, one faint line, Restart kept, and the
+        # last sentence still under it.
+        board._changes = {"told": True, "behind": 1, "commits": [],
+                          "files": []}
+        board._fill_problems()
+        board.root.update()
+        every = canvases(board)
+        assert not any("Changes on this computer" in texts(c)
+                       for c in every), "a card with nothing on it"
+        lines = [c for c in every
+                 if any(w.startswith("Everything on this computer is on "
+                                     "GitHub.") for w in texts(c))]
+        assert len(lines) == 1, "no line saying nothing is ahead"
+        assert any("GitHub also has 1 newer change " in w
+                   for w in texts(lines[0])), texts(lines[0])
+        assert set(buttons(lines[0])) == {"Restart"}, buttons(lines[0])
+        assert lines[0].keep[0] is not None, "the last sentence went"
+
+        # And when git could not answer at all, nothing is drawn — not
+        # a card, not a line, not an error.
+        board._changes = {"told": False, "behind": 0, "commits": [],
+                          "files": []}
+        board._fill_problems()
+        board.root.update()
+        assert not any("GitHub" in w for c in canvases(board)
+                       for w in texts(c)), "a block for a folder with no git"
+
+
+def test_local_changes_is_a_local_read_and_says_nothing_when_git_cannot(
+) -> None:
+    """The card is asked for on every paint of the tab, so it must never
+    touch the network: no fetch, only `origin/main..main` as last
+    fetched. And a folder with no git, no repo or no origin/main is an
+    empty answer with told=False — a block that is not drawn, never an
+    error."""
+    import dashboard as dash
+
+    fake, restore = _with_fake_git({
+        ("log",): "aaaaaaa1234\t2026-09-12 10:30\tThe newest one\n"
+                  "bbbbbbb5678\t2026-09-11 22:05\tThe one before it\n",
+        ("diff", "--name-only"): "dashboard.py\ntests.py\n",
+        ("rev-list", "--count", "main..origin/main"): "2\n",
+    })
+    try:
+        info = dash.local_changes()
+    finally:
+        restore()
+    assert info["told"] is True
+    assert [c["sha"] for c in info["commits"]] == ["aaaaaaa", "bbbbbbb"]
+    assert info["commits"][0] == {"sha": "aaaaaaa", "when": "2026-09-12 10:30",
+                                  "subject": "The newest one"}
+    assert info["files"] == ["dashboard.py", "tests.py"]
+    assert info["behind"] == 2
+    assert not fake.ran("fetch"), "a fetch on every paint of the tab"
+    assert not fake.ran("push") and not fake.ran("reset")
+    log = fake.ran("log")[0]
+    assert log[-1] == "origin/main..main", log
+
+    fake, restore = _with_fake_git({("log",): (128, "", "fatal: bad rev")})
+    try:
+        info = dash.local_changes()
+    finally:
+        restore()
+    assert info == {"commits": [], "files": [], "behind": 0, "told": False}
+
+
+def test_push_fetches_checks_the_ancestry_and_only_then_pushes_main() -> None:
+    """The order IS the safety: fetch, so the check is about GitHub now;
+    is origin/main an ancestor of main, because if not a plain push
+    would be refused and the only ways past are a merge or --force,
+    neither a button's; then `git push origin main` with no flags and
+    nothing else. The old guard refused whenever `main` held a commit
+    GitHub lacked, on the premise that the routine never commits to
+    `main` — and the moment a session moved the work onto `main` so he
+    could TRY it, that guard refused the very work he was trying to
+    push (2026-09-12). Here a commit GitHub lacks IS the work."""
+    import dashboard as dash
+
+    fake, restore = _with_fake_git({
+        ("fetch",): "", ("merge-base", "--is-ancestor"): "",
+        ("push", "origin", "main"): "",
+    })
+    try:
+        result = dash.push_main()
+    finally:
+        restore()
+    assert result["pushed"] is True
+    assert result["said"] == "Sent. GitHub now has everything on this " \
+                             "computer.", result["said"]
+    assert fake.calls == [("fetch", "origin", "main"),
+                          ("merge-base", "--is-ancestor", "origin/main",
+                           "main"),
+                          ("push", "origin", "main")], fake.calls
+    assert not any("--force" in c or "-f" in c for c in fake.calls)
+
+    # GitHub has moved on: refused, and push is never run.
+    fake, restore = _with_fake_git({
+        ("fetch",): "", ("merge-base", "--is-ancestor"): (1, "", ""),
+        ("push",): "",
+    })
+    try:
+        result = dash.push_main()
+    finally:
+        restore()
+    assert result["pushed"] is False
+    assert result["said"] == ("GitHub has changes this computer does not "
+                              "have yet. Ask Claude to bring them in first, "
+                              "then press Push again. Nothing changed."), \
+        result["said"]
+    assert not fake.ran("push"), "it pushed over GitHub's newer commit"
+    assert not fake.ran("merge") and not fake.ran("pull")
+
+    # No network: one sentence, and nothing after the fetch.
+    fake, restore = _with_fake_git({("fetch",): (128, "", "fatal: unable")})
+    try:
+        result = dash.push_main()
+    finally:
+        restore()
+    assert result["said"] == ("GitHub could not be reached. Nothing changed. "
+                              "Try again in a moment."), result["said"]
+    assert fake.calls == [("fetch", "origin", "main")], fake.calls
+
+    # GitHub said no: its first line is quoted back.
+    fake, restore = _with_fake_git({
+        ("fetch",): "", ("merge-base", "--is-ancestor"): "",
+        ("push",): (1, "", "error: failed to push some refs\nhint: ..."),
+    })
+    try:
+        result = dash.push_main()
+    finally:
+        restore()
+    assert result["pushed"] is False
+    assert result["said"] == ("GitHub did not take the changes (error: failed "
+                              "to push some refs). Nothing changed. Press "
+                              "Push again."), result["said"]
+
+
+def test_undo_resets_with_keep_only_when_something_is_ahead_and_names_the_file_git_refuses(
+) -> None:
+    """Undo is `git reset --keep origin/main` — --keep and never --hard,
+    because config.toml is his and is modified most of the time, and
+    --hard would throw his edit away with the commits. --keep carries
+    it across, and REFUSES when a file with uncommitted edits is one
+    the undone commits changed; that refusal has to reach him with the
+    file's name in it, in git's own words ("Entry 'config.toml' not
+    uptodate", measured 2026-09-12), and with "Nothing changed".
+
+    And nothing ahead is nothing to undo — said, not reset."""
+    import dashboard as dash
+
+    fake, restore = _with_fake_git({
+        ("fetch",): "", ("rev-list", "--count", "origin/main..main"): "2\n",
+        ("rev-parse", "--abbrev-ref", "HEAD"): "main\n",
+        ("reset", "--keep", "origin/main"): "",
+    })
+    try:
+        result = dash.undo_main()
+    finally:
+        restore()
+    assert result["undone"] is True
+    assert result["said"] == ("Undone. The changes are gone from this "
+                              "computer (GitHub never had them). Restart to "
+                              "run the older version again."), result["said"]
+    assert fake.calls[0] == ("fetch", "origin", "main")
+    assert fake.ran("reset") == [("reset", "--keep", "origin/main")], \
+        fake.calls
+    assert not any("--hard" in c for c in fake.calls), "--hard eats his edits"
+    assert not fake.ran("checkout") and not fake.ran("clean")
+
+    # Nothing ahead: no reset at all.
+    fake, restore = _with_fake_git({
+        ("fetch",): "", ("rev-list", "--count", "origin/main..main"): "0\n",
+        ("reset",): "",
+    })
+    try:
+        result = dash.undo_main()
+    finally:
+        restore()
+    assert result["undone"] is False
+    assert result["said"] == ("Nothing to undo — everything on this "
+                              "computer is already on GitHub."), result["said"]
+    assert not fake.ran("reset"), "a reset with nothing to undo"
+
+    # git refused --keep: the file it named, and nothing changed.
+    fake, restore = _with_fake_git({
+        ("fetch",): "", ("rev-list", "--count", "origin/main..main"): "1\n",
+        ("rev-parse", "--abbrev-ref", "HEAD"): "main\n",
+        ("reset", "--keep", "origin/main"): (
+            128, "", "error: Entry 'config.toml' not uptodate. Cannot "
+                     "merge.\nfatal: Could not reset index file to revision "
+                     "'origin/main'.\n"),
+    })
+    try:
+        result = dash.undo_main()
+    finally:
+        restore()
+    assert result["undone"] is False
+    assert result["said"] == ("Undo refused: config.toml has unsaved edits "
+                              "and one of these changes touched it. Nothing "
+                              "changed. Ask Claude."), result["said"]
+
+    # The folder standing on a branch that is not main: reset would move
+    # THAT branch, so it is refused before it is run.
+    fake, restore = _with_fake_git({
+        ("fetch",): "", ("rev-list", "--count", "origin/main..main"): "1\n",
+        ("rev-parse", "--abbrev-ref", "HEAD"): "fix-something\n",
+        ("reset",): "",
+    })
+    try:
+        result = dash.undo_main()
+    finally:
+        restore()
+    assert result["undone"] is False
+    assert "standing on fix-something, not main" in result["said"], \
+        result["said"]
+    assert not fake.ran("reset")
+
+    # No network: the same sentence Push gives, and nothing after.
+    fake, restore = _with_fake_git({("fetch",): (128, "", "fatal: unable")})
+    try:
+        result = dash.undo_main()
+    finally:
+        restore()
+    assert result["said"] == ("GitHub could not be reached. Nothing changed. "
+                              "Try again in a moment."), result["said"]
+    assert fake.calls == [("fetch", "origin", "main")], fake.calls
+
+
+def test_restart_stops_the_app_waits_for_it_to_go_starts_it_and_then_reopens_the_window(
+) -> None:
+    """Restart, with singleton and launch faked — NEVER against the real
+    app: the owner's dictation runs from the main checkout while this
+    suite runs.
+
+    The app half: quit is asked for, then the mutex is polled until it
+    is gone, and only then is the app started — a start while the old
+    copy still holds the mutex is a second copy refused at its own door.
+    An app that is not running is simply started. An app that will not
+    let go is a sentence and no start.
+
+    The window half: the window closes itself with _relaunch set, and
+    main() opens the new copy only AFTER the instance mutex is released
+    — a copy started earlier would be the "second launch" that pokes
+    the old window and exits, leaving no dashboard at all. A restart
+    that failed keeps the window and says why on the card."""
+    import launch as launch_mod
+    import singleton as singleton_mod
+
+    import dashboard as dash
+
+    saved = (singleton_mod.is_running, singleton_mod.request_quit,
+             launch_mod.start_app)
+    log: list[str] = []
+    try:
+        answers = iter([True, True, True, False, False, False])
+
+        def running() -> bool:
+            now = next(answers, False)
+            log.append(f"running={now}")
+            return now
+        singleton_mod.is_running = running
+        singleton_mod.request_quit = lambda: (log.append("quit"), True)[1]
+        launch_mod.start_app = lambda *a, **k: (log.append("start"), True)[1]
+        result = dash.restart_app(wait_s=2.0, step_s=0.001)
+        assert result["ok"] is True, result
+        assert log == ["running=True", "quit", "running=True", "running=True",
+                       "running=False", "start"], log
+
+        # Nothing running: no quit, no wait, just the start.
+        log.clear()
+        singleton_mod.is_running = lambda: (log.append("running=False"),
+                                            False)[1]
+        result = dash.restart_app(wait_s=2.0, step_s=0.001)
+        assert result["ok"] is True
+        assert log == ["running=False", "start"], log
+
+        # It will not let go: no start, and a sentence that says so.
+        log.clear()
+        singleton_mod.is_running = lambda: True
+        result = dash.restart_app(wait_s=0.02, step_s=0.001)
+        assert result["ok"] is False
+        assert "did not stop" in result["said"], result["said"]
+        assert log == ["quit"], log
+    finally:
+        (singleton_mod.is_running, singleton_mod.request_quit,
+         launch_mod.start_app) = saved
+
+    # The window: a restart that worked closes it with the one word
+    # main() reads; one that failed leaves it, with the sentence.
+    real = dash.restart_app
+    with _window() as board:
+        if board is None:
+            return
+        board._scan_changes = lambda: None
+        board._write_digest = lambda: None
+        board._show("Problems")
+        try:
+            dash.restart_app = lambda *a, **k: {"ok": False,
+                                                "said": "It would not stop."}
+            board._restart_all()
+            assert board._pushing == "restart"
+            assert board._push_said[dash.TRUNK] == \
+                "Restarting — the app takes about 25 seconds to load."
+            for _ in range(60):
+                board.root.update()
+                if board._pushing is None:
+                    break
+                time.sleep(0.02)
+            assert board._pushing is None, "the restart never came back"
+            assert board._push_said[dash.TRUNK] == "It would not stop."
+            assert not board.closing and board.root.winfo_exists(), \
+                "a failed restart took the window away"
+            assert not board.__dict__.get("_relaunch")
+
+            dash.restart_app = lambda *a, **k: {"ok": True, "said": ""}
+            board._restart_all()
+            for _ in range(60):
+                try:
+                    board.root.update()
+                except Exception:         # the root is gone: that is the
+                    break                 # point
+                if board.closing:
+                    break
+                time.sleep(0.02)
+            assert board.closing, "a restart that worked left the window up"
+            assert board.__dict__.get("_relaunch") is True, \
+                "the window closed without asking to come back"
+        finally:
+            dash.restart_app = real
+
+    # main(): release, THEN relaunch — and no relaunch when the window
+    # closed for any other reason.
+    import singleton as singleton_mod
+    order: list[str] = []
+
+    class Lock:
+        def __init__(self, name) -> None:
+            order.append(f"lock {name}")
+
+        def release(self) -> None:
+            order.append("release")
+
+    class Window:
+        wants = True
+
+        def run(self) -> bool:
+            order.append("run")
+            return Window.wants
+
+    saved = (singleton_mod.InstanceLock, dash.Dashboard,
+             dash._relaunch_dashboard)
+    try:
+        singleton_mod.InstanceLock = Lock
+        dash.Dashboard = Window
+        dash._relaunch_dashboard = lambda: (order.append("relaunch"), True)[1]
+        assert dash.main() == 0
+        assert order == [f"lock {singleton_mod.DASHBOARD_MUTEX}", "run",
+                         "release", "relaunch"], order
+        order.clear()
+        Window.wants = False
+        assert dash.main() == 0
+        assert order == [f"lock {singleton_mod.DASHBOARD_MUTEX}", "run",
+                         "release"], order
+    finally:
+        (singleton_mod.InstanceLock, dash.Dashboard,
+         dash._relaunch_dashboard) = saved
+
+
+def test_a_press_on_push_or_undo_runs_off_the_tk_thread_and_asks_git_again_after(
+) -> None:
+    """The two git buttons share one path: the card says it is going,
+    every button is flat until the answer is back, the answer becomes
+    the card's amber sentence, and the facts are asked for again rather
+    than patched — a push moved them to GitHub, an undo took them off
+    this folder."""
+    import dashboard as dash
+
+    with _window() as board:
+        if board is None:
+            return
+        # Not closing=True here: the answer comes back on the pump, and
+        # a closing window pumps once and stops.
+        asked: list[str] = []
+        board._scan_changes = lambda: asked.append("scan")
+        board._write_digest = lambda: None
+        board._show("Problems")
+        asked.clear()
+        real = (dash.push_main, dash.undo_main)
+        threads: list[str] = []
+        try:
+            dash.push_main = lambda: (threads.append(
+                threading.current_thread().name),
+                {"pushed": True, "said": "Sent, in the test."})[1]
+            board._push_main()
+            assert board._pushing == "push"
+            assert board._push_said[dash.TRUNK].startswith("Pushing…")
+            board._undo_main()                  # a second press: ignored
+            for _ in range(60):
+                board.root.update()
+                if board._pushing is None:
+                    break
+                time.sleep(0.02)
+            assert board._pushing is None
+            assert threads == ["changes-push"], threads
+            assert board._push_said[dash.TRUNK] == "Sent, in the test."
+            assert asked == ["scan"], asked
+
+            dash.undo_main = lambda: {"undone": True, "said": "Undone, in "
+                                                              "the test."}
+            board._undo_main()
+            assert board._pushing == "undo"
+            for _ in range(60):
+                board.root.update()
+                if board._pushing is None:
+                    break
+                time.sleep(0.02)
+            assert board._push_said[dash.TRUNK] == "Undone, in the test."
+            assert asked == ["scan", "scan"], asked
+        finally:
+            dash.push_main, dash.undo_main = real
 
 
 def test_an_answered_report_reopens_and_the_x_asks_before_it_deletes(
@@ -19740,7 +20290,7 @@ def test_an_answered_report_reopens_and_the_x_asks_before_it_deletes(
             if board is None:
                 return
             board.closing = True
-            board._scan_weekly = lambda: None   # git is not the subject
+            board._scan_changes = lambda: None   # git is not the subject
             board._write_digest = lambda: None  # nor is his problems.md
             board._problems_store = lambda: store
             board._show("Problems")
@@ -19864,7 +20414,7 @@ def test_pressing_the_x_on_a_report_keeps_the_page_where_he_was_reading(
             if board is None:
                 return
             board.closing = True
-            board._scan_weekly = lambda: None
+            board._scan_changes = lambda: None
             board._write_digest = lambda: None
             board._problems_store = lambda: store
             board._show("Problems")
@@ -26512,14 +27062,15 @@ def test_the_window_has_six_places_and_every_one_of_them_is_registered():
     There are SIX, in this order, and Settings is always last: Home (a
     summary and nothing more), Corrections (the second reading's
     proposals and the words it has learned), Problems (his reports, the
-    routine's questions, the weekly branches), Said (transcripts.log
-    read back), Keys, Settings. It was three for one evening, with the
-    whole desk on the home; he read that home and said "Home should be a
-    summary, and then maybe add more tabs". Home, Corrections, Problems
-    and Said are new words for old screens, so NAV_GLYPH is what says
-    whose glyphs they borrow. Every place has to fit along the 56 px top
-    bar beside the state chip and the three buttons — which is why the
-    wordmark is gone and the tabs sit at a gap of 18."""
+    routine's questions, what is here and not on GitHub), Said
+    (transcripts.log read back), Keys, Settings. It was three for one
+    evening, with the whole desk on the home; he read that home and said
+    "Home should be a summary, and then maybe add more tabs". Home,
+    Corrections, Problems and Said are new words for old screens, so
+    NAV_GLYPH is what says whose glyphs they borrow. Every place has to
+    fit along the 56 px top bar beside the state chip and the three
+    buttons — which is why the wordmark is gone and the tabs sit at a
+    gap of 18."""
     import dashboard as dash
     import ui
 
