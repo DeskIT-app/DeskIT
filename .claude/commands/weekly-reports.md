@@ -10,15 +10,22 @@ is not a batch job printing into a void: it runs as a **Claude Code scheduled
 task**, so it is a **real session with a live composer**. The session stays
 there after the run ends. He wakes up, reads it, and can type into it.
 
-Two consequences, and they shape the whole file:
+Three consequences, and they shape the whole file:
 
 - **You can ask a real question** — `AskUserQuestion` puts clickable options in
   front of him (§2). You are not restricted to prose he has to answer somewhere
   else.
+- **He answers in this same chat, and nowhere else.** A click on a chip, typed
+  words, or both — that is his answer. The run records it in the questions
+  store word for word, as his, and builds it in the same session (§8b). There
+  is no other surface: the answer card DeskIT once drew is off, and
+  `dashboard._questions_store`'s docstring records the decision — the routine
+  asks in the session and reads the answer there.
 - **He is asleep while you work.** So nothing may *wait* on him mid-run. Every
   build, every document, every close happens first; the asking is the last
   thing the run does (§8b), and by then there is nothing left undone that his
-  silence could hold up.
+  silence could hold up. The questions wait in the session until he comes to
+  it; when he answers, the session that asked is the one that builds.
 
 Everything else you need is below or on disk. Working directory is the repo
 root; every path below is relative to it.
@@ -38,12 +45,15 @@ chat write the code. He has decided against that shape, in these words:
 > the routine to do everything. I want it to be full autonomous."
 
 So the run has **two jobs**, and which one a report gets is decided by exactly
-one fact: **whether his answer to it is already on disk.**
+one fact: **whether his answer to it is on disk** — recorded there by an
+earlier run, or recorded by this run from what he answers in the chat at the
+end (§8b).
 
 - **He has answered it → build it.** His recorded answer *is* the approval.
   There is no second gate, no "confirm before starting", no waiting for a chat.
   A recorded answer that sits unbuilt for a week is the failure this change was
-  made to remove.
+  made to remove — and so is an answer he typed into the session that the
+  session then only quoted back at him.
 - **He has not answered it → investigate it, then write the question aside and
   go on to the next report.** One question, as many real options as the
   question actually has, and no code. It stays open.
@@ -104,7 +114,7 @@ Three rules fall out of that, and they are not negotiable:
 
 ---
 
-## The two rules that outrank everything else in this file
+## The three rules that outrank everything else in this file
 
 ### 1. The honesty rule, in his words
 
@@ -120,33 +130,34 @@ rule matters MORE now than it did when the routine only wrote prose, not less:
 a guess used to cost him a paragraph he could argue with, and now it costs him
 a branch full of code written against a misreading.
 
-### 2. Never answer your own question
+### 2. Never invent an answer — only his words, recorded verbatim
 
-**You may build only an answer he wrote. You may never write an answer.**
+**You may build only an answer he gave. You may never write one for him.**
 
-Nothing in this run may call the questions store's `answer(...)` — not to
-record what you inferred, not to fill in an obvious blank, not to save him a
-keystroke on a question whose answer you are certain of, not "provisionally so
-the build can proceed". `PENDING` is a wall, and the only hand that moves a
-question past it is his, from inside DeskIT.
+An answer is something he did: a chip he clicked, words he typed, or both, in
+this session's chat — or an answer an earlier run recorded from him the same
+way, already `ANSWERED` in the store. Nothing else is an answer. Not what you
+inferred, not an obvious blank filled in, not a keystroke saved on a question
+whose answer you are certain of, not "provisionally so the build can proceed".
+**If he has not answered, the question stays `PENDING`,** and `PENDING` is a
+wall.
 
-**`AskUserQuestion` does not open a side door in that wall, and the store makes
-sure of it.** `Store.mark_built` refuses any question that is not `ANSWERED`
-(read it — the check is explicit, and its comment is *"so nothing can be
-recorded as built off a question he never answered"*). So even if he is awake
-and clicks an option in the session while the run is still alive, that click
-cannot become a build in this run: the only route from a click to `ANSWERED` is
-`answer(...)`, and `answer(...)` is his. A live answer is real and it is his, so
-**quote it verbatim in your output** — but the question stays `PENDING`, his
-DeskIT card still carries it, and next Saturday builds it from the store with
-the audit trail whole. That is one week of latency bought for the guarantee
-that every line this routine commits traces to a row he wrote. It is a good
-trade and it is not yours to renegotiate at 4 AM.
+The questions store is built so the wall holds. `answer(...)` exists to record
+*his* answer and nothing else, and this run calls it for exactly one purpose:
+when he answers in the chat, record what he did, word for word, as his —
+`answer(ident, choice=<the index he picked, or None>, text=<his words,
+verbatim>, by="owner")`; §8b has the mechanics. `Store.mark_built` refuses any
+question that is not `ANSWERED` (read it — the check is explicit, and its
+comment is *"so nothing can be recorded as built off a question he never
+answered"*), so every line this routine commits traces to a row that holds what
+he said, in his words, and the audit trail is whole. The row is the record; the
+chat is where it came from; the build happens in the same session, not a week
+later.
 
 If you are ever about to reason *"he would obviously pick option 2"* — stop.
 That sentence is the entire failure mode this design exists to prevent. Picking
 for him turns a routine he can leave running into a routine that writes code he
-never asked for, and one such branch would cost the feature his trust
+never asked for, and one such build would cost the feature his trust
 permanently. An unanswered question costs him thirty seconds on Sunday morning.
 Those are not comparable prices.
 
@@ -158,6 +169,45 @@ prohibited move it is. The number of options has no bearing on this rule. Two
 options, one option's worth of doubt, a question you are ninety-nine per cent
 sure of — `PENDING` is still a wall, and the only hand that moves a question
 past it is his.
+
+### 3. Everything he reads is in Hebrew, in plain words, and short
+
+He read the chat of the 2026-09-12 run and said it used *"המון מילים באנגלית
+ומילים של מתכנתים"* — lots of English words and programmer words. So, for every
+word that is meant for him — the run's chat messages, the questions and their
+options, the summary (§5), the notification card (§8a), the fallback message
+(§2) — three things hold:
+
+- **Hebrew.** Not English, and not Hebrew with English words dropped into it.
+  Product names he uses himself are fine, in Hebrew letters: דסק-איט, גיטהאב,
+  קלוד.
+- **Plain words.** No programmer words: no function or file names, no module
+  names, no config keys, no git words (branch, commit, push, merge, fetch), no
+  test names, no numbers he did not ask for. Say what a thing does *for him* —
+  "the app now warns you when the microphone is silent" — not how it does it —
+  "recorder.py samples the level every 100 ms".
+- **Short.** If he does not need to know something, do not say it. His words on
+  2026-09-05: *"אני לא צריך לדעת שום דבר מלבד השאלות."* The technical detail —
+  files, functions, commits, measurements, test output — belongs in the plan
+  (§4) and in `run.log` (§9), which are for whoever builds next, not for him.
+
+**Bad** — a real line from the 2026-09-12 run, put in front of him as a
+question:
+
+> `review.snippet` קורא לצדדים right/left לפי כרטיס ימין-לשמאל ו-`review_card._text` מצייר כל טקסט עם rtl=True, אז שינוי במשפט אנגלי יוצא הפוך. מה לתקן?
+
+He cannot answer that without first learning what `review.snippet` is, and he
+did not ask to. **Good** — the same finding, said for him:
+
+> בכרטיס הקריאה השנייה, משפט באנגלית מוצג הפוך. מה לתקן?
+
+Same question, same options after it; everything the bad line knew about the
+code went into the plan, where the person who builds it will read it.
+
+This rule does not touch what is written for the builder. The plan, the
+archive and `run.log` stay in English and stay exact — file names, functions,
+commit subjects, the failing test's name. It is the split that matters: he gets
+the question, the builder gets the evidence.
 
 ---
 
@@ -190,11 +240,11 @@ option count, `OPTIONS_MIN` and `OPTIONS_MAX`.
 store is the authority on how many options a question may have, the print in
 the next block hands you both, and the range is there so a question can be the
 size it actually is. Every entry in `options` is a real, pickable choice —
-**there is no open option and no "something else" slot.** Both places he
-answers add the escape hatch themselves: the DeskIT card carries a free-text
-box under the buttons, and `AskUserQuestion` appends its own "Other" choice. So
-a slot never has to be spent on one, and it must not be. That is also why the
-floor is above one: two genuine choices are a choice, and one is not.
+**there is no open option and no "something else" slot.** The place he
+answers supplies the escape hatch itself: `AskUserQuestion` appends its own
+"Other" choice, and in the numbered fallback (§2) he simply types. So a slot
+never has to be spent on one, and it must not be. That is also why the floor
+is above one: two genuine choices are a choice, and one is not.
 
 `clean()` enforces the range by **refusing**, never by adjusting, and its
 docstring says why: *"Refusing, rather than padding the short list or trimming
@@ -203,8 +253,8 @@ changes the question he is being asked."* Carry that principle out of the store
 and into every place a question is rendered. It is what settles the one seam
 between the store and the tool: `AskUserQuestion` takes at most **four**
 options per question while `OPTIONS_MAX` is five, and a five-option question is
-therefore **not trimmed to fit the tool** — it goes to him on the card, which
-has no such ceiling (§8b).
+therefore **not trimmed to fit the tool** — it is asked in the numbered form in
+the run's final message, which has no such ceiling, and the run says so (§8b).
 
 An answered item carries two fields, `choice` and `text`, and it is normal for
 both to be filled. §3 says what to do with that; the short version is that the
@@ -262,11 +312,11 @@ Set `DATE` to today's local date as `YYYY-MM-DD`.
 - **Every open report already has a `PENDING` question and nothing has changed
   → write only the summary**, as a short standing-questions note (§5, questions
   block plus the carry-over lines, nothing else). No new plan, no new archive —
-  there is nothing new to plan or archive. The card says answers are wanted. Do
-  not manufacture a document to look busy. **Still put the carry-overs to him
-  with `AskUserQuestion` (§8b)** — a chip he can click is the one thing this
-  week can add to a question he has been ignoring on a card, and it costs him
-  nothing to see it.
+  there is nothing new to plan or archive. The notification card says answers
+  are waiting in the session. Do not manufacture a document to look busy.
+  **Still put the carry-overs to him with `AskUserQuestion` (§8b)** — the chat
+  is the only place he answers, so a question not asked there this week is a
+  question he cannot answer this week, and a chip costs him nothing to see.
 
 **A question that is already `PENDING` is never asked again — into the store.**
 Putting a standing question to him again as a chip is not asking it again; it
@@ -414,8 +464,8 @@ Two things the tool does for you, and doing them yourself is a bug:
 
 1. **It appends its own "Other" free-text choice.** So do **not** write an
    escape-hatch option, do not append "או תכתוב לי" to the last one, and do not
-   mention a text box anywhere. Every word about it is a word he reads instead
-   of the choice, and it is exactly the line he had removed.
+   mention "Other" or a place to type anywhere. Every word about it is a word
+   he reads instead of the choice, and it is exactly the line he had removed.
 2. **It does not want the list padded.** Two real options is a finished
    question. Everything under *The options are the hard part* below applies to
    the tool's `options` exactly as it applies to the store's.
@@ -494,11 +544,12 @@ evidence work.
 Pass it through a small JSON file rather than a command line: the questions and
 the options are Hebrew, and a console codepage must not be what mangles them.
 
-**The store write is not where the answer is collected — the tool and the card
-are. It is there so the question survives.** He can close the session without
+**The store write is not where the answer is collected — the chat is (§8b). It
+is there so the question survives.** He can close the session without
 answering, and a session he closed is a question that was never asked at all:
-no card, no badge, nothing next Saturday can find. A row in `questions.json` is
-what makes his silence recoverable instead of final. Same reason it goes into
+nothing next Saturday can find, nothing to put to him again. A row in
+`questions.json` is what makes his silence recoverable instead of final, and it
+is the row his answer is written into when it comes. Same reason it goes into
 the summary (§5) and the plan's `## 5` (§4): three durable copies of a question
 whose asking may have evaporated.
 
@@ -508,10 +559,10 @@ behind.
 
 **Two consequences of `ask()`'s de-duplication, which matches on the question
 text word for word** (read it: same `report_id`, same text, still `PENDING`
-returns the standing item instead of a second card):
+returns the standing item instead of a second row):
 
 - **A report's tag must be stable.** Reword the tag next Saturday and the store
-  sees a new question and gives him a second card for the same report.
+  sees a new question and asks him twice about the same report.
 - **Never add a tag to a carry-over question already in the store.** §0d says
   repeat it verbatim and that outranks this section. The tag for a carry-over
   goes in `header` and in the summary line only; the stored text stays exactly
@@ -523,6 +574,13 @@ It happens — it was missing entirely on 2026-09-05, and no environment variabl
 brought it back. When it is not there, **ask in the run's final message**, one
 question per paragraph, each opening with its three-word tag, the options as
 ordinary numbered sentences.
+
+**The same numbered form also carries the questions the tool cannot** (§8b): a
+question with five options (the tool takes four), the fifth and later questions
+of a run (the tool takes four per call), and a carry-over whose stored text
+still ends in an old "משהו אחר" line. Those go under the tool's chips, in the
+same final message, in the same numbered form — and one short Hebrew line says
+he answers these by typing the number or the words.
 
 **NEVER PUT THE QUESTION OR THE OPTIONS IN A FENCED CODE BLOCK.** He showed the
 result on 2026-09-05 and it is unreadable: a fence forces left-to-right, so
@@ -542,10 +600,11 @@ belongs. His words, after a run that printed the lot: *"אני לא צריך ל�
 where the rest is. If there are no questions, it is one line long.
 
 **This is worse than the tool and it is a fallback, not an alternative.** He
-gets no buttons and answers by typing. Say in `run.log` that the tool was
-missing — but never let the tool being absent become the reason a run ends up
-**silently not asking**. Not asking is the one outcome this section exists to
-make impossible.
+gets no buttons and answers by typing — and a typed answer is recorded and
+built exactly as a click is (§8b). Say in `run.log` that the tool was missing —
+but never let the tool being absent become the reason a run ends up **silently
+not asking**. Not asking is the one outcome this section exists to make
+impossible.
 
 ### The question itself
 
@@ -564,18 +623,18 @@ That good example is the standard. Hold every question you write against it.
 ### The options are the hard part
 
 **Every entry in `options` is a real choice he could pick and you would carry
-out. There is no open option.** Both surfaces supply one already: the DeskIT
-card always carries a free-text box under the buttons — it is there whatever
-the options are, and it is there when there are no options at all — and
-`AskUserQuestion` appends its own "Other". So the run never has to spend a slot
+out. There is no open option.** The way he answers supplies one already:
+`AskUserQuestion` appends its own "Other", and in the numbered fallback he can
+type whatever he likes under the numbers. So the run never has to spend a slot
 on an escape hatch, and it must not. An option that reads "something else, I'll
-write it" spends a line of a small card telling him about a box he is already
-looking at.
+write it" spends a line of a short list telling him about a way out he is
+already looking at.
 
-**No option may point at the box either.** Do not append "או תכתוב לי" to the
-last one, do not close the question with an invitation to type, and do not
-mention the field anywhere. He knows it is there. Every word about it is a word
-he reads instead of the choice, and it is exactly the line he had removed.
+**No option may point at the way out either.** Do not append "או תכתוב לי" to
+the last one, do not close the question with an invitation to type, and do not
+mention "Other" or a text field anywhere. He knows it is there. Every word
+about it is a word he reads instead of the choice, and it is exactly the line
+he had removed.
 
 ### How many — write the size the question actually is
 
@@ -600,8 +659,8 @@ question, and that is a finished question.
 
 > ההדבקה נתקעת אחרי תמלול ארוך. מה לעשות?
 >
-> 1. להאריך את `injector.SETTLE_SECONDS` כך שהחלון יספיק לקבל את ה-clipboard.
-> 2. לשלוח את צירוף ההדבקה פעם שנייה כשהחלון לא קיבל כלום.
+> 1. לחכות עוד רגע לפני ההדבקה, כדי שהחלון יספיק לקלוט את הטקסט.
+> 2. להדביק פעם שנייה אם החלון לא קיבל כלום.
 > 3. להשאיר את זה ולראות אם זה חוזר עוד פעם.
 
 Option 3 is not a fix; it is the run declining the work, dressed as a decision
@@ -609,8 +668,11 @@ he made. He now reads three lines to settle a two-way question, and the two
 real fixes look like a shrug's worth of alternatives. The same question at its
 real size is better in every way:
 
-> 1. להאריך את `injector.SETTLE_SECONDS` כך שהחלון יספיק לקבל את ה-clipboard.
-> 2. לשלוח את צירוף ההדבקה פעם שנייה כשהחלון לא קיבל כלום.
+> 1. לחכות עוד רגע לפני ההדבקה, כדי שהחלון יספיק לקלוט את הטקסט.
+> 2. להדביק פעם שנייה אם החלון לא קיבל כלום.
+
+(Which setting "a moment longer" is, and what it is now, is a plan line — rule
+3. The option says what changes for him.)
 
 If waiting-and-seeing really is one of the things you would do, it is not an
 option — it is the verdict `understood, cause not yet established` with a
@@ -633,20 +695,25 @@ measurement he wants first.
 5. **Every option must be one you would actually carry out.** A decoy option
    you would refuse if he picked it is a lie in a menu, and so is one you added
    to reach a count.
-6. **No option mentions the text box, and none of them is an escape hatch.**
-   The box is on the card; the options are for choosing.
+6. **No option mentions "Other" or a place to type, and none of them is an
+   escape hatch.** The way out is already under the list; the options are for
+   choosing.
+7. **Each option is in plain Hebrew** (rule 3). An option that names a file, a
+   function or a setting asks him to read code before he can click.
 
 **Good** — a real one from this repo, three genuinely different amounts of work:
 
-> יש 21 צלילים ב-`cues.CUES`, ו-11 מהם אותה קווינטה בגבהים שונים ושני זוגות
-> רחוקים חצי טון בלבד. מה לעשות?
+> יש 21 צלילים באפליקציה, ו-11 מהם אותו צליל בגובה אחר, ושני זוגות כמעט זהים.
+> מה לעשות?
 >
 > 1. לבנות סט חדש — לכל צליל אופי אחר, לא גובה אחר.
-> 2. להשאיר את הסט ולהרחיק רק את שני הזוגות הקרובים.
+> 2. להשאיר את הסט ולהרחיק רק את שני הזוגות הדומים.
 > 3. להשתיק את הצלילים שאני לא צריך ולהשאיר חמישה.
 
 Three, because there are three things worth doing here — not because three is a
-number. And no fourth line, because the box is on the card.
+number. And no fourth line, because the way out is already there. The two
+counts stay in, because they are what the question turns on; rule 3 forbids the
+numbers he did not ask for, not the ones the question is about.
 
 **Bad** — the same idea three times, so his pick decides nothing:
 
@@ -673,8 +740,8 @@ happens to come out at three most of the time because those three are genuinely
 distinct amounts of work — but if "build it small" and "build it fully" are the
 same build for a one-line feature, ask two.
 
-In all four cases the free-text escape — the card's box, the tool's "Other" —
-is already under them and no option refers to it.
+In all four cases the free-text escape — the tool's "Other", or typing under
+the numbers — is already there and no option refers to it.
 
 ---
 
@@ -698,12 +765,15 @@ report, each with the answer it came from in its message.
 
 ### Read the whole answer — the choice AND the text
 
-An answered item carries two fields and both of them are his:
+An answered item carries two fields and both of them are his — recorded by
+§8b from what he did in the chat, or by an earlier run the same way:
 
-- `choice` — the index into the stored `options` of the one he picked, or
-  `null` when he picked none.
-- `text` — what he typed into the card's free-text box, or `""` when he typed
-  nothing.
+- `choice` — the index into the stored `options` of the one he picked (the
+  store counts from zero, so the second chip and a typed "2" are both
+  `choice=1`), or `null` when he picked none.
+- `text` — the words he typed, verbatim: the tool's "Other", a typed reply in
+  the numbered fallback, or a sentence he added after a click — or `""` when he
+  typed nothing.
 
 The store keeps both because he uses both. It refuses an answer only when
 **both** are empty, which means a pick on its own, typed words on their own,
@@ -713,11 +783,11 @@ third is what this section exists for.
 **A `choice` and a `text` together mean the text modifies or overrides the
 option he picked: his words win.** Building the canned option and filing the
 sentence as a comment is how this feature breaks, because it throws away the
-only part of the answer he wrote himself. His own example of why he wanted the
-box at all is picking *"run before the backup"* and then typing *"actually
-after the backup, so that it doesn't…"* — the option carried him most of the
-way and the sentence corrected it. The thing to build is the corrected one, not
-the one on the button.
+only part of the answer he wrote himself. His own example of why he wanted to
+type as well as pick is picking *"run before the backup"* and then typing
+*"actually after the backup, so that it doesn't…"* — the option carried him
+most of the way and the sentence corrected it. The thing to build is the
+corrected one, not the one on the button.
 
 So, in this order:
 
@@ -732,9 +802,9 @@ So, in this order:
    again, and go on to the next one.** One new question in the store, quoting
    both halves of what he said and asking which he meant; it joins the
    collected questions for §8b like any other. That is this report's dead end,
-   not the run's. That costs him one line on Sunday. A branch built on the
-   wrong reading of a sentence he took the trouble to type costs him the
-   feature's credibility, and you cannot tell from here which way he meant it.
+   not the run's. That costs him one line on Sunday. Code built on the wrong
+   reading of a sentence he took the trouble to type costs him the feature's
+   credibility, and you cannot tell from here which way he meant it.
 5. `choice` is `null` and `text` is all there is: the sentence is the entire
    answer, and rule 2 at the top of this file applies with full force — if it
    does not authorise a specific change, it is not an approval, and the report
@@ -1045,11 +1115,12 @@ and each entry has exactly these five parts and no sixth:
   brackets, so a reader can match the entry to the chip he clicked.
 - **The options**, identical to the store's, in order and complete — however
   many the question has. Do not renumber them, do not add a closing line about
-  writing a sentence instead, and do not note that a text box exists.
-- **How it was asked** — in the `AskUserQuestion` call, or not asked with the
-  tool this run (§8b) and why: it was past the fourth chip, it has five
-  options, or the tool failed. That line is what tells next Saturday whether
-  his silence means he declined or never saw it.
+  writing a sentence instead, and do not note that he can type instead.
+- **How it was asked** — as a chip in the `AskUserQuestion` call, or in the
+  numbered form in the final message (§8b) and why: it was past the fourth
+  chip, it has five options, its stored text ends in an old open line, or the
+  tool failed. That line is what tells next Saturday whether his silence means
+  he declined or never saw it.
 
 No root cause. No candidate fix. No "probably". **No option marked as the one
 you would choose.** If you have a theory you could not test, it belongs in §4
@@ -1066,9 +1137,13 @@ a week with a bare one-line report is a lie, and he will catch it.
 ## 5. Write `problems/weekly/<DATE>-summary.md` — the short one
 
 **This is the only document he actually reads. It must be skimmable in under a
-minute.** Write it in **Hebrew**; keep file names, symbol names, model names,
-paths, branch names and ids in English. (The repo's docs are English; this is
-his personal weekly note.)
+minute.** Write it in **Hebrew, in plain words, and short** — rule 3 at the top
+of this file, in full. No file names, no function names, no model names, no
+paths, no git words, no test names, and no report ids: a report is named by its
+three-word tag and his own quoted words, which is how he knows it (the Problems
+tab shows him his words and the day, never an id), and everything else about
+it lives in the plan. (The repo's docs are English; this is his personal weekly
+note, and it reads like one.)
 
 **The open questions come first, at the top.** They are the thing that needs
 him; everything else is only ready to read. Lead with the count. If there are
@@ -1086,16 +1161,16 @@ Shape:
 ```
 # סיכום שבועי — <DATE>
 
-<N> דיווחים · <k> קבוצות · <q> ממתינים לתשובה שלך · <b> נבנה · פירוט מלא ב-<DATE>-plan.md
+<N> דיווחים · <q> שאלות מחכות לך · <b> נבנה
 
 ## ❓ צריך תשובה ממך (<q>)
 
-- **<id>** · **הדיווח על בעיות בתמלול** · "<what he reported, 6-8 words>" — ההקלטה 2.4 שניות של שקט. הכתבת לחלון אחר, או שהמקש לא נתפס?
+- **הדיווח על בעיות בתמלול** · "<what he reported, 6-8 words>" — ההקלטה 2.4 שניות של שקט. הכתבת לחלון אחר, או שהמקש לא נתפס?
   1. הכתבתי לחלון אחר.  2. המקש לא נתפס.  3. דיברתי והמיקרופון לא קלט.
-- **<id>** · **הדיווח על הבעיות בכרטיסיות התראה** · "<what he reported>" — <a two-option question, and two lines is a finished entry>
+- **הדיווח על הבעיות בכרטיסיות התראה** · "<what he reported>" — <a two-option question, and two lines is a finished entry>
   1. <option>.  2. <option>.
-- **<id>** · **<tag>** · (נשאל ב-12 Sep, עוד ממתין) "<the same question and options, verbatim>"
-- <a question not asked with the tool this run — say so in half a line: "לא הוצגה כשאלה בסשן (חמישית בתור) — מחכה לך בכרטיסייה">
+- **<tag>** · (נשאל ב-12 בספטמבר, עוד ממתין) "<the same question and options, verbatim>"
+- <a question that was not a chip this run — say so in half a line: "נשאלה במילים בסוף השיחה, בלי כפתורים — תענה שם במספר או במילים">
 
 ## 🔨 נבנה השבוע — צריך שתסתכל ותדחוף  (הכל על weekly/<DATE>)
 
@@ -1106,10 +1181,10 @@ Shape:
 
 ## הדיווחים
 
-- ✅ **wrong** · הסוף של המשפט המציא מילים → מבטלים hotwords מה-prompt של המפענח ומודדים שוב
-- 🔍 **slow** · ההדבקה נתקעת → מקור לא אושר; מודדים את זמן ה-clipboard לפני שנוגעים בקוד
-- ❓ **other** · <report waiting on an answer, one line, no plan>
-- 💡 **idea** · לחיצה אוטומטית על try again → צריך החלטה שלך לפני שמתכננים
+- ✅ הסוף של המשפט המציא מילים → מורידים מהמפענח את רשימת המילים המיוחדות ובודקים שוב
+- 🔍 ההדבקה נתקעת → עוד לא ברור למה; קודם מודדים כמה זמן לוקחת ההדבקה
+- ❓ <report waiting on an answer, one line, no plan>
+- 💡 לחיצה אוטומטית על "נסה שוב" → צריך החלטה שלך לפני שמתכננים
 
 ## מה צריך ממך
 - <the one or two decisions only he can make, beyond the questions above,
@@ -1125,10 +1200,18 @@ quoted words — the same tag that was in the `question` text and the same idea
 so the tag is how the two line up in his head.
 
 Each question's options go in exactly as the store has them, however many there
-are — and **nothing is added to tell him he can type instead.** He answers from
-the chip or the card, and both supply their own free-text escape; the summary is
-the copy he skims, and a line about a field he cannot see from here is noise.
-Two options is a normal entry, not a truncated one.
+are — and **nothing is added to tell him he can type instead.** He answers in
+the chat, where the way out is already in front of him; the summary is the copy
+he skims, and a line about it here is noise. Two options is a normal entry, not
+a truncated one.
+
+**The lines under `## הדיווחים` say what he reported and what happens next, in
+the words he would use** — "the app will warn you", "first we measure how long
+the paste takes" — never the cause as the code sees it. The cause, the file,
+the function and the number are in the plan. If a line cannot be said without a
+file name, it is a plan line, not a summary line; and the kind he filed it as
+(`wrong`, `slow`, `idea`) is a store value, not a word for him — the marker at
+the front of the line is what tells him where it stands.
 
 A carry-over question is marked with the date it was first asked and repeated
 **verbatim** from the store, options included, even if its wording predates
@@ -1189,8 +1272,13 @@ The test of this file: **could someone reconstruct the report from it with
   truth. `ANSWERED` is what makes next Saturday try again.
 - A question whose report is no longer open, or which the week made
   meaningless → `drop`. Say in your output which and why.
-- **`answer(...)` is never called by this run.** See rule 2 at the top of this
-  file. If you find yourself reaching for it, you have already gone wrong.
+- **`answer(...)` is called for one thing only: to record HIS chat answer,
+  verbatim** — `answer(ident, choice=<index or None>, text=<his words>,
+  by="owner")`, from what he clicked or typed in §8b, and never anything the
+  run inferred, rounded off, or filled in. See rule 2 at the top of this file.
+  If you are reaching for it with words that are not his, you have already gone
+  wrong. It returns `False` on a question that is no longer `PENDING`; report
+  that rather than retrying, because it means an answer is already there.
 
 ### 7b. Close, in this order, and only these reports
 
@@ -1244,7 +1332,8 @@ first, because it is what reaches him when he is nowhere near this machine, and
 it must not be held up behind a dialog nobody is awake to answer. The
 `AskUserQuestion` call is the last act of the run, because it is the one thing
 that may sit there until he wakes up — and by then everything is built, tested,
-committed, written and closed, so his silence holds up nothing at all.
+committed, written and closed, so his silence holds up nothing at all. And when
+the answer comes, the session that asked is the one that builds it (§8b).
 
 ### 8a. The card
 
@@ -1259,7 +1348,7 @@ branch, because a question blocks next Saturday and a branch only waits.
 Questions pending:
 
 ```
-.venv\Scripts\python.exe notify_hook.py --source weekly --kind input --title "הסקירה השבועית — <q> שאלות מחכות לך" --body "<N> דיווחים · <b> נבנה על weekly/<DATE> · problems/weekly/<DATE>-summary.md"
+.venv\Scripts\python.exe notify_hook.py --source weekly --kind input --title "הסקירה השבועית — <q> שאלות מחכות לך בשיחה עם קלוד" --body "<N> דיווחים · <b> נבנה על weekly/<DATE> · problems/weekly/<DATE>-summary.md"
 ```
 
 Nothing pending but something was built:
@@ -1285,7 +1374,13 @@ And the one failure worth a card of its own, from §0b:
 after the documents are written and the closes are done — a card that arrives
 before the document exists sends him to an empty folder.
 
-### 8b. Then ask him — all of it, in one call
+**The card's words are for him, so rule 3 governs them** — Hebrew, plain,
+short — and where the questions wait is **the Claude Code session, the chat**:
+never "the card", never anywhere in DeskIT. There is no answer surface in
+DeskIT any more; a card that sends him to look for one there sends him to
+nothing, which is what happened on 2026-09-12.
+
+### 8b. Then ask him — all of it, in one call — and build what he answers
 
 Every report has had its turn. Every build is committed, every document is on
 disk, every close is done, the card is sent. **Now** put the collected
@@ -1298,41 +1393,85 @@ row.
 
 Order the questions **by how much work is blocked behind each** — most blocked
 first. That is the only ordering that matters, because it decides which ones
-get asked when there are more than fit.
+get chips when there are more than fit.
 
 **When there are more than four questions:** the tool takes at most four per
 call, and the answer is **not** a second call stacked behind the first. Ask the
-top four. The rest are **already** in the store, in the summary, and covered by
-the card — which is exactly where they would have been anyway, and the DeskIT
-card gives him the same buttons plus the same text box, with no ceiling of four
-and no ceiling of `OPTIONS_MAX` either. Nothing is lost by not chipping them;
-something is lost by making him clear one dialog to discover another. Same
-answer for a question with five options (§0b): it goes to the card intact
-rather than being trimmed to the tool's four, because trimming changes the
-question he is being asked.
+top four as chips. The rest go **in the same final message, in the numbered
+form** (§2, *If the tool is genuinely unavailable*): one paragraph per
+question, the tag first, the options as numbered sentences, and one short
+Hebrew line saying he answers those by typing the number or the words. They
+are already in the store and in the summary too, so nothing is lost by not
+chipping them; something is lost by making him clear one dialog to discover
+another. Same answer for a question with five options (§0b): it goes into the
+numbered form intact rather than being trimmed to the tool's four, because
+trimming changes the question he is being asked.
 
 **One standing rule covers every mismatch between the store's shape and the
-tool's: the card wins and nothing is edited.** The other case you will meet is
-a migrated carry-over that still ends in an old `משהו אחר` line (§0d). You may
-not remove it — verbatim outranks everything for a question already in the
-store — and chipping it would put that line next to the tool's own "Other" and
-make the run look confused about its own question. So that one goes to the card
-too, and your output says why.
+tool's: the numbered form carries it and nothing is edited.** The other case
+you will meet is a migrated carry-over that still ends in an old `משהו אחר`
+line (§0d). You may not remove it — verbatim outranks everything for a question
+already in the store — and chipping it would put that line next to the tool's
+own "Other" and make the run look confused about its own question. So that one
+goes into the numbered form too, and your output says why.
 
-Say in the summary and in your output **which questions were asked with the
-tool and which were not, and why** — past the fourth chip, five options, or the
-tool failed. A question he never saw as a chip and a question he saw and
-skipped look identical next Saturday unless this run wrote down which it was.
+Say in the summary and in your output **which questions were chips and which
+were in the numbered form, and why** — past the fourth chip, five options, an
+old open line, or the tool failed. A question he never saw and a question he
+saw and skipped look identical next Saturday unless this run wrote down which
+it was.
 
-**If he answers here and then:** his answers are his, so quote them verbatim in
-your output — and **build nothing from them.** Rule 2 and `mark_built`'s
-`ANSWERED` check say why; the questions stay `PENDING` and his card carries
-them.
+**Then wait. The questions sit in the session until he comes to it, and that
+is the design:** the run has nothing left that his silence can hold up. If the
+session ends before he answers, the questions are `PENDING` in the store and
+next Saturday puts them to him again (§0d).
+
+**When he answers — a click, typed words, or both — three things, in this
+order, for each question he answered:**
+
+1. **Record it, verbatim, as his.** `answer(ident, choice=<index or None>,
+   text=<his words>, by="owner")`, through the repo's interpreter, the Hebrew
+   passed in a small JSON file the way §2 passes a question:
+
+   ```
+   .venv\Scripts\python.exe -c "import pathlib,sys,json,questions;s=questions.Store(pathlib.Path(getattr(questions,'STORE_NAME','questions.json')));a=json.load(open(sys.argv[1],encoding='utf-8'));print(s.answer(a['id'],choice=a.get('choice'),text=a.get('text',''),by='owner'))" <a json file you wrote>
+   ```
+
+   `choice` is the index into the stored `options`, **counted from zero** —
+   match the chip's label against the item's stored `options` to find it; the
+   second chip and a typed "2" are both `choice=1`; "Other", or a typed reply
+   that is not one of the options, is `choice=None`. `text` is what he typed,
+   **every word, unchanged** — not summarised, not translated, not tidied —
+   and empty when he only clicked. Check the printed value: `True` is
+   recorded; `False` means the question was no longer `PENDING` or the file
+   could not be written, and you report that rather than retry. The row now
+   says exactly what he said, in his words, and that is the whole audit trail.
+
+2. **Build it, in this same run, through the normal build loop (§3).** The
+   question is now `ANSWERED` on disk, which is the only thing §3 ever needed:
+   read the whole answer as §3 says (the choice and the text, the text
+   winning), take the same tests gate, the same clean-file check and the same
+   one-commit-per-report rule, and `mark_built` it (§7a) when it is in.
+   Nothing about the build is different because the answer arrived at eleven
+   in the morning instead of a week ago.
+
+3. **Bring the documents up to date, and tell him in one line.** Add the build
+   to the plan's `## 2` and to the summary's `🔨` block (§4, §5), append to
+   `run.log` (§9) what was recorded and what was built, and say to him in the
+   chat, in plain Hebrew and one short line per build (rule 3), what the app
+   now does differently — *"בכרטיס הקריאה השנייה, משפט באנגלית כבר מוצג נכון"*
+   — and nothing about how.
+
+What he did not answer stays `PENDING`. An answer you cannot read as one of the
+options and cannot read as words that authorise a specific change is not an
+answer to build from; it is a new question (§3, *Read the whole answer*, rule
+4), asked in the chat the same way, in the same session.
 
 **If the tool is unavailable**, fall back to the numbered form in the run's
-final message (§2, last block). Second choice, and say in your output that it
-was used and why. The one unacceptable ending is a run that had questions and
-asked none.
+final message for every question (§2, last block). Second choice, and say in
+your output that it was used and why. He answers by typing, and a typed answer
+is recorded and built exactly as a click is — the three steps above do not
+change. The one unacceptable ending is a run that had questions and asked none.
 
 ---
 
@@ -1376,17 +1515,19 @@ The log has to carry all of this:
   stored with their count; whether it is new or a carry-over from which date;
   and **whether it went into the `AskUserQuestion` call or not, and why not**
   (past the fourth chip, five options, or the tool failed and you fell back to
-  the numbered form). If he answered any of them live, **quote his answers
-  verbatim** and say that nothing was built from them.
+  the numbered form). If he answered any of them in the session, **quote his
+  answers verbatim**, say they were recorded with `answer(...)` as his, and
+  point at the build entry above that each one became (§8b).
 - **What it deliberately left alone** — the reports it did not build and why,
   and the standing list: no push, no `config.toml`, no deletions, no
-  `problems.json` edits beyond `resolve`, no `git add -A`, no `answer(...)`, no
-  restart of the running app.
+  `problems.json` edits beyond `resolve`, no `git add -A`, no `answer(...)`
+  with any words but his own, no restart of the running app.
 - **Counts and paths** — how many reports, how many groups, how many of each
   verdict, how many built, how many blocked, and the three document paths.
 - **Anything it could not gather evidence for**, named. This is the part a
   future reader needs, because it is what next week has to capture.
 
 Then stop. Do not begin any of the work you planned but were not answered
-about, do not act on an answer that arrived during §8b, and **do not answer
-your own questions.**
+about, and **do not answer your own questions.** An answer arriving in the chat
+is the one thing that starts you again: record it, build it, bring the
+documents up to date, tell him in one line (§8b) — and then stop again.
