@@ -160,6 +160,23 @@ object Skin {
         setOnClickListener { onTap() }
     }
 
+    /** The way back, on the page: a round secondary face with an arrow. */
+    fun backButton(c: Context, onTap: () -> Unit): TextView = TextView(c).apply {
+        text = "←"
+        typeface = font(c)
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 20f)
+        setTextColor(FG)
+        gravity = Gravity.CENTER
+        includeFontPadding = false
+        contentDescription = c.getString(R.string.back)
+        background = secondaryFace(c, 22)
+        val side = dp(c, 44)
+        layoutParams = LinearLayout.LayoutParams(side, side).apply { marginEnd = dp(c, 14) }
+        isClickable = true
+        isFocusable = true
+        setOnClickListener { onTap() }
+    }
+
     /** A card: CARD face, padded, vertical. */
     fun card(c: Context, pad: Int = 18): LinearLayout = LinearLayout(c).apply {
         orientation = LinearLayout.VERTICAL

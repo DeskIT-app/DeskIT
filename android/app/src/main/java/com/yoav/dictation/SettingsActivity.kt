@@ -38,6 +38,7 @@ class SettingsActivity : Activity() {
     private lateinit var tokenField: EditText
     private lateinit var switchBack: Switch
     private lateinit var result: TextView
+    private lateinit var updateResult: TextView
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
@@ -54,8 +55,15 @@ class SettingsActivity : Activity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT)
         })
 
-        col.addView(Skin.text(this, getString(R.string.settings), 26f, Skin.FG, heavy = true)
-            .apply { setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 6)) })
+        // A way back that is on the page, not only on the phone's own bar.
+        val head = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 6))
+        }
+        head.addView(Skin.backButton(this) { finish() })
+        head.addView(Skin.text(this, getString(R.string.settings), 26f, Skin.FG, heavy = true))
+        col.addView(head)
         col.addView(Skin.text(this, getString(R.string.setup_intro), 14f, Skin.DIM).apply {
             setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 20))
             setLineSpacing(0f, 1.25f)
@@ -139,6 +147,12 @@ class SettingsActivity : Activity() {
         app.addView(Skin.text(this, getString(R.string.version_line, version), 14f, Skin.DIM)
             .apply { setPadding(0, 0, 0, Skin.dp(this@SettingsActivity, 12)) })
         app.addView(Skin.button(this, getString(R.string.check_update)) { checkForUpdate() })
+        // The answer lands under the button that asked, not under Save.
+        updateResult = Skin.text(this, "", 14f, Skin.DIM).apply {
+            setPadding(0, Skin.dp(this@SettingsActivity, 12), 0, 0)
+            visibility = View.GONE
+        }
+        app.addView(updateResult)
         col.addView(app)
 
         // Paste the whole "https://host/#t=token" line and both fields fill.
@@ -172,10 +186,10 @@ class SettingsActivity : Activity() {
         }
     }
 
-    private fun say(s: String, colour: Int) {
-        result.visibility = View.VISIBLE
-        result.text = s
-        result.setTextColor(colour)
+    private fun say(s: String, colour: Int, into: TextView = result) {
+        into.visibility = View.VISIBLE
+        into.text = s
+        into.setTextColor(colour)
     }
 
     private fun saveAndTest() {
@@ -207,7 +221,7 @@ class SettingsActivity : Activity() {
      */
     private fun checkForUpdate() {
         val url = Prefs.url(this)
-        say(getString(R.string.checking), Skin.DIM)
+        say(getString(R.string.checking), Skin.DIM, updateResult)
         thread {
             val remote = Transcriber.serverApkVersion(url)
             val mine = try {
@@ -215,10 +229,10 @@ class SettingsActivity : Activity() {
             } catch (e: Exception) { "?" }
             runOnUiThread {
                 when (remote) {
-                    null -> say(getString(R.string.update_check_failed), Skin.RED)
-                    mine -> say(getString(R.string.up_to_date, mine), Skin.GREEN)
+                    null -> say(getString(R.string.update_check_failed), Skin.RED, updateResult)
+                    mine -> say(getString(R.string.up_to_date, mine), Skin.GREEN, updateResult)
                     else -> {
-                        say(getString(R.string.update_available, remote), Skin.GREEN)
+                        say(getString(R.string.update_available, remote), Skin.GREEN, updateResult)
                         startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$url/app.apk")))
                     }
                 }

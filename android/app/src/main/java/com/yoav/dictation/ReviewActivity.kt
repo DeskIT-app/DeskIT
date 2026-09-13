@@ -96,6 +96,7 @@ class ReviewActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
+        head.addView(Skin.backButton(this) { finish() })
         head.addView(Skin.eyebrow(this, getString(R.string.second_reading)).apply {
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         })
