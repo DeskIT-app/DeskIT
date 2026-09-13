@@ -27144,28 +27144,27 @@ def test_the_deck_is_the_texts_folder_read_in_order() -> None:
         ]}, ensure_ascii=False), "utf-8")
         deck = reading.deck(texts, vocab, read)
         texts_out = [s.text for s in deck]
-        # "תעשה commit ... ל-GitHub" and "ה-branch הזה" are left out: a
-        # word he says in English comes back in Hebrew letters, and the
-        # card would ask about every one (his rule, 2026-09-13 evening)
         assert texts_out == [
+            "תעשה commit ותדחוף את זה ל-GitHub בבקשה עכשיו.",
             "אני רוצה לפתוח את הפרויקט הזה מחדש:",
             "זה לא עובד בכלל היום.",
+            "אז מה קורה עם ה-branch הזה, אפשר לדחוף אותו?",
             "הדשבורד מציג את הנתונים, אבל עדיין יש חוסר סינכרון קטן.",
         ], texts_out
-        assert deck[0].terms == () and deck[2].terms == (), \
+        assert deck[0].terms == ("GitHub",) and deck[3].terms == (), \
             [s.terms for s in deck]
-        assert deck[0].said == "a-notes" and deck[2].said.startswith("written-")
-        assert (deck[0].index, deck[0].count) == (1, 2)
-        assert (deck[2].index, deck[2].count) == (1, 1)
+        assert deck[0].said == "a-notes" and deck[3].said.startswith("written-")
+        assert (deck[0].index, deck[0].count) == (1, 3)
+        assert (deck[3].index, deck[3].count) == (1, 2)
         assert all(len(s.key) == 12 for s in deck)
         assert not reading.plausible("במה שאתה מ.")
         assert not reading.plausible("לגובה אחת,שתיים, שלוש")
         assert not reading.plausible("זה זה זה לא עובד")
         assert reading.plausible("כן עשיתי בטעות 6 לחלק ל-6 שווה 2.")
-        assert reading.sentences("שורה אחת בעברית בלי שום מילה זרה בכלל.\n"
-                                 "שורה עם מילה אחת של English בתוכה.") == [
-            "שורה אחת בעברית בלי שום מילה זרה בכלל."]
         assert reading.terms_of(vocab) == ["GitHub", "עוד branch", "it works"]
+        # the writer is offered the NAMES: a term garbled into Hebrew or
+        # corrected twice, never an English slip
+        assert reading.names_of(vocab) == ["GitHub", "עוד branch"]
         assert reading.written_count(texts) == 1
 
         # kept and skipped sentences are not offered again — a kept one
@@ -27177,9 +27176,9 @@ def test_the_deck_is_the_texts_folder_read_in_order() -> None:
         meta["key"] = deck[0].key
         side.write_text(json.dumps(meta, ensure_ascii=False), "utf-8")
         (read / reading.SKIPPED).write_text(
-            json.dumps([deck[2].key]), "utf-8")
+            json.dumps([deck[3].key]), "utf-8")
         left = [s.text for s in reading.deck(texts, vocab, read)]
-        assert left == [texts_out[1]], left
+        assert left == [texts_out[1], texts_out[2], texts_out[4]], left
 
         t = reading.tally(read, texts, today="2026-09-13")
         assert t["total_s"] == 3.0 and t["read_s"] == 3.0, t
@@ -27220,27 +27219,42 @@ def test_the_writer_turns_a_reply_into_a_file_of_sentences() -> None:
             "הקפדתי לבדוק שהרשאות המיקרופון ניתנות לפני ההפעלה.  \n"
             "ה‑dashboard מראה 80 אלף משתמשים פעילים היום, זה מדהים!  \n"
             "הקוד מנסה לגשת למשתנה שלא אותחל במצב הזה.  \n"
-            "הפתרון המהיר היה לאתחל את האובייקט לפני השימוש.")
+            "הפתרון המהיר היה לאתחל את האובייקט לפני ה-commit.")
     found = scripted(good).write(count=6, seed=0)
     assert found == [
         "היום נתקלתי בבאג שמפסיק את ההקלטה אחרי חמש שניות בדיוק.",
         "הבאג מתרחש רק כשמפעילים את המיקרופון במצב ה-דינמי.",
         "הקפדתי לבדוק שהרשאות המיקרופון ניתנות לפני ההפעלה.",
+        "ה-dashboard מראה 80 אלף משתמשים פעילים היום, זה מדהים!",
         "הקוד מנסה לגשת למשתנה שלא אותחל במצב הזה.",
-        "הפתרון המהיר היה לאתחל את האובייקט לפני השימוש.",
+        "הפתרון המהיר היה לאתחל את האובייקט לפני ה-commit.",
     ], found
     assert asked[-1] == ("Write 6 sentences. Subject: a bug you ran into "
                          "today and how to reproduce it."), asked[-1]
     # the subject turns with the seed, round the table, so paragraphs
-    # differ
+    # differ — and so do the names it is offered, three at a time
     scripted(good).write(count=6, seed=1)
     assert asked[-1].endswith(f"Subject: {reading.SUBJECTS[1]}."), asked[-1]
     scripted(good).write(count=6, seed=len(reading.SUBJECTS))
     assert asked[-1].endswith(f"Subject: {reading.SUBJECTS[0]}."), asked[-1]
+    names = ["GitHub", "slash clear", "Desk it", "ה-API"]
+    scripted(good).write(count=6, seed=0, names=names)
+    assert asked[-1].endswith("Names you may use where natural: GitHub, "
+                              "slash clear, Desk it."), asked[-1]
+    scripted(good).write(count=6, seed=1, names=names)
+    assert asked[-1].endswith("ה-API, GitHub, slash clear."), asked[-1]
+
+    # at most a third of a paragraph carries a term: asked for one in
+    # three the model gives one in two, so the surplus is dropped
+    heb, eng = "משפט בעברית בלי שום מונח בכלל.", "משפט עם commit בתוכו."
+    assert reading.mixed([heb, eng, heb, eng, eng, heb, eng]) == [
+        heb, eng, heb, heb]
+    assert reading.mixed([eng, eng]) == [eng]
+    assert reading.mixed([heb] * 6 + [eng] * 6) == [heb] * 6 + [eng] * 3
 
     short = "היום נתקלתי בבאג שמפסיק את ההקלטה."
     assert scripted(short, good).write(count=6) is not None
-    assert len(asked) == 5, "the short reply cost a second backend"
+    assert len(asked) == 7, "the short reply cost a second backend"
     assert scripted(RuntimeError("429"), good).write(count=6) is not None
     assert scripted(short, RuntimeError("down")).write(count=6) is None
     assert scripted().write(count=6) is None
@@ -27285,7 +27299,7 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
     # it writes is the next thing on the card.
     wrote: list = []
 
-    def write(_self, count=reading.WRITE_SENTENCES, seed=None):
+    def write(_self, count=reading.WRITE_SENTENCES, seed=None, names=()):
         wrote.append((count, seed))
         return ["הדשבורד מציג את הנתונים, אבל עדיין יש חוסר סינכרון.",
                 "תזכיר לי לבדוק את הענף הזה אחרי שאני שומר."]
@@ -27402,7 +27416,7 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
             assert sent[-1]["do"] == "disarm", sent[-1]
             # And with no model able to write, the card says what to do
             # instead of asking again and again
-            reading.Writer.write = lambda _self, count=0, seed=None: None
+            reading.Writer.write = lambda _self, count=0, seed=None, names=(): None
             for p in written:
                 p.unlink()
             board._corr_tab_to("read")
@@ -27439,12 +27453,15 @@ def test_a_reading_is_kept_under_the_cards_words_only_when_he_says_so() -> None:
         assert r.heard("k0", b"RIFF", 2.0, card) is None
         assert not list(root.glob("*")), "nothing filed for a stray answer"
 
-        heard = "אתה לא יכול לעשות בתוך המיין עוד ברנץ' של משהו כזה"
+        # "ברנץ'" for branch is forgiven — English on the card is not
+        # checked — and "מישהו" for משהו is not
+        heard = "אתה לא יכול לעשות בתוך המיין עוד ברנץ' של מישהו כזה"
         state = r.heard("k1", b"RIFF-one", 3.4, heard)
         h = state["heard"]
         assert h["id"] == "k1" and h["text"] == heard and h["seconds"] == 3.4
         assert h["match"]["words"] == 11 and h["match"]["same"] == 10, h
-        assert h["match"]["pairs"] == [("ברנץ", "branch")], h["match"]
+        assert h["match"]["forgiven"] == 1, h["match"]
+        assert h["match"]["pairs"] == [("מישהו", "משהו")], h["match"]
         assert h["verdict"] == "One word came back different.", h
         pending = list(root.glob("pending-*.wav"))
         assert len(pending) == 1 and pending[0].read_bytes() == b"RIFF-one"
@@ -27488,6 +27505,20 @@ def test_a_reading_is_kept_under_the_cards_words_only_when_he_says_so() -> None:
     assert (m["same"], m["missing"], m["extra"], m["pairs"]) == (4, 1, 2, [])
     assert reading.verdict(m) == ("One word is missing, 2 words came back "
                                   "that are not on the card."), reading.verdict(m)
+    # a name or a number on the card is forgiven whatever came back for
+    # it — "קומיט", "גיט האב", "שש", nothing at all; the Hebrew is not
+    for heard in ("תעשה קומיט ותדחוף את זה לגיטהאב בבקשה, 6 פעמים",
+                  "תעשה קו מיט ותדחוף את זה ל גיט האב בבקשה שש פעמים",
+                  "תעשה ותדחוף את זה בבקשה פעמים"):
+        m = reading.match("תעשה commit ותדחוף את זה ל-GitHub בבקשה, 6 פעמים.",
+                          heard)
+        assert (m["same"], m["words"]) == (9, 9), (heard, m)
+        assert m["forgiven"] >= 2 and not m["pairs"], (heard, m)
+        assert reading.verdict(m) == "Every word came back as written."
+    m = reading.match("תעשה commit ותדחוף את זה עכשיו.",
+                      "תעשה קומיט ותמחוק את זה עכשיו")
+    assert m["pairs"] == [("קומיט ותמחוק", "ותדחוף")] and m["forgiven"] == 1, m
+    assert reading.verdict(m) == "One word came back different."
     assert reading.verdict(reading.match("אחת שתיים", "")) == "2 words are missing."
     assert reading.match("Slash Clear", "slash clear")["same"] == 2, "case is not a word"
 

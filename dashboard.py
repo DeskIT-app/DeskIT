@@ -2215,9 +2215,10 @@ class Dashboard:
             pass
         tk.Label(self.sheet,
                  text="Drop any Hebrew text (.txt, .md) into corpus\\read\\texts "
-                      "— it is read here, sentence by sentence.\nA sentence "
-                      "with English in it is left out; when the folder runs "
-                      "dry, a model writes the next paragraph, Hebrew only.\n"
+                      "— it is read here, sentence by sentence; when the "
+                      "folder runs dry, a model writes the next paragraph.\n"
+                      "English words and numbers on a card are not checked — "
+                      "the Hebrew has to come back as written.\n"
                       "Kept readings go to corpus\\read — the audio never "
                       "leaves this machine.",
                  bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
@@ -2403,7 +2404,8 @@ class Dashboard:
         try:
             cfg = config_mod.load(CONFIG_PATH)
             found = reading_mod.Writer(cfg).write(
-                seed=reading_mod.written_count(READ_TEXTS))
+                seed=reading_mod.written_count(READ_TEXTS),
+                names=reading_mod.names_of(APP_DIR / "vocab.json"))
             if found:
                 path = reading_mod.save_written(READ_TEXTS, found)
         except Exception:                 # noqa: BLE001
@@ -2451,8 +2453,8 @@ class Dashboard:
                        "this window.")
             elif phase == "writing":
                 head = "Writing the next paragraph…"
-                sub = ("A model writes a few sentences, Hebrew only — text "
-                       "only, the audio goes nowhere.")
+                sub = ("A model writes a few sentences round your own "
+                       "names — text only, the audio goes nowhere.")
             else:
                 head = "Nothing left to read."
                 sub = ("Drop any Hebrew text (.txt or .md) into "

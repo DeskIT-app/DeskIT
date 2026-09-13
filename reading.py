@@ -32,12 +32,16 @@ sentence is offered once: kept or skipped, it is not offered again.
 `plausible` still stands between a file and the card: a lone letter for
 a word, punctuation glued between words, a word three times running.
 
-AND NO ENGLISH. His second verdict, the same evening: a sentence with
-"commit" in it comes back as "קומיט" whichever way he says it, and the
-card asks about every one. So a sentence with a Latin letter in it is
-not offered — from a file he dropped as much as from the writer, which
-is told to say it in Hebrew — and the terms in vocab.json, English
-nearly all of them, are no longer what a paragraph is written round.
+THE ENGLISH ON A CARD IS NOT CHECKED. A word he says in English comes
+back in Hebrew letters — "קומיט" for commit — whichever way he says it,
+and for an evening the card asked about every one, so English was kept
+off the cards altogether. That threw away the best of it: the model
+knows English, what it does not know is to write "commit" in Latin
+letters in the middle of a Hebrew sentence, and a reading labelled
+"commit" is exactly the pair that teaches it. So the sentences carry
+a term or two where a developer would say one, and `match` forgives
+whatever came back for a word with Latin or digits in it: only the
+Hebrew has to come back as written. His decision, 2026-09-13 evening.
 
 WHO OWNS WHAT. The app owns the microphone and the models, so the
 recording and the transcript happen there (main.py: the read
@@ -86,12 +90,13 @@ TEXT_SUFFIXES = (".txt", ".md")
 MIN_WORDS, MAX_WORDS = 5, 22
 _END = re.compile(r"(?<=[.?!:])\s+|\n+")
 _HEBREW = re.compile(r"^[א-ת]$")
-_LATIN = re.compile("[A-Za-z]")
+_FOREIGN = re.compile("[A-Za-z0-9]")   # a word the transcript may spell its way
 _GLUE = re.compile(r"[א-ת][.,!?;:][א-ת]")   # "אחת,שתיים"
 _MARKUP = re.compile(r"^\s*(?:[-*•]|\d+[.)]|#+)\s+")             # a list, a heading
 _DASHES = re.compile("[‐‑‒–—−]")   # ‐ ‑ ‒ – — −
 GA_ROOT = 2                  # GetAncestor: the top-level window
 WRITE_SENTENCES = 12         # what one paragraph from the model is asked to hold
+WRITE_NAMES = 3              # how many of his names it is offered at a time
 # What the paragraphs are about, one subject a paragraph, round and
 # round: the sentences have to vary, and a model asked for "a
 # paragraph" twelve times writes the same paragraph twelve times.
@@ -146,9 +151,8 @@ def plausible(text: str) -> bool:
 
 def sentences(text: str) -> list[str]:
     """`text` cut at full stops and line ends, keeping the ones a breath
-    long, plausible and free of Latin letters. A list marker or a heading
-    mark at the front of a line is stripped: the sentence is what is
-    read, not the bullet."""
+    long and plausible. A list marker or a heading mark at the front of
+    a line is stripped: the sentence is what is read, not the bullet."""
     out = []
     # The typographic hyphens a model writes "ה‑tests" with (U+2011 and
     # its neighbours) are not the hyphen vocab.words keeps a prefix on,
@@ -157,7 +161,7 @@ def sentences(text: str) -> list[str]:
     for piece in _END.split(text):
         piece = " ".join(_MARKUP.sub("", piece).split())
         if (MIN_WORDS <= len(vocab_mod.words(piece)) <= MAX_WORDS
-                and plausible(piece) and not _LATIN.search(piece)):
+                and plausible(piece)):
             out.append(piece)
     return out
 
@@ -195,6 +199,32 @@ def terms_of(vocab_path: Path) -> list[str]:
     return out
 
 
+def names_of(vocab_path: Path) -> list[str]:
+    """The NAMES among the terms, for the writer: a term the decoder
+    garbled INTO HEBREW ("גית-האב" for GitHub, "סלאש קליר" for slash
+    clear), one corrected twice, or one with a capital inside it. An
+    English word corrected to another English word ("it work" -> "it
+    works") is an English dictation's slip, not a name, and a Hebrew
+    paragraph written round "it works" reads like one."""
+    try:
+        data = json.loads(vocab_path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return []
+    out = []
+    for c in data.get("corrections") or []:
+        heard = " ".join(str(c.get("heard") or "").split())
+        meant = " ".join(str(c.get("meant") or "").split())
+        if not meant or meant in out or not _FOREIGN.search(meant) \
+                or meant.replace(" ", "").isdigit():
+            continue
+        if (_HEBREW_ANY.search(heard) is not None
+                or int(c.get("hits") or 1) >= 2
+                or re.search(r"(?<=.)[A-Z]", meant) is not None):
+            out.append(meant)
+    return out
+
+
+_HEBREW_ANY = re.compile("[א-ת]")
 _PREFIX = re.compile(r"^[א-ת]{1,3}-")     # ל-GitHub, ה-API, וב-branch
 
 
@@ -267,30 +297,46 @@ def deck(texts: Path, vocab_path: Path, read_root: Path) -> list[Sentence]:
 
 
 def match(expected: str, heard: str) -> dict:
-    """Did the transcript come back as written? Word for word.
+    """Did the transcript come back as written? Word for word — for the
+    Hebrew. A word on the card with Latin or digits in it is FORGIVEN
+    whatever came back for it ("קומיט" for commit, "גיט האב" for GitHub,
+    "שש" for 6): the transcript cannot be trusted to spell English
+    inside Hebrew, that is what the reading is for, and the card's
+    spelling is the label either way.
 
     {"words": how many the card has, "same": how many came back in
-    place, "pairs": [(heard, expected), ...] where a run of words was
-    replaced, "missing": words the transcript has no trace of,
-    "extra": words it has that the card does not}.
+    place or were forgiven, "forgiven": how many of those were
+    forgiven, "pairs": [(heard, expected), ...] where a run of Hebrew
+    words was replaced, "missing": words the transcript has no trace
+    of, "extra": words it has that the card does not}.
     """
     a = [w.casefold() for w in vocab_mod.words(expected)]
     b = [w.casefold() for w in vocab_mod.words(heard)]
     ea, hb = vocab_mod.words(expected), vocab_mod.words(heard)
-    same = missing = extra = 0
+    same = forgiven = missing = extra = 0
     pairs: list[tuple[str, str]] = []
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
             None, a, b, autojunk=False).get_opcodes():
         if tag == "equal":
             same += i2 - i1
-        elif tag == "replace":
-            pairs.append((" ".join(hb[j1:j2]), " ".join(ea[i1:i2])))
-        elif tag == "delete":
-            missing += i2 - i1
+        elif tag in ("replace", "delete"):
+            # The names and numbers in the run are not held against
+            # him, whatever came back for them or nothing at all; the
+            # Hebrew beside them still has to be there.
+            hebrew = [w for w in ea[i1:i2] if not _FOREIGN.search(w)]
+            foreign = (i2 - i1) - len(hebrew)
+            same += foreign
+            forgiven += foreign
+            if not hebrew:
+                continue
+            if tag == "replace":
+                pairs.append((" ".join(hb[j1:j2]), " ".join(hebrew)))
+            else:
+                missing += len(hebrew)
         elif tag == "insert":
             extra += j2 - j1
-    return {"words": len(a), "same": same, "pairs": pairs,
-            "missing": missing, "extra": extra}
+    return {"words": len(a), "same": same, "forgiven": forgiven,
+            "pairs": pairs, "missing": missing, "extra": extra}
 
 
 def verdict(m: dict) -> str:
@@ -328,11 +374,14 @@ _WRITE_RULES = "\n".join([
     "app.",
     "Every sentence is complete, 6 to 16 words, and ends with a full "
     "stop, a question mark or an exclamation mark. Vary the sentences.",
+    "Most sentences are Hebrew through and through. At most ONE sentence "
+    "in three carries a single term an Israeli developer says in English, "
+    "written in English letters — commit, branch, merge, pull request, "
+    "deploy, log, bug, API, or a name you are given; the other sentences "
+    "have no Latin letters at all. Never a whole sentence in English, and "
+    "never an English word transliterated into Hebrew letters.",
     "",
     "ABSOLUTE RULES:",
-    "- HEBREW ONLY. Not one English word, not one Latin letter, no "
-    "transliterated English tool names: say it in Hebrew (לשמור גרסה, "
-    "לדחוף לשרת, ענף, הבדיקות, הממשק, המסוף).",
     "- Output ONLY the paragraph: plain sentences, one after another. No "
     "title, no list, no numbering, no notes, no quotation marks.",
     "- Modern Israeli Hebrew, no nikkud, no archaic or biblical phrasing.",
@@ -377,13 +426,21 @@ class Writer:
                          str(e).splitlines()[0][:160])
 
     def write(self, count: int = WRITE_SENTENCES,
-              seed: int | None = None) -> list[str] | None:
+              seed: int | None = None, names: list[str] = ()) -> list[str] | None:
         """`count` sentences on the next subject, or None when no backend
         answered usably. The subject is SUBJECTS[seed] round the table —
         the caller passes how many paragraphs exist — so consecutive
-        paragraphs are not the same paragraph."""
+        paragraphs are not the same paragraph; `names` (names_of) are
+        offered for it to use where natural, a few at a time, turning
+        with the seed as well."""
         subject = SUBJECTS[(seed or 0) % len(SUBJECTS)]
         ask = f"Write {count} sentences. Subject: {subject}."
+        names = list(names)
+        if names:
+            start = ((seed or 0) * WRITE_NAMES) % len(names)
+            picked = [names[(start + i) % len(names)]
+                      for i in range(min(WRITE_NAMES, len(names)))]
+            ask += " Names you may use where natural: " + ", ".join(picked) + "."
         cap = max(768, count * 60)
         for backend in self._backends(cap):
             try:
@@ -392,7 +449,7 @@ class Writer:
                 log.info("writing via %s failed (%s)", backend.name,
                          str(e).splitlines()[0][:160])
                 continue
-            found = sentences(reply)
+            found = mixed(sentences(reply))
             if len(found) < max(3, count // 2):
                 log.info("writing via %s REJECTED — %d usable sentence(s) "
                          "in the reply", backend.name, len(found))
@@ -401,6 +458,23 @@ class Writer:
                      backend.name, subject)
             return found
         return None
+
+
+def mixed(found: list[str]) -> list[str]:
+    """At most a third of the sentences carry a term. Asked for one in
+    three, the model gives one in two (measured 2026-09-13: 6, 6 and 5
+    of 12), so the surplus term-bearing sentences are dropped, in
+    order, and the paragraph is a little shorter for it."""
+    hebrew = sum(1 for text in found if not _FOREIGN.search(text))
+    cap = max(1, hebrew // 2)            # f <= (h + f) / 3  <=>  f <= h / 2
+    out, used = [], 0
+    for text in found:
+        if _FOREIGN.search(text):
+            if used >= cap:
+                continue
+            used += 1
+        out.append(text)
+    return out
 
 
 def written_count(texts: Path) -> int:
