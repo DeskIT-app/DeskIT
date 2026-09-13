@@ -51,6 +51,14 @@ class ReviewActivity : Activity() {
         load(intent.getStringExtra(Notify.EXTRA_ID))
     }
 
+    /** A second notification tapped while this is open: show that one. */
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        showLoading()
+        load(intent.getStringExtra(Notify.EXTRA_ID))
+    }
+
     private fun showLoading() {
         col.removeAllViews()
         col.addView(Skin.eyebrow(this, getString(R.string.second_reading)))
