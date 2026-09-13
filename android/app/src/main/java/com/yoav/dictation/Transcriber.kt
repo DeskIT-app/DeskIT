@@ -21,6 +21,8 @@ object Transcriber {
             /** "local" or "gemini" — which engine on the PC answered. */
             val backend: String = "",
             val seconds: Double = 0.0,
+            /** A lookup's answer reads right to left (its target is Hebrew). */
+            val rtl: Boolean = false,
         ) : Result()
 
         data class Err(val message: String) : Result()
@@ -78,8 +80,8 @@ object Transcriber {
      */
     fun serverApkVersion(baseUrl: String): String? = healthField(baseUrl, "apk")
 
-    /** One field out of /health, or null if the PC did not answer. */
-    private fun healthField(baseUrl: String, field: String): String? {
+    /** The whole of /health as JSON, or null if the PC did not answer. */
+    fun healthJson(baseUrl: String): JSONObject? {
         var conn: HttpURLConnection? = null
         return try {
             conn = (URL("$baseUrl/health").openConnection() as HttpURLConnection).apply {
@@ -87,12 +89,95 @@ object Transcriber {
                 readTimeout = 15000
             }
             val body = conn.inputStream.bufferedReader().use { it.readText() }
-            JSONObject(body).optString(field, "").ifEmpty { null }
+            JSONObject(body)
         } catch (e: Exception) {
             null
         } finally {
             conn?.disconnect()
         }
+    }
+
+    /** One field out of /health, or null if the PC did not answer. */
+    private fun healthField(baseUrl: String, field: String): String? =
+        healthJson(baseUrl)?.optString(field, "")?.ifEmpty { null }
+
+    // ---- the second reading, and the lookup ----
+
+    /** One proposal of the second reading, as GET /review hands it over. */
+    class Proposal(
+        val id: String, val whenText: String, val text: String,
+        val proposed: String, val source: String,
+        val changes: List<Change>,
+    ) {
+        class Change(val before: String, val after: String,
+                     val kind: String, val why: String, val rtl: Boolean)
+
+        val fromPhone: Boolean get() = source == "phone"
+
+        companion object {
+            fun from(o: JSONObject): Proposal {
+                val changes = ArrayList<Change>()
+                val cs = o.optJSONArray("changes")
+                val snips = o.optJSONArray("snippets")
+                if (cs != null) for (i in 0 until cs.length()) {
+                    val c = cs.getJSONObject(i)
+                    val snip = snips?.optJSONObject(i)
+                    changes.add(Change(
+                        c.optString("before", ""), c.optString("after", ""),
+                        c.optString("kind", "replace"), c.optString("why", ""),
+                        snip?.optBoolean("rtl", true) ?: true))
+                }
+                return Proposal(
+                    o.optString("id", ""), o.optString("when", ""),
+                    o.optString("text", ""), o.optString("proposed", ""),
+                    o.optString("source", "desktop"), changes)
+            }
+        }
+    }
+
+    /**
+     * Every proposal still waiting on the PC — null when it cannot be
+     * asked (unreachable, bad token, the reading switched off). Blocking.
+     */
+    fun reviewPending(baseUrl: String, token: String): List<Proposal>? {
+        var conn: HttpURLConnection? = null
+        return try {
+            conn = (URL("$baseUrl/review").openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10000
+                readTimeout = 15000
+                setRequestProperty("Authorization", "Bearer $token")
+            }
+            if (conn.responseCode !in 200..299) return null
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            val items = JSONObject(body).optJSONArray("items") ?: return emptyList()
+            (0 until items.length()).map { Proposal.from(items.getJSONObject(it)) }
+        } catch (e: Exception) {
+            null
+        } finally {
+            conn?.disconnect()
+        }
+    }
+
+    /** Keep or No on one proposal. "accepted" / "rejected". Blocking. */
+    fun reviewDecide(baseUrl: String, token: String, id: String,
+                     verdict: String): Result {
+        val body = JSONObject().put("id", id).put("verdict", verdict)
+            .toString().toByteArray(Charsets.UTF_8)
+        return post(baseUrl, "/review/decide", token,
+            "application/json; charset=utf-8", body, 30000)
+    }
+
+    /**
+     * The desktop's F8 key for a selection made on the phone: the Hebrew
+     * of an English selection, or the English of a Hebrew one. Never
+     * written anywhere by the caller — shown in a box, and that is all.
+     * Same long read timeout as translate: the local model may be cold.
+     */
+    fun lookup(baseUrl: String, token: String, text: String): Result {
+        val body = JSONObject().put("text", text)
+            .toString().toByteArray(Charsets.UTF_8)
+        return post(baseUrl, "/lookup", token,
+            "application/json; charset=utf-8", body, 180000)
     }
 
     private fun post(
@@ -124,7 +209,8 @@ object Transcriber {
                     Result.Ok(o.optString("text", ""),
                         o.optString("warning", "").ifEmpty { null },
                         o.optString("backend", ""),
-                        o.optDouble("seconds", 0.0))
+                        o.optDouble("seconds", 0.0),
+                        rtl = o.optString("target", "") == "Hebrew")
                 }
             }
         } catch (e: IOException) {

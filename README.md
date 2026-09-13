@@ -3426,6 +3426,42 @@ vocabulary](#teaching-it-the-words-it-gets-wrong). The repair pass runs on
 this path as well, so the two cannot give different answers for the same
 audio.
 
+### The app around the keyboard (1.8, 2026-09-13)
+
+The keyboard wears the desktop's look — LAMPLIGHT's colours and Rubik,
+`android/.../Skin.kt` copies `skin\palette.py` value for value — on
+shapes cut for a thumb: the microphone is a pill holding the status dot
+as a **lamp**, in the dot's own five colours (listening blue, recording
+red, locked red and breathing, transcribing gold, grey with no halo when
+this machine cannot be reached), and the action key is the one gold thing
+on the surface. What opens from the icon is a small **home**, not a form:
+the state of the link as a lamp and a line (a tap asks again), a gold pill
+when this machine holds a newer build, the set-up steps only while one is
+still red, and **What you said** — the last thirty transcripts this phone
+put into a field, kept on the phone, a tap copies. Settings sit behind
+the home's one button. Three things came over from the desk with it:
+
+- **The second reading rings the phone.** A phone dictation is now kept
+  in `recent\` like a desk one (stamped `source: phone`) and read by the
+  same engine — but instead of the desktop card it becomes a
+  notification: *Did you mean…* with the proposed sentence and **Keep**
+  / **No** right on it; a tap opens the sentence whole, the doubted words
+  struck, the proposed ones lit. The keyboard asks `GET /review` a few
+  times after each dictation and the home asks when it opens; nothing
+  runs in the background otherwise. A verdict goes to `POST
+  /review/decide` as `by="phone"` and is learned on the engine's next
+  wake exactly like a dashboard verdict. The list is every pending
+  proposal, so a desk sentence can be answered from the sofa too — only
+  the phone's own ring.
+- **Lookup from the selection menu.** Select text in any app — a web
+  page, a message, a field you cannot edit, no keyboard open — and
+  **DeskIT** is in the selection menu: a box with the Hebrew of what you
+  selected, or the English if it was Hebrew. It is `POST /lookup`, the
+  F8 engine with the desk's own classification, and it writes nothing.
+- **Nothing else, on purpose.** Screenshots, the camera, the ask card,
+  pause and the screens have no place under a thumb, and the report key
+  stays at the desk.
+
 ### Setting it up
 
 1. Install Tailscale on this PC and on the phone, signed into the same

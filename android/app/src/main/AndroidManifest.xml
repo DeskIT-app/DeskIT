@@ -3,15 +3,20 @@
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The second reading rings the phone: "did you mean…", Keep / No. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:label="@string/app_name"
         android:icon="@mipmap/ic_launcher"
+        android:theme="@style/DeskIT"
         android:allowBackup="false"
         android:supportsRtl="true">
 
+        <!-- The home: the link's state, the steps, the second reading,
+             what you said. Settings live behind its one button. -->
         <activity
-            android:name=".SetupActivity"
+            android:name=".HomeActivity"
             android:exported="true"
             android:label="@string/app_name">
             <intent-filter>
@@ -19,6 +24,39 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".SettingsActivity"
+            android:exported="false"
+            android:label="@string/settings" />
+
+        <!-- One proposal of the second reading, opened from its
+             notification or from the home's list. -->
+        <activity
+            android:name=".ReviewActivity"
+            android:exported="false"
+            android:label="@string/second_reading"
+            android:launchMode="singleTop" />
+
+        <!-- The desktop's F8 key: "DeskIT" in the text-selection menu of
+             any app. A dialog over the app, nothing else on screen. -->
+        <activity
+            android:name=".LookupActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/DeskIT.Box"
+            android:excludeFromRecents="true">
+            <intent-filter>
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
+
+        <!-- Keep / No pressed on the notification itself. -->
+        <receiver
+            android:name=".ReviewReceiver"
+            android:exported="false" />
 
         <!-- BIND_INPUT_METHOD is what lets this write into other apps'
              text fields. Only the system may bind it. -->

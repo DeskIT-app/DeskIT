@@ -1,5 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- palette.CARD — the icon's tile. -->
+    <!-- palette.py's ladder, for the theme and the icon. Skin.kt holds
+         the same values for everything drawn in code. -->
     <color name="ic_launcher_background">#24201A</color>
+    <color name="bg">#14110C</color>
+    <color name="card">#24201A</color>
+    <color name="card_hi">#2E2921</color>
+    <color name="fg">#F1ECE2</color>
+    <color name="dim">#B2A896</color>
+    <color name="accent">#E3A63C</color>
 </resources>

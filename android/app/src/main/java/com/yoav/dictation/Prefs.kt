@@ -16,6 +16,11 @@ object Prefs {
     private const val KEY_TOKEN = "token"
     private const val KEY_SWITCH_BACK = "switch_back"
     private const val KEY_ORDER = "key_order"
+    private const val KEY_SAID = "said"
+    private const val KEY_NOTIFIED = "notified"
+
+    /** How many of the phone's own dictations the home screen keeps. */
+    const val SAID_KEEP = 30
 
     const val DEFAULT_URL = "https://yoav.example.ts.net"
 
@@ -69,6 +74,52 @@ object Prefs {
             .putString(KEY_TOKEN, token.trim())
             .putBoolean(KEY_SWITCH_BACK, switchBack)
             .apply()
+    }
+
+    /**
+     * The phone's own "Said": every transcript this keyboard put into a
+     * field, newest first, kept on the phone alone. The PC has the full
+     * record in transcripts.log; this is the short one you read on the
+     * sofa to copy a sentence again. A JSON array of [epoch-ms, text].
+     */
+    fun said(c: Context): List<Pair<Long, String>> {
+        val raw = sp(c).getString(KEY_SAID, null) ?: return emptyList()
+        return try {
+            val arr = org.json.JSONArray(raw)
+            (0 until arr.length()).map {
+                val row = arr.getJSONArray(it)
+                Pair(row.getLong(0), row.getString(1))
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    fun addSaid(c: Context, text: String) {
+        val rows = listOf(Pair(System.currentTimeMillis(), text)) +
+                said(c).take(SAID_KEEP - 1)
+        val arr = org.json.JSONArray()
+        for ((t, s) in rows) arr.put(org.json.JSONArray().put(t).put(s))
+        sp(c).edit().putString(KEY_SAID, arr.toString()).apply()
+    }
+
+    fun clearSaid(c: Context) {
+        sp(c).edit().remove(KEY_SAID).apply()
+    }
+
+    /**
+     * Proposals of the second reading the phone has already rung for, so a
+     * poll never rings twice for one sentence. A bounded set: ids are
+     * timestamps, and a hundred of them is weeks.
+     */
+    fun wasNotified(c: Context, id: String): Boolean =
+        (sp(c).getString(KEY_NOTIFIED, "") ?: "").split(',').contains(id)
+
+    fun markNotified(c: Context, id: String) {
+        val had = (sp(c).getString(KEY_NOTIFIED, "") ?: "")
+            .split(',').filter { it.isNotEmpty() }
+        val now = (listOf(id) + had).distinct().take(100)
+        sp(c).edit().putString(KEY_NOTIFIED, now.joinToString(",")).apply()
     }
 
     /**

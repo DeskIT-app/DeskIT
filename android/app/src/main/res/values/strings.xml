@@ -84,24 +84,76 @@
     <!-- %1$s is the backend the PC answered with: "local" or "gemini". -->
     <string name="ready_on">Slide up to lock ↑ · %1$s</string>
 
-    <!-- The setup screen. English like the rest: the owner's decision
-         (2026-09-13) is that the app is an English app end to end, the
-         same as DeskIT on the desktop. -->
+    <!-- The app's screens. English like the keyboard: the owner's
+         decision (2026-09-13) is that the app is an English app end to
+         end, the same as DeskIT on the desktop. -->
+
+    <!-- Home. -->
+    <string name="settings">Settings</string>
+    <string name="install">Install</string>
+    <string name="update_on_pc">Version %1$s is on the PC</string>
+    <string name="connected_title">Connected</string>
+    <string name="connected_line">The PC answers · %1$s model</string>
+    <string name="unreachable_title">Can\'t reach the PC</string>
+    <string name="unreachable_line">Is Tailscale on at both ends? Tap to try again.</string>
+    <string name="no_token_title">Not set up yet</string>
+    <string name="no_token_line">Point it at the PC in Settings.</string>
+    <string name="steps_title">Three steps</string>
+    <string name="step_mic">Allow the microphone</string>
+    <string name="step_keyboard">Turn the keyboard on</string>
+    <string name="step_pc">Point it at the PC</string>
+    <string name="step_notify">Allow notifications</string>
+    <string name="mic_granted">Microphone allowed</string>
+    <string name="mic_denied">Without the microphone the keyboard cannot record</string>
+    <string name="said_title">What you said</string>
+    <string name="said_empty">Nothing yet — hold the lamp in any app and talk.</string>
+    <string name="clear">Clear</string>
+    <string name="copied">Copied</string>
+
+    <!-- Settings. -->
     <string name="setup_intro">The phone records; the PC at home transcribes. Tailscale has to be on at both ends.</string>
-    <string name="paste_url_label">Server address (paste the whole line, #t= and all)</string>
+    <string name="the_pc">The PC</string>
+    <string name="the_keyboard">The keyboard</string>
+    <string name="the_app">The app</string>
+    <string name="paste_url_label">Server address — paste the whole line, #t= and all</string>
     <string name="token_label">Token</string>
-    <string name="switch_back_label">Switch back to the previous keyboard once the text lands</string>
+    <string name="switch_back_label">Back to the previous keyboard once the text lands</string>
     <string name="save_and_test">Save and test</string>
     <string name="checking">Checking…</string>
     <string name="reachable">Connected — the PC answers</string>
-    <string name="steps_title">Three steps</string>
-    <string name="steps_body">1. Allow the microphone (button below).\n2. Turn the keyboard on in Settings.\n3. In any app: tap a text field, switch keyboard, hold and talk.</string>
-    <string name="grant_mic">1 · Allow the microphone</string>
-    <string name="enable_keyboard">2 · Turn the keyboard on in Settings</string>
-    <string name="mic_granted">Microphone allowed</string>
-    <string name="mic_denied">Without the microphone the keyboard cannot record</string>
+    <string name="arrange_help">Hold any key on the keyboard to rearrange the eight of them; drag one onto another to swap.</string>
+    <string name="reset_keys">Reset the keys</string>
+    <string name="keys_reset">Keys back in their places</string>
+    <string name="system_keyboards">Keyboard settings</string>
+    <string name="version_line">DeskIT %1$s on this phone</string>
     <string name="check_update">Check for an update</string>
     <string name="up_to_date">Up to date — v%1$s is the latest</string>
     <string name="update_available">Version %1$s is available — downloading…</string>
     <string name="update_check_failed">Can\'t check — the PC is not reachable</string>
+
+    <!-- The second reading. -->
+    <string name="channel_review">Second reading</string>
+    <string name="channel_review_desc">A proposal for a sentence you dictated — learned only if you keep it</string>
+    <string name="second_reading">Second reading</string>
+    <string name="review_title">Did you mean…</string>
+    <string name="did_you_mean">Did you mean</string>
+    <string name="did_you_mean_row">Did you mean this? · from %1$s</string>
+    <string name="the_phone">the phone</string>
+    <string name="the_desk">the desk</string>
+    <string name="from_the_phone">Said from the phone · %1$s</string>
+    <string name="from_the_desk">Said at the desk · %1$s</string>
+    <string name="you_said">What was written</string>
+    <string name="keep">Keep</string>
+    <string name="no">No</string>
+    <string name="learned">Learned</string>
+    <string name="noted">Noted — nothing changes</string>
+    <string name="later_hint">Back leaves it waiting — you can answer later.</string>
+    <string name="nothing_waiting">Nothing waiting.</string>
+    <string name="close">Close</string>
+
+    <!-- The lookup box. -->
+    <string name="lookup_title">DeskIT · look up</string>
+    <string name="looking_up">Looking up…</string>
+    <string name="nothing_selected">Nothing selected.</string>
+    <string name="copy">Copy</string>
 </resources>

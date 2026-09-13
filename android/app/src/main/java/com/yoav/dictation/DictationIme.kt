@@ -53,12 +53,22 @@ import kotlin.concurrent.thread
  *
  * The face is in English deliberately. It sits directly under a Hebrew
  * text field, and two scripts in one glance is harder to read, not easier.
+ *
+ * THE LOOK IS THE DESKTOP'S (Skin.kt): LAMPLIGHT's colours and Rubik, on
+ * shapes cut for a thumb. The microphone is a pill holding the desktop's
+ * status dot as a lamp — listening blue, recording red, locked red and
+ * breathing, transcribing gold, grey with no halo when the PC cannot be
+ * reached — so the corner of the desk and the bottom of the phone say the
+ * same thing in the same colour.
  */
 class DictationIme : InputMethodService() {
 
     private val recorder = Recorder()
     private val ui = Handler(Looper.getMainLooper())
 
+    /** The whole microphone: the lamp, the label and the level line. */
+    private lateinit var pill: LinearLayout
+    private lateinit var lamp: LampView
     private lateinit var button: TextView
     private lateinit var levelTrack: LinearLayout
     private lateinit var levelFill: View
@@ -134,14 +144,24 @@ class DictationIme : InputMethodService() {
     /** Every repeating key's Runnable, so nothing is left ticking. */
     private val repeats = ArrayList<Runnable>()
 
-    private val idleColor = Color.parseColor("#2d6cdf")
-    private val recColor = Color.parseColor("#d6392f")
-    private val lockColor = Color.parseColor("#b02a21")
-    private val busyColor = Color.parseColor("#4a5262")
-    private val keyColor = Color.parseColor("#1d2330")
-    private val keyText = Color.parseColor("#c6cfdd")
-    private val statusText = Color.parseColor("#8b97ad")
-    private val errorText = Color.parseColor("#e8837b")
+    /**
+     * Whether the PC answered the last /health. Decides what idle looks
+     * like: the listening blue when it did, the paused grey — no halo —
+     * when it did not, which is the desktop dot's own rule for "off".
+     */
+    private var reachable = true
+
+    private val idleColor: Int
+        get() = if (reachable) Skin.LISTENING else Skin.PAUSED
+    private val recColor = Skin.RECORDING
+    private val lockColor = Skin.LOCKED
+    private val busyColor = Skin.TRANSCRIBING
+    private val keyText = Skin.FG
+    private val statusText = Skin.DIM
+    private val errorText = Skin.RED
+
+    /** The review polls after a dictation, so a rebuild can drop them. */
+    private val polls = ArrayList<Runnable>()
 
     /** Drag distance that means "lock it on", or "throw it away". */
     private val lockDistance by lazy { dp(48).toFloat() }
@@ -183,7 +203,7 @@ class DictationIme : InputMethodService() {
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setBackgroundColor(Color.parseColor("#10131a"))
+            setBackgroundColor(Skin.BG)
             setPadding(dp(14), dp(12), dp(14), dp(14))
             // The row order is this keyboard's own, not the phone's. With
             // supportsRtl on, a Hebrew-locale phone mirrors these rows and
@@ -196,57 +216,79 @@ class DictationIme : InputMethodService() {
             )
         }
 
-        button = TextView(this).apply {
-            text = getString(R.string.hold_and_talk)
-            contentDescription = getString(R.string.cd_mic)
+        // The microphone is a pill: the lamp on the left, the label beside
+        // it, the level line along the bottom. The whole face is the
+        // button — at 100dp it is still several times the size of any key
+        // on any keyboard, and it was never a button found by looking.
+        pill = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f)
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(20).toFloat()
-                setColor(idleColor)
-            }
+            contentDescription = getString(R.string.cd_mic)
+            background = Skin.face(this@DictationIme, Skin.CARD, Skin.LINE, 28)
+            setPadding(dp(22), dp(10), dp(22), dp(10))
+            isClickable = true
+            isFocusable = true
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(if (landscape) 56 else 100)
             )
         }
-        root.addView(button)
+        val face = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+        }
+        lamp = LampView(this).apply {
+            val side = dp(if (landscape) 32 else 48)
+            layoutParams = LinearLayout.LayoutParams(side, side).apply {
+                marginEnd = dp(14)
+            }
+        }
+        face.addView(lamp)
+        button = TextView(this).apply {
+            text = getString(R.string.hold_and_talk)
+            typeface = Skin.fontBold(this@DictationIme)
+            includeFontPadding = false
+            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            setTextColor(Skin.FG)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, if (landscape) 16f else 19f)
+            maxLines = 1
+            ellipsize = TextUtils.TruncateAt.END
+            layoutParams = LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        face.addView(button)
+        pill.addView(face)
 
-        // The level bar. Not decoration: without it the only evidence the
-        // microphone is live is that a button turned red, and a microphone
+        // The level line. Not decoration: without it the only evidence the
+        // microphone is live is that a lamp turned red, and a microphone
         // another app is holding looks exactly like a working one.
         levelTrack = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(3).toFloat()
-                setColor(keyColor)
-            }
+            background = Skin.face(this@DictationIme, Skin.PANE, radius = 2, stroke = 0)
             visibility = View.INVISIBLE
             layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(5)
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(3)
             ).apply { topMargin = dp(6) }
         }
         levelFill = View(this).apply {
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dp(3).toFloat()
-                setColor(recColor)
-            }
+            background = Skin.face(this@DictationIme, Skin.ACCENT, radius = 2, stroke = 0)
             layoutParams = LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT
             )
         }
         levelTrack.addView(levelFill)
-        if (!landscape) root.addView(levelTrack)
+        if (!landscape) pill.addView(levelTrack)
+        root.addView(pill)
 
         status = TextView(this).apply {
             gravity = Gravity.CENTER
+            typeface = Skin.font(this@DictationIme)
+            includeFontPadding = false
             setTextColor(statusText)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-            setPadding(0, dp(6), 0, dp(4))
+            setPadding(0, dp(8), 0, dp(6))
             // Server errors are whole sentences. Unbounded, they wrap to
             // three lines and push the key rows out of a fixed-height view.
             maxLines = 2
@@ -282,7 +324,7 @@ class DictationIme : InputMethodService() {
             punctuateField()
         }
         actionKey = key(R.string.act_enter, R.string.act_enter, 15f,
-            fill = idleColor, textColor = Color.WHITE,
+            primary = true,
             // Some apps never listen for performEditorAction and take only
             // a real Enter, and there is no way to ask in advance. A long
             // press is the way out of that, rather than a key that looks
@@ -302,7 +344,7 @@ class DictationIme : InputMethodService() {
         root.addView(row1)
         root.addView(row2)
 
-        button.setOnTouchListener { v, e ->
+        pill.setOnTouchListener { v, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> {
                     downY = e.rawY; gestured = false
@@ -325,7 +367,7 @@ class DictationIme : InputMethodService() {
         // ever fires from an accessibility service — which cannot hold a
         // button down. Tap to start, tap again to finish: the same shape as
         // a locked recording, which is the one mode a click can drive.
-        button.setOnClickListener {
+        pill.setOnClickListener {
             if (busy) return@setOnClickListener
             if (locked) finishLocked() else if (!holding) startLocked()
         }
@@ -364,21 +406,22 @@ class DictationIme : InputMethodService() {
      */
     private fun key(
         face: Int, desc: Int, size: Float,
-        fill: Int = keyColor, textColor: Int = keyText,
+        primary: Boolean = false,
         onLong: (() -> Unit)? = null,
         onTap: () -> Unit,
     ): TextView = TextView(this).apply {
         text = getString(face)
         contentDescription = getString(desc)
         gravity = Gravity.CENTER
-        setTextColor(textColor)
+        typeface = if (primary) Skin.fontBold(this@DictationIme) else Skin.font(this@DictationIme)
+        includeFontPadding = false
+        setTextColor(if (primary) Skin.ACCENT_ON else keyText)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, size)
         isFocusable = true
-        background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(12).toFloat()
-            setColor(fill)
-        }
+        // The action key is the ONE gold thing on this surface — the
+        // primary action, the same rule every desktop surface keeps.
+        background = if (primary) Skin.primaryFace(this@DictationIme, 14)
+                     else Skin.secondaryFace(this@DictationIme, 14)
         layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
             marginStart = dp(4); marginEnd = dp(4)
         }
@@ -477,9 +520,9 @@ class DictationIme : InputMethodService() {
             }
         }
         button.text = getString(R.string.arrange_done)
-        button.contentDescription = getString(R.string.arrange_done)
-        button.setOnTouchListener(null)
-        button.setOnClickListener { exitArrange() }
+        pill.contentDescription = getString(R.string.arrange_done)
+        pill.setOnTouchListener(null)
+        pill.setOnClickListener { exitArrange() }
         status.text = getString(R.string.arrange_hint)
         status.contentDescription = getString(R.string.cd_arrange)
     }
@@ -506,14 +549,12 @@ class DictationIme : InputMethodService() {
         text = getString(R.string.backspace_btn)
         contentDescription = getString(R.string.cd_backspace)
         gravity = Gravity.CENTER
+        typeface = Skin.font(this@DictationIme)
+        includeFontPadding = false
         setTextColor(keyText)
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 19f)
         isFocusable = true
-        background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dp(12).toFloat()
-            setColor(keyColor)
-        }
+        background = Skin.secondaryFace(this@DictationIme, 14)
         layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f).apply {
             marginStart = dp(4); marginEnd = dp(4)
         }
@@ -665,7 +706,12 @@ class DictationIme : InputMethodService() {
      * the retry below is what gets it there.
      */
     private fun checkHealth() {
-        if (Prefs.token(this).isEmpty()) return
+        if (Prefs.token(this).isEmpty()) {
+            // Nothing to ask yet: the lamp is grey until the PC is named.
+            reachable = false
+            if (!busy && !holding && !locked) tint(idleColor)
+            return
+        }
         val now = SystemClock.elapsedRealtime()
         if (now - lastHealth < HEALTH_TTL_MS) return
         lastHealth = now
@@ -674,7 +720,9 @@ class DictationIme : InputMethodService() {
             val backend = Transcriber.health(url)
             ui.post {
                 backendName = backend.orEmpty()
+                reachable = backend != null
                 if (busy || holding || locked) return@post
+                tint(idleColor)
                 if (backend == null) {
                     sayError(getString(R.string.unreachable)) { openSetup() }
                 } else if (!sticky) {
@@ -833,6 +881,11 @@ class DictationIme : InputMethodService() {
                 val text = result.text.trim()
                 if (text.isEmpty()) { say(getString(R.string.no_speech)); return }
                 lastWav = null
+                // The PC answered, so the link is up whatever /health last
+                // said — and the sentence goes on the phone's own Said.
+                reachable = true
+                Prefs.addSaid(this, text)
+                scheduleReviewPolls()
                 if (!place(text, mine)) return
                 // A decoder loop means words were LOST, not garbled — say
                 // so now, not after the gap is discovered in reading.
@@ -840,6 +893,23 @@ class DictationIme : InputMethodService() {
                 if (Prefs.switchBack(this)) goBack()
             }
             is Transcriber.Result.Err -> retryable(result.message)
+        }
+    }
+
+    /**
+     * The second reading takes three more decodes and a language model,
+     * so its proposal is seconds to a minute behind the text. Three
+     * polls after each dictation catch it; the home screen catches what
+     * these miss. Never a service: nothing runs when nothing was said.
+     */
+    private fun scheduleReviewPolls() {
+        for (r in polls) ui.removeCallbacks(r)
+        polls.clear()
+        val app = applicationContext
+        for (delay in longArrayOf(20_000L, 60_000L, 150_000L)) {
+            val r = Runnable { thread { Notify.poll(app) } }
+            polls.add(r)
+            ui.postDelayed(r, delay)
         }
     }
 
@@ -1047,7 +1117,7 @@ class DictationIme : InputMethodService() {
      */
     private fun openSetup() {
         startActivity(
-            Intent(this, SetupActivity::class.java)
+            Intent(this, HomeActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     }
@@ -1106,8 +1176,20 @@ class DictationIme : InputMethodService() {
         button.text = getString(R.string.hold_and_talk)
     }
 
+    /**
+     * One state, three places: the lamp's colour, its halo (paused has
+     * none — that is the desktop's rule for "off"), its breath (locked
+     * only), and the pill's edge, which takes the state colour while
+     * something is happening so the state is not read off 48dp alone.
+     */
     private fun tint(color: Int) {
-        (button.background as? GradientDrawable)?.setColor(color)
+        if (::lamp.isInitialized) {
+            lamp.colour = color
+            lamp.halo = color != Skin.PAUSED
+            lamp.breathe(color == lockColor)
+            (pill.background as? GradientDrawable)?.setStroke(
+                dp(1), if (color == idleColor || color == Skin.PAUSED) Skin.LINE else color)
+        }
         // The backspace slot doubles as the way out of a locked recording,
         // so its face follows the same state the colour does.
         if (::backspace.isInitialized) {
