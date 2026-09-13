@@ -13,8 +13,11 @@ android {
         // InputMethod needs 28 and is guarded at the call site.
         minSdk = 26
         targetSdk = 34
-        versionCode = 11
-        versionName = "1.10"
+        // Three numbers from here on, his ask (2026-09-13): the next
+        // build is 1.1.1, not 1.11 — bump the last for a fix, the middle
+        // for something new, and versionCode by one every time.
+        versionCode = 12
+        versionName = "1.1.0"
     }
 
     buildTypes {
