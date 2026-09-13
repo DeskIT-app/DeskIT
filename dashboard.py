@@ -2230,6 +2230,14 @@ class Dashboard:
                   quiet=True, bg=ui.BG, icon=ui.ICON["folder"]).place(
             x=PAD + SAID_W, y=616, anchor="ne")
         p["read_on"] = True
+        # THE LEFT ARROW KEEPS. His flow (2026-09-13, late): let go of the
+        # key and the recording stands; ← keeps it and brings the next
+        # sentence; holding the key again reads the same sentence over.
+        # Left is the latch key, swallowed by the hook only while a
+        # recording is running — after the release it reaches this
+        # window like any key. Bound on the root, like the Keys place's
+        # press, and taken off again when he leaves the tab.
+        self.root.bind("<Left>", self._read_left)
         self._read_deck = self._read_build_deck()
         self._read_advance()
 
@@ -2247,6 +2255,10 @@ class Dashboard:
         anyway, since `takes` wants this window in front of it."""
         self._read_current = None
         self._read_drawn = None
+        try:
+            self.root.unbind("<Left>")
+        except tk.TclError:
+            pass
         self._ask("read", do="disarm")
 
     def _read_phase(self) -> tuple[str, dict | None]:
@@ -2283,20 +2295,26 @@ class Dashboard:
             return "checking", None
         return "waiting", None
 
+    def _read_left(self, _event=None) -> str | None:
+        """← : the recording that stands is kept and the next sentence
+        comes up. Nothing standing, nothing happens."""
+        if not self.parts.get("read_on") or self.closing:
+            return None
+        if self._read_phase()[0] == "heard":
+            self._read_keep()
+            return "break"
+        return None
+
     def _poll_read(self) -> None:
-        """Once a poll: arm the sentence the app has not got, keep the one
-        that came back, and redraw the card only when what it would say
-        has changed."""
+        """Once a poll: arm the sentence the app has not got, and redraw
+        the card only when what it would say has changed. A reading that
+        is back STANDS until he keeps it (←) or reads the sentence over
+        — the card is the label either way, and which take is the good
+        one is his to say (reading.py)."""
         if not self.parts.get("read_on") or self.closing:
             return
         phase, heard = self._read_phase()
         cur = self._read_current
-        if phase == "heard" and not self._read_busy:
-            # KEPT, whatever came back: he read the card, and the card
-            # is the label. What the model made of it is filed beside
-            # the audio and asked nothing (reading.py says why).
-            self._read_keep()
-            return
         since_arm = time.monotonic() - self._read_armed_at
         if phase == "arming" and cur is not None \
                 and since_arm > READ_ARM_EVERY_S:
@@ -2496,7 +2514,7 @@ class Dashboard:
         y_sentence = 32
         rule_y = y_sentence + text_h + 22
         ly = rule_y + 20
-        block_h = 48 if phase in ("waiting", "nothing") else 30
+        block_h = 48 if phase in ("waiting", "nothing", "heard") else 30
         by = ly + block_h + 18
         card_h = by + 36 + 2 * READ_PAD + 4
 
@@ -2535,7 +2553,7 @@ class Dashboard:
         widgets.rule(body, inner, bg=ui.CARD, colour=ui.LINE, y=rule_y)
 
         colour = {"listening": ui.RECORDING, "checking": ui.AMBER,
-                  "heard": ui.AMBER, "nothing": ui.AMBER}.get(phase, ui.FAINT)
+                  "heard": ui.GREEN, "nothing": ui.AMBER}.get(phase, ui.FAINT)
         lamp = ui.lamp(15, colour, ui.CARD,
                        0.0 if phase in ("waiting", "arming") else 0.45)
         lamp_label = tk.Label(body, bg=ui.CARD, image=lamp)
@@ -2544,8 +2562,13 @@ class Dashboard:
         sub = ""
         if phase == "listening":
             line = "Listening…  let go when you finish."
-        elif phase in ("checking", "heard"):
+        elif phase == "checking":
             line = "One moment…"
+        elif phase == "heard":
+            line = (f"Recorded, {float(heard.get('seconds') or 0):.1f} s.  "
+                    "Press ← to keep it and move on.")
+            sub = (f"Or hold {hold} and read it again — the new take "
+                   "replaces this one.")
         elif phase == "nothing":
             line = "Nothing came back."
             sub = (f"Is the microphone on? Hold {hold} and read it again — "
@@ -2555,8 +2578,8 @@ class Dashboard:
         else:
             line = (f"Hold {hold} and read it aloud.  Let go when you finish."
                     if hold != "off" else "No dictation key is set — see Keys.")
-            sub = ("It is kept the moment you let go, whatever the model "
-                   "made of it, and the next one comes up.")
+            sub = ("Let go, and the recording stands: ← keeps it and "
+                   "brings the next one; the key again reads it over.")
         tk.Label(body, text=line, bg=ui.CARD, fg=ui.FG,
                  font=(ui.UI, 11)).place(x=28, y=ly)
         if sub:
@@ -2564,8 +2587,16 @@ class Dashboard:
                      font=(ui.UI, 9), wraplength=inner - 28,
                      justify="left").place(x=28, y=ly + 24)
 
-        ui.Button(body, "Skip this one", self._read_skip, w=136, h=36,
-                  quiet=True, bg=ui.CARD).place(x=inner, y=by, anchor="ne")
+        if phase == "heard":
+            widgets.gold_button(body, "Keep  ←", self._read_keep, w=110,
+                                h=36, bg=ui.CARD).place(x=inner, y=by,
+                                                        anchor="ne")
+            ui.Button(body, "Skip", self._read_skip, w=84, h=36, quiet=True,
+                      bg=ui.CARD).place(x=inner - 122, y=by, anchor="ne")
+        else:
+            ui.Button(body, "Skip this one", self._read_skip, w=136, h=36,
+                      quiet=True, bg=ui.CARD).place(x=inner, y=by,
+                                                     anchor="ne")
         if self._read_last is not None:
             # The one he just read, if he knows he fumbled it: taken
             # back, and up again. Only until the next one is kept — the

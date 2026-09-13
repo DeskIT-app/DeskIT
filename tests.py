@@ -27276,11 +27276,11 @@ def test_the_writer_turns_a_reply_into_a_file_of_sentences() -> None:
 def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
     """The Corrections place's second tab, driven against the app's own
     control handler over a Reading in a temp folder: the tab arms the
-    sentence it shows, redraws for each phase, keeps every reading the
-    moment it is back — however it came back — and puts up the next one,
-    takes the last one back on Redo, asks again only when nothing came
-    back at all, has a paragraph written when the folder runs dry, and
-    disarms when he leaves."""
+    sentence it shows, redraws for each phase, lets a reading stand until
+    ← keeps it — however it came back — and puts up the next one, takes
+    the last one back on Redo, asks again only when nothing came back at
+    all, has a paragraph written when the folder runs dry, and disarms
+    when he leaves."""
     import shutil
 
     import control as control_mod
@@ -27375,14 +27375,23 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
                         if isinstance(w, widgets_mod.ToneButton)], \
                 "no gold button on the card any more"
 
-            # A WORD CAME BACK DIFFERENT: kept all the same, the moment it
-            # is back — he read the card, and the card is the label
+            # A WORD CAME BACK DIFFERENT: the recording STANDS all the
+            # same — he read the card, and the card is the label — until
+            # ← keeps it; ← with nothing standing does nothing
+            assert board._read_left() is None and not kept()
             r.heard(first.key, b"RIFF-1", 3.0,
                     "אני רוצה לפתוח את הפרוגקט הזה מחדש היום.")
+            assert phase(board) == "heard"
+            settle(board, ticks=10)
+            assert not kept() and board._read_current is first, "it stands"
+            golds = [w for w in board.parts["read_card"].body.winfo_children()
+                     if isinstance(w, widgets_mod.ToneButton)]
+            assert len(golds) == 1, "the gold Keep, for the mouse"
+            assert board._read_left() == "break"
             settle(board, until=lambda: board._read_current is not None
                    and board._read_current.key != first.key
                    and r.armed_id == board._read_current.key)
-            assert len(kept()) == 1, "kept without asking"
+            assert len(kept()) == 1, "kept on the left arrow"
             second = board._read_current
             assert second is not None and second.key != first.key
             assert r.armed_id == second.key, "the next one is armed"
@@ -27401,15 +27410,21 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
             assert board._read_counts == {"kept": 0, "skipped": 0, "again": 1}
             assert board._read_last is None and board._read_deck[0] is second
             r.heard(first.key, b"RIFF-2", 3.0, first.text)
+            r.heard(first.key, b"RIFF-3", 3.2, first.text)   # read it over
+            assert phase(board) == "heard"
+            board._read_left()
             settle(board, until=lambda: board._read_current is second
                    and r.armed_id == second.key)
-            assert len(kept()) == 1 and kept()[0].read_bytes() == b"RIFF-2"
+            assert len(kept()) == 1 and kept()[0].read_bytes() == b"RIFF-3", \
+                "the new take replaced the one before it"
 
             r.heard(second.key, b"RIFF", 2.0, second.text)   # word for word
+            assert phase(board) == "heard"
+            board._read_left()
             settle(board, until=lambda: board._read_counts["kept"] == 2
                    and board._read_current is not None
                    and r.armed_id == board._read_current.key)
-            assert len(kept()) == 2, "kept without asking"
+            assert len(kept()) == 2
             assert board._read_counts["kept"] == 2
             # THE FOLDER IS READ OUT: a paragraph was asked for, saved as
             # a file, and its first sentence is up
@@ -27429,12 +27444,14 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
             assert sorted(s["key"] for s in sides) == sorted(
                 [first.key, second.key]), "the sentence's key is filed"
 
+            assert board.root.bind("<Left>"), "the left arrow is the tab's"
             board._corr_tab_to("waiting")
             settle(board, until=lambda: r.armed_id is None
                    and sent[-1]["do"] == "disarm")
             assert r.armed_id is None, "leaving the tab disarms"
             assert "corr_list" in board.parts and "read_card" not in board.parts
             assert sent[-1]["do"] == "disarm", sent[-1]
+            assert not board.root.bind("<Left>"), "and gives the arrow back"
             # And with no model able to write, the card says what to do
             # instead of asking again and again
             reading.Writer.write = lambda _self, count=0, seed=None, names=(): None
