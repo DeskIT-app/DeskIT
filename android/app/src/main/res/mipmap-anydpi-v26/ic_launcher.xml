@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The desktop's mark, split the way Android wants it: the tile is the
+     background layer (a flat CARD, so whatever shape the launcher masks
+     to is the tile), and the desk, the lamp, its glow and the two arcs
+     are the foreground, drawn by the same masks as icon.ico. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

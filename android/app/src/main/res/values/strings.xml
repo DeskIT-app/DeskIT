@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">DeskIT</string>
-    <string name="ime_label">DeskIT (mic)</string>
+    <string name="ime_label">DeskIT</string>
 
     <!-- Keyboard face. English on purpose: it sits under a Hebrew text
-         field, and mixing scripts in the same glance is noise. -->
+         field, and mixing scripts in the same glance is noise. The owner
+         later made it the rule for the whole app (2026-09-13). -->
     <string name="hold_and_talk">Hold &amp; talk</string>
     <string name="slide_to_lock">Slide up to lock ↑ · down to discard</string>
     <!-- %1$s is m:ss. The clock is the point: a locked recording you walked
@@ -83,21 +84,24 @@
     <!-- %1$s is the backend the PC answered with: "local" or "gemini". -->
     <string name="ready_on">Slide up to lock ↑ · %1$s</string>
 
-    <string name="setup_intro">הטלפון מקליט, המחשב בבית מתמלל. צריך ש-Tailscale יהיה פעיל בשני הצדדים.</string>
-    <string name="paste_url_label">כתובת השרת (אפשר להדביק את הכתובת המלאה עם ‎#t=‎)</string>
-    <string name="token_label">טוקן</string>
-    <string name="switch_back_label">לחזור אוטומטית למקלדת הקודמת אחרי שהטקסט נכנס</string>
-    <string name="save_and_test">שמור ובדוק חיבור</string>
-    <string name="checking">בודק…</string>
-    <string name="reachable">מחובר — המחשב עונה</string>
-    <string name="steps_title">שלושה צעדים</string>
-    <string name="steps_body">1. אשר הרשאת מיקרופון (הכפתור למטה).\n2. הפעל את המקלדת בהגדרות.\n3. בכל אפליקציה: לחץ על שדה טקסט, החלף מקלדת, החזק ודבר.</string>
-    <string name="grant_mic">1 · אשר מיקרופון</string>
-    <string name="enable_keyboard">2 · הפעל את המקלדת בהגדרות</string>
-    <string name="mic_granted">מיקרופון אושר</string>
-    <string name="mic_denied">בלי הרשאת מיקרופון המקלדת לא תוכל להקליט</string>
-    <string name="check_update">בדוק עדכון</string>
-    <string name="up_to_date">מעודכן — ‎v%1$s‎ היא הגרסה האחרונה</string>
-    <string name="update_available">גרסה ‎%1$s‎ זמינה — מוריד…</string>
-    <string name="update_check_failed">אי אפשר לבדוק — המחשב לא זמין</string>
+    <!-- The setup screen. English like the rest: the owner's decision
+         (2026-09-13) is that the app is an English app end to end, the
+         same as DeskIT on the desktop. -->
+    <string name="setup_intro">The phone records; the PC at home transcribes. Tailscale has to be on at both ends.</string>
+    <string name="paste_url_label">Server address (paste the whole line, #t= and all)</string>
+    <string name="token_label">Token</string>
+    <string name="switch_back_label">Switch back to the previous keyboard once the text lands</string>
+    <string name="save_and_test">Save and test</string>
+    <string name="checking">Checking…</string>
+    <string name="reachable">Connected — the PC answers</string>
+    <string name="steps_title">Three steps</string>
+    <string name="steps_body">1. Allow the microphone (button below).\n2. Turn the keyboard on in Settings.\n3. In any app: tap a text field, switch keyboard, hold and talk.</string>
+    <string name="grant_mic">1 · Allow the microphone</string>
+    <string name="enable_keyboard">2 · Turn the keyboard on in Settings</string>
+    <string name="mic_granted">Microphone allowed</string>
+    <string name="mic_denied">Without the microphone the keyboard cannot record</string>
+    <string name="check_update">Check for an update</string>
+    <string name="up_to_date">Up to date — v%1$s is the latest</string>
+    <string name="update_available">Version %1$s is available — downloading…</string>
+    <string name="update_check_failed">Can\'t check — the PC is not reachable</string>
 </resources>
