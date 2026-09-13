@@ -23,6 +23,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import java.util.Locale
@@ -67,7 +68,7 @@ class DictationIme : InputMethodService() {
     private val ui = Handler(Looper.getMainLooper())
 
     /** The whole microphone: the lamp, the label and the level line. */
-    private lateinit var pill: LinearLayout
+    private lateinit var pill: FrameLayout
     private lateinit var lamp: LampView
     private lateinit var button: TextView
     private lateinit var levelTrack: LinearLayout
@@ -229,12 +230,10 @@ class DictationIme : InputMethodService() {
         // it, the level line along the bottom. The whole face is the
         // button — at 100dp it is still several times the size of any key
         // on any keyboard, and it was never a button found by looking.
-        pill = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
+        pill = FrameLayout(this).apply {
             contentDescription = getString(R.string.cd_mic)
             background = Skin.face(this@DictationIme, Skin.CARD, Skin.LINE, 28)
-            setPadding(dp(22), dp(10), dp(22), dp(10))
+            setPadding(dp(22), dp(12), dp(22), dp(12))
             isClickable = true
             isFocusable = true
             layoutParams = LinearLayout.LayoutParams(
@@ -242,11 +241,16 @@ class DictationIme : InputMethodService() {
                 dp(if (landscape) 56 else 100)
             )
         }
+        // Lamp and label together in the MIDDLE of the pill. Left-aligned
+        // they read as a row with an empty right half — his first word
+        // for it on a real phone was "crooked".
+        // A frame, not a column: the level line lies along the bottom
+        // edge and reserves nothing, so the lamp sits in the true middle.
         val face = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
+            gravity = Gravity.CENTER
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
         lamp = LampView(this).apply {
             val side = dp(if (landscape) 32 else 48)
@@ -259,13 +263,13 @@ class DictationIme : InputMethodService() {
             text = getString(R.string.hold_and_talk)
             typeface = Skin.fontBold(this@DictationIme)
             includeFontPadding = false
-            gravity = Gravity.START or Gravity.CENTER_VERTICAL
+            gravity = Gravity.CENTER
             setTextColor(Skin.FG)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, if (landscape) 16f else 19f)
             maxLines = 1
             ellipsize = TextUtils.TruncateAt.END
             layoutParams = LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         }
         face.addView(button)
         pill.addView(face)
@@ -277,9 +281,9 @@ class DictationIme : InputMethodService() {
             orientation = LinearLayout.HORIZONTAL
             background = Skin.face(this@DictationIme, Skin.PANE, radius = 2, stroke = 0)
             visibility = View.INVISIBLE
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(3)
-            ).apply { topMargin = dp(6) }
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(3), Gravity.BOTTOM
+            )
         }
         levelFill = View(this).apply {
             background = Skin.face(this@DictationIme, Skin.ACCENT, radius = 2, stroke = 0)
