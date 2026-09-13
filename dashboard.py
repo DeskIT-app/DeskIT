@@ -1372,6 +1372,8 @@ class Dashboard:
         self._read_drawn = None
         self._read_armed_at = 0.0
         self._read_busy = False
+        self._read_proofing = False       # a batch is with the model
+        self._read_proof_failed = False   # no backend answered: show raw
         self._read_counts = {"kept": 0, "skipped": 0, "again": 0}
         self._toast = None
         self._toast_after = None
@@ -2204,17 +2206,12 @@ class Dashboard:
         self._read_drawn = None
         self._read_armed_at = 0.0
         self._read_busy = False
-        try:
-            self._read_deck = reading_mod.deck(
-                CORPUS_DIR, APP_DIR / "vocab.json", READ_DIR)
-        except Exception:                 # noqa: BLE001 — a bad sidecar
-            self._read_deck = []
+        self._read_proofing = False
+        self._read_current = None
         try:
             READ_DIR.mkdir(parents=True, exist_ok=True)   # for the button
         except OSError:
             pass
-        self._read_current = (self._read_deck.pop(0) if self._read_deck
-                              else None)
         tk.Label(self.sheet,
                  text="Sentences come from your own dictations and the words "
                       "you taught it.\nKept readings go to corpus\\read — "
@@ -2227,6 +2224,16 @@ class Dashboard:
                   quiet=True, bg=ui.BG, icon=ui.ICON["folder"]).place(
             x=PAD + SAID_W, y=616, anchor="ne")
         p["read_on"] = True
+        self._read_deck = self._read_build_deck()
+        self._read_advance()
+
+    @staticmethod
+    def _read_build_deck() -> list:
+        try:
+            return reading_mod.deck(CORPUS_DIR, APP_DIR / "vocab.json",
+                                    READ_DIR)
+        except Exception:                 # noqa: BLE001 — a bad sidecar
+            return []
 
     def _read_leave(self) -> None:
         """Off the tab: the app is told there is nothing armed. Best
@@ -2239,14 +2246,17 @@ class Dashboard:
     def _read_phase(self) -> tuple[str, dict | None]:
         """What the card should show, from the app's last answer.
 
-        off — no app to listen; done — nothing left to read; arming —
-        the app has not got this sentence yet; waiting — it has, and the
-        key is up; listening / checking — the key is down / the decode
-        is running; heard — the transcript is back, with its match.
+        off — no app to listen; proofing — the next sentences are with
+        the model; done — nothing left to read; arming — the app has not
+        got this sentence yet; waiting — it has, and the key is up;
+        listening / checking — the key is down / the decode is running;
+        heard — the transcript is back, with its match.
         """
         cur = self._read_current
         if not self.running:
             return "off", None
+        if self._read_proofing:
+            return "proofing", None
         if cur is None:
             return "done", None
         read = self.status.get("read") or {}
@@ -2334,7 +2344,7 @@ class Dashboard:
             self._read_answered(reply)
             return
         self._read_counts["kept"] += 1
-        self._read_next(reply)
+        self._read_advance(reply)
         self._voice_panel()
 
     def _read_again(self) -> None:
@@ -2351,21 +2361,67 @@ class Dashboard:
             return
         self._read_busy = True
         self._read_counts["skipped"] += 1
-        self._ask("read", then=lambda r: self._read_next(r), do="drop",
+        self._ask("read", then=lambda r: self._read_advance(r), do="drop",
                   id=cur.key, skip=True)
 
     def _read_dropped(self, reply: dict | None) -> None:
         self._read_busy = False
         self._read_answered(reply)
 
-    def _read_next(self, reply: dict | None = None) -> None:
-        """The next sentence of the deck. Arming it is the next poll's
-        job, and it is asked for now rather than in READ_ARM_EVERY_S."""
+    def _read_advance(self, reply: dict | None = None) -> None:
+        """The next sentence of the deck — once the proofreader has read
+        it. A checked sentence goes up at once; an unchecked one goes to
+        the model first, with the batch behind it, so one call covers
+        the next ten and the wait is paid once in ten sentences. Arming
+        is the next poll's job, and it is asked for now rather than in
+        READ_ARM_EVERY_S."""
         self._read_busy = False
-        self._read_current = (self._read_deck.pop(0) if self._read_deck
-                              else None)
+        deck = self._read_deck
+        if deck and not deck[0].checked and not self._read_proof_failed \
+                and not self._read_proofing:
+            batch = [s for s in deck if not s.checked][:reading_mod.PROOF_BATCH]
+            self._read_current = None
+            # THE TOKEN names this batch: a verdict landing after the tab
+            # was left and opened again (which starts a batch of its own)
+            # is kept for the cache and not allowed to swap the sentence
+            # he is reading by then.
+            self._read_proofing = token = object()
+            threading.Thread(target=self._read_proof, args=(batch, token),
+                             daemon=True, name="proofread").start()
+            self._read_answered(reply)
+            return
+        self._read_current = deck.pop(0) if deck else None
         self._read_armed_at = 0.0
         self._read_answered(reply)
+
+    def _read_proof(self, batch: list, token) -> None:
+        """Off the Tk thread: one model call for the batch. The verdicts
+        land through _events like a pipe reply does."""
+        try:
+            cfg = config_mod.load(CONFIG_PATH)
+            result = reading_mod.Proofreader(cfg).check([s.raw for s in batch])
+        except Exception:                 # noqa: BLE001
+            result = None
+        self._events.put(lambda: self._read_proofed(batch, result, token))
+
+    def _read_proofed(self, batch: list, result: dict | None, token) -> None:
+        """The verdicts are kept whatever the tab is doing now — a
+        sentence the model has read is read for good — and the deck is
+        rebuilt from them so the corrected words are what goes up."""
+        if result is None:
+            self._read_proof_failed = True
+            self._note("the sentences could not be checked — showing them "
+                       "as they were said")
+        else:
+            reading_mod.proof_update(READ_DIR,
+                                     {s.key: result.get(s.raw) for s in batch})
+        if self._read_proofing is not token:
+            return                        # a batch the tab has moved past
+        self._read_proofing = False
+        if not self.parts.get("read_on") or self.closing:
+            return
+        self._read_deck = self._read_build_deck()
+        self._read_advance()
 
     def _draw_read_card(self, phase: str, heard: dict | None) -> None:
         """The sentence card for one phase, and the kept-today list under
@@ -2384,7 +2440,7 @@ class Dashboard:
         keys = self.status.get("keys") or self._read_keys()
         hold = pretty_key(keys.get("hotkey", ""))
 
-        if phase in ("off", "done"):
+        if phase in ("off", "done", "proofing"):
             card = ui.Card(self.sheet, SAID_W, 200, radius=14, bg=ui.BG,
                            pad=READ_PAD)
             card.place(x=PAD, y=READ_CARD_Y)
@@ -2393,6 +2449,10 @@ class Dashboard:
                 head = "Start the app first — it does the listening."
                 sub = ("The models that hear you live in the app, not in "
                        "this window.")
+            elif phase == "proofing":
+                head = "Checking the next sentences…"
+                sub = ("A model reads them first, for Hebrew that was cut "
+                       "off or garbled — text only, the audio goes nowhere.")
             else:
                 head = "You have read everything there is."
                 sub = ("Dictate more, or teach it more words, and there "

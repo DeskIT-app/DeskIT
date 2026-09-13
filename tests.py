@@ -27126,6 +27126,14 @@ def test_the_deck_is_his_own_gold_sentences_taught_words_first() -> None:
         _gold(corpus, "20260913-100000-0100",
               "זה משפט כסף שאף אחד לא אישר ולכן הוא לא נכנס לחפיסה.", 4.0,
               tier="silver")
+        # What the regex alone throws out: a recording cut mid-word (his
+        # "יש פה מם פשוט חופשית"), punctuation glued between words, a
+        # decoder loop.
+        _gold(corpus, "20260913-110000-0100",
+              "אני רוצה בסוף מוצר מוגמר תסתכל באינטרנט אם משתמשים במה שאתה מ. "
+              "שלוש משבצות לאורך ושתי משבצות לגובה אחת,שתיים, שלוש.שלוש.שש. "
+              "זה זה זה לא עובד בכלל היום אצלי.", 9.0,
+              kept="2026-09-13 11:00:00")
         vocab.write_text(json.dumps({"version": 1, "corrections": [
             {"heard": "גיטאב", "meant": "GitHub", "hits": 2},
             {"heard": "זו", "meant": "זה", "hits": 1},         # a wobble
@@ -27143,20 +27151,105 @@ def test_the_deck_is_his_own_gold_sentences_taught_words_first() -> None:
             "a single corrected Hebrew word is not a term to rank by"
         assert deck[0].said == "2026-09-01" and deck[1].said == "2026-09-12"
         assert all(len(s.key) == 12 for s in deck)
+        assert all(not s.checked and s.raw == s.text for s in deck)
         # "סבבה." is too short to be a sentence, silver is not gold
         assert not any("סבבה" in t or "כסף" in t for t in texts)
+        assert not reading.plausible("במה שאתה מ.")
+        assert not reading.plausible("לגובה אחת,שתיים, שלוש")
+        assert not reading.plausible("זה זה זה לא עובד")
+        assert reading.plausible("כן עשיתי בטעות 6 לחלק ל-6 שווה 2.")
 
-        # kept and skipped sentences are not offered again
-        _gold(read, "20260913-150000", texts[0], 3.0,
-              kept="2026-09-13 15:00:00")
+        # THE PROOFREADER'S VERDICTS shape the deck: a corrected sentence
+        # goes up corrected, a dropped one does not go up, and both are
+        # marked as read by the model so they are never sent again.
+        reading.proof_update(read, {
+            deck[1].key: "לא הבנתי למה זה לא עובד בכלל היום.",
+            deck[2].key: None})
+        checked = reading.deck(corpus, vocab, read)
+        assert [s.text for s in checked] == [texts[0], texts[1]], checked
+        assert [s.checked for s in checked] == [False, True]
+        assert checked[1].raw == texts[1] and checked[1].key == deck[1].key
+        assert reading.proof_load(read) == {deck[1].key: texts[1],
+                                            deck[2].key: None}
+
+        # kept and skipped sentences are not offered again — a kept one
+        # by the key in its sidecar, since the card's text may be the
+        # proofread form
+        _gold(read, "20260913-150000", "תעשה commit ותדחוף ל-GitHub בבקשה.",
+              3.0, kept="2026-09-13 15:00:00")
+        side = read / "20260913-150000.json"
+        meta = json.loads(side.read_text("utf-8"))
+        meta["key"] = deck[0].key
+        side.write_text(json.dumps(meta, ensure_ascii=False), "utf-8")
         (read / reading.SKIPPED).write_text(
-            json.dumps([reading.key_of(texts[2])]), "utf-8")
+            json.dumps([reading.key_of(texts[1])]), "utf-8")
         left = [s.text for s in reading.deck(corpus, vocab, read)]
-        assert left == [texts[1]], left
+        assert left == [], left
 
         t = reading.tally(read, corpus, today="2026-09-13")
-        assert t["total_s"] == 17.0 and t["read_s"] == 3.0, t
-        assert t["today_s"] == 3.0 and t["today"] == [("15:00", texts[0])], t
+        assert t["total_s"] == 26.0 and t["read_s"] == 3.0, t
+        assert t["today_s"] == 3.0 and t["today"] == [
+            ("15:00", "תעשה commit ותדחוף ל-GitHub בבקשה.")], t
+
+
+def test_the_proofreader_fixes_a_word_drops_a_fragment_and_trusts_nothing_else():
+    """reading.Proofreader against a scripted backend: a numbered reply
+    is read line by line; DROP drops; a fix that is still the same
+    sentence goes through; a rewrite, a fragment, a lone letter and a
+    reply that skips a number are refused — the next backend is asked,
+    and with none left the caller shows the sentences as they were."""
+    import reading
+
+    raws = ["מי שא אינו אותה חליפה הוא פינגוין.",
+            "אני רוצה בסוף מוצר מוגמר תסתכל באינטרנט אם משתמשים במה.",
+            "אז אני מבצע slash clear עכשיו.",
+            "לא הבנתי למה זה לא עובד בכלל היום."]
+    replies: list = []
+
+    class Backend:
+        name = "scripted"
+
+        def __init__(self, reply):
+            self.reply = reply
+
+        def translate(self, payload):
+            replies.append(payload)
+            if isinstance(self.reply, Exception):
+                raise self.reply
+            return self.reply
+
+    def scripted(*scripts):
+        pr = reading.Proofreader(cfg=None)
+        pr._backends = lambda cap: iter([Backend(r) for r in scripts])
+        return pr
+
+    good = ("[1] מי שאינו באותה חליפה הוא פינגוין.\n"
+            "[2] DROP\n"
+            "[3] אז אני מבצע slash clear עכשיו.\n"
+            "[4] אני כותב פה משפט אחר לגמרי שאין לו קשר.\n")
+    out = scripted(good).check(raws)
+    assert out == {raws[0]: "מי שאינו באותה חליפה הוא פינגוין.",
+                   raws[1]: None,
+                   raws[2]: raws[2],
+                   raws[3]: None}, out
+    assert replies[-1].startswith("[1] מי שא אינו"), replies[-1]
+
+    # a reply missing a number is refused, and the next backend is asked
+    short = "[1] מי שאינו באותה חליפה הוא פינגוין.\n[2] DROP\n[3] אז אני מבצע slash clear עכשיו."
+    out = scripted(short, good).check(raws)
+    assert out is not None and out[raws[3]] is None and len(replies) == 3
+    # a backend that raises is skipped the same way
+    out = scripted(RuntimeError("429"), good).check(raws)
+    assert out is not None and out[raws[0]].startswith("מי שאינו")
+    # nothing usable from anyone: None, and the caller keeps the raw deck
+    assert scripted(short, RuntimeError("down")).check(raws) is None
+    assert scripted().check([]) == {}
+    # a fix that leaves a lone letter or glue is not a fix
+    bad = "[1] מי שאינו באותה חליפה הוא מ.\n[2] DROP\n[3] אז אני מבצע slash clear עכשיו.\n[4] לא הבנתי,למה זה לא עובד בכלל היום."
+    out = scripted(bad).check(raws)
+    assert out[raws[0]] is None and out[raws[3]] is None, out
+    assert reading._parse_proof("1. שלום\n[2] DROP\n3) בסדר", 3) == {
+        1: "שלום", 2: "DROP", 3: "בסדר"}
 
 
 def test_a_reading_is_kept_under_the_cards_words_only_when_he_says_so() -> None:
@@ -27319,9 +27412,19 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="dictation-readtab-"))
     corpus, read = tmp / "corpus", tmp / "read"
     _gold(corpus, "20260912-100000-0100",
-          "אני רוצה לפתוח את הפרויקט הזה מחדש היום. "
-          "לא הבנתי למה זה לא עובד בכלל.", 8.0)
+          "אני רוצה לפתוח את הפרוגקט הזה מחדש היום. "
+          "לא הבנתי למה זה לא עובד בכלל. "
+          "משפט שהמודל יזרוק כי הוא לא משפט שלם בכלל.", 8.0)
     r = reading.Reading(read, root_of=lambda h: h)
+    # The proofreader, scripted: it fixes the garbled word of the first
+    # sentence, keeps the second, drops the third — and the tab must
+    # show what it returned, not what the corpus said.
+    proofed: list = []
+
+    def check(_self, texts):
+        proofed.append(list(texts))
+        return {t: (t.replace("הפרוגקט", "הפרויקט")
+                    if "יזרוק" not in t else None) for t in texts}
     app = main_mod.App.__new__(main_mod.App)
     app.reading = r
     activity = ["ready"]
@@ -27350,8 +27453,10 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
         return [p for p in read.glob("*.wav")
                 if not p.name.startswith(reading.PENDING)]
 
-    saved = (dash.READ_DIR, dash.CORPUS_DIR, control_mod.send)
+    saved = (dash.READ_DIR, dash.CORPUS_DIR, control_mod.send,
+             reading.Proofreader.check)
     dash.READ_DIR, dash.CORPUS_DIR = read, corpus
+    reading.Proofreader.check = check
     try:
         with _window() as board:
             if board is None:
@@ -27359,10 +27464,18 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
             control_mod.send = send
             board._corr_tab = "read"
             board._show("Corrections")
+            assert board._read_proofing and board._read_current is None
+            assert board._read_phase()[0] in ("off", "proofing")
             settle(board)
+            assert not board._read_proofing, "the verdicts never landed"
+            assert len(proofed) == 1 and len(proofed[0]) == 3, proofed
+            verdicts = reading.proof_load(read)
+            assert len(verdicts) == 3 and None in verdicts.values(), verdicts
             first = board._read_current
             assert first is not None and board._read_deck, "the deck is empty"
             assert first.text == "אני רוצה לפתוח את הפרויקט הזה מחדש היום."
+            assert first.raw == "אני רוצה לפתוח את הפרוגקט הזה מחדש היום."
+            assert first.checked and all(s.checked for s in board._read_deck)
             assert r.armed_id == first.key, "the tab armed what it shows"
             assert sent[-1]["hwnd"] == board._read_hwnd() and sent[-1]["hwnd"]
             assert phase(board) == "waiting"
@@ -27394,17 +27507,34 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
             assert len(kept()) == 2, "kept without asking"
             assert board._read_counts["kept"] == 2
             assert board._read_current is None and phase(board) == "done"
-            sides = [json.loads(p.read_text("utf-8")) for p in read.glob("*.json")]
+            sides = [json.loads(p.read_text("utf-8"))
+                     for p in read.glob("*.json")
+                     if p.name not in (reading.SKIPPED, reading.PROOFREAD)]
             assert sorted(s["text"] for s in sides) == sorted(
                 [first.text, second.text]), sides
+            assert sorted(s["key"] for s in sides) == sorted(
+                [first.key, second.key]), "the RAW sentence's key is filed"
+            assert len(proofed) == 1, "a sentence is proofread once, ever"
 
             board._corr_tab_to("waiting")
             settle(board)
             assert r.armed_id is None, "leaving the tab disarms"
             assert "corr_list" in board.parts and "read_card" not in board.parts
             assert sent[-1]["do"] == "disarm", sent[-1]
+            # And with no backend answering, the raw deck goes up rather
+            # than nothing: he can still read.
+            reading.Proofreader.check = lambda _self, texts: None
+            (read / reading.PROOFREAD).unlink()
+            board._read_proof_failed = False
+            board._corr_tab_to("read")
+            settle(board)
+            assert board._read_proof_failed and not board._read_proofing
+            assert board._read_current is not None
+            assert board._read_current.raw == board._read_current.text
+            assert not board._read_current.checked
     finally:
-        dash.READ_DIR, dash.CORPUS_DIR, control_mod.send = saved
+        (dash.READ_DIR, dash.CORPUS_DIR, control_mod.send,
+         reading.Proofreader.check) = saved
         shutil.rmtree(tmp, ignore_errors=True)
 
 
