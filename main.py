@@ -757,6 +757,10 @@ class App:
         # read under the model lock in _transcribe and written into the
         # recording's sidecar for the second reading.
         self._last_words: list = []
+        # And the stretches the LAST live transcription was joined from
+        # (rolling.py), [] when it was decoded whole — for the repair pass
+        # to skip the ones already repaired while the key was held.
+        self._last_windows: list = []
         self.phone: server_mod.PhoneServer | None = None
         if cfg.server.enabled:
             self.phone = server_mod.PhoneServer(
@@ -2542,7 +2546,6 @@ class App:
         self._question_texts = []
         self._cap, self._latched = self.cfg.max_seconds, False
         self._rec_at = time.monotonic()
-        self._roller = self._start_roller()
         self._set_state("recording")
         # An ask-the-screen card that is reading an answer aloud stops the
         # moment you start talking over it — that is what makes the thing
@@ -2618,13 +2621,18 @@ class App:
             # recorder: the card is given a way to READ a level and no way
             # to touch anything else.
             vqa.notify_recording(level=self.recorder.meter)
+        # After the routing above: a dictation bound for the ask card or
+        # the report card is never repaired, so its stretches are not
+        # sent to the repair pass either.
+        self._roller = self._start_roller(
+            polish=not (self._to_card or self._to_prompt))
         beep("start")
         log.info("recording %s... (release to transcribe%s)",
                  language_label(language, shout=True),
                  f", tap '{self.cfg.latch_hotkey}' to lock it on"
                  if self.cfg.latch_hotkey else "")
 
-    def _start_roller(self):
+    def _start_roller(self, polish: bool = True):
         """The rolling transcriber for the recording just begun, or None.
 
         Only for the local backend, and only when [local] rolling says
@@ -2632,6 +2640,10 @@ class App:
         nothing. Built here, on the hook thread, because that is where
         the recording begins — but only a Thread.start(); the reading and
         the decoding happen on its own thread (rolling.py).
+
+        `polish`: also send each decoded stretch through the repair pass
+        (_polish_window) while the key is still held, so the release
+        repairs only what came after it.
         """
         local = getattr(self.cfg, "local", None)
         if local is None or not getattr(local, "rolling", False):
@@ -2647,7 +2659,12 @@ class App:
                 # The one choke point every decode passes through, the
                 # phone endpoint's included (see _transcribe).
                 with self._model_lock:
-                    return backend.decode_window(wav, lead_s, keep_s)
+                    window = backend.decode_window(wav, lead_s, keep_s)
+                if polish and window.text:
+                    threading.Thread(target=self._polish_window,
+                                     args=(window, backend), daemon=True,
+                                     name="rolling-polish").start()
+                return window
 
             roller = rolling_mod.Roller(
                 self.recorder.chunks_since, self.recorder.sample_rate,
@@ -4252,6 +4269,12 @@ class App:
                     text = self._call(self.transcriber, wav, language)
                 self._last_words = list(
                     getattr(self.transcriber, "last_words", None) or [])
+                # The windows this text was joined from (rolling), [] for
+                # a whole decode — read HERE, off the backend that ran,
+                # so a stale list from an earlier dictation is never
+                # mistaken for this one's.
+                self._last_windows = list(
+                    getattr(self.transcriber, "last_windows", None) or [])
                 return text, self.transcriber.name
             except RateLimitError:
                 local = self._local_backend()
@@ -4260,6 +4283,7 @@ class App:
                 text = self._call(local, wav, language)
                 self._last_words = list(
                     getattr(local, "last_words", None) or [])
+                self._last_windows = []
                 return text, local.name
 
     def _worker(self) -> None:
@@ -5046,6 +5070,58 @@ class App:
             return text          # the caller will run the context pass after
         return self._context_pass(text, max_wait_s)
 
+    def _polish_window(self, window, backend) -> None:
+        """The repair pass on ONE stretch of a recording still in
+        progress, on a thread of its own (see _start_roller).
+
+        Its own thread, and not the rolling transcriber's, so that a slow
+        answer never holds the release: the worker takes whatever this
+        has finished and repairs the rest itself (_improve_rolled). The
+        stretch goes in as the whole recording would have — the same
+        filler cleanup first, then the vocabulary and the context pass.
+        Never raises: an unrepaired stretch is repaired at the release.
+        """
+        try:
+            text = backend.clean_text(window.text)
+            if text:
+                window.polished = self._improve(text, wait=True)
+        except Exception:
+            log.exception("a stretch could not be repaired while you spoke "
+                          "— the release will repair it")
+
+    def _improve_rolled(self, cleaned: str, head) -> str:
+        """_improve, minus the stretches already repaired while he spoke.
+
+        The leading run of windows whose repair has landed is taken as it
+        is; everything after it — a window whose answer is still on its
+        way, and the tail — goes through the pass together, exactly as
+        the whole recording used to. Measured 2026-09-13 in app.log: the
+        pass on a 106 s dictation (997 chars) took 2.0 s; on its last
+        stretch alone it is the 0.7 s a short dictation pays.
+        """
+        windows = list(getattr(self, "_last_windows", None) or [])
+        done: list = []
+        if head is not None:
+            for window in windows:
+                if window.polished is None:
+                    break
+                done.append(window)
+        if not done:
+            return self._improve(cleaned, wait=True)
+        rest_raw = " ".join(w.text for w in windows[len(done):]
+                            if w.text).strip()
+        rest = ""
+        if rest_raw:
+            cleaner = getattr(self.transcriber, "clean_text", None)
+            rest = cleaner(rest_raw) if cleaner else rest_raw
+            rest = self._improve(rest, wait=True)
+        log.info("context pass: %d stretch(es) were repaired while you "
+                 "spoke — %d chars went now", len(done), len(rest_raw))
+        parts = [w.polished for w in done if w.polished]
+        if rest:
+            parts.append(rest)
+        return " ".join(parts).strip()
+
     def _context_pass(self, text: str,
                       max_wait_s: float | None = None) -> str:
         """The LLM repair, run to completion. Returns the text either way.
@@ -5386,7 +5462,9 @@ class App:
         # So the placeholder is the contract: while "..." is on screen
         # nothing is final, and when the text appears it is done and will
         # not move again. polish.max_wait_s bounds how long that can take.
-        cleaned = self._improve(cleaned, wait=True)
+        # Minus whatever the rolling transcriber's stretches already had
+        # repaired while the key was held (_improve_rolled).
+        cleaned = self._improve_rolled(cleaned, head)
         # And the punctuation, if the box is ticked — after the repair, so
         # it works on the final words; punctuate.max_wait_s bounds it.
         cleaned = self._auto_punctuate(cleaned)

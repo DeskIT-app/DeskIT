@@ -28311,6 +28311,9 @@ def test_the_press_starts_a_roller_and_the_release_hands_it_to_the_worker():
         def decode_window(self, wav, lead_s, keep_s):
             return rolling.Window(0.0, 0.0, "חלון", [], [], None)
 
+        def clean_text(self, text):
+            return text
+
         def transcribe(self, wav, language=None):
             self.calls.append(("whole", language))
             return "שלם"
@@ -28455,6 +28458,97 @@ def test_the_recorder_hands_out_chunks_without_ending_the_utterance():
     wav, seconds = rec.end()
     assert wav is not None and abs(seconds - 0.03) < 1e-6
     assert rec.chunks_since(0) == []
+
+def test_the_repair_pass_skips_the_stretches_repaired_while_he_spoke():
+    """Phase two of the rolling transcriber: each decoded stretch is sent
+    through the repair pass on a thread of its own while the key is
+    held, and at the release only the leading run of repaired stretches
+    is trusted — everything after it, the tail included, goes through
+    the pass together, as the whole recording used to. A recording
+    decoded whole (no head, no windows) is repaired whole, as before."""
+    import main as main_mod
+    import rolling
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-rolled-polish-"))
+    try:
+        app = _worker_app(_Flaky(fail_times=0), tmp)
+        seen = []
+
+        def improve(text, wait=True, max_wait_s=None):
+            seen.append(text)
+            return f"<{text}>"
+
+        app._improve = improve
+        app.transcriber.clean_text = lambda t: t.replace("אה ", "")
+        head = rolling.Head([], 0.0)
+        w1 = rolling.Window(0.0, 25.0, "אחת", polished="<אחת>")
+        w2 = rolling.Window(25.0, 50.0, "שתיים", polished="<שתיים>")
+        w3 = rolling.Window(50.0, 75.0, "אה שלוש")          # still on its way
+        tail = rolling.Window(75.0, 80.0, "ארבע")
+        app._last_windows = [w1, w2, w3, tail]
+        out = app._improve_rolled("אחת שתיים שלוש ארבע", head)
+        assert out == "<אחת> <שתיים> <שלוש ארבע>", ascii(out)
+        assert seen == ["שלוש ארבע"], ascii(seen)
+        # Nothing repaired in time: the whole text, one pass, as before.
+        seen.clear()
+        app._last_windows = [rolling.Window(0.0, 25.0, "אחת"), tail]
+        out = app._improve_rolled("אחת ארבע", head)
+        assert out == "<אחת ארבע>" and seen == ["אחת ארבע"], (out, seen)
+        # Decoded whole: no head, and the windows are not consulted.
+        seen.clear()
+        app._last_windows = [w1, w2]
+        out = app._improve_rolled("אחת שתיים", None)
+        assert out == "<אחת שתיים>" and seen == ["אחת שתיים"], (out, seen)
+        # The stretch's own repair: filler cleanup first, then the pass,
+        # and the answer lands on the window.
+        seen.clear()
+        window = rolling.Window(0.0, 25.0, "אה חמש")
+        app._polish_window(window, app.transcriber)
+        assert window.polished == "<חמש>" and seen == ["חמש"],             (window.polished, seen)
+        # A pass that raises leaves the window for the release.
+        app._improve = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError())
+        window = rolling.Window(0.0, 25.0, "שש")
+        app._polish_window(window, app.transcriber)
+        assert window.polished is None
+        # The press starts the pass only for a dictation bound for the
+        # cursor: the ask card and the report card never repair.
+        started = []
+        real_thread = main_mod.threading.Thread
+
+        class Rec:
+            sample_rate = 16000
+
+            def chunks_since(self, mark): return []
+
+        app.recorder = Rec()
+        app._improve = improve
+        app.transcriber.decode_window =             lambda *_a: rolling.Window(0.0, 0.0, "חלון")
+        app.transcriber.can_overlap = False
+
+        class Spy(real_thread):
+            def __init__(self, *a, **k):
+                started.append(k.get("name"))
+                super().__init__(*a, **k)
+
+        main_mod.threading.Thread = Spy
+        try:
+            for wanted in (True, False):
+                roller = app._start_roller(polish=wanted)
+                assert roller is not None
+                window = roller._decode(b"RIFF", 0.0, 1.0)
+                roller.invalidate()
+                for thread in main_mod.threading.enumerate():
+                    if thread.name == "rolling-polish":
+                        thread.join(5)
+                assert (window.polished == "<חלון>") is wanted,                     (wanted, window.polished)
+        finally:
+            main_mod.threading.Thread = real_thread
+        assert started == ["rolling-transcribe", "rolling-polish",
+                           "rolling-transcribe"], started
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())

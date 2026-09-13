@@ -350,6 +350,7 @@ class LocalWhisperTranscriber:
         # last_removed, and for the same reason the study decodes never
         # touch it.
         self.last_words: list[tuple] = []
+        self.last_windows: list = []
         self._guards = hallucination_guards(guard_hallucinations)
 
         attempts = ([("cuda", "float16"), ("cpu", "int8")]
@@ -648,11 +649,19 @@ class LocalWhisperTranscriber:
         self.last_words = window.words
         self.last_removed = window.removed
         self.last_warning = window.warning
+        self.last_windows = []
         text = window.text
         if not text:
             return ""        # treated as "no speech", same as Gemini
-        if self._cleanup:
-            text = cleanup_mod.clean(text, self._fillers)
+        return self.clean_text(text)
+
+    def clean_text(self, text: str) -> str:
+        """The filler cleanup a transcript gets on its way out — the same
+        one, so a stretch repaired while the key is held (main.App
+        ._polish_window) starts from the text the whole recording would
+        have."""
+        if self._cleanup and text:
+            return cleanup_mod.clean(text, self._fillers)
         return text
 
     # -- the rolling transcriber (rolling.py) --
@@ -744,12 +753,13 @@ class LocalWhisperTranscriber:
         self.last_removed = [r for w in windows for r in w.removed]
         self.last_warning = next((w.warning for w in windows if w.warning),
                                  None)
+        # The windows as they went into this text, the tail's included,
+        # for the repair pass to see which of them it has already done.
+        self.last_windows = windows
         text = " ".join(w.text for w in windows if w.text).strip()
         if not text:
             return ""
-        if self._cleanup:
-            text = cleanup_mod.clean(text, self._fillers)
-        return text
+        return self.clean_text(text)
 
 
 def _trim(segs, lead_s: float, keep_s: float | None):

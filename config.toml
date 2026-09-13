@@ -1437,7 +1437,11 @@ corpus_keep = 400         # verified (audio, text) pairs kept in corpus\ as
 # THE CLOUD LEG SENDS TRANSCRIPT TEXT OFF THIS MACHINE. Your audio never
 # leaves it — ASR is local whatever this says — but the words do, to Groq,
 # under their free-tier terms. prefer = "ollama" declines that entirely and
-# costs you the seconds back.
+# costs you the seconds back. With [local] rolling on, each 25 s stretch of a
+# long dictation goes through this pass WHILE THE KEY IS STILL HELD, so the
+# release repairs only the last stretch (2.0 s -> ~0.7 s on a 106 s
+# dictation, measured 2026-09-13) — which also means the words of a
+# dictation you then abort with Esc may already have gone.
 #
 # IT SITS IN FRONT OF YOUR CURSOR, and that costs you seconds. It was tried
 # the other way — paste instantly, rewrite the text on screen a few seconds

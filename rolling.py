@@ -112,6 +112,13 @@ class Window:
     words: list = field(default_factory=list)      # (word, start, end, p)
     removed: list = field(default_factory=list)    # boilerplate dropped
     warning: str | None = None
+    # The stretch after the repair pass (main.App._polish_window), set by
+    # a thread of its own while the key is still held; None until then,
+    # and for ever when the pass was skipped. At the release only the
+    # leading run of repaired windows is trusted — the rest, tail
+    # included, goes through the pass together, as the whole recording
+    # used to.
+    polished: str | None = None
 
 
 @dataclass
