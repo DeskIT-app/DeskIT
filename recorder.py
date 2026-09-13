@@ -286,6 +286,22 @@ class Recorder:
             if self._state == ACTIVE and len(self._chunks) > mark:
                 self._excluded.append((mark, len(self._chunks)))
 
+    def chunks_since(self, mark: int) -> list[np.ndarray]:
+        """The chunks captured since `mark`, as they are — WITHOUT ending
+        the utterance, and without copying the audio.
+
+        For the rolling transcriber (rolling.py), which reads the buffer
+        every fifth of a second while the key is held and needs the chunk
+        boundaries, not a WAV. The list is copied under the lock; the
+        arrays are the ones the callback appended and nothing ever writes
+        to them, so handing them out is safe. [] once the utterance has
+        ended: the buffer is then the worker's.
+        """
+        with self._lock:
+            if self._state != ACTIVE:
+                return []
+            return self._chunks[mark:]
+
     def slice_since(self, mark: int) -> tuple[bytes | None, float]:
         """The audio captured since `mark` — WITHOUT ending the utterance.
 

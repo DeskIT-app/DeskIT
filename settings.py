@@ -1243,6 +1243,15 @@ _MORE: tuple[Friendly, ...] = (
     Friendly("local.extra_boilerplate", "Your own stock phrases to drop",
              "Whole phrases only: one common word here would delete real "
              "speech."),
+    Friendly("local.rolling", "Transcribe while you are still talking",
+             "The recording is decoded in stretches as you speak, so "
+             "letting go waits only for the last few seconds. Nothing "
+             "shows early."),
+    Friendly("local.rolling_window_s",
+             "How many seconds a stretch waits for, before it is decoded",
+             "Shorter means more is done by the time you let go; longer "
+             "means each stretch is read with more of its own context. "
+             "Below 20 it was measured to cost words."),
     # -- [review]
     Friendly("review.enabled", "Read every dictation a second time",
              "Off, there are no cards and no proposals, and the quiet "

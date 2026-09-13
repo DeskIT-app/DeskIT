@@ -1628,6 +1628,29 @@ extra_boilerplate = []           # your own phrases, e.g. ["תודה שצפית�
                                  # WHOLE PHRASES only: a single common word
                                  # here would delete real speech
 
+# --- transcribing while you are still talking --------------------------------
+# The wait after the key goes up used to be the decode of the WHOLE recording:
+# 4.3 s for a 162 s dictation, 2.7 s for 82 s (app.log, 2026-09-13). With this
+# on, a thread decodes the recording in stretches while the key is held — each
+# stretch cut in a pause, never mid-word, on the same model with the same
+# prompt, hotwords, beam and guards — and the release waits only for the tail,
+# about a second whatever the length. NOTHING REACHES THE SCREEN EARLY: the
+# stretches are joined after the tail and the text lands once, whole, as it
+# always has ("..." = not finished, text = finished — see [polish]).
+#
+# THE STRETCH IS LONG ON PURPOSE. Measured 2026-09-13 on the 69 gold clips in
+# corpus\ (see rolling.py): 25 s stretches give the text the whole decode gives,
+# within the noise of the labels; 20 s sits at the edge of that noise; 8 s is
+# plainly worse (13.9% against 7.5% WER) — Whisper reads a short clip with less
+# of its own context and invents at the edges. So a dictation shorter than a
+# stretch changes nothing, and a long one waits for its last stretch only.
+rolling = true                   # decode in stretches while the key is held
+rolling_window_s = 25.0          # how much settled audio a stretch waits for
+                                 # before it is decoded (1..25). Shorter = more
+                                 # is done by the release; longer = each stretch
+                                 # is read with more of its own context. Below
+                                 # 20 it was measured to cost words
+
 [review]
 # FAST VERSION ONLY. The second reading (review.py): the moment a
 # dictation has landed at the cursor, the recording is decoded three MORE

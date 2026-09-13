@@ -501,6 +501,11 @@ class App:
         # ask card began. The recording is never ended for it — see
         # _on_ask_stop.
         self._ask_mark = 0
+        # The rolling transcriber for the recording in progress (rolling.py):
+        # made at the press, handed to the worker at the release, None in
+        # between recordings. It decodes the recording in stretches while
+        # the key is held so that the release waits only for the tail.
+        self._roller = None
         # What was said to the card during THIS recording, in order, as
         # transcribed at the moment it was said. The splice puts these
         # back where they belong — see _transcribe_pieces.
@@ -992,6 +997,13 @@ class App:
         Runs inside the keyboard hook: one call and one assignment.
         """
         self._ask_mark = self.recorder.mark()
+        # A question is about to be cut out of, or noted in, the recording
+        # the rolling transcriber is reading: its windows no longer line
+        # up with what end_pieces will hand over. The whole recording
+        # goes the old way — cut at the questions and spliced.
+        roller = getattr(self, "_roller", None)
+        if roller is not None:
+            roller.invalidate()
         vqa = getattr(self, "_vqa", None)
         if vqa is not None:
             vqa.notify_recording(level=self.recorder.meter)
@@ -2530,6 +2542,7 @@ class App:
         self._question_texts = []
         self._cap, self._latched = self.cfg.max_seconds, False
         self._rec_at = time.monotonic()
+        self._roller = self._start_roller()
         self._set_state("recording")
         # An ask-the-screen card that is reading an answer aloud stops the
         # moment you start talking over it — that is what makes the thing
@@ -2611,7 +2624,48 @@ class App:
                  f", tap '{self.cfg.latch_hotkey}' to lock it on"
                  if self.cfg.latch_hotkey else "")
 
+    def _start_roller(self):
+        """The rolling transcriber for the recording just begun, or None.
+
+        Only for the local backend, and only when [local] rolling says
+        so: the cloud backends take a file, and the fake one is timing
+        nothing. Built here, on the hook thread, because that is where
+        the recording begins — but only a Thread.start(); the reading and
+        the decoding happen on its own thread (rolling.py).
+        """
+        local = getattr(self.cfg, "local", None)
+        if local is None or not getattr(local, "rolling", False):
+            return None
+        backend = getattr(self, "transcriber", None)
+        if not hasattr(backend, "decode_window"):
+            return None
+        try:
+            import rolling as rolling_mod
+            from recorder import frames_to_wav
+
+            def decode(wav: bytes, lead_s: float, keep_s: float):
+                # The one choke point every decode passes through, the
+                # phone endpoint's included (see _transcribe).
+                with self._model_lock:
+                    return backend.decode_window(wav, lead_s, keep_s)
+
+            roller = rolling_mod.Roller(
+                self.recorder.chunks_since, self.recorder.sample_rate,
+                decode, local.rolling_window_s, frames_to_wav,
+                overlap=bool(getattr(backend, "can_overlap", False)))
+            roller.start()
+            return roller
+        except Exception:
+            log.exception("could not start the rolling transcriber — this "
+                          "recording is decoded whole at the end")
+            return None
+
     def _on_stop(self, language: str | None = "he") -> None:
+        # The rolling transcriber first, so its next look at the buffer
+        # finds it ended; the worker collects what it finished (_handle).
+        roller, self._roller = getattr(self, "_roller", None), None
+        if roller is not None:
+            roller.close()
         # end_pieces, not end: a recording the ask card interrupted comes
         # back cut at the questions, so the worker can transcribe what
         # surrounds them and splice the questions back in. Nothing asked
@@ -2663,10 +2717,15 @@ class App:
             extra["silent"] = True
             log.warning("the whole recording was silent (peak %.4f) — it "
                         "will not be kept in recent\\", self.recorder.peak())
+        done = ""
+        if roller is not None and len(pieces) <= 1:
+            extra["rolled"] = roller
+            if roller.done_s > 0:
+                done = f"; {roller.done_s:.1f} s already done"
         self.queue.put((wav, seconds, hwnd, language, self._to_card, extra))
-        log.info("captured %.1f s of %s -> transcribing (%s)...", seconds,
+        log.info("captured %.1f s of %s -> transcribing (%s%s)...", seconds,
                  language_label(language),
-                 self.transcriber.name)
+                 self.transcriber.name, done)
 
     def _on_latch(self) -> None:
         # Lift the cap first, then beep: the cue is fire-and-forget but the
@@ -2685,6 +2744,9 @@ class App:
     def _on_abort(self, reason: str) -> None:
         self._set_state("ready")
         self.dot.alarm(False)
+        roller, self._roller = getattr(self, "_roller", None), None
+        if roller is not None:
+            roller.invalidate()
         self.recorder.abort()
         log.info("aborted, nothing recorded — %s", reason)
 
@@ -4167,17 +4229,27 @@ class App:
         return " ".join(out), backend or "local"
 
     def _transcribe(self, wav: bytes,
-                    language: str | None = None) -> tuple[str, str]:
+                    language: str | None = None,
+                    head=None) -> tuple[str, str]:
         """Cloud first; local only once every cloud model is out of quota.
 
         Serialised: the phone endpoint runs on its own threads and would
         otherwise hit the same Whisper model as the desktop worker at the
         same moment. This is the one choke point both paths pass through.
 
+        `head` is what the rolling transcriber finished while the key was
+        held (rolling.Head): the backend that made it decodes only the
+        tail after it. Any other backend — the cloud, or the local
+        fallback under it — was not there and gets the whole recording.
         """
         with self._model_lock:
             try:
-                text = self._call(self.transcriber, wav, language)
+                if head is not None and hasattr(self.transcriber,
+                                                "transcribe_with_head"):
+                    text = self.transcriber.transcribe_with_head(
+                        wav, head, language=language)
+                else:
+                    text = self._call(self.transcriber, wav, language)
                 self._last_words = list(
                     getattr(self.transcriber, "last_words", None) or [])
                 return text, self.transcriber.name
@@ -5051,7 +5123,8 @@ class App:
                 to_card: bool | None = None,
                 sliced: bool = False, in_stream: bool = False,
                 pieces: list | None = None,
-                to_prompt: bool = False, silent: bool = False) -> None:
+                to_prompt: bool = False, silent: bool = False,
+                rolled=None) -> None:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
@@ -5103,6 +5176,17 @@ class App:
         last_error = ""
         attempt = 0
         text = backend = None
+        # What the rolling transcriber finished while the key was held.
+        # finish() waits for the decode it is in the middle of, if any —
+        # bounded, and inside the latency that is measured, because it
+        # IS part of the wait. None means the whole recording is decoded
+        # here exactly as it always was.
+        head = rolled.finish() if rolled is not None else None
+        if head is not None:
+            log.info("rolling: %d window(s) covering %.1f of %.1f s were "
+                     "decoded while you spoke (%.1f s of decoder time) — "
+                     "only the tail is left", len(head.windows), head.end_s,
+                     seconds, rolled.busy_s)
 
         while True:
             attempt += 1
@@ -5111,7 +5195,7 @@ class App:
                     text, backend = self._transcribe_pieces(pieces,
                                                             language)
                 else:
-                    text, backend = self._transcribe(wav, language)
+                    text, backend = self._transcribe(wav, language, head)
                 break
             except TranscriptionError as e:
                 last_error = str(e)

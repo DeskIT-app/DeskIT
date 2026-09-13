@@ -294,6 +294,22 @@ class LocalConfig:
     # Your own phrases to treat the same way, e.g. a jingle the model keeps
     # tacking on. Whole phrases only — single common words strip real speech.
     extra_boilerplate: tuple[str, ...] = ()
+    # Decode the recording in stretches WHILE the key is held (rolling.py),
+    # so the release waits only for the last stretch: measured 2026-09-13
+    # in app.log, a 162 s dictation waited 4.3 s for Whisper and an 82 s
+    # one 2.7 s, against about a second for one stretch. Same model,
+    # prompt, beam and guards per stretch; nothing reaches the screen
+    # early.
+    rolling: bool = True
+    # How much settled audio a stretch waits for before it is decoded.
+    # Shorter means more of the recording is done by the release; longer
+    # means each stretch is read with the context the whole recording
+    # would have given it. MEASURED 2026-09-13 on the 69 gold clips in
+    # corpus\ (see rolling.py): at 25 s the text is what the whole
+    # decode gives, within the noise of the labels; at 20 s it is at the
+    # edge of that noise; at 8 s it is plainly worse (13.9% against 7.5%
+    # WER). Cuts always land in a pause, never mid-word.
+    rolling_window_s: float = 25.0
 
 
 @dataclass(frozen=True)
@@ -1557,6 +1573,9 @@ def load(path: Path) -> Config:
             extra_boilerplate=tuple(str(p).strip()
                                     for p in local.get("extra_boilerplate", ())
                                     if str(p).strip()),
+            rolling=bool(local.get("rolling", LocalConfig.rolling)),
+            rolling_window_s=float(local.get(
+                "rolling_window_s", LocalConfig.rolling_window_s)),
         ),
         feedback=FeedbackConfig(
             placeholder=str(feedback.get("placeholder",
@@ -2003,6 +2022,11 @@ def load(path: Path) -> Config:
     if cfg.local.beam_size < 1:
         raise ConfigError("local.beam_size must be >= 1 (1 is greedy; this "
                           "app shipped at 5)")
+    if not (1.0 <= cfg.local.rolling_window_s <= 25.0):
+        raise ConfigError("local.rolling_window_s must be between 1 and 25 "
+                          "seconds (Whisper's own window is 30; this app "
+                          "shipped at 25, and below 20 it was measured to "
+                          "cost words)")
     if cfg.polish.min_chars < 0:
         raise ConfigError("polish.min_chars must be >= 0")
     if cfg.polish.max_wait_s <= 0:

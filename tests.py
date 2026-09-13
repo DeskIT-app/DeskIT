@@ -27972,6 +27972,490 @@ def test_the_readme_and_agents_document_the_nightly_tests() -> None:
     assert "| `nightly.py`" in where, "nightly.py is not on the map"
 
 
+def test_a_cut_falls_in_the_latest_pause_once_enough_audio_has_settled():
+    """rolling.cut_at is the whole decision of WHERE a recording still
+    in progress is cut, made on the audio alone: never before window_s
+    of it is pending, never inside the last LAG_S, always in a pause —
+    the LATEST one, through its middle — and, with no pause at all by
+    MAX_WINDOW_S, at the quietest chunk of the last five seconds."""
+    import rolling
+
+    rate, chunk = 1000, 100                 # ten chunks a second
+    loud, quiet = 0.30, 0.001
+
+    def stretch(seconds, level):
+        return [level] * int(seconds * 10)
+
+    sizes = lambda peaks: [chunk] * len(peaks)  # noqa: E731
+
+    # Six seconds of speech: under the 8 s window, nothing yet.
+    peaks = stretch(6, loud)
+    assert rolling.cut_at(peaks, sizes(peaks), rate, 8.0) is None
+    # Nine seconds with no pause: nothing, and not the max fallback yet.
+    peaks = stretch(9, loud)
+    assert rolling.cut_at(peaks, sizes(peaks), rate, 8.0) is None
+    # Speech 0-5, pause 5-6, speech 6-9: the cut is in the pause, at its
+    # middle (5.5 s = chunk 55), and the pause is well behind the lag.
+    peaks = stretch(5, loud) + stretch(1, quiet) + stretch(3, loud)
+    cut = rolling.cut_at(peaks, sizes(peaks), rate, 8.0)
+    assert cut == 55, cut
+    # Two pauses: the later one wins, as long as it is LAG_S behind.
+    peaks = (stretch(3, loud) + stretch(1, quiet) + stretch(3, loud)
+             + stretch(1, quiet) + stretch(2, loud))
+    cut = rolling.cut_at(peaks, sizes(peaks), rate, 8.0)
+    assert cut == 75, cut
+    # A pause that ends inside the lag is not a place to cut: the earlier
+    # one is used instead.
+    peaks = (stretch(4.5, loud) + stretch(1, quiet) + stretch(3.5, loud)
+             + stretch(0.6, quiet) + stretch(0.4, loud))
+    cut = rolling.cut_at(peaks, sizes(peaks), rate, 8.0)
+    assert cut == 50, cut
+    # The only pause is early, so the window it would make is under half
+    # the target: wait for a better one...
+    peaks = stretch(2, loud) + stretch(1, quiet) + stretch(7, loud)
+    assert rolling.cut_at(peaks, sizes(peaks), rate, 8.0) is None
+    # ...unless the pending audio is at Whisper's own edge, when the
+    # quietest chunk of the last five seconds (still LAG_S behind) is
+    # taken rather than let faster-whisper cut wherever it likes.
+    peaks = stretch(28, loud)
+    peaks[-30] = 0.05                       # 3.0 s from the end: eligible
+    peaks[-5] = 0.01                        # 0.5 s from the end: inside the lag
+    cut = rolling.cut_at(peaks, sizes(peaks), rate, 8.0)
+    assert cut == len(peaks) - 30, cut
+    # Still silent when the key is held with nothing said: everything is
+    # "quiet", the run reaches back to the start and the cut is mid-way.
+    peaks = stretch(9, quiet)
+    cut = rolling.cut_at(peaks, sizes(peaks), rate, 8.0)
+    assert cut is not None and 0 < cut < len(peaks), cut
+
+
+def test_quiet_is_relative_to_how_loud_the_microphone_is():
+    """The owner's microphone peaks at 0.03-0.06 on many recordings and at
+    0.3 on others, with the floor between words at 0.0000-0.0009 on all
+    of them (measured over recent\\, 2026-09-13). A fixed threshold would
+    miss the quiet sessions' pauses or call their speech silence; the
+    threshold follows the loud level, with FLOOR as the least that can
+    count."""
+    import rolling
+
+    loud_session = [0.30] * 50 + [0.02] * 10 + [0.30] * 30
+    quiet_session = [0.035] * 50 + [0.0005] * 10 + [0.035] * 30
+    sizes = [100] * 90
+    # A breath at 0.02 is quiet against 0.30 speech...
+    assert rolling.cut_at(loud_session, sizes, 1000, 8.0) == 55
+    # ...and at 0.035 the same shape is speech, its floor the pause.
+    assert rolling.cut_at(quiet_session, sizes, 1000, 8.0) == 55
+    # The breath from the loud session would be SPEECH in the quiet one.
+    mixed = [0.035] * 50 + [0.02] * 10 + [0.035] * 30
+    assert rolling.cut_at(mixed, sizes, 1000, 8.0) is None
+    assert rolling.quiet_threshold([0.0] * 10) == rolling.FLOOR
+
+
+def test_the_roller_settles_windows_as_the_audio_arrives_and_stops_clean():
+    """The thread's one step, driven by hand over a recording that arrives
+    a fifth of a second at a time: each window is decoded with LEAD_S of
+    the previous one before it and EXT_S after it, and told how much of
+    that is its own; done_s reaches the end of the last window; a window
+    with no speech in it is skipped without a decode; finish() hands the
+    windows over — or None after invalidate(), or when nothing settled."""
+    import rolling
+    from recorder import frames_to_wav
+
+    rate, per = 1000, 100
+    chunks: list = []
+    seen = {"n": 0}
+
+    def since(mark):
+        return chunks[mark:seen["n"]]
+
+    calls = []
+
+    def decode(wav, lead_s, keep_s):
+        with wave.open(io.BytesIO(wav), "rb") as w:
+            seconds = w.getnframes() / w.getframerate()
+        calls.append((round(seconds, 1), round(lead_s, 1), round(keep_s, 1)))
+        return rolling.Window(0.0, 0.0, f"w{len(calls)}",
+                              [("x", 0.1, 0.2, 0.9)], [], None)
+
+    def add(seconds, level):
+        for _ in range(int(seconds * 10)):
+            chunks.append(np.full(per, int(level * 32768), dtype=np.int16))
+
+    r = rolling.Roller(since, rate, decode, 8.0, frames_to_wav)
+    # 2 s of room before he starts, 5 s of speech, a 1 s pause, 4 s more.
+    add(2, 0.0); add(5, 0.3); add(1, 0.0); add(4, 0.3)
+    while seen["n"] < len(chunks):
+        seen["n"] = min(len(chunks), seen["n"] + 2)
+        r._step()
+    assert len(r.windows) == 1, [(w.start_s, w.end_s) for w in r.windows]
+    win = r.windows[0]
+    # The cut is inside the 7-8 s pause: the run counted from where it
+    # began to LAG_S behind the newest chunk, and the cut is its middle.
+    assert win.start_s == 0.0 and 7.0 < win.end_s < 8.0, \
+        (win.start_s, win.end_s)
+    assert win.text == "w1"
+    # No previous window, so no lead; EXT_S of what followed was appended
+    # and the decoder was told which seconds are the window's own.
+    keep = round(win.end_s - win.start_s, 1)
+    assert calls == [(round(keep + rolling.EXT_S, 1), 0.0, keep)], calls
+    assert abs(r.done_s - win.end_s) < 1e-6, r.done_s
+    assert r.decodes == 1
+    # More speech: the next window carries a second of the last one.
+    add(1, 0.0); add(8, 0.3)
+    while seen["n"] < len(chunks):
+        seen["n"] = min(len(chunks), seen["n"] + 2)
+        r._step()
+    assert len(r.windows) == 2, [(w.start_s, w.end_s) for w in r.windows]
+    second = r.windows[1]
+    assert second.start_s == win.end_s and 12.0 < second.end_s < 13.0, \
+        (second.start_s, second.end_s)
+    keep = round(second.end_s - second.start_s, 1)
+    assert calls[1] == (round(rolling.LEAD_S + keep + rolling.EXT_S, 1),
+                        rolling.LEAD_S, keep), calls[1]
+    head = r.finish()
+    assert head is not None and len(head.windows) == 2
+    assert abs(head.end_s - second.end_s) < 1e-6, head.end_s
+
+    # A long think: eight seconds of nothing settle as a window with no
+    # speech in it, and are skipped rather than decoded.
+    chunks.clear(); seen["n"] = 0; calls.clear()
+    r = rolling.Roller(since, rate, decode, 8.0, frames_to_wav)
+    add(10, 0.0)
+    while seen["n"] < len(chunks):
+        seen["n"] = min(len(chunks), seen["n"] + 2)
+        r._step()
+    assert calls == [] and r.windows == [], (calls, r.windows)
+    assert r.done_s > 0, "the silence was not skipped past"
+    assert r.finish() is None, "nothing decoded must mean the old path"
+
+    # The ask card took a slice: whatever was done is dropped.
+    chunks.clear(); seen["n"] = 0; calls.clear()
+    r = rolling.Roller(since, rate, decode, 8.0, frames_to_wav)
+    add(5, 0.3); add(1, 0.0); add(4, 0.3)
+    while seen["n"] < len(chunks):
+        seen["n"] = min(len(chunks), seen["n"] + 2)
+        r._step()
+    assert len(r.windows) == 1
+    r.invalidate()
+    assert r.finish() is None
+
+    # Bare windows for a backend that cannot time its words.
+    chunks.clear(); seen["n"] = 0; calls.clear()
+    r = rolling.Roller(since, rate, decode, 8.0, frames_to_wav, overlap=False)
+    add(5, 0.3); add(1, 0.0); add(4, 0.3); add(1, 0.0); add(8, 0.3)
+    while seen["n"] < len(chunks):
+        seen["n"] = min(len(chunks), seen["n"] + 2)
+        r._step()
+    assert calls == [(5.5, 0.0, 5.5), (5.0, 0.0, 5.0)], calls
+
+
+def test_a_window_keeps_the_words_whose_middle_is_its_own():
+    """decode_window is handed a second of the previous window and most
+    of a second of the next, for context, and trims back by word times:
+    a word's MIDDLE decides, since the boundary is in a pause and a
+    word's start or end may wobble a few ms between two decodes. The text
+    is rebuilt from the words' own strings, leading spaces and all, so a
+    token split at punctuation ("'ר" after "בפיצ") is not pulled apart."""
+    from transcribers import local_whisper as lw
+
+    class W:
+        def __init__(self, word, start, end, p=0.9):
+            self.word, self.start, self.end, self.probability = (
+                word, start, end, p)
+
+    class S:
+        def __init__(self, words):
+            self.words = words
+            self.text = "".join(w.word for w in words).strip()
+
+    segs = [S([W(" לפני", 0.2, 0.6), W(" הכל", 0.7, 0.95),
+               W(" בפיצ", 1.3, 1.6), W("'ר", 1.6, 1.7),
+               W(" שלו,", 1.8, 2.2), W(" אחרי", 6.05, 6.4),
+               W(" זה", 6.5, 6.7)])]
+    words, text = lw._trim(segs, 1.0, 5.0)
+    assert text == "בפיצ'ר שלו,", ascii(text)
+    assert [w[0] for w in words] == ["בפיצ", "'ר", "שלו,"], words
+    assert words[0][1] == 0.3 and words[0][2] == 0.6, words[0]
+    # The tail has no end: everything after the lead is its own.
+    words, text = lw._trim(segs, 1.0, None)
+    assert text == "בפיצ'ר שלו, אחרי זה", ascii(text)
+    # A word straddling the lead boundary goes by its middle.
+    segs = [S([W(" רגע", 0.8, 1.1), W(" אחת", 0.95, 1.4)])]
+    words, text = lw._trim(segs, 1.0, 5.0)
+    assert text == "אחת", ascii(text)
+
+
+def test_transcribe_with_head_decodes_only_the_tail_and_joins_the_windows():
+    """The backend's half of the rolling transcriber: given the windows
+    decoded while the key was held, only the audio after them goes to
+    the model (with LEAD_S before it, trimmed back), the texts are
+    joined, the word times are moved onto the recording's clock, and
+    the loop/boilerplate findings of every window are kept. A tail too
+    short to decode alone takes the last window with it. English — the
+    decision is still made on the whole recording — throws the windows
+    away and decodes whole, exactly as before."""
+    import rolling
+    from transcribers import local_whisper as lw
+
+    class W:
+        def __init__(self, word, start, end, p=0.9):
+            self.word, self.start, self.end, self.probability = (
+                word, start, end, p)
+
+    class S:
+        def __init__(self, words):
+            self.words = words
+            self.text = "".join(w.word for w in words).strip()
+
+    decoded = []
+
+    class Model:
+        def transcribe(self, audio, **kw):
+            with wave.open(audio, "rb") as w:
+                seconds = w.getnframes() / w.getframerate()
+            decoded.append(round(seconds, 2))
+            # One word per second of audio, timed where it sits.
+            words = [W(f" ת{i}", i + 0.2, i + 0.8)
+                     for i in range(int(seconds))]
+            return iter([S(words)]), None
+
+    def wav(seconds, rate=16000):
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+            w.writeframes(b"\x00\x00" * int(seconds * rate))
+        return buf.getvalue()
+
+    t = lw.LocalWhisperTranscriber.__new__(lw.LocalWhisperTranscriber)
+    t._model, t._english, t._language = Model(), None, "he"
+    t._initial_prompt, t._hotwords, t._guards = None, None, {
+        "word_timestamps": True}
+    t._boilerplate, t._cleanup, t._fillers = (), False, ()
+    assert t.can_overlap
+
+    # 12 s recording; windows covered the first 10 s.
+    head = rolling.Head(
+        [rolling.Window(0.0, 6.0, "א ב ג", [("א", 0.2, 0.8, 0.9)], [], None),
+         rolling.Window(6.0, 10.0, "ד ה", [("ד", 0.2, 0.8, 0.9)],
+                        ["חברי הכנסת"], None)], 10.0)
+    text = t.transcribe_with_head(wav(12), head)
+    # The tail: 9-12 s went to the model (LEAD_S = 1 s before the 10 s
+    # mark), the first second of it was trimmed away as the lead.
+    assert decoded == [3.0], decoded
+    assert text == "א ב ג ד ה ת1 ת2", ascii(text)
+    assert t.last_words[0] == ("א", 0.2, 0.8, 0.9)
+    assert t.last_words[1] == ("ד", 6.2, 6.8, 0.9), t.last_words[1]
+    assert t.last_words[2] == ("ת1", 10.2, 10.8, 0.9), t.last_words[2]
+    assert t.last_removed == ["חברי הכנסת"]
+
+    # A tail of 1 s is under MIN_TAIL_S: the last window is decoded again
+    # with it (from 6 s, with the lead from 5 s) and replaced.
+    decoded.clear()
+    text = t.transcribe_with_head(wav(11), head)
+    assert decoded == [6.0], decoded
+    assert text == "א ב ג ת1 ת2 ת3 ת4 ת5", ascii(text)
+
+    # An explicit other language: the windows are useless, decode whole.
+    decoded.clear()
+    text = t.transcribe_with_head(wav(11), head, language="en")
+    assert decoded == [11.0], decoded
+    assert text.startswith("ת0 ת1"), ascii(text)
+
+    # No word times: no overlap, the tail is cut bare at the mark.
+    t._guards = {}
+    decoded.clear()
+    text = t.transcribe_with_head(wav(12), head)
+    assert decoded == [2.0], decoded
+    assert text == "א ב ג ד ה ת0 ת1", ascii(text)
+
+
+def test_the_press_starts_a_roller_and_the_release_hands_it_to_the_worker():
+    """The wiring in main: the press builds a Roller on the recorder when
+    the backend can decode windows and [local] rolling is on — and not
+    otherwise; the release closes it and puts it on the queue with the
+    recording; a question to the ask card mid-dictation invalidates it;
+    abort drops it. _handle then asks the backend for the tail only."""
+    import main as main_mod
+    import rolling
+
+    class Rec:
+        sample_rate = 16000
+
+        def __init__(self):
+            self.chunks = []
+
+        def begin(self): pass
+
+        def meter(self): return 0.0, True
+
+        def chunks_since(self, mark): return self.chunks[mark:]
+
+        def mark(self): return len(self.chunks)
+
+        def end_pieces(self): return b"RIFF-audio", [(False, b"RIFF")], 3.0
+
+        def silent(self): return False
+
+        def peak(self): return 0.5
+
+        def abort(self): pass
+
+    class Backend:
+        name = "local"
+        can_overlap = True
+        last_words = []
+
+        def __init__(self):
+            self.calls = []
+
+        def decode_window(self, wav, lead_s, keep_s):
+            return rolling.Window(0.0, 0.0, "חלון", [], [], None)
+
+        def transcribe(self, wav, language=None):
+            self.calls.append(("whole", language))
+            return "שלם"
+
+        def transcribe_with_head(self, wav, head, language=None):
+            self.calls.append(("tail", language, len(head.windows)))
+            return "מגולגל"
+
+    import shutil
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-rolling-"))
+    fake = _FakeInjector()
+    fake.is_our_window = lambda _h: False
+    real, was_beep = main_mod.injector, main_mod.beep
+    try:
+        main_mod.injector = fake
+        main_mod.beep = lambda _k: None
+        app = _worker_app(Backend(), tmp)
+        app.cfg = dataclasses.replace(
+            app.cfg, local=dataclasses.replace(app.cfg.local, rolling=True,
+                                               rolling_window_s=8.0))
+        app.recorder = Rec()
+        app.dot = type("D", (), {"set_state": lambda s, v: None,
+                                 "alarm": lambda s, v: None})()
+        app.hint = _FakeHint()
+        app.queue = queue.Queue()
+        app._set_state = lambda *_a, **_k: None
+        app._vqa = None
+        app._problem_card = None
+        app._to_card = app._to_prompt = False
+        app._roller = None
+
+        app._on_start(None)
+        roller = app._roller
+        assert isinstance(roller, rolling.Roller), roller
+        assert roller._thread.is_alive()
+        app._on_stop(None)
+        assert app._roller is None
+        item = app.queue.get_nowait()
+        assert item[5].get("rolled") is roller, item[5]
+        assert roller._stop.is_set()
+        # The worker: a head with a window makes the backend decode the
+        # tail; here the thread found nothing, so the whole recording.
+        app._handle(*item[:5], **item[5])
+        assert app.transcriber.calls == [("whole", None)], app.transcriber.calls
+
+        # A window the thread DID finish reaches the backend as a head.
+        app.transcriber.calls.clear()
+        app._on_start(None)
+        roller = app._roller
+        roller.windows.append(rolling.Window(0.0, 8.0, "חלון", [], [], None))
+        roller._offset = 8 * 16000
+        app._on_stop(None)
+        item = app.queue.get_nowait()
+        app._handle(*item[:5], **item[5])
+        assert app.transcriber.calls == [("tail", None, 1)], \
+            app.transcriber.calls
+
+        # A question to the ask card mid-dictation: the head is dropped.
+        app.transcriber.calls.clear()
+        app._on_start(None)
+        roller = app._roller
+        roller.windows.append(rolling.Window(0.0, 8.0, "חלון", [], [], None))
+        app._on_ask_start(None)
+        assert roller._invalid
+        app._on_stop(None)
+        item = app.queue.get_nowait()
+        app._handle(*item[:5], **item[5])
+        assert app.transcriber.calls == [("whole", None)], app.transcriber.calls
+
+        # Abort drops it; the switch off builds none; a backend without
+        # windows gets none.
+        app._on_start(None)
+        roller = app._roller
+        app._on_abort("test")
+        assert app._roller is None and roller._invalid
+        app.cfg = dataclasses.replace(
+            app.cfg, local=dataclasses.replace(app.cfg.local, rolling=False))
+        app._on_start(None)
+        assert app._roller is None
+        app.cfg = dataclasses.replace(
+            app.cfg, local=dataclasses.replace(app.cfg.local, rolling=True))
+        app.transcriber = _Flaky(fail_times=0)
+        app._on_start(None)
+        assert app._roller is None
+    finally:
+        main_mod.injector, main_mod.beep = real, was_beep
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_rolling_knobs_parse_and_are_bounded():
+    """[local] rolling and rolling_window_s: on by default at 25 s (the
+    measured size — see rolling.py), read from the file, and a window
+    outside 1..25 s is refused loudly: 30 s is Whisper's own window and
+    nothing above 25 leaves room to cut."""
+    import tempfile as _tempfile
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    assert cfg.local.rolling is True
+    assert cfg.local.rolling_window_s == 25.0
+    base = (Path(__file__).resolve().parent / "config.toml").read_text("utf-8")
+    with _tempfile.TemporaryDirectory() as d:
+        copy = Path(d) / "config.toml"
+        copy.write_text(base.replace("rolling_window_s = 25.0",
+                                     "rolling_window_s = 12"), "utf-8")
+        assert config_mod.load(copy).local.rolling_window_s == 12.0
+        copy.write_text(base.replace("rolling = true", "rolling = false"),
+                        "utf-8")
+        assert config_mod.load(copy).local.rolling is False
+        for bad in ("0.5", "26"):
+            copy.write_text(base.replace("rolling_window_s = 25.0",
+                                         f"rolling_window_s = {bad}"),
+                            "utf-8")
+            try:
+                config_mod.load(copy)
+            except config_mod.ConfigError as e:
+                assert "rolling_window_s" in str(e), e
+            else:
+                raise AssertionError(f"rolling_window_s = {bad} was accepted")
+
+
+def test_the_recorder_hands_out_chunks_without_ending_the_utterance():
+    """chunks_since is the rolling transcriber's read of the buffer: the
+    chunks from a mark on, the very arrays the callback appended, and
+    nothing about the recording changes for having been read. Once the
+    utterance has ended the buffer is the worker's and it answers []."""
+    import recorder as recorder_mod
+
+    rec = recorder_mod.Recorder.__new__(recorder_mod.Recorder)
+    rec._lock = threading.Lock()
+    rec._state = recorder_mod.ACTIVE
+    rec.sample_rate = 16000
+    rec._chunks, rec._excluded, rec._questions, rec._samples = [], [], [], 0
+    rec._peak = 0.0
+    for value in (1, 2, 3):
+        rec._chunks.append(np.full(160, value, dtype=np.int16))
+        rec._samples += 160
+    got = rec.chunks_since(1)
+    assert [int(c[0]) for c in got] == [2, 3], got
+    assert got[0] is rec._chunks[1]
+    assert rec.mark() == 3 and rec._samples == 480
+    wav, seconds = rec.end()
+    assert wav is not None and abs(seconds - 0.03) < 1e-6
+    assert rec.chunks_since(0) == []
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

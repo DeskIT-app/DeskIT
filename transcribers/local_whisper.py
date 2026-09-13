@@ -499,106 +499,122 @@ class LocalWhisperTranscriber:
             text = cleanup_mod.clean(text, self._fillers)
         return text
 
-    def transcribe(self, wav_bytes: bytes,
-                   language: str | None = None) -> str:
-        """`language` is the caller's explicit choice (a dedicated hotkey).
-        It always wins — detection only runs when nothing was specified."""
-        try:
-            model, chosen = self._model, self._language
-            if language == "en" and self._english is not None:
+    def _choose(self, wav_bytes: bytes, language: str | None):
+        """Which model and language a recording gets -> (model, code).
+
+        `language` is the caller's explicit choice (a dedicated hotkey).
+        It always wins — detection only runs when nothing was specified.
+        """
+        model, chosen = self._model, self._language
+        if language == "en" and self._english is not None:
+            model, chosen = self._english, "en"
+        elif language in (None, "") and self._english is not None:
+            audio = _decode_pcm(wav_bytes)
+            if audio is not None and self._pick_language(audio) == "en":
                 model, chosen = self._english, "en"
-            elif language in (None, "") and self._english is not None:
-                audio = _decode_pcm(wav_bytes)
-                if audio is not None and self._pick_language(audio) == "en":
-                    model, chosen = self._english, "en"
-            elif language:
-                chosen = language
+        elif language:
+            chosen = language
+        return model, chosen
 
-            def decode(**over):
-                kwargs = dict(
-                    language=chosen,     # never None: see _pick_language
-                    vad_filter=True,
-                    beam_size=self._beam_size,
-                    condition_on_previous_text=False,
-                    # The Hebrew prompt would only confuse the English
-                    # model.
-                    initial_prompt=None if chosen == "en"
-                    else self._initial_prompt,
-                    # Hotwords go to BOTH models, unlike initial_prompt.
-                    # That one is a Hebrew sentence and means nothing to a
-                    # general English model; this is a list of names
-                    # ("Expo Go", "EAS"), and an English utterance is if
-                    # anything the MORE likely place for them to be
-                    # spoken.
-                    hotwords=self._current_hotwords(),
-                    **self._guards,
-                )
-                kwargs.update(over)      # the retry overrides, one dict
-                segments, _info = model.transcribe(BytesIO(wav_bytes),
-                                                   **kwargs)
-                got = list(segments)
-                return got, " ".join(s.text.strip() for s in got).strip()
+    def _decode(self, model, chosen: str, wav_bytes: bytes):
+        """One decode with the live settings, and the retry after a loop
+        -> (segments, text). Raises whatever faster-whisper raises."""
+        def decode(**over):
+            kwargs = dict(
+                language=chosen,     # never None: see _pick_language
+                vad_filter=True,
+                beam_size=self._beam_size,
+                condition_on_previous_text=False,
+                # The Hebrew prompt would only confuse the English
+                # model.
+                initial_prompt=None if chosen == "en"
+                else self._initial_prompt,
+                # Hotwords go to BOTH models, unlike initial_prompt.
+                # That one is a Hebrew sentence and means nothing to a
+                # general English model; this is a list of names
+                # ("Expo Go", "EAS"), and an English utterance is if
+                # anything the MORE likely place for them to be
+                # spoken.
+                hotwords=self._current_hotwords(),
+                **self._guards,
+            )
+            kwargs.update(over)      # the retry overrides, one dict
+            segments, _info = model.transcribe(BytesIO(wav_bytes),
+                                               **kwargs)
+            got = list(segments)
+            return got, " ".join(s.text.strip() for s in got).strip()
 
-            segs, text = decode()
-            if _LOOP_RUN.search(text):
-                # The words a loop swallows are NOT gone — this file used
-                # to say they were, and it was wrong. Measured 2026-09-05
-                # on the 57 s clip whose 73-character "Xxxxx…" ate 29 s:
-                # every re-decode came back without the loop and WITH the
-                # missing sentences (beam 1: 128 words, the ladder:
-                # 114-125, the general model: 132, against 63 for the
-                # looping one). One extra decode, only ever after a loop,
-                # buys back half a minute of speech.
-                #
-                # Greedy first, ladder second, and that order is the whole
-                # design. Beam search is what gets stuck; dropping to beam
-                # 1 takes a different path through the same pinned
-                # temperature, so it is DETERMINISTIC and it is cheaper
-                # than the decode that just failed. The ladder samples —
-                # three runs of it on that clip recovered 69, 114 and 124
-                # words — so it stays the second rung, for the loop that
-                # greedy decoding cannot shake either.
-                for rung in (dict(beam_size=1),
-                             dict(temperature=[0.0, 0.2, 0.4, 0.6, 0.8,
-                                               1.0])):
-                    retry_segs, retry = decode(**rung)
-                    if retry and not _LOOP_RUN.search(retry):
-                        log.warning("decoder loop — recovered with %s "
-                                    "(%d words for %d)",
-                                    "beam 1" if "beam_size" in rung
-                                    else "the temperature ladder",
-                                    len(retry.split()), len(text.split()))
-                        segs, text = retry_segs, retry
-                        break
-        except Exception as e:
-            raise TranscriptionError(f"local transcription failed: {e}") from e
+        segs, text = decode()
+        if _LOOP_RUN.search(text):
+            # The words a loop swallows are NOT gone — this file used
+            # to say they were, and it was wrong. Measured 2026-09-05
+            # on the 57 s clip whose 73-character "Xxxxx…" ate 29 s:
+            # every re-decode came back without the loop and WITH the
+            # missing sentences (beam 1: 128 words, the ladder:
+            # 114-125, the general model: 132, against 63 for the
+            # looping one). One extra decode, only ever after a loop,
+            # buys back half a minute of speech.
+            #
+            # Greedy first, ladder second, and that order is the whole
+            # design. Beam search is what gets stuck; dropping to beam
+            # 1 takes a different path through the same pinned
+            # temperature, so it is DETERMINISTIC and it is cheaper
+            # than the decode that just failed. The ladder samples —
+            # three runs of it on that clip recovered 69, 114 and 124
+            # words — so it stays the second rung, for the loop that
+            # greedy decoding cannot shake either.
+            for rung in (dict(beam_size=1),
+                         dict(temperature=[0.0, 0.2, 0.4, 0.6, 0.8,
+                                           1.0])):
+                retry_segs, retry = decode(**rung)
+                if retry and not _LOOP_RUN.search(retry):
+                    log.warning("decoder loop — recovered with %s "
+                                "(%d words for %d)",
+                                "beam 1" if "beam_size" in rung
+                                else "the temperature ladder",
+                                len(retry.split()), len(text.split()))
+                    segs, text = retry_segs, retry
+                    break
+        return segs, text
 
-        # Where an invented tail sits, every word is stamped into the last
-        # few ms at zero duration and p < 0.6, while the words really
-        # spoken are 0.89-1.00 — measured 2026-09-02 on the 2.8 s clip that
-        # grew 24 words. word_timestamps is already on for the silence
-        # guard; this only keeps what it computed.
-        # getattr: the test suite's segment stand-ins carry text only, and
-        # a decoder that could not time its words has still transcribed.
-        self.last_words = [(w.word.strip(), round(float(w.start), 2),
-                            round(float(w.end), 2),
-                            round(float(w.probability), 3))
-                           for s in segs
-                           for w in (getattr(s, "words", None) or [])]
-        self.last_removed = []
+    @staticmethod
+    def _words_of(segs) -> list[tuple]:
+        """(word, start, end, probability) per word, times in seconds
+        from the start of the clip that was decoded.
+
+        Where an invented tail sits, every word is stamped into the last
+        few ms at zero duration and p < 0.6, while the words really
+        spoken are 0.89-1.00 — measured 2026-09-02 on the 2.8 s clip that
+        grew 24 words. word_timestamps is already on for the silence
+        guard; this only keeps what it computed.
+        getattr: the test suite's segment stand-ins carry text only, and
+        a decoder that could not time its words has still transcribed.
+        """
+        return [(w.word.strip(), round(float(w.start), 2),
+                 round(float(w.end), 2),
+                 round(float(w.probability), 3))
+                for s in segs
+                for w in (getattr(s, "words", None) or [])]
+
+    def _settle(self, words: list, text: str):
+        """The checks a decoded stretch gets before it can be trusted:
+        the loop warning and cut, the stock phrases for silence, the
+        boilerplate tail. -> rolling.Window with times still relative to
+        the clip decoded (the caller places it)."""
+        from rolling import Window
+        warning = None
         # A long letter-run means the decoder looped, and while it loops
         # the audio keeps advancing — so the words spoken during it are
         # not in the text. Reaching HERE means the retry above looped too,
         # which is the only case left where they are really unrecoverable.
         # Say so immediately rather than let the loss be found in reading.
-        self.last_warning = None
         loop = _LOOP_RUN.search(text)
         if loop:
-            lost = _looped_seconds(self.last_words)
+            lost = _looped_seconds(words)
             span = f"{lost:.0f} s of " if lost else ""
-            self.last_warning = (f"the model looped mid-recording — {span}"
-                                 "words around it are lost; re-dictate that "
-                                 "part")
+            warning = (f"the model looped mid-recording — {span}"
+                       "words around it are lost; re-dictate that "
+                       "part")
             log.warning("decoder loop: %d×%r swallowed %s— and the retry "
                         "looped too", len(loop.group(0)),
                         loop.group(1), f"{lost:.1f} s " if lost else "")
@@ -608,15 +624,190 @@ class LocalWhisperTranscriber:
             # is what carries the loss, not a piece of the loop.
             text = _LOOP_RUN.sub(" ", text)
         if text.strip(" .,!?").lower() in _HALLUCINATED_SILENCE:
-            return ""        # treated as "no speech", same as Gemini
+            return Window(0.0, 0.0, "", words, [], warning)
+        removed: list[str] = []
         if self._boilerplate:
             text, removed = cleanup_mod.strip_trailing_boilerplate(
                 text, self._boilerplate)
             if removed:
-                self.last_removed = removed
                 log.warning("dropped hallucinated tail (never spoken, comes "
                             "from the fine-tune's Knesset training data): %s",
                             " | ".join(removed))
+        return Window(0.0, 0.0, text, words, list(removed), warning)
+
+    def transcribe(self, wav_bytes: bytes,
+                   language: str | None = None) -> str:
+        """`language` is the caller's explicit choice (a dedicated hotkey).
+        It always wins — detection only runs when nothing was specified."""
+        try:
+            model, chosen = self._choose(wav_bytes, language)
+            segs, text = self._decode(model, chosen, wav_bytes)
+        except Exception as e:
+            raise TranscriptionError(f"local transcription failed: {e}") from e
+        window = self._settle(self._words_of(segs), text)
+        self.last_words = window.words
+        self.last_removed = window.removed
+        self.last_warning = window.warning
+        text = window.text
+        if not text:
+            return ""        # treated as "no speech", same as Gemini
         if self._cleanup:
             text = cleanup_mod.clean(text, self._fillers)
         return text
+
+    # -- the rolling transcriber (rolling.py) --
+
+    @property
+    def can_overlap(self) -> bool:
+        """Whether a window can be decoded with its neighbours' audio
+        around it and trimmed back by word times — which needs the word
+        timestamps the hallucination guards switch on."""
+        return bool(self._guards.get("word_timestamps"))
+
+    def decode_window(self, wav_bytes: bytes, lead_s: float = 0.0,
+                      keep_s: float | None = None):
+        """One settled stretch of a recording STILL IN PROGRESS, decoded
+        exactly as the whole recording would be: the Hebrew model with
+        the language pinned, the same prompt, hotwords, beam and guards,
+        the same loop retry and the same checks after. -> rolling.Window
+
+        WITH ITS NEIGHBOURS AROUND IT. `wav_bytes` may carry `lead_s` of
+        the audio before the stretch and anything after it; only the
+        words whose middle falls inside [lead_s, lead_s + keep_s) are
+        kept, and their times are moved so 0 is the stretch's start.
+        Measured 2026-09-13 on the gold clips: cut bare, a window that
+        ended "מופיע לי" grew a "תודה" and the next one lost its soft
+        first words to VAD; with a second of context either side the
+        decoder sees what the whole recording would have shown it at
+        that point, and the boundary falls in a pause where no word can
+        be on both sides.
+
+        Hebrew always. The English decision is made on the whole
+        recording when the key goes up (transcribe_with_head), as it
+        always was; a window that turns out to have been English is
+        thrown away there. Touches no instance state: the last_* slots
+        belong to the live path, which may be finishing the previous
+        dictation on the worker while this runs.
+        """
+        try:
+            segs, text = self._decode(self._model, self._language,
+                                      wav_bytes)
+        except Exception as e:
+            raise TranscriptionError(f"local transcription failed: {e}") from e
+        words = self._words_of(segs)
+        if (lead_s or keep_s is not None) and words:
+            words, text = _trim(segs, lead_s, keep_s)
+        return self._settle(words, text)
+
+    def transcribe_with_head(self, wav_bytes: bytes, head,
+                             language: str | None = None) -> str:
+        """The whole recording, given the windows already decoded from
+        its head while it was being spoken (rolling.Head). Only the tail
+        after `head.end_s` is decoded now — with LEAD_S of what came
+        before it for context, trimmed back by word times like any
+        window — and the text is the windows and the tail, joined,
+        through the same cleanup as transcribe().
+
+        A tail shorter than MIN_TAIL_S is not decoded alone — Whisper
+        invents on very short clips — but together with the window
+        before it, which is decoded again in its place.
+        """
+        from rolling import LEAD_S, MIN_TAIL_S
+        try:
+            model, chosen = self._choose(wav_bytes, language)
+        except Exception as e:
+            raise TranscriptionError(f"local transcription failed: {e}") from e
+        if model is not self._model or chosen != self._language:
+            # English, or a language the windows were not decoded in.
+            # The whole recording, the old way — these are short.
+            log.info("rolling: the recording is not %s — decoding it whole",
+                     self._language)
+            return self.transcribe(wav_bytes, language=chosen)
+        total_s = _wav_seconds(wav_bytes)
+        windows = list(head.windows)
+        start = float(head.end_s)
+        if windows and total_s - start < MIN_TAIL_S:
+            start = windows.pop().start_s
+        lead = min(start, LEAD_S) if self.can_overlap else 0.0
+        try:
+            tail = _slice_wav(wav_bytes, start - lead)
+            if tail is not None and _wav_seconds(tail) - lead >= 0.05:
+                last = self.decode_window(tail, lead, None)
+                last.start_s, last.end_s = start, total_s
+                windows.append(last)
+        except Exception as e:
+            raise TranscriptionError(f"local transcription failed: {e}") from e
+        self.last_words = [(word, round(begin + w.start_s, 2),
+                            round(end + w.start_s, 2), p)
+                           for w in windows
+                           for word, begin, end, p in w.words]
+        self.last_removed = [r for w in windows for r in w.removed]
+        self.last_warning = next((w.warning for w in windows if w.warning),
+                                 None)
+        text = " ".join(w.text for w in windows if w.text).strip()
+        if not text:
+            return ""
+        if self._cleanup:
+            text = cleanup_mod.clean(text, self._fillers)
+        return text
+
+
+def _trim(segs, lead_s: float, keep_s: float | None):
+    """Keep the words whose MIDDLE lies in [lead_s, lead_s + keep_s), re-
+    timed so the stretch starts at 0, and the text rebuilt from them
+    -> (words, text).
+
+    The middle, not the start: the boundary sits in a pause, so a word's
+    middle is well clear of it on one side or the other, while its start
+    or end may sit a few ms either way between two decodes of the same
+    audio — and a word that both neighbours drop is a word lost.
+
+    The text is the words' own strings run together, not joined with
+    spaces: faster-whisper keeps each word's leading space in `word`, and
+    a token it split at punctuation ("'ר" after "בפיצ") has none — so
+    joining with spaces put one inside the word.
+    """
+    end = None if keep_s is None else lead_s + keep_s
+    kept: list[tuple] = []
+    raw: list[str] = []
+    for s in segs:
+        for w in (getattr(s, "words", None) or []):
+            begin, stop = float(w.start), float(w.end)
+            middle = (begin + stop) / 2
+            if middle < lead_s or (end is not None and middle >= end):
+                continue
+            kept.append((w.word.strip(), round(begin - lead_s, 2),
+                         round(stop - lead_s, 2),
+                         round(float(w.probability), 3)))
+            raw.append(str(w.word))
+    return kept, "".join(raw).strip()
+
+
+def _wav_seconds(wav_bytes: bytes) -> float:
+    """Length of a WAV in seconds; 0.0 for anything `wave` cannot open."""
+    try:
+        with wave.open(BytesIO(wav_bytes), "rb") as w:
+            return w.getnframes() / float(w.getframerate() or 1)
+    except Exception:
+        return 0.0
+
+
+def _slice_wav(wav_bytes: bytes, start_s: float) -> bytes | None:
+    """The WAV from `start_s` to its end, as a WAV of its own. None when
+    the input is not a WAV `wave` can read."""
+    try:
+        with wave.open(BytesIO(wav_bytes), "rb") as w:
+            rate, width, channels = (w.getframerate(), w.getsampwidth(),
+                                     w.getnchannels())
+            first = max(0, min(w.getnframes(), int(start_s * rate)))
+            w.setpos(first)
+            pcm = w.readframes(w.getnframes() - first)
+    except Exception:
+        return None
+    out = BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(width)
+        w.setframerate(rate)
+        w.writeframes(pcm)
+    return out.getvalue()
