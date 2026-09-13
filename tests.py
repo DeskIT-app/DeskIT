@@ -27109,102 +27109,93 @@ def _gold(folder: Path, stem: str, text: str, seconds: float, tier="gold",
         ensure_ascii=False), "utf-8")
 
 
-def test_the_deck_is_his_own_gold_sentences_taught_words_first() -> None:
-    """reading.deck: gold only, cut at full stops, a breath long, the
-    sentences carrying a taught name or term ahead of the rest, newest
-    first within a rank — and nothing he has kept or skipped."""
+def test_the_deck_is_the_texts_folder_read_in_order() -> None:
+    """reading.deck: the files of corpus\\read\\texts, oldest first, each
+    cut at full stops and line ends, in the order it was written — a
+    paragraph reads as a paragraph. A list mark or a heading mark comes
+    off the front, a typographic hyphen becomes the plain one, and what
+    the regex can see is not a sentence stays out. Nothing he has kept or
+    skipped is offered again, kept ones by the key in their sidecar."""
     import reading
 
     with tempfile.TemporaryDirectory() as d:
-        corpus, read, vocab = Path(d) / "corpus", Path(d) / "read", Path(d) / "vocab.json"
-        _gold(corpus, "20260901-100000-0100",
-              "אני רוצה לפתוח את הפרויקט הזה מחדש. סבבה. "
-              "תעשה commit ותדחוף את זה ל-GitHub בבקשה עכשיו.", 10.0,
-              kept="2026-09-01 10:00:00")
-        _gold(corpus, "20260912-100000-0100",
-              "לא הבנתי למה זה לא עובד בכלל היום.", 4.0)
-        _gold(corpus, "20260913-100000-0100",
-              "זה משפט כסף שאף אחד לא אישר ולכן הוא לא נכנס לחפיסה.", 4.0,
-              tier="silver")
-        # What the regex alone throws out: a recording cut mid-word (his
-        # "יש פה מם פשוט חופשית"), punctuation glued between words, a
-        # decoder loop.
-        _gold(corpus, "20260913-110000-0100",
-              "אני רוצה בסוף מוצר מוגמר תסתכל באינטרנט אם משתמשים במה שאתה מ. "
-              "שלוש משבצות לאורך ושתי משבצות לגובה אחת,שתיים, שלוש.שלוש.שש. "
-              "זה זה זה לא עובד בכלל היום אצלי.", 9.0,
-              kept="2026-09-13 11:00:00")
+        texts, read, vocab = Path(d) / "texts", Path(d) / "read", Path(d) / "vocab.json"
+        texts.mkdir()
+        (texts / "a-notes.md").write_text(
+            "# מה עשינו היום\n"
+            "- תעשה commit ותדחוף את זה ל‑GitHub בבקשה עכשיו.\n"
+            "סבבה.\n"
+            "אני רוצה לפתוח את הפרויקט הזה מחדש: זה לא עובד בכלל היום.\n",
+            "utf-8")
+        time.sleep(0.05)
+        (texts / "written-20260913-180000.txt").write_text(
+            "אז מה קורה עם ה-branch הזה, אפשר לדחוף אותו?\n"
+            "אני רוצה בסוף מוצר מוגמר תסתכל באינטרנט אם משתמשים במה שאתה מ.\n"
+            "שלוש משבצות לאורך ושתי משבצות לגובה אחת,שתיים, שלוש.שלוש.שש.\n"
+            "זה זה זה לא עובד בכלל היום אצלי.\n"
+            "הדשבורד מציג את הנתונים, אבל עדיין יש חוסר סינכרון קטן.\n",
+            "utf-8")
+        (texts / "ignored.wav").write_bytes(b"RIFF")
         vocab.write_text(json.dumps({"version": 1, "corrections": [
-            {"heard": "גיטאב", "meant": "GitHub", "hits": 2},
-            {"heard": "זו", "meant": "זה", "hits": 1},         # a wobble
-            {"heard": "פרוג'קט", "meant": "פרויקט", "hits": 1},  # a wobble
+            {"heard": "גית-האב", "meant": "GitHub", "hits": 1},
+            {"heard": "עוד ברנד", "meant": "עוד branch", "hits": 1},
+            {"heard": "זו", "meant": "זה", "hits": 1},          # a wobble
+            {"heard": "it work", "meant": "it works", "hits": 1},  # English
         ]}, ensure_ascii=False), "utf-8")
-        deck = reading.deck(corpus, vocab, read)
-        texts = [s.text for s in deck]
-        assert texts == [
+        deck = reading.deck(texts, vocab, read)
+        texts_out = [s.text for s in deck]
+        assert texts_out == [
             "תעשה commit ותדחוף את זה ל-GitHub בבקשה עכשיו.",
-            "לא הבנתי למה זה לא עובד בכלל היום.",
-            "אני רוצה לפתוח את הפרויקט הזה מחדש.",
-        ], texts
-        assert deck[0].terms == ("GitHub",), deck[0].terms
-        assert deck[1].terms == () and deck[2].terms == (), \
-            "a single corrected Hebrew word is not a term to rank by"
-        assert deck[0].said == "2026-09-01" and deck[1].said == "2026-09-12"
+            "אני רוצה לפתוח את הפרויקט הזה מחדש:",
+            "זה לא עובד בכלל היום.",
+            "אז מה קורה עם ה-branch הזה, אפשר לדחוף אותו?",
+            "הדשבורד מציג את הנתונים, אבל עדיין יש חוסר סינכרון קטן.",
+        ], texts_out
+        assert deck[0].terms == ("GitHub",) and deck[3].terms == (), \
+            [s.terms for s in deck]
+        assert deck[0].said == "a-notes" and deck[3].said.startswith("written-")
+        assert (deck[0].index, deck[0].count) == (1, 3)
+        assert (deck[3].index, deck[3].count) == (1, 2)
         assert all(len(s.key) == 12 for s in deck)
-        assert all(not s.checked and s.raw == s.text for s in deck)
-        # "סבבה." is too short to be a sentence, silver is not gold
-        assert not any("סבבה" in t or "כסף" in t for t in texts)
         assert not reading.plausible("במה שאתה מ.")
         assert not reading.plausible("לגובה אחת,שתיים, שלוש")
         assert not reading.plausible("זה זה זה לא עובד")
         assert reading.plausible("כן עשיתי בטעות 6 לחלק ל-6 שווה 2.")
-
-        # THE PROOFREADER'S VERDICTS shape the deck: a corrected sentence
-        # goes up corrected, a dropped one does not go up, and both are
-        # marked as read by the model so they are never sent again.
-        reading.proof_update(read, {
-            deck[1].key: "לא הבנתי למה זה לא עובד בכלל היום.",
-            deck[2].key: None})
-        checked = reading.deck(corpus, vocab, read)
-        assert [s.text for s in checked] == [texts[0], texts[1]], checked
-        assert [s.checked for s in checked] == [False, True]
-        assert checked[1].raw == texts[1] and checked[1].key == deck[1].key
-        assert reading.proof_load(read) == {deck[1].key: texts[1],
-                                            deck[2].key: None}
+        # the writer's terms are the NAMES: a term garbled into Hebrew or
+        # corrected twice, never an English slip
+        assert reading.terms_of(vocab) == ["GitHub", "עוד branch", "it works"]
+        assert reading.terms_of(vocab, to_write=True) == ["GitHub", "עוד branch"]
+        assert reading.written_count(texts) == 1
 
         # kept and skipped sentences are not offered again — a kept one
-        # by the key in its sidecar, since the card's text may be the
-        # proofread form
-        _gold(read, "20260913-150000", "תעשה commit ותדחוף ל-GitHub בבקשה.",
+        # by the key in its sidecar, whatever its text became
+        _gold(read, "20260913-150000", "the card's words, as read",
               3.0, kept="2026-09-13 15:00:00")
         side = read / "20260913-150000.json"
         meta = json.loads(side.read_text("utf-8"))
         meta["key"] = deck[0].key
         side.write_text(json.dumps(meta, ensure_ascii=False), "utf-8")
         (read / reading.SKIPPED).write_text(
-            json.dumps([reading.key_of(texts[1])]), "utf-8")
-        left = [s.text for s in reading.deck(corpus, vocab, read)]
-        assert left == [], left
+            json.dumps([deck[3].key]), "utf-8")
+        left = [s.text for s in reading.deck(texts, vocab, read)]
+        assert left == [texts_out[1], texts_out[2], texts_out[4]], left
 
-        t = reading.tally(read, corpus, today="2026-09-13")
-        assert t["total_s"] == 26.0 and t["read_s"] == 3.0, t
+        t = reading.tally(read, texts, today="2026-09-13")
+        assert t["total_s"] == 3.0 and t["read_s"] == 3.0, t
         assert t["today_s"] == 3.0 and t["today"] == [
-            ("15:00", "תעשה commit ותדחוף ל-GitHub בבקשה.")], t
+            ("15:00", "the card's words, as read")], t
 
 
-def test_the_proofreader_fixes_a_word_drops_a_fragment_and_trusts_nothing_else():
-    """reading.Proofreader against a scripted backend: a numbered reply
-    is read line by line; DROP drops; a fix that is still the same
-    sentence goes through; a rewrite, a fragment, a lone letter and a
-    reply that skips a number are refused — the next backend is asked,
-    and with none left the caller shows the sentences as they were."""
+def test_the_writer_turns_a_reply_into_a_file_of_sentences() -> None:
+    """reading.Writer against a scripted backend: the reply is cut into
+    sentences like any file, a reply with too few usable sentences is
+    refused and the next backend asked, a backend that raises is
+    skipped, nothing usable from anyone is None — and what it wrote is
+    saved as written-<stamp>.txt, a sentence a line, the file he could
+    have dropped there himself."""
     import reading
 
-    raws = ["מי שא אינו אותה חליפה הוא פינגוין.",
-            "אני רוצה בסוף מוצר מוגמר תסתכל באינטרנט אם משתמשים במה.",
-            "אז אני מבצע slash clear עכשיו.",
-            "לא הבנתי למה זה לא עובד בכלל היום."]
-    replies: list = []
+    asked: list[str] = []
 
     class Backend:
         name = "scripted"
@@ -27213,43 +27204,214 @@ def test_the_proofreader_fixes_a_word_drops_a_fragment_and_trusts_nothing_else()
             self.reply = reply
 
         def translate(self, payload):
-            replies.append(payload)
+            asked.append(payload)
             if isinstance(self.reply, Exception):
                 raise self.reply
             return self.reply
 
     def scripted(*scripts):
-        pr = reading.Proofreader(cfg=None)
-        pr._backends = lambda cap: iter([Backend(r) for r in scripts])
-        return pr
+        w = reading.Writer(cfg=None)
+        w._backends = lambda cap: iter([Backend(r) for r in scripts])
+        return w
 
-    good = ("[1] מי שאינו באותה חליפה הוא פינגוין.\n"
-            "[2] DROP\n"
-            "[3] אז אני מבצע slash clear עכשיו.\n"
-            "[4] אני כותב פה משפט אחר לגמרי שאין לו קשר.\n")
-    out = scripted(good).check(raws)
-    assert out == {raws[0]: "מי שאינו באותה חליפה הוא פינגוין.",
-                   raws[1]: None,
-                   raws[2]: raws[2],
-                   raws[3]: None}, out
-    assert replies[-1].startswith("[1] מי שא אינו"), replies[-1]
+    good = ("היי, אפשר לעשות slash clear לפני שמריצים את ה‑tests?  \n"
+            "הקוד שלי עדיין נופל אחרי ש‑6 שניות של ריצה.  \n"
+            "ה‑dashboard מראה 80 אלף משתמשים פעילים היום, זה מדהים!  \n"
+            "אני מנסה להוסיף את claude co‑work למודול החדש.  \n"
+            "ה‑branch החדש נקרא third hand ואני עדיין לא משלים את המיזוג.  \n"
+            "תוכל לבדוק אם ה‑lint מתריע על משתנים לא משומשים?")
+    found = scripted(good).write(["slash clear", "GitHub"], count=6, seed=0)
+    assert found == [
+        "היי, אפשר לעשות slash clear לפני שמריצים את ה-tests?",
+        "הקוד שלי עדיין נופל אחרי ש-6 שניות של ריצה.",
+        "ה-dashboard מראה 80 אלף משתמשים פעילים היום, זה מדהים!",
+        "אני מנסה להוסיף את claude co-work למודול החדש.",
+        "ה-branch החדש נקרא third hand ואני עדיין לא משלים את המיזוג.",
+        "תוכל לבדוק אם ה-lint מתריע על משתנים לא משומשים?",
+    ], found
+    assert asked[-1] == "Write 6 sentences. Terms to work in: slash clear, GitHub"
+    # the terms rotate with the seed, so paragraphs differ in subject
+    terms = [f"term{i}" for i in range(9)]
+    scripted(good).write(terms, count=6, seed=1)
+    assert asked[-1].endswith("term6, term7, term8, term0, term1, term2"), asked[-1]
 
-    # a reply missing a number is refused, and the next backend is asked
-    short = "[1] מי שאינו באותה חליפה הוא פינגוין.\n[2] DROP\n[3] אז אני מבצע slash clear עכשיו."
-    out = scripted(short, good).check(raws)
-    assert out is not None and out[raws[3]] is None and len(replies) == 3
-    # a backend that raises is skipped the same way
-    out = scripted(RuntimeError("429"), good).check(raws)
-    assert out is not None and out[raws[0]].startswith("מי שאינו")
-    # nothing usable from anyone: None, and the caller keeps the raw deck
-    assert scripted(short, RuntimeError("down")).check(raws) is None
-    assert scripted().check([]) == {}
-    # a fix that leaves a lone letter or glue is not a fix
-    bad = "[1] מי שאינו באותה חליפה הוא מ.\n[2] DROP\n[3] אז אני מבצע slash clear עכשיו.\n[4] לא הבנתי,למה זה לא עובד בכלל היום."
-    out = scripted(bad).check(raws)
-    assert out[raws[0]] is None and out[raws[3]] is None, out
-    assert reading._parse_proof("1. שלום\n[2] DROP\n3) בסדר", 3) == {
-        1: "שלום", 2: "DROP", 3: "בסדר"}
+    short = "היי, אפשר לעשות slash clear לפני שמריצים?"
+    assert scripted(short, good).write([], count=6) is not None
+    assert len(asked) == 4, "the short reply cost a second backend"
+    assert scripted(RuntimeError("429"), good).write([], count=6) is not None
+    assert scripted(short, RuntimeError("down")).write([], count=6) is None
+    assert scripted().write([], count=6) is None
+
+    with tempfile.TemporaryDirectory() as d:
+        texts = Path(d) / "texts"
+        path = reading.save_written(texts, found)
+        assert path is not None and path.parent == texts
+        assert path.stem.startswith(reading.WRITTEN) and path.suffix == ".txt"
+        assert path.read_text("utf-8") == "\n".join(found) + "\n"
+        assert reading.written_count(texts) == 1
+        again = reading.save_written(texts, found)
+        assert again is not None and again != path, "same second, own file"
+        # the same sentence in two files is one sentence of the deck
+        assert [s.text for s in reading.deck(texts, Path(d) / "none.json",
+                                             Path(d) / "read")] == found
+
+
+def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
+    """The Corrections place's second tab, driven against the app's own
+    control handler over a Reading in a temp folder: the tab arms the
+    sentence it shows, redraws for each phase, keeps a word-for-word
+    reading without asking and puts up the next one, asks about one that
+    came back different, has a paragraph written when the folder runs
+    dry, and disarms when he leaves."""
+    import shutil
+
+    import control as control_mod
+    import main as main_mod
+    import reading
+    import dashboard as dash
+    import widgets as widgets_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-readtab-"))
+    texts, read = tmp / "texts", tmp / "read"
+    texts.mkdir()
+    (texts / "notes.txt").write_text(
+        "אני רוצה לפתוח את הפרויקט הזה מחדש היום.\n"
+        "לא הבנתי למה זה לא עובד בכלל.\n", "utf-8")
+    r = reading.Reading(read, root_of=lambda h: h)
+    # The writer, scripted: asked once the folder is read out, and what
+    # it writes is the next thing on the card.
+    wrote: list = []
+
+    def write(_self, terms, count=reading.WRITE_SENTENCES, seed=None):
+        wrote.append((list(terms), seed))
+        return ["הדשבורד מציג את הנתונים, אבל עדיין יש חוסר סינכרון.",
+                "תזכיר לי לבדוק את ה-branch הזה אחרי הקומיט."]
+    app = main_mod.App.__new__(main_mod.App)
+    app.reading = r
+    activity = ["ready"]
+    sent: list[dict] = []
+
+    def send(cmd, timeout_ms=0, **args):
+        if cmd == "status":
+            return {"ok": True, "stage": "running", "activity": activity[0],
+                    "uptime_s": 60, "keys": {"hotkey": "right ctrl"},
+                    "read": r.state()}
+        if cmd == "read":
+            sent.append(dict(args))
+            return app.control_command("read", args)
+        return None
+
+    def settle(board, until=None, ticks: int = 40) -> None:
+        """Pump the window until `until` holds — the poll runs every
+        POLL_MS and a pipe reply lands on the next pump, so a chain of
+        them is seconds, not a fixed number of ticks — or for `ticks`
+        when nothing in particular is waited for."""
+        for _ in range(250 if until is not None else ticks):
+            board.root.update()
+            time.sleep(0.02)
+            if until is not None and until():
+                board.root.update()
+                return
+        assert until is None, "the window never got there"
+
+    def phase(board) -> str:
+        board._refresh(send("status"))
+        return board._read_phase()[0]
+
+    def kept() -> list:
+        return [p for p in read.glob("*.wav")
+                if not p.name.startswith(reading.PENDING)]
+
+    saved = (dash.READ_DIR, dash.READ_TEXTS, control_mod.send,
+             reading.Writer.write)
+    dash.READ_DIR, dash.READ_TEXTS = read, texts
+    reading.Writer.write = write
+    try:
+        with _window() as board:
+            if board is None:
+                return
+            control_mod.send = send
+            board._corr_tab = "read"
+            board._show("Corrections")
+            settle(board, until=lambda: r.armed_id is not None)
+            first = board._read_current
+            assert first is not None and board._read_deck, "the deck is empty"
+            assert first.text == "אני רוצה לפתוח את הפרויקט הזה מחדש היום."
+            assert first.said == "notes" and (first.index, first.count) == (1, 2)
+            assert r.armed_id == first.key, "the tab armed what it shows"
+            assert sent[-1]["hwnd"] == board._read_hwnd() and sent[-1]["hwnd"]
+            assert phase(board) == "waiting"
+            assert "read_card" in board.parts and "voice_card" in board.parts
+            assert "corr_list" not in board.parts, "the other tab's list"
+            assert not wrote, "nothing written while the folder has text"
+
+            activity[0] = "recording"
+            assert phase(board) == "listening"
+            activity[0] = "ready"
+            r.heard(first.key, b"RIFF", 3.0, "אני רוצה לפתוח את הפרוגקט הזה מחדש היום.")
+            assert phase(board) == "heard"
+            settle(board, ticks=10)
+            golds = [w for w in board.parts["read_card"].body.winfo_children()
+                     if isinstance(w, widgets_mod.ToneButton)]
+            assert len(golds) == 1, "one gold Yes on the card"
+            assert not kept(), "nothing kept until he says so"
+            assert list(read.glob("pending-*.wav")), "the audio waits"
+
+            board._read_keep()
+            settle(board, until=lambda: board._read_current is not None
+                   and board._read_current.key != first.key
+                   and r.armed_id == board._read_current.key)
+            assert len(kept()) == 1, "kept on Yes"
+            second = board._read_current
+            assert second is not None and second.key != first.key
+            assert r.armed_id == second.key, "the next one is armed"
+            assert board._read_counts["kept"] == 1
+
+            r.heard(second.key, b"RIFF", 2.0, second.text)   # word for word
+            settle(board, until=lambda: board._read_counts["kept"] == 2
+                   and board._read_current is not None
+                   and r.armed_id == board._read_current.key)
+            assert len(kept()) == 2, "kept without asking"
+            assert board._read_counts["kept"] == 2
+            # THE FOLDER IS READ OUT: a paragraph was asked for, saved as
+            # a file, and its first sentence is up
+            assert len(wrote) == 1 and wrote[0][1] == 0, wrote
+            written = [p for p in texts.iterdir()
+                       if p.stem.startswith(reading.WRITTEN)]
+            assert len(written) == 1, written
+            third = board._read_current
+            assert third is not None and third.text.startswith("הדשבורד מציג")
+            assert third.said.startswith(reading.WRITTEN)
+            assert (third.index, third.count) == (1, 2)
+            assert r.armed_id == third.key and phase(board) == "waiting"
+            sides = [json.loads(p.read_text("utf-8"))
+                     for p in read.glob("*.json") if p.name != reading.SKIPPED]
+            assert sorted(s["text"] for s in sides) == sorted(
+                [first.text, second.text]), sides
+            assert sorted(s["key"] for s in sides) == sorted(
+                [first.key, second.key]), "the sentence's key is filed"
+
+            board._corr_tab_to("waiting")
+            settle(board, until=lambda: r.armed_id is None
+                   and sent[-1]["do"] == "disarm")
+            assert r.armed_id is None, "leaving the tab disarms"
+            assert "corr_list" in board.parts and "read_card" not in board.parts
+            assert sent[-1]["do"] == "disarm", sent[-1]
+            # And with no model able to write, the card says what to do
+            # instead of asking again and again
+            reading.Writer.write = lambda _self, terms, count=0, seed=None: None
+            for p in written:
+                p.unlink()
+            board._corr_tab_to("read")
+            settle(board, until=lambda: board._read_write_failed
+                   and not board._read_writing)
+            assert board._read_write_failed and not board._read_writing
+            assert board._read_current is None and phase(board) == "done"
+            assert "corpus" in (board._toast_text or ""), board._toast_text
+    finally:
+        (dash.READ_DIR, dash.READ_TEXTS, control_mod.send,
+         reading.Writer.write) = saved
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_a_reading_is_kept_under_the_cards_words_only_when_he_says_so() -> None:
@@ -27392,149 +27554,6 @@ def test_a_reading_is_filed_not_pasted_and_the_app_answers_the_tab() -> None:
         assert not list((tmp / "read").glob("pending-*"))
     finally:
         main_mod.injector = real
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
-    """The Corrections place's second tab, driven against the app's own
-    control handler over a Reading in a temp folder: the tab arms the
-    sentence it shows, redraws for each phase, keeps a word-for-word
-    reading without asking and puts up the next one, asks about one that
-    came back different, and disarms when he leaves."""
-    import shutil
-
-    import control as control_mod
-    import main as main_mod
-    import reading
-    import dashboard as dash
-    import widgets as widgets_mod
-
-    tmp = Path(tempfile.mkdtemp(prefix="dictation-readtab-"))
-    corpus, read = tmp / "corpus", tmp / "read"
-    _gold(corpus, "20260912-100000-0100",
-          "אני רוצה לפתוח את הפרוגקט הזה מחדש היום. "
-          "לא הבנתי למה זה לא עובד בכלל. "
-          "משפט שהמודל יזרוק כי הוא לא משפט שלם בכלל.", 8.0)
-    r = reading.Reading(read, root_of=lambda h: h)
-    # The proofreader, scripted: it fixes the garbled word of the first
-    # sentence, keeps the second, drops the third — and the tab must
-    # show what it returned, not what the corpus said.
-    proofed: list = []
-
-    def check(_self, texts):
-        proofed.append(list(texts))
-        return {t: (t.replace("הפרוגקט", "הפרויקט")
-                    if "יזרוק" not in t else None) for t in texts}
-    app = main_mod.App.__new__(main_mod.App)
-    app.reading = r
-    activity = ["ready"]
-    sent: list[dict] = []
-
-    def send(cmd, timeout_ms=0, **args):
-        if cmd == "status":
-            return {"ok": True, "stage": "running", "activity": activity[0],
-                    "uptime_s": 60, "keys": {"hotkey": "right ctrl"},
-                    "read": r.state()}
-        if cmd == "read":
-            sent.append(dict(args))
-            return app.control_command("read", args)
-        return None
-
-    def settle(board, ticks: int = 40) -> None:
-        for _ in range(ticks):
-            board.root.update()
-            time.sleep(0.02)
-
-    def phase(board) -> str:
-        board._refresh(send("status"))
-        return board._read_phase()[0]
-
-    def kept() -> list:
-        return [p for p in read.glob("*.wav")
-                if not p.name.startswith(reading.PENDING)]
-
-    saved = (dash.READ_DIR, dash.CORPUS_DIR, control_mod.send,
-             reading.Proofreader.check)
-    dash.READ_DIR, dash.CORPUS_DIR = read, corpus
-    reading.Proofreader.check = check
-    try:
-        with _window() as board:
-            if board is None:
-                return
-            control_mod.send = send
-            board._corr_tab = "read"
-            board._show("Corrections")
-            assert board._read_proofing and board._read_current is None
-            assert board._read_phase()[0] in ("off", "proofing")
-            settle(board)
-            assert not board._read_proofing, "the verdicts never landed"
-            assert len(proofed) == 1 and len(proofed[0]) == 3, proofed
-            verdicts = reading.proof_load(read)
-            assert len(verdicts) == 3 and None in verdicts.values(), verdicts
-            first = board._read_current
-            assert first is not None and board._read_deck, "the deck is empty"
-            assert first.text == "אני רוצה לפתוח את הפרויקט הזה מחדש היום."
-            assert first.raw == "אני רוצה לפתוח את הפרוגקט הזה מחדש היום."
-            assert first.checked and all(s.checked for s in board._read_deck)
-            assert r.armed_id == first.key, "the tab armed what it shows"
-            assert sent[-1]["hwnd"] == board._read_hwnd() and sent[-1]["hwnd"]
-            assert phase(board) == "waiting"
-            assert "read_card" in board.parts and "voice_card" in board.parts
-            assert "corr_list" not in board.parts, "the other tab's list"
-
-            activity[0] = "recording"
-            assert phase(board) == "listening"
-            activity[0] = "ready"
-            r.heard(first.key, b"RIFF", 3.0, "אני רוצה לפתוח את הפרוגקט הזה מחדש היום.")
-            assert phase(board) == "heard"
-            settle(board, 10)
-            golds = [w for w in board.parts["read_card"].body.winfo_children()
-                     if isinstance(w, widgets_mod.ToneButton)]
-            assert len(golds) == 1, "one gold Yes on the card"
-            assert not kept(), "nothing kept until he says so"
-            assert list(read.glob("pending-*.wav")), "the audio waits"
-
-            board._read_keep()
-            settle(board)
-            assert len(kept()) == 1, "kept on Yes"
-            second = board._read_current
-            assert second is not None and second.key != first.key
-            assert r.armed_id == second.key, "the next one is armed"
-            assert board._read_counts["kept"] == 1
-
-            r.heard(second.key, b"RIFF", 2.0, second.text)   # word for word
-            settle(board)
-            assert len(kept()) == 2, "kept without asking"
-            assert board._read_counts["kept"] == 2
-            assert board._read_current is None and phase(board) == "done"
-            sides = [json.loads(p.read_text("utf-8"))
-                     for p in read.glob("*.json")
-                     if p.name not in (reading.SKIPPED, reading.PROOFREAD)]
-            assert sorted(s["text"] for s in sides) == sorted(
-                [first.text, second.text]), sides
-            assert sorted(s["key"] for s in sides) == sorted(
-                [first.key, second.key]), "the RAW sentence's key is filed"
-            assert len(proofed) == 1, "a sentence is proofread once, ever"
-
-            board._corr_tab_to("waiting")
-            settle(board)
-            assert r.armed_id is None, "leaving the tab disarms"
-            assert "corr_list" in board.parts and "read_card" not in board.parts
-            assert sent[-1]["do"] == "disarm", sent[-1]
-            # And with no backend answering, the raw deck goes up rather
-            # than nothing: he can still read.
-            reading.Proofreader.check = lambda _self, texts: None
-            (read / reading.PROOFREAD).unlink()
-            board._read_proof_failed = False
-            board._corr_tab_to("read")
-            settle(board)
-            assert board._read_proof_failed and not board._read_proofing
-            assert board._read_current is not None
-            assert board._read_current.raw == board._read_current.text
-            assert not board._read_current.checked
-    finally:
-        (dash.READ_DIR, dash.CORPUS_DIR, control_mod.send,
-         reading.Proofreader.check) = saved
         shutil.rmtree(tmp, ignore_errors=True)
 
 

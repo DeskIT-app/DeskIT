@@ -211,6 +211,7 @@ READ_PAD = 24            # the sentence card's own padding
 READ_ARM_EVERY_S = 3.0   # how long before an unanswered arm is sent again
 READ_ARM_GRACE_S = 1.5   # how long a just-sent arm is taken on trust
 READ_DIR = APP_DIR / "corpus" / "read"
+READ_TEXTS = READ_DIR / reading_mod.TEXTS   # the prose he reads, a file each
 CORPUS_DIR = APP_DIR / "corpus"
 
 # The Keys place, top to bottom. THE BOARD IS THE FULL-SIZE ONE since
@@ -1372,8 +1373,8 @@ class Dashboard:
         self._read_drawn = None
         self._read_armed_at = 0.0
         self._read_busy = False
-        self._read_proofing = False       # a batch is with the model
-        self._read_proof_failed = False   # no backend answered: show raw
+        self._read_writing = False        # a paragraph is with the model
+        self._read_write_failed = False   # no backend answered this session
         self._read_counts = {"kept": 0, "skipped": 0, "again": 0}
         self._toast = None
         self._toast_after = None
@@ -2206,21 +2207,23 @@ class Dashboard:
         self._read_drawn = None
         self._read_armed_at = 0.0
         self._read_busy = False
-        self._read_proofing = False
+        self._read_writing = False
         self._read_current = None
         try:
-            READ_DIR.mkdir(parents=True, exist_ok=True)   # for the button
+            READ_TEXTS.mkdir(parents=True, exist_ok=True)  # for the button
         except OSError:
             pass
         tk.Label(self.sheet,
-                 text="Sentences come from your own dictations and the words "
-                      "you taught it.\nKept readings go to corpus\\read — "
-                      "the audio never leaves this machine.",
+                 text="Drop any Hebrew text (.txt, .md) into corpus\\read\\texts "
+                      "— it is read here, sentence by sentence.\nWhen the "
+                      "folder runs dry, a model writes the next paragraph "
+                      "round the words you taught it.\nKept readings go to "
+                      "corpus\\read — the audio never leaves this machine.",
                  bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
-                 justify="left").place(x=PAD, y=616)
-        wide = widgets.button_width("Open corpus\\read", icon=True)
-        ui.Button(self.sheet, "Open corpus\\read",
-                  lambda: launch.open_path(READ_DIR), w=wide, h=30,
+                 justify="left").place(x=PAD, y=610)
+        wide = widgets.button_width("Open the texts", icon=True)
+        ui.Button(self.sheet, "Open the texts",
+                  lambda: launch.open_path(READ_TEXTS), w=wide, h=30,
                   quiet=True, bg=ui.BG, icon=ui.ICON["folder"]).place(
             x=PAD + SAID_W, y=616, anchor="ne")
         p["read_on"] = True
@@ -2230,9 +2233,9 @@ class Dashboard:
     @staticmethod
     def _read_build_deck() -> list:
         try:
-            return reading_mod.deck(CORPUS_DIR, APP_DIR / "vocab.json",
+            return reading_mod.deck(READ_TEXTS, APP_DIR / "vocab.json",
                                     READ_DIR)
-        except Exception:                 # noqa: BLE001 — a bad sidecar
+        except Exception:                 # noqa: BLE001 — a bad file
             return []
 
     def _read_leave(self) -> None:
@@ -2246,7 +2249,7 @@ class Dashboard:
     def _read_phase(self) -> tuple[str, dict | None]:
         """What the card should show, from the app's last answer.
 
-        off — no app to listen; proofing — the next sentences are with
+        off — no app to listen; writing — the next paragraph is with
         the model; done — nothing left to read; arming — the app has not
         got this sentence yet; waiting — it has, and the key is up;
         listening / checking — the key is down / the decode is running;
@@ -2255,8 +2258,8 @@ class Dashboard:
         cur = self._read_current
         if not self.running:
             return "off", None
-        if self._read_proofing:
-            return "proofing", None
+        if self._read_writing:
+            return "writing", None
         if cur is None:
             return "done", None
         read = self.status.get("read") or {}
@@ -2369,55 +2372,52 @@ class Dashboard:
         self._read_answered(reply)
 
     def _read_advance(self, reply: dict | None = None) -> None:
-        """The next sentence of the deck — once the proofreader has read
-        it. A checked sentence goes up at once; an unchecked one goes to
-        the model first, with the batch behind it, so one call covers
-        the next ten and the wait is paid once in ten sentences. Arming
-        is the next poll's job, and it is asked for now rather than in
-        READ_ARM_EVERY_S."""
+        """The next sentence of the deck; with the deck empty, a
+        paragraph is asked of the model first and the deck rebuilt from
+        the file it lands in. Arming is the next poll's job, and it is
+        asked for now rather than in READ_ARM_EVERY_S."""
         self._read_busy = False
         deck = self._read_deck
-        if deck and not deck[0].checked and not self._read_proof_failed \
-                and not self._read_proofing:
-            batch = [s for s in deck if not s.checked][:reading_mod.PROOF_BATCH]
+        if not deck and not self._read_write_failed \
+                and not self._read_writing:
             self._read_current = None
-            # THE TOKEN names this batch: a verdict landing after the tab
-            # was left and opened again (which starts a batch of its own)
-            # is kept for the cache and not allowed to swap the sentence
-            # he is reading by then.
-            self._read_proofing = token = object()
-            threading.Thread(target=self._read_proof, args=(batch, token),
-                             daemon=True, name="proofread").start()
+            # THE TOKEN names this paragraph: one landing after the tab
+            # was left and opened again (which asks for one of its own)
+            # is kept as a file and not allowed to swap the sentence he
+            # is reading by then.
+            self._read_writing = token = object()
+            threading.Thread(target=self._read_write, args=(token,),
+                             daemon=True, name="read-write").start()
             self._read_answered(reply)
             return
         self._read_current = deck.pop(0) if deck else None
         self._read_armed_at = 0.0
         self._read_answered(reply)
 
-    def _read_proof(self, batch: list, token) -> None:
-        """Off the Tk thread: one model call for the batch. The verdicts
-        land through _events like a pipe reply does."""
+    def _read_write(self, token) -> None:
+        """Off the Tk thread: one model call for one paragraph, saved as
+        a file of the folder like anything he dropped there. The result
+        lands through _events like a pipe reply does."""
+        path = None
         try:
             cfg = config_mod.load(CONFIG_PATH)
-            result = reading_mod.Proofreader(cfg).check([s.raw for s in batch])
+            terms = reading_mod.terms_of(APP_DIR / "vocab.json", to_write=True)
+            found = reading_mod.Writer(cfg).write(
+                terms, seed=reading_mod.written_count(READ_TEXTS))
+            if found:
+                path = reading_mod.save_written(READ_TEXTS, found)
         except Exception:                 # noqa: BLE001
-            result = None
-        self._events.put(lambda: self._read_proofed(batch, result, token))
+            path = None
+        self._events.put(lambda: self._read_written(path, token))
 
-    def _read_proofed(self, batch: list, result: dict | None, token) -> None:
-        """The verdicts are kept whatever the tab is doing now — a
-        sentence the model has read is read for good — and the deck is
-        rebuilt from them so the corrected words are what goes up."""
-        if result is None:
-            self._read_proof_failed = True
-            self._note("the sentences could not be checked — showing them "
-                       "as they were said")
-        else:
-            reading_mod.proof_update(READ_DIR,
-                                     {s.key: result.get(s.raw) for s in batch})
-        if self._read_proofing is not token:
-            return                        # a batch the tab has moved past
-        self._read_proofing = False
+    def _read_written(self, path, token) -> None:
+        if path is None:
+            self._read_write_failed = True
+            self._note("no model could write the next paragraph — drop a "
+                       "text into corpus\\read\\texts to keep reading")
+        if self._read_writing is not token:
+            return                        # a paragraph the tab moved past
+        self._read_writing = False
         if not self.parts.get("read_on") or self.closing:
             return
         self._read_deck = self._read_build_deck()
@@ -2440,7 +2440,7 @@ class Dashboard:
         keys = self.status.get("keys") or self._read_keys()
         hold = pretty_key(keys.get("hotkey", ""))
 
-        if phase in ("off", "done", "proofing"):
+        if phase in ("off", "done", "writing"):
             card = ui.Card(self.sheet, SAID_W, 200, radius=14, bg=ui.BG,
                            pad=READ_PAD)
             card.place(x=PAD, y=READ_CARD_Y)
@@ -2449,14 +2449,15 @@ class Dashboard:
                 head = "Start the app first — it does the listening."
                 sub = ("The models that hear you live in the app, not in "
                        "this window.")
-            elif phase == "proofing":
-                head = "Checking the next sentences…"
-                sub = ("A model reads them first, for Hebrew that was cut "
-                       "off or garbled — text only, the audio goes nowhere.")
+            elif phase == "writing":
+                head = "Writing the next paragraph…"
+                sub = ("A model writes a few sentences round the words you "
+                       "taught it — text only, the audio goes nowhere.")
             else:
-                head = "You have read everything there is."
-                sub = ("Dictate more, or teach it more words, and there "
-                       "will be more here.")
+                head = "Nothing left to read."
+                sub = ("Drop any Hebrew text (.txt or .md) into "
+                       "corpus\\read\\texts and it is here, sentence by "
+                       "sentence.")
             tk.Label(card.body, text=head, bg=ui.CARD, fg=ui.FG,
                      font=(ui.UI, 12)).place(x=inner // 2, y=70,
                                              anchor="center")
@@ -2496,18 +2497,12 @@ class Dashboard:
         body = card.body
 
         left = len(self._read_deck)
-        when = ""
-        if cur.said:
-            try:
-                when = time.strftime("%d %b", time.strptime(cur.said,
-                                                            "%Y-%m-%d"))
-            except ValueError:
-                when = ""
+        source = ("WRITTEN FOR YOU"
+                  if cur.said.startswith(reading_mod.WRITTEN)
+                  else f"FROM {cur.said.upper()}")
         eyebrow = "  ·  ".join(
-            part for part in ((f"FROM WHAT YOU SAID ON {when.upper()}"
-                               if when else "FROM WHAT YOU SAID"),
-                              (f"{left} MORE TO READ" if left
-                               else "THE LAST ONE")) if part)
+            (source, f"SENTENCE {cur.index} OF {cur.count}",
+             f"{left} MORE TO READ" if left else "THE LAST ONE"))
         tk.Label(body, text=eyebrow, bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.UI, ui.PT_CAPS)).place(x=0, y=0)
         # The taught words it carries, as lit chips — the reason it is
