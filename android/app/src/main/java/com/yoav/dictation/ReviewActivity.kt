@@ -117,6 +117,8 @@ class ReviewActivity : Activity() {
         card.addView(Skin.gap(this, 8))
         card.addView(Skin.text(this, struck(p), 17f, Skin.DIM).apply {
             textDirection = if (rtl) View.TEXT_DIRECTION_RTL else View.TEXT_DIRECTION_LTR
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             gravity = if (rtl) Gravity.END else Gravity.START
             setLineSpacing(0f, 1.25f)
         })
@@ -126,6 +128,8 @@ class ReviewActivity : Activity() {
         card.addView(Skin.gap(this, 8))
         card.addView(Skin.text(this, lit(p), 20f, Skin.FG).apply {
             textDirection = if (rtl) View.TEXT_DIRECTION_RTL else View.TEXT_DIRECTION_LTR
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             gravity = if (rtl) Gravity.END else Gravity.START
             setLineSpacing(0f, 1.25f)
         })
@@ -134,6 +138,8 @@ class ReviewActivity : Activity() {
             card.addView(Skin.gap(this, 12))
             card.addView(Skin.text(this, why.joinToString(" · "), 14f, Skin.DIM).apply {
                 textDirection = View.TEXT_DIRECTION_ANY_RTL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 gravity = if (rtl) Gravity.END else Gravity.START
             })
         }

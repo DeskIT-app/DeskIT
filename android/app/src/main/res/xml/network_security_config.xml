@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- HTTPS everywhere, as before, with one exception: 10.0.2.2 is the
+     Android emulator's name for the machine it runs on, and a fake PC
+     on that address during a check has no certificate. No real phone
+     ever reaches this address. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

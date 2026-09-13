@@ -138,6 +138,15 @@ class DictationIme : InputMethodService() {
     private var sticky = false
     private var statusAction: (() -> Unit)? = null
 
+    /**
+     * The sticky error is "no microphone" or "no token". Those two are
+     * fixed on the app's screens, not here — so the next field after the
+     * fix must look again instead of keeping a complaint that is no
+     * longer true (found on the emulator: the token was saved and the
+     * keyboard went on saying there was none).
+     */
+    private var stickySetup = false
+
     private var backendName = ""
     private var lastHealth = 0L
 
@@ -603,7 +612,9 @@ class DictationIme : InputMethodService() {
         privateField = isPrivate(info)
         refreshActionKey()
         restoreState()
-        if (!sticky) sayReady()
+        if (!sticky || (stickySetup && hasMic() && Prefs.token(this).isNotEmpty())) {
+            sayReady()
+        }
         if (!privateField) checkHealth()
     }
 
@@ -685,10 +696,12 @@ class DictationIme : InputMethodService() {
     private fun sayReady() {
         if (privateField) { say(getString(R.string.private_field)); return }
         if (!hasMic()) {
-            sayError(getString(R.string.needs_permission)) { openSetup() }; return
+            sayError(getString(R.string.needs_permission)) { openSetup() }
+            stickySetup = true; return
         }
         if (Prefs.token(this).isEmpty()) {
-            sayError(getString(R.string.needs_setup)) { openSetup() }; return
+            sayError(getString(R.string.needs_setup)) { openSetup() }
+            stickySetup = true; return
         }
         say(
             if (backendName.isNotEmpty()) getString(R.string.ready_on, backendName)
@@ -1207,6 +1220,7 @@ class DictationIme : InputMethodService() {
         status.text = msg
         status.setTextColor(statusText)
         sticky = false
+        stickySetup = false
         statusAction = null
     }
 
@@ -1219,6 +1233,7 @@ class DictationIme : InputMethodService() {
      */
     private fun sayError(msg: String, action: (() -> Unit)? = null) {
         sticky = true
+        stickySetup = false
         statusAction = action
         if (!::status.isInitialized) return
         status.text = msg

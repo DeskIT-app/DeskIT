@@ -303,6 +303,8 @@ class HomeActivity : Activity() {
                 maxLines = 2
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 textDirection = View.TEXT_DIRECTION_ANY_RTL
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             })
             row.addView(Skin.text(this, getString(R.string.did_you_mean_row,
                 getString(if (p.fromPhone) R.string.the_phone else R.string.the_desk)),
@@ -362,6 +364,8 @@ class HomeActivity : Activity() {
                 maxLines = 4
                 ellipsize = android.text.TextUtils.TruncateAt.END
                 textDirection = View.TEXT_DIRECTION_ANY_RTL
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
                 setPadding(0, Skin.dp(this@HomeActivity, 4), 0, 0)
                 setLineSpacing(0f, 1.2f)
             })

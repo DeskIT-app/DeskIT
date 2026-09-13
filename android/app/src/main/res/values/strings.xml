@@ -98,7 +98,7 @@
     <string name="unreachable_line">Is Tailscale on at both ends? Tap to try again.</string>
     <string name="no_token_title">Not set up yet</string>
     <string name="no_token_line">Point it at the PC in Settings.</string>
-    <string name="steps_title">Three steps</string>
+    <string name="steps_title">Set up</string>
     <string name="step_mic">Allow the microphone</string>
     <string name="step_keyboard">Turn the keyboard on</string>
     <string name="step_pc">Point it at the PC</string>
