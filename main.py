@@ -45,6 +45,7 @@ import notify_watch as notify_watch_mod
 import popup as popup_mod
 import problems as problems_mod
 import questions as questions_mod
+import reading as reading_mod
 import server as server_mod
 import singleton
 import overlay as overlay_mod
@@ -362,6 +363,11 @@ class App:
         pcfg = getattr(cfg, "problems", None)
         self.problems = (problems_mod.Store(APP_DIR / problems_mod.STORE_NAME)
                          if pcfg is not None and pcfg.enabled else None)
+        # Read this to me (reading.py): the sentence the dashboard has
+        # put up, and what came back for it. Its folder sits BESIDE the
+        # corpus, not in it, so [study] corpus_keep can never trim away
+        # what he sat down to read.
+        self.reading = reading_mod.Reading(APP_DIR / "corpus" / "read")
         # The OTHER direction of the same conversation (questions.py). The
         # bug list is what he tells the app; this is what the weekly
         # routine asks him back when a report cannot be explained from the
@@ -489,6 +495,7 @@ class App:
         # dropped hook and a frozen keyboard.
         self._to_card = False
         self._to_prompt = False
+        self._to_read = False
         self._start_hwnd = 0
         # [visual_qa] echo_to_field. What was dictated INTO the ask card,
         # kept until the card closes and the field it belongs to is in
@@ -1751,6 +1758,9 @@ class App:
                                    if self.cfg.vocab.enabled else 0)},
             "pending": len(self.spool.pending()),
             "phone": (self.phone.url or "") if self.phone else "",
+            # The sentence the Read aloud tab has up, and what came back
+            # for it — text only, and short: one sentence each way.
+            "read": self.reading.state(),
             # Where the dot is and whether it is waiting to be dragged.
             # The dashboard hides itself for a move and has to know when
             # the move is over; this poll is how it finds out, which is
@@ -2187,6 +2197,31 @@ class App:
                 threading.Thread(target=engine.absorb_decisions, daemon=True,
                                  name="review-absorb").start()
                 return {"ok": True}
+            if command == "read":
+                # arm | disarm | keep | drop — the dashboard's Read aloud
+                # tab (reading.py). All of it is a flag flip or a file
+                # move, so it answers within the poll's patience.
+                do = str(args.get("do", "")).strip().lower()
+                ident = str(args.get("id", "") or "")
+                if do == "arm":
+                    return {"ok": True, "read": self.reading.arm(
+                        ident, str(args.get("text", "") or ""),
+                        int(args.get("hwnd") or 0))}
+                if do == "disarm":
+                    self.reading.disarm()
+                    return {"ok": True, "read": self.reading.state()}
+                if do == "keep":
+                    wav = self.reading.keep(ident)
+                    if wav is None:
+                        return {"ok": False, "error": "nothing to keep for "
+                                                      "that sentence",
+                                "read": self.reading.state()}
+                    return {"ok": True, "kept": wav.name,
+                            "read": self.reading.state()}
+                if do == "drop":
+                    self.reading.drop(ident, skipped=bool(args.get("skip")))
+                    return {"ok": True, "read": self.reading.state()}
+                return {"ok": False, "error": f"unknown read action {do!r}"}
             if command == "screens":
                 # off | on | toggle | again. The engine's switches are a
                 # thread start and a log line — the broadcasts and the
@@ -2610,6 +2645,17 @@ class App:
         # known", which _handle answers with the clipboard.
         start = injector.foreground_window()
         self._start_hwnd = 0 if injector.is_our_window(start) else start
+        # THE READING, on the same rule again: a sentence is armed on the
+        # dashboard's Read aloud tab AND the dashboard is the window in
+        # front, so he is reading the card, not dictating into it. The
+        # dashboard is another process, which is why it is not one of
+        # "ours" above and why the test is the window it armed with.
+        # Decided here and never re-asked: the sentence he is reading is
+        # the one that was up when he began. getattr, like the box: the
+        # tests build half an App and still start recordings.
+        reading = getattr(self, "reading", None)
+        self._to_read = bool(not self._to_card and not self._to_prompt
+                             and reading is not None and reading.takes(start))
         # The last window that was somebody ELSE'S. Sticky on purpose: it
         # is what the ask card interrupted, and the card being in front is
         # exactly when _start_hwnd stops being able to tell us.
@@ -2625,7 +2671,7 @@ class App:
         # the report card is never repaired, so its stretches are not
         # sent to the repair pass either.
         self._roller = self._start_roller(
-            polish=not (self._to_card or self._to_prompt))
+            polish=not (self._to_card or self._to_prompt or self._to_read))
         beep("start")
         log.info("recording %s... (release to transcribe%s)",
                  language_label(language, shout=True),
@@ -2725,6 +2771,12 @@ class App:
         extra = {"pieces": pieces} if len(pieces) > 1 else {}
         if self._to_prompt:
             extra["to_prompt"] = True
+        if self._to_read:
+            # The SENTENCE'S id, not a flag: by the time the worker has
+            # the transcript the dashboard may have moved on, and a
+            # reading filed under the next card would be a wrong label
+            # in the one set that must have none.
+            extra["to_read"] = self.reading.armed_id
         if self.recorder.silent():
             # Nothing above recorder.SILENT_PEAK from start to end: a
             # dead microphone, not a dictation. The worker still runs it
@@ -5200,7 +5252,7 @@ class App:
                 sliced: bool = False, in_stream: bool = False,
                 pieces: list | None = None,
                 to_prompt: bool = False, silent: bool = False,
-                rolled=None) -> None:
+                rolled=None, to_read: str | None = None) -> None:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
@@ -5222,7 +5274,8 @@ class App:
         # foreground at the press, so _on_start already filtered hwnd to
         # 0 — but only normally, and a stray "..." left in his editor is
         # exactly the kind of litter this branch exists to avoid.
-        if fb.enabled and hwnd and not diverting and not to_prompt:
+        if fb.enabled and hwnd and not diverting and not to_prompt \
+                and not to_read:
             # BOUNDED, unlike the paste below, and the focus test is INSIDE
             # the lock rather than in front of it. A translate or punctuate
             # holds this lock across its whole model call (up to
@@ -5328,6 +5381,10 @@ class App:
             log.info("empty transcript (no speech heard) — not pasting")
             if item:
                 item.discard()
+            if to_read:
+                # The card is waiting for an answer, and "nothing came
+                # back" is one.
+                self.reading.heard(to_read, wav, seconds, "")
             return
 
         # THE ASK-THE-SCREEN DIVERSION. While the visual-QA window is up,
@@ -5446,6 +5503,34 @@ class App:
                                 "dictation and the clipboard would not "
                                 "either (%s) — text is in transcripts.log "
                                 "only", e)
+            return
+
+        # THE READING DIVERSION, the third window of ours that takes a
+        # dictation — except that this one is not a window of ours at
+        # all but the dashboard's Read aloud card, and the dictation is
+        # not text going anywhere: it is AUDIO, filed under the words on
+        # the card (reading.py says why that is the point). The
+        # transcript is made only to ask whether he read what is
+        # written, so the vocabulary swap applies — the same instant
+        # repair every other diversion gets, and one that turns a name
+        # the model garbles into the name on the card — and the context
+        # pass does not: a paid model tidying a sentence nobody will
+        # read is the trade the box declined too. `_last` is never
+        # touched, for the box's reason: a reading is not a dictation.
+        if to_read:
+            try:
+                cleaned, _applied = self.vocab.apply(cleaned)
+            except Exception:
+                log.exception("the vocabulary repair failed on a reading "
+                              "— using the raw transcript")
+            if item:
+                item.discard()
+            state = self.reading.heard(to_read, wav, seconds, cleaned)
+            if state is None:
+                log.info("reading: the card had moved on before the "
+                         "transcript came back — nothing kept")
+            elif state["heard"]:
+                self._say(state["heard"]["verdict"])
             return
 
         # IN FRONT OF THE PASTE, on purpose, and this is the one decision

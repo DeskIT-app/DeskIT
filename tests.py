@@ -27098,6 +27098,325 @@ def test_the_corrections_place_holds_every_proposal_and_one_gold() -> None:
         assert "Nothing is waiting" in board.parts["corr_head"].cget("text")
 
 
+# ----------------------------------------------- read this to me
+
+def _gold(folder: Path, stem: str, text: str, seconds: float, tier="gold",
+          kept="2026-09-12 14:00:00") -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{stem}.wav").write_bytes(b"RIFF" + bytes(44))
+    (folder / f"{stem}.json").write_text(json.dumps(
+        {"text": text, "tier": tier, "seconds": seconds, "kept": kept},
+        ensure_ascii=False), "utf-8")
+
+
+def test_the_deck_is_his_own_gold_sentences_taught_words_first() -> None:
+    """reading.deck: gold only, cut at full stops, a breath long, the
+    sentences carrying a taught name or term ahead of the rest, newest
+    first within a rank — and nothing he has kept or skipped."""
+    import reading
+
+    with tempfile.TemporaryDirectory() as d:
+        corpus, read, vocab = Path(d) / "corpus", Path(d) / "read", Path(d) / "vocab.json"
+        _gold(corpus, "20260901-100000-0100",
+              "אני רוצה לפתוח את הפרויקט הזה מחדש. סבבה. "
+              "תעשה commit ותדחוף את זה ל-GitHub בבקשה עכשיו.", 10.0,
+              kept="2026-09-01 10:00:00")
+        _gold(corpus, "20260912-100000-0100",
+              "לא הבנתי למה זה לא עובד בכלל היום.", 4.0)
+        _gold(corpus, "20260913-100000-0100",
+              "זה משפט כסף שאף אחד לא אישר ולכן הוא לא נכנס לחפיסה.", 4.0,
+              tier="silver")
+        vocab.write_text(json.dumps({"version": 1, "corrections": [
+            {"heard": "גיטאב", "meant": "GitHub", "hits": 2},
+            {"heard": "זו", "meant": "זה", "hits": 1},         # a wobble
+            {"heard": "פרוג'קט", "meant": "פרויקט", "hits": 1},  # a wobble
+        ]}, ensure_ascii=False), "utf-8")
+        deck = reading.deck(corpus, vocab, read)
+        texts = [s.text for s in deck]
+        assert texts == [
+            "תעשה commit ותדחוף את זה ל-GitHub בבקשה עכשיו.",
+            "לא הבנתי למה זה לא עובד בכלל היום.",
+            "אני רוצה לפתוח את הפרויקט הזה מחדש.",
+        ], texts
+        assert deck[0].terms == ("GitHub",), deck[0].terms
+        assert deck[1].terms == () and deck[2].terms == (), \
+            "a single corrected Hebrew word is not a term to rank by"
+        assert deck[0].said == "2026-09-01" and deck[1].said == "2026-09-12"
+        assert all(len(s.key) == 12 for s in deck)
+        # "סבבה." is too short to be a sentence, silver is not gold
+        assert not any("סבבה" in t or "כסף" in t for t in texts)
+
+        # kept and skipped sentences are not offered again
+        _gold(read, "20260913-150000", texts[0], 3.0,
+              kept="2026-09-13 15:00:00")
+        (read / reading.SKIPPED).write_text(
+            json.dumps([reading.key_of(texts[2])]), "utf-8")
+        left = [s.text for s in reading.deck(corpus, vocab, read)]
+        assert left == [texts[1]], left
+
+        t = reading.tally(read, corpus, today="2026-09-13")
+        assert t["total_s"] == 17.0 and t["read_s"] == 3.0, t
+        assert t["today_s"] == 3.0 and t["today"] == [("15:00", texts[0])], t
+
+
+def test_a_reading_is_kept_under_the_cards_words_only_when_he_says_so() -> None:
+    """reading.Reading: the app's side. Armed with the dashboard's window,
+    it takes a dictation begun over that window and no other; what comes
+    back is matched word for word; keep files the audio under the CARD'S
+    text, read-again drops it, skip drops it and retires the sentence."""
+    import reading
+
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "read"
+        r = reading.Reading(root, root_of=lambda h: h // 10)
+        card = "אתה לא יכול לעשות בתוך המיין עוד branch של משהו כזה."
+        state = r.arm("k1", card, hwnd=420)
+        assert state == {"armed": {"id": "k1", "text": card}, "heard": None}
+        assert r.takes(421) and r.takes(429), "a child of the window counts"
+        assert not r.takes(431), "another window is a dictation"
+        assert not r.takes(0)
+        assert r.armed_id == "k1"
+
+        # the wrong sentence's answer is not this card's
+        assert r.heard("k0", b"RIFF", 2.0, card) is None
+        assert not list(root.glob("*")), "nothing filed for a stray answer"
+
+        heard = "אתה לא יכול לעשות בתוך המיין עוד ברנץ' של משהו כזה"
+        state = r.heard("k1", b"RIFF-one", 3.4, heard)
+        h = state["heard"]
+        assert h["id"] == "k1" and h["text"] == heard and h["seconds"] == 3.4
+        assert h["match"]["words"] == 11 and h["match"]["same"] == 10, h
+        assert h["match"]["pairs"] == [("ברנץ", "branch")], h["match"]
+        assert h["verdict"] == "One word came back different.", h
+        pending = list(root.glob("pending-*.wav"))
+        assert len(pending) == 1 and pending[0].read_bytes() == b"RIFF-one"
+
+        # a second try replaces the first, without being asked
+        r.heard("k1", b"RIFF-two", 3.9, card)
+        pending = list(root.glob("pending-*.wav"))
+        assert len(pending) == 1 and pending[0].read_bytes() == b"RIFF-two"
+        assert r.state()["heard"]["verdict"] == "Every word came back as written."
+
+        wav = r.keep("k1")
+        assert wav is not None and wav.exists() and wav.read_bytes() == b"RIFF-two"
+        side = json.loads(wav.with_suffix(".json").read_text("utf-8"))
+        assert side["text"] == card, "the CARD is the label, never the transcript"
+        assert side["tier"] == "gold" and side["source"] == "read"
+        assert side["seconds"] == 3.9 and side["heard"] == card
+        assert side["match"] == [11, 11] and side["kept"][:4] == "2026"
+        assert not list(root.glob("pending-*")), "the pending file was moved"
+        assert r.state() == {"armed": None, "heard": None}
+        assert r.keep("k1") is None, "nothing to keep twice"
+
+        # read again: the audio goes, the sentence stays armed
+        r.arm("k2", "משפט שני לגמרי אחר כאן.", hwnd=420)
+        r.heard("k2", b"RIFF", 1.0, "משפט")
+        assert r.drop("k2") is True
+        assert not list(root.glob("pending-*")) and r.armed_id == "k2"
+        # skip: retired, and the deck will not offer it again
+        r.drop("k2", skipped=True)
+        assert r.armed_id is None
+        skipped = json.loads((root / reading.SKIPPED).read_text("utf-8"))
+        assert skipped == [reading.key_of("משפט שני לגמרי אחר כאן.")], skipped
+        # arming another sentence drops what the last one left behind
+        r.arm("k3", "משפט שלישי כדי לבדוק את זה.", hwnd=420)
+        r.heard("k3", b"RIFF", 1.0, "משפט")
+        r.arm("k4", "משפט רביעי כדי לבדוק את זה.", hwnd=420)
+        assert not list(root.glob("pending-*")) and r.state()["heard"] is None
+        r.disarm()
+        assert r.state() == {"armed": None, "heard": None}
+
+    m = reading.match("אחת שתיים שלוש ארבע חמש", "אחת שלוש ארבע חמש שש שבע")
+    assert (m["same"], m["missing"], m["extra"], m["pairs"]) == (4, 1, 2, [])
+    assert reading.verdict(m) == ("One word is missing, 2 words came back "
+                                  "that are not on the card."), reading.verdict(m)
+    assert reading.verdict(reading.match("אחת שתיים", "")) == "2 words are missing."
+    assert reading.match("Slash Clear", "slash clear")["same"] == 2, "case is not a word"
+
+
+def test_a_reading_is_filed_not_pasted_and_the_app_answers_the_tab() -> None:
+    """main.py: a dictation decided at the press to be a reading puts no
+    marker up, pastes nothing, and hands the transcript to reading.py —
+    and the `read` control command is the tab's whole vocabulary."""
+    import inspect
+    import shutil
+
+    import main as main_mod
+    import reading
+
+    src = inspect.getsource(main_mod.App._on_start)
+    assert "reading.takes(start)" in src, "decided at the press, like the box"
+    assert "self._to_card or self._to_prompt or self._to_read" in src, \
+        "a reading is never sent to the repair pass"
+    assert 'extra["to_read"] = self.reading.armed_id' in \
+        inspect.getsource(main_mod.App._on_stop), "the SENTENCE rides along"
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-read-"))
+    fake = _FakeInjector()
+    real = main_mod.injector
+    card = "שלום עולם זה משפט לבדיקה"
+    try:
+        main_mod.injector = fake
+        app = _worker_app(_Flaky(fail_times=0, text="שלום עולם זה משפט לבדיקה"),
+                          tmp)
+        app._note = ""
+        app.reading = reading.Reading(tmp / "read", root_of=lambda h: h)
+        reply = app.control_command("read", {"do": "arm", "id": "k1",
+                                             "text": card, "hwnd": fake.focus})
+        assert reply["ok"] and reply["read"]["armed"]["id"] == "k1", reply
+        app._handle(b"RIFF-audio", 4.0, hwnd=fake.focus, to_read="k1")
+        assert fake.calls == [], f"a reading touched the screen: {fake.calls}"
+        assert app.spool.pending() == [], "not spooled either"
+        assert app._last is None, "a reading is not a dictation"
+        state = app.reading.state()
+        assert state["heard"]["match"]["same"] == 5, state
+        assert "Every word" in app._note, app._note
+        reply = app.control_command("read", {"do": "keep", "id": "k1"})
+        assert reply["ok"] and reply["kept"].endswith(".wav"), reply
+        assert reply["read"] == {"armed": None, "heard": None}
+        side = json.loads((tmp / "read" / reply["kept"]).with_suffix(".json")
+                          .read_text("utf-8"))
+        assert side["text"] == card and side["source"] == "read"
+        assert (tmp / "read" / reply["kept"]).read_bytes() == b"RIFF-audio"
+
+        again = app.control_command("read", {"do": "keep", "id": "k1"})
+        assert again["ok"] is False and "nothing to keep" in again["error"]
+        # an empty transcript is still an answer for the card
+        app.control_command("read", {"do": "arm", "id": "k2", "text": card,
+                                     "hwnd": fake.focus})
+        app.transcriber.text = "   "
+        app._handle(b"RIFF-audio", 2.0, hwnd=fake.focus, to_read="k2")
+        assert fake.calls == [], fake.calls
+        assert app.reading.state()["heard"]["verdict"] == "5 words are missing."
+        reply = app.control_command("read", {"do": "drop", "id": "k2",
+                                             "skip": True})
+        assert reply["ok"] and reply["read"] == {"armed": None, "heard": None}
+        assert (tmp / "read" / reading.SKIPPED).exists()
+        bad = app.control_command("read", {"do": "sideways"})
+        assert bad["ok"] is False and "sideways" in bad["error"], bad
+        reply = app.control_command("read", {"do": "disarm"})
+        assert reply["ok"] and reply["read"]["armed"] is None
+        assert not list((tmp / "read").glob("pending-*"))
+    finally:
+        main_mod.injector = real
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
+    """The Corrections place's second tab, driven against the app's own
+    control handler over a Reading in a temp folder: the tab arms the
+    sentence it shows, redraws for each phase, keeps a word-for-word
+    reading without asking and puts up the next one, asks about one that
+    came back different, and disarms when he leaves."""
+    import shutil
+
+    import control as control_mod
+    import main as main_mod
+    import reading
+    import dashboard as dash
+    import widgets as widgets_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-readtab-"))
+    corpus, read = tmp / "corpus", tmp / "read"
+    _gold(corpus, "20260912-100000-0100",
+          "אני רוצה לפתוח את הפרויקט הזה מחדש היום. "
+          "לא הבנתי למה זה לא עובד בכלל.", 8.0)
+    r = reading.Reading(read, root_of=lambda h: h)
+    app = main_mod.App.__new__(main_mod.App)
+    app.reading = r
+    activity = ["ready"]
+    sent: list[dict] = []
+
+    def send(cmd, timeout_ms=0, **args):
+        if cmd == "status":
+            return {"ok": True, "stage": "running", "activity": activity[0],
+                    "uptime_s": 60, "keys": {"hotkey": "right ctrl"},
+                    "read": r.state()}
+        if cmd == "read":
+            sent.append(dict(args))
+            return app.control_command("read", args)
+        return None
+
+    def settle(board, ticks: int = 40) -> None:
+        for _ in range(ticks):
+            board.root.update()
+            time.sleep(0.02)
+
+    def phase(board) -> str:
+        board._refresh(send("status"))
+        return board._read_phase()[0]
+
+    def kept() -> list:
+        return [p for p in read.glob("*.wav")
+                if not p.name.startswith(reading.PENDING)]
+
+    saved = (dash.READ_DIR, dash.CORPUS_DIR, control_mod.send)
+    dash.READ_DIR, dash.CORPUS_DIR = read, corpus
+    try:
+        with _window() as board:
+            if board is None:
+                return
+            control_mod.send = send
+            board._corr_tab = "read"
+            board._show("Corrections")
+            settle(board)
+            first = board._read_current
+            assert first is not None and board._read_deck, "the deck is empty"
+            assert first.text == "אני רוצה לפתוח את הפרויקט הזה מחדש היום."
+            assert r.armed_id == first.key, "the tab armed what it shows"
+            assert sent[-1]["hwnd"] == board._read_hwnd() and sent[-1]["hwnd"]
+            assert phase(board) == "waiting"
+            assert "read_card" in board.parts and "voice_card" in board.parts
+            assert "corr_list" not in board.parts, "the other tab's list"
+
+            activity[0] = "recording"
+            assert phase(board) == "listening"
+            activity[0] = "ready"
+            r.heard(first.key, b"RIFF", 3.0, "אני רוצה לפתוח את הפרוגקט הזה מחדש היום.")
+            assert phase(board) == "heard"
+            settle(board, 10)
+            golds = [w for w in board.parts["read_card"].body.winfo_children()
+                     if isinstance(w, widgets_mod.ToneButton)]
+            assert len(golds) == 1, "one gold Yes on the card"
+            assert not kept(), "nothing kept until he says so"
+            assert list(read.glob("pending-*.wav")), "the audio waits"
+
+            board._read_keep()
+            settle(board)
+            assert len(kept()) == 1, "kept on Yes"
+            second = board._read_current
+            assert second is not None and second.key != first.key
+            assert r.armed_id == second.key, "the next one is armed"
+            assert board._read_counts["kept"] == 1
+
+            r.heard(second.key, b"RIFF", 2.0, second.text)   # word for word
+            settle(board)
+            assert len(kept()) == 2, "kept without asking"
+            assert board._read_counts["kept"] == 2
+            assert board._read_current is None and phase(board) == "done"
+            sides = [json.loads(p.read_text("utf-8")) for p in read.glob("*.json")]
+            assert sorted(s["text"] for s in sides) == sorted(
+                [first.text, second.text]), sides
+
+            board._corr_tab_to("waiting")
+            settle(board)
+            assert r.armed_id is None, "leaving the tab disarms"
+            assert "corr_list" in board.parts and "read_card" not in board.parts
+            assert sent[-1]["do"] == "disarm", sent[-1]
+    finally:
+        dash.READ_DIR, dash.CORPUS_DIR, control_mod.send = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_two_reading_knobs_are_in_the_config_and_the_settings() -> None:
+    import settings as settings_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    assert cfg.study.read_minutes == 15 and cfg.study.read_goal_hours == 3
+    assert {"study.read_minutes", "study.read_goal_hours"} <= set(
+        settings_mod.WORDS), "every line in the file has words"
+
+
 def test_said_opens_on_a_page_of_rows_and_show_more_adds_another() -> None:
     """"It's a lot to scroll and it's a nightmare" — so the list opens on
     SAID_PAGE rows and grows by that much per press, and the press does

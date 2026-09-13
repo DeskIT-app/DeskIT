@@ -1031,6 +1031,12 @@ class StudyConfig:
     # data. ~1 MB per 30 s clip; 400 is roughly 3-4 hours of speech.
     # 0 keeps none.
     corpus_keep: int = 400
+    # Read this to me (reading.py, the dashboard's Read aloud tab): how
+    # much reading a day it asks for, and how much of his voice on file
+    # the fine-tune wants. Both are the bars the tab draws, nothing more
+    # — it never stops him reading past either.
+    read_minutes: float = 15.0
+    read_goal_hours: float = 3.0
 
 
 @dataclass(frozen=True)
@@ -1671,6 +1677,10 @@ def load(path: Path) -> Config:
                                       StudyConfig.llm_per_day)),
             corpus_keep=int(study.get("corpus_keep",
                                       StudyConfig.corpus_keep)),
+            read_minutes=float(study.get("read_minutes",
+                                         StudyConfig.read_minutes)),
+            read_goal_hours=float(study.get("read_goal_hours",
+                                            StudyConfig.read_goal_hours)),
         ),
         review=ReviewConfig(
             enabled=bool(review.get("enabled", ReviewConfig.enabled)),

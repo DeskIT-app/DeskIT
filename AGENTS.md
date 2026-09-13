@@ -1026,6 +1026,7 @@ exactly what classic did.
 | `polish.py` + `translate.py` | repair pass + all chat backends (Gemini/Ollama/Cerebras/Groq) |
 | `cleanup.py` / `vocab.py` | filler removal, learned words |
 | `study.py` | the second learning channel: when idle, re-decodes sent recordings, votes + adjudicates, learns from divergence (fast only) |
+| `reading.py` | read this to me: the Corrections place's Read aloud tab. One of his own gold sentences on a card (the deck: corpus\ gold texts cut at full stops, the ones carrying a taught word first, kept and skipped ones never again), read into the dictation key with the dashboard in front, and filed under the CARD'S words in corpus\read (beside the corpus, so corpus_keep never trims it). The app owns the mic and the models: `_on_start` decides `_to_read` at the press from the foreground window alone, `_handle` diverts the transcript to `Reading.heard` instead of pasting, the `read` control command is arm / disarm / keep / drop and `status()["read"]` is what the tab draws. Word for word back = kept without asking and the next one comes up; anything else asks him (keep / read again / skip). Two bars in [study]: read_minutes, read_goal_hours |
 | `injector.py` | clipboard paste, placeholder, focus checks |
 | `punctuate.py` / `lookup.py` | F2 rewrite-in-place / reading box |
 | `visual_qa.py` | ask-the-screen: region select, vision chain, answer window, TTS |

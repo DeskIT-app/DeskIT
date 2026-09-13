@@ -1404,6 +1404,16 @@ corpus_keep = 400         # verified (audio, text) pairs kept in corpus\ as
                           # fine-tune of the local model on YOUR speech.
                           # PRIVACY: raw audio on this disk, gitignored,
                           # capped, oldest dropped first. 0 keeps none.
+# Read this to me -- the dashboard's Corrections > Read aloud tab
+# (reading.py). A sentence from your own gold dictations is shown, you
+# hold the dictation key with the dashboard in front and read it, and
+# the recording is filed under the words on the card in corpus\read --
+# beside the corpus, never trimmed by corpus_keep. The text is known
+# before the audio exists, so the pair is right even where the model is
+# wrong, which is the fastest road to the hours a fine-tune wants. The
+# two numbers below are the bars the tab draws; neither stops you.
+read_minutes = 15         # a day's reading, the bar under "Today"
+read_goal_hours = 3       # how much of your voice a fine-tune wants
 
 [polish]
 # The context pass: the half that vocab CANNOT do. Some mishearings swap a real

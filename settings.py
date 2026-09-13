@@ -1172,6 +1172,13 @@ _MORE: tuple[Friendly, ...] = (
     Friendly("study.corpus_keep", "How many checked recordings to keep",
              "Kept here as material for teaching the model your own voice "
              "one day. Zero keeps none."),
+    Friendly("study.read_minutes", "How long a day to read to it, in minutes",
+             "The bar on the Read aloud tab. It never stops you reading "
+             "past it."),
+    Friendly("study.read_goal_hours",
+             "How much of your voice teaching it needs, in hours",
+             "The other bar: what a fine-tune on your own speech wants. "
+             "Two to three hours is the usual number."),
     # -- [polish]
     Friendly("polish.min_chars", "Shortest text worth fixing, in letters",
              "Below this there is no sentence to reason from, which is "

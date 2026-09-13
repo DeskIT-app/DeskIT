@@ -76,6 +76,7 @@ import keyboard as keyboard_mod
 import launch
 import awake as awake_mod
 import nightly as nightly_mod
+import reading as reading_mod
 import settings as settings_mod
 import singleton
 import summary
@@ -191,6 +192,27 @@ CAPTURE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 # width a sentence needs; the panel takes what is left.
 SAID_W = CW - 320
 
+# THE CORRECTIONS PLACE HAS TWO TABS. Waiting is what it always was —
+# the second reading's proposals, with the vocabulary beside them. Read
+# aloud is reading.py: one of his own sentences on a card, read into
+# the dictation key with this window in front, and kept under the words
+# on the card. It lives here and not as a seventh word in the bar
+# because the bar has no room for one: measured 2026-09-13, seven
+# places at gap 14 run under the state chip by 3 px the moment a nightly
+# run puts Stop tests in the bar. The two are one place because they
+# are one story — the words it learned from him, and the voice it is
+# learning from him.
+CORR_TABS = (("waiting", "Waiting"), ("read", "Read aloud"))
+CORR_CHIPS_Y = 62
+CORR_HEAD_Y = 110        # the "N proposals" line, under the chips
+CORR_PAGE_Y = 140
+READ_CARD_Y = 112
+READ_PAD = 24            # the sentence card's own padding
+READ_ARM_EVERY_S = 3.0   # how long before an unanswered arm is sent again
+READ_ARM_GRACE_S = 1.5   # how long a just-sent arm is taken on trust
+READ_DIR = APP_DIR / "corpus" / "read"
+CORPUS_DIR = APP_DIR / "corpus"
+
 # The Keys place, top to bottom. THE BOARD IS THE FULL-SIZE ONE since
 # 2026-09-07 — 22.5 cap units wide against the tenkeyless 18.25, because
 # that is the keyboard on his desk — and in a window fixed at 1160 wide
@@ -249,7 +271,9 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
 #   Home         a summary, and nothing that needs scrolling
 #   Corrections  the second reading's proposals, and the words it has
 #                learned from them (his: "the vocabulary and all the
-#                corrections it does automatically")
+#                corrections it does automatically") — and, on a second
+#                tab, Read aloud: his own sentences read to it one at a
+#                time, kept as (voice, text) pairs (CORR_TABS, reading.py)
 #   Problems     what he reported, the routine's questions, what is on
 #                this computer and not on GitHub — everything that needs
 #                more than a line
@@ -391,6 +415,23 @@ def human_time(seconds: float) -> str:
 # sentence, which is what the title line is. Past six the digit is
 # honestly better — "seventeen things" is a wall.
 _COUNT_WORDS = ("No", "One", "Two", "Three", "Four", "Five", "Six")
+
+
+def _minutes(seconds: float) -> str:
+    """29.6 min, or 2.4 h once it is hours — the voice tally."""
+    if seconds >= 3600:
+        return f"{seconds / 3600:.1f} h"
+    return f"{seconds / 60:.1f} min"
+
+
+def _hours(seconds: float) -> str:
+    return f"{seconds / 3600:g} h"
+
+
+def _clock(seconds: float) -> str:
+    """4:12 — today's reading, as a clock reads."""
+    seconds = int(round(seconds))
+    return f"{seconds // 60}:{seconds % 60:02d}"
 
 
 def _count_word(n: int) -> str:
@@ -1322,6 +1363,16 @@ class Dashboard:
         self._log_stamp: tuple[int, float] = (0, 0.0)
         self._filter: str | None = None
         self._query = ""
+        # The Corrections place: which tab is up, and the reading in
+        # hand — see _read_column. The deck is built when the tab opens
+        # and popped as he goes; the counts are this session's.
+        self._corr_tab = "waiting"
+        self._read_deck: list = []
+        self._read_current = None
+        self._read_drawn = None
+        self._read_armed_at = 0.0
+        self._read_busy = False
+        self._read_counts = {"kept": 0, "skipped": 0, "again": 0}
         self._toast = None
         self._toast_after = None
         self._pump_after = None
@@ -1572,6 +1623,9 @@ class Dashboard:
     def _show(self, name: str) -> None:
         """Swap screens. Everything the old one registered goes with it, so
         _refresh has to ask for a widget rather than assume one."""
+        if (self.screen == "Corrections" and name != "Corrections"
+                and self._corr_tab == "read"):
+            self._read_leave()
         self.screen = name
         self._paint_nav()
         self._stop_rows()
@@ -2031,14 +2085,28 @@ class Dashboard:
         The rows are the pile's rows, with the pile's two answers, so a
         correction reads the same here as it does on the home.
         """
-        self._title("Corrections", "the second reading, and what it learned")
+        self._title("Corrections", "the second reading, what it learned, "
+                                   "and what you read to it")
         p = self.parts
         self._row_w = SAID_W
+        chips = tk.Frame(self.sheet, bg=ui.BG)
+        chips.place(x=PAD, y=CORR_CHIPS_Y)
+        p["corr_chips"] = {}
+        for key, name in CORR_TABS:
+            chip = ui.Chip(chips, name, lambda k=key: self._corr_tab_to(k),
+                           active=(key == self._corr_tab), bg=ui.BG)
+            chip.pack(side="left", padx=(0, 6))
+            p["corr_chips"][key] = chip
+        if self._corr_tab == "read":
+            self._read_column()
+            self._voice_panel()
+            return
         p["corr_head"] = tk.Label(self.sheet, text="", bg=ui.BG, fg=ui.DIM,
                                   font=(ui.UI, 10))
-        p["corr_head"].place(x=PAD, y=66)
-        page = ui.Scroller(self.sheet, SAID_W + 10, 520, bg=ui.BG)
-        page.place(x=PAD, y=100)
+        p["corr_head"].place(x=PAD, y=CORR_HEAD_Y)
+        page = ui.Scroller(self.sheet, SAID_W + 10, H - TOP - CORR_PAGE_Y - 24,
+                           bg=ui.BG)
+        page.place(x=PAD, y=CORR_PAGE_Y)
         p["page"] = page
         p["corr_list"] = _Column(page.inner, page)
         p["corr_empty"] = tk.Label(self.sheet, text="", bg=ui.BG,
@@ -2048,9 +2116,20 @@ class Dashboard:
         self._corr_stamp = None
         self._fill_corrections()
 
+    def _corr_tab_to(self, key: str) -> None:
+        if key == self._corr_tab:
+            return
+        if self._corr_tab == "read":
+            self._read_leave()
+        self._corr_tab = key
+        self._show("Corrections")
+
     def _poll_corrections(self) -> None:
         """Once a second from _refresh, and only a stat() unless the file
         moved — a verdict given at a card is the usual reason it did."""
+        if self._corr_tab == "read":
+            self._poll_read()
+            return
         if "corr_list" not in self.parts:
             return
         if self._review_stat() != getattr(self, "_corr_stamp", None):
@@ -2087,7 +2166,7 @@ class Dashboard:
                 text="When a dictation is re-read and a word looks wrong, "
                      "the proposal waits here — and on a card, for twenty "
                      "seconds, wherever you are.")
-            p["corr_empty"].place(x=PAD, y=140)
+            p["corr_empty"].place(x=PAD, y=CORR_PAGE_Y + 40)
         for index, spec in enumerate(items):
             if index:
                 widgets.rule(column.inner, SAID_W - 28, bg=ui.BG,
@@ -2108,6 +2187,470 @@ class Dashboard:
             column.bind_wheel(card)
             column.bind_wheel(row)
             column.bind_wheel(row.canvas)
+
+    # ---------------------------------------------------------- read aloud
+
+    def _read_column(self) -> None:
+        """The Read aloud tab's left column: the sentence card, and under
+        it what he has kept today. The card is drawn by _poll_read off the
+        app's answer, not here — see reading.py for who owns what.
+
+        THE DECK IS BUILT WHEN THE TAB OPENS and popped as he reads: a
+        kept or skipped sentence is written to corpus\\read by the app,
+        and a deck built later leaves it out on its own, so switching
+        tabs and back never shows him a sentence twice.
+        """
+        p = self.parts
+        self._read_drawn = None
+        self._read_armed_at = 0.0
+        self._read_busy = False
+        try:
+            self._read_deck = reading_mod.deck(
+                CORPUS_DIR, APP_DIR / "vocab.json", READ_DIR)
+        except Exception:                 # noqa: BLE001 — a bad sidecar
+            self._read_deck = []
+        try:
+            READ_DIR.mkdir(parents=True, exist_ok=True)   # for the button
+        except OSError:
+            pass
+        self._read_current = (self._read_deck.pop(0) if self._read_deck
+                              else None)
+        tk.Label(self.sheet,
+                 text="Sentences come from your own dictations and the words "
+                      "you taught it.\nKept readings go to corpus\\read — "
+                      "the audio never leaves this machine.",
+                 bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
+                 justify="left").place(x=PAD, y=616)
+        wide = widgets.button_width("Open corpus\\read", icon=True)
+        ui.Button(self.sheet, "Open corpus\\read",
+                  lambda: launch.open_path(READ_DIR), w=wide, h=30,
+                  quiet=True, bg=ui.BG, icon=ui.ICON["folder"]).place(
+            x=PAD + SAID_W, y=616, anchor="ne")
+        p["read_on"] = True
+
+    def _read_leave(self) -> None:
+        """Off the tab: the app is told there is nothing armed. Best
+        effort and fire-and-forget — a sentence left armed is harmless
+        anyway, since `takes` wants this window in front of it."""
+        self._read_current = None
+        self._read_drawn = None
+        self._ask("read", do="disarm")
+
+    def _read_phase(self) -> tuple[str, dict | None]:
+        """What the card should show, from the app's last answer.
+
+        off — no app to listen; done — nothing left to read; arming —
+        the app has not got this sentence yet; waiting — it has, and the
+        key is up; listening / checking — the key is down / the decode
+        is running; heard — the transcript is back, with its match.
+        """
+        cur = self._read_current
+        if not self.running:
+            return "off", None
+        if cur is None:
+            return "done", None
+        read = self.status.get("read") or {}
+        heard = read.get("heard")
+        if heard and heard.get("id") == cur.key:
+            return "heard", heard
+        armed = read.get("armed") or {}
+        if armed.get("id") != cur.key:
+            return "arming", None
+        activity = self.status.get("activity")
+        if activity in ("recording", "locked"):
+            return "listening", None
+        if activity == "busy":
+            return "checking", None
+        return "waiting", None
+
+    def _poll_read(self) -> None:
+        """Once a poll: arm the sentence the app has not got, keep the one
+        that came back word for word, and redraw the card only when what
+        it would say has changed."""
+        if not self.parts.get("read_on") or self.closing:
+            return
+        phase, heard = self._read_phase()
+        cur = self._read_current
+        if phase == "heard" and not self._read_busy:
+            m = heard.get("match") or {}
+            if m.get("words") and m.get("same") == m.get("words") \
+                    and not m.get("extra"):
+                # EVERY WORD AS WRITTEN: kept without asking, and the
+                # next one comes up. The card would only have said yes.
+                self._read_keep(auto=True)
+                return
+        since_arm = time.monotonic() - self._read_armed_at
+        if phase == "arming" and cur is not None \
+                and since_arm > READ_ARM_EVERY_S:
+            self._read_arm()
+        if phase == "arming" and since_arm < READ_ARM_GRACE_S:
+            # The arm is in flight, or answered and a poll that left
+            # before it is landing now. The pipe answers in milliseconds;
+            # drawing "one moment" for a poll's worth of that is a
+            # flicker between every two sentences.
+            phase = "waiting"
+        key = (phase, cur.key if cur else None,
+               heard.get("when") if heard else None)
+        if key != self._read_drawn:
+            self._read_drawn = key
+            self._draw_read_card(phase, heard)
+
+    def _read_hwnd(self) -> int:
+        """This window's top-level HWND — the one Windows puts in the
+        foreground, which is what the app compares against."""
+        try:
+            return int(ctypes.windll.user32.GetAncestor(
+                self.root.winfo_id(), reading_mod.GA_ROOT))
+        except Exception:                 # noqa: BLE001
+            return 0
+
+    def _read_arm(self) -> None:
+        cur = self._read_current
+        if cur is None:
+            return
+        self._read_armed_at = time.monotonic()
+        self._ask("read", then=self._read_answered, do="arm", id=cur.key,
+                  text=cur.text, hwnd=self._read_hwnd())
+
+    def _read_answered(self, reply: dict | None) -> None:
+        """Every read command answers with the app's new state; take it
+        now rather than a poll later, so the card moves at once."""
+        if reply and isinstance(reply.get("read"), dict):
+            self.status["read"] = reply["read"]
+        self._poll_read()
+
+    def _read_keep(self, auto: bool = False) -> None:
+        cur = self._read_current
+        if cur is None or self._read_busy:
+            return
+        self._read_busy = True
+        self._ask("read", then=lambda r: self._read_kept(r, auto), do="keep",
+                  id=cur.key)
+
+    def _read_kept(self, reply: dict | None, auto: bool) -> None:
+        self._read_busy = False
+        if not reply or not reply.get("ok"):
+            self._announce(reply, "that did not keep")
+            self._read_answered(reply)
+            return
+        self._read_counts["kept"] += 1
+        self._read_next(reply)
+        self._voice_panel()
+
+    def _read_again(self) -> None:
+        cur = self._read_current
+        if cur is None or self._read_busy:
+            return
+        self._read_busy = True
+        self._read_counts["again"] += 1
+        self._ask("read", then=self._read_dropped, do="drop", id=cur.key)
+
+    def _read_skip(self) -> None:
+        cur = self._read_current
+        if cur is None or self._read_busy:
+            return
+        self._read_busy = True
+        self._read_counts["skipped"] += 1
+        self._ask("read", then=lambda r: self._read_next(r), do="drop",
+                  id=cur.key, skip=True)
+
+    def _read_dropped(self, reply: dict | None) -> None:
+        self._read_busy = False
+        self._read_answered(reply)
+
+    def _read_next(self, reply: dict | None = None) -> None:
+        """The next sentence of the deck. Arming it is the next poll's
+        job, and it is asked for now rather than in READ_ARM_EVERY_S."""
+        self._read_busy = False
+        self._read_current = (self._read_deck.pop(0) if self._read_deck
+                              else None)
+        self._read_armed_at = 0.0
+        self._read_answered(reply)
+
+    def _draw_read_card(self, phase: str, heard: dict | None) -> None:
+        """The sentence card for one phase, and the kept-today list under
+        it. Rebuilt whole: the card is as tall as what is in it, and the
+        list starts where the card ends."""
+        p = self.parts
+        for key in ("read_card", "read_kept_head", "read_kept"):
+            old = p.pop(key, None)
+            if old is not None:
+                try:
+                    old.destroy()
+                except tk.TclError:
+                    pass
+        cur = self._read_current
+        inner = SAID_W - 2 * READ_PAD
+        keys = self.status.get("keys") or self._read_keys()
+        hold = pretty_key(keys.get("hotkey", ""))
+
+        if phase in ("off", "done"):
+            card = ui.Card(self.sheet, SAID_W, 200, radius=14, bg=ui.BG,
+                           pad=READ_PAD)
+            card.place(x=PAD, y=READ_CARD_Y)
+            p["read_card"] = card
+            if phase == "off":
+                head = "Start the app first — it does the listening."
+                sub = ("The models that hear you live in the app, not in "
+                       "this window.")
+            else:
+                head = "You have read everything there is."
+                sub = ("Dictate more, or teach it more words, and there "
+                       "will be more here.")
+            tk.Label(card.body, text=head, bg=ui.CARD, fg=ui.FG,
+                     font=(ui.UI, 12)).place(x=inner // 2, y=70,
+                                             anchor="center")
+            tk.Label(card.body, text=sub, bg=ui.CARD, fg=ui.FAINT,
+                     font=(ui.UI, 9)).place(x=inner // 2, y=98,
+                                            anchor="center")
+            self._draw_read_kept(READ_CARD_Y + 200 + 20)
+            return
+
+        # MEASURED FIRST: the card is exactly as tall as what is in it.
+        photo, text_h, _l = ui.draw_text(cur.text, pt=20, width=inner,
+                                         max_lines=3, colour=ui.FG,
+                                         bg=ui.CARD)
+        y_sentence = 32
+        rule_y = y_sentence + text_h + 22
+        ly = rule_y + 20
+        pairs = list((heard.get("match") or {}).get("pairs") or []) \
+            if heard else []
+        heard_img = heard_h = pill_w = pill_h = 0
+        block_h = 30
+        if phase == "heard":
+            heard_img, heard_h, _l = ui.draw_text(
+                heard.get("text") or "—", pt=12, width=inner - 210,
+                max_lines=2, colour=ui.DIM, bg=ui.CARD)
+            if pairs:
+                pill_w, pill_h = ui.pair_size(pairs[0][0], pairs[0][1])
+            block_h = 30 + max(heard_h, pill_h) + 4
+        elif phase == "waiting":
+            block_h = 48
+        by = ly + block_h + 18
+        card_h = by + 36 + 2 * READ_PAD + 4
+
+        card = ui.Card(self.sheet, SAID_W, card_h, radius=14, bg=ui.BG,
+                       pad=READ_PAD)
+        card.place(x=PAD, y=READ_CARD_Y)
+        p["read_card"] = card
+        body = card.body
+
+        left = len(self._read_deck)
+        when = ""
+        if cur.said:
+            try:
+                when = time.strftime("%d %b", time.strptime(cur.said,
+                                                            "%Y-%m-%d"))
+            except ValueError:
+                when = ""
+        eyebrow = "  ·  ".join(
+            part for part in ((f"FROM WHAT YOU SAID ON {when.upper()}"
+                               if when else "FROM WHAT YOU SAID"),
+                              (f"{left} MORE TO READ" if left
+                               else "THE LAST ONE")) if part)
+        tk.Label(body, text=eyebrow, bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, ui.PT_CAPS)).place(x=0, y=0)
+        # The taught words it carries, as lit chips — the reason it is
+        # near the top of the deck.
+        if cur.terms:
+            pills = tk.Canvas(body, width=inner // 2, height=ui.PILL_H,
+                              bg=ui.CARD, highlightthickness=0, bd=0)
+            pills.place(x=inner, y=-8, anchor="ne")
+            x = inner // 2
+            for term in cur.terms[:3]:
+                x -= ui.pill(pills, x, 0, term, ui.CARD,
+                             colour=ui.ACCENT_TEXT, fill=ui.ACCENT_SOFT,
+                             border=ui.CHIP_ON_EDGE) + 6
+                if x < 0:
+                    break
+
+        holder = tk.Label(body, image=photo, bg=ui.CARD, bd=0)
+        holder.image = photo
+        holder.place(x=inner, y=y_sentence, anchor="ne")
+        widgets.rule(body, inner, bg=ui.CARD, colour=ui.LINE, y=rule_y)
+
+        colour = {"listening": ui.RECORDING, "checking": ui.AMBER,
+                  "heard": ui.AMBER}.get(phase, ui.FAINT)
+        lamp = ui.lamp(15, colour, ui.CARD,
+                       0.0 if phase in ("waiting", "arming") else 0.45)
+        lamp_label = tk.Label(body, bg=ui.CARD, image=lamp)
+        lamp_label.image = lamp
+        lamp_label.place(x=0, y=ly + 2)
+        sub = ""
+        if phase == "listening":
+            line = "Listening…  let go when you finish."
+        elif phase == "checking":
+            line = "Checking what it heard…"
+        elif phase == "heard":
+            line = f"{heard.get('verdict') or ''}  Did you read it as written?"
+        elif phase == "arming":
+            line = "One moment — handing the sentence to the app."
+        else:
+            line = (f"Hold {hold} and read it aloud.  Let go when you finish."
+                    if hold != "off" else "No dictation key is set — see Keys.")
+            sub = ("When every word comes back as written it is kept on "
+                   "its own and the next one comes up.")
+        tk.Label(body, text=line, bg=ui.CARD, fg=ui.FG,
+                 font=(ui.UI, 11)).place(x=28, y=ly)
+        if sub:
+            tk.Label(body, text=sub, bg=ui.CARD, fg=ui.FAINT,
+                     font=(ui.UI, 9), wraplength=inner - 28,
+                     justify="left").place(x=28, y=ly + 24)
+        if phase == "heard":
+            shown = tk.Label(body, image=heard_img, bg=ui.CARD, bd=0)
+            shown.image = heard_img
+            shown.place(x=inner, y=ly + 30, anchor="ne")
+            if pairs:
+                pc = tk.Canvas(body, width=pill_w + 4, height=pill_h + 4,
+                               bg=ui.CARD, highlightthickness=0, bd=0)
+                pc.place(x=28, y=ly + 30)
+                ui.pair_pill(pc, pill_w + 2, 2, pairs[0][0], pairs[0][1],
+                             ui.CARD)
+
+        if phase == "heard":
+            keep = widgets.gold_button(body, "Yes, keep it", self._read_keep,
+                                       w=136, h=36, bg=ui.CARD,
+                                       icon=ui.ICON["check"])
+            keep.place(x=inner, y=by, anchor="ne")
+            ui.Button(body, "Read again", self._read_again, w=118, h=36,
+                      quiet=True, bg=ui.CARD).place(x=inner - 148, y=by,
+                                                     anchor="ne")
+            ui.Button(body, "Skip", self._read_skip, w=84, h=36, quiet=True,
+                      bg=ui.CARD).place(x=inner - 278, y=by, anchor="ne")
+            note = "Yes keeps the card's words as the lesson."
+        else:
+            ui.Button(body, "Skip this one", self._read_skip, w=136, h=36,
+                      quiet=True, bg=ui.CARD).place(x=inner, y=by,
+                                                     anchor="ne")
+            note = "Skip a sentence you would never say."
+        tk.Label(body, text=note, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9),
+                 justify="left", anchor="w").place(x=0, y=by + 8)
+        self._draw_read_kept(READ_CARD_Y + card_h + 20)
+
+    def _draw_read_kept(self, y: int) -> None:
+        """What he has kept today, newest first, as many as fit above the
+        footer."""
+        p = self.parts
+        try:
+            kept = reading_mod.tally(READ_DIR, CORPUS_DIR)["today"]
+        except Exception:                 # noqa: BLE001
+            kept = []
+        room = 600 - y - 22
+        if room < 28:
+            return
+        p["read_kept_head"] = tk.Label(self.sheet, text="K E P T   T O D A Y",
+                                       bg=ui.BG, fg=ui.FAINT,
+                                       font=(ui.MEDIUM, 8))
+        p["read_kept_head"].place(x=PAD, y=y)
+        rows = tk.Canvas(self.sheet, width=SAID_W, height=room, bg=ui.BG,
+                         highlightthickness=0, bd=0)
+        rows.place(x=PAD, y=y + 22)
+        p["read_kept"] = rows
+        if not kept:
+            rows.create_text(0, 9, anchor="w", font=(ui.UI, 9), fill=ui.FAINT,
+                             text="Nothing yet today.")
+            return
+        ry = 0
+        for when, text in kept:
+            if ry + 28 > room:
+                break
+            rows.create_text(0, ry + 9, text=when, anchor="w",
+                             font=(ui.UI, 9), fill=ui.FAINT)
+            rows.create_text(48, ry + 9, text=ui.ICON["check"], anchor="w",
+                             font=(ui.ICONS, 9), fill=ui.GREEN)
+            img, _h, _l = ui.draw_text(text, pt=10, width=SAID_W - 76,
+                                       max_lines=1, colour=ui.DIM, bg=ui.BG)
+            rows.create_image(SAID_W, ry + 9, anchor="e", image=img)
+            ry += 28
+
+    def _voice_panel(self) -> None:
+        """The Read aloud tab's right panel, where the vocabulary sits on
+        the other tab: how much of his voice is on file against what a
+        fine-tune wants, today's reading against the day's bar, and the
+        key to hold."""
+        p = self.parts
+        old = p.pop("voice_card", None)
+        if old is not None:
+            try:
+                old.destroy()
+            except tk.TclError:
+                pass
+        try:
+            scfg = config_mod.load(CONFIG_PATH).study
+            goal_s = max(1.0, float(scfg.read_goal_hours)) * 3600
+            day_s = max(1.0, float(scfg.read_minutes)) * 60
+        except Exception:                 # noqa: BLE001 — unreadable config
+            goal_s, day_s = 3 * 3600, 15 * 60
+        try:
+            t = reading_mod.tally(READ_DIR, CORPUS_DIR)
+        except Exception:                 # noqa: BLE001
+            t = {"total_s": 0.0, "today_s": 0.0}
+        width = CW - SAID_W - 20
+        card = ui.Card(self.sheet, width, 508, fill=ui.CARD, bg=ui.BG, pad=16)
+        card.place(x=PAD + SAID_W + 20, y=64)
+        p["voice_card"] = card
+        body, inner = card.body, width - 32
+
+        def bar(y: int, done: float, whole: float) -> None:
+            track = tk.Canvas(body, width=inner, height=4, bg=ui.CARD,
+                              highlightthickness=0, bd=0)
+            track.place(x=0, y=y)
+            track.create_image(0, 0, anchor="nw",
+                               image=ui.rounded(inner, 4, 2, ui.LINE,
+                                                ui.CARD, None))
+            lit = int(inner * min(1.0, done / whole)) if whole else 0
+            if lit >= 4:
+                track.create_image(0, 0, anchor="nw",
+                                   image=ui.rounded(lit, 4, 2, ui.ACCENT,
+                                                    ui.CARD, None))
+
+        tk.Label(body, text="Y O U R   V O I C E", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        tk.Label(body, text=_minutes(t["total_s"]), bg=ui.CARD, fg=ui.FG,
+                 font=(ui.DISPLAY, 24, "bold")).place(x=0, y=20)
+        tk.Label(body, text="on file, in your own words — a fine-tune wants "
+                            f"{_hours(goal_s)}",
+                 bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9), wraplength=inner,
+                 justify="left").place(x=0, y=60)
+        bar(104, t["total_s"], goal_s)
+
+        widgets.rule(body, inner, bg=ui.CARD, colour=ui.LINE, x=0, y=136)
+        tk.Label(body, text="T O D A Y", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=150)
+        tk.Label(body, text=_clock(t["today_s"]), bg=ui.CARD, fg=ui.FG,
+                 font=(ui.DISPLAY, 24, "bold")).place(x=0, y=170)
+        tk.Label(body, text=f"of the {day_s / 60:g} minutes a day this asks",
+                 bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9), wraplength=inner,
+                 justify="left").place(x=0, y=210)
+        bar(236, t["today_s"], day_s)
+        c = self._read_counts
+        counts = "  ·  ".join(
+            part for part in (f"{c['kept']} kept" if c["kept"] else "",
+                              f"{c['skipped']} skipped" if c["skipped"] else "",
+                              f"{c['again']} read again" if c["again"] else "")
+            if part) or "—"
+        tk.Label(body, text=counts, bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 9)).place(x=0, y=250)
+
+        widgets.rule(body, inner, bg=ui.CARD, colour=ui.LINE, x=0, y=286)
+        keys = self.status.get("keys") or self._read_keys()
+        hold = pretty_key(keys.get("hotkey", ""))
+        row = tk.Frame(body, bg=ui.CARD)
+        row.place(x=0, y=302)
+        ui.KeyCap(row, hold, bg=ui.CARD,
+                  w=max(56, 26 + ui.text_width(hold, ui.UI, 10)),
+                  h=28).pack(side="left")
+        tk.Label(row, text="hold it and read", bg=ui.CARD, fg=ui.DIM,
+                 font=(ui.UI, 9)).pack(side="left", padx=(10, 0))
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                 wraplength=inner, justify="left",
+                 text="Only while this window is in front. Anywhere else "
+                      "the key dictates as it always has.").place(x=0, y=340)
+        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                 wraplength=inner, justify="left",
+                 text="Every reading is a (voice, text) pair the local model "
+                      "can be tuned on. Nothing is sent anywhere."
+                 ).place(x=0, y=436)
 
     def _poll_waiting(self) -> None:
         """Once a second from _refresh. Four stores, one stamp each, and
@@ -7802,6 +8345,8 @@ class Dashboard:
         # is what closing it on top of an open key dialog used to do.
         self.closing = True
         self._resume_after_capture()
+        if self.screen == "Corrections" and self._corr_tab == "read":
+            self._read_leave()
         for pending in (self._pump_after, self._toast_after,
                         self._search_after, self._rows_after,
                         self._slide_after, self._breath_after,
