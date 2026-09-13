@@ -24,13 +24,20 @@ once talked through came back as "בכל מקרה שלא מותר לפרוש ש�
 and a model asked to proofread it made it worse. His verdict
 (2026-09-13): leave the past alone, give me real text, sentence by
 sentence. So the deck is corpus\\read\\texts — any .txt or .md he drops
-there, and paragraphs a language model writes for him round the words
-in vocab.json (Writer: the polish backends, Groq then Ollama, text
-only) when the folder runs dry — cut at full stops and offered in the
+there, and paragraphs a language model writes for him (Writer: the
+polish backends, Groq then Ollama, text only, a different subject each
+time) when the folder runs dry — cut at full stops and offered in the
 order they were written, so a paragraph reads as a paragraph. A
 sentence is offered once: kept or skipped, it is not offered again.
 `plausible` still stands between a file and the card: a lone letter for
 a word, punctuation glued between words, a word three times running.
+
+AND NO ENGLISH. His second verdict, the same evening: a sentence with
+"commit" in it comes back as "קומיט" whichever way he says it, and the
+card asks about every one. So a sentence with a Latin letter in it is
+not offered — from a file he dropped as much as from the writer, which
+is told to say it in Hebrew — and the terms in vocab.json, English
+nearly all of them, are no longer what a paragraph is written round.
 
 WHO OWNS WHAT. The app owns the microphone and the models, so the
 recording and the transcript happen there (main.py: the read
@@ -79,13 +86,29 @@ TEXT_SUFFIXES = (".txt", ".md")
 MIN_WORDS, MAX_WORDS = 5, 22
 _END = re.compile(r"(?<=[.?!:])\s+|\n+")
 _HEBREW = re.compile(r"^[א-ת]$")
-_HEBREW_ANY = re.compile("[א-ת]")
+_LATIN = re.compile("[A-Za-z]")
 _GLUE = re.compile(r"[א-ת][.,!?;:][א-ת]")   # "אחת,שתיים"
 _MARKUP = re.compile(r"^\s*(?:[-*•]|\d+[.)]|#+)\s+")             # a list, a heading
 _DASHES = re.compile("[‐‑‒–—−]")   # ‐ ‑ ‒ – — −
 GA_ROOT = 2                  # GetAncestor: the top-level window
 WRITE_SENTENCES = 12         # what one paragraph from the model is asked to hold
-WRITE_TERMS = 6              # how many taught words it is asked to work in
+# What the paragraphs are about, one subject a paragraph, round and
+# round: the sentences have to vary, and a model asked for "a
+# paragraph" twelve times writes the same paragraph twelve times.
+SUBJECTS = (
+    "a bug you ran into today and how to reproduce it",
+    "asking the assistant to run the tests and report only what failed",
+    "what the app should do the moment the key is released",
+    "the plan for tomorrow morning, step by step",
+    "a small thing about the phone app that annoys you",
+    "explaining to a friend what the dictation app does and why",
+    "a mistake the transcription keeps making and what you say instead",
+    "a short story about something that happened at the desk today",
+    "what a good summary of the day's work should and should not say",
+    "asking for a screenshot before anything is changed",
+    "why the machine has to stay awake while the screens are off",
+    "what to do when the model gets a name wrong twice in a row",
+)
 
 
 def _root_of(hwnd: int) -> int:
@@ -123,8 +146,9 @@ def plausible(text: str) -> bool:
 
 def sentences(text: str) -> list[str]:
     """`text` cut at full stops and line ends, keeping the ones a breath
-    long and plausible. A list marker or a heading mark at the front of
-    a line is stripped: the sentence is what is read, not the bullet."""
+    long, plausible and free of Latin letters. A list marker or a heading
+    mark at the front of a line is stripped: the sentence is what is
+    read, not the bullet."""
     out = []
     # The typographic hyphens a model writes "ה‑tests" with (U+2011 and
     # its neighbours) are not the hyphen vocab.words keeps a prefix on,
@@ -133,7 +157,7 @@ def sentences(text: str) -> list[str]:
     for piece in _END.split(text):
         piece = " ".join(_MARKUP.sub("", piece).split())
         if (MIN_WORDS <= len(vocab_mod.words(piece)) <= MAX_WORDS
-                and plausible(piece)):
+                and plausible(piece) and not _LATIN.search(piece)):
             out.append(piece)
     return out
 
@@ -148,18 +172,13 @@ class Sentence:
     count: int = 0             # how many the file holds
 
 
-def terms_of(vocab_path: Path, *, to_write: bool = False) -> list[str]:
+def terms_of(vocab_path: Path) -> list[str]:
     """The words he had to teach: the meant side of every correction
     that is a name or a term (vocab.family) or a phrase of more than
     one word. A single Hebrew word corrected once — "זה", "פה" — is a
-    spelling wobble, not a word the model has never heard.
-
-    `to_write` keeps only the NAMES, for the writer: a term the decoder
-    garbled INTO HEBREW ("גית-האב" for GitHub, "סלאש קליר" for slash
-    clear) or one corrected twice, or one with a capital inside it. An
-    English word corrected to another English word ("it work" -> "it
-    works", "grade" -> "great") is an English dictation's slip, and a
-    Hebrew paragraph written round "it works" reads like one."""
+    spelling wobble, not a word the model has never heard. They light
+    the chips on a card that carries one; with no Latin on the cards,
+    that is the Hebrew phrases."""
     try:
         data = json.loads(vocab_path.read_text("utf-8"))
     except (OSError, ValueError):
@@ -170,14 +189,8 @@ def terms_of(vocab_path: Path, *, to_write: bool = False) -> list[str]:
         meant = " ".join(str(c.get("meant") or "").split())
         if not meant or meant in out:
             continue
-        term = vocab_mod.family(heard, meant) == "term"
-        if to_write:
-            named = (_HEBREW_ANY.search(heard) is not None
-                     or int(c.get("hits") or 1) >= 2
-                     or re.search(r"(?<=.)[A-Z]", meant) is not None)
-            if term and named and not meant.replace(" ", "").isdigit():
-                out.append(meant)
-        elif term or len(vocab_mod.words(meant)) > 1:
+        if (vocab_mod.family(heard, meant) == "term"
+                or len(vocab_mod.words(meant)) > 1):
             out.append(meant)
     return out
 
@@ -309,16 +322,17 @@ def _count(n: int) -> str:
 _WRITE_RULES = "\n".join([
     "You write Hebrew for a software developer to READ ALOUD, one "
     "sentence at a time, so that a speech model can learn his voice.",
-    "Write ONE paragraph of natural, correct, everyday spoken Hebrew — "
-    "the way a developer talks to an AI coding assistant while working "
-    "on his Windows dictation app: instructions, questions, remarks about "
-    "bugs, tests, git, branches, commits, the dashboard, the phone app.",
+    "Write ONE paragraph of natural, correct, everyday spoken Hebrew on "
+    "the subject given — the way a developer talks to an AI coding "
+    "assistant, or to a friend, while working on his Windows dictation "
+    "app.",
     "Every sentence is complete, 6 to 16 words, and ends with a full "
     "stop, a question mark or an exclamation mark. Vary the sentences.",
-    "Work the given terms in exactly as written; English words stay in "
-    "English letters. Never transliterate them into Hebrew.",
     "",
     "ABSOLUTE RULES:",
+    "- HEBREW ONLY. Not one English word, not one Latin letter, no "
+    "transliterated English tool names: say it in Hebrew (לשמור גרסה, "
+    "לדחוף לשרת, ענף, הבדיקות, הממשק, המסוף).",
     "- Output ONLY the paragraph: plain sentences, one after another. No "
     "title, no list, no numbering, no notes, no quotation marks.",
     "- Modern Israeli Hebrew, no nikkud, no archaic or biblical phrasing.",
@@ -362,20 +376,14 @@ class Writer:
                 log.info("writer backend unavailable (%s)",
                          str(e).splitlines()[0][:160])
 
-    def write(self, terms: list[str], count: int = WRITE_SENTENCES,
+    def write(self, count: int = WRITE_SENTENCES,
               seed: int | None = None) -> list[str] | None:
-        """`count` sentences round some of `terms`, or None when no
-        backend answered usably. Which terms is rotated by `seed` (the
-        caller passes how many paragraphs exist) so consecutive
-        paragraphs are not about the same six words."""
-        picked: list[str] = []
-        if terms:
-            start = (seed or 0) * WRITE_TERMS
-            picked = [terms[(start + i) % len(terms)]
-                      for i in range(min(WRITE_TERMS, len(terms)))]
-        ask = (f"Write {count} sentences. Terms to work in: "
-               + ", ".join(picked) if picked
-               else f"Write {count} sentences.")
+        """`count` sentences on the next subject, or None when no backend
+        answered usably. The subject is SUBJECTS[seed] round the table —
+        the caller passes how many paragraphs exist — so consecutive
+        paragraphs are not the same paragraph."""
+        subject = SUBJECTS[(seed or 0) % len(SUBJECTS)]
+        ask = f"Write {count} sentences. Subject: {subject}."
         cap = max(768, count * 60)
         for backend in self._backends(cap):
             try:
@@ -389,8 +397,8 @@ class Writer:
                 log.info("writing via %s REJECTED — %d usable sentence(s) "
                          "in the reply", backend.name, len(found))
                 continue
-            log.info("wrote %d sentence(s) via %s round %s", len(found),
-                     backend.name, ", ".join(picked) or "no terms")
+            log.info("wrote %d sentence(s) via %s on %r", len(found),
+                     backend.name, subject)
             return found
         return None
 

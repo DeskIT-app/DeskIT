@@ -27144,27 +27144,28 @@ def test_the_deck_is_the_texts_folder_read_in_order() -> None:
         ]}, ensure_ascii=False), "utf-8")
         deck = reading.deck(texts, vocab, read)
         texts_out = [s.text for s in deck]
+        # "תעשה commit ... ל-GitHub" and "ה-branch הזה" are left out: a
+        # word he says in English comes back in Hebrew letters, and the
+        # card would ask about every one (his rule, 2026-09-13 evening)
         assert texts_out == [
-            "תעשה commit ותדחוף את זה ל-GitHub בבקשה עכשיו.",
             "אני רוצה לפתוח את הפרויקט הזה מחדש:",
             "זה לא עובד בכלל היום.",
-            "אז מה קורה עם ה-branch הזה, אפשר לדחוף אותו?",
             "הדשבורד מציג את הנתונים, אבל עדיין יש חוסר סינכרון קטן.",
         ], texts_out
-        assert deck[0].terms == ("GitHub",) and deck[3].terms == (), \
+        assert deck[0].terms == () and deck[2].terms == (), \
             [s.terms for s in deck]
-        assert deck[0].said == "a-notes" and deck[3].said.startswith("written-")
-        assert (deck[0].index, deck[0].count) == (1, 3)
-        assert (deck[3].index, deck[3].count) == (1, 2)
+        assert deck[0].said == "a-notes" and deck[2].said.startswith("written-")
+        assert (deck[0].index, deck[0].count) == (1, 2)
+        assert (deck[2].index, deck[2].count) == (1, 1)
         assert all(len(s.key) == 12 for s in deck)
         assert not reading.plausible("במה שאתה מ.")
         assert not reading.plausible("לגובה אחת,שתיים, שלוש")
         assert not reading.plausible("זה זה זה לא עובד")
         assert reading.plausible("כן עשיתי בטעות 6 לחלק ל-6 שווה 2.")
-        # the writer's terms are the NAMES: a term garbled into Hebrew or
-        # corrected twice, never an English slip
+        assert reading.sentences("שורה אחת בעברית בלי שום מילה זרה בכלל.\n"
+                                 "שורה עם מילה אחת של English בתוכה.") == [
+            "שורה אחת בעברית בלי שום מילה זרה בכלל."]
         assert reading.terms_of(vocab) == ["GitHub", "עוד branch", "it works"]
-        assert reading.terms_of(vocab, to_write=True) == ["GitHub", "עוד branch"]
         assert reading.written_count(texts) == 1
 
         # kept and skipped sentences are not offered again — a kept one
@@ -27176,9 +27177,9 @@ def test_the_deck_is_the_texts_folder_read_in_order() -> None:
         meta["key"] = deck[0].key
         side.write_text(json.dumps(meta, ensure_ascii=False), "utf-8")
         (read / reading.SKIPPED).write_text(
-            json.dumps([deck[3].key]), "utf-8")
+            json.dumps([deck[2].key]), "utf-8")
         left = [s.text for s in reading.deck(texts, vocab, read)]
-        assert left == [texts_out[1], texts_out[2], texts_out[4]], left
+        assert left == [texts_out[1]], left
 
         t = reading.tally(read, texts, today="2026-09-13")
         assert t["total_s"] == 3.0 and t["read_s"] == 3.0, t
@@ -27214,33 +27215,35 @@ def test_the_writer_turns_a_reply_into_a_file_of_sentences() -> None:
         w._backends = lambda cap: iter([Backend(r) for r in scripts])
         return w
 
-    good = ("היי, אפשר לעשות slash clear לפני שמריצים את ה‑tests?  \n"
-            "הקוד שלי עדיין נופל אחרי ש‑6 שניות של ריצה.  \n"
+    good = ("היום נתקלתי בבאג שמפסיק את ההקלטה אחרי חמש שניות בדיוק.  \n"
+            "הבאג מתרחש רק כשמפעילים את המיקרופון במצב ה‑דינמי.  \n"
+            "הקפדתי לבדוק שהרשאות המיקרופון ניתנות לפני ההפעלה.  \n"
             "ה‑dashboard מראה 80 אלף משתמשים פעילים היום, זה מדהים!  \n"
-            "אני מנסה להוסיף את claude co‑work למודול החדש.  \n"
-            "ה‑branch החדש נקרא third hand ואני עדיין לא משלים את המיזוג.  \n"
-            "תוכל לבדוק אם ה‑lint מתריע על משתנים לא משומשים?")
-    found = scripted(good).write(["slash clear", "GitHub"], count=6, seed=0)
+            "הקוד מנסה לגשת למשתנה שלא אותחל במצב הזה.  \n"
+            "הפתרון המהיר היה לאתחל את האובייקט לפני השימוש.")
+    found = scripted(good).write(count=6, seed=0)
     assert found == [
-        "היי, אפשר לעשות slash clear לפני שמריצים את ה-tests?",
-        "הקוד שלי עדיין נופל אחרי ש-6 שניות של ריצה.",
-        "ה-dashboard מראה 80 אלף משתמשים פעילים היום, זה מדהים!",
-        "אני מנסה להוסיף את claude co-work למודול החדש.",
-        "ה-branch החדש נקרא third hand ואני עדיין לא משלים את המיזוג.",
-        "תוכל לבדוק אם ה-lint מתריע על משתנים לא משומשים?",
+        "היום נתקלתי בבאג שמפסיק את ההקלטה אחרי חמש שניות בדיוק.",
+        "הבאג מתרחש רק כשמפעילים את המיקרופון במצב ה-דינמי.",
+        "הקפדתי לבדוק שהרשאות המיקרופון ניתנות לפני ההפעלה.",
+        "הקוד מנסה לגשת למשתנה שלא אותחל במצב הזה.",
+        "הפתרון המהיר היה לאתחל את האובייקט לפני השימוש.",
     ], found
-    assert asked[-1] == "Write 6 sentences. Terms to work in: slash clear, GitHub"
-    # the terms rotate with the seed, so paragraphs differ in subject
-    terms = [f"term{i}" for i in range(9)]
-    scripted(good).write(terms, count=6, seed=1)
-    assert asked[-1].endswith("term6, term7, term8, term0, term1, term2"), asked[-1]
+    assert asked[-1] == ("Write 6 sentences. Subject: a bug you ran into "
+                         "today and how to reproduce it."), asked[-1]
+    # the subject turns with the seed, round the table, so paragraphs
+    # differ
+    scripted(good).write(count=6, seed=1)
+    assert asked[-1].endswith(f"Subject: {reading.SUBJECTS[1]}."), asked[-1]
+    scripted(good).write(count=6, seed=len(reading.SUBJECTS))
+    assert asked[-1].endswith(f"Subject: {reading.SUBJECTS[0]}."), asked[-1]
 
-    short = "היי, אפשר לעשות slash clear לפני שמריצים?"
-    assert scripted(short, good).write([], count=6) is not None
-    assert len(asked) == 4, "the short reply cost a second backend"
-    assert scripted(RuntimeError("429"), good).write([], count=6) is not None
-    assert scripted(short, RuntimeError("down")).write([], count=6) is None
-    assert scripted().write([], count=6) is None
+    short = "היום נתקלתי בבאג שמפסיק את ההקלטה."
+    assert scripted(short, good).write(count=6) is not None
+    assert len(asked) == 5, "the short reply cost a second backend"
+    assert scripted(RuntimeError("429"), good).write(count=6) is not None
+    assert scripted(short, RuntimeError("down")).write(count=6) is None
+    assert scripted().write(count=6) is None
 
     with tempfile.TemporaryDirectory() as d:
         texts = Path(d) / "texts"
@@ -27282,10 +27285,10 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
     # it writes is the next thing on the card.
     wrote: list = []
 
-    def write(_self, terms, count=reading.WRITE_SENTENCES, seed=None):
-        wrote.append((list(terms), seed))
+    def write(_self, count=reading.WRITE_SENTENCES, seed=None):
+        wrote.append((count, seed))
         return ["הדשבורד מציג את הנתונים, אבל עדיין יש חוסר סינכרון.",
-                "תזכיר לי לבדוק את ה-branch הזה אחרי הקומיט."]
+                "תזכיר לי לבדוק את הענף הזה אחרי שאני שומר."]
     app = main_mod.App.__new__(main_mod.App)
     app.reading = r
     activity = ["ready"]
@@ -27399,7 +27402,7 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
             assert sent[-1]["do"] == "disarm", sent[-1]
             # And with no model able to write, the card says what to do
             # instead of asking again and again
-            reading.Writer.write = lambda _self, terms, count=0, seed=None: None
+            reading.Writer.write = lambda _self, count=0, seed=None: None
             for p in written:
                 p.unlink()
             board._corr_tab_to("read")
