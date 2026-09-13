@@ -27535,8 +27535,11 @@ def test_a_reading_is_filed_not_pasted_and_the_app_answers_the_tab() -> None:
 
     src = inspect.getsource(main_mod.App._on_start)
     assert "reading.takes(start)" in src, "decided at the press, like the box"
-    assert "self._to_card or self._to_prompt or self._to_read" in src, \
-        "a reading is never sent to the repair pass"
+    assert "polish=not (self._to_card or self._to_prompt)" in src, \
+        "a reading's stretches are repaired while he reads, like a dictation's"
+    assert "cleaned = self._improve_rolled(cleaned, head)" in inspect.getsource(
+        main_mod.App._handle).split("if to_read:")[-1], \
+        "a reading gets the whole repair, the context pass included"
     assert 'extra["to_read"] = self.reading.armed_id' in \
         inspect.getsource(main_mod.App._on_stop), "the SENTENCE rides along"
 

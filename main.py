@@ -2669,9 +2669,9 @@ class App:
             vqa.notify_recording(level=self.recorder.meter)
         # After the routing above: a dictation bound for the ask card or
         # the report card is never repaired, so its stretches are not
-        # sent to the repair pass either.
+        # sent to the repair pass either. A reading IS — see _handle.
         self._roller = self._start_roller(
-            polish=not (self._to_card or self._to_prompt or self._to_read))
+            polish=not (self._to_card or self._to_prompt))
         beep("start")
         log.info("recording %s... (release to transcribe%s)",
                  language_label(language, shout=True),
@@ -5511,18 +5511,16 @@ class App:
         # not text going anywhere: it is AUDIO, filed under the words on
         # the card (reading.py says why that is the point). The
         # transcript is made only to ask whether he read what is
-        # written, so the vocabulary swap applies — the same instant
-        # repair every other diversion gets, and one that turns a name
-        # the model garbles into the name on the card — and the context
-        # pass does not: a paid model tidying a sentence nobody will
-        # read is the trade the box declined too. `_last` is never
-        # touched, for the box's reason: a reading is not a dictation.
+        # written — and it gets THE WHOLE REPAIR a dictation gets, the
+        # vocabulary and the context pass both, where the other two
+        # diversions skip the context pass. It went without for an
+        # evening and the card asked about "קבועים" for כבויים, a slip
+        # the pass fixes on every dictation; a verdict the pasted text
+        # would not have had is a verdict about nothing. `_last` is
+        # never touched, for the box's reason: a reading is not a
+        # dictation.
         if to_read:
-            try:
-                cleaned, _applied = self.vocab.apply(cleaned)
-            except Exception:
-                log.exception("the vocabulary repair failed on a reading "
-                              "— using the raw transcript")
+            cleaned = self._improve_rolled(cleaned, head)
             if item:
                 item.discard()
             state = self.reading.heard(to_read, wav, seconds, cleaned)
