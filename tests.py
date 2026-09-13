@@ -3049,6 +3049,176 @@ def test_phone_punctuate_is_absent_rather_than_broken_without_it() -> None:
         srv.stop()
 
 
+def test_the_phone_reads_and_answers_the_second_reading() -> None:
+    """GET /review lists what waits, with the snippet the card paints and
+    the source the phone rings on; POST /review/decide writes the verdict
+    by="phone" and answers 404 once nothing is pending under that id."""
+    import dataclasses
+    import tempfile
+
+    import requests
+
+    import review as review_mod
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dataclasses.replace(
+        cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
+                                            port=8796))
+    tmp = Path(tempfile.mkdtemp(prefix="phone-review-"))
+    store = review_mod.Store(tmp / "review.json")
+    store.add({"id": "20260913-140000-0031", "when": "2026-09-13 14:00:00",
+               "seconds": 3.1, "text": "אוכלים מטוס בערב", "raw":
+               "אוכלים מטוס בערב", "proposed": "אוכלים מנטוס בערב",
+               "changes": [{"before": "מטוס", "after": "מנטוס",
+                            "kind": "replace", "span": [1, 2],
+                            "why": "מנטוס, לא מטוס"}],
+               "agree": 0.5, "decodes": [], "llm": True,
+               "status": review_mod.PENDING, "shown": False,
+               "decided": None, "by": None, "learned": False, "hwnd": 0,
+               "source": "phone"})
+    decided: list[tuple[str, str]] = []
+
+    def decide(sid, verdict):
+        decided.append((sid, verdict))
+        return store.decide(sid, verdict, by="phone")
+
+    srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"),
+                                 lambda: "fake",
+                                 review_pending=lambda: store.pending(),
+                                 review_decide=decide)
+    srv.start()
+    base = "http://127.0.0.1:8796"
+    auth = {"Authorization": f"Bearer {server_mod.load_token()}"}
+    try:
+        # The list quotes what was said, so it is behind the token.
+        assert requests.get(f"{base}/review", timeout=10).status_code == 401
+        r = requests.get(f"{base}/review", timeout=10, headers=auth)
+        assert r.status_code == 200, r.text
+        items = r.json()["items"]
+        assert len(items) == 1 and items[0]["id"] == "20260913-140000-0031"
+        assert items[0]["source"] == "phone"
+        assert items[0]["proposed"] == "אוכלים מנטוס בערב"
+        snip = items[0]["snippets"][0]
+        assert snip["word"] == "מנטוס" and snip["was"] == "מטוס", snip
+        assert snip["rtl"] is True
+
+        bad = requests.post(f"{base}/review/decide", timeout=10,
+                            headers=auth, json={"id": "x", "verdict": "maybe"})
+        assert bad.status_code == 400, bad.text
+        ok = requests.post(f"{base}/review/decide", timeout=10, headers=auth,
+                           json={"id": "20260913-140000-0031",
+                                 "verdict": "accepted"})
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["status"] == review_mod.ACCEPTED
+        assert decided == [("20260913-140000-0031", "accepted")]
+        assert store.get("20260913-140000-0031")["by"] == "phone"
+        # Decided once; the second verdict finds nothing pending.
+        again = requests.post(f"{base}/review/decide", timeout=10,
+                              headers=auth,
+                              json={"id": "20260913-140000-0031",
+                                    "verdict": "rejected"})
+        assert again.status_code == 404, again.text
+        assert not store.pending()
+        r = requests.get(f"{base}/review", timeout=10, headers=auth)
+        assert r.json()["items"] == []
+    finally:
+        srv.stop()
+
+
+def test_the_phone_looks_a_word_up_without_writing_anything() -> None:
+    """POST /lookup hands the selection to the F8 engine and returns its
+    answer and direction; a selection with nothing to look up is a 400
+    naming the reason, and a server built without the hook says 503."""
+    import dataclasses
+
+    import requests
+
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = dataclasses.replace(
+        cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
+                                            port=8795))
+    asked: list[str] = []
+
+    def lookup(text):
+        asked.append(text)
+        if text == "empty":
+            raise ValueError("nothing to look up (both-scripts)")
+        return "שלום", "Hebrew", "fake", 0.2
+
+    srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"),
+                                 lambda: "fake", lookup=lookup)
+    srv.start()
+    base = "http://127.0.0.1:8795"
+    auth = {"Authorization": f"Bearer {server_mod.load_token()}"}
+    try:
+        r = requests.post(f"{base}/lookup", timeout=10, headers=auth,
+                          json={"text": "hello"})
+        assert r.status_code == 200, r.text
+        assert r.json() == {"text": "שלום", "target": "Hebrew",
+                            "backend": "fake", "seconds": 0.2}, r.json()
+        no = requests.post(f"{base}/lookup", timeout=10, headers=auth,
+                           json={"text": "empty"})
+        assert no.status_code == 400 and "both-scripts" in no.json()["error"]
+        blank = requests.post(f"{base}/lookup", timeout=10, headers=auth,
+                              json={"text": "   "})
+        assert blank.status_code == 400, blank.text
+        assert asked == ["hello", "empty"], asked
+        assert requests.post(f"{base}/lookup", timeout=10,
+                             json={"text": "hello"}).status_code == 401
+    finally:
+        srv.stop()
+
+    bare = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"),
+                                  lambda: "fake")
+    bare.start()
+    try:
+        r = requests.post(f"{base}/lookup", timeout=10, headers=auth,
+                          json={"text": "hello"})
+        assert r.status_code == 503, r.text
+        r = requests.get(f"{base}/review", timeout=10, headers=auth)
+        assert r.status_code == 503, r.text
+    finally:
+        bare.stop()
+
+
+def test_a_phone_dictation_is_kept_for_the_second_reading() -> None:
+    """Until 2026-09-13 a phone clip was transcribed and forgotten, so the
+    reading never saw it. Now it lands in recent\ stamped source=phone and
+    is handed to the engine WITHOUT the desktop card — the phone asks
+    GET /review for it instead."""
+    import tempfile
+    import types
+
+    import main as main_mod
+    import spool as spool_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="phone-kept-"))
+    recent = spool_mod.Spool(tmp / "recent", keep=5)
+    submitted: list[tuple] = []
+    engine = types.SimpleNamespace(
+        submit=lambda item, hwnd=0, card=True: submitted.append(
+            (item, hwnd, card)))
+    wav = frames_to_wav([np.zeros(16000, dtype=np.int16)], 16000)
+
+    app = types.SimpleNamespace(
+        recent=recent, _review=engine, _last_words=[], _local=None,
+        transcriber=types.SimpleNamespace(last_warning=None),
+        _transcribe=lambda w, language=None: ("שלום מהטלפון", "fake"),
+        _improve=lambda t, wait=False: t)
+    text, backend, warning = main_mod.App._transcribe_for_phone(app, wav)
+    assert text == "שלום מהטלפון" and backend == "fake" and warning is None
+    assert len(submitted) == 1, submitted
+    item, hwnd, card = submitted[0]
+    assert card is False, "a phone clip must not raise the desktop card"
+    assert item.meta["source"] == "phone", item.meta
+    assert item.meta["text"] == "שלום מהטלפון"
+    assert abs(item.meta["seconds"] - 1.0) < 0.05, item.meta["seconds"]
+    assert item.wav_path.exists()
+
+
 def test_splash_shuts_down_without_aborting_the_process() -> None:
     """Tk interpreters must be torn down on the thread that created them.
     Left to the GC, the after() callbacks keep root alive in a cycle that

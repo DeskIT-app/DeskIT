@@ -244,6 +244,8 @@ class _Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True,
                              "backend": self.server.backend_name(),
                              "apk": apk_version() if APK.exists() else None})
+        elif path == "/review":
+            self._do_review_pending()
         else:
             self._json(404, {"error": "not found"})
 
@@ -267,6 +269,8 @@ class _Handler(BaseHTTPRequestHandler):
         "/translate": "_do_translate",
         "/punctuate": "_do_punctuate",
         "/notify": "_do_notify",
+        "/review/decide": "_do_review_decide",
+        "/lookup": "_do_lookup",
     }
 
     def do_POST(self) -> None:
@@ -461,12 +465,139 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(200, result)
 
 
+    # ---- the second reading, read and answered from the phone ----
+
+    def _do_review_pending(self) -> None:
+        """GET /review: every proposal still waiting for a verdict.
+
+        The one GET that needs the token: a proposal quotes what was
+        said. Each item carries the sentence, the proposed sentence, the
+        changes, a `snippets` list shaped by review.snippet() so the phone
+        paints the same three parts the desktop card does, and `source`
+        — "phone" or "desktop" — which is what the phone rings on. The
+        list is ALL pending proposals, not only the phone's: the phone is
+        also the way to answer a desk proposal from the sofa.
+        """
+        if not self._authorised():
+            self._json(401, {"error": "bad token"})
+            return
+        if self.server.review_pending is None:
+            self._json(503, {"error": "the second reading is not available"})
+            return
+        try:
+            items = self.server.review_pending()
+        except Exception as e:            # noqa: BLE001 — the store, not us
+            log.warning("phone asked for the review queue and it failed: %s",
+                        e)
+            self._json(503, {"error": str(e)})
+            return
+        self._json(200, {"items": [_review_item(i) for i in items]})
+
+    def _do_review_decide(self, raw: bytes) -> None:
+        """POST /review/decide {id, verdict}: the phone's Keep or No.
+
+        The verdict is written to the store as `by="phone"`, and the
+        app's review engine learns it on its next wake exactly as it
+        learns a decision the dashboard took — one path for every
+        answer, whoever gave it. 404 when the proposal is no longer
+        pending: answered elsewhere, or never existed.
+        """
+        if self.server.review_decide is None:
+            self._json(503, {"error": "the second reading is not available"})
+            return
+        payload = self._text_body(raw)
+        if payload is None:
+            return
+        sid = str(payload.get("id") or "").strip()
+        verdict = str(payload.get("verdict") or "").strip()
+        if not sid or verdict not in ("accepted", "rejected"):
+            self._json(400, {"error": "expected an id and a verdict of "
+                                      "accepted or rejected"})
+            return
+        try:
+            item = self.server.review_decide(sid, verdict)
+        except Exception as e:            # noqa: BLE001
+            log.warning("phone verdict on %s failed: %s", sid, e)
+            self._json(503, {"error": str(e)})
+            return
+        if item is None:
+            self._json(404, {"error": "no pending proposal with that id"})
+            return
+        log.info("phone: review %s %s", sid, verdict)
+        self._json(200, {"ok": True, "id": sid, "status": item.get("status")})
+
+    def _do_lookup(self, raw: bytes) -> None:
+        """POST /lookup {text}: the phone twin of the desktop's F8 key.
+
+        Read-only by construction — the phone shows the answer in a box
+        of its own and never writes it anywhere. The far end classifies
+        the selection first (direction, word or phrase) with the same
+        rules as the desk; a selection with nothing to look up — empty,
+        too long, already in both scripts — is a 400 with the reason,
+        so the phone can say so instead of showing an empty box.
+        """
+        if self.server.lookup is None:
+            self._json(503, {"error": "lookup is not available"})
+            return
+        payload = self._text_body(raw)
+        if payload is None:
+            return
+        text = payload.get("text", "")
+        if not isinstance(text, str) or not text.strip():
+            self._json(400, {"error": "nothing to look up"})
+            return
+        try:
+            answer, target, backend, seconds = self.server.lookup(text)
+        except ValueError as e:
+            # classify() said no: the reason, verbatim, for the box.
+            self._json(400, {"error": str(e)})
+            return
+        except Exception as e:            # noqa: BLE001 — every backend
+            log.warning("phone lookup failed: %s", e)
+            self._json(503, {"error": str(e)})
+            return
+        self._json(200, {"text": answer, "target": target,
+                         "backend": backend, "seconds": round(seconds, 2)})
+
+
+def _review_item(item: dict) -> dict:
+    """One pending proposal as the phone wants it: the fields it paints,
+    and the three-part snippet per change, computed here so the phone
+    needs no copy of review.words()."""
+    import review as review_mod
+    text = str(item.get("text") or "")
+    changes = list(item.get("changes") or [])
+    snippets = []
+    for change in changes:
+        try:
+            snippets.append(review_mod.snippet(text, change))
+        except Exception:                 # noqa: BLE001 — a malformed span
+            snippets.append({"right": "", "left": "",
+                             "word": str(change.get("after", "")),
+                             "was": str(change.get("before", "")),
+                             "kind": str(change.get("kind", "replace")),
+                             "why": str(change.get("why", "")),
+                             "support": 0, "rtl": review_mod.is_rtl(text)})
+    return {"id": str(item.get("id") or ""),
+            "when": str(item.get("when") or ""),
+            "seconds": item.get("seconds", 0),
+            "text": text,
+            "proposed": str(item.get("proposed") or ""),
+            "source": str(item.get("source") or "desktop"),
+            "changes": [{"before": str(c.get("before", "")),
+                         "after": str(c.get("after", "")),
+                         "kind": str(c.get("kind", "replace")),
+                         "why": str(c.get("why", ""))} for c in changes],
+            "snippets": snippets}
+
+
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
     def __init__(self, addr, token, transcribe, backend_name, translate=None,
-                 max_chars=5000, punctuate=None, notify=None):
+                 max_chars=5000, punctuate=None, notify=None,
+                 review_pending=None, review_decide=None, lookup=None):
         super().__init__(addr, _Handler)
         self.token = token
         self.transcribe = transcribe
@@ -474,6 +605,9 @@ class _Server(ThreadingHTTPServer):
         self.translate = translate
         self.punctuate = punctuate
         self.notify = notify
+        self.review_pending = review_pending
+        self.review_decide = review_decide
+        self.lookup = lookup
         self.max_chars = max_chars
 
 
@@ -482,13 +616,20 @@ class PhoneServer:
     the desktop hotkey must keep working regardless."""
 
     def __init__(self, cfg, transcribe, backend_name, translate=None,
-                 punctuate=None, notify=None):
+                 punctuate=None, notify=None, review_pending=None,
+                 review_decide=None, lookup=None):
         self.cfg = cfg
         self._transcribe = transcribe
         self._backend_name = backend_name
         self._translate = translate
         self._punctuate = punctuate
         self._notify = notify
+        # The second reading's queue and its verdicts, and the F8 lookup,
+        # for the phone (2026-09-13). All optional: a caller without them
+        # gets a 503 on those routes and everything else unchanged.
+        self._review_pending = review_pending
+        self._review_decide = review_decide
+        self._lookup = lookup
         self._srv: _Server | None = None
         self._thread: threading.Thread | None = None
         self.url: str | None = None
@@ -500,7 +641,10 @@ class PhoneServer:
         self._srv = _Server((host, port), token, self._transcribe,
                             self._backend_name, self._translate,
                             self.cfg.translate.max_chars, self._punctuate,
-                            notify=self._notify)
+                            notify=self._notify,
+                            review_pending=self._review_pending,
+                            review_decide=self._review_decide,
+                            lookup=self._lookup)
         self._thread = threading.Thread(target=self._srv.serve_forever,
                                         daemon=True, name="phone-server")
         self._thread.start()

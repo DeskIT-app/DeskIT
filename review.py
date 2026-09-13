@@ -875,7 +875,11 @@ def suggestion_from(item, result: dict, *, hwnd: int = 0) -> dict:
             "decodes": list(result.get("decodes") or []),
             "llm": bool(result.get("llm")),
             "status": PENDING, "shown": False, "decided": None,
-            "by": None, "learned": False, "hwnd": int(hwnd or 0)}
+            "by": None, "learned": False, "hwnd": int(hwnd or 0),
+            # Where the dictation was spoken. The phone asks for its own
+            # proposals by this, so a reading of a desk dictation does
+            # not ring a pocket.
+            "source": str(meta.get("source") or "desktop")}
 
 
 # ---------------------------------------------------------------------------

@@ -759,7 +759,10 @@ class App:
                 lambda: self.transcriber.name,
                 self._translate_for_phone,
                 self._punctuate_for_phone,
-                self._notify_from_outside)
+                self._notify_from_outside,
+                review_pending=self._review_pending_for_phone,
+                review_decide=self._review_decide_for_phone,
+                lookup=self._lookup_for_phone)
 
     @property
     def vqa(self):
@@ -2306,9 +2309,10 @@ class App:
         text, backend = self._transcribe(wav, language=None)
         transcript_log.info("OK | PHONE | %s | %.1fs latency | %s",
                             backend, time.monotonic() - started, text)
+        raw = text.strip()
         # Same blocking pass the desktop runs, under the same ceiling: both
         # have somebody waiting on the other end of it.
-        text = self._improve(text.strip()) if text.strip() else text
+        text = self._improve(raw) if raw else text
         # A decoder loop means words are LOST, not garbled — surface that
         # on the phone right away instead of letting reading discover it.
         warning = None
@@ -2317,7 +2321,78 @@ class App:
             if found:
                 warning = found
                 break
+        # Kept in recent\ like a desk dictation, and handed to the second
+        # reading — WITHOUT the desktop card (card=False): the person who
+        # said this is holding a phone, and the phone asks GET /review
+        # for its own proposals and rings on them. Until 2026-09-13 a
+        # phone clip was transcribed and forgotten, so the reading never
+        # saw it. Never in front of the reply: a full disk is a log line.
+        if raw and self.recent is not None:
+            try:
+                # 16 kHz mono 16-bit, the shape to_wav() always hands
+                # over: 32 000 bytes a second after the 44-byte header.
+                kept = self.recent.save(
+                    wav, max(0.0, (len(wav) - 44) / 32000.0), "",
+                    extra={"text": text.strip(), "raw": raw,
+                           "backend": backend, "language": "auto",
+                           "words": list(getattr(self, "_last_words", [])
+                                         or []),
+                           "source": "phone"})
+                engine = getattr(self, "_review", None)
+                if engine is not None:
+                    engine.submit(kept, hwnd=0, card=False)
+            except Exception as e:        # noqa: BLE001
+                log.info("could not keep the phone recording for the "
+                         "second reading: %s", e)
         return text, backend, warning
+
+    # ---- the second reading and the lookup, from the phone ----
+
+    def _review_store(self):
+        """The proposals on disk. The engine's own store while it runs;
+        otherwise the same file opened here, the way the dashboard opens
+        it — a phone answering while the reading is off must still land."""
+        engine = getattr(self, "_review", None)
+        if engine is not None:
+            return engine.store
+        import review as review_mod
+        return review_mod.Store(APP_DIR / review_mod.STORE_NAME)
+
+    def _review_pending_for_phone(self) -> list:
+        """GET /review: every proposal still waiting, newest last."""
+        return list(self._review_store().pending())
+
+    def _review_decide_for_phone(self, sid: str, verdict: str):
+        """POST /review/decide: written straight to the store as the
+        dashboard does, by="phone"; the engine's next wake learns it
+        (absorb_decisions, every few seconds) — one learning path for
+        every verdict. None when nothing pending has that id."""
+        item = self._review_store().decide(sid, verdict, by="phone")
+        if item is not None:
+            transcript_log.info("REVIEW | %s | phone | %s", verdict,
+                                item.get("proposed", ""))
+        return item
+
+    def _lookup_for_phone(self, text: str) -> tuple[str, str, str, float]:
+        """POST /lookup: the F8 engine, for a selection made on the phone.
+        (answer, target, backend, seconds). ValueError when there is
+        nothing to look up — the reason classify() gave — so the server
+        can answer 400 with it. Same lazily built engine as the key."""
+        import lookup as lookup_mod
+        lcfg = self.cfg.lookup
+        what = lookup_mod.classify(text, lcfg.max_chars, lcfg.both_ways,
+                                   lcfg.hebrew_share)
+        if not what.ok:
+            raise ValueError(f"nothing to look up ({what.reason})")
+        transcript_log.info("LOOKUP-IN  | phone | %s | %s", what.mode, text)
+        if self._lookup_engine is None:
+            self._lookup_engine = lookup_mod.Engine(self.cfg)
+        answer = self._lookup_engine.look_up(text, what)
+        if answer is None or not answer.text.strip():
+            raise TranscriptionError("the lookup answered with nothing")
+        transcript_log.info("LOOKUP-OUT | %.1fs | %s | %s", answer.seconds,
+                            answer.backend, answer.text)
+        return answer.text, answer.target, answer.backend, answer.seconds
 
     def _translate_for_phone(self, text: str) -> tuple[str, str]:
         """The same Gemini-then-Ollama translator the F9 key uses. Shares
