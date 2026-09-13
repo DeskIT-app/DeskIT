@@ -27276,10 +27276,11 @@ def test_the_writer_turns_a_reply_into_a_file_of_sentences() -> None:
 def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
     """The Corrections place's second tab, driven against the app's own
     control handler over a Reading in a temp folder: the tab arms the
-    sentence it shows, redraws for each phase, keeps a word-for-word
-    reading without asking and puts up the next one, asks about one that
-    came back different, has a paragraph written when the folder runs
-    dry, and disarms when he leaves."""
+    sentence it shows, redraws for each phase, keeps every reading the
+    moment it is back — however it came back — and puts up the next one,
+    takes the last one back on Redo, asks again only when nothing came
+    back at all, has a paragraph written when the folder runs dry, and
+    disarms when he leaves."""
     import shutil
 
     import control as control_mod
@@ -27365,24 +27366,44 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
             activity[0] = "recording"
             assert phase(board) == "listening"
             activity[0] = "ready"
-            r.heard(first.key, b"RIFF", 3.0, "אני רוצה לפתוח את הפרוגקט הזה מחדש היום.")
-            assert phase(board) == "heard"
+            # NOTHING CAME BACK: the one case he is asked to read again
+            r.heard(first.key, b"RIFF", 0.4, "")
+            assert phase(board) == "nothing"
             settle(board, ticks=10)
-            golds = [w for w in board.parts["read_card"].body.winfo_children()
-                     if isinstance(w, widgets_mod.ToneButton)]
-            assert len(golds) == 1, "one gold Yes on the card"
-            assert not kept(), "nothing kept until he says so"
-            assert list(read.glob("pending-*.wav")), "the audio waits"
+            assert not kept() and board._read_current is first
+            assert not [w for w in board.parts["read_card"].body.winfo_children()
+                        if isinstance(w, widgets_mod.ToneButton)], \
+                "no gold button on the card any more"
 
-            board._read_keep()
+            # A WORD CAME BACK DIFFERENT: kept all the same, the moment it
+            # is back — he read the card, and the card is the label
+            r.heard(first.key, b"RIFF-1", 3.0,
+                    "אני רוצה לפתוח את הפרוגקט הזה מחדש היום.")
             settle(board, until=lambda: board._read_current is not None
                    and board._read_current.key != first.key
                    and r.armed_id == board._read_current.key)
-            assert len(kept()) == 1, "kept on Yes"
+            assert len(kept()) == 1, "kept without asking"
             second = board._read_current
             assert second is not None and second.key != first.key
             assert r.armed_id == second.key, "the next one is armed"
             assert board._read_counts["kept"] == 1
+            assert board._read_last is not None and board._read_last[0] is first
+            side = json.loads(kept()[0].with_suffix(".json").read_text("utf-8"))
+            assert side["text"] == first.text and side["match"] == [7, 8], side
+            assert side["heard"].startswith("אני רוצה לפתוח את הפרוגקט"), side
+
+            # REDO: the reading he just made is taken back, its sentence is
+            # up again and the one that replaced it waits behind it
+            board._read_redo()
+            settle(board, until=lambda: board._read_current is first
+                   and r.armed_id == first.key and not board._read_busy)
+            assert not kept(), "the fumbled reading is gone"
+            assert board._read_counts == {"kept": 0, "skipped": 0, "again": 1}
+            assert board._read_last is None and board._read_deck[0] is second
+            r.heard(first.key, b"RIFF-2", 3.0, first.text)
+            settle(board, until=lambda: board._read_current is second
+                   and r.armed_id == second.key)
+            assert len(kept()) == 1 and kept()[0].read_bytes() == b"RIFF-2"
 
             r.heard(second.key, b"RIFF", 2.0, second.text)   # word for word
             settle(board, until=lambda: board._read_counts["kept"] == 2
@@ -27431,11 +27452,12 @@ def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_a_reading_is_kept_under_the_cards_words_only_when_he_says_so() -> None:
+def test_a_reading_is_kept_under_the_cards_words_and_can_be_taken_back() -> None:
     """reading.Reading: the app's side. Armed with the dashboard's window,
     it takes a dictation begun over that window and no other; what comes
-    back is matched word for word; keep files the audio under the CARD'S
-    text, read-again drops it, skip drops it and retires the sentence."""
+    back is matched word for word, for the record; keep files the audio
+    under the CARD'S text, drop drops it, skip drops it and retires the
+    sentence, and forget takes a kept one back."""
     import reading
 
     with tempfile.TemporaryDirectory() as d:
@@ -27501,6 +27523,15 @@ def test_a_reading_is_kept_under_the_cards_words_only_when_he_says_so() -> None:
         r.disarm()
         assert r.state() == {"armed": None, "heard": None}
 
+        # a kept reading taken back, by the name keep() answered with —
+        # and only a file of this folder
+        assert r.forget(wav.name) is True
+        assert not wav.exists() and not wav.with_suffix(".json").exists()
+        assert r.forget(wav.name) is False, "gone is gone"
+        assert r.forget("") is False and r.forget("../x.wav") is False
+        assert r.forget(reading.SKIPPED) is False
+        assert (root / reading.SKIPPED).exists(), "only a wav and its sidecar"
+
     m = reading.match("אחת שתיים שלוש ארבע חמש", "אחת שלוש ארבע חמש שש שבע")
     assert (m["same"], m["missing"], m["extra"], m["pairs"]) == (4, 1, 2, [])
     assert reading.verdict(m) == ("One word is missing, 2 words came back "
@@ -27535,11 +27566,11 @@ def test_a_reading_is_filed_not_pasted_and_the_app_answers_the_tab() -> None:
 
     src = inspect.getsource(main_mod.App._on_start)
     assert "reading.takes(start)" in src, "decided at the press, like the box"
-    assert "polish=not (self._to_card or self._to_prompt)" in src, \
-        "a reading's stretches are repaired while he reads, like a dictation's"
-    assert "cleaned = self._improve_rolled(cleaned, head)" in inspect.getsource(
+    assert "self._to_card or self._to_prompt or self._to_read" in src, \
+        "a reading is never sent to the repair pass"
+    assert "cleaned = self._improve(cleaned, wait=False)" in inspect.getsource(
         main_mod.App._handle).split("if to_read:")[-1], \
-        "a reading gets the whole repair, the context pass included"
+        "the vocabulary yes, the context pass no"
     assert 'extra["to_read"] = self.reading.armed_id' in \
         inspect.getsource(main_mod.App._on_stop), "the SENTENCE rides along"
 
@@ -27573,6 +27604,12 @@ def test_a_reading_is_filed_not_pasted_and_the_app_answers_the_tab() -> None:
 
         again = app.control_command("read", {"do": "keep", "id": "k1"})
         assert again["ok"] is False and "nothing to keep" in again["error"]
+        back = app.control_command("read", {"do": "forget",
+                                            "name": reply["kept"]})
+        assert back["ok"] and not (tmp / "read" / reply["kept"]).exists()
+        back = app.control_command("read", {"do": "forget",
+                                            "name": reply["kept"]})
+        assert back["ok"] is False and "take back" in back["error"], back
         # an empty transcript is still an answer for the card
         app.control_command("read", {"do": "arm", "id": "k2", "text": card,
                                      "hwnd": fake.focus})

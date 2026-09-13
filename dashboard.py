@@ -1376,6 +1376,7 @@ class Dashboard:
         self._read_writing = False        # a paragraph is with the model
         self._read_write_failed = False   # no backend answered this session
         self._read_counts = {"kept": 0, "skipped": 0, "again": 0}
+        self._read_last = None            # (sentence, wav name) just kept
         self._toast = None
         self._toast_after = None
         self._pump_after = None
@@ -2209,16 +2210,16 @@ class Dashboard:
         self._read_busy = False
         self._read_writing = False
         self._read_current = None
+        self._read_last = None
         try:
             READ_TEXTS.mkdir(parents=True, exist_ok=True)  # for the button
         except OSError:
             pass
         tk.Label(self.sheet,
-                 text="Drop any Hebrew text (.txt, .md) into corpus\\read\\texts "
-                      "— it is read here, sentence by sentence; when the "
-                      "folder runs dry, a model writes the next paragraph.\n"
-                      "English words and numbers on a card are not checked — "
-                      "the Hebrew has to come back as written.\n"
+                 text="Any Hebrew text dropped into corpus\\read\\texts is "
+                      "read here, in order; a model writes more when it "
+                      "runs dry.\nNothing is checked but that something came "
+                      "back — you read the card, and the card is the label.\n"
                       "Kept readings go to corpus\\read — the audio never "
                       "leaves this machine.",
                  bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
@@ -2255,7 +2256,9 @@ class Dashboard:
         the model; done — nothing left to read; arming — the app has not
         got this sentence yet; waiting — it has, and the key is up;
         listening / checking — the key is down / the decode is running;
-        heard — the transcript is back, with its match.
+        heard — the transcript is back, and the reading is kept on the
+        next poll; nothing — it is back and empty: a dead microphone, a
+        key let go too soon, and the one case he is asked to read again.
         """
         cur = self._read_current
         if not self.running:
@@ -2267,7 +2270,9 @@ class Dashboard:
         read = self.status.get("read") or {}
         heard = read.get("heard")
         if heard and heard.get("id") == cur.key:
-            return "heard", heard
+            m = heard.get("match") or {}
+            return ("heard" if m.get("same") or not m.get("words")
+                    else "nothing"), heard
         armed = read.get("armed") or {}
         if armed.get("id") != cur.key:
             return "arming", None
@@ -2280,20 +2285,18 @@ class Dashboard:
 
     def _poll_read(self) -> None:
         """Once a poll: arm the sentence the app has not got, keep the one
-        that came back word for word, and redraw the card only when what
-        it would say has changed."""
+        that came back, and redraw the card only when what it would say
+        has changed."""
         if not self.parts.get("read_on") or self.closing:
             return
         phase, heard = self._read_phase()
         cur = self._read_current
         if phase == "heard" and not self._read_busy:
-            m = heard.get("match") or {}
-            if m.get("words") and m.get("same") == m.get("words") \
-                    and not m.get("extra"):
-                # EVERY WORD AS WRITTEN: kept without asking, and the
-                # next one comes up. The card would only have said yes.
-                self._read_keep(auto=True)
-                return
+            # KEPT, whatever came back: he read the card, and the card
+            # is the label. What the model made of it is filed beside
+            # the audio and asked nothing (reading.py says why).
+            self._read_keep()
+            return
         since_arm = time.monotonic() - self._read_armed_at
         if phase == "arming" and cur is not None \
                 and since_arm > READ_ARM_EVERY_S:
@@ -2334,31 +2337,52 @@ class Dashboard:
             self.status["read"] = reply["read"]
         self._poll_read()
 
-    def _read_keep(self, auto: bool = False) -> None:
+    def _read_keep(self) -> None:
         cur = self._read_current
         if cur is None or self._read_busy:
             return
         self._read_busy = True
-        self._ask("read", then=lambda r: self._read_kept(r, auto), do="keep",
+        self._ask("read", then=lambda r: self._read_kept(r, cur), do="keep",
                   id=cur.key)
 
-    def _read_kept(self, reply: dict | None, auto: bool) -> None:
+    def _read_kept(self, reply: dict | None, sentence) -> None:
         self._read_busy = False
         if not reply or not reply.get("ok"):
             self._announce(reply, "that did not keep")
             self._read_answered(reply)
             return
         self._read_counts["kept"] += 1
+        self._read_last = (sentence, str(reply.get("kept") or ""))
         self._read_advance(reply)
         self._voice_panel()
 
-    def _read_again(self) -> None:
-        cur = self._read_current
-        if cur is None or self._read_busy:
+    def _read_redo(self) -> None:
+        """The reading he just made, taken back — he knows he fumbled it
+        — and its sentence up again, the one that replaced it waiting
+        behind it."""
+        last = self._read_last
+        if last is None or self._read_busy:
             return
         self._read_busy = True
+        self._read_last = None
+        self._ask("read", then=lambda r: self._read_redone(r, last),
+                  do="forget", name=last[1])
+
+    def _read_redone(self, reply: dict | None, last) -> None:
+        self._read_busy = False
+        if not reply or not reply.get("ok"):
+            self._announce(reply, "that could not be taken back")
+            return
+        sentence, _name = last
+        self._read_counts["kept"] = max(0, self._read_counts["kept"] - 1)
         self._read_counts["again"] += 1
-        self._ask("read", then=self._read_dropped, do="drop", id=cur.key)
+        if self._read_current is not None:
+            self._read_deck.insert(0, self._read_current)
+        self._read_current = sentence
+        self._read_armed_at = 0.0
+        self._read_drawn = None
+        self._read_answered(reply)
+        self._voice_panel()
 
     def _read_skip(self) -> None:
         cur = self._read_current
@@ -2368,10 +2392,6 @@ class Dashboard:
         self._read_counts["skipped"] += 1
         self._ask("read", then=lambda r: self._read_advance(r), do="drop",
                   id=cur.key, skip=True)
-
-    def _read_dropped(self, reply: dict | None) -> None:
-        self._read_busy = False
-        self._read_answered(reply)
 
     def _read_advance(self, reply: dict | None = None) -> None:
         """The next sentence of the deck; with the deck empty, a
@@ -2476,19 +2496,7 @@ class Dashboard:
         y_sentence = 32
         rule_y = y_sentence + text_h + 22
         ly = rule_y + 20
-        pairs = list((heard.get("match") or {}).get("pairs") or []) \
-            if heard else []
-        heard_img = heard_h = pill_w = pill_h = 0
-        block_h = 30
-        if phase == "heard":
-            heard_img, heard_h, _l = ui.draw_text(
-                heard.get("text") or "—", pt=12, width=inner - 210,
-                max_lines=2, colour=ui.DIM, bg=ui.CARD)
-            if pairs:
-                pill_w, pill_h = ui.pair_size(pairs[0][0], pairs[0][1])
-            block_h = 30 + max(heard_h, pill_h) + 4
-        elif phase == "waiting":
-            block_h = 48
+        block_h = 48 if phase in ("waiting", "nothing") else 30
         by = ly + block_h + 18
         card_h = by + 36 + 2 * READ_PAD + 4
 
@@ -2527,7 +2535,7 @@ class Dashboard:
         widgets.rule(body, inner, bg=ui.CARD, colour=ui.LINE, y=rule_y)
 
         colour = {"listening": ui.RECORDING, "checking": ui.AMBER,
-                  "heard": ui.AMBER}.get(phase, ui.FAINT)
+                  "heard": ui.AMBER, "nothing": ui.AMBER}.get(phase, ui.FAINT)
         lamp = ui.lamp(15, colour, ui.CARD,
                        0.0 if phase in ("waiting", "arming") else 0.45)
         lamp_label = tk.Label(body, bg=ui.CARD, image=lamp)
@@ -2536,52 +2544,39 @@ class Dashboard:
         sub = ""
         if phase == "listening":
             line = "Listening…  let go when you finish."
-        elif phase == "checking":
-            line = "Checking what it heard…"
-        elif phase == "heard":
-            line = f"{heard.get('verdict') or ''}  Did you read it as written?"
+        elif phase in ("checking", "heard"):
+            line = "One moment…"
+        elif phase == "nothing":
+            line = "Nothing came back."
+            sub = (f"Is the microphone on? Hold {hold} and read it again — "
+                   "the key has to stay down until you finish.")
         elif phase == "arming":
             line = "One moment — handing the sentence to the app."
         else:
             line = (f"Hold {hold} and read it aloud.  Let go when you finish."
                     if hold != "off" else "No dictation key is set — see Keys.")
-            sub = ("When every word comes back as written it is kept on "
-                   "its own and the next one comes up.")
+            sub = ("It is kept the moment you let go, whatever the model "
+                   "made of it, and the next one comes up.")
         tk.Label(body, text=line, bg=ui.CARD, fg=ui.FG,
                  font=(ui.UI, 11)).place(x=28, y=ly)
         if sub:
             tk.Label(body, text=sub, bg=ui.CARD, fg=ui.FAINT,
                      font=(ui.UI, 9), wraplength=inner - 28,
                      justify="left").place(x=28, y=ly + 24)
-        if phase == "heard":
-            shown = tk.Label(body, image=heard_img, bg=ui.CARD, bd=0)
-            shown.image = heard_img
-            shown.place(x=inner, y=ly + 30, anchor="ne")
-            if pairs:
-                pc = tk.Canvas(body, width=pill_w + 4, height=pill_h + 4,
-                               bg=ui.CARD, highlightthickness=0, bd=0)
-                pc.place(x=28, y=ly + 30)
-                ui.pair_pill(pc, pill_w + 2, 2, pairs[0][0], pairs[0][1],
-                             ui.CARD)
 
-        if phase == "heard":
-            keep = widgets.gold_button(body, "Yes, keep it", self._read_keep,
-                                       w=136, h=36, bg=ui.CARD,
-                                       icon=ui.ICON["check"])
-            keep.place(x=inner, y=by, anchor="ne")
-            ui.Button(body, "Read again", self._read_again, w=118, h=36,
-                      quiet=True, bg=ui.CARD).place(x=inner - 148, y=by,
-                                                     anchor="ne")
-            ui.Button(body, "Skip", self._read_skip, w=84, h=36, quiet=True,
-                      bg=ui.CARD).place(x=inner - 278, y=by, anchor="ne")
-            note = "Yes keeps the card's words as the lesson."
+        ui.Button(body, "Skip this one", self._read_skip, w=136, h=36,
+                  quiet=True, bg=ui.CARD).place(x=inner, y=by, anchor="ne")
+        if self._read_last is not None:
+            # The one he just read, if he knows he fumbled it: taken
+            # back, and up again. Only until the next one is kept — the
+            # one before that is in the folder to stay.
+            wide = widgets.button_width("Redo the last one")
+            ui.Button(body, "Redo the last one", self._read_redo, w=wide,
+                      h=36, quiet=True, bg=ui.CARD).place(x=0, y=by)
         else:
-            ui.Button(body, "Skip this one", self._read_skip, w=136, h=36,
-                      quiet=True, bg=ui.CARD).place(x=inner, y=by,
-                                                     anchor="ne")
-            note = "Skip a sentence you would never say."
-        tk.Label(body, text=note, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9),
-                 justify="left", anchor="w").place(x=0, y=by + 8)
+            tk.Label(body, text="Skip a sentence you would never say.",
+                     bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9),
+                     justify="left", anchor="w").place(x=0, y=by + 8)
         self._draw_read_kept(READ_CARD_Y + card_h + 20)
 
     def _draw_read_kept(self, y: int) -> None:

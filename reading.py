@@ -10,12 +10,17 @@ and reads it, and the recording is filed under the words on the card.
 THE LABEL IS THE CARD, NOT THE TRANSCRIPT. That is the whole value of
 reading over dictating: the text is known BEFORE the audio exists, so
 the pair is right even where the model is wrong — and the clips where
-the model is wrong are exactly the ones a fine-tune learns from. The
-transcript is still made, for one question only: did he read what is
-written? Every word back as written means yes, and the pair is kept
-without asking. Anything else is put to him — the sentence, what came
-back, the words that differ — and he answers whether he read it as
-written (keep), stumbled (read again) or would never say it (skip).
+the model is wrong are exactly the ones a fine-tune learns from. So
+EVERY READING IS KEPT, the moment it is back, and the next sentence
+comes up; the transcript is made only to notice that nothing came back
+at all (a dead microphone, a key let go too soon), and is filed in the
+sidecar with its match for a day when the pairs are sifted. It used to
+be a verdict — every word as written kept on its own, anything else
+put to him with the words that differed — and he asked the right
+question (2026-09-13, late): "why do I need the transcript at all? I
+said it, this is the text." He did not stumble; the model did, and
+that is not his problem. A reading he knows he fumbled he takes back
+with one press (forget), and the sentence comes up again.
 
 WHERE THE SENTENCES COME FROM: WRITTEN TEXT, read in order. The first
 version cut them out of his own gold dictations, and a dictation is
@@ -616,6 +621,23 @@ class Reading:
                 return False
             self._drop_locked()
             return True
+
+    def forget(self, name: str) -> bool:
+        """A kept reading he takes back — the wav and its sidecar, by the
+        name keep() answered with, and only a file of this folder."""
+        if not name or "/" in name or "\\" in name or not name.endswith(".wav"):
+            return False
+        wav = self.root / name
+        if not wav.exists() or wav.name.startswith(PENDING):
+            return False
+        for path in (wav, wav.with_suffix(".json")):
+            try:
+                path.unlink()
+            except OSError as e:
+                log.warning("could not take back %s (%s)", path.name, e)
+                return False
+        log.info("reading taken back: %s", name)
+        return True
 
     def _drop_locked(self) -> None:
         heard, self._heard = self._heard, None

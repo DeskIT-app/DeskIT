@@ -2221,6 +2221,12 @@ class App:
                 if do == "drop":
                     self.reading.drop(ident, skipped=bool(args.get("skip")))
                     return {"ok": True, "read": self.reading.state()}
+                if do == "forget":
+                    # A kept reading he takes back, by the name keep()
+                    # answered with.
+                    ok = self.reading.forget(str(args.get("name", "") or ""))
+                    return ({"ok": True} if ok else
+                            {"ok": False, "error": "nothing to take back"})
                 return {"ok": False, "error": f"unknown read action {do!r}"}
             if command == "screens":
                 # off | on | toggle | again. The engine's switches are a
@@ -2667,11 +2673,11 @@ class App:
             # recorder: the card is given a way to READ a level and no way
             # to touch anything else.
             vqa.notify_recording(level=self.recorder.meter)
-        # After the routing above: a dictation bound for the ask card or
-        # the report card is never repaired, so its stretches are not
-        # sent to the repair pass either. A reading IS — see _handle.
+        # After the routing above: a dictation bound for the ask card,
+        # the report card or the reading card is never repaired, so its
+        # stretches are not sent to the repair pass either.
         self._roller = self._start_roller(
-            polish=not (self._to_card or self._to_prompt))
+            polish=not (self._to_card or self._to_prompt or self._to_read))
         beep("start")
         log.info("recording %s... (release to transcribe%s)",
                  language_label(language, shout=True),
@@ -5510,17 +5516,15 @@ class App:
         # all but the dashboard's Read aloud card, and the dictation is
         # not text going anywhere: it is AUDIO, filed under the words on
         # the card (reading.py says why that is the point). The
-        # transcript is made only to ask whether he read what is
-        # written — and it gets THE WHOLE REPAIR a dictation gets, the
-        # vocabulary and the context pass both, where the other two
-        # diversions skip the context pass. It went without for an
-        # evening and the card asked about "קבועים" for כבויים, a slip
-        # the pass fixes on every dictation; a verdict the pasted text
-        # would not have had is a verdict about nothing. `_last` is
-        # never touched, for the box's reason: a reading is not a
-        # dictation.
+        # transcript is filed beside it and asked one thing, whether
+        # anything came back at all; so the vocabulary swap applies —
+        # instant, offline, the same as the other two diversions — and
+        # the context pass does not. It did for an hour, when the
+        # transcript was still a verdict; a verdict nobody is asked for
+        # is not worth a model call a sentence. `_last` is never
+        # touched, for the box's reason: a reading is not a dictation.
         if to_read:
-            cleaned = self._improve_rolled(cleaned, head)
+            cleaned = self._improve(cleaned, wait=False)
             if item:
                 item.discard()
             state = self.reading.heard(to_read, wav, seconds, cleaned)
