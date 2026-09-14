@@ -1032,10 +1032,13 @@ class StudyConfig:
     # 0 keeps none.
     corpus_keep: int = 400
     # Read this to me (reading.py, the dashboard's Read aloud tab): how
-    # much reading a day it asks for, and how much of his voice on file
-    # the fine-tune wants. Both are the bars the tab draws, nothing more
-    # — it never stops him reading past either.
-    read_minutes: float = 15.0
+    # many sentences a day it asks for, and how much of his voice on
+    # file the fine-tune wants. Both are the bars the tab draws, nothing
+    # more — it never stops him reading past either. SENTENCES, not
+    # minutes: a reading is four seconds of audio and fifteen of his
+    # time, so "five minutes a day" (his ceiling, 2026-09-14) is twenty
+    # sentences, and a bar in audio-minutes would have asked for eighty.
+    read_sentences: int = 20
     read_goal_hours: float = 3.0
 
 
@@ -1677,8 +1680,8 @@ def load(path: Path) -> Config:
                                       StudyConfig.llm_per_day)),
             corpus_keep=int(study.get("corpus_keep",
                                       StudyConfig.corpus_keep)),
-            read_minutes=float(study.get("read_minutes",
-                                         StudyConfig.read_minutes)),
+            read_sentences=int(study.get("read_sentences",
+                                         StudyConfig.read_sentences)),
             read_goal_hours=float(study.get("read_goal_hours",
                                             StudyConfig.read_goal_hours)),
         ),

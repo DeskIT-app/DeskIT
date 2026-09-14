@@ -27652,8 +27652,8 @@ def test_the_two_reading_knobs_are_in_the_config_and_the_settings() -> None:
     import settings as settings_mod
 
     cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
-    assert cfg.study.read_minutes == 15 and cfg.study.read_goal_hours == 3
-    assert {"study.read_minutes", "study.read_goal_hours"} <= set(
+    assert cfg.study.read_sentences == 20 and cfg.study.read_goal_hours == 3
+    assert {"study.read_sentences", "study.read_goal_hours"} <= set(
         settings_mod.WORDS), "every line in the file has words"
 
 

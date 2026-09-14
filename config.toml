@@ -1412,7 +1412,9 @@ corpus_keep = 400         # verified (audio, text) pairs kept in corpus\ as
 # before the audio exists, so the pair is right even where the model is
 # wrong, which is the fastest road to the hours a fine-tune wants. The
 # two numbers below are the bars the tab draws; neither stops you.
-read_minutes = 15         # a day's reading, the bar under "Today"
+read_sentences = 20       # a day's reading, the bar under "Today" -- about
+                          # five minutes of your time (2026-09-14: "I can't
+                          # do more than five minutes a day")
 read_goal_hours = 3       # how much of your voice a fine-tune wants
 
 [polish]

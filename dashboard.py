@@ -2661,9 +2661,9 @@ class Dashboard:
         try:
             scfg = config_mod.load(CONFIG_PATH).study
             goal_s = max(1.0, float(scfg.read_goal_hours)) * 3600
-            day_s = max(1.0, float(scfg.read_minutes)) * 60
+            day_n = max(1, int(scfg.read_sentences))
         except Exception:                 # noqa: BLE001 — unreadable config
-            goal_s, day_s = 3 * 3600, 15 * 60
+            goal_s, day_n = 3 * 3600, 20
         try:
             t = reading_mod.tally(READ_DIR, CORPUS_DIR)
         except Exception:                 # noqa: BLE001
@@ -2698,20 +2698,26 @@ class Dashboard:
         bar(104, t["total_s"], goal_s)
 
         widgets.rule(body, inner, bg=ui.CARD, colour=ui.LINE, x=0, y=136)
+        # HOW MANY OF HOW MANY, and how many to go — his words
+        # (2026-09-14), and in sentences, which is what he counts in: a
+        # reading is seconds of audio and a quarter-minute of his time.
+        done = len(t.get("today") or [])
+        left = max(0, day_n - done)
         tk.Label(body, text="T O D A Y", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.MEDIUM, 8)).place(x=0, y=150)
-        tk.Label(body, text=_clock(t["today_s"]), bg=ui.CARD, fg=ui.FG,
+        tk.Label(body, text=f"{done} of {day_n}", bg=ui.CARD, fg=ui.FG,
                  font=(ui.DISPLAY, 24, "bold")).place(x=0, y=170)
-        tk.Label(body, text=f"of the {day_s / 60:g} minutes a day this asks",
+        tk.Label(body, text=(f"sentences today — {left} to go" if left
+                             else "sentences today — done for today"),
                  bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9), wraplength=inner,
                  justify="left").place(x=0, y=210)
-        bar(236, t["today_s"], day_s)
+        bar(236, done, day_n)
         c = self._read_counts
         counts = "  ·  ".join(
-            part for part in (f"{c['kept']} kept" if c["kept"] else "",
+            part for part in (f"{_clock(t['today_s'])} of voice",
                               f"{c['skipped']} skipped" if c["skipped"] else "",
                               f"{c['again']} read again" if c["again"] else "")
-            if part) or "—"
+            if part)
         tk.Label(body, text=counts, bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.UI, 9)).place(x=0, y=250)
 
