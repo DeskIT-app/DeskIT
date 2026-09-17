@@ -28454,7 +28454,9 @@ def test_migrate_writes_the_two_files_and_retires_the_old_one():
         out = run("--migrate", str(old.parent))
         assert out.returncode == 0, (out.stdout, out.stderr)
         assert config_mod.read_settings(home / "settings.toml") == {"vocab.max_terms": 41}
-        assert config_mod.read_state(home / "state.json") == {"hint.x": 5, "hint.y": 6}
+        import version as version_mod
+        assert config_mod.read_state(home / "state.json") == {
+            "hint.x": 5, "hint.y": 6, "config_version": version_mod.CONFIG_VERSION}
         assert (home / "vocab.json").exists() and (home / "audio" / "recent" / "clip.wav").exists()
         assert old.exists(), "a file given by folder is left where it was"
         again = run("--migrate", str(old.parent))
@@ -32217,6 +32219,101 @@ def test_dictation_never_hands_faster_whisper_a_file():
     assert (REPO / "vendor" / "av" / "__init__.py").exists()
     attrs = (REPO / ".gitattributes").read_text("utf-8")
     assert "vendor/" not in attrs, "vendor/ must ship"
+
+
+# ------------------------------- the Update row on Home (screen 11, PR 25)
+
+def test_a_newer_version_is_a_row_on_the_home_pile():
+    """Chapter 9 screen 11 (D21) as a pile row: nothing while no newer
+    release is known; with one, a row that names the version, the size
+    and the date, with Download and install (gold; the winget one-liner
+    on that channel; neither in the checkout), Release notes and Skip
+    this version; nothing on the Store channel, off, or Offline; Skip
+    takes the row away."""
+    import updates
+
+    feed = _feed_for(b"x" * 7)
+    rel = updates.Release.parse(feed)
+    with _window() as board:
+        if board is None:
+            return
+        with _patched(updates, "_last", {"release": None}):
+            assert board._waiting_update() == []
+        with _patched(updates, "_last", {"release": rel}), _patched(paths, "DEVELOPER", False), \
+                _patched(paths, "CHANNEL", "github"):
+            rows = board._waiting_update()
+            assert len(rows) == 1 and rows[0]["kind"] == "update"
+            assert "9.9.9 is available" in rows[0]["text"] and "you have" in rows[0]["text"]
+            labels = [b[0] for b in rows[0]["buttons"]]
+            assert labels == ["Download and install", "Release notes", "Skip this version"], labels
+            assert rows[0]["buttons"][0][1] == "gold"
+            board._show("Home")
+            board._fill_waiting()
+            board.root.update_idletasks()
+            assert any(i.get("kind") == "update" for i in board._waiting_items()), \
+                "the row is not in the pile"
+        with _patched(updates, "_last", {"release": rel}), _patched(paths, "DEVELOPER", False), \
+                _patched(paths, "CHANNEL", "winget"):
+            labels = [b[0] for b in board._waiting_update()[0]["buttons"]]
+            assert labels[0] == "Copy the winget command", labels
+        with _patched(updates, "_last", {"release": rel}), _patched(paths, "DEVELOPER", True):
+            labels = [b[0] for b in board._waiting_update()[0]["buttons"]]
+            assert "Download and install" not in labels, "the checkout pulls, it does not install"
+        with _patched(updates, "_last", {"release": rel}), _patched(paths, "CHANNEL", "store"):
+            assert board._waiting_update() == []
+        with _patched(updates, "_last", {"release": rel}), _patched(paths, "DEVELOPER", False), \
+                _patched(paths, "CHANNEL", "github"), _patched(updates, "skip", lambda r: updates._last.update(release=None)):
+            row = board._waiting_update()[0]
+            next(b for b in row["buttons"] if b[0] == "Skip this version")[2]()
+            assert board._waiting_update() == []
+
+
+# ------------------------------------- config_version and migrations (11.10)
+
+def test_migrations_bring_the_files_forward_and_never_half_way():
+    """migrations.apply(): a copy with no config_version is 1; with no
+    pending step the files are stamped with CONFIG_VERSION; steps above
+    the file's version run in order and the stamp is written only after
+    all succeeded; a failing step leaves the stamp (and the files) as
+    they were and names itself; too_old_for() reads the same number;
+    the owner's --migrate writes the current version."""
+    import migrations
+    import version
+
+    d, s, t = _layer_files()
+    try:
+        with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+            assert migrations.current() == 1
+            assert migrations.apply() is None
+            assert config_mod.read_state(t).get("config_version") == version.CONFIG_VERSION
+            ran: list[int] = []
+
+            def step_two():
+                """rename nothing, for the test"""
+                ran.append(2)
+
+            def step_three():
+                """fail, for the test"""
+                raise RuntimeError("the disk said no")
+            with _patched(version, "CONFIG_VERSION", 3),                     _patched(migrations, "STEPS", [(2, step_two), (3, step_three)]):
+                problem = migrations.apply()
+                assert problem and "step 3" in problem and "fail, for the test" in problem, problem
+                assert ran == [2]
+                assert config_mod.read_state(t).get("config_version") == 1, "stamped half way"
+                assert migrations.too_old_for(2) and not migrations.too_old_for(1)
+            with _patched(version, "CONFIG_VERSION", 3),                     _patched(migrations, "STEPS", [(2, step_two), (3, lambda: ran.append(3))]):
+                assert migrations.apply() is None
+                assert ran == [2, 2, 3] and config_mod.read_state(t).get("config_version") == 3
+                assert migrations.pending() == []
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    assert version.MIN_CONFIG_VERSION <= version.CONFIG_VERSION
+    src = (REPO / "main.py").read_text("utf-8")
+    assert src.index("migrations.apply()") < src.index("firstrun.needed(cfg)"), "the files read before the steps"
+    yml = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    assert "version.MIN_CONFIG_VERSION" in yml, "latest.json's min_config_version is typed by hand"
+    mig = (REPO / "migrate.py").read_text("utf-8")
+    assert 'machine["config_version"] = version.CONFIG_VERSION' in mig
 
 
 # ------------------------------------------------------ updates (PR 13)

@@ -94,6 +94,11 @@ PARTS: tuple[int, int, int, int | None] = parse(VERSION)
 IS_BETA: bool = PARTS[3] is not None
 #: The git branch in the checkout; "" on every installed copy.
 BRANCH: str = _branch()
+#: The per-user files' format (11.10): what this build writes to
+#: state.json, and the oldest it can bring forward (migrations.py;
+#: published as min_config_version in latest.json).
+CONFIG_VERSION: int = 1
+MIN_CONFIG_VERSION: int = 1
 
 
 def label() -> str:

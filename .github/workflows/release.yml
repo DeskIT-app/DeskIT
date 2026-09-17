@@ -202,7 +202,7 @@ jobs:
             url = "https://github.com/${{ github.repository }}/releases/download/v$version/DeskIT-Setup-$version.exe"
             sha256 = $sha
             size = (Get-Item $exe).Length
-            min_config_version = 1
+            min_config_version = [int](python -c "import version; print(version.MIN_CONFIG_VERSION)")
             notes_url = "https://github.com/${{ github.repository }}/releases/tag/v$version"
           }
           $latest | ConvertTo-Json | Set-Content -Path dist/latest.json -Encoding utf8

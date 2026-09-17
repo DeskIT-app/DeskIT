@@ -175,6 +175,10 @@ def migrate(where: Path | None = None, *, out=print) -> int:
     # does not ask again.
     if paths.SETUP_MARKER.exists() or (legacy.parent / ".setup-done").exists():
         machine["setup.done"] = True
+    # The files this writes are this build's format (11.10): the owner's
+    # cutover is step 1 of the migrations, explicit and never automatic.
+    import version
+    machine["config_version"] = version.CONFIG_VERSION
     try:
         config_mod.build(config_mod._merge(
             config_mod._merge(config_mod.nest(config_mod.defaults_flat()),

@@ -6127,6 +6127,18 @@ def main() -> int:
         import dashboard
         return dashboard.main()
 
+    # The per-user files brought forward (11.10): every migration step
+    # above the files' config_version, before anything reads them; a
+    # step that fails leaves them as they were and says so once.
+    if not args.fake and not args.config:
+        try:
+            import migrations
+            problem = migrations.apply()
+            if problem:
+                log.warning("%s", problem)
+        except Exception:                     # noqa: BLE001
+            log.warning("the migrations could not run", exc_info=True)
+
     if args.diagnose:
         block = problems_mod.diagnose()
         try:

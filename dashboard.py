@@ -2785,6 +2785,7 @@ class Dashboard:
         means.
         """
         items: list[dict] = []
+        items += self._waiting_update()
         items += self._waiting_hardware()
         items += self._waiting_notify()
         items += self._waiting_review()
@@ -2827,6 +2828,53 @@ class Dashboard:
 
     def _hardware_stat(self):
         return self._hardware_words()
+
+    def _waiting_update(self) -> list[dict]:
+        """Chapter 9 screen 11 (D21) as a pile row, not a card of its own:
+        when the weekly check found a newer release, one row on Home —
+        the version, the size, the date — with the same three buttons
+        the row on Settings > The app carries (Download and install, or
+        the winget one-liner; Release notes; Skip this version). Nothing
+        on the Store channel, while the check is off, or Offline."""
+        try:
+            s = updates.status()
+        except Exception:                 # noqa: BLE001
+            return []
+        rel = s.get("available")
+        if rel is None or s.get("mode") in ("store", "off", "offline"):
+            return []
+        mb = rel.size / 1_048_576
+        when = f", {rel.published[:10]}" if rel.published else ""
+        buttons: list = []
+        if self._too_old_for(rel):
+            return [{
+                "at": time.time(), "kind": "update", "mark": "version",
+                "mark_colour": ui.AMBER, "eyebrow": "A newer version",
+                "eyebrow_right": False,
+                "text": f"DeskIT {rel.version} is available, but this copy's settings are "
+                        f"too old to go straight to it — install the intermediate version "
+                        f"the release notes name first.",
+                "note": "Your data folder is untouched either way.",
+                "buttons": [("Release notes", "gold", lambda r=rel: self._open_url(r.notes_url))],
+            }]
+        if s.get("winget_command"):
+            buttons.append(("Copy the winget command", "gold",
+                            lambda c=s["winget_command"]: self._copy_text(c)))
+        elif not paths.DEVELOPER:
+            buttons.append(("Download and install", "gold",
+                            lambda r=rel: self._update_install(r)))
+        buttons.append(("Release notes", "quiet", lambda r=rel: self._open_url(r.notes_url)))
+        buttons.append(("Skip this version", "quiet", lambda r=rel: self._update_skip(r)))
+        return [{
+            "at": time.time(), "kind": "update", "mark": "version",
+            "mark_colour": ui.ACCENT, "eyebrow": "A newer version",
+            "eyebrow_right": False,
+            "text": f"DeskIT {rel.version} is available ({mb:.0f} MB{when}) — "
+                    f"you have {s.get('running', '')}.",
+            "note": "Downloaded from GitHub and checked against its SHA-256 before "
+                    "the installer runs; your data folder is untouched.",
+            "buttons": buttons,
+        }]
 
     def _waiting_hardware(self) -> list[dict]:
         """The rows of chapter 9's screen 10 and 6.9, on the pile rather
@@ -8667,6 +8715,9 @@ class Dashboard:
         rel = s["available"]
         if rel is None or s["mode"] in ("store", "off", "offline"):
             return rows
+        if self._too_old_for(rel):
+            rows.append(("Release notes", lambda r=rel: self._open_url(r.notes_url)))
+            return rows
         if s["winget_command"]:
             rows.append(("Copy the winget command",
                          lambda c=s["winget_command"]: self._copy_text(c)))
@@ -8677,6 +8728,17 @@ class Dashboard:
                      lambda r=rel: self._open_url(r.notes_url)))
         rows.append(("Skip this version", lambda r=rel: self._update_skip(r)))
         return rows
+
+    @staticmethod
+    def _too_old_for(release) -> bool:
+        """11.10: a release whose min_config_version is above this copy's
+        files is not offered as a download — the notes say which
+        intermediate version to install first."""
+        try:
+            import migrations
+            return migrations.too_old_for(release.min_config_version)
+        except Exception:                 # noqa: BLE001
+            return False
 
     def _copy_text(self, text: str) -> None:
         self.root.clipboard_clear()
