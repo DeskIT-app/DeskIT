@@ -29800,6 +29800,177 @@ def test_problems_env_fields():
                for c in problems_mod.env(cfg)["consents"])
 
 
+# ----------------------------------------------- the hardware probe (PR 14)
+#
+# DISTRIBUTION_PLAN.md 6.2-6.3, D14: hardware.py decides the tier from the
+# cheap facts before any model loads, writes the tier's derived defaults
+# into state.json — the machine layer — only where settings.toml is
+# silent, and the checkout applies nothing. Every fact source is faked
+# here; nothing below asks nvidia-smi or PowerShell.
+
+def _facts(**over) -> dict:
+    base = {"cuda_devices": 1, "vram_mb": 16311, "driver": "596.49", "driver_ok": True,
+            "cores": 12, "ram_mb": 16327, "gpu_pack": "venv"}
+    base.update(over)
+    return base
+
+
+def test_hardware_probe_no_nvidia():
+    """No CUDA device at all: cpu, and nvidia-smi is never asked."""
+    import hardware
+
+    asked: list = []
+    with _patched(hardware, "cuda_devices", lambda: 0), \
+            _patched(hardware, "nvidia_smi", lambda *a, **k: asked.append(1) or None), \
+            _patched(hardware, "gpu_pack_state", lambda: "missing"):
+        facts = hardware.probe()
+    assert facts["tier"] == "cpu" and facts["cuda_devices"] == 0 and asked == [], facts
+    assert facts["cores"] >= 1 and facts["ram_mb"] > 0 and facts["probe_version"] == hardware.PROBE_VERSION
+    assert facts["probed_at"][:4] == time.strftime("%Y")
+    assert hardware.tier_for(_facts(cuda_devices=0)) == "cpu"
+    # a card ctranslate2 sees but nvidia-smi cannot describe: gpu, on trust
+    with _patched(hardware, "cuda_devices", lambda: 1), \
+            _patched(hardware, "nvidia_smi", lambda *a, **k: None), \
+            _patched(hardware, "gpu_pack_state", lambda: "venv"):
+        facts = hardware.probe()
+    assert facts["tier"] == "gpu" and facts["vram_mb"] == 0 and facts["driver_ok"] is True
+
+
+def test_hardware_probe_small_card():
+    """4-6 GB is gpu-small: the card, int8_float16, the small Ollama models,
+    the shorter waits; under 4 GB is cpu; 16 GB is gpu with the plain
+    defaults."""
+    import hardware
+
+    with _patched(hardware, "cuda_devices", lambda: 1), \
+            _patched(hardware, "nvidia_smi", lambda *a, **k: (5000, "596.49")), \
+            _patched(hardware, "gpu_pack_state", lambda: "venv"):
+        facts = hardware.probe()
+    assert facts["tier"] == "gpu-small" and facts["vram_mb"] == 5000, facts
+    small = hardware.DERIVED["gpu-small"]
+    assert small["local.compute_type"] == "int8_float16" and small["local.device"] == "cuda"
+    assert small["polish.ollama_model"] == "gemma3:4b" and small["polish.max_wait_s"] == 6.0
+    assert small["translate.ollama_model"] == "llama3.2:3b"
+    assert hardware.tier_for(_facts(vram_mb=3900)) == "cpu"
+    assert hardware.tier_for(_facts(vram_mb=6144)) == "gpu"
+    assert hardware.tier_for(_facts(vram_mb=4096)) == "gpu-small"
+    assert hardware.DERIVED["gpu"]["local.compute_type"] == "float16"
+    assert hardware.DERIVED["cpu"]["local.compute_type"] == "int8"
+    assert hardware.DERIVED["cpu"]["review.enabled"] is False
+    assert hardware.DERIVED["cpu"]["local.beam_size"] == 2
+    # a stranger's copy without the CUDA wheels is cpu until the pack lands
+    with _patched(paths, "DEVELOPER", False):
+        assert hardware.tier_for(_facts(gpu_pack="missing")) == "cpu"
+        assert hardware.tier_for(_facts(gpu_pack="ok")) == "gpu"
+
+
+def test_hardware_probe_old_driver():
+    """A driver under CUDA 12.3's floor (545.84 on Windows) is a cpu tier
+    with the card recorded; an unreadable version counts as too old."""
+    import hardware
+
+    assert hardware.driver_ok("596.49") and hardware.driver_ok("545.84")
+    assert not hardware.driver_ok("545.83") and not hardware.driver_ok("531.14")
+    assert not hardware.driver_ok("") and not hardware.driver_ok("garbage")
+    with _patched(hardware, "cuda_devices", lambda: 1), \
+            _patched(hardware, "nvidia_smi", lambda *a, **k: (16311, "531.14")), \
+            _patched(hardware, "gpu_pack_state", lambda: "venv"):
+        facts = hardware.probe()
+    assert facts["tier"] == "cpu" and facts["driver"] == "531.14" and facts["driver_ok"] is False
+    assert facts["cuda_devices"] == 1, "the card is still on record for the report"
+
+
+def test_the_probe_writes_the_machine_layer_and_a_choice_beats_it():
+    """apply(tier) puts the derived keys in state.json and only where
+    settings.toml is silent; a key the person then writes to settings
+    leaves state in the same save, so the layer on top never hides theirs;
+    a changed tier clears the old tier's keys first; the facts land under
+    hardware.* and the report carries gpu and tier. The checkout applies
+    nothing and records everything."""
+    import hardware
+    import problems as problems_mod
+
+    d, s, t = _layer_files()
+    try:
+        with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+            with _patched(paths, "DEVELOPER", True):
+                assert hardware.apply("cpu") == {}
+                assert not t.exists() or "local.device" not in json.loads(t.read_text("utf-8"))
+            with _patched(paths, "DEVELOPER", False):
+                config_mod.save({"local.beam_size": 4}, settings=s, state=t)
+                written = hardware.apply("cpu")
+                assert "local.beam_size" not in written, "the person's beam size was overwritten"
+                assert written["local.device"] == "cpu" and written["review.enabled"] is False
+                state = json.loads(t.read_text("utf-8"))
+                assert state["local.compute_type"] == "int8" and "local.beam_size" not in state
+                cfg = config_mod.load_layered(settings=s, state=t)
+                assert cfg.local.device == "cpu" and cfg.local.compute_type == "int8"
+                assert cfg.local.beam_size == 4 and cfg.review.enabled is False
+                # the person chooses: their value wins from now on, state lets go
+                config_mod.save({"local.compute_type": "float16"}, settings=s, state=t)
+                state = json.loads(t.read_text("utf-8"))
+                assert "local.compute_type" not in state
+                assert config_mod.load_layered(settings=s, state=t).local.compute_type == "float16"
+                assert "local.compute_type" not in hardware.apply("cpu")
+                # the tier changes: the cpu keys go, the gpu keys come
+                written = hardware.apply("gpu", previous="cpu")
+                state = json.loads(t.read_text("utf-8"))
+                assert "review.enabled" not in state and state["local.device"] == "cuda"
+                assert written["local.device"] == "cuda"
+                cfg = config_mod.load_layered(settings=s, state=t)
+                assert cfg.review.enabled is True and cfg.local.compute_type == "float16"
+                # the facts: state only, never settings, and the report reads them
+                hardware.record(_facts(tier="gpu-small"))
+                assert "hardware" not in s.read_text("utf-8")
+                assert hardware.recorded()["tier"] == "gpu-small"
+                assert hardware.recorded()["vram_mb"] == 16311
+                env = problems_mod.env()
+                assert env["gpu"] is True and env["tier"] == "gpu-small", env
+                hardware.record({"ollama_models": ["gemma3:4b"], "he_voice": ""})
+                assert hardware.recorded()["ollama_models"] == ["gemma3:4b"]
+                assert config_mod.is_state_key("hardware.anything") and not config_mod.is_state_key("local.device")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    assert hardware.DERIVED_KEYS >= {"local.device", "local.compute_type", "review.enabled"}
+    for tier, keys in hardware.DERIVED.items():
+        defaults = config_mod.defaults_flat()
+        for k in keys:
+            assert k in defaults, f"{tier}: {k} is not a defaults.toml key"
+
+
+def test_the_ladder_honours_the_number_format():
+    """local_whisper: auto keeps the ladder it always had; a named format
+    goes on the device asked for with int8 on the processor underneath;
+    cpu_threads reaches WhisperModel only when set."""
+    import transcribers.local_whisper as lw
+
+    built: list[tuple] = []
+
+    class _FakeModel:
+        def __init__(self, model, device, compute_type, **kw):
+            built.append((device, compute_type, kw))
+            if device == "cuda" and compute_type == "int8_float16":
+                raise RuntimeError("no such kernel here")
+
+        def transcribe(self, *a, **k):
+            return iter(()), None
+
+    import faster_whisper
+    with _patched(faster_whisper, "WhisperModel", _FakeModel), \
+            _patched(lw, "_register_cuda_dlls", lambda: None):
+        lw.LocalWhisperTranscriber("m", "he", device="auto")
+        assert [b[:2] for b in built] == [("cuda", "float16")], built
+        built.clear()
+        lw.LocalWhisperTranscriber("m", "he", device="cuda", compute_type="int8_float16",
+                                   cpu_threads=6)
+        assert [b[:2] for b in built] == [("cuda", "int8_float16"), ("cpu", "int8")], built
+        assert built[-1][2] == {"cpu_threads": 6}
+        built.clear()
+        lw.LocalWhisperTranscriber("m", "he", device="cpu", compute_type="int8")
+        assert [b[:2] for b in built] == [("cpu", "int8")] and built[0][2] == {}
+    assert config_mod.LocalConfig().compute_type == "auto" and config_mod.LocalConfig().cpu_threads == 0
+
+
 # ------------------------------------------------------ updates (PR 13)
 #
 # DISTRIBUTION_PLAN.md 11.3-11.6, D21: one weekly look at GitHub Releases

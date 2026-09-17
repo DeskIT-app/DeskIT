@@ -6165,6 +6165,17 @@ def main() -> int:
     # the position: a wizard that appears after 25 s of nothing has
     # already lost the argument it exists to win, and the microphone it
     # writes has to be the one the Recorder is then opened on.
+    # What this computer can do (hardware.py, plan 6.2): the facts into
+    # state.json and the tier's derived defaults into the machine layer,
+    # BEFORE any model loads — the config is read again when it wrote.
+    if not args.fake and not args.config:
+        import hardware as hardware_mod
+        try:
+            hardware_mod.run_at_start()
+            cfg = _load_config(args.config)
+        except Exception:                     # noqa: BLE001
+            log.warning("the hardware probe failed; running as before",
+                        exc_info=True)
     if args.setup or (firstrun.needed(cfg) and not args.fake):
         if firstrun.run(cfg, Path(args.config) if args.config else None):
             cfg = _load_config(args.config)            # it wrote the device

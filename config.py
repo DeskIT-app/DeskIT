@@ -278,6 +278,10 @@ class LocalConfig:
     model: str = "ivrit-ai/whisper-large-v3-turbo-ct2"
     language: str = "he"  # pinned — the ivrit-ai fine-tune broke autodetect
     device: str = "auto"  # auto | cuda | cpu — auto tries the GPU first
+    # auto = float16 on the card, int8 on the processor (the ladder as it
+    # always was); the probe writes int8_float16 for a small card (6.3)
+    compute_type: str = "auto"
+    cpu_threads: int = 0     # 0 = the library's own choice
     # Whisper transcribes only; Gemini also cleans. Without this, the local
     # backend regresses output quality on real (hesitant) dictation.
     cleanup: bool = True
@@ -1672,6 +1676,9 @@ def build(data: dict) -> Config:
             guard_hallucinations=bool(local.get(
                 "guard_hallucinations", LocalConfig.guard_hallucinations)),
             beam_size=int(local.get("beam_size", LocalConfig.beam_size)),
+            compute_type=str(local.get("compute_type",
+                                       LocalConfig.compute_type)).strip().lower() or "auto",
+            cpu_threads=max(0, int(local.get("cpu_threads", LocalConfig.cpu_threads))),
             drop_trailing_boilerplate=bool(local.get(
                 "drop_trailing_boilerplate",
                 LocalConfig.drop_trailing_boilerplate)),
@@ -2568,6 +2575,12 @@ STATE_KEYS: frozenset[str] = frozenset({
     "server.port", "setup.done", "setup.autostart", "config_version",
     "updates.last_check", "updates.latest_seen", "updates.installed_version",
 })
+#: Whole families that are state: the machine facts hardware.py records.
+STATE_PREFIXES: tuple[str, ...] = ("hardware.",)
+
+
+def is_state_key(name: str) -> bool:
+    return name in STATE_KEYS or name.startswith(STATE_PREFIXES)
 
 #: What settings.toml may hold: the scalar kinds config.toml uses, and a
 #: list of strings. Anything else is a bug in the caller.
@@ -2722,15 +2735,23 @@ def defaults_flat(defaults=None) -> dict[str, object]:
 
 
 def save(updates: dict[str, object], *, defaults=None, settings=None,
-         state=None, allow_consent: bool = False) -> None:
+         state=None, allow_consent: bool = False,
+         derived: bool = False) -> None:
     """Write a change into the per-user files.
 
-    STATE_KEYS go to state.json. Everything else goes to settings.toml —
-    unless the new value equals the default, in which case the line is
-    DROPPED, so the file stays "only what you changed". The merged config
-    is built and validated BEFORE either file is touched, for the same
-    reason set_values validates before it swaps: a value that stops the
-    app from starting must not be reachable from a click.
+    STATE_KEYS (and the hardware.* family) go to state.json. Everything
+    else goes to settings.toml — unless the new value equals the
+    default, in which case the line is DROPPED, so the file stays "only
+    what you changed". The merged config is built and validated BEFORE
+    either file is touched, for the same reason set_values validates
+    before it swaps: a value that stops the app from starting must not
+    be reachable from a click.
+
+    `derived=True` is hardware.py's door (plan 6.3): every key goes to
+    state.json, the machine layer, and a value of None removes it. A
+    person's choice always beats a probe: a key written to settings.toml
+    is taken out of state.json in the same breath, so the layer on top
+    never hides the layer they edit.
     """
     _refuse_consent_keys(updates, allow_consent)
     d, s, t = _layer_paths(defaults, settings, state)
@@ -2739,10 +2760,16 @@ def save(updates: dict[str, object], *, defaults=None, settings=None,
     machine = read_state(t)
     touched_settings = touched_state = False
     for name, value in updates.items():
-        if name in STATE_KEYS:
-            machine[name] = value
+        if derived or is_state_key(name):
+            if value is None:
+                machine.pop(name, None)
+            else:
+                machine[name] = value
             touched_state = True
             continue
+        if name in machine:              # the probe's value yields
+            machine.pop(name)
+            touched_state = True
         touched_settings = True
         # True == 1 in Python, so "equals the default" also asks whether
         # both sides are bools or neither is.

@@ -293,7 +293,8 @@ class LocalWhisperTranscriber:
                  english_model: str = "", english_threshold: float = 0.8,
                  initial_prompt: str = "", guard_hallucinations: bool = True,
                  boilerplate: tuple = cleanup_mod.PARLIAMENTARY_BOILERPLATE,
-                 hotwords=None, beam_size: int = 5):
+                 hotwords=None, beam_size: int = 5,
+                 compute_type: str = "auto", cpu_threads: int = 0):
         _register_cuda_dlls()
         try:
             from faster_whisper import WhisperModel
@@ -353,14 +354,24 @@ class LocalWhisperTranscriber:
         self.last_windows: list = []
         self._guards = hallucination_guards(guard_hallucinations)
 
-        attempts = ([("cuda", "float16"), ("cpu", "int8")]
-                    if device == "auto" else
-                    [(device, "float16" if device == "cuda" else "int8")])
+        # The ladder as it always was, unless the probe (hardware.py, plan
+        # 6.3) or the person named a number format: then that format on
+        # the device asked for, and int8 on the processor underneath.
+        if compute_type and compute_type != "auto":
+            first = "cpu" if device == "cpu" else "cuda"
+            attempts = [(first, compute_type)]
+            if first != "cpu":
+                attempts.append(("cpu", "int8"))
+        else:
+            attempts = ([("cuda", "float16"), ("cpu", "int8")]
+                        if device == "auto" else
+                        [(device, "float16" if device == "cuda" else "int8")])
+        threads = {"cpu_threads": int(cpu_threads)} if cpu_threads else {}
         last: Exception | None = None
         for dev, compute in attempts:
             try:
                 candidate = WhisperModel(model, device=dev,
-                                         compute_type=compute)
+                                         compute_type=compute, **threads)
                 # Constructing on "cuda" succeeds even when the CUDA math
                 # libraries are missing — the failure only surfaces on the
                 # first real inference. Force that here, so a broken GPU

@@ -430,6 +430,9 @@ _PUNCTUATORS = (("groq", "Groq — fast, free tier"),
                 ("gemini", "Gemini"),
                 ("ollama", "Ollama, on this computer"))
 _CHANNELS = (("stable", "Stable"), ("beta", "Beta, a little earlier"))
+_COMPUTE = (("auto", "Auto"), ("float16", "float16 — the card"),
+            ("int8_float16", "int8 + float16 — a small card"),
+            ("int8", "int8 — the processor"))
 _CORNERS = (("top-right", "Top right"), ("top-left", "Top left"),
             ("bottom-right", "Bottom right"), ("bottom-left", "Bottom left"))
 # The two corners the status dot may sit in, and the cards' menu with
@@ -1363,6 +1366,12 @@ _MORE: tuple[Friendly, ...] = (
     Friendly("local.beam_size", "How many readings it weighs at once",
              "Fewer is faster and a little less accurate. Do not change "
              "it on a hunch — replay your recordings both ways."),
+    Friendly("local.compute_type", "Number format for the model",
+             "Auto picks the right one for your card or processor; the "
+             "probe sets a lighter one on a small card.", _COMPUTE),
+    Friendly("local.cpu_threads", "Processor threads for the model",
+             "Zero lets the library decide; on a machine without a card "
+             "the probe writes the core count."),
     Friendly("local.drop_trailing_boilerplate",
              "Drop stock phrases stuck to the end",
              "Never in the middle, where they are almost certainly really "

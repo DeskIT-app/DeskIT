@@ -287,6 +287,14 @@ def env(cfg=None) -> dict:
     pins it). gpu and tier join when the hardware probe lands (ch. 6)."""
     out: dict = {"version": "", "os_build": "", "consents": _consents()}
     try:
+        import hardware
+        facts = hardware.recorded()
+        if facts:
+            out["gpu"] = int(facts.get("cuda_devices") or 0) >= 1
+            out["tier"] = str(facts.get("tier") or "")
+    except Exception:                     # noqa: BLE001
+        pass
+    try:
         import version
         out["version"] = version.VERSION
         if paths.DEVELOPER and version.BRANCH:

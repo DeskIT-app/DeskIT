@@ -1649,6 +1649,15 @@ timeout_s = 30
 model = "ivrit-ai/whisper-large-v3-turbo-ct2"
 language = "he"               # MUST stay pinned — the fine-tune broke language autodetect
 device = "auto"               # auto | cuda | cpu — auto tries the GPU, falls back to CPU
+# The number format the model runs in. auto = float16 on a card, int8 on
+# the processor — what the ladder always did. The hardware probe writes
+# int8_float16 for a card with 4-6 GB (it fits, a little slower); a
+# value here is yours and the probe leaves it alone.
+compute_type = "auto"        # auto | float16 | int8_float16 | int8
+# Processor threads for the model when it runs on the CPU. 0 = the
+# library decides; the probe writes the core count on a machine without
+# a card.
+cpu_threads = 0
 cleanup = true                # strip "אה"/"אמ" and collapse restarted phrases
                               # (Whisper only transcribes; Gemini also cleans)
 extra_fillers = []            # add your own, e.g. ["כאילו"] — only add words you

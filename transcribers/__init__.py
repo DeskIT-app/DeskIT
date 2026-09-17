@@ -35,6 +35,8 @@ def local_kwargs(cfg, hotwords=None) -> dict:
                 initial_prompt=cfg.local.initial_prompt,
                 guard_hallucinations=cfg.local.guard_hallucinations,
                 beam_size=cfg.local.beam_size,
+                compute_type=cfg.local.compute_type,
+                cpu_threads=cfg.local.cpu_threads,
                 boilerplate=boilerplate)
 
 
