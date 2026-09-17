@@ -1,7 +1,9 @@
 """Backend A: Gemini API. Transcription + cleanup in one request.
 
-Reads the key from the environment or a local .env file (see apikey.py).
-Never hardcoded.
+The key comes from the secret store (secretstore.py, through apikey.py);
+the SDK's HTTP client rides net.py's transport with the base URL pinned,
+so the one host it can reach is the allowlisted one and every call is a
+row in network.log (D12; the REST port of plan 5.6 retires the SDK).
 
 Free-tier quota is counted PER MODEL (measured: gemini-2.5-flash allows 20
 generate_content requests per day), so this backend is given a list of
@@ -17,6 +19,7 @@ from google import genai
 from google.genai import errors, types
 
 import gemini_pool
+import net
 from apikey import MISSING_KEY_MESSAGE, find_api_key
 from gemini_pool import MAX_COOLDOWN_S, PER_DAY_COOLDOWN_S
 from gemini_pool import parse_429 as _parse_429
@@ -69,8 +72,8 @@ class GeminiTranscriber:
         self._strikes: dict[str, int] = {}
         self._thinking: dict[str, str] = {}   # model -> budget|level|none
         self._client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(timeout=timeout_s * 1000))
+            api_key=api_key, vertexai=False,
+            http_options=net.genai_http_options("transcribe", timeout_s))
 
     @property
     def model(self) -> str:

@@ -107,3 +107,6 @@ problems/
 /state.json
 /config.toml
 /config.legacy.toml
+
+# the egress log net.py writes (D12): hosts and byte counts, no bodies
+network.log*

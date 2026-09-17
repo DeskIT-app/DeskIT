@@ -277,7 +277,7 @@ class Punctuator:
                 self._gemini = translate_mod.GeminiTranslator(
                     list(self._cfg.gemini.models),
                     self._cfg.translate.timeout_s,
-                    system_prompt=self._system_prompt)
+                    system_prompt=self._system_prompt, purpose="punctuate")
             except Exception as e:
                 log.info("no Gemini to punctuate with (%s) — using Ollama", e)
                 self._gemini = False
@@ -293,7 +293,7 @@ class Punctuator:
                 self._cfg.translate.ollama_url,
                 self._cfg.translate.ollama_timeout_s,
                 system_prompt=self._system_prompt,
-                setting="punctuate.ollama_model")
+                setting="punctuate.ollama_model", purpose="punctuate")
         return self._ollama
 
     def _backends(self):

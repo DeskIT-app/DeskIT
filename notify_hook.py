@@ -1,6 +1,6 @@
 """How Claude Code says it is done — and the command-line door for anything else.
 
-Three jobs, one stdlib-only script, exit code ALWAYS 0 and nothing on
+Three jobs, one small script, exit code ALWAYS 0 and nothing on
 stdout, because a Claude Code hook that exits non-zero or prints is a
 hook that blocks or edits the turn it was told about:
 
@@ -45,8 +45,6 @@ import os
 import re
 import sys
 import tomllib
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import paths
@@ -413,15 +411,23 @@ def read_token(path=None) -> str | None:
 
 def post(payload: dict, url: str, token: str, timeout: float = 3.0) -> bool:
     """One POST; True on a 2xx. Any failure — no app, wrong port, bad
-    token, a slow reply — is False, never an exception."""
+    token, a slow reply — is False, never an exception.
+
+    Through net.py like every other request in the tree (D12), which is
+    also why the bearer travels as a header the caller supplies: net.py
+    admits a caller's own bearer for 127.0.0.1 only, and this is the one
+    place that has a reason to — the token may have come from a file
+    named on the command line rather than the store."""
     try:
-        req = urllib.request.Request(
-            url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        import net
+
+        status, _headers, _body = net.request(
+            "POST", url, "notify",
             headers={"Authorization": f"Bearer {token}",
                      "Content-Type": "application/json; charset=utf-8"},
-            method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return 200 <= resp.status < 300
+            body=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            timeout_s=timeout)
+        return 200 <= status < 300
     except Exception:                     # noqa: BLE001
         return False
 

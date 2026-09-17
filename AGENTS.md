@@ -234,7 +234,7 @@ exactly what classic did.
 ## The machine
 
 - Windows 11, Python 3.11 venv at `.venv\` (stdlib-first: cloud APIs go
-  through plain `urllib`; avoid new pip dependencies).
+  through plain HTTP in `net.py`; avoid new pip dependencies).
 - GPU: 16 GB VRAM. Budgeted: two Whisper models (~6 GB) + gemma3:12b
   resident in Ollama (~8.5 GB). Adding model residency means evicting
   something — check `nvidia-smi`.
@@ -251,21 +251,48 @@ exactly what classic did.
   dictation fallback pool, 20 req/day/model; Groq: repair pass, ~1,000
   req/day. The phone token is `secrets\phone_token.bin` (DPAPI), moved
   there from `server_token.txt` on the first start after 2026-09-17.
+- Network: every outbound request leaves through `net.py` — `request()`
+  / `post_json()` / `open()` (streamed), each with a `purpose` from
+  `net.PURPOSES` and, for a cloud host, `secret="groq"` / `"gemini"` by
+  NAME; `net.py` looks the value up, attaches it in that provider's
+  header and never sends it anywhere else (`SECRET_HOSTS`). Hosts are
+  the frozen `net.ALLOWED_HOSTS`; anything else is `EgressRefused`
+  before a socket opens. One row per call — host, purpose, bytes,
+  status, secret name, never a body or a URL — in `net.rows()` and
+  `network.log` (gitignored). A test stands in for the wire at
+  `net._connect` (tests' `_FakeRaw`). The google-genai clients get
+  `net.genai_http_options(purpose, timeout_s)` + `vertexai=False`.
 - The app runs windowless under `pythonw.exe`, single instance enforced by
   a named mutex (`singleton.py`); status in `app.log`, everything ever
   dictated in `transcripts.log`. Both logs are plaintext and private.
 
 ## Traps we already paid for — do not re-arm them
 
+- **No module but `net.py` imports a transport.** `urllib.request`,
+  `urllib.error`, `http.client`, `httpx`, `requests`, `socket`, `ssl` —
+  `test_only_net_imports_transport` greps for them, and the grep is the
+  proof a stranger runs (plan 5.10). Need a new host? Add it to
+  `net.ALLOWED_HOSTS` in its own commit; a new reason? `net.PURPOSES`.
+  Never pass an `Authorization` header to a remote host yourself —
+  `net.py` refuses it; pass `secret=<name>`. Loopback is the exception
+  (the hook's phone token). An HTTP error status is a RETURN, not an
+  exception: check `status`, read the body; `net.NetError` is the
+  connection failing, `net.EgressRefused` the door staying shut.
+- **`net.py` defines `open()`; inside it, write files with
+  `path.open(...)`.** A bare `open(path, "a")` in that module calls the
+  request function and fails on "unknown purpose 'a'" — silently, in
+  the log writer's `except`, which is how the first version wrote no
+  log at all.
 - **Never name a module after a standard-library module.** The plan
   called the secret store `secrets.py`; a file of that name beside
   `main.py` shadows stdlib `secrets` (`token_urlsafe` in `server.py` and
   eleven files in the venv) because the app folder is first on
   `sys.path`. It is `secretstore.py`. Check `python -c "import X"` from
   a folder WITHOUT the file before picking a new module name.
-- **A secret value goes into a variable in `secretstore.py` and nowhere
-  else.** `apikey.py` is a shim over it; clients get the value and use it
-  in the request. Never log one, never put one in a message, a report or
+- **A secret value goes into a variable in `secretstore.py` and `net.py`
+  and nowhere else.** `apikey.py` is a shim over the store; a client
+  checks that a key EXISTS (`find_key`, keep the source, `del` the value)
+  and hands `net.py` the NAME. Never log one, never put one in a message, a report or
   a settings file, never cache it in a module global. Tests that write a
   key use the `DeskIT.test/` Credential Manager prefix (`DESKIT_HOME`
   selects it) or the DPAPI files under the tests' scratch home — a test

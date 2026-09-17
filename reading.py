@@ -415,14 +415,15 @@ class Writer:
                 and getattr(pcfg, "groq_model", ""):
             builders.append(lambda: translate_mod.GroqTranslator(
                 pcfg.groq_model, pcfg.groq_timeout_s,
-                system_prompt=_WRITE_RULES, max_tokens=cap))
+                system_prompt=_WRITE_RULES, max_tokens=cap,
+                purpose="reading"))
         builders.append(lambda: translate_mod.OllamaTranslator(
             getattr(pcfg, "ollama_model", "")
             or self._cfg.translate.ollama_model,
             self._cfg.translate.ollama_url,
             self._cfg.translate.ollama_timeout_s,
             system_prompt=_WRITE_RULES, setting="polish.ollama_model",
-            num_predict=cap))
+            num_predict=cap, purpose="reading"))
         for build in builders:
             try:
                 yield build()

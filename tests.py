@@ -45,6 +45,9 @@ _paths_mod.STATE_FILE = _SCRATCH_HOME / "state.json"
 # not files — tests that write one use _test_cred_prefix below.
 _paths_mod.SECRETS_DIR = _SCRATCH_HOME / "secrets"
 _paths_mod.PHONE_TOKEN = _SCRATCH_HOME / "phone" / "server_token.txt"
+# And the egress log: every net.py row a test provokes lands here, not in
+# the checkout's network.log the owner reads.
+_paths_mod.NETWORK_LOG = _SCRATCH_HOME / "network.log"
 
 import apikey
 import paths
@@ -880,6 +883,31 @@ def _patched(module, name, replacement):
         yield replacement
     finally:
         setattr(module, name, real)
+
+
+class _FakeRaw:
+    """What net._connect hands back when a test stands in for the wire:
+    the shape of an http.client response — status, headers, read(),
+    iteration by line, close() — and nothing more. A test that wants an
+    HTTP error passes its status; a test that wants a dead server raises
+    net.NetError from its fake _connect instead."""
+
+    def __init__(self, body: bytes = b"", status: int = 200, headers=None):
+        self._body, self.status = body, status
+        self.headers = headers or {}
+        self.closed = False
+
+    def read(self) -> bytes:
+        body, self._body = self._body, b""
+        return body
+
+    def __iter__(self):
+        for line in self._body.splitlines(keepends=True):
+            yield line
+        self._body = b""
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _SpyPopup:
@@ -4687,27 +4715,16 @@ def test_ollama_num_predict_stays_out_of_shared_requests() -> None:
     replies; nobody else's request body may change by a byte."""
     import json as json_mod
 
+    import net as net_mod
     import translate as translate_mod
 
     captured: dict = {}
 
-    class _Resp:
-        def __enter__(self):
-            return self
+    def fake_connect(method, url, headers, body, timeout_s):
+        captured["body"] = json_mod.loads(body.decode("utf-8"))
+        return _FakeRaw(b'{"message":{"content":"ok"}}')
 
-        def __exit__(self, *args):
-            return False
-
-        def read(self):
-            return b'{"message":{"content":"ok"}}'
-
-    def fake_urlopen(request, timeout=None):
-        captured["body"] = json_mod.loads(request.data.decode("utf-8"))
-        return _Resp()
-
-    original = translate_mod.urllib.request.urlopen
-    translate_mod.urllib.request.urlopen = fake_urlopen
-    try:
+    with _patched(net_mod, "_connect", fake_connect):
         plain = translate_mod.OllamaTranslator(
             "m", "http://127.0.0.1:11434", 5)
         assert plain.translate("x") == "ok"
@@ -4718,8 +4735,6 @@ def test_ollama_num_predict_stays_out_of_shared_requests() -> None:
             "m", "http://127.0.0.1:11434", 5, num_predict=128)
         assert capped.translate("x") == "ok"
         assert captured["body"]["options"]["num_predict"] == 128
-    finally:
-        translate_mod.urllib.request.urlopen = original
 
 
 def test_the_fast_knobs_validate_and_default_classic_shaped() -> None:
@@ -10875,7 +10890,6 @@ def _bare_groq_vision():
     import visual_qa as vq
 
     g = vq.GroqVision.__new__(vq.GroqVision)
-    g._key = "test-key"
     g._model = "qwen/qwen3.6-27b"
     g._timeout = 20
     g._num_predict = 300
@@ -10909,7 +10923,10 @@ def test_groq_vision_request_shape() -> None:
     headers = g._headers()
     assert headers["User-Agent"] == "deskit/1.0", \
         "Cloudflare 403s Python's default UA (error 1010)"
-    assert headers["Authorization"] == "Bearer test-key"
+    # The key is net.py's to attach, by name, at the door (D12): this
+    # class holds no value and sends no Authorization of its own.
+    assert "Authorization" not in headers, headers
+    assert not hasattr(g, "_key"), "the client holds a key value"
 
 
 def test_ollama_vision_history_reuses_one_image() -> None:
@@ -23939,6 +23956,23 @@ def test_the_hook_script_maps_events_and_never_fails() -> None:
     t0 = time.monotonic()
     assert hook.post({}, "http://127.0.0.1:1/notify", "t", timeout=0.5) is False
     assert time.monotonic() - t0 < 2.0
+    # The knock goes through net.py like everything else (D12): a 2xx is
+    # True, the bearer rides as the caller's own header — admitted for
+    # loopback only — and the row names the purpose, never the token.
+    import net as net_mod
+    seen: list[tuple] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        seen.append((method, url, dict(headers)))
+        return _FakeRaw(b"", status=204)
+
+    with _patched(net_mod, "_connect", fake_connect):
+        assert hook.post({"title": "x"}, "http://127.0.0.1:8756/notify",
+                         "tok-fixture") is True
+    assert seen[0][0] == "POST" and seen[0][2]["Authorization"] == "Bearer tok-fixture"
+    row = net_mod.rows()[-1]
+    assert (row.host, row.purpose, row.status) == ("127.0.0.1", "notify", 204), row
+    assert "tok-fixture" not in paths.NETWORK_LOG.read_text(encoding="utf-8")
     assert hook.main(["--title", "x", "--url", "http://127.0.0.1:1/notify"]) == 0
     assert hook.main(["--no-such-flag"]) == 0, "argparse errors must not leak"
 
@@ -29786,6 +29820,269 @@ def test_only_secretstore_touches_the_key_backends():
             if backends.search(line):
                 bad.append(f"{py.name}:{i}: {line.strip()}")
     assert not bad, "\n".join(bad)
+
+
+# ---------------------------------------------- net.py, the one door out
+#
+# DISTRIBUTION_PLAN.md 5.4-5.8, D12 lock 2. Every test here stands in for
+# the wire at net._connect — the one seam — so nothing leaves this PC, and
+# every row a test provokes lands in the scratch network.log (see the
+# guard at the top of this file), never in the owner's.
+
+_TRANSPORT_IMPORT = re.compile(
+    r"^\s*(?:import|from)\s+(?:urllib\.(?:request|error)\b|urllib\s*(?:$|,|;)"
+    r"|http\.client\b|httpx\b|requests\b|socket\b|ssl\b)")
+
+
+def test_only_net_imports_transport():
+    """Static: urllib.request, http.client, httpx, requests, socket and
+    ssl are imported by net.py and by nothing else in the product tree.
+    server.py's http.server is the INBOUND listener, not a transport, and
+    urllib.parse is string work. The same grep a sceptic runs (5.10)."""
+    bad = []
+    for py in sorted(REPO.glob("*.py")) + sorted((REPO / "transcribers").glob("*.py")):
+        if py.name == "net.py" or py.name.startswith("tests"):
+            continue
+        for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+            if _TRANSPORT_IMPORT.match(line):
+                bad.append(f"{py.name}:{i}: {line.strip()}")
+    assert not bad, "\n".join(bad)
+    # And the allowlist is what the plan froze: Cerebras is out (D6),
+    # Anthropic was never in, loopback is the one host offline mode keeps.
+    import net as net_mod
+    assert isinstance(net_mod.ALLOWED_HOSTS, frozenset)
+    assert "api.cerebras.ai" not in net_mod.ALLOWED_HOSTS
+    assert not any("anthropic" in h for h in net_mod.ALLOWED_HOSTS)
+    assert {"127.0.0.1", "api.groq.com", "generativelanguage.googleapis.com"} <= net_mod.ALLOWED_HOSTS
+
+
+def test_net_refuses_unlisted_host():
+    """A request to a host outside ALLOWED_HOSTS raises EgressRefused
+    before any socket is opened — the fake transport counts zero
+    connects — and the refusal is itself a row. Plain http to a remote
+    host is refused too; loopback over http passes; offline mode refuses
+    every remote host and still lets loopback through; an unknown
+    purpose is a programming error, not a policy answer."""
+    import net as net_mod
+
+    connects: list[str] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        connects.append(url)
+        return _FakeRaw(b"{}")
+
+    with _patched(net_mod, "_connect", fake_connect):
+        before = len(net_mod.rows())
+        try:
+            net_mod.request("GET", "https://example.com/x", "polish")
+        except net_mod.EgressRefused as e:
+            assert e.host == "example.com" and e.purpose == "polish", e
+        else:
+            raise AssertionError("an unlisted host was admitted")
+        assert connects == [], connects
+        row = net_mod.rows()[-1]
+        assert (row.host, row.purpose, row.status) == ("example.com", "polish", "refused"), row
+        try:
+            net_mod.request("GET", "http://api.groq.com/openai/v1/models", "key-test")
+        except net_mod.EgressRefused as e:
+            assert "https" in e.reason, e
+        else:
+            raise AssertionError("plain http left for a remote host")
+        status, _headers, body = net_mod.request(
+            "GET", "http://127.0.0.1:11434/api/ps", "ollama")
+        assert status == 200 and body == b"{}"
+        assert connects == ["http://127.0.0.1:11434/api/ps"], connects
+        with _patched(net_mod, "offline", True):
+            try:
+                net_mod.request("GET", "https://api.groq.com/openai/v1/models", "key-test")
+            except net_mod.EgressRefused as e:
+                assert "offline" in e.reason, e
+            else:
+                raise AssertionError("offline mode let a remote host through")
+            net_mod.request("GET", "http://127.0.0.1:11434/api/ps", "ollama")
+        assert len(connects) == 2, connects
+        try:
+            net_mod.request("GET", "https://api.groq.com/openai/v1/models", "bogus")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("an unknown purpose was accepted")
+        assert len(net_mod.rows()) - before == 5, net_mod.rows()[before:]
+    text = paths.NETWORK_LOG.read_text(encoding="utf-8")
+    assert "example.com | polish | 0 | 0 | refused | - | -" in text, text
+    assert "/x" not in text and "/openai" not in text and "/api/ps" not in text, \
+        "a URL path reached the log"
+
+
+def test_net_never_puts_key_in_url():
+    """A Google URL carrying key= is refused. The fixture keys travel only
+    in the header net.py attaches for that secret's own host —
+    Authorization: Bearer for groq, x-goog-api-key for gemini — so a groq
+    key can never go to Google, a gemini key never to Groq, and a caller's
+    own bearer never to a remote host. The log names the secret, never
+    the value; a secret nothing holds is SecretMissing, which the
+    fall-through `except Exception` of every feature already catches."""
+    import net as net_mod
+    import secretstore
+
+    groq_fixture = "gsk_fixture_url_" + "q" * 24
+    gem_fixture = "AIza_fixture_url_" + "g" * 20
+    captured: list[tuple[str, dict]] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        captured.append((url, dict(headers)))
+        return _FakeRaw(b"{}")
+
+    google = "https://generativelanguage.googleapis.com/v1beta/models"
+    groq = "https://api.groq.com/openai/v1/chat/completions"
+    with _test_cred_prefix() as store, _patched(net_mod, "_connect", fake_connect):
+        store.set("groq", groq_fixture)
+        store.set("gemini", gem_fixture)
+        for url, purpose, secret, why in (
+                (google + "?key=" + gem_fixture, "catalog", "gemini", "key in the query"),
+                (google, "catalog", "groq", "groq key to Google"),
+                (groq, "polish", "gemini", "gemini key to Groq"),
+                (groq, "polish", "phone_token", "the phone token off this PC")):
+            try:
+                net_mod.request("GET", url, purpose, secret=secret)
+            except net_mod.EgressRefused:
+                pass
+            else:
+                raise AssertionError(f"admitted: {why}")
+        try:
+            net_mod.request("GET", groq, "polish",
+                            headers={"Authorization": "Bearer " + groq_fixture})
+        except net_mod.EgressRefused as e:
+            assert "Authorization" in e.reason, e
+        else:
+            raise AssertionError("a caller's own bearer left for a remote host")
+        assert captured == [], captured
+        net_mod.request("GET", google, "catalog", secret="gemini")
+        net_mod.post_json(groq, "polish", {"x": 1}, secret="groq")
+        (u1, h1), (u2, h2) = captured
+        assert u1 == google and h1["x-goog-api-key"] == gem_fixture and "Authorization" not in h1, h1
+        assert u2 == groq and h2["Authorization"] == "Bearer " + groq_fixture \
+            and "x-goog-api-key" not in h2, h2
+        assert h2["User-Agent"] == "deskit/1.0" and h2["Content-Type"] == "application/json"
+        # The one bearer a caller may hand over itself: to our own listener.
+        net_mod.request("POST", "http://127.0.0.1:8756/notify", "notify",
+                        headers={"Authorization": "Bearer phone-fixture"}, body=b"{}")
+        assert captured[-1][1]["Authorization"] == "Bearer phone-fixture"
+        with _patched(secretstore, "find_key", lambda name: (None, "not found")):
+            try:
+                net_mod.request("GET", groq, "polish", secret="groq")
+            except net_mod.SecretMissing as e:
+                assert e.name == "groq" and isinstance(e, net_mod.NetError)
+            else:
+                raise AssertionError("a request went out with no key to attach")
+    text = paths.NETWORK_LOG.read_text(encoding="utf-8")
+    for value in (groq_fixture, gem_fixture, "phone-fixture"):
+        assert value not in text, "a secret value reached network.log"
+    tail = text.splitlines()[-4:]
+    assert any("| catalog | 0 | 2 | 200 | gemini | -" in line for line in tail), tail
+    assert any("| polish | 8 | 2 | 200 | groq | -" in line for line in tail), tail
+
+
+def test_network_log_row_shape():
+    """Each row has exactly the eight fields of 5.4 — time, host,
+    purpose, bytes up, bytes down, HTTP status or error class, secret
+    NAME, consent — and no row carries a body fragment, a header value or
+    a query string. Bytes are counted on a whole read and on a streamed
+    one alike; a dead server's row names the error class; the in-memory
+    table and the file say the same thing."""
+    import net as net_mod
+
+    reply = b'{"message":{"content":"body-secret-text"}}\n' * 3
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        if "dead" in url:
+            raise net_mod.NetError("refused") from ConnectionRefusedError(10061, "refused")
+        return _FakeRaw(reply, headers={"X-Fixture": "header-secret-value"})
+
+    with _patched(net_mod, "_connect", fake_connect):
+        before = len(net_mod.rows())
+        up = b'{"prompt":"up-secret-text"}'
+        status, headers, body = net_mod.request(
+            "POST", "http://127.0.0.1:11434/api/chat?verbose=1&q=query-secret",
+            "ollama", body=up)
+        assert status == 200 and body == reply and headers["X-Fixture"] == "header-secret-value"
+        with net_mod.open("POST", "http://127.0.0.1:11434/api/chat", "lookup", body=up) as r:
+            assert r.status == 200
+            lines = list(r)
+            assert len(lines) == 3, lines
+            r.close()                      # a watchdog closing early ...
+        try:
+            net_mod.request("GET", "http://127.0.0.1:11434/dead", "ollama")
+        except net_mod.NetError:
+            pass
+        else:
+            raise AssertionError("a dead server answered")
+    rows = net_mod.rows()[before:]
+    assert [r.purpose for r in rows] == ["ollama", "lookup", "ollama"], rows
+    assert (rows[0].up, rows[0].down, rows[0].status) == (len(up), len(reply), 200), rows[0]
+    assert (rows[1].up, rows[1].down, rows[1].status) == (len(up), len(reply), 200), rows[1]
+    assert (rows[2].up, rows[2].down, rows[2].status) == (0, 0, "ConnectionRefusedError"), rows[2]
+    assert all(r.host == "127.0.0.1" and r.secret == "-" and r.consent == "-" for r in rows)
+    text = paths.NETWORK_LOG.read_text(encoding="utf-8")
+    tail = text.splitlines()[-3:]
+    assert tail == [net_mod.format_row(r) for r in rows], (tail, rows)
+    for line in tail:
+        fields = line.split(" | ")
+        assert len(fields) == 8, fields
+        assert re.fullmatch(r"\d{4}-\d\d-\d\d \d\d:\d\d:\d\d", fields[0]), fields[0]
+        int(fields[3]), int(fields[4])
+    for leak in ("body-secret-text", "header-secret-value", "up-secret-text",
+                 "query-secret", "verbose", "/api/chat", "X-Fixture"):
+        assert leak not in text, f"{leak!r} reached network.log"
+
+
+def test_plain_dictation_touches_only_loopback():
+    """D27's phase-1 acceptance, as a test: a local-backend dictation on a
+    copy with NO key stored — the shipped defaults, repair on and Groq
+    preferred — tries no host but 127.0.0.1. The fake wire refuses every
+    connection the way a PC without Ollama does; what is asserted is the
+    set of hosts that were TRIED, from the table and from the file, and
+    that the text still landed (raw, unrepaired). The owner's own keys
+    are taken out of play the way an installed copy never sees them:
+    the test prefix in Credential Manager, no DESKIT_* variables, and
+    PORTABLE off so neither the bare names nor .env are read."""
+    import main as main_mod
+    import net as net_mod
+    from urllib.parse import urlsplit
+
+    tried: list[str] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        tried.append(url)
+        raise net_mod.NetError("refused") from ConnectionRefusedError(10061, "refused")
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-loopback-"))
+    fake = _FakeInjector()
+    hidden = {k: os.environ.pop(k) for k in ("DESKIT_GROQ_API_KEY", "DESKIT_GEMINI_API_KEY")
+              if k in os.environ}
+    try:
+        with _test_cred_prefix(), _patched(paths, "PORTABLE", False), \
+                _patched(net_mod, "_connect", fake_connect), \
+                _patched(main_mod, "injector", fake):
+            app = _worker_app(_Flaky(0, text="שלום עולם"), tmp)
+            app.cfg = dataclasses.replace(app.cfg, polish=config_mod.PolishConfig(
+                when="always", min_chars=1, max_wait_s=5))
+            assert app.cfg.polish.prefer == "groq", "the shipped default is cloud-first"
+            before = len(net_mod.rows())
+            app._handle(b"RIFF-audio", 4.0, fake.focus)
+        rows = net_mod.rows()[before:]
+        hosts = {r.host for r in rows}
+        assert tried, "the repair never reached the wire — nothing was proved"
+        assert hosts == {"127.0.0.1"}, (hosts, tried)
+        assert all(urlsplit(u).hostname == "127.0.0.1" for u in tried), tried
+        assert all(r.secret == "-" for r in rows), rows
+        landed = [c[-1] for c in fake.calls if c[0] in ("replace", "inject")]
+        assert landed == ["שלום עולם"], fake.calls
+        text = paths.NETWORK_LOG.read_text(encoding="utf-8").splitlines()[-len(rows):]
+        assert all(line.split(" | ")[1] == "127.0.0.1" for line in text), text
+    finally:
+        os.environ.update(hidden)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

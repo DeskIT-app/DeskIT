@@ -12,8 +12,15 @@ spent it falls back to a local Ollama model — the same cloud-first,
 local-when-spent shape the dictation path already uses, so translation
 never becomes another thing that stops working at 20 requests.
 
-Ollama is reached over plain HTTP with urllib: no new pip dependency, and
-nothing is loaded into VRAM until the fallback actually fires.
+Ollama is reached over plain HTTP: no new pip dependency, and nothing is
+loaded into VRAM until the fallback actually fires.
+
+Every request here leaves through net.py (since 2026-09-17, D12): the
+host is checked against its allowlist, the key is attached THERE by name,
+and one row per call lands in network.log. Nothing in this file holds a
+key value or opens a socket. Each backend takes a ``purpose`` — the
+feature that built it (polish, punctuate, lookup, ...) — because the
+same three classes serve six keys and the log row has to say which.
 """
 from __future__ import annotations
 
@@ -21,9 +28,8 @@ import json
 import logging
 import re
 import time
-import urllib.error
-import urllib.request
 
+import net
 from transcribers.base import RateLimitError, TranscriptionError
 
 log = logging.getLogger("app")
@@ -112,7 +118,8 @@ class GeminiTranslator:
     name = "gemini"
 
     def __init__(self, models: list[str] | str, timeout_s: int,
-                 target: str = "English", system_prompt=None):
+                 target: str = "English", system_prompt=None,
+                 purpose: str = "translate"):
         from google import genai
         from google.genai import types
 
@@ -133,9 +140,12 @@ class GeminiTranslator:
         self._strikes: dict[str, int] = {}
         self._thinking: dict[str, str] = {}
         self._types = types
+        # The SDK still holds the key (interim until the REST port, plan
+        # 5.6); its transport and base URL are net.py's, so the host is
+        # pinned and every call is a row in network.log.
         self._client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(timeout=timeout_s * 1000))
+            api_key=api_key, vertexai=False,
+            http_options=net.genai_http_options(purpose, timeout_s))
 
     def _one(self, model: str, text: str) -> str:
         import gemini_pool
@@ -224,12 +234,13 @@ class OllamaTranslator:
                  target: str = "English", system_prompt=None,
                  setting: str = "translate.ollama_model", *,
                  keep_alive: str | None = None, on_chunk=None,
-                 num_predict: int | None = None):
+                 num_predict: int | None = None, purpose: str = "ollama"):
         self._model = model
         self._url = url.rstrip("/")
         self._timeout = timeout_s
         self._target = target
         self._system = system_prompt
+        self._purpose = purpose
         # Which config key to name when the model is missing. polish.py
         # reuses this class with a DIFFERENT key, and telling someone to
         # edit translate.ollama_model when the polish model is the one that
@@ -256,8 +267,8 @@ class OllamaTranslator:
         0.53 s instead of 5.4 s of nothing (measured 2026-08-19).
 
         The deadline below is what streaming COSTS, and it has to be paid
-        back by hand. urllib's timeout is per socket operation, and it
-        was bounding the whole request only by accident of stream=false:
+        back by hand. The socket timeout is per operation, and it was
+        bounding the whole request only by accident of stream=false:
         the server says nothing for the entire generation, so the first
         recv times out. Streamed, a token lands every ~23 ms and no recv
         ever waits, so timeout stops meaning anything. Measured
@@ -329,28 +340,24 @@ class OllamaTranslator:
             payload["options"]["num_predict"] = self._num_predict
         if self._keep_alive is not None:
             payload["keep_alive"] = self._keep_alive
-        request = urllib.request.Request(
-            f"{self._url}/api/chat",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(request,
-                                        timeout=self._timeout) as response:
+            with net.open("POST", f"{self._url}/api/chat", self._purpose,
+                          headers={"Content-Type": "application/json"},
+                          body=json.dumps(payload).encode("utf-8"),
+                          timeout_s=self._timeout) as response:
+                if response.status != 200:
+                    detail = response.text()[:200]
+                    if response.status == 404:
+                        raise TranslationError(
+                            f"Ollama has no model {self._model!r} — run "
+                            f"'ollama pull {self._model}' or change "
+                            f"{self._setting} in config.toml")
+                    raise TranslationError(
+                        f"Ollama returned HTTP {response.status}: {detail}")
                 content = self._read(response)
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8", "replace")[:200]
-            except Exception:
-                pass
-            if e.code == 404:
-                raise TranslationError(
-                    f"Ollama has no model {self._model!r} — run "
-                    f"'ollama pull {self._model}' or change "
-                    f"{self._setting} in config.toml") from e
-            raise TranslationError(
-                f"Ollama returned HTTP {e.code}: {detail}") from e
-        except urllib.error.URLError as e:
+        except TranslationError:
+            raise
+        except net.NetError as e:
             raise TranslationError(
                 f"cannot reach Ollama at {self._url} ({e.reason}) — is it "
                 f"running?") from e
@@ -366,11 +373,10 @@ class OllamaTranslator:
 CEREBRAS_URL = "https://api.cerebras.ai/v1"
 GROQ_URL = "https://api.groq.com/openai/v1"
 
-# A named User-Agent, and this is not cosmetic: api.cerebras.ai sits behind
-# Cloudflare, which answers Python's default signature (Python-urllib/3.x)
-# with 403 / error 1010 "banned based on your browser's signature" —
-# measured live with the user's own key. Any named client passes.
-USER_AGENT = "deskit/1.0"
+# The named User-Agent Cloudflare demands (error 1010 on Python's default)
+# is net.py's, sent on every request; the name stays here for the one
+# place that still spells it out (visual_qa.GroqVision._headers).
+USER_AGENT = net.USER_AGENT
 
 
 class CerebrasTranslator:
@@ -382,11 +388,13 @@ class CerebrasTranslator:
     well under a second, turning the longest fixed wait in the pipeline
     into the shortest — at zero cost where a free tier still exists.
 
-    OpenAI-compatible over plain urllib, like OllamaTranslator above: no
-    new pip dependency, no contact until first use, and the constructor
-    raises (rather than translating badly) when no key is configured, so
-    callers can simply fall through to the next backend. GroqTranslator
-    below is this exact class pointed at a different host.
+    OpenAI-compatible over plain HTTP through net.py, like OllamaTranslator
+    above: no new pip dependency, no contact until first use, and the
+    constructor raises (rather than translating badly) when no key is
+    stored, so callers can simply fall through to the next backend. The
+    key itself is attached by net.py under its NAME (`secret` below); this
+    class never holds the value. GroqTranslator below is this exact class
+    pointed at a different host.
 
     HISTORY WORTH KEEPING: Cerebras was chosen first, on published free-
     tier terms of ~1M tokens/day. Measured live on 2026-08-22 with the
@@ -406,6 +414,10 @@ class CerebrasTranslator:
     name = "cerebras"
     base_url = CEREBRAS_URL
     key_names = ("CEREBRAS_API_KEY",)
+    # The secret NAME net.py attaches (net.SECRET_HOSTS). Cerebras has
+    # none: its host is off the allowlist (D6), so a request would be
+    # refused at the door even if the constructor let it through.
+    secret = "cerebras"
     setting_hint = "[polish] cerebras_model"
     provider_label = "Cerebras"
     # Provider-specific request-body additions (see GroqTranslator's twin
@@ -423,19 +435,23 @@ class CerebrasTranslator:
         return CEREBRAS_MISSING_KEY_MESSAGE
 
     def __init__(self, model: str, timeout_s: int, target: str = "English",
-                 system_prompt=None, max_tokens: int | None = None):
+                 system_prompt=None, max_tokens: int | None = None,
+                 purpose: str = "translate"):
         import apikey
 
         # find_key directly, not a per-provider helper: the subclass below
-        # changes only key_names, and one lookup covers both.
+        # changes only key_names, and one lookup covers both. Only the
+        # presence and the SOURCE are kept; the value is dropped on the
+        # floor here and fetched again by net.py when the request goes.
         key, self.key_source = apikey.find_key(type(self).key_names)
         if not key:
             raise TranslationError(type(self)._missing_key_message())
-        self._key = key
+        del key
         self._model = model
         self._timeout = timeout_s
         self._target = target
         self._system = system_prompt
+        self._purpose = purpose
         # Sized by the caller from the text being repaired: the honest
         # reply is never much longer than its input, so a cap converts a
         # runaway generation into a bounded failure the fallback absorbs —
@@ -462,43 +478,37 @@ class CerebrasTranslator:
             body["max_tokens"] = self._max_tokens
         if type(self).extra_body:
             body.update(type(self).extra_body)
-        request = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {self._key}",
-                     "User-Agent": USER_AGENT})
+        label = type(self).provider_label
         try:
-            with urllib.request.urlopen(request,
-                                        timeout=self._timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8", "replace")[:200]
-            except Exception:
-                pass
-            label = type(self).provider_label
-            if e.code == 402:
+            status, _headers, raw = net.post_json(
+                f"{self.base_url}/chat/completions", self._purpose, body,
+                secret=type(self).secret, timeout_s=self._timeout)
+        except net.EgressRefused as e:
+            raise TranslationError(
+                f"{label} is not a host this app talks to ({e.reason})") from e
+        except net.NetError as e:
+            raise TranslationError(
+                f"cannot reach {label} at {self.base_url} ({e.reason})") from e
+        except Exception as e:
+            raise TranslationError(f"{label} request failed: {e}") from e
+        if status != 200:
+            detail = raw.decode("utf-8", "replace")[:200]
+            if status == 402:
                 raise RateLimitError(
                     f"{label} reports no quota for this key ({detail}) "
-                    "— falling through to the next repair backend") from e
-            if e.code == 429:
-                raise RateLimitError(
-                    f"{label} rate limit reached ({detail})") from e
-            if e.code == 404:
+                    "— falling through to the next repair backend")
+            if status == 429:
+                raise RateLimitError(f"{label} rate limit reached ({detail})")
+            if status == 404:
                 raise TranslationError(
                     f"{label} has no model {self._model!r} — change "
-                    f"{type(self).setting_hint} in config.toml") from e
-            raise TranslationError(
-                f"{label} returned HTTP {e.code}: {detail}") from e
-        except urllib.error.URLError as e:
-            raise TranslationError(
-                f"cannot reach {type(self).provider_label} at "
-                f"{self.base_url} ({e.reason})") from e
+                    f"{type(self).setting_hint} in config.toml")
+            raise TranslationError(f"{label} returned HTTP {status}: {detail}")
+        try:
+            data = json.loads(raw.decode("utf-8"))
         except Exception as e:
-            raise TranslationError(
-                f"{type(self).provider_label} request failed: {e}") from e
+            raise TranslationError(f"{label} sent a reply that is not "
+                                   f"JSON: {e}") from e
 
         choices = data.get("choices") or []
         content = (choices[0].get("message") or {}).get("content", "") \
@@ -538,6 +548,7 @@ class GroqTranslator(CerebrasTranslator):
     name = "groq"
     base_url = GROQ_URL
     key_names = ("GROQ_API_KEY",)
+    secret = "groq"
     setting_hint = "[polish] groq_model"
     provider_label = "Groq"
 
@@ -572,7 +583,8 @@ class Translator:
             try:
                 self._cloud = GeminiTranslator(list(self._cfg.gemini.models),
                                                self._cfg.translate.timeout_s,
-                                               self._cfg.translate.target)
+                                               self._cfg.translate.target,
+                                               purpose="translate")
             except Exception as e:
                 log.info("no Gemini translator (%s) — using Ollama", e)
                 self._cloud = False
@@ -584,7 +596,7 @@ class Translator:
                 self._cfg.translate.ollama_model,
                 self._cfg.translate.ollama_url,
                 self._cfg.translate.ollama_timeout_s,
-                self._cfg.translate.target)
+                self._cfg.translate.target, purpose="translate")
         return self._local
 
     def translate(self, text: str) -> tuple[str, str]:

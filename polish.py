@@ -291,13 +291,15 @@ class Polisher:
             return translate_mod.GroqTranslator(
                 self._cfg.polish.groq_model,
                 self._cfg.polish.groq_timeout_s,
-                system_prompt=self._system_prompt, max_tokens=cap)
+                system_prompt=self._system_prompt, max_tokens=cap,
+                purpose="polish")
 
         def cerebras(cap: int):
             return translate_mod.CerebrasTranslator(
                 self._cfg.polish.cerebras_model,
                 self._cfg.polish.cerebras_timeout_s,
-                system_prompt=self._system_prompt, max_tokens=cap)
+                system_prompt=self._system_prompt, max_tokens=cap,
+                purpose="polish")
 
         def ollama(cap: int):
             # Reuses the translator class: same chat endpoint, same reply
@@ -308,7 +310,8 @@ class Polisher:
                 self._cfg.translate.ollama_url,
                 self._cfg.translate.ollama_timeout_s,
                 system_prompt=self._system_prompt,
-                setting="polish.ollama_model", num_predict=cap)
+                setting="polish.ollama_model", num_predict=cap,
+                purpose="polish")
 
         order = {"groq": groq, "cerebras": cerebras, "ollama": ollama}
         # Cerebras is opt-IN, never a fallback. Their free tier is gone —

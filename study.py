@@ -306,14 +306,14 @@ class Adjudicator:
                 and getattr(pcfg, "groq_model", ""):
             builders.append(lambda: translate_mod.GroqTranslator(
                 pcfg.groq_model, pcfg.groq_timeout_s,
-                system_prompt=_RULES, max_tokens=cap))
+                system_prompt=_RULES, max_tokens=cap, purpose="study"))
         builders.append(lambda: translate_mod.OllamaTranslator(
             getattr(pcfg, "ollama_model", "")
             or self._cfg.translate.ollama_model,
             self._cfg.translate.ollama_url,
             self._cfg.translate.ollama_timeout_s,
             system_prompt=_RULES, setting="polish.ollama_model",
-            num_predict=cap))
+            num_predict=cap, purpose="study"))
         for build in builders:
             try:
                 yield build()

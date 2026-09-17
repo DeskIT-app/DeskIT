@@ -46,11 +46,11 @@ import logging
 import re
 import threading
 import time
-import urllib.request
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
+import net
 import paths
 
 from transcribers.base import RateLimitError, TranscriptionError
@@ -670,7 +670,7 @@ class Engine:
                 system_prompt=self._system_prompt,
                 setting="lookup.model",
                 keep_alive=self._cfg.lookup.keep_alive or None,
-                on_chunk=self._chunk)
+                on_chunk=self._chunk, purpose="lookup")
         return self._ollama
 
     def _gemini_backend(self):
@@ -681,7 +681,7 @@ class Engine:
                 self._gemini = translate_mod.GeminiTranslator(
                     list(self._cfg.gemini.models),
                     self._cfg.translate.timeout_s,
-                    system_prompt=self._system_prompt)
+                    system_prompt=self._system_prompt, purpose="lookup")
             except Exception as e:
                 log.info("no Gemini to look up with (%s) — Ollama only", e)
                 self._gemini = False
@@ -702,9 +702,11 @@ class Engine:
         cloud — which is the right answer, not a failure to report.
         """
         try:
-            with urllib.request.urlopen(f"{self._url}/api/ps",
-                                        timeout=2) as response:
-                body = json.loads(response.read().decode("utf-8"))
+            status, _headers, raw = net.request(
+                "GET", f"{self._url}/api/ps", "ollama", timeout_s=2)
+            if status != 200:
+                raise OSError(f"HTTP {status}")
+            body = json.loads(raw.decode("utf-8"))
         except Exception as e:
             log.debug("Ollama /api/ps did not answer (%s)", e)
             return False
@@ -741,14 +743,11 @@ class Engine:
             payload["keep_alive"] = keep_alive
         started = time.monotonic()
         try:
-            request = urllib.request.Request(
-                f"{self._url}/api/generate",
-                data=json.dumps(payload).encode("utf-8"),
-                headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(
-                    request,
-                    timeout=self._cfg.translate.ollama_timeout_s) as r:
-                r.read()
+            status, _headers, _raw = net.post_json(
+                f"{self._url}/api/generate", "ollama", payload,
+                timeout_s=self._cfg.translate.ollama_timeout_s)
+            if status != 200:
+                raise OSError(f"HTTP {status}")
             log.info("lookup model %s is warm after %.1fs — the next lookup "
                      "stays local", self._model, time.monotonic() - started)
         except Exception as e:

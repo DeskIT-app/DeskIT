@@ -467,7 +467,7 @@ class Reader:
                 and getattr(pcfg, "groq_model", ""):
             builders.append(lambda: translate_mod.GroqTranslator(
                 pcfg.groq_model, pcfg.groq_timeout_s,
-                system_prompt=_RULES, max_tokens=cap))
+                system_prompt=_RULES, max_tokens=cap, purpose="review"))
         if self._local:
             builders.append(lambda: translate_mod.OllamaTranslator(
                 getattr(pcfg, "ollama_model", "")
@@ -475,7 +475,7 @@ class Reader:
                 self._cfg.translate.ollama_url,
                 self._cfg.translate.ollama_timeout_s,
                 system_prompt=_RULES, setting="polish.ollama_model",
-                num_predict=cap))
+                num_predict=cap, purpose="review"))
         for build in builders:
             try:
                 yield build()

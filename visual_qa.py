@@ -197,8 +197,14 @@ import tempfile
 import threading
 import time
 
+import net
+
 log = logging.getLogger("app")
 transcript_log = logging.getLogger("transcripts")
+
+# What every question here is, in network.log; the warm-up that only
+# loads the projector is Ollama housekeeping.
+PURPOSE = "ask-screen"
 
 # ------------------------------------------------------------------ knobs
 # Groq's TPM budget, not aesthetics, picks its numbers: ~830 prompt tokens
@@ -597,8 +603,8 @@ class OllamaVision:
         does, or the window keeps half an answer as though it were the
         answer.
 
-        THE DEADLINE IS WHAT STREAMING COSTS. urllib's timeout is per
-        socket operation; unstreamed it bounds the request only by
+        THE DEADLINE IS WHAT STREAMING COSTS. The socket timeout is per
+        operation; unstreamed it bounds the request only by
         accident, because the server says nothing for the whole
         generation and the first recv times out. Streamed, a token lands
         every ~24 ms, no recv ever waits, and the timeout stops meaning
@@ -661,7 +667,7 @@ class OllamaVision:
         a running stream raised out of `for line in response` in 1.52 s
         against a 1.5 s timer, having read 67 lines.
 
-        It CANNOT reach a request that is still inside urlopen, and that
+        It CANNOT reach a request that is still connecting, and that
         limit is why the check before this thread starts exists: Ollama
         sends no headers at all until the model is loaded, so a cold
         projector parks the caller there for ~23 s with no response object
@@ -679,9 +685,6 @@ class OllamaVision:
 
     def ask(self, image_b64: str, question: str, history: list[dict],
             on_chunk=None, cancel=None) -> str:
-        import urllib.error
-        import urllib.request
-
         payload = {
             "model": self._model,
             "stream": on_chunk is not None,
@@ -689,25 +692,28 @@ class OllamaVision:
                         "num_predict": self._num_predict},
             "messages": self._messages(image_b64, question, history),
         }
-        request = urllib.request.Request(
-            f"{self._url}/api/chat",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"})
         started = time.monotonic()
         try:
-            with urllib.request.urlopen(request,
-                                        timeout=self._timeout) as response:
+            with net.open("POST", f"{self._url}/api/chat", PURPOSE,
+                          headers={"Content-Type": "application/json"},
+                          body=json.dumps(payload).encode("utf-8"),
+                          timeout_s=self._timeout) as response:
                 # Hang up NOW if the question was replaced while we waited
                 # for headers. Ollama sends none until it has the model
                 # loaded, so a cold projector parks this thread inside
-                # urlopen for ~23 s where neither the watchdog below (not
-                # started yet) nor the per-line check (no lines yet) can
-                # reach it. Closing here without reading a byte is what
-                # stops the GPU generating a whole answer for a question
-                # nobody is waiting for any more, while the REPLACEMENT
-                # question waits behind it on the same model.
+                # the connect for ~23 s where neither the watchdog below
+                # (not started yet) nor the per-line check (no lines yet)
+                # can reach it. Closing here without reading a byte is
+                # what stops the GPU generating a whole answer for a
+                # question nobody is waiting for any more, while the
+                # REPLACEMENT question waits behind it on the same model.
                 if cancel is not None and cancel.is_set():
                     raise Cancelled("superseded before the model answered")
+                if response.status != 200:
+                    detail = response.text()[:200]
+                    raise QAError(
+                        f"Ollama returned HTTP {response.status}: {detail} "
+                        f"— is {self._model} pulled? (visual_qa.ollama_model)")
                 finished = threading.Event()
                 if cancel is not None:
                     threading.Thread(
@@ -718,18 +724,9 @@ class OllamaVision:
                     text = self._read(response, on_chunk, cancel)
                 finally:
                     finished.set()
-        except Cancelled:
+        except (Cancelled, QAError):
             raise
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8", "replace")[:200]
-            except Exception:
-                pass
-            raise QAError(
-                f"Ollama returned HTTP {e.code}: {detail} — is {self._model}"
-                f" pulled? (visual_qa.ollama_model)") from e
-        except urllib.error.URLError as e:
+        except net.NetError as e:
             raise QAError(
                 f"cannot reach Ollama at {self._url} ({e.reason}) — the "
                 f"upload gate is off, so there is no cloud fallback for a "
@@ -757,16 +754,9 @@ class OllamaVision:
                  "images": [_TINY_PNG_B64]},
             ],
         }
-        import urllib.request
-
         started = time.monotonic()
-        request = urllib.request.Request(
-            f"{self._url}/api/chat",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request,
-                                    timeout=self._timeout) as response:
-            response.read()
+        net.post_json(f"{self._url}/api/chat", "ollama", payload,
+                      timeout_s=self._timeout)
         return time.monotonic() - started
 
 
@@ -785,11 +775,12 @@ class GroqVision:
     def __init__(self, model: str, timeout_s: int, num_predict: int):
         import apikey
 
+        # Presence and source only; net.py attaches the value by name.
         key, self.key_source = apikey.find_key(("GROQ_API_KEY",))
         if not key:
             from apikey import GROQ_MISSING_KEY_MESSAGE
             raise QAError(GROQ_MISSING_KEY_MESSAGE)
-        self._key = key
+        del key
         self._model = model
         self._timeout = timeout_s
         self._num_predict = num_predict
@@ -829,12 +820,10 @@ class GroqVision:
         return messages
 
     def _headers(self) -> dict:
-        """Auth + the named User-Agent Cloudflare demands (error 1010)."""
-        from translate import USER_AGENT
-
+        """The named User-Agent Cloudflare demands (error 1010). No
+        Authorization here: net.py attaches the Groq key under its name."""
         return {"Content-Type": "application/json",
-                "Authorization": f"Bearer {self._key}",
-                "User-Agent": USER_AGENT}
+                "User-Agent": net.USER_AGENT}
 
     def request_body(self, image_b64: str, question: str,
                      history: list[dict]) -> dict:
@@ -857,35 +846,30 @@ class GroqVision:
         # on_chunk is accepted and ignored: Groq answers in ~0.5 s, so
         # there is no wait to fill, and its wire shape is not Ollama's.
         # Only the local backend streams — the same split lookup.py made.
-        import urllib.error
-        import urllib.request
-
         from translate import GROQ_URL
         from transcribers.base import RateLimitError
 
-        request = urllib.request.Request(
-            f"{GROQ_URL}/chat/completions",
-            data=json.dumps(self.request_body(image_b64, question,
-                                              history)).encode("utf-8"),
-            headers=self._headers())
         try:
-            with urllib.request.urlopen(request,
-                                        timeout=self._timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            detail = ""
-            try:
-                detail = e.read().decode("utf-8", "replace")[:200]
-            except Exception:
-                pass
-            if e.code == 429:
-                raise RateLimitError(
-                    f"Groq vision rate limit reached ({detail})") from e
-            raise QAError(
-                f"Groq returned HTTP {e.code}: {detail} — visual_qa."
-                f"groq_model may have drifted, list /v1/models") from e
+            status, _headers, raw = net.post_json(
+                f"{GROQ_URL}/chat/completions", PURPOSE,
+                self.request_body(image_b64, question, history),
+                secret="groq", headers=self._headers(),
+                timeout_s=self._timeout)
         except Exception as e:
             raise QAError(f"Groq vision request failed: {e}") from e
+        if status != 200:
+            detail = raw.decode("utf-8", "replace")[:200]
+            if status == 429:
+                raise RateLimitError(
+                    f"Groq vision rate limit reached ({detail})")
+            raise QAError(
+                f"Groq returned HTTP {status}: {detail} — visual_qa."
+                f"groq_model may have drifted, list /v1/models")
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception as e:
+            raise QAError(f"Groq vision sent a reply that is not JSON: "
+                          f"{e}") from e
         choices = data.get("choices") or []
         content = (choices[0].get("message") or {}).get("content", "") \
             if choices else ""
@@ -914,9 +898,12 @@ class GeminiVision:
             raise QAError(MISSING_KEY_MESSAGE)
         self._models = list(models)
         self._types = types
+        # The SDK still holds the key (interim, plan 5.6); the transport
+        # and the base URL are net.py's, so the host is pinned and every
+        # call is a row in network.log.
         self._client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(timeout=timeout_s * 1000))
+            api_key=api_key, vertexai=False,
+            http_options=net.genai_http_options(PURPOSE, timeout_s))
         # Same per-feature rotation state as the translators: a model that
         # is spent for text is spent for vision too, but each feature
         # learning that independently would cost one 429 each.
