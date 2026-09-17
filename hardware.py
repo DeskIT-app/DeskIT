@@ -270,6 +270,86 @@ def apply(tier: str, previous: str | None = None) -> dict[str, object]:
     return wanted
 
 
+def clear_change() -> None:
+    """The Home row's OK: the change was seen."""
+    try:
+        config_mod.save({"hardware.tier_changed": None, "hardware.tier_changed_at": None})
+    except Exception:                                    # noqa: BLE001
+        log.debug("hardware: the change note was not cleared", exc_info=True)
+
+
+TIER_WORDS = {"gpu": "on the graphics card", "gpu-small": "on a small graphics card",
+              "cpu": "on the processor"}
+
+
+def summary(facts: dict | None = None) -> str:
+    """One line for the Speed page: what was found and what that
+    means — `gpu — NVIDIA card, 16 GB, driver 596.49 · 12 cores, 16 GB RAM`."""
+    facts = recorded() if facts is None else facts
+    if not facts.get("tier"):
+        return "not probed yet"
+    parts = [f"{facts['tier']} ({TIER_WORDS.get(facts['tier'], facts['tier'])})"]
+    if int(facts.get("cuda_devices") or 0):
+        card = "NVIDIA card"
+        if facts.get("vram_mb"):
+            card += f", {int(facts['vram_mb']) / 1024:.0f} GB"
+        if facts.get("driver"):
+            card += f", driver {facts['driver']}"
+            if not facts.get("driver_ok"):
+                card += " (too old for CUDA 12.3)"
+        parts.append(card)
+    else:
+        parts.append("no NVIDIA card")
+    if facts.get("cores"):
+        parts.append(f"{facts['cores']} cores, {int(facts.get('ram_mb') or 0) / 1024:.0f} GB RAM")
+    return " · ".join(parts)
+
+
+NO_VOICE = ("No Hebrew voice is installed. Add one under Windows Settings > "
+            "Time & Language > Speech, then restart DeskIT.")
+
+
+def apply_voice(he_voice: str) -> str | None:
+    """6.8: without a he-IL voice the answer is not read aloud —
+    `visual_qa.speak = "off"` into the machine layer, only where
+    settings.toml is silent, and taken out again the start a voice is
+    found. The checkout is left alone (the owner has Asaf). Returns
+    what was written, or None."""
+    if paths.DEVELOPER:
+        return None
+    chosen = set(config_mod.read_settings(paths.SETTINGS_FILE))
+    if "visual_qa.speak" in chosen:
+        return None
+    try:
+        if he_voice:
+            config_mod.save({"visual_qa.speak": None}, derived=True)
+            return None
+        config_mod.save({"visual_qa.speak": "off"}, derived=True)
+        log.info("hardware: %s", NO_VOICE)
+        return "off"
+    except Exception as e:                               # noqa: BLE001
+        log.warning("hardware: the voice's setting was not written (%s)", e)
+        return None
+
+
+def no_voice() -> bool:
+    """Has the probe looked and found no Hebrew voice? (An installed copy
+    only; the checkout speaks with Asaf.)"""
+    if paths.PORTABLE:
+        return False
+    facts = recorded()
+    return "he_voice" in facts and not facts.get("he_voice")
+
+
+def ollama_absent() -> bool:
+    """Has the probe looked and found no Ollama on this PC? Only an
+    installed copy hides its menu entries on that answer."""
+    if paths.PORTABLE:
+        return False
+    facts = recorded()
+    return "ollama" in facts and not facts.get("ollama")
+
+
 def run_at_start(say=None) -> dict:
     """Probe, decide, record, apply — and the slow half on a thread. What
     the caller gets back is the fast facts with the tier."""
@@ -286,12 +366,18 @@ def run_at_start(say=None) -> dict:
              f"; {len(written)} derived setting(s) written" if written else "")
     if changed:
         log.info("hardware: the tier changed from %s to %s", previous, facts["tier"])
+        # Written down for the Home row (chapter 9, screen 10's "your
+        # hardware changed" variant); its [OK] clears it.
+        record({"tier_changed": f"{previous} → {facts['tier']}",
+                "tier_changed_at": facts["probed_at"]})
         if say is not None:
             say(f"Your hardware changed: DeskIT now runs as {facts['tier']}")
 
     def slow() -> None:
         try:
-            record(probe_slow())
+            found = probe_slow()
+            record(found)
+            apply_voice(found.get("he_voice", ""))
         except Exception:                                # noqa: BLE001
             log.debug("hardware: the slow probe tripped", exc_info=True)
     threading.Thread(target=slow, daemon=True, name="hardware-probe").start()

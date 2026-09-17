@@ -75,6 +75,9 @@ import hotkey as hotkey_mod
 import keycaps as keyboard_mod
 import launch
 import awake as awake_mod
+import hardware as hardware_mod
+import models as models_mod
+import packs as packs_mod
 import reading as reading_mod
 import settings as settings_mod
 import singleton
@@ -2756,7 +2759,8 @@ class Dashboard:
         if "pile_list" not in self.parts:
             return
         stamp = (self._notify_stat(), self._review_stat(),
-                 self._problems_stat(), self._questions_stat())
+                 self._problems_stat(), self._questions_stat(),
+                 self._hardware_stat())
         if stamp != getattr(self, "_pile_stamp", None):
             self._fill_waiting()
         self._paint_rest()
@@ -2774,6 +2778,7 @@ class Dashboard:
         means.
         """
         items: list[dict] = []
+        items += self._waiting_hardware()
         items += self._waiting_notify()
         items += self._waiting_review()
         items += self._waiting_problems()
@@ -2793,6 +2798,106 @@ class Dashboard:
                 buttons.append((label, tone, act))
             row["buttons"] = buttons
         return items
+
+    # -- what the machine wants: the model, the GPU pack, a changed tier
+
+    def _hardware_words(self) -> tuple[str, str, str]:
+        """(the model's state, the GPU pack's standing, the tier change
+        note) — three words, each guarded, read once a second."""
+        try:
+            model = models_mod.state(config_mod.load_layered().local.model)
+        except Exception:                 # noqa: BLE001
+            model = "unknown"
+        try:
+            pack = packs_mod.standing("gpu")
+        except Exception:                 # noqa: BLE001
+            pack = "unknown"
+        try:
+            changed = str(hardware_mod.recorded().get("tier_changed") or "")
+        except Exception:                 # noqa: BLE001
+            changed = ""
+        return model, pack, changed
+
+    def _hardware_stat(self):
+        return self._hardware_words()
+
+    def _waiting_hardware(self) -> list[dict]:
+        """The rows of chapter 9's screen 10 and 6.9, on the pile rather
+        than a card of their own: Home is a summary (the owner, three
+        times), and a model that is not there, a card that will not
+        run, or a tier that changed are exactly "what wants me". Each
+        row's button runs the step in a process of its own — this
+        window cannot host a second Tk root — and the app picks the
+        model up at the next dictation (transcribers.missing). Nothing
+        here in the checkout or a portable copy but the tier note."""
+        model, pack, changed = self._hardware_words()
+        rows: list[dict] = []
+        now = time.time()
+        if not paths.PORTABLE and model in ("absent", "incomplete", "stale"):
+            size = ""
+            try:
+                e = models_mod.entry(config_mod.load_layered().local.model)
+                size = f" ({models_mod.human(e.bytes)})" if e else ""
+            except Exception:             # noqa: BLE001
+                pass
+            said = {"absent": f"The Hebrew model is not on this PC yet{size} — "
+                              "dictation waits for it.",
+                    "incomplete": "The Hebrew model's download did not finish — "
+                                  "it continues from where it stopped.",
+                    "stale": "The Hebrew model on this PC is from an older "
+                             "release — download the new one."}[model]
+            rows.append({
+                "at": now, "kind": "hardware", "mark": "engine",
+                "mark_colour": ui.AMBER, "eyebrow": "This computer",
+                "eyebrow_right": False, "text": said,
+                "note": "Downloaded once, from huggingface.co, into the app's folder.",
+                "buttons": [("Download" if model == "absent" else "Continue", "gold",
+                             lambda: self._hardware_step("--download-model"))],
+            })
+        if not paths.PORTABLE and pack.startswith("failed:"):
+            rows.append({
+                "at": now, "kind": "hardware", "mark": "alert",
+                "mark_colour": ui.RED, "eyebrow": "This computer",
+                "eyebrow_right": False,
+                "text": "Your NVIDIA card was found but GPU speed could not "
+                        f"start ({pack[7:]}).",
+                "note": "Dictation works on the processor meanwhile.",
+                "buttons": [("Retry", "quiet", self._hardware_retry),
+                            ("Reinstall", "quiet",
+                             lambda: self._hardware_step("--install-pack", "gpu")),
+                            ("Remove the pack", "quiet", self._hardware_remove)],
+            })
+        if changed:
+            rows.append({
+                "at": now, "kind": "hardware", "mark": "engine",
+                "mark_colour": ui.ACCENT, "eyebrow": "This computer",
+                "eyebrow_right": False,
+                "text": f"Your hardware changed: DeskIT now runs {changed}.",
+                "note": "The speed settings for this tier were applied; "
+                        "yours were left alone.",
+                "buttons": [("OK", "quiet", self._hardware_seen)],
+            })
+        return rows
+
+    def _hardware_step(self, flag: str, name: str | None = None) -> None:
+        if launch.run_step(flag, name):
+            self._note("the download window is opening…")
+        else:
+            self._note("could not start the download window")
+
+    def _hardware_retry(self) -> None:
+        packs_mod.clear_failure("gpu")
+        self._note("GPU speed will be tried again at the next start")
+        self._fill_waiting()
+
+    def _hardware_remove(self) -> None:
+        packs_mod.remove("gpu")
+        self._note("the GPU pack was removed — Settings > Speed offers it again")
+        self._fill_waiting()
+
+    def _hardware_seen(self) -> None:
+        hardware_mod.clear_change()
+        self._fill_waiting()
 
     @staticmethod
     def _stamp_of(text: str, fmt: str) -> float:
@@ -3071,7 +3176,8 @@ class Dashboard:
         if "pile_list" not in self.parts:
             return
         self._pile_stamp = (self._notify_stat(), self._review_stat(),
-                            self._problems_stat(), self._questions_stat())
+                            self._problems_stat(), self._questions_stat(),
+                            self._hardware_stat())
         p = self.parts
         items = self._waiting_items()
         count = len(items)
@@ -7102,6 +7208,10 @@ class Dashboard:
                 builders.append(lambda: self._files_card(scroller))
             elif name == "Phone":
                 builders.append(lambda: self._phone_block(scroller))
+            elif name == "Speed":
+                builders.append(lambda: self._speed_block(scroller))
+            elif name == "Screen" and hardware_mod.no_voice():
+                builders.append(lambda: self._voice_block(scroller))
             elif name == settings_mod.GENERAL:
                 # FIRST ON GENERAL, because that is where he went looking
                 # for it: "I'm going to General and then 'which corner the
@@ -7368,9 +7478,15 @@ class Dashboard:
                             values[setting.path] = key
                             break
                 return mics
-        if row is not None and row.names:
-            return list(row.names)
-        return [(c, c) for c in setting.choices]
+        names = list(row.names) if row is not None and row.names \
+            else [(c, c) for c in setting.choices]
+        # 6.7: no Ollama on this PC, no "On this computer" on the menu —
+        # unless it is the value the file holds, which a menu must be
+        # able to show. The checkout keeps every entry.
+        if hardware_mod.ollama_absent():
+            held = str(self.parts.get("values", {}).get(setting.path, setting.value))
+            names = [(v, n) for v, n in names if v != "ollama" or held == "ollama"]
+        return names
 
     def _control(self, card, y: int, setting, options) -> None:
         """The one control a line calls for, on the right of its row. A
@@ -7774,6 +7890,137 @@ class Dashboard:
                   w=widgets.button_width("Copy link", icon=True),
                   icon=ui.ICON["link"]).place(x=CW - 36, y=20, anchor="ne")
         scroller.bind_wheel(card)
+
+    def _speed_block(self, scroller) -> None:
+        """This PC, the model and the GPU pack, each with its standing
+        and its buttons (plan 6.4-6.5, 6.9; chapter 9 Settings > Speed).
+        In the checkout the model and the pack are the venv's own and
+        the lines say so with no buttons; on an installed copy every
+        button runs the step in a process of its own (launch.run_step)
+        or removes a folder, and the row says what happens next."""
+        card = ui.Card(scroller.inner, CW, 214, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="T H I S   P C", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        tk.Label(body, text=hardware_mod.summary(), bg=ui.CARD, fg=ui.FG,
+                 font=(ui.UI, 10)).place(x=0, y=22)
+        lines, buttons = self._speed_lines()
+        self.parts["speed_lines"] = [t for _n, t in lines]
+        self.parts["speed_buttons"] = [label for label, _c in buttons]
+        y = 56
+        for name, text in lines:
+            tk.Label(body, text=name, bg=ui.CARD, fg=ui.DIM,
+                     font=(ui.UI, 9)).place(x=0, y=y)
+            tk.Label(body, text=text, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
+                     wraplength=CW - 60, justify="left").place(x=110, y=y - 1)
+            y += 40
+        x = 0
+        for label, command in buttons:
+            w = widgets.button_width(label)
+            ui.Button(body, label, command, h=28, w=w, quiet=True,
+                      bg=ui.CARD).place(x=x, y=y + 6)
+            x += w + 8
+        scroller.bind_wheel(card)
+
+    def _voice_block(self, scroller) -> None:
+        """6.8, on an installed copy with no he-IL voice: the sentence,
+        and the button that opens the Windows page where one is added.
+        The Speak row below stays; the probe has set it off in the
+        machine layer until a voice turns up."""
+        card = ui.Card(scroller.inner, CW, 96, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="N O   H E B R E W   V O I C E", bg=ui.CARD,
+                 fg=ui.AMBER, font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        tk.Label(body, text=hardware_mod.NO_VOICE, bg=ui.CARD, fg=ui.FG,
+                 font=(ui.UI, 10), wraplength=CW - 220, justify="left").place(x=0, y=22)
+        self.parts["voice_block"] = card
+        ui.Button(body, "Open Speech settings", self._open_speech_settings, h=30,
+                  quiet=True, w=widgets.button_width("Open Speech settings")
+                  ).place(x=CW - 36, y=20, anchor="ne")
+        scroller.bind_wheel(card)
+
+    def _open_speech_settings(self) -> None:
+        try:
+            os.startfile("ms-settings:speech")
+        except OSError as e:
+            self._note(f"could not open the Speech settings ({e})")
+
+    def _speed_lines(self) -> tuple[list, list]:
+        """The two lines under the summary and the buttons under them."""
+        model, pack, _changed = self._hardware_words()
+        lines: list[tuple[str, str]] = []
+        buttons: list = []
+        try:
+            repo = config_mod.load_layered().local.model
+        except Exception:                 # noqa: BLE001
+            repo = ""
+        if paths.PORTABLE:
+            lines.append(("The model", f"{repo} — from this checkout's own cache"))
+            lines.append(("GPU speed", "the CUDA libraries in this checkout's venv"
+                          if pack == "venv" else "no CUDA libraries in this venv"))
+            return lines, buttons
+        e = models_mod.entry(repo)
+        size = f" ({models_mod.human(e.bytes)})" if e else ""
+        model_said = {
+            "ready": f"ready — {repo}{size}",
+            "absent": f"not downloaded yet{size}",
+            "incomplete": "download did not finish — continue it",
+            "stale": "from an older release — download the new one",
+            "unknown": f"{repo} is not in models.lock",
+        }[model]
+        lines.append(("The model", model_said))
+        if model == "ready":
+            buttons.append(("Delete and re-download the model", self._speed_redownload))
+            buttons.append(("Delete the model", self._speed_delete_model))
+        elif model != "unknown":
+            buttons.append(("Download the model" if model == "absent" else "Continue the download",
+                            lambda: self._hardware_step("--download-model")))
+        facts = hardware_mod.recorded()
+        has_card = int(facts.get("cuda_devices") or 0) >= 1
+        gp = packs_mod.pack("gpu")
+        psize = f" ({packs_mod.human(gp.bytes)})" if gp else ""
+        if pack.startswith("failed:"):
+            pack_said = f"installed but could not start ({pack[7:]}) — dictating on the processor"
+            buttons.append(("Retry GPU speed", self._hardware_retry))
+            buttons.append(("Reinstall the GPU pack", lambda: self._hardware_step("--install-pack", "gpu")))
+            buttons.append(("Remove the GPU pack", self._hardware_remove))
+        elif pack == "ok":
+            pack_said = "NVIDIA's libraries are installed — dictation runs on the card"
+            buttons.append(("Remove the GPU pack", self._hardware_remove))
+        elif pack == "stale":
+            pack_said = "installed from an older release — update it"
+            buttons.append((f"Update the GPU pack{psize}", lambda: self._hardware_step("--install-pack", "gpu")))
+            buttons.append(("Remove the GPU pack", self._hardware_remove))
+        elif not has_card:
+            pack_said = "no NVIDIA card — dictation runs on the processor"
+        elif not facts.get("driver_ok", True):
+            pack_said = "the NVIDIA driver is too old for CUDA 12.3 — update it, then come back"
+        else:
+            pack_said = f"off — NVIDIA's libraries are not installed{psize}"
+            buttons.append((f"Turn on GPU speed{psize}", lambda: self._hardware_step("--install-pack", "gpu")))
+        lines.append(("GPU speed", pack_said))
+        return lines, buttons
+
+    def _speed_redownload(self) -> None:
+        try:
+            models_mod.remove(config_mod.load_layered().local.model)
+        except Exception as e:            # noqa: BLE001
+            self._note(str(e))
+            return
+        self._hardware_step("--download-model")
+
+    def _speed_delete_model(self) -> None:
+        try:
+            gone = models_mod.remove(config_mod.load_layered().local.model)
+        except Exception as e:            # noqa: BLE001
+            self._note(str(e))
+            return
+        self._note("the model was deleted — dictation waits until it is downloaded again"
+                   if gone else "there was no model folder to delete")
+        if self.screen == "Settings":
+            self._show("Settings")
 
     def _app_block(self, scroller) -> None:
         """The app itself: which version is running, how to stop it, and

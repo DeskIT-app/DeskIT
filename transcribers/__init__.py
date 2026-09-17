@@ -46,14 +46,17 @@ def _local(cfg, hotwords) -> Transcriber:
     says so at the first dictation. The checkout never meets this: its
     model comes from the global cache as always (D4)."""
     from .local_whisper import LocalWhisperTranscriber
-    try:
+
+    def build():
         return LocalWhisperTranscriber(**local_kwargs(cfg, hotwords))
+    try:
+        return build()
     except ModelMissing as e:
         import logging
         logging.getLogger("app").warning(
             "%s — starting without local transcription", e)
         from .missing import MissingModelTranscriber
-        return MissingModelTranscriber(e)
+        return MissingModelTranscriber(e, build)
 
 
 def get_transcriber(cfg, hotwords=None) -> Transcriber:

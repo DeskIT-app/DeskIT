@@ -588,10 +588,6 @@ TABS: tuple[Tab, ...] = (
             Friendly("setup.autostart", "Start with Windows",
                      "Windows starts DeskIT when you sign in. Off, you "
                      "open it from the Start menu."),
-            Friendly("setup.offer_gpu_pack", "Offer GPU speed at start",
-                     "On a PC with an NVIDIA card, the start asks once to "
-                     "download NVIDIA's libraries (1.37 GB) so dictation "
-                     "runs on the card. Not now turns this off."),
         )),
         Group("UPDATES", (
             Friendly("updates.channel", "Which releases to look at",
@@ -601,6 +597,31 @@ TABS: tuple[Tab, ...] = (
             Friendly("updates.skipped", "A version you chose to skip",
                      "Empty means none. A newer version than this one is "
                      "offered again."),
+        )),
+    )),
+    Tab("Speed", (
+        # THE MODEL AND THE CARD (plan 6.4-6.9, chapter 9). The block above
+        # these rows — what this PC is, the model's standing, the GPU
+        # pack's — is drawn by dashboard._speed_block; the rows are the
+        # four knobs the probe writes for a stranger and the owner may
+        # overrule, and the one switch the start asks.
+        Group("ON THIS COMPUTER", (
+            Friendly("local.device", "What it runs on",
+                     "The graphics card is far faster; it falls back to the "
+                     "processor where there is none.", _RUNS_ON),
+            Friendly("local.compute_type", "Number format",
+                     "Auto is float16 on a card and int8 on the processor; "
+                     "the mixed one fits a card with 4-6 GB.", _COMPUTE),
+            Friendly("local.cpu_threads", "Processor threads for the model",
+                     "0 lets the library decide; on a machine without a "
+                     "card the probe writes the core count."),
+            Friendly("local.beam_size", "Beam width",
+                     "5 is the accuracy the app was measured at; 2 or 1 is "
+                     "faster on a processor and a little less accurate."),
+            Friendly("setup.offer_gpu_pack", "Offer GPU speed at start",
+                     "On a PC with an NVIDIA card, the start asks once to "
+                     "download NVIDIA's libraries (1.37 GB) so dictation "
+                     "runs on the card. Not now turns this off."),
         )),
     )),
     Tab("Text", (
@@ -773,6 +794,7 @@ TAB_SECTIONS: dict[str, tuple[str, ...]] = {
     "Dictation": ("", "audio", "feedback", "polish", "vocab", "study",
                   "history",
                   "local", "review", "setup"),
+    "Speed": (),
     "Text": ("punctuate", "translate", "lookup", "gemini"),
     "Screen": ("visual_qa", "capture", "camera"),
     "Cards": ("hint", "notify", "problems", "shelf"),

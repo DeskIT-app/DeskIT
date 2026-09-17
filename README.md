@@ -4270,6 +4270,22 @@ for `מבשרים`, all of which the local model got right.
     or removed. The skin's `skia-python` is a second, 11 MB pack on the
     same machinery. `main.py --install-pack gpu` shows the step alone;
     `python packs.py --lock` rewrites the lock from this venv's versions.
+  - **Settings > Speed** (since 2026-09-17) is where all of this is
+    read and acted on: one line about this PC (tier, card, driver,
+    cores, RAM), the model's standing and the GPU pack's, and a button
+    for each thing that can be done about them — download or continue
+    the model, delete it or delete-and-re-download, turn on GPU speed,
+    update, retry, reinstall or remove the pack — each opening its
+    step in a window of its own. The four `[local]` knobs the probe
+    writes (`device`, `compute_type`, `cpu_threads`, `beam_size`) and
+    the start-time offer switch sit under it. Home shows a row only
+    when the machine wants something: the model is not there, the
+    pack was found not to run, or the tier changed since the last
+    start. In this checkout the page says both are the venv's own and
+    shows no buttons. Without a Hebrew Windows voice an installed copy
+    turns the answer's Speak off in the machine layer and the Screen
+    tab says where to add one; without Ollama the provider menus carry
+    no "On this computer" entry.
   - `[local] device` is `auto` (GPU, falling back to CPU). The GPU is
     validated with a real warm-up inference at load, because constructing
     on `cuda` succeeds even when the CUDA libraries are missing — the

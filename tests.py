@@ -19512,9 +19512,13 @@ def test_the_settings_show_the_choices_and_fold_the_measurements() -> None:
         assert settings_mod.common(by_path[path]), path       # a switch
     for path in ("notify.corner", "lookup.prefer"):
         assert settings_mod.common(by_path[path]), path       # a menu
-    for path in ("local.beam_size", "notify.stack_max", "vocab.max_terms",
+    for path in ("local.english_threshold", "notify.stack_max", "vocab.max_terms",
                  "polish.groq_model", "gemini.timeout_s"):
         assert not settings_mod.common(by_path[path]), path   # a number
+    # local.beam_size is a number the Speed tab names by hand (the probe
+    # writes it, the person may overrule it), so since 2026-09-17 it is
+    # on the face of that card: the first rule wins over the third.
+    assert settings_mod.common(by_path["local.beam_size"])
     # A fold that would hide ONE line is not worth a line of its own: it
     # costs the room it saves. So a card like that shows everything.
     def pair(*paths):
@@ -30845,6 +30849,298 @@ def test_the_step_window_says_declined_before_it_starts():
             assert w.outcome == "later"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------- the Speed page and the Home rows (PR 17)
+#
+# DISTRIBUTION_PLAN.md 6.9 and chapter 9 (screen 10, Settings > Speed):
+# what the machine wants goes on the Home pile — the model that is not
+# there, the GPU pack that will not run, the tier that changed — each
+# with the button that fixes it, and Settings > Speed carries this PC's
+# summary, the model's standing, the pack's, and the four knobs the
+# probe writes. The stand-in backend picks the model up at the next
+# dictation once it lands. Every state below is faked; nothing runs a
+# step for real.
+
+def test_the_stand_in_upgrades_itself_when_the_model_lands():
+    """transcribers.missing: while the model is not on disk every
+    dictation is the typed ModelMissing and the builder is never called;
+    once .complete is there the next dictation builds the real backend,
+    hands it the language, and everything the real one has is reachable
+    through the stand-in — including its name."""
+    import models
+    from transcribers.base import ModelMissing
+    from transcribers.missing import MissingModelTranscriber
+
+    built: list = []
+
+    class _Real:
+        name = "local"
+        last_words = [("שלום", 0.0, 0.5, 0.9)]
+
+        def transcribe(self, wav_bytes, language=None):
+            return f"real:{language}"
+
+        def study_decode(self, *a, **k):
+            return "studied"
+
+    def build():
+        built.append(1)
+        return _Real()
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-models-"))
+    try:
+        e = _model_lock(tmp, {"model.bin": b"x" * 10})
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "MODELS_LOCK", tmp / "models.lock"):
+            err = ModelMissing(e.repo, "absent", "not yet")
+            t = MissingModelTranscriber(err, build)
+            assert t.name == "missing" and not hasattr(t, "study_decode")
+            for _ in range(2):
+                try:
+                    t.transcribe(b"RIFF", "he")
+                except ModelMissing as got:
+                    assert got.state == "absent" and got.retry_after == float("inf")
+                else:
+                    raise AssertionError("transcribed without a model")
+            assert built == [], "the builder ran before the model was there"
+            e.folder.mkdir(parents=True)
+            (e.folder / "model.bin").write_bytes(b"x" * 10)
+            (e.folder / models.COMPLETE).write_text(json.dumps({"revision": e.revision}), "utf-8")
+            assert t.transcribe(b"RIFF", "he") == "real:he" and built == [1]
+            assert t.transcribe(b"RIFF", "en") == "real:en" and built == [1], "built once"
+            assert t.name == "local" and t.last_words[0][0] == "שלום"
+            assert hasattr(t, "study_decode") and t.study_decode() == "studied"
+            # without a builder it is only ever the error
+            assert MissingModelTranscriber(err).name == "missing"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_hardware_change_note_and_summary():
+    """A tier that changed since the last start is written down
+    (tier_changed, tier_changed_at) for the Home row and cleared by its
+    OK; summary() is the one line the Speed page prints for a card, no
+    card, an old driver, and a machine never probed."""
+    import hardware
+
+    d, s, t = _layer_files()
+    try:
+        with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+                _patched(paths, "DEVELOPER", True), \
+                _patched(hardware, "probe", lambda: dict(_facts(cuda_devices=0, tier="cpu",
+                                                                probed_at="2026-09-17T23:00:00",
+                                                                probe_version=1))), \
+                _patched(hardware, "probe_slow", lambda: {}), \
+                _patched(hardware.threading, "Thread",
+                         lambda *a, **k: type("T", (), {"start": lambda self: None})()):
+            hardware.record({"tier": "gpu"})
+            said: list[str] = []
+            hardware.run_at_start(say=said.append)
+            rec = hardware.recorded()
+            assert rec["tier"] == "cpu" and rec["tier_changed"] == "gpu → cpu", rec
+            assert rec["tier_changed_at"] == "2026-09-17T23:00:00" and said == [
+                "Your hardware changed: DeskIT now runs as cpu"]
+            hardware.run_at_start()
+            assert hardware.recorded()["tier_changed"] == "gpu → cpu", "an unchanged start keeps the note"
+            hardware.clear_change()
+            rec = hardware.recorded()
+            assert "tier_changed" not in rec and "tier_changed_at" not in rec and rec["tier"] == "cpu"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    assert hardware.summary({}) == "not probed yet"
+    line = hardware.summary(_facts(tier="gpu"))
+    assert line == "gpu (on the graphics card) · NVIDIA card, 16 GB, driver 596.49 · 12 cores, 16 GB RAM", line
+    assert hardware.summary(_facts(tier="cpu", cuda_devices=0)).startswith("cpu (on the processor) · no NVIDIA card")
+    assert "too old for CUDA 12.3" in hardware.summary(_facts(tier="cpu", driver="531.14", driver_ok=False))
+    assert hardware.summary(_facts(tier="gpu-small", vram_mb=5000)).startswith(
+        "gpu-small (on a small graphics card) · NVIDIA card, 5 GB")
+
+
+def test_the_speed_page_and_the_home_rows():
+    """Settings > Speed: the summary line, the model's standing, the
+    pack's, and the buttons each state earns — none in the checkout,
+    where both are the venv's; Home: a missing model, a failed pack and
+    a changed tier are rows on the pile with the button that fixes each,
+    and Retry / OK act at once. The Speed tab names the four knobs and
+    the switch, once each (the drawn-once test holds the rest)."""
+    import settings as settings_mod
+
+    speed = settings_mod.tab_named("Speed")
+    assert speed is not None and [r.path for g in speed.groups for r in g.rows] == [
+        "local.device", "local.compute_type", "local.cpu_threads", "local.beam_size",
+        "setup.offer_gpu_pack"]
+    assert settings_mod.TAB_SECTIONS["Speed"] == ()
+    assert [t.name for t in settings_mod.TABS][1:3] == ["Dictation", "Speed"]
+
+    import dashboard as dash
+
+    with _window() as board:
+        if board is None:
+            return
+
+        def drawn():
+            board._show("Settings")
+            board._settings_go("Speed")
+            board._finish_settings()
+            board.root.update_idletasks()
+            return list(board.parts["speed_lines"]), list(board.parts["speed_buttons"])
+
+        # the checkout: two lines, no buttons
+        lines, buttons = drawn()
+        assert "checkout" in lines[0] and buttons == [], (lines, buttons)
+        assert len(lines) == 2 and "venv" in lines[1]
+        assert board._waiting_hardware() == []
+        # an installed copy, nothing there yet, a card with a good driver
+        words = {"model": "absent", "pack": "missing", "changed": ""}
+        facts = _facts(tier="cpu")
+        with _patched(paths, "PORTABLE", False), \
+                _patched(dash.models_mod, "state", lambda repo: words["model"]), \
+                _patched(dash.packs_mod, "standing", lambda name: words["pack"]), \
+                _patched(dash.hardware_mod, "recorded", lambda: dict(facts, tier_changed=words["changed"])):
+            lines, buttons = drawn()
+            assert lines[0].startswith("not downloaded yet (1.62 GB)"), lines
+            assert lines[1].startswith("off — NVIDIA's libraries are not installed (1.37 GB)"), lines
+            assert buttons == ["Download the model", "Turn on GPU speed (1.37 GB)"], buttons
+            rows = board._waiting_hardware()
+            assert len(rows) == 1 and rows[0]["kind"] == "hardware", rows
+            assert "not on this PC yet (1.62 GB)" in rows[0]["text"]
+            assert [b[0] for b in rows[0]["buttons"]] == ["Download"]
+            # the model ready, the pack installed but broken, the tier changed
+            words.update(model="ready", pack="failed:Library cudnn64_9.dll is not found",
+                         changed="gpu → cpu")
+            lines, buttons = drawn()
+            assert lines[0].startswith("ready — ivrit-ai/") and "could not start (Library cudnn64_9" in lines[1]
+            assert buttons == ["Delete and re-download the model", "Delete the model",
+                               "Retry GPU speed", "Reinstall the GPU pack", "Remove the GPU pack"], buttons
+            rows = board._waiting_hardware()
+            assert [r["mark"] for r in rows] == ["alert", "engine"], rows
+            assert "GPU speed could not start (Library cudnn64_9.dll is not found)" in rows[0]["text"]
+            assert [b[0] for b in rows[0]["buttons"]] == ["Retry", "Reinstall", "Remove the pack"]
+            assert "now runs gpu → cpu" in rows[1]["text"] and rows[1]["buttons"][0][0] == "OK"
+            # a stale pack and an incomplete model
+            words.update(model="incomplete", pack="stale", changed="")
+            lines, buttons = drawn()
+            assert lines[0].startswith("download did not finish") and lines[1].startswith("installed from an older release")
+            assert buttons == ["Continue the download", "Update the GPU pack (1.37 GB)", "Remove the GPU pack"], buttons
+            assert [b[0] for b in board._waiting_hardware()[0]["buttons"]] == ["Continue"]
+            # no card at all: no pack button, no pack row
+            words.update(model="ready", pack="missing")
+            facts.update(cuda_devices=0)
+            lines, buttons = drawn()
+            assert lines[1] == "no NVIDIA card — dictation runs on the processor", lines
+            assert buttons == ["Delete and re-download the model", "Delete the model"]
+            facts.update(cuda_devices=1, driver_ok=False)
+            lines, buttons = drawn()
+            assert lines[1].startswith("the NVIDIA driver is too old"), lines
+            # the buttons that act here and now
+            cleared: list = []
+            with _patched(dash.packs_mod, "clear_failure", lambda n: cleared.append(("clear", n))), \
+                    _patched(dash.packs_mod, "remove", lambda n: cleared.append(("remove", n)) or True), \
+                    _patched(dash.hardware_mod, "clear_change", lambda: cleared.append(("seen",))), \
+                    _patched(dash.launch, "run_step", lambda flag, name=None: cleared.append((flag, name)) or True):
+                board._hardware_retry()
+                board._hardware_remove()
+                board._hardware_seen()
+                board._hardware_step("--download-model")
+                board._hardware_step("--install-pack", "gpu")
+            assert cleared == [("clear", "gpu"), ("remove", "gpu"), ("seen",),
+                               ("--download-model", None), ("--install-pack", "gpu")], cleared
+
+
+def test_tts_probe_no_hebrew_voice():
+    """6.8: the slow probe that finds no he-IL voice writes
+    visual_qa.speak = "off" into the machine layer — only where
+    settings.toml is silent, never in the checkout — and takes it out
+    the start a voice is found; no_voice() is what the Screen tab reads
+    to draw the block with the ms-settings link; the block is there on
+    an installed copy without a voice and nowhere else."""
+    import hardware
+
+    d, s, t = _layer_files()
+    try:
+        with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+            with _patched(paths, "DEVELOPER", True):
+                assert hardware.apply_voice("") is None
+                assert not t.exists() or "visual_qa.speak" not in t.read_text("utf-8")
+            with _patched(paths, "DEVELOPER", False), _patched(paths, "PORTABLE", False):
+                assert hardware.apply_voice("") == "off"
+                assert config_mod.load_layered(settings=s, state=t).visual_qa.speak == "off"
+                assert "visual_qa.speak" not in (s.read_text("utf-8") if s.exists() else "")
+                hardware.record({"he_voice": ""})
+                assert hardware.no_voice()
+                assert hardware.apply_voice("Microsoft Asaf") is None
+                assert config_mod.load_layered(settings=s, state=t).visual_qa.speak == "button"
+                hardware.record({"he_voice": "Microsoft Asaf"})
+                assert not hardware.no_voice()
+                # the person's own choice is never touched
+                config_mod.save({"visual_qa.speak": "auto"}, settings=s, state=t)
+                assert hardware.apply_voice("") is None
+                assert config_mod.load_layered(settings=s, state=t).visual_qa.speak == "auto"
+                hardware.record({"ollama": False})
+                assert hardware.ollama_absent()
+                hardware.record({"ollama": True, "ollama_models": ["gemma3:4b"]})
+                assert not hardware.ollama_absent()
+            assert not hardware.no_voice() and not hardware.ollama_absent(), "the checkout"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+    assert "Time & Language > Speech" in hardware.NO_VOICE
+
+    import dashboard as dash
+    import settings as settings_mod
+
+    with _window() as board:
+        if board is None:
+            return
+
+        def drawn(tab):
+            # the tab first, then the screen: _show fills whichever tab
+            # is current, and its first card is built on the spot
+            board.parts.pop("voice_block", None)
+            board._settings_tab = tab
+            board._show("Settings")
+            board._finish_settings()
+            board.root.update_idletasks()
+            return "voice_block" in board.parts
+
+        assert not drawn("Screen"), "the checkout drew the no-voice block"
+        with _patched(dash.hardware_mod, "no_voice", lambda: True):
+            assert drawn("Screen") and not drawn("Cards")
+
+
+def test_ollama_absent_hides_local_entries():
+    """6.7: with the probe saying no Ollama, an installed copy's provider
+    menus carry no "On this computer" entry — unless it is the value the
+    file holds, which a menu has to be able to show; the checkout keeps
+    every entry; and the ask-the-screen refusal names the three ways
+    out with the model the tier suggests."""
+    import dashboard as dash
+    import settings as settings_mod
+
+    class _Setting:
+        def __init__(self, path, value, choices=()):
+            self.path, self.value, self.choices = path, value, choices
+
+    row = settings_mod.WORDS["lookup.prefer"]
+    assert any(v == "ollama" for v, _n in row.names), row.names
+    with _window() as board:
+        if board is None:
+            return
+        board.parts.setdefault("values", {})
+        names = board._menu_for(row, _Setting("lookup.prefer", "groq"))
+        assert any(v == "ollama" for v, _n in names), "the checkout hid Ollama"
+        with _patched(dash.hardware_mod, "ollama_absent", lambda: True):
+            names = board._menu_for(row, _Setting("lookup.prefer", "groq"))
+            assert not any(v == "ollama" for v, _n in names), names
+            assert len(names) == len(row.names) - 1
+            names = board._menu_for(row, _Setting("lookup.prefer", "ollama"))
+            assert any(v == "ollama" for v, _n in names), "the held value was hidden"
+            plain = board._menu_for(None, _Setting("x", "a", ("a", "b")))
+            assert plain == [("a", "a"), ("b", "b")]
+    import visual_qa
+    src = inspect.getsource(visual_qa)
+    assert "install Ollama from ollama.com and pull" in src and "Settings > Privacy" in src
 
 
 # ------------------------------------------------------ updates (PR 13)

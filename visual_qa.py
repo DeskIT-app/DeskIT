@@ -745,10 +745,15 @@ class OllamaVision:
         except (Cancelled, QAError):
             raise
         except net.NetError as e:
+            # 6.7 / chapter 9 screen 12, said in words until the card
+            # has the three buttons: install Ollama (with the model the
+            # tier suggests), use a cloud key, or leave the key off.
             raise QAError(
-                f"cannot reach Ollama at {self._url} ({e.reason}) — the "
-                f"upload gate is off, so there is no cloud fallback for a "
-                f"screenshot") from e
+                f"cannot reach Ollama at {self._url} ({e.reason}). Three ways "
+                f"out: install Ollama from ollama.com and pull {self._model} "
+                f"(it answers on this PC), turn on the screenshot gate on "
+                f"Settings > Privacy with your own Gemini or Groq key, or "
+                f"leave this key alone") from e
         except Exception as e:
             raise QAError(f"Ollama request failed: {e}") from e
         log.debug("visual qa via ollama in %.2fs",

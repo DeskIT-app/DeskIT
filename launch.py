@@ -75,6 +75,16 @@ def open_dashboard() -> bool:
     return spawn([str(APP_DIR / "dashboard.py")])
 
 
+def run_step(flag: str, name: str | None = None) -> bool:
+    """A download step (models.py, packs.py) as its own process — the
+    dashboard cannot host a second Tk root, and the app is already
+    running: `main.py --download-model` or `--install-pack <name>`."""
+    args = [str(APP_DIR / "main.py"), flag]
+    if name:
+        args.append(name)
+    return spawn(args)
+
+
 def dashboard_command() -> list[str]:
     """How the window is opened again by something that is not this
     process — the taskbar pin's relaunch property, Restart. In the
