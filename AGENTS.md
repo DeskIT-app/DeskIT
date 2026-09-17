@@ -1176,6 +1176,9 @@ ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedg
 | `shelf.py` + `shelf_card.py` + `skin\shelf.py` | the panel beside the dot: the window/thread/queue class (modelled on `overlay.HintCard`), the pure painter (words, geometry, hit test, `INK`) and the glass. Every answer it offers calls the same `App` method the matching card does; nothing goes through `control.py` |
 | `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |
 | `version.py` | reads `VERSION` (one line, SemVer, the number every screen and report prints; the Android build reads the same file) and, in the checkout only, the git branch |
+| `deskit.pyw` | the installed copy's entry — `python\pythonw.exe app\deskit.pyw [--dashboard]`, what the shortcut, the Run value and the pin's relaunch point at; `main.main()` and nothing else. The checkout keeps its `.vbs` launchers |
+| `autostart.py` | "Start with Windows": the HKCU `Run` value `DeskIT` (`setup.autostart`, a state key), re-asserted at every start; refuses in the checkout |
+| `packaging\DeskIT.iss` | the per-user Inno installer (10.4): no UAC, Hebrew/English by the Windows language, Restart Manager on upgrade, downgrade refused, `/CHANNEL=` and `/NOLAUNCH`, the uninstall question defaulting to Keep |
 | `manifest.py` | `MANIFEST.sha256`: the build writes one line per file under `python\` and `app\` (`write`), `--verify` reads it back (`verify`); stdlib only |
 | `packaging\` | the build's inputs that are not code: `python311._pth`, `python-embed.sha256`, `build_local.ps1` (steps 1-7 on this PC into `dist\`); never in the archive |
 | `.github/workflows/release.yml` | the build on a tag `v*` (10.3 steps 0-7 so far): wheelhouse by hash, python.org zip by SHA-256, Tk copied from the runner's same-patch Python, `git archive`, the manifest |

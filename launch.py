@@ -17,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import paths
+
 APP_DIR = Path(__file__).resolve().parent
 
 # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP. Without the first the child
@@ -33,11 +35,13 @@ _DETACHED = 0x00000008 | 0x00000200
 def pythonw() -> str:
     """The windowless interpreter to launch children with.
 
-    The project's own venv first: the shortcuts point at it, it is the one
-    with faster-whisper in it, and whichever interpreter happens to be
-    running this code may well not be it.
+    The installed layout first (python\ beside app\, DISTRIBUTION_PLAN.md
+    10.2), then the project's own venv: the shortcuts point at it, it is
+    the one with faster-whisper in it, and whichever interpreter happens
+    to be running this code may well not be it.
     """
     candidates = [
+        APP_DIR.parent / "python" / "pythonw.exe",
         APP_DIR / ".venv" / "Scripts" / "pythonw.exe",
         Path(sys.executable).with_name("pythonw.exe"),
         Path(sys.executable),
@@ -69,6 +73,20 @@ def start_app(config_path: str | None = None) -> bool:
 
 def open_dashboard() -> bool:
     return spawn([str(APP_DIR / "dashboard.py")])
+
+
+def dashboard_command() -> list[str]:
+    """How the window is opened again by something that is not this
+    process — the taskbar pin's relaunch property, Restart. In the
+    checkout it is wscript + Dashboard.vbs, the launcher the shortcut
+    and the pin have always run; an installed copy has no .vbs and
+    runs the entry with --dashboard (10.2)."""
+    vbs = APP_DIR / "Dashboard.vbs"
+    if paths.DEVELOPER and vbs.exists():
+        wscript = str(Path(os.environ.get("SystemRoot", r"C:\Windows"))
+                      / "System32" / "wscript.exe")
+        return [wscript, str(vbs)]
+    return [pythonw(), str(APP_DIR / "deskit.pyw"), "--dashboard"]
 
 
 def open_path(path: Path) -> bool:

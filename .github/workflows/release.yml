@@ -1,6 +1,8 @@
-# The build — DISTRIBUTION_PLAN.md 10.3, steps 0 to 7 (PR 10). Later PRs
-# add the Inno installer, the attestation, the smoke test, VirusTotal and
-# the release itself (steps 8-15). Nothing here runs on the owner's PC:
+# The build — DISTRIBUTION_PLAN.md 10.3, steps 0 to 7 (PR 10) and 9 to 12
+# (PR 11): the channel word, the Inno installer, its SHA-256 and
+# latest.json, and a silent install + verify + uninstall on the runner.
+# Later PRs add the attestation, VirusTotal and the release itself
+# (steps 8, 13-15). Nothing here runs on the owner's PC:
 # every byte of the staged tree traces to the tag, a hashed wheel or a
 # SHA-verified python.org zip (D12 lock 5, D19).
 #
@@ -122,10 +124,70 @@ jobs:
           Write-Host $out
           Get-ChildItem -Recurse stage -File | Measure-Object -Property Length -Sum | ForEach-Object { "stage: $($_.Count) files, $([math]::Round($_.Sum / 1MB)) MB" }
 
+      # 9. channel — github here; the winget manifest passes /CHANNEL=winget
+      #    to the same installer, the Store build writes store (10.4)
+      - name: CHANNEL
+        run: Set-Content -Path stage/CHANNEL -Value github -NoNewline -Encoding ascii
+
+      # 10. inno — the runner image ships Inno Setup 6; the script takes the
+      #     version, its four-part Windows form, the stage and the output dir
+      - name: Installer
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup --no-progress -y | Out-Null }
+          if (-not (Test-Path $iscc)) { throw "ISCC.exe not found" }
+          $version = "${{ steps.version.outputs.version }}"
+          $core = ($version -split '-')[0]
+          $beta = if ($version -match '-beta\.(\d+)$') { $Matches[1] } else { '0' }
+          $info = "$core.$beta"
+          & $iscc packaging/DeskIT.iss /DVersion=$version /DVersionInfo=$info /DStage=stage /DOutDir=dist
+          if ($LASTEXITCODE) { throw "ISCC failed" }
+          Get-ChildItem dist
+
+      # 11. sha + latest.json — the forms the guide and the Update card read
+      - name: SHA-256 and latest.json
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $exe = "dist/DeskIT-Setup-$version.exe"
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          Set-Content -Path "$exe.sha256" -Value "$sha  DeskIT-Setup-$version.exe" -Encoding ascii
+          $latest = [ordered]@{
+            version = $version
+            url = "https://github.com/${{ github.repository }}/releases/download/v$version/DeskIT-Setup-$version.exe"
+            sha256 = $sha
+            size = (Get-Item $exe).Length
+            min_config_version = 1
+            notes_url = "https://github.com/${{ github.repository }}/releases/tag/v$version"
+          }
+          $latest | ConvertTo-Json | Set-Content -Path dist/latest.json -Encoding utf8
+          Copy-Item stage/MANIFEST.sha256 dist/MANIFEST.sha256
+          Get-Content "$exe.sha256", dist/latest.json
+
+      # 12. smoke — the installer, silent, on the runner itself; the tree
+      #     verifies against its manifest; the uninstaller leaves nothing
+      - name: Silent install, verify, uninstall
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $log = "$env:RUNNER_TEMP\deskit-setup.log"
+          $p = Start-Process -FilePath "dist/DeskIT-Setup-$version.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOLAUNCH", "/LOG=$log" -Wait -PassThru
+          if ($p.ExitCode) { Get-Content $log; throw "the installer exited $($p.ExitCode)" }
+          $app = "$env:LOCALAPPDATA\Programs\DeskIT"
+          if ((Get-Content "$app\CHANNEL" -Raw) -ne 'github') { throw "CHANNEL is not github" }
+          & "$app\python\python.exe" "$app\app\manifest.py" verify $app
+          if ($LASTEXITCODE) { throw "the installed tree does not verify" }
+          & "$app\python\python.exe" -c "import sys; sys.path.insert(0, r'$app\app'); import paths, version; print('installed', version.VERSION, 'channel', paths.CHANNEL, 'data', paths.DATA_DIR)"
+          if ($LASTEXITCODE) { throw "the installed app does not import" }
+          $u = Start-Process -FilePath "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+          if ($u.ExitCode) { throw "the uninstaller exited $($u.ExitCode)" }
+          Start-Sleep -Seconds 3
+          if (Test-Path $app) { Get-ChildItem -Recurse $app | Select-Object -First 20; throw "APP_DIR survived the uninstall" }
+
       - uses: actions/upload-artifact@v4
         with:
-          name: stage-${{ steps.version.outputs.version }}
+          name: DeskIT-${{ steps.version.outputs.version }}
           path: |
-            stage/MANIFEST.sha256
-            stage/app
-          retention-days: 7
+            dist/DeskIT-Setup-*.exe
+            dist/DeskIT-Setup-*.exe.sha256
+            dist/latest.json
+            dist/MANIFEST.sha256
+          retention-days: 14

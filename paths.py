@@ -206,6 +206,32 @@ DEFAULT_PORT: int = 8757 if DEVELOPER else 8756
 #: AppUserModelID for the taskbar: neutral (D5), and distinct for Dev.
 APP_ID: str = "DeskIT.Dev" if DEVELOPER else "DeskIT.App"
 
+# ---- the channel this copy came through (chapter 10 §10.4, chapter 11)
+
+CHANNELS = ("github", "winget", "store")
+#: One word, written by the installer beside python\ and app\ (never
+#: inside app\, which the archive fills): github, winget or store.
+CHANNEL_FILE = APP_DIR.parent / "CHANNEL"
+
+
+def read_channel(path: Path | None = None) -> tuple[str, str]:
+    """`(channel, note)`: the word in the file, or github with a note
+    saying why — a missing file is the checkout or a hand-made tree, an
+    unknown word is a broken install. Never raises."""
+    path = CHANNEL_FILE if path is None else path
+    try:
+        word = path.read_text("utf-8").strip().lower()
+    except FileNotFoundError:
+        return "github", ""
+    except OSError as e:
+        return "github", f"CHANNEL unreadable ({e}); assuming github"
+    if word in CHANNELS:
+        return word, ""
+    return "github", f"CHANNEL says {word!r}, not one of {CHANNELS}; assuming github"
+
+
+CHANNEL, CHANNEL_NOTE = read_channel()
+
 
 def kernel_name(base: str) -> str:
     """``Local\\DeskIT.instance`` → ``Local\\DeskIT.dev.instance`` for Dev.

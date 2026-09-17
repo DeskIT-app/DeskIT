@@ -1181,6 +1181,7 @@ def test_export_ignore_covers_forbidden():
     assert not leaked, leaked
     assert not [n for n in names if n.endswith(".html")], "an .html page"
     for must in ("main.py", "defaults.toml", "VERSION", "version.py", "manifest.py",
+                 "deskit.pyw", "autostart.py",
                  "paths.py", "net.py", "privacy.py", "README.md", "icon.ico",
                  "skin/__init__.py", "transcribers/__init__.py", "fonts/"):
         assert must in names, f"{must} is not in the archive"

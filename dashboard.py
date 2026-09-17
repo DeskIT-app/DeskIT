@@ -605,11 +605,10 @@ def _set_taskbar_relaunch(root) -> bool:
         if hr != 0:
             return False
         fmtid = GUID("{9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3}")
-        wscript = str(Path(os.environ.get("SystemRoot", r"C:\Windows"))
-                      / "System32" / "wscript.exe")
+        command = " ".join(f'"{part}"' for part in launch.dashboard_command())
         values = (
             (5, APP_ID),                                        # ...ID
-            (2, f'"{wscript}" "{APP_DIR / "Dashboard.vbs"}"'),  # ...Command
+            (2, command),                                       # ...Command
             (4, "DeskIT"),                    # ...DisplayName
             (3, f"{ICON_PATH},0"),                      # ...IconResource
         )
@@ -1184,10 +1183,8 @@ def _relaunch_dashboard() -> bool:
     """
     import subprocess
 
-    wscript = str(Path(os.environ.get("SystemRoot", r"C:\Windows"))
-                  / "System32" / "wscript.exe")
     try:
-        subprocess.Popen([wscript, str(APP_DIR / "Dashboard.vbs")],
+        subprocess.Popen(launch.dashboard_command(),
                          cwd=str(APP_DIR), creationflags=launch._DETACHED,
                          close_fds=True, stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -7907,6 +7904,11 @@ class Dashboard:
                 setting.path, setting.value))
             self._note(str(e))
             return
+        if setting.path == "setup.autostart":
+            # the Run value is this session's to write; with the app
+            # stopped nobody else will (main.py re-asserts it at start)
+            import autostart
+            autostart.apply(bool(value))
         self.parts["values"][setting.path] = value
         self._paint_setting(setting.path, value)
         self._note(f"{setting.path} saved — it applies the next time it "

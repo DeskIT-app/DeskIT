@@ -291,6 +291,12 @@ scale = 0.8                   # how big you last made it (0.6 .. 1.4). The − a
 # This line is the override: true switches the wizard off without hunting
 # for a dotfile. To see it again: run  main.py --setup
 done = false
+# Start with Windows: true writes the HKCU Run value that starts the
+# installed copy at logon, false removes it (autostart.py; the app
+# re-checks it at every start, so a moved install never leaves a stale
+# entry). A per-installation fact, kept in state.json like `done`.
+# Does nothing in a checkout, which starts from its own shortcut.
+autostart = false
 
 [audio]
 sample_rate = 16000

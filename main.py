@@ -1987,6 +1987,18 @@ class App:
         section, _, key = name.rpartition(".")
         if name == "auto_pause_fullscreen":
             return self._set_auto_pause(fresh.auto_pause_fullscreen)
+        if name == "setup.autostart":
+            import autostart
+            on = fresh.setup.autostart
+            self.cfg = dataclasses.replace(self.cfg, setup=fresh.setup)
+            autostart.apply(on)
+            message = ("Windows will start DeskIT when you sign in" if on
+                       else "DeskIT no longer starts with Windows")
+            if paths.DEVELOPER:
+                message = "setup.autostart saved — the checkout starts from its own shortcut"
+            self._say(message)
+            log.info("%s", message)
+            return message
         live = False
         if not section and name in LIVE_TOP_LEVEL:
             self.cfg = dataclasses.replace(self.cfg,
@@ -6114,6 +6126,12 @@ def main() -> int:
     # The gates (privacy.py): what [privacy] says, before anything that
     # could build a cloud client. net.py learns `offline` from this too.
     privacy.configure(cfg)
+    # Start with Windows: the Run value says what state.json says, every
+    # start, so an install that moved never leaves a stale entry (10.2).
+    import autostart
+    autostart.sync(cfg)
+    if paths.CHANNEL_NOTE:
+        log.warning("%s", paths.CHANNEL_NOTE)
     # [history] keep_days: prune, or detach the transcripts handler.
     import history as history_mod
     log.info("%s", history_mod.apply(cfg, transcript_log))

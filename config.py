@@ -252,8 +252,15 @@ class SetupConfig:
 
     It stays here as an override because a setting someone can find and
     flip beats a dotfile they have to be told about.
+
+    autostart is the other per-installation fact here (a STATE key, so
+    it lives in state.json): whether Windows starts the app at logon —
+    the HKCU Run value autostart.py writes. Off by default until the
+    wizard's Done step offers it (chapter 9); never acted on in the
+    checkout.
     """
     done: bool = False
+    autostart: bool = False
 
 
 @dataclass(frozen=True)
@@ -1687,6 +1694,7 @@ def build(data: dict) -> Config:
         ),
         setup=SetupConfig(
             done=bool(setup.get("done", SetupConfig.done)),
+            autostart=bool(setup.get("autostart", SetupConfig.autostart)),
         ),
         translate=TranslateConfig(
             target=str(translate.get("target",
@@ -2540,7 +2548,7 @@ STATE_KEYS: frozenset[str] = frozenset({
     "shelf.x", "shelf.y", "shelf.scale",
     "review.x", "review.y", "review.scale",
     "audio.device", "camera.device", "visual_qa.voice",
-    "server.port", "setup.done", "config_version",
+    "server.port", "setup.done", "setup.autostart", "config_version",
 })
 
 #: What settings.toml may hold: the scalar kinds config.toml uses, and a

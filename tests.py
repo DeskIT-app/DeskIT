@@ -28240,6 +28240,7 @@ def test_no_store_path_is_built_beside_the_code():
         "weekly_review.ps1", "problems",                   # owner-only: the routine, problems\weekly
         "android",                                         # owner-only: the APK build
         "Dashboard.vbs", ".venv", "main.py", "dashboard.py",  # launch.py, until chapter 10
+        "deskit.pyw",                                      # the installed entry (launch.py, autostart.py)
     }
     owner_only_files = {"nightly.py", "make_icon.py", "install_fonts.py",
                         "audio_check.py"}
@@ -29803,6 +29804,147 @@ def test_problems_env_fields():
     assert kinds == ["cloud_text"], kinds
     assert all(set(c) == {"kind", "text_version"}
                for c in problems_mod.env(cfg)["consents"])
+
+
+# ------------------------------------------------- the installer (PR 11)
+#
+# DISTRIBUTION_PLAN.md 10.2 and 10.4: packaging/DeskIT.iss is the per-user
+# installer, deskit.pyw the entry every launcher points at, CHANNEL the
+# word the installer leaves beside the tree, and "Start with Windows" the
+# app's own Run value — never the installer's, never the checkout's.
+
+def test_iss_settings():
+    """The [Setup] lines that buy 10.4's behaviour, read off the script:
+    per-user with no UAC, Restart Manager on upgrade, Windows 10 1809+,
+    both languages, one Start-menu entry with the app's AppUserModelID,
+    no Run value of its own, /CHANNEL and /NOLAUNCH handled in [Code],
+    the data question on uninstall with Keep as the default."""
+    iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
+    for line in ("PrivilegesRequired=lowest", "CloseApplications=yes",
+                 "RestartApplications=yes", "MinVersion=10.0.17763",
+                 "DisableDirPage=yes", "UsePreviousAppDir=yes",
+                 "ArchitecturesAllowed=x64compatible", "SetupLogging=yes",
+                 "Compression=lzma2/ultra64", "SolidCompression=yes",
+                 "ShowLanguageDialog=auto", "AppId={{9DE44D29-7270-4406-B00A-E6517B5629CE}",
+                 "DefaultDirName={localappdata}\\Programs\\DeskIT",
+                 "OutputBaseFilename=DeskIT-Setup-{#Version}"):
+        assert line in iss, line
+    assert 'Name: "english"; MessagesFile: "compiler:Default.isl"' in iss
+    assert 'Name: "hebrew"; MessagesFile: "compiler:Languages\\Hebrew.isl"' in iss
+    icons = iss[iss.index("[Icons]"):iss.index("[Run]")]
+    entries = [ln for ln in icons.splitlines() if ln.startswith("Name:")]
+    assert len(entries) == 1 and 'AppUserModelID: "DeskIT.App"' in entries[0], entries
+    assert "pythonw.exe" in entries[0] and "deskit.pyw" in entries[0]
+    assert "{commondesktop}" not in iss and "{userstartup}" not in iss
+    assert "[Registry]" not in iss, "the Run value is the app's (autostart.py)"
+    code = iss[iss.index("[Code]"):]
+    assert "{param:CHANNEL|github}" in code and "{param:NOLAUNCH|no}" in code
+    assert "Check: not NoLaunch" in iss and "skipifsilent" in iss
+    assert "SuppressibleTaskDialogMsgBox" in code and "IDNO, IDNO" in code, \
+        "the uninstall question must default to Keep, silently too"
+    assert "--reset-data --yes" in code
+    assert "RegDeleteValue(HKCU, RunKey, RunValue)" in code
+    assert "VersionNumber(Have) > VersionNumber('{#Version}')" in code, "no downgrade refusal"
+    assert "hebrew.DeleteDataQuestion=" in iss and "english.DeleteDataQuestion=" in iss
+
+
+def test_channel_values():
+    """paths.read_channel: github, winget and store are taken as written
+    (case and whitespace forgiven); a missing file is github without a
+    word; an unknown or unreadable one is github with a note main.py
+    logs at start. This checkout has no CHANNEL beside it."""
+    with tempfile.TemporaryDirectory() as d:
+        f = Path(d) / "CHANNEL"
+        assert paths.read_channel(f) == ("github", "")
+        for word in ("github", "winget", "store", " Store\n", "WINGET"):
+            f.write_text(word, "utf-8")
+            channel, note = paths.read_channel(f)
+            assert channel == word.strip().lower() and note == "", (word, channel, note)
+        f.write_text("chocolatey", "utf-8")
+        channel, note = paths.read_channel(f)
+        assert channel == "github" and "chocolatey" in note, note
+    assert paths.CHANNELS == ("github", "winget", "store")
+    assert paths.CHANNEL == "github" and paths.CHANNEL_NOTE == ""
+    assert paths.CHANNEL_FILE.parent == paths.APP_DIR.parent, "CHANNEL sits beside app\\, not in it"
+
+
+def test_autostart_run_value():
+    """autostart.apply writes one REG_SZ under the Run key with the
+    installed launcher command, removes it again, reports whether the
+    registry changed, and refuses in the checkout. Against a scratch key
+    of the tests' own — the real Run value is the person's."""
+    import winreg
+
+    import autostart
+    import launch
+
+    scratch = r"Software\DeskIT.test\Run-" + str(os.getpid())
+
+    def read():
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, scratch) as k:
+                return winreg.QueryValueEx(k, autostart.VALUE)[0]
+        except FileNotFoundError:
+            return None
+
+    class _Setup:
+        def __init__(self, on): self.autostart = on
+
+    class _Cfg:
+        def __init__(self, on): self.setup = _Setup(on)
+
+    try:
+        with _patched(autostart, "RUN_KEY", scratch), _patched(paths, "DEVELOPER", False):
+            assert autostart.current() is None
+            assert autostart.apply(True) is True
+            assert read() == autostart.command() == autostart.current()
+            assert launch.pythonw() in autostart.command() and "deskit.pyw" in autostart.command()
+            assert autostart.command().count('"') == 4, "both halves quoted"
+            assert autostart.apply(True) is False, "nothing to change"
+            assert autostart.apply(False) is True and read() is None
+            assert autostart.apply(False) is False
+            # sync: on rewrites, off removes a stale value, absent + off touches nothing
+            autostart.sync(_Cfg(True))
+            assert read() == autostart.command()
+            autostart.sync(_Cfg(False))
+            assert read() is None
+        with _patched(autostart, "RUN_KEY", scratch), _patched(paths, "DEVELOPER", True):
+            assert autostart.apply(True) is False and read() is None
+            autostart.sync(_Cfg(True))
+            assert read() is None, "the checkout wrote a Run value"
+    finally:
+        try:
+            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, scratch)
+        except OSError:
+            pass
+    # and the switch is a state key with a row on the page
+    assert "setup.autostart" in config_mod.STATE_KEYS
+    assert config_mod.SetupConfig().autostart is False
+    import settings as settings_mod
+    assert "setup.autostart" in settings_mod.friendly_paths()
+
+
+def test_deskit_pyw_is_the_entry_and_the_window_is_relaunched_by_layout():
+    """deskit.pyw does nothing but main.main(); launch.dashboard_command()
+    is wscript + Dashboard.vbs in the checkout (the pin's command since
+    the .vbs existed) and pythonw + deskit.pyw --dashboard everywhere
+    else; launch.pythonw() prefers python\\ beside app\\ when it exists."""
+    import launch
+
+    src = (REPO / "deskit.pyw").read_text("utf-8")
+    assert "import main" in src and "sys.exit(main.main())" in src
+    assert "argparse" not in src and "def " not in src, "deskit.pyw grew logic"
+    here = launch.dashboard_command()
+    assert here[0].lower().endswith("wscript.exe") and here[1].endswith("Dashboard.vbs"), here
+    with _patched(paths, "DEVELOPER", False):
+        theirs = launch.dashboard_command()
+    assert theirs == [launch.pythonw(), str(launch.APP_DIR / "deskit.pyw"), "--dashboard"]
+    with tempfile.TemporaryDirectory() as d:
+        tree = Path(d)
+        (tree / "python").mkdir()
+        (tree / "python" / "pythonw.exe").write_bytes(b"")
+        with _patched(launch, "APP_DIR", tree / "app"):
+            assert launch.pythonw() == str(tree / "python" / "pythonw.exe")
 
 
 # ------------------------------------------- the build's inputs (PR 10)
