@@ -30586,6 +30586,7 @@ def test_app_log_never_quotes_text():
             assert "learned %d pair(s): %s" not in msrc, mod.__name__
             assert "proposes %d change(s): %s" not in msrc, mod.__name__
             assert "learned %d pair(s)%s" not in msrc, mod.__name__
+            assert "%r -> %r heard by" not in msrc, mod.__name__
         # 5. the phone URL (server.py)
         import server as server_mod
         ssrc = inspect.getsource(server_mod)

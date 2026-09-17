@@ -421,9 +421,11 @@ def validate(final: str, proposals: list[dict], variants: list[str],
         support = sum(1 for h in heard if all(w in h for w in low_after))
         if support < int(witness) and \
                 (" ".join(_low(bw)), " ".join(low_after)) not in known:
-            log.info("second reading: %r -> %r heard by %d decode(s), "
-                     "needs %d, taught by nobody — not proposed", before,
-                     after, support, int(witness))
+            # The words themselves stay out of app.log (D8); a count of
+            # witnesses is what a reader of the log needs.
+            log.info("second reading: a change heard by %d decode(s), "
+                     "needs %d, taught by nobody — not proposed",
+                     support, int(witness))
             used.pop()
             continue
         out.append({"before": " ".join(fw[span[0]:span[1]]),
