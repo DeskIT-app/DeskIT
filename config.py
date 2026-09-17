@@ -1480,14 +1480,32 @@ def _parse_device(raw: str) -> int | str | None:
 
 
 def load(path: Path) -> Config:
+    """One TOML file as the whole configuration.
+
+    This is what `--config somefile.toml` and the test suite use: the file
+    given is the complete config and every write goes back into it through
+    the line editor (set_values). The app itself, started without
+    --config, loads the three LAYERS instead — see load_layered().
+    """
+    return build(_read_toml(path))
+
+
+def _read_toml(path: Path) -> dict:
     if not path.exists():
         raise ConfigError(f"Config file not found: {path}")
     try:
         with path.open("rb") as f:
-            data = tomllib.load(f)
+            return tomllib.load(f)
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"Bad TOML in {path}: {e}") from e
 
+
+def build(data: dict) -> Config:
+    """The dataclass tree, validated, from one merged mapping.
+
+    Every rule below runs on the MERGED values, whichever layer they came
+    from — a value that would not load from config.toml does not load
+    from settings.toml either."""
     audio = data.get("audio", {})
     gemini = data.get("gemini", {})
     local = data.get("local", {})
@@ -2430,3 +2448,227 @@ def set_values(path: Path, updates: dict[str, object]) -> None:
         tmp.unlink(missing_ok=True)
         raise ConfigError(f"the edited config would not load: {e}") from e
     os.replace(tmp, path)
+
+
+# ---------------------------------------------------------------------------
+# The three layers (DISTRIBUTION_PLAN.md chapter 3.4, decision D2)
+#
+#   dataclass defaults  <-  defaults.toml  <-  settings.toml  <-  state.json
+#
+# defaults.toml is the tracked file: every key, every measurement comment,
+# the source the Settings page is generated from. The app NEVER writes it.
+# settings.toml holds only what the person changed, one dotted line per
+# key. state.json holds what belongs to this machine rather than to the
+# person: where the cards were dragged to, which microphone, which voice,
+# which port was bound, whether the wizard has run. Both live in
+# paths.DATA_DIR and both are written atomically through a per-process
+# temp file, for the reason set_values explains above.
+
+#: Keys that describe THIS MACHINE and go to state.json, never to
+#: settings.toml (and never to a settings sync, D31). The Settings page
+#: hides them. Kept in step with the table in chapter 3.4.
+STATE_KEYS: frozenset[str] = frozenset({
+    "dot.x", "dot.y",
+    "hint.x", "hint.y", "hint.scale",
+    "notify.x", "notify.y",
+    "problems.x", "problems.y", "problems.card_x", "problems.card_y",
+    "shelf.x", "shelf.y", "shelf.scale",
+    "review.x", "review.y", "review.scale",
+    "audio.device", "camera.device", "visual_qa.voice",
+    "server.port", "setup.done", "config_version",
+})
+
+#: What settings.toml may hold: the scalar kinds config.toml uses, and a
+#: list of strings. Anything else is a bug in the caller.
+_SCALARS = (bool, int, float, str)
+
+SETTINGS_HEADER = ("# DeskIT settings — only what you changed, one line per "
+                   "key. Help for every key lives in defaults.toml beside "
+                   "the app; the Settings page edits this file for you.\n")
+
+
+def flatten(data: dict, prefix: str = "") -> dict[str, object]:
+    """{"a": {"b": 1}, "c": 2} -> {"a.b": 1, "c": 2}. Two levels is all the
+    file has; deeper tables are left as values."""
+    flat: dict[str, object] = {}
+    for key, value in data.items():
+        name = f"{prefix}{key}"
+        if isinstance(value, dict) and not prefix:
+            flat.update(flatten(value, name + "."))
+        else:
+            flat[name] = value
+    return flat
+
+
+def nest(flat: dict[str, object]) -> dict:
+    """The inverse of flatten, for handing an overlay to build()."""
+    data: dict = {}
+    for name, value in flat.items():
+        section, dot, key = name.partition(".")
+        if dot:
+            data.setdefault(section, {})[key] = value
+        else:
+            data[name] = value
+    return data
+
+
+def _merge(base: dict, over: dict) -> dict:
+    out = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _format_value(value: object) -> str:
+    """A settings.toml value. Strings are written as TOML basic strings
+    with the escapes json knows, which TOML accepts (\\", \\\\, \\n, \\uXXXX);
+    Hebrew stays as it is because ensure_ascii is off."""
+    import json
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (list, tuple)):
+        if not all(isinstance(item, str) for item in value):
+            raise ConfigError("settings.toml lists hold strings only")
+        return "[" + ", ".join(json.dumps(i, ensure_ascii=False)
+                               for i in value) + "]"
+    raise ConfigError(f"cannot write a {type(value).__name__} to "
+                      "settings.toml")
+
+
+def read_settings(path: Path) -> dict[str, object]:
+    """settings.toml as a flat dotted dict; {} when it does not exist."""
+    path = Path(path)
+    if not path.exists():
+        return {}
+    try:
+        with path.open("rb") as f:
+            return flatten(tomllib.load(f))
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"Bad TOML in {path}: {e}") from e
+
+
+def write_settings(path: Path, flat: dict[str, object]) -> None:
+    """Every override on its own dotted line, sorted, written atomically;
+    the previous file kept as .bak so an update can never lose them."""
+    path = Path(path)
+    lines = [SETTINGS_HEADER]
+    for name in sorted(flat):
+        lines.append(f"{name} = {_format_value(flat[name])}\n")
+    text = "".join(lines)
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.new")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(text, "utf-8")
+    try:
+        with tmp.open("rb") as f:
+            tomllib.load(f)            # what we wrote must read back
+    except Exception as e:
+        tmp.unlink(missing_ok=True)
+        raise ConfigError(f"settings.toml would not read back: {e}") from e
+    if path.exists():
+        try:
+            os.replace(path, path.with_suffix(path.suffix + ".bak"))
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
+def read_state(path: Path) -> dict[str, object]:
+    """state.json as a flat dotted dict; {} when missing or unreadable —
+    a corrupt state file is a log line and defaults, never a failed start."""
+    import json
+    path = Path(path)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_state(path: Path, flat: dict[str, object]) -> None:
+    import json
+    path = Path(path)
+    tmp = path.with_suffix(f"{path.suffix}.{os.getpid()}.new")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp.write_text(json.dumps(flat, ensure_ascii=False, indent=2,
+                              sort_keys=True) + "\n", "utf-8")
+    os.replace(tmp, path)
+
+
+def _layer_paths(defaults, settings, state):
+    import paths
+    return (Path(defaults) if defaults else paths.DEFAULTS_FILE,
+            Path(settings) if settings else paths.SETTINGS_FILE,
+            Path(state) if state else paths.STATE_FILE)
+
+
+def layered_data(defaults=None, settings=None, state=None) -> dict:
+    """The merged mapping the app runs on, before validation."""
+    d, s, t = _layer_paths(defaults, settings, state)
+    data = _read_toml(d)
+    data = _merge(data, nest(read_settings(s)))
+    data = _merge(data, nest(read_state(t)))
+    return data
+
+
+def load_layered(defaults=None, settings=None, state=None) -> Config:
+    """The app's configuration: defaults.toml under settings.toml under
+    state.json, validated as one. The paths default to paths.py's."""
+    return build(layered_data(defaults, settings, state))
+
+
+def defaults_flat(defaults=None) -> dict[str, object]:
+    d, _, _ = _layer_paths(defaults, None, None)
+    return flatten(_read_toml(d))
+
+
+def save(updates: dict[str, object], *, defaults=None, settings=None,
+         state=None) -> None:
+    """Write a change into the per-user files.
+
+    STATE_KEYS go to state.json. Everything else goes to settings.toml —
+    unless the new value equals the default, in which case the line is
+    DROPPED, so the file stays "only what you changed". The merged config
+    is built and validated BEFORE either file is touched, for the same
+    reason set_values validates before it swaps: a value that stops the
+    app from starting must not be reachable from a click.
+    """
+    d, s, t = _layer_paths(defaults, settings, state)
+    flat_defaults = flatten(_read_toml(d))
+    overrides = read_settings(s)
+    machine = read_state(t)
+    touched_settings = touched_state = False
+    for name, value in updates.items():
+        if name in STATE_KEYS:
+            machine[name] = value
+            touched_state = True
+            continue
+        touched_settings = True
+        # True == 1 in Python, so "equals the default" also asks whether
+        # both sides are bools or neither is.
+        same = (name in flat_defaults and flat_defaults[name] == value
+                and isinstance(value, bool) == isinstance(flat_defaults[name], bool))
+        if same:
+            overrides.pop(name, None)
+        else:
+            overrides[name] = value
+    merged = _merge(_merge(nest(flat_defaults), nest(overrides)),
+                    nest(machine))
+    try:
+        build(merged)
+    except ConfigError:
+        raise
+    except Exception as e:
+        raise ConfigError(f"the edited settings would not load: {e}") from e
+    if touched_settings:
+        write_settings(s, overrides)
+    if touched_state:
+        write_state(t, machine)

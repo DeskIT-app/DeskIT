@@ -16,7 +16,11 @@ instead:
 
 ``APP_DIR``
     The folder holding ``main.py``: code, ``fonts\\``, ``skin\\``, the
-    icon, and (for now) ``config.toml``. Read-only once installed.
+    icon, and ``defaults.toml`` — the tracked configuration document.
+    Read-only once installed. A person's own changes go to
+    ``settings.toml`` and ``state.json`` in ``DATA_DIR`` (config.py,
+    "the three layers"); ``LEGACY_CONFIG`` is only where ``--migrate``
+    looks for a pre-2026-09-17 ``config.toml``.
 
 ``DATA_DIR``
     Everything personal. ``%LOCALAPPDATA%\\DeskIT`` for an installed copy
@@ -91,7 +95,7 @@ FLAT: bool = _LAYOUT == "portable"
 # DATA_DIR. The left column is what the app wrote before 2026-09-17, so
 # the owner's checkout keeps every file where it is (D4).
 _LAYOUTS: dict[str, tuple[str, str]] = {
-    "CONFIG_FILE":     ("config.toml",        "config.toml"),
+    "LEGACY_CONFIG":   ("config.toml",        "config.toml"),
     "SETTINGS_FILE":   ("settings.toml",      "settings.toml"),
     "STATE_FILE":      ("state.json",         "state.json"),
     "CONSENT_FILE":    ("consent.json",       "consent.json"),
@@ -133,7 +137,7 @@ def _rel(name: str) -> Path:
     return DATA_DIR / parts if parts else DATA_DIR
 
 
-CONFIG_FILE = _rel("CONFIG_FILE")
+LEGACY_CONFIG = _rel("LEGACY_CONFIG")
 SETTINGS_FILE = _rel("SETTINGS_FILE")
 STATE_FILE = _rel("STATE_FILE")
 CONSENT_FILE = _rel("CONSENT_FILE")
@@ -165,6 +169,11 @@ SECRETS_DIR = _rel("SECRETS_DIR")
 CACHE_DIR = _rel("CACHE_DIR")
 CUES_DIR = _rel("CUES_DIR")
 TMP_DIR = _rel("TMP_DIR")
+
+#: The tracked configuration document: every key with its measurement
+#: comments, the source the Settings page is generated from, and the
+#: bottom layer of config.load_layered(). The app never writes it.
+DEFAULTS_FILE = APP_DIR / "defaults.toml"
 
 #: Read-only assets that stay with the code in every layout.
 FONTS_DIR = APP_DIR / "fonts"

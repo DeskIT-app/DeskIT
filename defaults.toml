@@ -262,8 +262,8 @@ corner = "dot"                # dot | top-right | top-left | bottom-right | bott
                               # where it is placed BESIDE the dot - above it
                               # at the bottom, to its left at the top - and
                               # never over it: the dot does not move for this
-x = -278                      # the top-left of the CARD where you last dragged
-y = 236                       # it, in screen pixels — what you can SEE, not the
+x = -100000                   # the top-left of the CARD where you last dragged
+y = -100000                   # it, in screen pixels — what you can SEE, not the
                               # window, which starts 26 px further up and left to
                               # leave room for its own shadow. -100000 = never
                               # moved: use `corner`. It has to be a number no
@@ -290,7 +290,7 @@ done = false
 
 [audio]
 sample_rate = 16000
-device = "Headset Microphone (Arctis 7 Chat), Windows WASAPI"
+device = ""
                                # the microphone BY NAME, never by index:
                                # indices shift whenever any device appears
                                # or disappears, and on 2026-09-05 index 27
@@ -656,7 +656,7 @@ speak = "button"               # off | button | auto — whether the answer is
                                # control (press again to stop); auto reads
                                # every answer as it lands; off hides the
                                # control entirely
-voice = "Microsoft Asaf"       # he-IL. CAUTION: the legacy SAPI
+voice = ""                     # he-IL. CAUTION: the legacy SAPI
                                # System.Speech API does not SEE the OneCore
                                # voices (it lists only Zira en-US here);
                                # WinRT SpeechSynthesizer does. Synthesis is
@@ -785,7 +785,7 @@ record_hotkey = "ctrl+f12"     # tap to start, tap again to stop. One key
                                # same thought as the first, and a recorder
                                # you have to hunt for with the mouse records
                                # you hunting for it
-folder = "C:\\Users\\shimr\\Desktop\\Organized\\Photos\\Screenshots\\DeskIT capture"
+folder = "captures"
                                # where screenshots and camera photos go.
                                # A relative name is relative to the APP
                                # folder, not to whatever directory the
@@ -793,7 +793,7 @@ folder = "C:\\Users\\shimr\\Desktop\\Organized\\Photos\\Screenshots\\DeskIT capt
                                # from a .vbs, a shortcut and a scheduled
                                # task, and all three disagree. An absolute
                                # path is used as given
-clip_folder = "C:\\Users\\shimr\\Desktop\\Organized\\Videos\\DeskIT"
+clip_folder = ""
                                # where screen RECORDINGS (clip *.mp4) go.
                                # Empty means the same folder as the
                                # pictures; an absolute path is used as
@@ -996,7 +996,7 @@ timer = 0                      # 0, 3 or 10 seconds of self-timer to start
                                # on. `t` cycles it while the window is
                                # open, and Esc cancels a countdown before
                                # it closes the window
-folder = "C:\\Users\\shimr\\Desktop\\Organized\\Photos\\Screenshots\\DeskIT capture"
+folder = "captures"
                                # the same folder the screen captures go
                                # to, so there is one place to look for
                                # pictures. The files are named
@@ -1165,8 +1165,8 @@ anchor = "bottom"              # bottom | top. Which edge of the stack stays
                                # so a card kept in the bottom-right corner
                                # never runs off the screen; "top" pins the
                                # top edge and grows downward, as it used to
-x = 2188                    # the top-left of the CARD where you last
-y = 1373                    # dragged it, in screen pixels — but `y` is the
+x = -100000                 # the top-left of the CARD where you last
+y = -100000                 # dragged it, in screen pixels — but `y` is the
                                # edge `anchor` names, so with the default
                                # "bottom" it is the BOTTOM of the stack and
                                # a taller card grows up away from it.
@@ -1227,7 +1227,7 @@ keep_resolved = 200            # how many ANSWERED reports to keep, newest
                                # are never trimmed at any setting - a
                                # question nobody has answered is not a
                                # kilobyte worth saving
-x = 1066                    # the left edge of the report CARD where
+x = -100000                 # the left edge of the report CARD where
                                # you last dragged it to, in screen pixels.
                                # -100000 = you never have, so it opens
                                # where it always opens. The sentinel is a
@@ -1235,7 +1235,7 @@ x = 1066                    # the left edge of the report CARD where
                                # negative coordinates are real on a monitor
                                # to the left of the primary (this one
                                # starts at x = -1920)
-y = 511                    # the top edge of that same card, in screen
+y = -100000                # the top edge of that same card, in screen
                                # pixels. -100000 = never dragged
 card_x = -100000               # the left edge of the DASHBOARD's report
                                # box, which is a second window and keeps
@@ -1302,7 +1302,7 @@ hush_notifications = true      # while the panel is open the notification
 # Reachability is Tailscale's job — see the README. host = "" binds to the
 # Tailscale address when it is up (and 127.0.0.1 when it is not), so this
 # never answers the home LAN.
-enabled = true
+enabled = false
 host = ""
 port = 8756
 
@@ -1346,22 +1346,13 @@ keep_audio = 50           # keep this many recent recordings in recent\, so a
                           # 0 keeps none — everything else still works, you
                           # just lose the ability to measure.
 
-# Seeds: your own stack, written by hand. Anything you correct with the
-# correction key is added to vocab.json automatically and ranks alongside
-# these. Real mishearings from transcripts.log that these are here to stop:
-# "Expo Go" -> "xpogo", "--branch" -> "Brinth", "Cowork" -> "בקו-ורק",
-# "HebrewDictation" -> "Hebrew reduction", "Play Protect" -> "PlayProtect Scance".
-terms = [
-  # this machine's projects
-  "HebrewDictation", "Massif", "TripSync", "Cowork",
-  # the toolchain that keeps coming out wrong
-  "Expo", "Expo Go", "EAS", "npx", "APK", "Gradle", "Android Studio",
-  "Play Protect", "GitHub", "Tailscale", "Ollama", "Claude Code", "Whisper",
-  # git/dev terms — also in [local] initial_prompt, repeated here because
-  # that one stops reaching the decoder after 30 seconds
-  "commit", "branch", "pull request", "merge", "deploy", "production",
-  "repo", "terminal", "bug", "feature", "prompt", "config",
-]
+# Seeds: names and terms the model has never heard, written by hand — your
+# projects, your tools, the people you mention. Anything you correct with
+# the correction key is added to vocab.json automatically and ranks
+# alongside these. Ships empty; the owner's own list lives in his
+# settings.toml. Real mishearings this exists to stop, from one desk:
+# "Expo Go" -> "xpogo", "--branch" -> "Brinth", "Cowork" -> "בקו-ורק".
+terms = []
 
 [study]
 # FAST VERSION ONLY -- classic ignores this whole section, like [local]
@@ -1701,8 +1692,8 @@ card_seconds = 20             # how long the card stays on screen before it
 corner = "right"              # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                               # appears before you have dragged it: "right"
                               # is mid-height on the right edge
-x = 924                   # the top-left of the CARD where you last
-y = 881                   # dragged it, in screen pixels. -100000 = never
+x = -100000               # the top-left of the CARD where you last
+y = -100000               # dragged it, in screen pixels. -100000 = never
                               # moved: use `corner`. Negative is real on a
                               # monitor to the left of the primary
 scale = 1.0                   # how big it is drawn (0.6 .. 1.4)

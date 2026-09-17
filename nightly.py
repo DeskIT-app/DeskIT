@@ -723,7 +723,7 @@ def _wanted(app_dir) -> tuple:
     cannot read a setting is not the night to stop testing."""
     try:
         import config
-        cfg = config.load(Path(app_dir) / "config.toml")
+        cfg = config.load(Path(app_dir) / "defaults.toml")
         return bool(cfg.tests.nightly), float(cfg.tests.wait_seconds), cfg
     except Exception as e:                # noqa: BLE001
         log.info("nightly: could not read [tests] (%s) — using the "

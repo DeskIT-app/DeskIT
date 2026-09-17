@@ -94,3 +94,13 @@ problems/
 /tmp/
 # The marker that keeps a copy in portable mode without a .git beside it.
 /portable.txt
+
+# The three layers (config.py, 2026-09-17): defaults.toml is TRACKED and
+# never written by the app; these two are the person's and never leave the
+# machine. config.toml / config.legacy.toml is the pre-layers file that
+# --migrate reads once and retires.
+/settings.toml
+/settings.toml.bak
+/state.json
+/config.toml
+/config.legacy.toml

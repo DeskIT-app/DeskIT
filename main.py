@@ -317,12 +317,33 @@ class App:
     _record_vk = None
     _camera_vk = None
 
+    def _save(self, updates: dict) -> None:
+        """Write a changed setting where this copy keeps its settings.
+
+        Started with --config, the file given is the whole configuration
+        and the line editor writes into it (tests, a portable one-file
+        run). Started plainly, the app runs on the three layers and the
+        change goes to settings.toml or state.json — config.save decides
+        which (chapter 3.4, D2)."""
+        if self.config_path is None:
+            config_mod.save(updates)
+        else:
+            config_mod.set_values(self.config_path, updates)
+
+    def _reload(self) -> config_mod.Config:
+        """The configuration as the files say it is NOW."""
+        if self.config_path is None:
+            return config_mod.load_layered()
+        return config_mod.load(self.config_path)
+
     def __init__(self, cfg: config_mod.Config,
                  config_path: Path | None = None):
         self.cfg = cfg
-        # Where a key change is written back to. Carried rather than
-        # recomputed so --config keeps pointing at the file it was given.
-        self.config_path = Path(config_path or paths.CONFIG_FILE)
+        # Where a key change is written back to: the one file --config
+        # named, or None for the three layers (see _save). Carried rather
+        # than recomputed so --config keeps pointing at the file it was
+        # given.
+        self.config_path = Path(config_path) if config_path else None
         self._stopping = threading.Event()
         self._watcher: threading.Thread | None = None
         parse_chord(cfg.paste_chord)  # fail fast on a bad chord name
@@ -1422,7 +1443,7 @@ class App:
         """
         self.cfg = dataclasses.replace(
             self.cfg, hint=dataclasses.replace(self.cfg.hint, **fields))
-        config_mod.set_values(self.config_path,
+        self._save(
                               {f"hint.{k}": v for k, v in fields.items()})
         log.info("hint card: %s",
                  ", ".join(f"{k}={v}" for k, v in fields.items()))
@@ -1453,7 +1474,7 @@ class App:
             return
         self.cfg = dataclasses.replace(
             self.cfg, dot=dataclasses.replace(dcfg, **fields))
-        config_mod.set_values(self.config_path,
+        self._save(
                               {f"dot.{k}": v for k, v in fields.items()})
         log.info("the dot: %s", ", ".join(f"{k}={v}" for k, v in
                                           fields.items()))
@@ -1463,7 +1484,7 @@ class App:
         written into [review] through the same comment-keeping line edit."""
         self.cfg = dataclasses.replace(
             self.cfg, review=dataclasses.replace(self.cfg.review, **fields))
-        config_mod.set_values(self.config_path,
+        self._save(
                               {f"review.{k}": v for k, v in fields.items()})
         log.info("review card: %s",
                  ", ".join(f"{k}={v}" for k, v in fields.items()))
@@ -1476,7 +1497,7 @@ class App:
         comment-keeping line edit."""
         self.cfg = dataclasses.replace(
             self.cfg, notify=dataclasses.replace(self.cfg.notify, **fields))
-        config_mod.set_values(self.config_path,
+        self._save(
                               {f"notify.{k}": v for k, v in fields.items()})
         log.info("notify card: %s",
                  ", ".join(f"{k}={v}" for k, v in fields.items()))
@@ -1507,7 +1528,7 @@ class App:
             return
         self.cfg = dataclasses.replace(
             self.cfg, problems=dataclasses.replace(pcfg, **fields))
-        config_mod.set_values(self.config_path,
+        self._save(
                               {f"problems.{k}": v for k, v in fields.items()})
         log.info("report card: %s",
                  ", ".join(f"{k}={v}" for k, v in fields.items()))
@@ -1910,7 +1931,7 @@ class App:
         # key is visual_qa_hotkey (config.toml's own naming), the dataclass
         # field it loads into is hotkey.
         write_key = NESTED_HOTKEYS.get(field, field)
-        config_mod.set_values(self.config_path, {write_key: key})
+        self._save( {write_key: key})
         message = (f"{field} is now '{key}'" if key
                    else f"{field} is off")
         self._say(message)
@@ -1937,8 +1958,8 @@ class App:
         name = (name or "").strip()
         if not name:
             raise ValueError("no setting was named")
-        config_mod.set_values(self.config_path, {name: value})
-        fresh = config_mod.load(self.config_path)
+        self._save( {name: value})
+        fresh = self._reload()
         section, _, key = name.rpartition(".")
         if name == "auto_pause_fullscreen":
             return self._set_auto_pause(fresh.auto_pause_fullscreen)
@@ -3651,7 +3672,7 @@ class App:
             return
         self.cfg = dataclasses.replace(
             self.cfg, shelf=dataclasses.replace(scfg, **fields))
-        config_mod.set_values(self.config_path,
+        self._save(
                               {f"shelf.{k}": v for k, v in fields.items()})
         log.info("shelf: %s", ", ".join(f"{k}={v}" for k, v in fields.items()))
 
@@ -3923,7 +3944,7 @@ class App:
             return
         self.cfg = dataclasses.replace(
             self.cfg, questions=dataclasses.replace(qcfg, **fields))
-        config_mod.set_values(self.config_path,
+        self._save(
                               {f"questions.{k}": v for k, v in fields.items()})
         log.info("question card: %s",
                  ", ".join(f"{k}={v}" for k, v in fields.items()))
@@ -4914,7 +4935,7 @@ class App:
             log.info("not looking anything up in a '%s' window: the copy "
                      "chord becomes a real Ctrl+C there and would interrupt "
                      "whatever is running in it. Set skip_consoles = false "
-                     "under [lookup] in config.toml to try it anyway.",
+                     "under [lookup] in the settings to try it anyway.",
                      injector.window_class(hwnd) or "console")
             return
         if reason == "clipboard-locked":
@@ -4955,7 +4976,7 @@ class App:
                        "lookup.both_ways")
                 log.info("that selection is already the target language and "
                          "both_ways is off — set both_ways = true under "
-                         "[lookup] in config.toml to have Hebrew come back "
+                         "[lookup] in the settings to have Hebrew come back "
                          "as English.")
             else:
                 refuse("noop", "lookup-nothing-to-translate",
@@ -5642,6 +5663,15 @@ class App:
         self._review_submit(kept, hwnd)
 
 
+def _load_config(explicit: str | None) -> config_mod.Config:
+    """--config names one file as the whole configuration; without it the
+    app runs on the three layers (defaults.toml, settings.toml,
+    state.json — config.py, "the three layers")."""
+    if explicit:
+        return config_mod.load(Path(explicit))
+    return config_mod.load_layered()
+
+
 def setup_logging() -> None:
     handlers: list[logging.Handler] = []
     if HAS_CONSOLE:
@@ -5828,7 +5858,7 @@ def show_vocab(cfg: config_mod.Config) -> int:
                   f"   ({c.get('last','?')})")
         print()
     if cfg.vocab.terms:
-        print(f"{len(cfg.vocab.terms)} seed term(s) from config.toml "
+        print(f"{len(cfg.vocab.terms)} seed term(s) from the settings "
               f"[vocab] terms\n")
     hot = v.hotwords()
     if not cfg.vocab.enabled:
@@ -5861,7 +5891,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Hebrew push-to-talk dictation (hold hotkey, speak, "
                     "release).")
-    parser.add_argument("--config", default=str(paths.CONFIG_FILE))
+    parser.add_argument("--config", default=None,
+                        help="one file as the whole configuration (the "
+                             "app itself runs on defaults.toml + "
+                             "settings.toml + state.json)")
+    parser.add_argument("--migrate", nargs="?", const="", metavar="OLD",
+                        help="carry a pre-2026-09-17 config.toml (or an old "
+                             "checkout folder) into the per-user files")
+    parser.add_argument("--reset-data", action="store_true",
+                        help="delete everything learned and recorded; keep "
+                             "the settings (needs --yes)")
+    parser.add_argument("--yes", action="store_true",
+                        help="confirm --reset-data")
     parser.add_argument("--fake", action="store_true",
                         help="use the fake backend (no API, no mic quality "
                              "needed)")
@@ -5919,6 +5960,14 @@ def main() -> int:
                         help="open the control window (start/pause/stop and "
                              "the keys), then exit")
     args = parser.parse_args()
+    # The two housekeeping commands run before a single log handler
+    # opens a file: --reset-data has to be able to delete app.log.
+    if args.migrate is not None:
+        import migrate as migrate_mod
+        return migrate_mod.migrate(Path(args.migrate) if args.migrate else None)
+    if args.reset_data:
+        import migrate as migrate_mod
+        return migrate_mod.reset_data(yes=args.yes)
     paths.ensure()
     setup_logging()
 
@@ -5950,12 +5999,12 @@ def main() -> int:
     if args.list_devices:
         import sounddevice as sd
         print(sd.query_devices())
-        print('\nPut the index or a unique name substring into config.toml '
-              '-> [audio] device = "..."')
+        print('\nPick it in the first-run wizard (main.py --setup) or write '
+              'audio.device = "<name>" into settings.toml')
         return 0
 
     try:
-        cfg = config_mod.load(Path(args.config))
+        cfg = _load_config(args.config)
     except ConfigError as e:
         # report_fatal, not a bare log line: launched windowless there is
         # nowhere for this to be seen, and a config.toml can now be edited
@@ -5970,8 +6019,8 @@ def main() -> int:
     # already lost the argument it exists to win, and the microphone it
     # writes has to be the one the Recorder is then opened on.
     if args.setup or (firstrun.needed(cfg) and not args.fake):
-        if firstrun.run(cfg, Path(args.config)):
-            cfg = config_mod.load(Path(args.config))   # it wrote the device
+        if firstrun.run(cfg, Path(args.config) if args.config else None):
+            cfg = _load_config(args.config)            # it wrote the device
         if args.setup:
             return 0
 
@@ -6071,7 +6120,7 @@ def main() -> int:
                   "engine to run.")
             return 2
         if getattr(cfg, "study", None) is None:
-            print("config.toml has no [study] section.")
+            print("the settings have no [study] section.")
             return 2
         return study_mod.study_all(cfg, paths.DATA_DIR)
 
@@ -6083,7 +6132,7 @@ def main() -> int:
                   "second reading to run.")
             return 2
         if getattr(cfg, "review", None) is None:
-            print("config.toml has no [review] section.")
+            print("the settings have no [review] section.")
             return 2
         return review_mod.review_all(cfg, paths.DATA_DIR)
 
@@ -6183,15 +6232,15 @@ def main() -> int:
         log.warning("%s", leftover)
     try:
         splash.status("loading the transcription model…")
-        app = App(cfg, config_path=Path(args.config))
+        app = App(cfg, config_path=Path(args.config) if args.config else None)
     except TranscriptionError as e:   # missing key, stub backend, ...
         return fail(str(e))
     except (ValueError, ConfigError) as e:   # unknown hotkey/chord name
-        return fail(f"bad key name in config.toml: {e}")
+        return fail(f"bad key name in the settings: {e}")
     except Exception as e:            # no input device, PortAudio errors
         return fail(f"could not start audio capture: {e}\n\nCheck Settings "
-                    "> Privacy & security > Microphone, and the device "
-                    "index in config.toml (see --list-devices).")
+                    "> Privacy & security > Microphone, and the microphone "
+                    "chosen in the wizard (main.py --setup).")
 
     if quit_signal.is_set():
         # Stop was pressed while the models were loading. Bringing the

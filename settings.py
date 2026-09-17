@@ -52,6 +52,7 @@ measurements the file is made of.
 """
 from __future__ import annotations
 
+import dataclasses
 import re
 import tomllib
 from dataclasses import dataclass
@@ -184,8 +185,28 @@ def _choices(trailing: str) -> tuple[tuple[str, ...], str]:
     return choices, rest
 
 
-def read(path: Path | str) -> list[Section]:
-    """The file, section by section, in the order it is written."""
+def read(path: Path | str, overrides: dict | None = None) -> list[Section]:
+    """The file, section by section, in the order it is written.
+
+    `overrides` is the person's layer (config.read_settings plus
+    config.read_state, dotted keys): a setting whose path is in it shows
+    THAT value, the help and the choices still come from the file. This
+    is how the page shows what the app actually runs on while the file
+    it is generated from stays the untouched defaults.toml (D2)."""
+    sections = _read(path)
+    if not overrides:
+        return sections
+    out: list[Section] = []
+    for section in sections:
+        rows = tuple(
+            dataclasses.replace(s, value=overrides[s.path])
+            if s.path in overrides else s
+            for s in section.settings)
+        out.append(dataclasses.replace(section, settings=rows))
+    return out
+
+
+def _read(path: Path | str) -> list[Section]:
     raw = Path(path).read_text("utf-8")
     data = tomllib.loads(raw)
     lines = raw.splitlines()
@@ -202,7 +223,7 @@ def read(path: Path | str) -> list[Section]:
     def value_of(key: str, number: int):
         table = data[name] if name else data
         if not isinstance(table, dict) or key not in table:
-            raise ValueError(f"config.toml line {number}: {key!r} is not a "
+            raise ValueError(f"{Path(path).name} line {number}: {key!r} is not a "
                              f"key tomllib found under [{name}]")
         return table[key]
 

@@ -27,7 +27,21 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import paths as _paths_mod
+
+# THE PERSON'S OWN FILES ARE NEVER A FIXTURE. config.save and load_layered
+# default to paths.SETTINGS_FILE / paths.STATE_FILE, which in this checkout
+# are the checkout's own; a Settings-screen test that flips a switch would
+# otherwise write into them (it did, once, on 2026-09-17 — a stray
+# `punctuate.auto = true` in the worktree's settings.toml). Every
+# default-path write in this process lands here instead. Subprocess tests
+# set DESKIT_HOME themselves.
+_SCRATCH_HOME = Path(tempfile.mkdtemp(prefix="deskit-tests-home-"))
+_paths_mod.SETTINGS_FILE = _SCRATCH_HOME / "settings.toml"
+_paths_mod.STATE_FILE = _SCRATCH_HOME / "state.json"
+
 import apikey
+import paths
 import capture as capture_mod
 import config as config_mod
 import hint as hint_mod
@@ -281,7 +295,7 @@ def test_the_rate_ladder_asks_wasapi_before_giving_up_on_16_khz() -> None:
 
 
 def test_config_loads_and_validates() -> None:
-    cfg = config_mod.load(Path(__file__).parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).parent / "defaults.toml")
     assert cfg.hotkey == "right ctrl"
     assert cfg.backend in config_mod.VALID_BACKENDS
     assert cfg.min_seconds < cfg.max_seconds
@@ -931,7 +945,7 @@ def _worker_app(backend, spool_dir, retry_seconds=5.0):
     import main as main_mod
     from spool import Spool
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(
         cfg,
         feedback=config_mod.FeedbackConfig(placeholder="...", enabled=True,
@@ -1718,7 +1732,7 @@ def test_the_hold_key_declares_no_language_by_default() -> None:
 
     import main as main_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.auto_language, "the shipped config.toml must ship it on"
     cfg = dataclasses.replace(cfg, hotkey="right ctrl", english_hotkey="")
 
@@ -2043,7 +2057,7 @@ def test_the_detector_is_warmed_before_the_first_dictation() -> None:
 def test_initial_prompt_is_set_for_code_switching() -> None:
     """Guards the mixed-language fix: without an initial_prompt the decoder
     drops the English half of a Hebrew+English sentence entirely."""
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     prompt = cfg.local.initial_prompt
     assert prompt, "initial_prompt must not be empty"
     assert "commit" in prompt and "branch" in prompt, prompt
@@ -2771,7 +2785,7 @@ def test_the_dot_alarm_travels_to_the_centre_and_comes_back() -> None:
 def test_real_config_has_a_reachable_latch_key() -> None:
     """Guards the shipped config: without this the app is back to "a long
     dictation means a long hold"."""
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.latch_hotkey, "latch_hotkey is off"
     vk_for(cfg.latch_hotkey)              # must be a name the hook knows
     assert cfg.latch_hotkey != cfg.hotkey
@@ -2864,7 +2878,7 @@ def test_local_backend_gets_the_guards_and_boilerplate_from_config() -> None:
     through one helper, so they cannot drift apart."""
     import cleanup as cleanup_mod
     from transcribers import local_kwargs
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     kw = local_kwargs(cfg)
     assert kw["guard_hallucinations"] is True
     assert "אדוני היושב ראש" in kw["boilerplate"]
@@ -2895,7 +2909,7 @@ def test_phone_endpoint_round_trip_and_auth() -> None:
 
     import server as server_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(
         cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
                                             port=8799))
@@ -2960,7 +2974,7 @@ def test_phone_punctuate_route_and_the_guards_around_it() -> None:
 
     import server as server_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(
         cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
                                             port=8798))
@@ -3037,7 +3051,7 @@ def test_phone_punctuate_is_absent_rather_than_broken_without_it() -> None:
 
     import server as server_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(
         cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
                                             port=8797))
@@ -3065,7 +3079,7 @@ def test_the_phone_reads_and_answers_the_second_reading() -> None:
     import review as review_mod
     import server as server_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(
         cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
                                             port=8796))
@@ -3140,7 +3154,7 @@ def test_the_phone_looks_a_word_up_without_writing_anything() -> None:
 
     import server as server_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(
         cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
                                             port=8795))
@@ -3973,7 +3987,7 @@ def test_phone_endpoint_never_binds_anything_but_loopback() -> None:
     import server as server_mod
     assert config_mod.ServerConfig.enabled is False   # opt in, not out
     assert config_mod.ServerConfig.host == ""
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.server.host in ("", "127.0.0.1", "localhost"), cfg.server.host
     # the resolution the server actually performs
     assert (cfg.server.host.strip() or "127.0.0.1") == "127.0.0.1"
@@ -4150,7 +4164,7 @@ def test_translator_falls_back_on_a_plain_api_error_too() -> None:
 def test_translate_settings_are_present_in_the_real_config() -> None:
     """Guards the shipped config: the fallback timeout must stay well above
     the cloud one or the first local translation times out mid-load."""
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.translate_hotkey, "the translate key is not enabled"
     assert cfg.translate_hotkey not in (cfg.hotkey, cfg.english_hotkey)
     assert cfg.translate.ollama_timeout_s >= 120, cfg.translate.ollama_timeout_s
@@ -4170,7 +4184,7 @@ def test_the_repair_pass_ships_its_backend_choice_in_the_real_config(
     spends hidden tokens before it answers, and a cap tighter than
     GroqTranslator's floor gets an empty reply rather than an error.
     """
-    here = Path(__file__).resolve().parent / "config.toml"
+    here = Path(__file__).resolve().parent / "defaults.toml"
     text = here.read_text(encoding="utf-8")
     cfg = config_mod.load(here)
     assert cfg.polish.prefer == "groq", cfg.polish.prefer
@@ -4203,7 +4217,7 @@ def test_the_repair_pass_ships_its_backend_choice_in_the_real_config(
 def test_local_backend_is_configured_and_unlimited() -> None:
     """Guards the switch to the local backend: it is the only one without a
     daily cap, so a silent revert to gemini would reintroduce the wall."""
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.backend == "local", cfg.backend
     assert cfg.local.language == "he", "autodetect is broken in this fine-tune"
     assert cfg.local.device in ("auto", "cuda", "cpu")
@@ -4213,7 +4227,7 @@ def test_local_backend_is_configured_and_unlimited() -> None:
 def test_real_config_has_a_multi_model_runway() -> None:
     """Guards the actual shipped config: a single model means the daily cap
     stops dictation dead, which is the bug users feel."""
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert len(cfg.gemini.models) >= 2, cfg.gemini.models
     assert cfg.feedback.enabled and cfg.feedback.placeholder
     assert cfg.fallback_to_local is True
@@ -4501,7 +4515,7 @@ def test_polish_only_wakes_up_for_a_known_mistake() -> None:
 
     import polish as polish_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(cfg, polish=config_mod.PolishConfig(
         when="known", min_chars=5))
     v = _tmp_vocab()
@@ -4524,7 +4538,7 @@ def test_a_slow_context_pass_is_abandoned_rather_than_waited_out() -> None:
 
     import polish as polish_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(cfg, polish=config_mod.PolishConfig(
         when="always", min_chars=1, max_wait_s=0.3))
 
@@ -4556,7 +4570,7 @@ def test_the_context_pass_never_reaches_for_gemini() -> None:
     import apikey as apikey_mod
     import polish as polish_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     polisher = polish_mod.Polisher(cfg, _tmp_vocab())
     text = "תריץ את השרת בבקשה ותגיד לי מה קרה שם"
     original = apikey_mod.find_key
@@ -4595,7 +4609,7 @@ def test_polish_prefer_ollama_reverses_the_repair_order() -> None:
     import apikey as apikey_mod
     import polish as polish_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(cfg, polish=dataclasses.replace(
         cfg.polish, prefer="ollama"))
     polisher = polish_mod.Polisher(cfg, _tmp_vocab())
@@ -4616,7 +4630,7 @@ def test_cerebras_is_opt_in_but_still_reachable() -> None:
     import apikey as apikey_mod
     import polish as polish_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(cfg, polish=dataclasses.replace(
         cfg.polish, prefer="cerebras"))
     polisher = polish_mod.Polisher(cfg, _tmp_vocab())
@@ -4789,7 +4803,7 @@ def test_the_warm_up_never_raises() -> None:
 
     import polish as polish_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(cfg, polish=config_mod.PolishConfig(
         when="known", max_wait_s=0.2))
 
@@ -4809,7 +4823,7 @@ def test_polish_never_runs_when_switched_off() -> None:
 
     import polish as polish_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(cfg, polish=config_mod.PolishConfig(
         when="never"))
     v = _tmp_vocab()
@@ -4927,16 +4941,20 @@ def test_polish_when_is_validated() -> None:
 
 
 def test_the_real_config_seeds_the_names_that_actually_garble() -> None:
-    """Guards the shipped config against the measured failures in
-    transcripts.log: every one of these was observed coming out wrong."""
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
-    assert cfg.vocab.enabled is True
-    assert cfg.correct_hotkey, "with no correction key nothing is ever learned"
-    seeded = {t.lower() for t in cfg.vocab.terms}
-    for term in ("expo go", "eas", "cowork", "hebrewdictation", "branch"):
-        assert term in seeded, f"{term!r} garbles in practice and is not seeded"
-    assert cfg.vocab.replace_after_hits >= 2, \
-        "one correction must not be enough to start rewriting speech"
+    """The shipped file seeds NOTHING (a stranger's projects are not the
+    owner's, D6) — the owner's list lives in his settings.toml, and a
+    vocab.terms override reaches the decoder like every other line."""
+    shipped = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert shipped.vocab.terms == (), shipped.vocab.terms
+    d = Path(tempfile.mkdtemp(prefix="deskit-seeds-"))
+    try:
+        s, t = d / "settings.toml", d / "state.json"
+        config_mod.save({"vocab.terms": ["Expo Go", "Cowork", "Tailscale"]},
+                        settings=s, state=t)
+        cfg = config_mod.load_layered(settings=s, state=t)
+        assert list(cfg.vocab.terms) == ["Expo Go", "Cowork", "Tailscale"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_the_phone_gets_the_vocabulary_the_desktop_learned() -> None:
@@ -5527,7 +5545,7 @@ def test_the_capture_dialog_waits_for_the_key_after_a_modifier() -> None:
             keysym, keycode, probe=lambda vk: vk == keycode, mods={0x11})
         assert got == want, f"{keysym} -> {got!r}"
         config_mod.check_hotkeys(dataclasses.replace(
-            config_mod.load(Path(__file__).resolve().parent / "config.toml"),
+            config_mod.load(Path(__file__).resolve().parent / "defaults.toml"),
             hotkey=want))          # the name it produces must be bindable
 
 
@@ -5573,7 +5591,7 @@ def _temp_config():
     import shutil
     import tempfile
     tmp = Path(tempfile.mkdtemp(prefix="dictation-config-"))
-    shutil.copy(Path(__file__).resolve().parent / "config.toml",
+    shutil.copy(Path(__file__).resolve().parent / "defaults.toml",
                 tmp / "config.toml")
     return tmp, tmp / "config.toml"
 
@@ -5663,7 +5681,7 @@ def test_a_hash_inside_a_value_is_not_read_as_a_comment() -> None:
 
 def test_colliding_keys_are_refused_before_they_are_written() -> None:
     import dataclasses
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     try:
         config_mod.check_hotkeys(
             dataclasses.replace(cfg, correct_hotkey=cfg.hotkey))
@@ -5687,7 +5705,7 @@ def test_the_real_config_names_keys_the_app_can_bind() -> None:
     share a trigger with a key that is tested before the taps are.
     """
     import main as main_mod
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     hotkeys, taps, latch_vk, pause_vk = main_mod.App.bindings(cfg)
     assert hotkeys and pause_vk is not None, (hotkeys, pause_vk)
     names = [hotkey_mod.binding_name(b) for b in taps]
@@ -6127,7 +6145,7 @@ def test_prefer_ollama_reverses_the_backend_order() -> None:
 
     import punctuate as punctuate_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     for prefer, expected in (("gemini", "gemini"), ("ollama", "ollama")):
         p = punctuate_mod.Punctuator(
             dataclasses.replace(
@@ -6375,7 +6393,7 @@ def test_the_punctuate_key_is_a_tap_the_state_machine_knows() -> None:
 
     import main as main_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(cfg, punctuate_hotkey="f7",
                               translate_hotkey="f9")
     _hotkeys, taps, _latch, _pause = main_mod.App.bindings(cfg)
@@ -6478,7 +6496,7 @@ def test_the_lookup_key_is_a_tap_the_state_machine_knows() -> None:
 
     import main as main_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dataclasses.replace(cfg, lookup_hotkey="f6")
     _hotkeys, taps, _latch, _pause = main_mod.App.bindings(cfg)
     assert taps[parse_binding("f6")] == "lookup", taps
@@ -10813,7 +10831,7 @@ def test_screenshot_upload_gate_keeps_cloud_out_of_the_chain() -> None:
 
     import visual_qa as vq
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.visual_qa.allow_screenshot_upload is False
     shut = [name for name, _build in vq.Chain(cfg)._builders()]
     assert shut == ["ollama"], \
@@ -11048,7 +11066,7 @@ def test_visual_qa_key_binds_and_the_kill_switch_unbinds_it() -> None:
 
     import main as main_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     _hotkeys, taps, _latch, _pause = main_mod.App.bindings(cfg)
     assert taps[parse_binding("ctrl+f10")] == "visual_qa", taps
     assert main_mod.App._vk_of(taps, "visual_qa") == vk_for("f10")
@@ -11071,7 +11089,7 @@ def test_visual_qa_key_collision_is_refused_like_every_other() -> None:
 
     import main as main_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     clash = config_mod.with_field(cfg, "visual_qa_hotkey", "ctrl+f8")
     assert clash.visual_qa.hotkey == "ctrl+f8"
     assert cfg.visual_qa.hotkey == "ctrl+f10", "the original changed"
@@ -11285,7 +11303,7 @@ def test_a_cancelled_question_never_falls_through_to_the_cloud() -> None:
     cloud request, and a screenshot, on text nobody is waiting for."""
     import visual_qa as vq
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     chain = vq.Chain(cfg)
     reached: list[str] = []
 
@@ -11328,7 +11346,7 @@ def test_one_image_is_encoded_once_per_backend() -> None:
     import visual_qa as vq
     from PIL import Image
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     chain = vq.Chain(cfg)
     image = Image.new("RGB", (900, 450), (20, 30, 40))
     cache: dict = {}
@@ -13091,7 +13109,7 @@ def test_a_question_asked_mid_sentence_rejoins_the_field_it_interrupted(
         _cursor_lock = threading.Lock()
 
     who = Interrupted()
-    who.cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    who.cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     who._echo_lines = ["מה כתוב פה", "ומה זה אומר"]
     who._field_hwnd = 4321
 
@@ -13787,7 +13805,7 @@ def test_the_capture_keys_bind_and_the_kill_switch_unbinds_both() -> None:
 
     import main as main_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     _hot, taps, _latch, _pause = main_mod.App.bindings(cfg)
     assert "capture" in taps.values(), taps
     assert "record" in taps.values(), taps
@@ -13814,7 +13832,7 @@ def test_a_capture_key_collision_is_refused_like_every_other() -> None:
     launch."""
     import main as main_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     # ctrl+f5, because ctrl+f6 stopped being free the day the camera key
     # took it. Any measured-free key that nothing else in the shipped
     # config claims will do.
@@ -13868,13 +13886,13 @@ def test_the_shipped_config_carries_the_capture_section() -> None:
     the values shipped have to be ones both branches can live with — on
     classic the section is simply never read."""
     here = Path(__file__).resolve().parent
-    text = (here / "config.toml").read_text("utf-8")
+    text = (here / "defaults.toml").read_text("utf-8")
     assert "[capture]" in text
     for key in ("capture_hotkey", "record_hotkey", "folder", "fps",
                 "quality", "cursor", "audio", "max_minutes",
                 "copy_to_clipboard", "edit_after_shot", "copy_clip_path"):
         assert f"\n{key} = " in text, f"{key} is not a writable line"
-    cfg = config_mod.load(here / "config.toml")
+    cfg = config_mod.load(here / "defaults.toml")
     assert cfg.capture.audio == "off", "the shipped default must be off"
     ignored = (here / ".gitignore").read_text("utf-8")
     assert Path(cfg.capture.folder).is_absolute() \
@@ -13997,7 +14015,7 @@ def test_a_clip_has_two_sound_sources_and_the_mic_switches_both_ways(
         assert config_mod.CaptureConfig.system_sound is True
         assert config_mod.CaptureConfig.audio == "off"
         here = Path(__file__).resolve().parent
-        cfg = config_mod.load(here / "config.toml")
+        cfg = config_mod.load(here / "defaults.toml")
         assert cfg.capture.system_sound is True, \
             "system_sound is not in the shipped file, so the default rules"
     finally:
@@ -14522,7 +14540,7 @@ def test_the_recording_indicator_settings_parse_and_are_bounded() -> None:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     here = Path(__file__).resolve().parent
-    text = (here / "config.toml").read_text("utf-8")
+    text = (here / "defaults.toml").read_text("utf-8")
     for key in ("timer_corner", "announce"):
         assert f"\n{key} = " in text, f"{key} is not a writable line"
 
@@ -14814,7 +14832,7 @@ def test_the_camera_key_is_registered_everywhere_a_key_must_be() -> None:
     assert main_mod.NESTED_HOTKEYS["camera_hotkey"] == "camera.camera_hotkey"
     assert dash_mod.NESTED_HOTKEYS["camera_hotkey"] == "camera.camera_hotkey"
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     moved = config_mod.with_field(cfg, "camera_hotkey", "ctrl+f5")
     assert moved.camera.hotkey == "ctrl+f5"
     assert moved.camera_hotkey == "ctrl+f5"
@@ -14839,7 +14857,7 @@ def test_the_camera_key_binds_and_the_kill_switch_unbinds_it() -> None:
 
     import main as main_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     _hotkeys, taps, _latch, _pause = main_mod.App.bindings(cfg)
     assert taps[parse_binding(cfg.camera_hotkey)] == "photo", taps
 
@@ -14921,7 +14939,7 @@ def test_the_shipped_config_carries_the_camera_section() -> None:
     """Committed to both branches like every other section (see the
     cross-branch test); on classic it is simply never read."""
     here = Path(__file__).resolve().parent
-    text = (here / "config.toml").read_text("utf-8")
+    text = (here / "defaults.toml").read_text("utf-8")
     assert "[camera]" in text
     section = text[text.index("[camera]"):]
     section = section[:section.index("\n[", 1)]
@@ -14930,7 +14948,7 @@ def test_the_shipped_config_carries_the_camera_section() -> None:
                 "edit_after_shot"):
         assert f"\n{key} = " in section, f"{key} is not a writable line"
 
-    cfg = config_mod.load(here / "config.toml")
+    cfg = config_mod.load(here / "defaults.toml")
     assert cfg.camera.mirror is False
     assert cfg.camera.timer == 0
     ignored = (here / ".gitignore").read_text("utf-8")
@@ -15416,7 +15434,7 @@ def test_the_shipped_screenshot_key_is_the_one_windows_uses() -> None:
     """It is the point of the exercise: Win+Shift+S opens THIS editor."""
     import main as main_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.capture_hotkey == "win+shift+s", cfg.capture_hotkey
     assert "capture_hotkey" in config_mod.CHORD_FIELDS
     _hotkeys, taps, _latch, _pause = main_mod.App.bindings(cfg)
@@ -15943,7 +15961,7 @@ def test_a_closed_deck_of_cards_leaves_no_interpreter_to_free() -> None:
 
     # The deck reads `toast_stack` off whatever this hands it, fresh, the
     # same way everything else in that module reads its settings.
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     deck = cap.ShotCards(lambda: cfg.capture)
     gc.disable()                 # only explicit collects: we pick the thread
     try:
@@ -16141,7 +16159,7 @@ def test_the_after_shot_settings_parse_and_are_bounded() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
     here = Path(__file__).resolve().parent
-    text = (here / "config.toml").read_text("utf-8")
+    text = (here / "defaults.toml").read_text("utf-8")
     section = text[text.index("[capture]"):]
     section = section[:section.index("\n[", 1)]
     for key in ("after_shot", "toast_corner", "toast_seconds", "toast_stack",
@@ -17300,7 +17318,7 @@ def test_the_engine_studies_one_clip_and_feeds_the_vocab() -> None:
     import study as study_mod
     from spool import Spool
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     tmp = Path(tempfile.mkdtemp(prefix="study-"))
     recent = Spool(tmp / "recent", keep=10)
     recent.save(b"RIFFx", 5.0, "",
@@ -17339,7 +17357,7 @@ def test_a_spent_llm_budget_waits_instead_of_wasting_clips() -> None:
     import study as study_mod
     from spool import Spool
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dc.replace(cfg, study=dc.replace(cfg.study, llm_per_day=0))
     tmp = Path(tempfile.mkdtemp(prefix="study-"))
     recent = Spool(tmp / "recent", keep=10)
@@ -17363,7 +17381,7 @@ def test_a_clip_too_long_to_study_is_marked_not_rechewed() -> None:
     import study as study_mod
     from spool import Spool
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     cfg = dc.replace(cfg, study=dc.replace(cfg.study,
                                            max_clip_seconds=10.0))
     tmp = Path(tempfile.mkdtemp(prefix="study-"))
@@ -17382,7 +17400,7 @@ def test_a_clip_too_long_to_study_is_marked_not_rechewed() -> None:
 
 
 def test_the_shipped_config_carries_the_study_section() -> None:
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     scfg = getattr(cfg, "study", None)
     assert scfg is not None and scfg.enabled, scfg
     assert scfg.idle_minutes > 0 and scfg.max_clip_seconds > 0
@@ -17450,7 +17468,7 @@ def test_the_study_never_relearns_what_the_live_pass_already_fixed() -> None:
 
 def _hint_cfg(**over):
     """The shipped config, with fields replaced, for the card's rows."""
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     return dataclasses.replace(cfg, **over) if over else cfg
 
 
@@ -17461,7 +17479,7 @@ def test_hint_settings_are_present_in_the_real_config() -> None:
     # The delay is the whole reason this is not clutter: an ordinary
     # dictation has to finish before the card would have appeared.
     assert 150 <= cfg.hint.after_ms <= 1200, cfg.hint.after_ms
-    text = (Path(__file__).resolve().parent / "config.toml").read_text("utf-8")
+    text = (Path(__file__).resolve().parent / "defaults.toml").read_text("utf-8")
     assert "[hint]" in text and "after_ms" in text
 
 
@@ -17472,7 +17490,7 @@ def test_a_bad_hint_corner_is_refused_at_load() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="dictation-hint-"))
     try:
         path = tmp / "config.toml"
-        base = (Path(__file__).resolve().parent / "config.toml"
+        base = (Path(__file__).resolve().parent / "defaults.toml"
                 ).read_text("utf-8")
         # The shipped [hint] says `corner = "dot"` — the first such line
         # in the file; [shelf]'s is the second and much further down.
@@ -18372,7 +18390,7 @@ def test_the_shelf_key_is_registered_where_config_main_and_hint_look():
         config_mod.HOTKEY_FIELDS[-1]
     assert "shelf_hotkey" in config_mod.CHORD_FIELDS
     assert main_mod.NESTED_HOTKEYS["shelf_hotkey"] == "shelf.shelf_hotkey"
-    cfg = config_mod.load(Path(sys.path[0]) / "config.toml")
+    cfg = config_mod.load(Path(sys.path[0]) / "defaults.toml")
     assert cfg.shelf_hotkey == cfg.shelf.hotkey == "ctrl+alt+d"
     moved = config_mod.with_field(cfg, "shelf_hotkey", "ctrl+alt+k")
     assert moved.shelf.hotkey == "ctrl+alt+k"
@@ -18404,7 +18422,7 @@ def test_the_shelf_section_parses_and_is_bounded() -> None:
     they are outside what the painter can draw."""
     import shutil
 
-    cfg = config_mod.load(Path(sys.path[0]) / "config.toml")
+    cfg = config_mod.load(Path(sys.path[0]) / "defaults.toml")
     assert cfg.shelf.enabled is True
     assert cfg.shelf.corner in config_mod.HINT_CORNERS, cfg.shelf.corner
     assert config_mod.SHELF_ROWS_MIN <= cfg.shelf.rows \
@@ -18470,11 +18488,11 @@ def test_the_dot_section_decides_the_corner_for_every_card_beside_it(
     # there. The shipped default is a property of the dataclass, and that
     # is where it is now pinned.
     assert config_mod.DotConfig.corner == "bottom-right"
-    shipped = config_mod.load(Path(sys.path[0]) / "config.toml")
+    shipped = config_mod.load(Path(sys.path[0]) / "defaults.toml")
     assert shipped.dot.corner in config_mod.DOT_CORNERS, shipped.dot
     assert shipped.hint.corner == shipped.dot.corner, shipped.hint.corner
     assert shipped.shelf.corner == shipped.dot.corner, shipped.shelf.corner
-    text = (Path(sys.path[0]) / "config.toml").read_text("utf-8")
+    text = (Path(sys.path[0]) / "defaults.toml").read_text("utf-8")
     assert "[dot]" in text and text.index("[dot]") < text.index("[hint]")
 
     tmp = Path(tempfile.mkdtemp(prefix="dictation-dot-"))
@@ -18529,7 +18547,7 @@ def test_the_dot_section_decides_the_corner_for_every_card_beside_it(
     # of its own stays in that corner even when the dot started there.
     # `corner_for` cannot carry that difference, because by the time it
     # has run the two read identically.
-    moved_dot = config_mod.load(Path(sys.path[0]) / "config.toml")
+    moved_dot = config_mod.load(Path(sys.path[0]) / "defaults.toml")
     moved_dot = dataclasses.replace(
         moved_dot, dot=dataclasses.replace(moved_dot.dot, x=40, y=40))
     assert moved_dot.hint.corner == moved_dot.dot.corner
@@ -18634,7 +18652,7 @@ def test_the_dot_can_be_dropped_anywhere_and_is_remembered() -> None:
         # never half a position.
         assert config_mod.DotConfig.x == config_mod.DotConfig.y ==             config_mod.HINT_UNSET
         assert config_mod.DotConfig().moved() is False
-        shipped = config_mod.load(Path(sys.path[0]) / "config.toml")
+        shipped = config_mod.load(Path(sys.path[0]) / "defaults.toml")
         assert (shipped.dot.x == config_mod.HINT_UNSET) ==             (shipped.dot.y == config_mod.HINT_UNSET), shipped.dot
         assert shipped.dot.moved() is (shipped.dot.x != config_mod.HINT_UNSET)
         path.write_text("[dot]\nx = 1204\ny = 388\n", "utf-8")
@@ -18650,7 +18668,7 @@ def test_the_dot_can_be_dropped_anywhere_and_is_remembered() -> None:
                 assert "dot.x" in str(e) and "dot.y" in str(e), (line, e)
         # and the drop is written with the line editor that keeps the
         # comments — this file's comments are the measurements in it
-        base = (Path(__file__).resolve().parent / "config.toml"
+        base = (Path(__file__).resolve().parent / "defaults.toml"
                 ).read_text("utf-8")
         path.write_text(base, "utf-8")
         before = base.count("#")
@@ -18756,8 +18774,8 @@ def test_the_move_button_reaches_the_running_app_down_the_real_pipe() -> None:
     import main as main_mod
 
     app = main_mod.App.__new__(main_mod.App)
-    app.cfg = config_mod.load(Path(sys.path[0]) / "config.toml")
-    app.config_path = Path(sys.path[0]) / "config.toml"
+    app.cfg = config_mod.load(Path(sys.path[0]) / "defaults.toml")
+    app.config_path = Path(sys.path[0]) / "defaults.toml"
     written: list = []
     app.dot = overlay_mod.StatusDot(on_change=written.append)
     app.dot._thread = threading.current_thread()      # pretend it is up
@@ -18855,8 +18873,8 @@ def test_move_mode_expires_and_a_drop_writes_one_pair_of_lines() -> None:
     # main.py: the command, the save, and the state on the status poll
     import main as main_mod
     app = main_mod.App.__new__(main_mod.App)
-    app.cfg = config_mod.load(Path(sys.path[0]) / "config.toml")
-    app.config_path = Path(sys.path[0]) / "config.toml"
+    app.cfg = config_mod.load(Path(sys.path[0]) / "defaults.toml")
+    app.config_path = Path(sys.path[0]) / "defaults.toml"
     app.dot = overlay_mod.StatusDot(on_change=app._save_dot)
     app.dot._thread = threading.current_thread()
     app._say = lambda *a, **k: None
@@ -18952,7 +18970,7 @@ def test_a_saved_card_position_keeps_every_comment_in_the_config() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="dictation-hint-save-"))
     try:
         path = tmp / "config.toml"
-        base = (Path(__file__).resolve().parent / "config.toml"
+        base = (Path(__file__).resolve().parent / "defaults.toml"
                 ).read_text("utf-8")
         path.write_text(base, "utf-8")
         before = base.count("#")
@@ -19061,7 +19079,7 @@ def test_the_wizard_runs_once_per_copy_and_can_say_so_on_a_fresh_one(
     try:
         marker = tmp / ".setup-done"
         fresh = dataclasses.replace(
-            config_mod.load(Path(__file__).resolve().parent / "config.toml"),
+            config_mod.load(Path(__file__).resolve().parent / "defaults.toml"),
             setup=config_mod.SetupConfig(done=False))
         assert firstrun.needed(fresh, marker), "a fresh copy skipped setup"
         assert firstrun.mark_done(marker) is True
@@ -19080,7 +19098,7 @@ def test_the_wizard_runs_once_per_copy_and_can_say_so_on_a_fresh_one(
 
 def test_the_shipped_config_lets_a_fresh_download_see_the_wizard() -> None:
     """Whatever is committed here is what someone downloading this gets."""
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.setup.done is False, (
         "the committed config switches the wizard off, so no new install "
         "would ever see it — the per-copy record belongs in .setup-done")
@@ -19161,7 +19179,7 @@ def test_the_wizards_test_runs_the_apps_own_backend() -> None:
     import firstrun
 
     cfg = dataclasses.replace(
-        config_mod.load(Path(__file__).resolve().parent / "config.toml"),
+        config_mod.load(Path(__file__).resolve().parent / "defaults.toml"),
         backend="fake")
     text, problem = firstrun.transcribe(cfg, frames_to_wav(
         [np.zeros(16000, dtype=np.int16)], 16000))
@@ -19201,7 +19219,7 @@ def _config_paths() -> set[str]:
     writes, straight from tomllib — the parser the app trusts."""
     import tomllib
 
-    data = tomllib.loads((Path(__file__).resolve().parent / "config.toml")
+    data = tomllib.loads((Path(__file__).resolve().parent / "defaults.toml")
                          .read_text("utf-8"))
     paths: set[str] = set()
     for key, value in data.items():
@@ -19219,11 +19237,11 @@ def test_every_line_of_config_toml_is_a_setting_the_screen_can_draw() -> None:
     import settings as settings_mod
 
     here = Path(__file__).resolve().parent
-    sections = settings_mod.read(here / "config.toml")
+    sections = settings_mod.read(here / "defaults.toml")
     flat = settings_mod.flatten(sections)
     assert {s.path for s in flat} == _config_paths()
     assert len(flat) == len({s.path for s in flat}), "a key was read twice"
-    lines = (here / "config.toml").read_text("utf-8").splitlines()
+    lines = (here / "defaults.toml").read_text("utf-8").splitlines()
     for setting in flat:
         line = lines[setting.line - 1]
         assert line.lstrip().startswith(setting.key), (setting.path, line)
@@ -19240,7 +19258,7 @@ def test_the_help_on_a_setting_is_the_comment_in_the_file() -> None:
     import settings as settings_mod
 
     sections = settings_mod.read(
-        Path(__file__).resolve().parent / "config.toml")
+        Path(__file__).resolve().parent / "defaults.toml")
 
     def find(path):
         setting = settings_mod.find(sections, path)
@@ -19295,7 +19313,7 @@ def test_the_plain_words_name_lines_the_file_has() -> None:
     import settings as settings_mod
 
     sections = settings_mod.read(
-        Path(__file__).resolve().parent / "config.toml")
+        Path(__file__).resolve().parent / "defaults.toml")
     paths = _config_paths()
     assert settings_mod.TABS[0].name == settings_mod.GENERAL
     assert settings_mod.TABS[-1].name == settings_mod.APP
@@ -19336,7 +19354,7 @@ def test_every_line_and_every_section_has_plain_words() -> None:
     import settings as settings_mod
 
     sections = settings_mod.read(
-        Path(__file__).resolve().parent / "config.toml")
+        Path(__file__).resolve().parent / "defaults.toml")
     assert set(settings_mod.WORDS) == _config_paths(), \
         sorted(_config_paths() ^ set(settings_mod.WORDS))
     assert set(settings_mod.SECTION_WORDS) == {s.name for s in sections}
@@ -19447,7 +19465,7 @@ def test_the_settings_show_the_choices_and_fold_the_measurements() -> None:
     import dashboard as dash
 
     sections = settings_mod.read(
-        Path(__file__).resolve().parent / "config.toml")
+        Path(__file__).resolve().parent / "defaults.toml")
     named = settings_mod.named_by_hand()
     for setting in settings_mod.flatten(sections):
         want = (setting.path in named or setting.kind == "bool"
@@ -20653,10 +20671,10 @@ def test_pressing_the_x_on_a_report_keeps_the_page_where_he_was_reading(
 
 
 def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
-    """The write is config.set_values with the dotted path and nothing
-    else — the line editor that keeps the comments. A refused value
-    (set_values validates the whole file first) puts the switch back and
-    says why, wherever the row is drawn."""
+    """The write is config.save with the dotted path and nothing else —
+    one line into settings.toml (chapter 3.4). A refused value (save
+    validates the merged config first) puts the switch back and says
+    why, wherever the row is drawn."""
     import settings as settings_mod
 
     with _window() as board:
@@ -20665,15 +20683,13 @@ def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
         board._show("Settings")                 # opens on General
         board._finish_settings()
         written: list = []
-        real = config_mod.set_values
-        config_mod.set_values = lambda path, updates: written.append(
-            (Path(path).name, dict(updates)))
+        real = config_mod.save
+        config_mod.save = lambda updates, **kw: written.append(dict(updates))
         try:
             [(kind, switch)] = board.parts["rows"]["punctuate.auto"]
             assert kind == "switch" and switch.get() is False, kind
             switch.toggle()
-            assert written == [("config.toml", {"punctuate.auto": True})], \
-                written
+            assert written == [{"punctuate.auto": True}], written
             assert board.parts["values"]["punctuate.auto"] is True
             assert "punctuate.auto saved" in board._toast_text, \
                 board._toast_text
@@ -20688,15 +20704,15 @@ def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
             [(kind, again)] = board.parts["rows"]["punctuate.auto"]
             assert again.get() is True, "General did not follow"
 
-            def refuse(path, updates):
+            def refuse(updates, **kw):
                 raise config_mod.ConfigError("punctuate.auto must be a bool")
-            config_mod.set_values = refuse
+            config_mod.save = refuse
             again.toggle()
             assert again.get() is True, \
                 "a refused write left the switch flipped"
             assert "must be a bool" in board._toast_text, board._toast_text
         finally:
-            config_mod.set_values = real
+            config_mod.save = real
 
 
 def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
@@ -20905,7 +20921,7 @@ def test_auto_punctuation_ships_off_and_the_knobs_around_it_validate() -> None:
     import tempfile
 
     here = Path(__file__).resolve().parent
-    cfg = config_mod.load(here / "config.toml")
+    cfg = config_mod.load(here / "defaults.toml")
     assert cfg.punctuate.auto is False
     assert config_mod.PunctuateConfig().auto is False
     assert cfg.punctuate.max_wait_s > 0
@@ -20913,7 +20929,7 @@ def test_auto_punctuation_ships_off_and_the_knobs_around_it_validate() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="dictation-punct-"))
     try:
         copy = tmp / "config.toml"
-        shutil.copy(here / "config.toml", copy)
+        shutil.copy(here / "defaults.toml", copy)
         config_mod.set_values(copy, {"punctuate.auto": True})
         assert config_mod.load(copy).punctuate.auto is True
         for bad in ({"punctuate.prefer": "cerebras"},
@@ -21022,7 +21038,7 @@ def test_set_option_writes_first_and_takes_the_live_ones_into_the_running_app() 
     tmp = Path(tempfile.mkdtemp(prefix="dictation-option-"))
     try:
         copy = tmp / "config.toml"
-        shutil.copy(here / "config.toml", copy)
+        shutil.copy(here / "defaults.toml", copy)
         app = main_mod.App.__new__(main_mod.App)
         app.cfg = config_mod.load(copy)
         app.config_path = copy
@@ -21086,7 +21102,7 @@ def test_the_punctuation_chain_is_prefer_first_then_the_rest_in_order() -> None:
     import punctuate as punctuate_mod
     import translate as translate_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     for prefer, expected in (("groq", ["groq", "gemini", "ollama"]),
                              ("gemini", ["gemini", "groq", "ollama"]),
                              ("ollama", ["ollama", "groq", "gemini"])):
@@ -21731,7 +21747,7 @@ def test_review_settings_are_in_the_real_config_and_checked_at_load() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="dictation-review-"))
     try:
         path = tmp / "config.toml"
-        base = (here / "config.toml").read_text("utf-8")
+        base = (here / "defaults.toml").read_text("utf-8")
         # Two since 2026-09-03: [review] and [notify] both start on the
         # right edge. The replace below turns BOTH into "middle"; review's
         # check runs first in config.load, so the error still names it.
@@ -21756,7 +21772,7 @@ def test_review_settings_are_in_the_real_config_and_checked_at_load() -> None:
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     import settings as settings_mod
-    sections = {s.name: s for s in settings_mod.read(here / "config.toml")}
+    sections = {s.name: s for s in settings_mod.read(here / "defaults.toml")}
     assert "review" in sections, list(sections)
     corner = next(s for s in sections["review"].settings if s.key == "corner")
     assert "right" in corner.choices and "bottom-left" in corner.choices, \
@@ -22276,7 +22292,7 @@ def test_the_screens_key_is_registered_everywhere_a_key_must_be() -> None:
     assert main_mod.NESTED_HOTKEYS["screens_hotkey"] == "awake.screens_hotkey"
     assert dash_mod.NESTED_HOTKEYS["screens_hotkey"] == "awake.screens_hotkey"
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.awake.hotkey == "ctrl+alt+n", cfg.awake
     assert cfg.screens_hotkey == cfg.awake.hotkey
     moved = config_mod.with_field(cfg, "screens_hotkey", "ctrl+f5")
@@ -22298,7 +22314,7 @@ def test_the_screens_key_binds_and_the_kill_switch_unbinds_it() -> None:
 
     import main as main_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     _hotkeys, taps, _latch, _pause = main_mod.App.bindings(cfg)
     assert taps[parse_binding(cfg.screens_hotkey)] == "screens", taps
     off = dataclasses.replace(cfg, awake=dataclasses.replace(
@@ -22314,14 +22330,14 @@ def test_the_awake_section_is_in_the_real_config_and_bounded() -> None:
     import settings as settings_mod
 
     here = Path(__file__).resolve().parent
-    cfg = config_mod.load(here / "config.toml")
+    cfg = config_mod.load(here / "defaults.toml")
     assert cfg.awake.hold is True, "the machine must never sleep"
     assert cfg.awake.enabled is True
     assert cfg.awake.pin_timeouts is False, "off by default, on purpose"
     assert cfg.awake.screens_off_again_s == 3
     assert cfg.awake.keep_screens_off_s == 10
     assert cfg.awake.vitals_minutes == 10
-    sections = {s.name: s for s in settings_mod.read(here / "config.toml")}
+    sections = {s.name: s for s in settings_mod.read(here / "defaults.toml")}
     assert "awake" in sections, sorted(sections)
     assert "night" not in sections, "the old section is still in the file"
     keys = {s.key for s in sections["awake"].settings}
@@ -23602,7 +23618,7 @@ def test_the_notify_route_is_token_gated_and_fast() -> None:
 
     import server as server_mod
 
-    cfg = config_mod.load(Path(sys.path[0]) / "config.toml")
+    cfg = config_mod.load(Path(sys.path[0]) / "defaults.toml")
     cfg = dataclasses.replace(
         cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1",
                                             port=8796))
@@ -23675,7 +23691,7 @@ def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
     import settings as settings_mod
 
     here = Path(sys.path[0])
-    cfg = config_mod.load(here / "config.toml")
+    cfg = config_mod.load(here / "defaults.toml")
     assert cfg.notify.enabled is True
     assert cfg.notify.cue is True
     # 0 since 2026-09-04: a card stays until it is dismissed, and the
@@ -23699,7 +23715,7 @@ def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
     # Cowork's only road in (notify_watch.py), and Claude Code's turns
     # left to the hook that already cards them.
     assert cfg.notify.watch == "cowork"
-    sections = {s.name: s for s in settings_mod.read(here / "config.toml")}
+    sections = {s.name: s for s in settings_mod.read(here / "defaults.toml")}
     assert "notify" in sections, sorted(sections)
     keys = {s.key for s in sections["notify"].settings}
     assert keys == {"enabled", "cue", "card_seconds", "stack_max",
@@ -23755,7 +23771,7 @@ def test_the_dismiss_key_is_registered_where_config_main_and_hint_look() -> None
         config_mod.HOTKEY_FIELDS[-1]
     assert "dismiss_hotkey" in config_mod.CHORD_FIELDS
     assert main_mod.NESTED_HOTKEYS["dismiss_hotkey"] == "notify.dismiss_hotkey"
-    cfg = config_mod.load(Path(sys.path[0]) / "config.toml")
+    cfg = config_mod.load(Path(sys.path[0]) / "defaults.toml")
     assert cfg.dismiss_hotkey == cfg.notify.hotkey == "ctrl+alt+m"
     moved = config_mod.with_field(cfg, "dismiss_hotkey", "ctrl+alt+k")
     assert moved.notify.hotkey == "ctrl+alt+k"
@@ -25679,7 +25695,7 @@ def test_problems_settings_are_in_the_real_config_and_checked_at_load(
     import problems as problems_mod
     import settings as settings_mod
 
-    cfg = config_mod.load(REPO / "config.toml")
+    cfg = config_mod.load(REPO / "defaults.toml")
     p = cfg.problems
     assert p.enabled and p.shot and p.keep_audio
     assert p.keep_resolved == problems_mod.KEEP_RESOLVED == 200, p
@@ -25715,7 +25731,7 @@ def test_problems_settings_are_in_the_real_config_and_checked_at_load(
     tmp = Path(tempfile.mkdtemp(prefix="problems-config-"))
     try:
         path = tmp / "config.toml"
-        base = (REPO / "config.toml").read_text("utf-8")
+        base = (REPO / "defaults.toml").read_text("utf-8")
         for old, new, needle in (
                 ('report_hotkey = "ctrl+alt+r"', 'report_hotkey = "esc"',
                  "report_hotkey"),
@@ -25740,7 +25756,7 @@ def test_problems_settings_are_in_the_real_config_and_checked_at_load(
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
-    sections = {s.name: s for s in settings_mod.read(REPO / "config.toml")}
+    sections = {s.name: s for s in settings_mod.read(REPO / "defaults.toml")}
     assert "problems" in sections, list(sections)
     # A SET, like the [notify] test one screen up, and the order was
     # never buying anything: nothing in this program reads these keys by
@@ -25780,7 +25796,7 @@ def test_problems_settings_are_in_the_real_config_and_checked_at_load(
     tmp = Path(tempfile.mkdtemp(prefix="problems-drag-"))
     try:
         path = tmp / "config.toml"
-        base = (REPO / "config.toml").read_text("utf-8")
+        base = (REPO / "defaults.toml").read_text("utf-8")
         head = base.index("\n[problems]\n")
         tail = base.index("\n[", head + 3)
         section = base[head:tail]
@@ -27655,7 +27671,7 @@ def test_a_reading_is_filed_not_pasted_and_the_app_answers_the_tab() -> None:
 def test_the_two_reading_knobs_are_in_the_config_and_the_settings() -> None:
     import settings as settings_mod
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.study.read_sentences == 20 and cfg.study.read_goal_hours == 3
     assert {"study.read_sentences", "study.read_goal_hours"} <= set(
         settings_mod.WORDS), "every line in the file has words"
@@ -28350,7 +28366,7 @@ def test_the_nightly_setting_turns_the_whole_thing_off() -> None:
 
     import nightly as nightly_mod
 
-    cfg = config_mod.load(REPO / "config.toml")
+    cfg = config_mod.load(REPO / "defaults.toml")
     assert cfg.tests.nightly is True, "the shipped config has it on"
     assert cfg.tests.wait_seconds == 300.0 \
         == nightly_mod.ASK_SECONDS, cfg.tests
@@ -28361,7 +28377,7 @@ def test_the_nightly_setting_turns_the_whole_thing_off() -> None:
     # no card at all, and the app must not start believing in one.
     room = Path(tempfile.mkdtemp(prefix="nightly-config-"))
     try:
-        base = (REPO / "config.toml").read_text("utf-8")
+        base = (REPO / "defaults.toml").read_text("utf-8")
         assert "wait_seconds = 300" in base
         for bad in ("5", "0", "99999"):
             path = room / "config.toml"
@@ -28974,10 +28990,10 @@ def test_the_rolling_knobs_parse_and_are_bounded():
     nothing above 25 leaves room to cut."""
     import tempfile as _tempfile
 
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.local.rolling is True
     assert cfg.local.rolling_window_s == 25.0
-    base = (Path(__file__).resolve().parent / "config.toml").read_text("utf-8")
+    base = (Path(__file__).resolve().parent / "defaults.toml").read_text("utf-8")
     with _tempfile.TemporaryDirectory() as d:
         copy = Path(d) / "config.toml"
         copy.write_text(base.replace("rolling_window_s = 25.0",
@@ -29125,7 +29141,7 @@ _PATHS_PROBE = (
     "print(json.dumps({k: str(getattr(paths, k)) for k in ("
     "'APP_DIR','DATA_DIR','PORTABLE','DEVELOPER','FLAT','RECENT_DIR',"
     "'PENDING_DIR','APP_LOG','TRANSCRIPTS_LOG','PHONE_TOKEN','CUES_DIR',"
-    "'VOCAB_FILE','CONFIG_FILE','APP_ID','DEFAULT_PORT')}"
+    "'VOCAB_FILE','LEGACY_CONFIG','APP_ID','DEFAULT_PORT')}"
     " | {'mutex': paths.kernel_name(r'Local\\DeskIT.instance'),"
     "    'pipe': paths.kernel_name(r'\\\\.\\pipe\\DeskIT.control'),"
     "    'ensured': str(paths.ensure())}))"
@@ -29159,7 +29175,7 @@ def test_paths_checkout_is_portable_and_nothing_moved():
         "NOTIFY_FILE": "notify.json", "NOTIFY_LOG": "notify.log",
         "AWAKE_STATE": "awake_state.json", "AWAKE_LOG": "awake.log",
         "APP_LOG": "app.log", "TRANSCRIPTS_LOG": "transcripts.log",
-        "CONFIG_FILE": "config.toml", "SETUP_MARKER": ".setup-done",
+        "LEGACY_CONFIG": "config.toml", "SETUP_MARKER": ".setup-done",
         "PHONE_TOKEN": "server_token.txt", "CUES_DIR": "cues",
         "LOOKUP_CACHE": "lookup_cache.json",
     }
@@ -29192,7 +29208,7 @@ def test_paths_installed_layout_through_deskit_home():
         assert got["PHONE_TOKEN"] == str(tmp / "phone" / "server_token.txt")
         assert got["CUES_DIR"] == str(tmp / "cache" / "cues")
         assert got["VOCAB_FILE"] == str(tmp / "vocab.json")
-        assert got["CONFIG_FILE"] == str(tmp / "config.toml")
+        assert got["LEGACY_CONFIG"] == str(tmp / "config.toml")
         for sub in ("logs", "audio/recent", "audio/pending", "problems",
                     "cache", "tmp"):
             assert (tmp / sub).is_dir(), sub
@@ -29292,6 +29308,235 @@ def test_no_store_path_is_built_beside_the_code():
             if m.group(1) not in allowed:
                 bad.append(f"{py.name}: {m.group(0)}")
     assert not bad, "\n".join(bad)
+
+
+
+# ------------------------------------------------------- the three layers
+# defaults.toml <- settings.toml <- state.json (config.py, chapter 3.4, D2).
+
+
+def _layer_files():
+    """A scratch pair of per-user files for config.save / load_layered."""
+    d = Path(tempfile.mkdtemp(prefix="deskit-layers-"))
+    return d, d / "settings.toml", d / "state.json"
+
+
+def test_config_layers_merge_order():
+    """A key in every layer resolves to state.json; one only in
+    settings.toml beats defaults.toml; one absent everywhere is the
+    default the file ships."""
+    d, s, t = _layer_files()
+    try:
+        s.write_text('vocab.max_terms = 77\naudio.device = "from settings"\n',
+                     encoding="utf-8")
+        t.write_text(json.dumps({"audio.device": "from state"}), encoding="utf-8")
+        cfg = config_mod.load_layered(settings=s, state=t)
+        assert cfg.audio.device == "from state"
+        assert cfg.vocab.max_terms == 77
+        default = config_mod.defaults_flat()["vocab.replace_after_hits"]
+        assert cfg.vocab.replace_after_hits == default
+        # no per-user files at all is the plain defaults
+        plain = config_mod.load_layered(settings=d / "none.toml", state=d / "none.json")
+        assert plain.vocab.max_terms == config_mod.defaults_flat()["vocab.max_terms"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_settings_toml_holds_only_overrides():
+    """A value equal to the default is DROPPED from settings.toml; a
+    different one is exactly one dotted line. State keys never land
+    there and settings keys never land in state.json."""
+    d, s, t = _layer_files()
+    try:
+        defaults = config_mod.defaults_flat()
+        config_mod.save({"vocab.max_terms": defaults["vocab.max_terms"]},
+                        settings=s, state=t)
+        assert "max_terms" not in s.read_text("utf-8")
+        config_mod.save({"vocab.max_terms": defaults["vocab.max_terms"] + 5,
+                         "dot.x": 40, "dot.y": 50}, settings=s, state=t)
+        lines = [l for l in s.read_text("utf-8").splitlines() if l and not l.startswith("#")]
+        assert lines == [f"vocab.max_terms = {defaults['vocab.max_terms'] + 5}"], lines
+        state = json.loads(t.read_text("utf-8"))
+        assert state == {"dot.x": 40, "dot.y": 50}, state
+        assert "dot." not in s.read_text("utf-8")
+        for key in config_mod.STATE_KEYS:
+            assert "." in key or key == "config_version", key
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_settings_toml_roundtrip_all_kinds():
+    """Strings with quotes and Hebrew, ints, floats, booleans and string
+    lists survive write -> tomllib read -> the dataclass."""
+    d, s, t = _layer_files()
+    try:
+        values = {"local.extra_fillers": ["כאילו", 'say "hi"', "a\\b"],
+                  "vocab.max_terms": 55, "polish.max_wait_s": 2.5,
+                  "server.enabled": True, "local.initial_prompt": "שלום, \"world\""}
+        config_mod.save(values, settings=s, state=t)
+        back = config_mod.read_settings(s)
+        for key, value in values.items():
+            assert back[key] == value, (key, back.get(key))
+        cfg = config_mod.load_layered(settings=s, state=t)
+        assert list(cfg.local.extra_fillers) == values["local.extra_fillers"]
+        assert cfg.polish.max_wait_s == 2.5 and cfg.server.enabled is True
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_defaults_toml_never_written_and_validates_before_write():
+    """Every settings write leaves defaults.toml byte-identical, and an
+    invalid value leaves settings.toml untouched and raises."""
+    import hashlib
+    d, s, t = _layer_files()
+    try:
+        before = hashlib.sha256(paths.DEFAULTS_FILE.read_bytes()).hexdigest()
+        config_mod.save({"vocab.max_terms": 12}, settings=s, state=t)
+        config_mod.save({"vocab.max_terms": 13}, settings=s, state=t)
+        was = s.read_text("utf-8")
+        try:
+            config_mod.save({"local.english_threshold": 9.0}, settings=s, state=t)
+            assert False, "an invalid value was written"
+        except config_mod.ConfigError:
+            pass
+        assert s.read_text("utf-8") == was
+        assert hashlib.sha256(paths.DEFAULTS_FILE.read_bytes()).hexdigest() == before
+        assert s.with_suffix(".toml.bak").exists(), "the previous file is kept"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_unknown_override_key_is_ignored_not_fatal():
+    """A stale key in settings.toml (a setting a later version dropped)
+    yields a normal config."""
+    d, s, t = _layer_files()
+    try:
+        s.write_text('vocab.max_terms = 33\nnosuch.key = 1\ngone = "x"\n', encoding="utf-8")
+        cfg = config_mod.load_layered(settings=s, state=t)
+        assert cfg.vocab.max_terms == 33
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_settings_read_shows_the_persons_values():
+    """settings.read with overrides shows the person's value on the row and
+    keeps the help and the choices from defaults.toml."""
+    import settings as settings_mod
+    plain = settings_mod.read(paths.DEFAULTS_FILE)
+    over = settings_mod.read(paths.DEFAULTS_FILE,
+                             overrides={"vocab.max_terms": 123, "polish.prefer": "ollama"})
+    a = settings_mod.find(plain, "vocab.max_terms")
+    b = settings_mod.find(over, "vocab.max_terms")
+    assert a.value != 123 and b.value == 123
+    assert a.help == b.help and a.line == b.line
+    p = settings_mod.find(over, "polish.prefer")
+    assert p.value == "ollama" and p.choices == settings_mod.find(plain, "polish.prefer").choices
+    assert [s.path for s in settings_mod.flatten(plain)] == [s.path for s in settings_mod.flatten(over)]
+
+
+def test_defaults_toml_carries_no_owner_values():
+    """The tracked file is a stranger's starting point: no microphone, no
+    absolute folders, no desk coordinates, no owner vocabulary, phone
+    endpoint off."""
+    flat = config_mod.defaults_flat()
+    assert flat["audio.device"] == "" and flat["camera.device"] == ""
+    assert flat["visual_qa.voice"] == ""
+    assert flat["capture.folder"] == "captures" and flat["camera.folder"] == "captures"
+    assert flat["capture.clip_folder"] == ""
+    assert flat["vocab.terms"] == []
+    assert flat["server.enabled"] is False
+    for key in ("dot.x", "dot.y", "hint.x", "hint.y", "notify.x", "notify.y",
+                "problems.x", "problems.y", "review.x", "review.y",
+                "shelf.x", "shelf.y"):
+        assert flat[key] == -100000, (key, flat[key])
+    text = paths.DEFAULTS_FILE.read_text("utf-8")
+    for owner in ("shimr", "Arctis", "Asaf", "Massif", "TripSync"):
+        assert owner not in text, owner
+
+
+def test_migrate_config_diff_splits_settings_from_state():
+    """An old single config.toml differing in three settings and two
+    positions becomes exactly three overrides and two state keys, with the
+    retired keys dropped."""
+    import migrate as migrate_mod
+    d = Path(tempfile.mkdtemp(prefix="deskit-migrate-"))
+    try:
+        old = d / "config.toml"
+        text = paths.DEFAULTS_FILE.read_text("utf-8")
+        text = text.replace('device = ""', 'device = "Old Mic"', 1)
+        old.write_text(text, encoding="utf-8")
+        config_mod.set_values(old, {"vocab.max_terms": 41, "polish.when": "known",
+                                    "server.enabled": True, "notify.x": 10, "notify.y": 20,
+                                    "lookup.dwell_ms": 5})
+        settings, state, dropped = migrate_mod.config_diff(old)
+        assert settings == {"vocab.max_terms": 41, "polish.when": "known",
+                            "server.enabled": True}, settings
+        assert state == {"audio.device": "Old Mic", "notify.x": 10, "notify.y": 20}, state
+        assert "lookup.dwell_ms" in dropped
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_migrate_writes_the_two_files_and_retires_the_old_one():
+    """End to end in a scratch DATA_DIR (fresh interpreter, DESKIT_HOME):
+    --migrate <old config.toml> writes settings.toml + state.json, a
+    second run finds nothing new, and --reset-data --yes removes the
+    stores and keeps the two files."""
+    d = Path(tempfile.mkdtemp(prefix="deskit-migrate-e2e-"))
+    try:
+        old = d / "old" / "config.toml"
+        old.parent.mkdir()
+        old.write_text(paths.DEFAULTS_FILE.read_text("utf-8"), encoding="utf-8")
+        config_mod.set_values(old, {"vocab.max_terms": 41, "hint.x": 5, "hint.y": 6})
+        (old.parent / "vocab.json").write_text('{"version": 1, "corrections": []}', encoding="utf-8")
+        (old.parent / "recent").mkdir()
+        (old.parent / "recent" / "clip.wav").write_bytes(b"RIFF")
+        home = d / "home"
+        env = {**os.environ, "DESKIT_HOME": str(home)}
+        env.pop("DESKIT_PORTABLE", None)
+        run = lambda *args: subprocess.run(
+            [sys.executable, "main.py", *args], cwd=str(REPO), env=env,
+            capture_output=True, encoding="utf-8", errors="replace", timeout=120)
+        out = run("--migrate", str(old.parent))
+        assert out.returncode == 0, (out.stdout, out.stderr)
+        assert config_mod.read_settings(home / "settings.toml") == {"vocab.max_terms": 41}
+        assert config_mod.read_state(home / "state.json") == {"hint.x": 5, "hint.y": 6}
+        assert (home / "vocab.json").exists() and (home / "audio" / "recent" / "clip.wav").exists()
+        assert old.exists(), "a file given by folder is left where it was"
+        again = run("--migrate", str(old.parent))
+        assert again.returncode == 0, (again.stdout, again.stderr)
+        assert any(l.startswith("stores copied") and l.endswith(": 0")
+                   for l in again.stdout.splitlines()), again.stdout
+        dry = run("--reset-data")
+        assert dry.returncode == 1 and "Add --yes" in dry.stdout, dry.stdout
+        assert (home / "vocab.json").exists()
+        wipe = run("--reset-data", "--yes")
+        assert wipe.returncode == 0, (wipe.stdout, wipe.stderr)
+        assert not (home / "vocab.json").exists()
+        assert not (home / "audio" / "recent").exists()
+        assert (home / "settings.toml").exists() and (home / "state.json").exists()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_notify_hook_reads_the_port_through_the_layers():
+    """The hook's port comes from state.json first, then settings.toml,
+    then defaults.toml."""
+    import notify_hook as hook
+    d, s, t = _layer_files()
+    try:
+        old = (hook.paths.STATE_FILE, hook.paths.SETTINGS_FILE)
+        hook.paths.STATE_FILE, hook.paths.SETTINGS_FILE = t, s
+        try:
+            assert hook.server_port() == config_mod.defaults_flat()["server.port"]
+            s.write_text("server.port = 9001\n", encoding="utf-8")
+            assert hook.server_port() == 9001
+            t.write_text(json.dumps({"server.port": 9002}), encoding="utf-8")
+            assert hook.server_port() == 9002
+        finally:
+            hook.paths.STATE_FILE, hook.paths.SETTINGS_FILE = old
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 

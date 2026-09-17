@@ -363,17 +363,31 @@ def payload_from_hook(event: dict, window=None, link=None) -> dict | None:
             "hwnd": int(hwnd), "app": str(app), "link": str(link or "")}
 
 
-def server_url() -> str:
-    """http://127.0.0.1:<[server] port>/notify, the port read from the
-    config.toml beside this script so a rebinding follows without an
-    edit here; 8756 when the file or the key is missing."""
-    port = DEFAULT_PORT
+def server_port() -> int:
+    """The port the app answers on: state.json (the port it actually
+    bound), else settings.toml, else defaults.toml, else 8756 — the same
+    three layers config.py reads, without importing config.py, because a
+    hook must stay stdlib-light and never wait on the app's imports."""
     try:
-        data = tomllib.loads(paths.CONFIG_FILE.read_text("utf-8"))
-        port = int(data.get("server", {}).get("port", DEFAULT_PORT))
+        state = json.loads(paths.STATE_FILE.read_text("utf-8"))
+        if state.get("server.port"):
+            return int(state["server.port"])
     except Exception:                     # noqa: BLE001
-        port = DEFAULT_PORT
-    return f"http://127.0.0.1:{port}/notify"
+        pass
+    for path in (paths.SETTINGS_FILE, paths.DEFAULTS_FILE):
+        try:
+            data = tomllib.loads(path.read_text("utf-8"))
+        except Exception:                 # noqa: BLE001
+            continue
+        port = data.get("server", {}).get("port")
+        if port:
+            return int(port)
+    return DEFAULT_PORT
+
+
+def server_url() -> str:
+    """http://127.0.0.1:<port>/notify — see server_port."""
+    return f"http://127.0.0.1:{server_port()}/notify"
 
 
 def read_token(path) -> str | None:

@@ -932,7 +932,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         raise SystemExit('usage: python lookup.py "text to look up"')
     selection = " ".join(sys.argv[1:])
-    cfg = config_mod.load(paths.CONFIG_FILE)
+    cfg = config_mod.load_layered()
     what = classify(selection, cfg.lookup.max_chars, cfg.lookup.both_ways,
                     cfg.lookup.hebrew_share)
     if not what.ok:

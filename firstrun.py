@@ -50,7 +50,6 @@ import ui
 log = logging.getLogger("app")
 
 APP_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = paths.CONFIG_FILE
 # "This copy has been set up" is not a setting, it is a fact about one
 # installation, and it lives in a gitignored file for the same reason .env
 # and vocab.json do.
@@ -326,10 +325,10 @@ class Wizard:
     dialog chain you cannot walk back turns that into starting over.
     """
 
-    def __init__(self, cfg, path: Path = CONFIG_PATH,
+    def __init__(self, cfg, path: Path | None = None,
                  marker: Path | None = None):
         self.cfg = cfg
-        self.path = path
+        self.path = path          # one-file mode (--config); None = layers
         self.marker = MARKER if marker is None else marker
         self.device = cfg.audio.device or default_device()
         self.listener = Listener(cfg.audio.sample_rate)
@@ -637,7 +636,10 @@ class Wizard:
         if self.device == (self.cfg.audio.device or ""):
             return
         try:
-            config_mod.set_values(self.path, {"audio.device": self.device})
+            if self.path is None:
+                config_mod.save({"audio.device": self.device})
+            else:
+                config_mod.set_values(self.path, {"audio.device": self.device})
             log.info("setup: microphone set to %s", self.device or "the "
                      "system default")
         except Exception as e:
@@ -693,7 +695,7 @@ def mark_done(marker: Path | None = None) -> bool:
         return False
 
 
-def run(cfg, path: Path = CONFIG_PATH,
+def run(cfg, path: Path | None = None,
         marker: Path | None = None) -> bool:
     """Show the wizard. True if it ran to the end and saved.
 
@@ -709,4 +711,4 @@ def run(cfg, path: Path = CONFIG_PATH,
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    run(config_mod.load(CONFIG_PATH))
+    run(config_mod.load_layered())

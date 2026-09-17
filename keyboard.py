@@ -297,7 +297,7 @@ def bindings(keys: dict | None = None) -> tuple[dict, list]:
     """
     if keys is None:
         try:
-            cfg = config_mod.load(paths.CONFIG_FILE)
+            cfg = config_mod.load_layered()
             keys = {name: getattr(cfg, name, "")
                     for name, _label in config_mod.HOTKEY_FIELDS}
         except Exception:                 # noqa: BLE001 — unreadable config

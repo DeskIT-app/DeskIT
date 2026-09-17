@@ -85,7 +85,7 @@ import widgets
 
 APP_DIR = Path(__file__).resolve().parent
 import paths
-CONFIG_PATH = paths.CONFIG_FILE
+DEFAULTS_PATH = paths.DEFAULTS_FILE
 ICON_PATH = APP_DIR / "icon.ico"
 ICON_PNG = APP_DIR / "icon.png"
 
@@ -805,7 +805,7 @@ def _problems_enabled() -> bool:
     says nothing about what he wants, so it changes nothing here.
     """
     try:
-        pcfg = getattr(config_mod.load(CONFIG_PATH), "problems", None)
+        pcfg = getattr(config_mod.load_layered(), "problems", None)
     except Exception:                     # noqa: BLE001 — never fatal here
         return True
     return bool(getattr(pcfg, "enabled", True))
@@ -2441,7 +2441,7 @@ class Dashboard:
         lands through _events like a pipe reply does."""
         path = None
         try:
-            cfg = config_mod.load(CONFIG_PATH)
+            cfg = config_mod.load_layered()
             found = reading_mod.Writer(cfg).write(
                 seed=reading_mod.written_count(READ_TEXTS),
                 names=reading_mod.names_of(paths.VOCAB_FILE))
@@ -2660,7 +2660,7 @@ class Dashboard:
             except tk.TclError:
                 pass
         try:
-            scfg = config_mod.load(CONFIG_PATH).study
+            scfg = config_mod.load_layered().study
             goal_s = max(1.0, float(scfg.read_goal_hours)) * 3600
             day_n = max(1, int(scfg.read_sentences))
         except Exception:                 # noqa: BLE001 — unreadable config
@@ -3248,7 +3248,7 @@ class Dashboard:
              "every one of them lit on a drawn keyboard"),
             ("Settings", "settings", len(settings_mod.TABS),
              "tabs of settings",
-             "config.toml, in the words its own comments use"),
+             "every setting, in the words the file's own comments use"),
         ]
 
     def _paint_doors(self, items: list[dict]) -> None:
@@ -3472,7 +3472,7 @@ class Dashboard:
         this window knew they existed.
         """
         try:
-            cfg = config_mod.load(CONFIG_PATH)
+            cfg = config_mod.load_layered()
             folder = Path(getattr(cfg.capture, "folder", "") or "")
         except Exception:                 # noqa: BLE001
             return None
@@ -3594,7 +3594,7 @@ class Dashboard:
                                    "on a word it got wrong.")
 
         try:
-            cap = config_mod.load(CONFIG_PATH).vocab.max_terms
+            cap = config_mod.load_layered().vocab.max_terms
         except Exception:                 # noqa: BLE001 — unreadable config
             cap = None
         p["vocab_hot"] = tk.Label(
@@ -3933,7 +3933,7 @@ class Dashboard:
         if module is None:
             return None
         try:
-            qcfg = getattr(config_mod.load(CONFIG_PATH), "questions", None)
+            qcfg = getattr(config_mod.load_layered(), "questions", None)
         except Exception:                 # noqa: BLE001 — unreadable config
             qcfg = None                   # off, like an absent section
         if qcfg is None or not getattr(qcfg, "enabled", False):
@@ -5627,7 +5627,7 @@ class Dashboard:
         # order and same reason as main._problem_ask: a report about what
         # is on the screen wants the screen, not the question.
         try:
-            pcfg = getattr(config_mod.load(CONFIG_PATH), "problems", None)
+            pcfg = getattr(config_mod.load_layered(), "problems", None)
         except Exception:                 # noqa: BLE001 — a picture is a bonus
             pcfg = None
         jpeg = self._report_shot(pcfg) if getattr(pcfg, "shot", True) else None
@@ -6203,7 +6203,7 @@ class Dashboard:
         so filing a report can cost him the report and never the window.
         """
         try:
-            cfg = config_mod.load(CONFIG_PATH)
+            cfg = config_mod.load_layered()
         except Exception:                 # noqa: BLE001 — env is a bonus
             cfg = None
         try:
@@ -6917,11 +6917,14 @@ class Dashboard:
         config.toml has one writer at a time and the app can take the
         change live where it knows how (main.set_option).
         """
-        self._title("Settings", "written back into config.toml, in place")
+        self._title("Settings", "written to settings.toml — only what you changed")
         self._row_w = CW
         p = self.parts
         try:
-            sections = settings_mod.read(CONFIG_PATH)
+            sections = settings_mod.read(
+                DEFAULTS_PATH,
+                overrides=config_mod.read_settings(paths.SETTINGS_FILE)
+                | config_mod.read_state(paths.STATE_FILE))
         except Exception as e:
             card = ui.Card(self.sheet, CW, 96, pad=18, bg=ui.BG)
             card.place(x=PAD, y=64)
@@ -7097,7 +7100,7 @@ class Dashboard:
         if not builders:
             card = ui.Card(scroller.inner, CW, 60, pad=18, bg=ui.BG)
             card.pack(anchor="w", pady=(0, 14))
-            tk.Label(card.body, text=f"nothing in config.toml matches "
+            tk.Label(card.body, text=f"no setting matches "
                                      f"{self._settings_query!r}",
                      bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9)).place(x=0, y=2)
             return
@@ -7361,7 +7364,7 @@ class Dashboard:
             self._register_row(setting, "switch", switch)
         elif not setting.editable:
             button = ui.Button(card, "In the file",
-                               lambda: launch.open_path(CONFIG_PATH),
+                               lambda: launch.open_path(paths.SETTINGS_FILE),
                                w=widgets.button_width("In the file",
                                                       icon=True),
                                h=30, quiet=True,
@@ -7410,9 +7413,10 @@ class Dashboard:
             ("page", "The app's diary",
              "app.log — what it did and why, for when something looks off",
              paths.APP_LOG),
-            ("settings", "The settings file",
-             "config.toml — every knob, its measurements kept as comments",
-             CONFIG_PATH),
+            ("settings", "Your settings",
+             "settings.toml — only what you changed; the help for every "
+             "knob is in defaults.toml beside the app",
+             paths.SETTINGS_FILE),
             ("folder", "The app's folder",
              str(paths.DATA_DIR),
              paths.DATA_DIR),
@@ -7811,7 +7815,7 @@ class Dashboard:
 
     def _write_setting(self, setting, value) -> None:
         try:
-            config_mod.set_values(CONFIG_PATH, {setting.path: value})
+            config_mod.save({setting.path: value})
         except Exception as e:
             self._paint_setting(setting.path, self.parts["values"].get(
                 setting.path, setting.value))
@@ -8267,7 +8271,7 @@ class Dashboard:
                       field=field, key=key)
             return
         try:
-            current = config_mod.load(CONFIG_PATH)
+            current = config_mod.load_layered()
             # with_field, not a bare replace: most keys live at the top
             # level, but some (visual_qa_hotkey, and both capture keys)
             # are nested in their section, and replace() cannot assign
@@ -8275,7 +8279,7 @@ class Dashboard:
             config_mod.check_hotkeys(config_mod.with_field(current, field,
                                                            key))
             write_key = NESTED_HOTKEYS.get(field, field)
-            config_mod.set_values(CONFIG_PATH, {write_key: key})
+            config_mod.save({write_key: key})
             self._note(f"{field} is now '{key}'" if key
                        else f"{field} is off")
             self._refresh(None)
@@ -8288,7 +8292,7 @@ class Dashboard:
         """The keys as they are on disk — what to show when nothing is
         running to ask."""
         try:
-            cfg = config_mod.load(CONFIG_PATH)
+            cfg = config_mod.load_layered()
         except Exception:
             return {}
         keys = {name: getattr(cfg, name)
