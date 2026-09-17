@@ -278,6 +278,60 @@ def _consents() -> list[dict]:
         return []
 
 
+DIAGNOSE_LINES = 50
+
+
+def diagnose(cfg=None) -> str:
+    """One text block for a bug report (plan 14.7): env()'s whitelist,
+    the backend and the model with its standing on disk, the GPU
+    pack's, the channel, the phone port, the pack and model folders'
+    presence, and the last DIAGNOSE_LINES lines of app.log — every
+    line through the redactor. Never transcripts.log, never a key,
+    never a path with a user name in it beyond the data folder's own.
+    Best effort: a source that fails is one line saying so."""
+    import redact
+
+    lines: list[str] = ["DeskIT diagnostics — this contains no transcripts "
+                        "and no keys; read it before sending."]
+    try:
+        for k, v in env(cfg).items():
+            lines.append(f"{k}: {v}")
+    except Exception as e:                # noqa: BLE001
+        lines.append(f"env: failed ({e})")
+    try:
+        if cfg is None:
+            import config as config_mod
+            cfg = config_mod.load_layered()
+        import models
+        import packs
+        lines.append(f"backend: {cfg.backend}")
+        lines.append(f"model: {cfg.local.model} — {models.state(cfg.local.model)}")
+        if cfg.local.english_model:
+            lines.append(f"english model: {cfg.local.english_model} — "
+                         f"{models.state(cfg.local.english_model)}")
+        lines.append(f"device: {cfg.local.device} / {cfg.local.compute_type}")
+        lines.append(f"gpu pack: {packs.standing('gpu')}; skin pack: {packs.standing('skin')}")
+        lines.append(f"channel: {paths.CHANNEL}; layout: {paths.describe().split(':')[0]}")
+        lines.append(f"phone: {'on' if cfg.server.enabled else 'off'}, port {cfg.server.port}")
+    except Exception as e:                # noqa: BLE001
+        lines.append(f"settings: failed ({e})")
+    try:
+        tail = paths.APP_LOG.read_text("utf-8", errors="replace").splitlines()[-DIAGNOSE_LINES:]
+        lines.append(f"--- app.log, last {len(tail)} lines ---")
+        lines.extend(tail)
+    except Exception as e:                # noqa: BLE001
+        lines.append(f"app.log: unreadable ({e})")
+    try:
+        logs = sorted(paths.LOGS_DIR.glob("setup-*.log"))
+        if logs:
+            tail = logs[-1].read_text("utf-8", errors="replace").splitlines()[-20:]
+            lines.append(f"--- {logs[-1].name}, last {len(tail)} lines ---")
+            lines.extend(tail)
+    except Exception:                     # noqa: BLE001
+        pass
+    return redact.redact("\n".join(lines), stored=False)
+
+
 def env(cfg=None) -> dict:
     """Best effort, never raises. The whitelist a report carries
     (DISTRIBUTION_PLAN.md 7.8): the app version, the Windows build,

@@ -76,7 +76,7 @@ HUB_ENV: dict[str, str] = {
     "HF_HUB_DISABLE_IMPLICIT_TOKEN": "1",
 }
 _HASH_CHUNK = 1 << 20
-STATES = ("ready", "absent", "incomplete", "stale", "unknown")
+STATES = ("ready", "absent", "incomplete", "stale", "unknown", "cache")
 
 #: net.download()'s errors, by the names this module's callers know.
 DownloadError = net.DownloadError
@@ -186,7 +186,10 @@ def state(repo: str, path: Path | None = None) -> str:
     lock), `absent` (nothing on disk), `incomplete` (files but no
     `.complete` — a download that did not finish), `stale` (complete,
     but the lock has moved to another revision), `unknown` (not in the
-    lock at all)."""
+    lock at all); `cache` on a portable or developer copy, whose model
+    is the global Hugging Face cache's and never this module's."""
+    if paths.PORTABLE:
+        return "cache"
     e = entry(repo, path)
     if e is None:
         return "unknown"

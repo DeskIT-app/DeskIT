@@ -112,6 +112,31 @@ jobs:
           $forbidden = @("tests.py", "tests_quiet.py", "nightly.py", "questions.py", "AGENTS.md", "dev", "docs", "packaging", "android", ".github", ".gitattributes", ".gitignore")
           foreach ($f in $forbidden) { if (Test-Path "stage/app/$f") { throw "$f is in the archive" } }
 
+      # 6b. notices — the generated half (pip-licenses over the staged
+      #     site-packages) + the hand-written half (dev/notices-extra.txt,
+      #     from the checkout, never the archive) + Python's own
+      #     LICENSE.txt and Tcl's license.terms (13.3, D24)
+      - name: THIRD-PARTY-NOTICES.txt
+        run: |
+          python -m pip install pip-licenses
+          pip-licenses --python stage/python/python.exe --with-license-file --with-urls `
+            --with-authors --format=plain-vertical --output-file generated-notices.txt
+          $header = "THIRD-PARTY NOTICES for DeskIT $env:DESKIT_VERSION, built $(Get-Date -Format yyyy-MM-dd)`n" +
+                    "Generated half: every wheel in the base wheelhouse (pip-licenses). Hand-written half: dev/notices-extra.txt.`n`n"
+          $parts = @($header, (Get-Content generated-notices.txt -Raw -Encoding utf8), (Get-Content dev/notices-extra.txt -Raw -Encoding utf8))
+          if (Test-Path stage/python/LICENSE.txt) {
+            $parts += "`n`n================ python/LICENSE.txt ================`n" + (Get-Content stage/python/LICENSE.txt -Raw -Encoding utf8)
+          }
+          $tcl = Get-ChildItem -Recurse stage/python/tcl -Filter license.terms -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($tcl) {
+            $parts += "`n`n================ tcl/license.terms ================`n" + (Get-Content $tcl.FullName -Raw -Encoding utf8)
+          }
+          [IO.File]::WriteAllText("stage/app/THIRD-PARTY-NOTICES.txt", ($parts -join ""), (New-Object Text.UTF8Encoding $false))
+          Copy-Item stage/app/THIRD-PARTY-NOTICES.txt stage/THIRD-PARTY-NOTICES.txt
+          "notices: $((Get-Item stage/app/THIRD-PARTY-NOTICES.txt).Length) bytes"
+        env:
+          DESKIT_VERSION: ${{ steps.version.outputs.version }}
+
       # 7. manifest — one line per file under python\ and app\
       - name: MANIFEST.sha256
         run: |

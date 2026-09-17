@@ -1,0 +1,42 @@
+name: Something went wrong
+description: A bug in DeskIT. Non-technical? Use "Report a problem" inside the app instead.
+labels: [bug]
+body:
+  - type: textarea
+    id: did
+    attributes:
+      label: What you did
+    validations:
+      required: true
+  - type: textarea
+    id: happened
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: textarea
+    id: diagnose
+    attributes:
+      label: The --diagnose block
+      description: "Run `deskit --diagnose` (or Settings > The app > Copy diagnostics) and paste it. It contains no transcripts and no keys; you can read it first."
+      render: text
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed
+      options: [GitHub release, winget, Microsoft Store, a checkout]
+    validations:
+      required: true
+  - type: checkboxes
+    id: faq
+    attributes:
+      label: Before filing
+      options:
+        - label: I searched the FAQ and the open issues
+          required: true

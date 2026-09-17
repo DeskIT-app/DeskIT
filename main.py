@@ -6055,6 +6055,12 @@ def main() -> int:
                         help="show the model download step on its own "
                              "(an installed copy shows it at start while "
                              "the Hebrew model is not on disk) and exit")
+    parser.add_argument("--diagnose", action="store_true",
+                        help="print one block for a bug report — version, "
+                             "tier, the model's and the pack's standing, "
+                             "the last 50 lines of app.log through the "
+                             "redactor; no transcripts, no keys — and put "
+                             "it on the clipboard")
     parser.add_argument("--install-pack", metavar="NAME",
                         help="show a pack's install step on its own (gpu "
                              "or skin; an installed copy with an NVIDIA "
@@ -6120,6 +6126,20 @@ def main() -> int:
     if args.dashboard:
         import dashboard
         return dashboard.main()
+
+    if args.diagnose:
+        block = problems_mod.diagnose()
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:                 # noqa: BLE001
+            pass
+        print(block)
+        try:
+            injector.set_text(block)
+            print("\n(copied to the clipboard)")
+        except Exception:                 # noqa: BLE001
+            pass
+        return 0
 
     if args.test_sound:
         cues.ensure_files(force=True)

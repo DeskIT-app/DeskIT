@@ -7205,6 +7205,7 @@ class Dashboard:
             if name == settings_mod.APP:
                 builders.append(lambda: self._awake_block(scroller))
                 builders.append(lambda: self._app_block(scroller))
+                builders.append(lambda: self._about_card(scroller))
                 builders.append(lambda: self._files_card(scroller))
             elif name == "Phone":
                 builders.append(lambda: self._phone_block(scroller))
@@ -7599,6 +7600,100 @@ class Dashboard:
                    f"next press; the card will ask again when a feature "
                    f"needs the cloud")
         self._draw_settings()
+
+    # ------------------------------------------------------------- about
+
+    PAGES_URL = "https://massifapp.github.io/DeskIT"
+    ISSUES_URL = "https://github.com/massifapp/DeskIT/issues/new/choose"
+    MODEL_CARD_URL = "https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2"
+
+    @staticmethod
+    def built_with_llama() -> bool:
+        """13.5: while any shipped default names a Llama model, the line
+        "Built with Llama" is on the About card — the conservative
+        reading of the Llama licence (D24)."""
+        try:
+            return any("llama" in str(v).lower()
+                       for v in config_mod.defaults_flat().values())
+        except Exception:                 # noqa: BLE001
+            return False
+
+    def _about_rows(self) -> list[tuple[str, object]]:
+        """The papers, each a button: the files ship beside the app; the
+        two Pages documents open locally in a checkout and on the web
+        otherwise; the notices file is made by the build, so a checkout
+        says so instead of opening nothing."""
+        app = paths.APP_DIR
+
+        def opener(name: str, missing: str):
+            path = app / name
+            return lambda: (launch.open_path(path) if path.exists()
+                            else self._note(missing))
+
+        def page(name: str):
+            local = app / "docs" / f"{name}.md"
+            return lambda: (launch.open_path(local) if local.exists()
+                            else self._open_url(f"{self.PAGES_URL}/{name}"))
+
+        return [
+            ("Licence", opener("LICENSE", "LICENSE is not beside the app")),
+            ("Trademark", opener("TRADEMARK.md", "TRADEMARK.md is not beside the app")),
+            ("Third-party notices", opener("THIRD-PARTY-NOTICES.txt",
+                                           "the notices file is written by the build; "
+                                           "a checkout has dev/notices-extra.txt")),
+            ("Network", opener("NETWORK.md", "NETWORK.md is not beside the app")),
+            ("Privacy policy", page("privacy")),
+            ("Terms", page("terms")),
+            ("Report a security issue", opener("SECURITY.md", "SECURITY.md is not beside the app")),
+            ("Report on GitHub", lambda: self._open_url(self.ISSUES_URL)),
+            ("Copy diagnostics", self._copy_diagnostics),
+        ]
+
+    def _copy_diagnostics(self) -> None:
+        import problems as problems_mod
+        try:
+            block = problems_mod.diagnose()
+        except Exception as e:            # noqa: BLE001
+            self._note(f"diagnostics failed ({e})")
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(block)
+        self._note("diagnostics copied — no transcripts, no keys; read it before sending")
+
+    def _about_card(self, scroller) -> None:
+        """About (chapter 9 screen 14, 13.2-13.5): the licence line, the
+        model the app transcribes with, "Built with Llama" while a
+        default names one, and a button for every paper."""
+        rows = self._about_rows()
+        per_row, row_h = 5, 36
+        height = 92 + ((len(rows) + per_row - 1) // per_row) * row_h
+        card = ui.Card(scroller.inner, CW, height, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="A B O U T", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        tk.Label(body, text=f"DeskIT {version.VERSION} · Apache License 2.0 · "
+                            "Copyright 2026 Yoav Shimron",
+                 bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10)).place(x=0, y=22)
+        line = ("Transcribes Hebrew with ivrit.ai's whisper-large-v3-turbo "
+                "(Apache-2.0)" + (" · Built with Llama" if self.built_with_llama() else ""))
+        model = tk.Label(body, text=line, bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9),
+                         cursor="hand2")
+        model.place(x=0, y=46)
+        model.bind("<Button-1>", lambda _e: self._open_url(self.MODEL_CARD_URL))
+        self.parts["about_line"] = line
+        self.parts["about_buttons"] = [label for label, _c in rows]
+        x = y = 0
+        for index, (label, command) in enumerate(rows):
+            if index and index % per_row == 0:
+                x, y = 0, y + row_h
+            w = widgets.button_width(label)
+            if x + w > CW - 36:
+                x, y = 0, y + row_h
+            ui.Button(body, label, command, h=28, w=w, quiet=True,
+                      bg=ui.CARD).place(x=x, y=72 + y)
+            x += w + 8
+        scroller.bind_wheel(card)
 
     def _files_card(self, scroller) -> None:
         # Named for what they ARE, not what they are called on disk — the
@@ -8143,7 +8238,8 @@ class Dashboard:
 
     def _open_url(self, url: str) -> None:
         import webbrowser
-        if url.startswith("https://github.com/"):
+        if url.startswith(("https://github.com/", "https://massifapp.github.io/",
+                           "https://huggingface.co/")):
             webbrowser.open(url)
 
     def _updates_say(self, text: str) -> None:

@@ -1,0 +1,186 @@
+================================================================================
+HAND-WRITTEN NOTICES — what pip does not know about
+================================================================================
+
+This half is concatenated after the generated half (pip-licenses over
+the base wheelhouse) by the release workflow into THIRD-PARTY-NOTICES.txt
+(DISTRIBUTION_PLAN.md 13.3, D24). Keep every entry in this order:
+component, version, copyright, licence, where the text comes from, the
+source URL. Verify each copyright line against the upstream file before
+the first public release (owner's hand work, chapter 16).
+
+--------------------------------------------------------------------------------
+Python 3.11 (embeddable distribution)
+--------------------------------------------------------------------------------
+Copyright (c) 2001-2024 Python Software Foundation. All rights reserved.
+Licence: PSF License Agreement for Python 3 (PSF-2.0).
+Text: the LICENSE.txt inside the python.org embeddable zip, appended by
+the build below this line as "python/LICENSE.txt".
+Source: https://www.python.org/
+
+--------------------------------------------------------------------------------
+Tcl/Tk 8.6
+--------------------------------------------------------------------------------
+Copyright (c) the Regents of the University of California, Sun
+Microsystems, Inc., Scriptics Corporation, ActiveState Corporation and
+other parties.
+Licence: Tcl/Tk License (BSD-style; the licence terms must be included
+verbatim in any distributions).
+Text: license.terms from the Tcl tree copied into python\tcl\ by the
+build, appended below this line when present.
+Source: https://www.tcl-lang.org/software/tcltk/license.html
+
+--------------------------------------------------------------------------------
+Whisper (OpenAI) — the model family, the tokenizer and the vocabulary
+--------------------------------------------------------------------------------
+Copyright (c) 2022 OpenAI
+Licence: MIT
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Source: https://github.com/openai/whisper
+Not shipped: the weights are downloaded by the user from Hugging Face.
+
+--------------------------------------------------------------------------------
+ivrit-ai/whisper-large-v3-turbo-ct2 — the Hebrew model
+--------------------------------------------------------------------------------
+Copyright (c) ivrit.ai
+Licence: Apache License 2.0 (the model card's licence tag). The full text
+of the Apache License 2.0 is the LICENSE file beside this one.
+Attribution: DeskIT transcribes Hebrew with the ivrit.ai fine-tune of
+Whisper large-v3-turbo, converted for CTranslate2 by ivrit.ai.
+Model card: https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2
+Courtesy citation: Marmor, Y., Misgav, K., Lifshitz, Y. — "ivrit.ai: A
+Comprehensive Dataset of Hebrew Speech for AI Research and Development",
+arXiv:2307.08720.
+Not shipped: downloaded by the user at first run, at the commit pinned
+in models.lock, and verified by SHA-256.
+
+--------------------------------------------------------------------------------
+deepdml/faster-whisper-large-v3-turbo-ct2 — the English detector
+--------------------------------------------------------------------------------
+Licence: MIT (the model card's licence tag); the MIT text is the one
+under Whisper above. Model card:
+https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2
+Not shipped: an optional download, pinned in models.lock.
+
+--------------------------------------------------------------------------------
+Rubik — the four static cuts in fonts\
+--------------------------------------------------------------------------------
+Copyright 2015 The Rubik Project Authors
+(https://github.com/googlefonts/rubik)
+Licence: SIL Open Font License, Version 1.1 — the text is fonts\OFL.txt,
+shipped beside the fonts. The four files are a Modified Version in the
+OFL's sense: their name tables were rewritten (install_fonts.py) so
+Windows keeps the four weights apart; upstream declares no Reserved
+Font Name. The fonts are never sold on their own.
+Source: https://fonts.google.com/specimen/Rubik
+
+--------------------------------------------------------------------------------
+Skia — the graphics library inside the skia-python wheel (skin pack)
+--------------------------------------------------------------------------------
+Copyright (c) 2011 Google Inc. All rights reserved.
+Licence: BSD 3-Clause
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google Inc. nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Source: https://skia.org/
+Not in the installer: the skin pack, downloaded on request (packs.py);
+skia-python's own BSD-3 notice (Kota Yamaguchi) is in its wheel.
+
+--------------------------------------------------------------------------------
+PortAudio — the audio library inside the sounddevice wheel
+--------------------------------------------------------------------------------
+Copyright (c) 1999-2006 Ross Bencina and Phil Burk
+Licence: PortAudio Portable Real-Time Audio Library license (MIT-style).
+Text: the LICENSE file of the sounddevice wheel carries PortAudio's own
+text in the generated half above; the request in that licence — to
+send improvements back to the PortAudio community — is noted here.
+Source: http://www.portaudio.com/
+
+--------------------------------------------------------------------------------
+Ollama — not shipped; installed by the user for "on this computer"
+--------------------------------------------------------------------------------
+Copyright (c) Ollama
+Licence: MIT (the text under Whisper above).
+Source: https://ollama.com/  https://github.com/ollama/ollama
+
+--------------------------------------------------------------------------------
+NVIDIA cuBLAS, cuDNN, NVRTC — the GPU pack, never in the installer
+--------------------------------------------------------------------------------
+Licence: NVIDIA Software License Agreement for the CUDA Toolkit
+(https://docs.nvidia.com/cuda/eula/index.html) and the NVIDIA cuDNN
+Software License Agreement
+(https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/eula.html).
+DeskIT does not redistribute them: the pack step shows the two links
+before the download, the wheels come from PyPI (NVIDIA's own packages)
+into the user's data folder, and each wheel carries NVIDIA's licence
+text in its own dist-info.
+
+--------------------------------------------------------------------------------
+Llama 3.1 — a recommended local model (translate.ollama_model)
+--------------------------------------------------------------------------------
+Built with Llama.
+Licence: Llama 3.1 Community License Agreement
+(https://www.llama.com/llama3_1/license/). While any default names a
+Llama model the About card shows "Built with Llama" and this entry
+stays; the full licence text is to be pasted below this line by the
+owner before the first public release (chapter 16), verbatim from the
+page above.
+Not shipped: pulled by Ollama on the user's PC, or served by Groq.
+
+--------------------------------------------------------------------------------
+Gemma 3 — a recommended local model (polish, lookup, ask-the-screen)
+--------------------------------------------------------------------------------
+Gemma is provided under and subject to the Gemma Terms of Use found at
+ai.google.dev/gemma/terms.
+Not shipped: pulled by Ollama on the user's PC. This entry stays while
+a gemma3:* id is a default; D24 prefers Gemma 4 (Apache-2.0) once it is
+measured (chapter 6).
+
+--------------------------------------------------------------------------------
+Gemini API, Groq API
+--------------------------------------------------------------------------------
+Not a notice item: the user brings their own key and is the provider's
+customer; the provider terms are linked from the consent cards and the
+privacy policy.

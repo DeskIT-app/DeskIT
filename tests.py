@@ -31143,6 +31143,130 @@ def test_ollama_absent_hides_local_entries():
     assert "install Ollama from ollama.com and pull" in src and "Settings > Privacy" in src
 
 
+# ------------------------------------- the papers and the About card (PR 18)
+#
+# DISTRIBUTION_PLAN.md chapter 13 and 14.7: LICENSE (Apache-2.0) and
+# NOTICE, TRADEMARK.md, SECURITY.md, NETWORK.md beside the code and
+# shipped; the notices file made by the build from the wheelhouse plus
+# dev/notices-extra.txt; the privacy and terms drafts on Pages; the About
+# card with a button for each; --diagnose, one block with no transcript
+# and no key in it.
+
+def test_the_papers_are_beside_the_code():
+    """LICENSE is the Apache-2.0 text, NOTICE names the owner and the
+    year; TRADEMARK.md, SECURITY.md and NETWORK.md say the things chapter
+    13 fixes; none of them is export-ignored; the drafts and the private
+    legal folder are where the plan puts them."""
+    lic = (REPO / "LICENSE").read_text("utf-8")
+    assert lic.lstrip().startswith("Apache License") and "Version 2.0, January 2004" in lic
+    assert "TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION" in lic
+    assert len(lic.splitlines()) > 190
+    notice = (REPO / "NOTICE").read_text("utf-8")
+    assert notice.startswith("DeskIT\nCopyright 2026 Yoav Shimron") and "TRADEMARK.md" in notice
+    tm = (REPO / "TRADEMARK.md").read_text("utf-8")
+    for must in ("What is reserved", "What you may do", "What you may not do", "Renaming a fork",
+                 "No registration claimed", "Contact", "DeskIT.App", "%LOCALAPPDATA%\\DeskIT",
+                 "not registered"):
+        assert must in tm, must
+    sec = (REPO / "SECURITY.md").read_text("utf-8")
+    for must in ("90 days", "The latest release only", "NETWORK.md", "no bug bounty",
+                 "--diagnose", "consent.json"):
+        assert must in sec, must
+    assert (REPO / "docs" / "privacy.md").exists() and (REPO / "docs" / "terms.md").exists()
+    privacy = (REPO / "docs" / "privacy.md").read_text("utf-8")
+    for must in ("policy_version", "Yoav Shimron", "%LOCALAPPDATA%\\DeskIT", "Anthropic PBC",
+                 "Frankfurt", "NETWORK.md", "18 or over", "Credential Manager"):
+        assert must in privacy, must
+    terms = (REPO / "docs" / "terms.md").read_text("utf-8")
+    for must in ("text_version", "Israeli law", "Apache License 2.0", "I agree"):
+        assert must in terms, must
+    for name in ("README.md", "database-definition.md", "security-procedure.md", "access-list.md",
+                 "incident-log.md", "breach-template.md", "policy-changelog.md"):
+        assert (REPO / "dev" / "legal" / name).exists(), name
+    extra = (REPO / "dev" / "notices-extra.txt").read_text("utf-8")
+    for must in ("Python 3.11", "Tcl/Tk", "Whisper", "ivrit-ai/whisper-large-v3-turbo-ct2", "Rubik",
+                 "Skia", "PortAudio", "Ollama", "NVIDIA", "Built with Llama",
+                 "Gemma is provided under and subject to the Gemma Terms of Use"):
+        assert must in extra, must
+    attrs = (REPO / ".gitattributes").read_text("utf-8")
+    for name in ("LICENSE", "NOTICE", "TRADEMARK.md", "SECURITY.md", "NETWORK.md"):
+        assert not re.search(rf"^{re.escape(name)}\s+export-ignore", attrs, re.M), name
+    yml = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    assert "pip-licenses" in yml and "dev/notices-extra.txt" in yml and "THIRD-PARTY-NOTICES.txt" in yml
+    assert yml.index("THIRD-PARTY-NOTICES.txt") < yml.index("name: MANIFEST.sha256"), "notices before the manifest"
+    for name in ("bug.yml", "false-positive.yml", "config.yml"):
+        assert (REPO / ".github" / "ISSUE_TEMPLATE" / name).exists(), name
+    assert "--diagnose" in (REPO / ".github" / "ISSUE_TEMPLATE" / "bug.yml").read_text("utf-8")
+
+
+def test_network_md_matches_net_py():
+    """NETWORK.md names every host and every suffix net.py allows, and
+    no host net.py does not: the page a sceptic reads is the allowlist
+    the code enforces."""
+    import net as net_mod
+
+    page = (REPO / "NETWORK.md").read_text("utf-8")
+    for host in net_mod.ALLOWED_HOSTS:
+        assert f"`{host}`" in page, f"{host} is allowed by net.py and not on NETWORK.md"
+    for suffix in net_mod.ALLOWED_SUFFIXES:
+        assert f"`{suffix}`" in page, suffix
+    named = set(re.findall(r"`([a-z0-9.-]+\.[a-z]{2,}|127\.0\.0\.1)`", page))
+    stray = {h for h in named if "." in h and not h.startswith(".")
+             and h not in net_mod.ALLOWED_HOSTS and not h.endswith(net_mod.ALLOWED_SUFFIXES)
+             and not h.endswith((".md", ".log", ".json", ".py", ".txt", ".exe"))
+             and h not in ("supabase.co",)}
+    assert not stray, f"on NETWORK.md but not allowed by net.py: {stray}"
+    for purpose in ("model-download", "pack-install", "update-check", "update-download",
+                    "ollama", "notify"):
+        assert f"`{purpose}`" in page, purpose
+    assert "us.aws.cdn.hf.co" in page and "Offline" in page
+
+
+def test_diagnose_block_is_safe_to_paste():
+    """--diagnose: the env whitelist, the backend, the model's and the
+    packs' standing, the channel and the port, the tail of app.log — and
+    nothing that looks like a key or a transcript survives the redactor.
+    The About card carries a button for every paper and says Built with
+    Llama while a default names one."""
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-diag-"))
+    try:
+        log_path = tmp / "app.log"
+        log_path.write_text("\n".join(f"line {i}" for i in range(80))
+                            + "\nkey=gsk_abcdefghijklmnopqrstuvwxyz0123456789ABCDEF\n", "utf-8")
+        with _patched(paths, "APP_LOG", log_path), _patched(paths, "LOGS_DIR", tmp):
+            block = problems_mod.diagnose()
+        lines = block.splitlines()
+        assert lines[0].startswith("DeskIT diagnostics") and "no transcripts and no keys" in lines[0]
+        assert any(l.startswith("version: 1.1.0") for l in lines)
+        assert any(l.startswith("backend: ") for l in lines) and any(l.startswith("model: ") for l in lines)
+        assert any(l.startswith("gpu pack: ") for l in lines) and any(l.startswith("channel: ") for l in lines)
+        assert any(l.startswith("phone: ") for l in lines)
+        assert "--- app.log, last 50 lines ---" in lines and "line 79" in lines and "line 29" not in lines
+        assert "gsk_abcdefghijklmnopqrstuvwxyz0123456789ABCDEF" not in block, "a key survived"
+        assert "transcripts" not in block.split("--- app.log")[1].lower()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    import dashboard as dash
+    assert dash.Dashboard.built_with_llama() is True, "translate.ollama_model is llama3.1:8b"
+    with _patched(config_mod, "defaults_flat", lambda: {"a": "gemma3:4b"}):
+        assert dash.Dashboard.built_with_llama() is False
+    with _window() as board:
+        if board is None:
+            return
+        board._settings_tab = settings_mod_name = "The app"
+        board._show("Settings")
+        board._finish_settings()
+        board.root.update_idletasks()
+        assert board.parts["about_buttons"] == [
+            "Licence", "Trademark", "Third-party notices", "Network", "Privacy policy",
+            "Terms", "Report a security issue", "Report on GitHub", "Copy diagnostics"]
+        assert "Built with Llama" in board.parts["about_line"] and "ivrit.ai" in board.parts["about_line"]
+        board._copy_diagnostics()
+        assert board.root.clipboard_get().startswith("DeskIT diagnostics")
+
+
 # ------------------------------------------------------ updates (PR 13)
 #
 # DISTRIBUTION_PLAN.md 11.3-11.6, D21: one weekly look at GitHub Releases

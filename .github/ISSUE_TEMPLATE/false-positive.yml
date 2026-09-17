@@ -1,0 +1,26 @@
+name: Defender or SmartScreen flagged it
+description: A detection on the installer or the app.
+labels: [false-positive]
+body:
+  - type: input
+    id: detection
+    attributes:
+      label: The detection name
+      placeholder: "e.g. Trojan:Win32/Wacatac.B!ml"
+    validations:
+      required: true
+  - type: input
+    id: file
+    attributes:
+      label: The file it named
+      placeholder: DeskIT-Setup-1.1.0.exe
+    validations:
+      required: true
+  - type: input
+    id: virustotal
+    attributes:
+      label: A VirusTotal link for that file, if you have one
+  - type: input
+    id: version
+    attributes:
+      label: DeskIT version

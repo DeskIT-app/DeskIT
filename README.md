@@ -4465,6 +4465,22 @@ for `מבשרים`, all of which the local model got right.
 | `[tests] nightly` | `true` | the nightly run of the whole test suite (see [The nightly run](#the-nightly-run--the-whole-suite-at-0255-while-nobody-is-here)). `false` = the scheduled task still fires, reads this and goes back to sleep — no card, no run, no report. Nothing else in the app changes, because nothing else in the app is involved: the trigger is a Windows scheduled task and not a timer inside DeskIT, so that the night DeskIT crashed is still a night the tests run |
 | `[tests] wait_seconds` | `300` | how long the 02:55 card waits for an answer before it runs the suite anyway (`30` to `3600`). **No answer means run** — an idle check was rejected because anything that moves in the night, a bottle landing on the keyboard, looks exactly like you being here and would cancel the run in silence. Say **No** and nothing happens |
 
+## Licence, trademark, notices
+
+The code is under the **Apache License 2.0** (`LICENSE`, `NOTICE` —
+Copyright 2026 Yoav Shimron). The name DeskIT and the icon are not part
+of that grant: `TRADEMARK.md` says what a fork may and may not do.
+What the app is built with is `THIRD-PARTY-NOTICES.txt`, written by
+the release build from the pinned wheelhouse plus the hand-written
+half in `dev/notices-extra.txt` (Python, Tcl/Tk, Whisper, ivrit-ai,
+Rubik, Skia, PortAudio, Ollama, the Llama and Gemma lines). Every host
+the app may talk to is `NETWORK.md`; how to report a security issue is
+`SECURITY.md`; the privacy policy and the account terms are
+`docs/privacy.md` and `docs/terms.md` (drafts — the Hebrew column and
+the contact address are the owner's). Settings > The app > About has
+a button for each, plus **Copy diagnostics** (`main.py --diagnose`):
+one block for a bug report with no transcripts and no keys in it.
+
 ## Design notes
 
 Raw Win32 via ctypes (`WH_KEYBOARD_LL` hook + `SendInput`) — the
