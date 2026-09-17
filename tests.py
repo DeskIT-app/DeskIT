@@ -31460,6 +31460,11 @@ def test_the_wizard_offers_what_this_copy_lacks():
             assert out["detector"] is not None and out["detector"].repo == cfg.local.english_model
             small = dict(gpu, tier="gpu-small", vram_mb=4096)
             assert firstrun.downloads_for(cfg, small)["detector"] is None, "no detector on 4 GB"
+            # a first start: the pack is not there yet, so the tier says
+            # cpu — the detector goes with the card all the same
+            first = dict(gpu, tier="cpu", gpu_pack="missing")
+            assert firstrun.downloads_for(cfg, first)["detector"] is not None, "the detector went with the tier"
+            assert firstrun.hardware_line(first).startswith("NVIDIA card, 16 GB — fast")
             cpu = {"tier": "cpu", "cuda_devices": 0}
             out = firstrun.downloads_for(cfg, cpu)
             assert out["pack"] is None and out["detector"] is None and out["model"] is not None
@@ -31468,7 +31473,8 @@ def test_the_wizard_offers_what_this_copy_lacks():
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     assert firstrun.hardware_line(gpu).startswith("NVIDIA card, 16 GB — fast")
-    assert "smaller mode" in firstrun.hardware_line({"tier": "gpu-small", "vram_mb": 4096})
+    assert "smaller mode" in firstrun.hardware_line(
+        {"tier": "gpu-small", "vram_mb": 4096, "cuda_devices": 1, "driver_ok": True})
     assert firstrun.hardware_line({"tier": "cpu", "cuda_devices": 0}).startswith("No NVIDIA card")
     assert "too old" in firstrun.hardware_line({"tier": "cpu", "cuda_devices": 1, "driver_ok": False})
     assert firstrun.hardware_line(None) == "This computer has not been probed yet"

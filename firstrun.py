@@ -453,21 +453,53 @@ def transcribe(cfg, wav: bytes) -> tuple[str, str]:
 
 # ------------------------------------------------------- this computer
 
-def hardware_line(facts: dict | None) -> str:
-    """The top line of page 2, chapter 9.2's three sentences."""
+def card_tier(facts: dict | None) -> str:
+    """The tier the CARD earns once NVIDIA's libraries are there — what
+    page 2 speaks of, since on a first start the pack is not installed
+    yet and hardware.tier_for says cpu until it is. "" without a usable
+    card."""
     facts = facts or {}
-    tier = facts.get("tier")
-    if not tier:
+    if int(facts.get("cuda_devices") or 0) < 1:
+        return ""
+    if not facts.get("driver_ok", True):
+        return ""
+    import hardware
+    vram = int(facts.get("vram_mb") or 0)
+    if vram and vram < hardware.GPU_SMALL_MB:
+        return ""
+    if vram and vram < hardware.GPU_MB:
+        return "gpu-small"
+    return "gpu"
+
+
+def hardware_line(facts: dict | None) -> str:
+    """The top line of page 2, chapter 9.2's three sentences — for the
+    card this PC has, not for the tier it runs at before the pack."""
+    facts = facts or {}
+    if not facts.get("tier"):
         return "This computer has not been probed yet"
     vram = int(facts.get("vram_mb") or 0)
-    if tier == "gpu":
+    card = card_tier(facts)
+    if card == "gpu":
         return f"NVIDIA card, {vram / 1024:.0f} GB — fast transcription"
-    if tier == "gpu-small":
+    if card == "gpu-small":
         return f"NVIDIA card, {vram / 1024:.0f} GB — fast, smaller mode"
     if int(facts.get("cuda_devices") or 0) and not facts.get("driver_ok"):
         return ("NVIDIA card with a driver too old for CUDA 12.3 — "
                 "transcription on the processor, about as long as you spoke")
     return "No NVIDIA card found — transcription will take about as long as you spoke"
+
+
+def cfg_mod_english(cfg) -> str:
+    """local.english_model as the defaults and settings.toml say — the
+    machine layer may hold "" for the cpu tier (hardware.DERIVED)."""
+    try:
+        chosen = config_mod.read_settings(paths.SETTINGS_FILE)
+        if "local.english_model" in chosen:
+            return str(chosen["local.english_model"] or "")
+        return str(config_mod.defaults_flat().get("local.english_model") or "")
+    except Exception:                                      # noqa: BLE001
+        return str(getattr(cfg.local, "english_model", "") or "")
 
 
 def downloads_for(cfg, facts: dict | None) -> dict:
@@ -486,8 +518,13 @@ def downloads_for(cfg, facts: dict | None) -> dict:
         out["model"] = models.entry(repo)
     if packs.wanted(cfg, facts):
         out["pack"] = packs.pack("gpu")
-    english = getattr(cfg.local, "english_model", "")
-    if (out["tier"] == "gpu" and english and cfg.backend == "local"
+    # The detector goes with the CARD, not with the tier of the moment:
+    # on a first start the pack is not there yet, the tier says cpu, and
+    # the cpu tier's machine layer blanks local.english_model — so the
+    # name is read from the layers UNDER it (the file's default, the
+    # person's settings), never from the layer the tier wrote.
+    english = str(cfg_mod_english(cfg))
+    if (card_tier(facts) == "gpu" and english and cfg.backend == "local"
             and models.state(english) != "ready"):
         out["detector"] = models.entry(english)
     return out
@@ -815,7 +852,7 @@ class Wizard:
                 body_lines=3)
             self.pane.pack(fill="x", pady=(0, 8))
         started = self.active >= 0
-        if offers.get("tier") == "cpu":
+        if not card_tier(self.facts):
             self._para(WORDS["computer.cpu.he"], pt=10, colour=ui.DIM, lines=2,
                        pady=(0, 8))
         if offers.get("pack") is not None:
@@ -1233,7 +1270,7 @@ class Wizard:
                 self.status.configure(
                     text=WORDS["say.heard"].format(seconds=seconds),
                     fg=ui.GREEN)
-                if self.offers.get("tier") == "cpu":
+                if not card_tier(self.facts):
                     self._para(WORDS["say.cpu.he"], pt=10, colour=ui.DIM,
                                lines=2, pady=(8, 0))
                 self._save_seconds(seconds)
