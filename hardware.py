@@ -175,9 +175,14 @@ def hebrew_voice(timeout: float = 8.0) -> str:
 
 
 def gpu_pack_state() -> str:
-    """The GPU pack's standing (6.5). Until packs.py lands: `venv` when the
+    """The GPU pack's standing (6.5): `venv` in the checkout when the
     CUDA wheels are importable from the interpreter that runs this (the
-    owner's venv), else `missing`."""
+    owner's venv), else `missing`; on an installed copy what packs.py
+    says — ok, stale, missing, or `failed:<reason>` when the pack is
+    there and the ladder saw it not run."""
+    if not paths.PORTABLE:
+        import packs
+        return packs.standing("gpu")
     try:
         import nvidia.cublas  # noqa: F401
         import nvidia.cudnn  # noqa: F401
@@ -193,9 +198,11 @@ def tier_for(facts: dict) -> str:
         return "cpu"
     if facts.get("driver") and not facts.get("driver_ok"):
         return "cpu"
-    if facts.get("gpu_pack") in ("missing",) and not paths.DEVELOPER:
-        # the wheels are not there yet: the card exists, the tier does
-        # not — the wizard's pack step is where it becomes gpu
+    pack = str(facts.get("gpu_pack") or "")
+    if (pack in ("missing", "unknown") or pack.startswith("failed:")) and not paths.DEVELOPER:
+        # the wheels are not there yet, or are there and do not run: the
+        # card exists, the tier does not — the pack step (packs.py) or
+        # Settings > Speed is where it becomes gpu
         return "cpu"
     vram = int(facts.get("vram_mb") or 0)
     if vram and vram < GPU_SMALL_MB:

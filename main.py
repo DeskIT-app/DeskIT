@@ -6055,6 +6055,10 @@ def main() -> int:
                         help="show the model download step on its own "
                              "(an installed copy shows it at start while "
                              "the Hebrew model is not on disk) and exit")
+    parser.add_argument("--install-pack", metavar="NAME",
+                        help="show a pack's install step on its own (gpu "
+                             "or skin; an installed copy with an NVIDIA "
+                             "card offers gpu at start) and exit")
     parser.add_argument("--benchmark", action="store_true",
                         help="replay every recording you have corrected, "
                              "with the learned vocabulary on and off, and "
@@ -6185,10 +6189,11 @@ def main() -> int:
     # What this computer can do (hardware.py, plan 6.2): the facts into
     # state.json and the tier's derived defaults into the machine layer,
     # BEFORE any model loads — the config is read again when it wrote.
+    facts = None
     if not args.fake and not args.config:
         import hardware as hardware_mod
         try:
-            hardware_mod.run_at_start()
+            facts = hardware_mod.run_at_start()
             cfg = _load_config(args.config)
         except Exception:                     # noqa: BLE001
             log.warning("the hardware probe failed; running as before",
@@ -6203,6 +6208,25 @@ def main() -> int:
         log.info("model download step: %s", outcome)
         if args.download_model:
             return 0 if outcome == "done" else 1
+    # The GPU pack (packs.py, plan 6.5): an NVIDIA card without NVIDIA's
+    # libraries is a cpu tier, so the same step, once, right after the
+    # model — [Not now] is written down and the start stops asking.
+    # Installed, the probe runs again so the tier and its defaults are
+    # the card's before any model loads.
+    import packs as packs_mod
+    if args.install_pack or (not args.fake and packs_mod.wanted(cfg, facts)):
+        outcome = packs_mod.offer(args.install_pack or "gpu")
+        log.info("pack step (%s): %s", args.install_pack or "gpu", outcome)
+        if args.install_pack:
+            return 0 if outcome == "done" else 1
+        if outcome == "done":
+            import hardware as hardware_mod
+            try:
+                facts = hardware_mod.run_at_start()
+                cfg = _load_config(args.config)
+            except Exception:                 # noqa: BLE001
+                log.warning("the hardware probe failed after the pack",
+                            exc_info=True)
     if args.setup or (firstrun.needed(cfg) and not args.fake):
         if firstrun.run(cfg, Path(args.config) if args.config else None):
             cfg = _load_config(args.config)            # it wrote the device

@@ -258,9 +258,14 @@ class SetupConfig:
     the HKCU Run value autostart.py writes. Off by default until the
     wizard's Done step offers it (chapter 9); never acted on in the
     checkout.
+
+    offer_gpu_pack is the person's answer to the GPU pack step at start
+    (packs.py, plan 6.5): [Not now] writes false to settings.toml and the
+    start stops asking; Settings > Speed keeps a one-line offer.
     """
     done: bool = False
     autostart: bool = False
+    offer_gpu_pack: bool = True
 
 
 @dataclass(frozen=True)
@@ -1714,6 +1719,7 @@ def build(data: dict) -> Config:
         setup=SetupConfig(
             done=bool(setup.get("done", SetupConfig.done)),
             autostart=bool(setup.get("autostart", SetupConfig.autostart)),
+            offer_gpu_pack=bool(setup.get("offer_gpu_pack", SetupConfig.offer_gpu_pack)),
         ),
         updates=UpdatesConfig(
             channel=(str(updates_.get("channel", UpdatesConfig.channel))

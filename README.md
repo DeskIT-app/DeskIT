@@ -4255,6 +4255,21 @@ for `מבשרים`, all of which the local model got right.
     the DLL search path, so `local_whisper.py` prepends them to `PATH` at
     import. Without that it silently runs on CPU: measured on this box,
     **0.20 s on the GPU vs 8.2 s on CPU** for a 3 s clip.
+  - **On an installed copy the CUDA libraries are a pack** (`packs.py`,
+    since 2026-09-17): the installer carries no NVIDIA binary, and a PC
+    with an NVIDIA card is offered them once at start, right after the
+    model — 1.37 GB (cuBLAS, cuDNN, NVRTC, the exact versions this venv
+    runs, pinned with hashes in `packs.lock`), NVIDIA's licence links on
+    the card, **Install** / **Not now**. The wheels come down through
+    `net.py` from `files.pythonhosted.org` and pip installs them with
+    `--no-index` into `%LOCALAPPDATA%\DeskIT\packs\gpu\site` — pip never
+    talks to PyPI itself. Without the pack the card is found and the
+    tier is still `cpu`; a pack that is there but does not load (the
+    warm-up inference fails on cuda) is written down as `failed:<reason>`
+    in `state.json` and the tier drops to `cpu` until it is reinstalled
+    or removed. The skin's `skia-python` is a second, 11 MB pack on the
+    same machinery. `main.py --install-pack gpu` shows the step alone;
+    `python packs.py --lock` rewrites the lock from this venv's versions.
   - `[local] device` is `auto` (GPU, falling back to CPU). The GPU is
     validated with a real warm-up inference at load, because constructing
     on `cuda` succeeds even when the CUDA libraries are missing — the
@@ -4329,6 +4344,7 @@ for `מבשרים`, all of which the local model got right.
 | `[feedback] retry_seconds` | `45` | how long to keep retrying before leaving the audio in `pending\` |
 | `[gemini] models` | 4 flash models | tried in order; per-model daily quota makes a list a longer runway (`model = "..."` still accepted) |
 | `[gemini] timeout_s` | `30` | API request timeout |
+| `[setup] offer_gpu_pack` | `true` | an installed copy with an NVIDIA card asks once at start to download NVIDIA's CUDA libraries (the GPU pack, 1.37 GB); **Not now** writes `false` |
 | `[local] model` | `ivrit-ai/whisper-large-v3-turbo-ct2` | ~1.6 GB. In the checkout, downloaded on first use into the global Hugging Face cache; an installed copy downloads it once, with consent, into `models\` (see Backends) |
 | `[local] language` | `he` | **must stay pinned** — the fine-tune broke autodetect |
 | `[local] device` | `auto` | `auto` \| `cuda` \| `cpu` |

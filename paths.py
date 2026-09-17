@@ -187,6 +187,10 @@ VERSION_FILE = APP_DIR / "VERSION"
 #: file with its size and SHA-256 (chapter 6.4, D13). Written by the
 #: owner (`models.py --lock`), shipped beside the code, read by models.py.
 MODELS_LOCK = APP_DIR / "models.lock"
+#: The wheels an installed copy may download per pack (chapter 6.5):
+#: version, file, PyPI URL, size, SHA-256, licence links. `packs.py
+#: --lock` writes it from the owner's venv; packs.py reads it.
+PACKS_LOCK = APP_DIR / "packs.lock"
 
 #: Read-only assets that stay with the code in every layout.
 FONTS_DIR = APP_DIR / "fonts"

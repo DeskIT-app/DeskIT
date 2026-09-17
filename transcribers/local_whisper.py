@@ -46,6 +46,8 @@ from pathlib import Path
 
 import cleanup as cleanup_mod
 import models as models_mod
+import packs as packs_mod
+import paths
 
 from .base import TranscriptionError
 
@@ -62,6 +64,13 @@ def _register_cuda_dlls() -> None:
     with "Library cublas64_12.dll is not found".
     """
     if os.name != "nt":
+        return
+    if not paths.PORTABLE:
+        # An installed copy has no CUDA wheels in its interpreter: they
+        # are the GPU pack (packs.py, plan 6.5), in a folder of their
+        # own, and activate() does for it exactly what the scan below
+        # does for the venv. Nothing to scan.
+        packs_mod.activate("gpu")
         return
     roots = [Path(p) / "nvidia" for p in sys.path if p.endswith("site-packages")]
     roots.append(Path(sys.prefix) / "Lib" / "site-packages" / "nvidia")
@@ -399,6 +408,12 @@ class LocalWhisperTranscriber:
                 last = e
                 log.info("local model cannot use %s (%s) — %s", dev, compute,
                          str(e).splitlines()[0][:120])
+                if dev == "cuda" and not paths.PORTABLE \
+                        and packs_mod.state("gpu") in ("ok", "stale"):
+                    # the pack is there and does not run: written down
+                    # for the tier and the Home card (6.9), until the
+                    # next install or removal
+                    packs_mod.note_failure("gpu", str(e))
                 continue
             self._model = candidate
             self.device = dev

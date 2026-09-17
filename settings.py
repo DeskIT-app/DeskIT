@@ -588,6 +588,10 @@ TABS: tuple[Tab, ...] = (
             Friendly("setup.autostart", "Start with Windows",
                      "Windows starts DeskIT when you sign in. Off, you "
                      "open it from the Start menu."),
+            Friendly("setup.offer_gpu_pack", "Offer GPU speed at start",
+                     "On a PC with an NVIDIA card, the start asks once to "
+                     "download NVIDIA's libraries (1.37 GB) so dictation "
+                     "runs on the card. Not now turns this off."),
         )),
         Group("UPDATES", (
             Friendly("updates.channel", "Which releases to look at",

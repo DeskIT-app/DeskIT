@@ -155,6 +155,22 @@ class EgressRefused(Exception):
         self.host, self.reason, self.purpose = host, reason, purpose
 
 
+class DownloadError(Exception):
+    """``download()`` did not finish. ``reason`` is one word for the
+    code — offline, cancelled, refused, http, short, verify — and
+    str(e) is the line for the log. The part file is kept for every
+    reason but verify."""
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+
+
+class Cancelled(DownloadError):
+    def __init__(self):
+        super().__init__("cancelled", "the download was paused")
+
+
 class NetError(Exception):
     """The request was attempted and did not get an HTTP answer: no
     route, refused connection, timeout, TLS failure. ``reason`` is the
@@ -465,3 +481,119 @@ def post_json(url: str, purpose: str, payload: dict, *,
     return request("POST", url, purpose, secret=secret, headers=hdrs,
                    body=json.dumps(payload).encode("utf-8"),
                    timeout_s=timeout_s, consent=consent)
+
+
+# --------------------------------------------------------------- download
+
+DOWNLOAD_CHUNK = 256 * 1024
+DOWNLOAD_HOPS = 4
+DOWNLOAD_TIMEOUT_S = 60.0
+PART = ".part"
+
+
+def _human(n: int) -> str:
+    n = int(n)
+    if n >= 1_000_000_000:
+        return f"{n / 1e9:.2f} GB"
+    if n >= 1_000_000:
+        return f"{n / 1e6:.0f} MB"
+    if n >= 1_000:
+        return f"{n / 1e3:.1f} kB"
+    return f"{n} B"
+
+
+def download(url: str, dest, purpose: str, *, size: int | None = None,
+             sha256: str | None = None, progress=None, cancel=None,
+             base: int = 0, total: int | None = None):
+    """A file to ``dest``, resumed from where the last attempt left it.
+
+    The bytes go to ``<dest>.part``; a second attempt asks for the rest
+    with a Range header (a 206 continues, a 200 to a ranged ask means
+    the server never heard of resuming and the file starts over); every
+    redirect — absolute or relative — is followed by hand, so each hop
+    meets the allowlist above and is a row of its own. The part survives
+    every failure but a hash that does not match, which is deleted and
+    said: nothing half-right is left behind with the right name.
+
+    ``progress(done, total)`` gets bytes as they land — ``base`` is what
+    earlier files of a set add, ``total`` the set's whole size, both
+    defaulting to this one file. ``cancel`` is a threading.Event; set,
+    the next chunk raises ``Cancelled`` (a DownloadError) and the part
+    stays. Raises ``DownloadError`` for everything else; returns
+    ``dest``. The models and the packs come down this way (chapter 6).
+    """
+    import hashlib
+    import urllib.parse
+
+    from pathlib import Path as _Path
+    dest = _Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + PART)
+    have = part.stat().st_size if part.exists() else 0
+    if size is not None and have >= size:
+        part.unlink()
+        have = 0
+    whole = total if total is not None else (size or 0)
+    headers = {"Range": f"bytes={have}-"} if have else {}
+    name = dest.name
+    for _hop in range(DOWNLOAD_HOPS):
+        try:
+            r = open("GET", url, purpose, headers=headers, timeout_s=DOWNLOAD_TIMEOUT_S)
+        except EgressRefused as err:
+            raise DownloadError("refused", str(err)) from err
+        except NetError as err:
+            host = urllib.parse.urlsplit(url).hostname
+            raise DownloadError("offline", f"no connection to {host}: {err}") from err
+        with r:
+            if r.status in (301, 302, 303, 307, 308):
+                where = str(r.headers.get("Location") or "")
+                if not where:
+                    raise DownloadError("http", f"{name}: a redirect with no Location")
+                url = urllib.parse.urljoin(url, where)
+                continue
+            if r.status == 200:
+                mode, have = "wb", 0          # the whole file, asked or not
+            elif r.status == 206:
+                mode = "ab"
+            else:
+                host = urllib.parse.urlsplit(url).hostname
+                raise DownloadError("http", f"{name}: HTTP {r.status} from {host}")
+            try:
+                with part.open(mode) as f:
+                    for chunk in r.chunks(DOWNLOAD_CHUNK):
+                        if cancel is not None and cancel.is_set():
+                            raise Cancelled()
+                        f.write(chunk)
+                        have += len(chunk)
+                        if progress is not None:
+                            progress(base + (min(have, size) if size else have),
+                                     whole if whole else have)
+            except DownloadError:
+                raise
+            except Exception as err:                        # noqa: BLE001
+                # the stream broke under us: the part stays, the next
+                # attempt asks for the rest
+                raise DownloadError("offline", f"{name}: the connection dropped after "
+                                    f"{_human(have)} ({err})") from err
+            break
+    else:
+        raise DownloadError("http", f"{name}: too many redirects")
+    if size is not None and have != size:
+        raise DownloadError("short", f"{name}: {_human(have)} of {_human(size)} arrived")
+    if sha256 is not None:
+        digest = hashlib.sha256()
+        with part.open("rb") as f:
+            while True:
+                block = f.read(1 << 20)
+                if not block:
+                    break
+                digest.update(block)
+        got = digest.hexdigest()
+        if got != sha256.lower():
+            part.unlink(missing_ok=True)
+            log.warning("download: %s did not match its checksum and was discarded "
+                        "(got %s, expected %s)", name, got, sha256)
+            raise DownloadError("verify", f"{name}: the download did not match its "
+                                "checksum and was discarded; try again")
+    part.replace(dest)
+    return dest

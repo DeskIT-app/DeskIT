@@ -57,6 +57,8 @@ def on() -> bool:
         elif os.environ.get("HD_SKIN", "1") in ("0", "off", "false", "no"):
             _log.info("skin: off (HD_SKIN)")
         else:
+            import packs
+            packs.activate("skin")         # the skin pack, on an installed copy
             import skia                    # noqa: F401
             from . import glass            # noqa: F401
             ok = True

@@ -30196,7 +30196,7 @@ def test_models_download_resumes_verifies_and_marks_complete():
                 _patched(paths, "MODELS_DIR", tmp / "models"), \
                 _patched(paths, "MODELS_LOCK", tmp / "models.lock"), \
                 _patched(net_mod, "_connect", hub), \
-                _patched(models, "_CHUNK", 64 * 1024):
+                _patched(net_mod, "DOWNLOAD_CHUNK", 64 * 1024):
             # a pause after the first chunk of the big file
             def pause_early(done, total):
                 seen.append((done, total))
@@ -30444,6 +30444,407 @@ def test_net_admits_the_hub_by_domain():
                  "notthehf.co", "example.com"):
         assert not net_mod._host_allowed(host), host
     assert net_mod.ALLOWED_SUFFIXES == (".huggingface.co", ".hf.co")
+
+
+# ------------------------------------------------------- the packs (PR 16)
+#
+# DISTRIBUTION_PLAN.md 6.5, D14, D19, D24: packs.lock names the wheels an
+# installed copy may download (the GPU pack — NVIDIA's cuBLAS, cuDNN and
+# NVRTC at the owner's venv's versions — and the skin pack); the wheels
+# come down through net.download() and pip installs them with no network
+# at all (--no-index --find-links --require-hashes --no-deps), which is
+# how every outbound byte, pip's included, passes the one door. The
+# checkout answers `venv` and activates nothing (D4). Every wire and every
+# pip below is a fake.
+
+def _pack_lock(tmp: Path, name: str, bodies: dict[str, bytes]) -> "packs.Pack":
+    """A lock with one pack whose wheels are `bodies` (filename -> bytes),
+    served from files.pythonhosted.org; returns the pack as read back."""
+    import hashlib
+
+    import packs
+
+    wheels = tuple(packs.Wheel(fn.split("-")[0].replace("_", "-"), fn.split("-")[1], fn,
+                               f"https://files.pythonhosted.org/packages/ab/cd/{fn}",
+                               len(body), hashlib.sha256(body).hexdigest())
+                   for fn, body in bodies.items())
+    packs.write_lock([packs.Pack(name, wheels, tuple(packs.LICENSES.get(name, [])))],
+                     tmp / "packs.lock")
+    return packs.read_lock(tmp / "packs.lock")[name]
+
+
+class _PyPI:
+    """files.pythonhosted.org as the download meets it: the file, whole
+    or from a Range; every request's headers kept."""
+
+    def __init__(self, bodies: dict[str, bytes]):
+        self.bodies = bodies
+        self.asked: list[tuple[str, dict]] = []
+
+    def __call__(self, method, url, headers, body, timeout_s):
+        self.asked.append((url, dict(headers)))
+        data = self.bodies[url.rsplit("/", 1)[-1]]
+        rng = headers.get("Range")
+        if rng:
+            start = int(rng.split("=")[1].rstrip("-"))
+            return _FakeRaw(data[start:], status=206)
+        return _FakeRaw(data, status=200)
+
+
+class _Pip:
+    """subprocess.run as pip: records the command and the flags, lays
+    down what a real install would (the nvidia bin folders), or fails
+    with a line when told to."""
+
+    def __init__(self, fail: str = ""):
+        self.calls: list[tuple[list[str], dict]] = []
+        self.fail = fail
+
+    def __call__(self, cmd, **kw):
+        import subprocess as _sp
+        self.calls.append((list(cmd), dict(kw)))
+        if self.fail:
+            return _sp.CompletedProcess(cmd, 1, stdout="Collecting...\n", stderr=f"ERROR: {self.fail}\n")
+        target = Path(cmd[cmd.index("--target") + 1])
+        for sub in ("cublas", "cudnn", "cuda_nvrtc"):
+            (target / "nvidia" / sub / "bin").mkdir(parents=True, exist_ok=True)
+        return _sp.CompletedProcess(cmd, 0, stdout="Successfully installed\n", stderr="")
+
+
+def test_packs_lock_is_the_shipped_list():
+    """packs.lock names the GPU pack's three NVIDIA wheels at exactly the
+    versions this venv holds (D34) and the skin pack's skia wheel for
+    cp311 / win_amd64, every wheel from files.pythonhosted.org with a
+    size and a SHA-256, the licence links the card shows, and a size
+    line of 1.37 GB; requirements_text pins and hashes each one."""
+    from importlib import metadata
+
+    import net as net_mod
+    import packs
+
+    lock = packs.read_lock()
+    assert set(lock) == set(packs.NAMES) == {"gpu", "skin"}, list(lock)
+    gpu, skin = lock["gpu"], lock["skin"]
+    assert [w.name for w in gpu.wheels] == list(packs.PINS["gpu"])
+    for w in gpu.wheels + skin.wheels:
+        assert w.version == metadata.version(w.name), (w.name, w.version)
+        assert w.filename.endswith("win_amd64.whl") and w.size > 0
+        assert re.fullmatch(r"[0-9a-f]{64}", w.sha256), w
+        host = w.url.split("/")[2]
+        assert host == "files.pythonhosted.org" and host in net_mod.ALLOWED_HOSTS
+    assert "-cp311-" in skin.wheels[0].filename
+    assert 1_300_000_000 < gpu.bytes < 1_500_000_000 and gpu.versions["nvidia-cudnn-cu12"].startswith("9.")
+    assert [x[0] for x in gpu.licenses] == ["NVIDIA CUDA EULA", "cuDNN SLA"]
+    assert all(u.startswith("https://docs.nvidia.com/") for _l, u in gpu.licenses)
+    assert packs.size_line(gpu).startswith("1.37 GB from files.pythonhosted.org into ")
+    text = packs.requirements_text(gpu)
+    assert text.splitlines()[0] == f"nvidia-cublas-cu12=={gpu.wheels[0].version} --hash=sha256:{gpu.wheels[0].sha256}"
+    assert len(text.splitlines()) == 3
+    assert packs.pack("recording") is None, "PyAV ships in the base lock; there is no recording pack"
+    base = (REPO / "requirements.lock").read_text("utf-8")
+    assert "av==" in base and "nvidia-" not in base and "skia-python" not in base
+
+
+def test_packs_pip_command():
+    """pip is handed the wheels already on disk and nothing else: no
+    index, the find-links folder, the target, hashes required, no
+    dependency walk; and it runs with no console window."""
+    import inspect
+
+    import packs
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-packs-"))
+    try:
+        with _patched(paths, "PACKS_DIR", tmp / "packs"):
+            p = _pack_lock(tmp, "gpu", {"nvidia_cublas_cu12-1.0-py3-none-win_amd64.whl": b"x"})
+            cmd = packs.pip_command(p, tmp / "req.txt")
+            assert cmd[:4] == [sys.executable, "-m", "pip", "install"]
+            for flag in ("--no-index", "--require-hashes", "--no-deps", "--disable-pip-version-check"):
+                assert flag in cmd, flag
+            assert cmd[cmd.index("--find-links") + 1] == str(p.wheels_dir)
+            assert cmd[cmd.index("--target") + 1] == str(p.site)
+            assert cmd[cmd.index("-r") + 1] == str(tmp / "req.txt")
+            assert p.site == tmp / "packs" / "gpu" / "site"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    src = inspect.getsource(packs._run_pip)
+    assert "creationflags=CREATE_NO_WINDOW" in src and packs.CREATE_NO_WINDOW == 0x08000000
+
+
+def test_packs_install_downloads_through_net_then_pip_offline():
+    """install(): each wheel through net.download() (a row under
+    pack-install from files.pythonhosted.org, a Range after a pause,
+    the hash checked), then pip with the flags above, then the record
+    with the versions, the wheels gone; activate("gpu") puts the pack's
+    bin folders first on PATH and calls add_dll_directory for each; a
+    pip that fails leaves no record and says its line."""
+    import net as net_mod
+    import packs
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-packs-"))
+    before = os.environ.get("PATH", "")
+    try:
+        bodies = {"nvidia_cublas_cu12-1.0-py3-none-win_amd64.whl": bytes(range(256)) * 600,
+                  "nvidia_cudnn_cu12-2.0-py3-none-win_amd64.whl": b"d" * 3000}
+        pypi = _PyPI(bodies)
+        pip = _Pip()
+        added: list[str] = []
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "PACKS_DIR", tmp / "packs"), \
+                _patched(paths, "PACKS_LOCK", tmp / "packs.lock"), \
+                _patched(net_mod, "_connect", pypi), \
+                _patched(net_mod, "DOWNLOAD_CHUNK", 64 * 1024), \
+                _patched(packs.subprocess, "run", pip), \
+                _patched(os, "add_dll_directory", lambda d: added.append(d)):
+            p = _pack_lock(tmp, "gpu", bodies)
+            assert packs.state("gpu") == "missing" and packs.standing("gpu") == "missing"
+            assert packs.activate("gpu") is False
+            cancel = threading.Event()
+            seen: list = []
+
+            def pause(done, total):
+                seen.append((done, total))
+                if done >= 64 * 1024:
+                    cancel.set()
+            try:
+                packs.install(p, progress=pause, cancel=cancel)
+            except packs.DownloadError as err:
+                assert err.reason == "cancelled", err
+            else:
+                raise AssertionError("the pause was not honoured")
+            part = p.wheels_dir / (list(bodies)[0] + ".part")
+            assert part.exists() and part.stat().st_size == 64 * 1024 and pip.calls == []
+            assert seen and all(t == p.bytes for _d, t in seen)
+            stages: list[str] = []
+            site = packs.install(p, stage=stages.append)
+            assert site == p.site and stages == ["downloading", "installing"]
+            ranged = [h["Range"] for _u, h in pypi.asked if "Range" in h]
+            assert ranged == [f"bytes={64 * 1024}-"], pypi.asked
+            assert not any(k.lower() == "authorization" for _u, h in pypi.asked for k in h)
+            assert len(pip.calls) == 1
+            cmd, kw = pip.calls[0]
+            assert "--no-index" in cmd and kw["creationflags"] == packs.CREATE_NO_WINDOW
+            req = (p.folder / "requirements.txt")
+            assert not req.exists() and not p.wheels_dir.exists(), "the wheels and the list are gone once installed"
+            rec = json.loads(p.record.read_text("utf-8"))
+            assert rec["versions"] == {"nvidia-cublas-cu12": "1.0", "nvidia-cudnn-cu12": "2.0"}
+            assert rec["installed_at"][:4] == time.strftime("%Y")
+            assert packs.state("gpu") == "ok" and packs.standing("gpu") == "ok"
+            rows = [r for r in net_mod.rows() if r.purpose == "pack-install"]
+            assert rows and {r.host for r in rows} == {"files.pythonhosted.org"}, rows
+            assert {r.status for r in rows} >= {200, 206}
+            # activate: the bin folders first on PATH, each registered
+            assert packs.activate("gpu") is True and packs.activate("gpu") is True
+            bins = packs.dll_dirs(p)
+            assert len(bins) == 3 and all(b.endswith("bin") for b in bins)
+            assert os.environ["PATH"].split(os.pathsep)[:3] == bins
+            assert added == bins
+            # a pip that fails: its line, no record
+            packs._active.discard("gpu")
+            packs.remove("gpu")
+            assert packs.state("gpu") == "missing" and not p.folder.exists()
+            pip.fail = "THESE PACKAGES DO NOT MATCH THE HASHES"
+            try:
+                packs.install(p)
+            except packs.InstallError as err:
+                assert err.reason == "install" and "HASHES" in str(err), err
+            else:
+                raise AssertionError("a failed pip was called an install")
+            assert not p.record.exists() and packs.state("gpu") == "missing"
+    finally:
+        os.environ["PATH"] = before
+        import packs as _packs
+        _packs._active.discard("gpu")
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_packs_lock_mismatch_is_stale():
+    """An installed record whose cudnn version is not the lock's is
+    `stale` — offered as an update, never re-downloaded on its own;
+    a failure the ladder noted makes the standing `failed:<reason>`,
+    activate() refuse and the tier cpu, until the note is cleared or the
+    pack removed."""
+    import hardware
+    import packs
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-packs-"))
+    d, s, t = _layer_files()
+    try:
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "PACKS_DIR", tmp / "packs"), \
+                _patched(paths, "PACKS_LOCK", tmp / "packs.lock"), \
+                _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+            p = _pack_lock(tmp, "gpu", {"nvidia_cublas_cu12-1.0-py3-none-win_amd64.whl": b"a",
+                                        "nvidia_cudnn_cu12-2.0-py3-none-win_amd64.whl": b"b"})
+            p.site.mkdir(parents=True)
+            p.record.write_text(json.dumps({"versions": {"nvidia-cublas-cu12": "1.0",
+                                                          "nvidia-cudnn-cu12": "1.9"}}), "utf-8")
+            assert packs.state("gpu") == "stale" and packs.standing("gpu") == "stale"
+            assert hardware.tier_for(_facts(gpu_pack="stale")) == "gpu", "a stale pack still runs"
+            p.record.write_text(json.dumps({"versions": p.versions}), "utf-8")
+            assert packs.state("gpu") == "ok"
+            packs.note_failure("gpu", "Library cudnn64_9.dll is not found\nmore")
+            assert packs.failure("gpu") == "Library cudnn64_9.dll is not found"
+            assert packs.standing("gpu") == "failed:Library cudnn64_9.dll is not found"
+            assert packs.activate("gpu") is False
+            with _patched(paths, "DEVELOPER", False):
+                assert hardware.tier_for(_facts(gpu_pack=packs.standing("gpu"))) == "cpu"
+                assert hardware.tier_for(_facts(gpu_pack="ok")) == "gpu"
+                assert hardware.tier_for(_facts(gpu_pack="unknown")) == "cpu"
+            assert json.loads(t.read_text("utf-8"))["hardware.gpu_pack_failed"].startswith("Library")
+            assert "gpu_pack_failed" not in s.read_text("utf-8") if s.exists() else True
+            packs.clear_failure("gpu")
+            assert packs.standing("gpu") == "ok" and "hardware.gpu_pack_failed" not in json.loads(t.read_text("utf-8"))
+            packs.note_failure("gpu", "again")
+            assert packs.remove("gpu") and packs.standing("gpu") == "missing" and packs.failure("gpu") == ""
+            assert packs.state("nothing") == "unknown"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_packs_wanted_and_decline():
+    """The step is offered on an installed copy with the switch on, an
+    NVIDIA card with a driver that clears the floor, and no pack (or a
+    stale one); [Not now] writes setup.offer_gpu_pack = false to
+    settings.toml and the start stops asking; the checkout answers
+    `venv`, activates nothing and is never asked."""
+    import packs
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-packs-"))
+    d, s, t = _layer_files()
+    try:
+        cfg = config_mod.Config()
+        assert cfg.setup.offer_gpu_pack is True and config_mod.defaults_flat()["setup.offer_gpu_pack"] is True
+        card = _facts()
+        assert packs.state("gpu") == "venv" and packs.activate("gpu") is False
+        assert not packs.wanted(cfg, card), "the checkout"
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "PACKS_DIR", tmp / "packs"), \
+                _patched(paths, "PACKS_LOCK", tmp / "packs.lock"), \
+                _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+            _pack_lock(tmp, "gpu", {"nvidia_cublas_cu12-1.0-py3-none-win_amd64.whl": b"a"})
+            assert packs.wanted(cfg, card)
+            assert not packs.wanted(cfg, None)
+            assert not packs.wanted(cfg, _facts(cuda_devices=0))
+            assert not packs.wanted(cfg, _facts(driver_ok=False))
+            packs.decline("gpu")
+            assert 'offer_gpu_pack = false' in s.read_text("utf-8")
+            assert not packs.wanted(config_mod.load_layered(settings=s, state=t), card)
+            # the window's own answers reach decline() through offer()
+            import steps
+            with _patched(steps, "show", lambda step: "declined"):
+                config_mod.save({"setup.offer_gpu_pack": True}, settings=s, state=t)
+                assert packs.offer("gpu") == "declined"
+                assert 'offer_gpu_pack = false' in s.read_text("utf-8")
+            with _patched(steps, "show", lambda step: "later"):
+                config_mod.save({"setup.offer_gpu_pack": True}, settings=s, state=t)
+                assert packs.offer("gpu") == "later"
+                assert "offer_gpu_pack" not in s.read_text("utf-8")
+            assert packs.offer("nothing") == "later"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_packs_failed_falls_to_cpu_with_card():
+    """On an installed copy the ladder registers the pack instead of
+    scanning site-packages, and a cuda attempt that fails with the pack
+    present is written down as failed:<first line> — the next probe
+    says cpu and the Home card of 6.9 has its reason."""
+    import hardware
+    import packs
+    import transcribers.local_whisper as lw
+
+    class _FakeModel:
+        def __init__(self, model, device, compute_type, **kw):
+            if device == "cuda":
+                raise RuntimeError("Library cublas64_12.dll is not found\nsecond line")
+
+        def transcribe(self, *a, **k):
+            return iter(()), None
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-packs-"))
+    d, s, t = _layer_files()
+    activated: list[str] = []
+    before = dict(os.environ)
+    try:
+        import faster_whisper
+        with _patched(faster_whisper, "WhisperModel", _FakeModel), \
+                _patched(paths, "PORTABLE", False), \
+                _patched(paths, "PACKS_DIR", tmp / "packs"), \
+                _patched(paths, "PACKS_LOCK", tmp / "packs.lock"), \
+                _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+                _patched(paths, "CACHE_DIR", tmp / "cache"), \
+                _patched(packs, "activate", lambda name: activated.append(name) or False):
+            p = _pack_lock(tmp, "gpu", {"nvidia_cublas_cu12-1.0-py3-none-win_amd64.whl": b"a"})
+            p.site.mkdir(parents=True)
+            p.record.write_text(json.dumps({"versions": p.versions}), "utf-8")
+            assert packs.state("gpu") == "ok"
+            lw._register_cuda_dlls()
+            assert activated == ["gpu"], "the product registers the pack, not site-packages"
+            lw.LocalWhisperTranscriber(str(tmp), "he", english_model="")
+            assert packs.standing("gpu") == "failed:Library cublas64_12.dll is not found"
+            with _patched(paths, "DEVELOPER", False):
+                assert hardware.gpu_pack_state().startswith("failed:")
+                assert hardware.tier_for(_facts(gpu_pack=hardware.gpu_pack_state())) == "cpu"
+            # a cpu-only attempt notes nothing; a missing pack notes nothing
+            packs.clear_failure("gpu")
+            lw.LocalWhisperTranscriber(str(tmp), "he", device="cpu", english_model="")
+            assert packs.failure("gpu") == ""
+            packs.remove("gpu")
+            lw.LocalWhisperTranscriber(str(tmp), "he", english_model="")
+            assert packs.failure("gpu") == ""
+    finally:
+        os.environ.clear()
+        os.environ.update(before)
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_step_window_says_declined_before_it_starts():
+    """steps.StepWindow: [Not now] before the work starts is `declined`
+    (the caller writes it down), after a failure it is `later`; the
+    licence links are drawn; a pack's step carries its links and says
+    Install."""
+    import packs
+    import steps
+
+    calls: list = []
+    step = steps.Step(title="כותרת", body="גוף", size_line="1 MB from x into y", total=10,
+                      work=lambda **kw: calls.append(kw),
+                      links=[("NVIDIA CUDA EULA", "https://docs.nvidia.com/cuda/eula/index.html"),
+                             ("cuDNN SLA", "https://docs.nvidia.com/x")], button="Install")
+    try:
+        w = steps.StepWindow(step)
+    except Exception as err:                                 # noqa: BLE001
+        print(f"    (skipped: no Tk window — {err})")
+        return
+    labels = [c for c in w.root.winfo_children()[0].winfo_children()
+              if c.winfo_class() == "Frame"]
+    links = [x.cget("text") for f in labels for x in f.winfo_children() if x.winfo_class() == "Label"]
+    assert links == ["NVIDIA CUDA EULA", "cuDNN SLA"], links
+    w._not_now()
+    assert w.outcome == "declined" and calls == []
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-packs-"))
+    try:
+        with _patched(paths, "PACKS_DIR", tmp / "packs"):
+            p = _pack_lock(tmp, "gpu", {"nvidia_cublas_cu12-1.0-py3-none-win_amd64.whl": b"a" * 5})
+            st = packs.step(p, installer=lambda pk, **kw: (_ for _ in ()).throw(
+                packs.DownloadError("offline", "no connection")))
+            assert st.button == "Install" and st.links == list(p.licenses) and st.total == 5
+            assert "5 B" in st.body and st.size_line.startswith("5 B from files.pythonhosted.org")
+            w = steps.StepWindow(st)
+            w.start()
+            deadline = time.monotonic() + 8
+            while w.status_text != "No connection" and time.monotonic() < deadline:
+                w.root.update()
+                time.sleep(0.02)
+            assert w.status_text == "No connection", w.status_text
+            w._not_now()
+            assert w.outcome == "later"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ------------------------------------------------------ updates (PR 13)
