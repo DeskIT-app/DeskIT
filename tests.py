@@ -26531,15 +26531,15 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
         band = board.parts["elsewhere"]
         board.root.update_idletasks()
         tiles = sorted(band.winfo_children(), key=lambda w: w.winfo_x())
-        assert len(tiles) == 5, len(tiles)
+        assert len(tiles) == 6, len(tiles)
         assert all(t.winfo_manager() for t in tiles)
         # The count and the words it counts are two labels on one line,
         # so the tile is read as the set of things drawn on it.
         words = {t: _texts(t) for t in tiles}
         corrections = next(t for t in tiles
-                           if "corrections waiting" in words[t])
+                           if "corrections" in words[t])
         assert "5" in words[corrections], words[corrections]
-        trouble = next(t for t in tiles if "problems open" in words[t])
+        trouble = next(t for t in tiles if "problems" in words[t])
         assert "1" in words[trouble], words[trouble]
         # the band fills the row: the last tile ends where the page does
         last = tiles[-1]
@@ -26625,7 +26625,7 @@ def test_the_home_fills_its_page_whether_nothing_or_everything_waits():
             # say, so it may never be the thing that is missing.
             tiles = sorted(board.parts["elsewhere"].winfo_children(),
                            key=lambda w: w.winfo_x())
-            assert len(tiles) == 5, (name, len(tiles))
+            assert len(tiles) == 6, (name, len(tiles))
             assert tiles[0].winfo_x() == 0
             assert (tiles[-1].winfo_x() + tiles[-1].winfo_width()
                     == dash.CW), name
@@ -27412,29 +27412,30 @@ def test_the_bar_keeps_stop_away_from_the_key_he_presses_all_day() -> None:
         assert room >= 100, f"Stop is back within a slip of Pause: {room} px"
 
 
-def test_the_window_has_six_places_and_every_one_of_them_is_registered():
+def test_the_window_has_seven_places_and_every_one_of_them_is_registered():
     """A place is five registrations (NAV, ICON, _show, _refresh, and for
     a key KEY_GROUPS + NESTED_HOTKEYS); missing any one of them is a
     KeyError the first time somebody clicks.
 
-    There are SIX, in this order, and Settings is always last: Home (a
-    summary and nothing more), Corrections (the second reading's
-    proposals and the words it has learned), Problems (his reports, the
-    routine's questions, what is here and not on GitHub), Said
-    (transcripts.log read back), Keys, Settings. It was three for one
-    evening, with the whole desk on the home; he read that home and said
-    "Home should be a summary, and then maybe add more tabs". Home,
-    Corrections, Problems and Said are new words for old screens, so
-    NAV_GLYPH is what says whose glyphs they borrow. Every place has to
-    fit along the 56 px top bar beside the state chip and the three
-    buttons — which is why the wordmark is gone and the tabs sit at a
-    gap of 18."""
+    There are SEVEN, in this order: Home (a summary and nothing more),
+    Corrections (the second reading's proposals and the words it has
+    learned), Problems (his reports, the routine's questions, what is
+    here and not on GitHub), Said (transcripts.log read back), Keys,
+    Settings, and — since PR 21, D12's window — Network, drawn last
+    (chapter 9 screen 6: a seventh entry, not a tab of Settings). It was
+    three for one evening, with the whole desk on the home; he read that
+    home and said "Home should be a summary, and then maybe add more
+    tabs". Home, Corrections, Problems and Said are new words for old
+    screens, so NAV_GLYPH is what says whose glyphs they borrow. Every
+    place has to fit along the 56 px top bar beside the state chip and
+    the three buttons — which is why the wordmark is gone and the tabs
+    sit at a gap of 12 since the seventh word."""
     import dashboard as dash
     import ui
 
     names = [key for key, _label in dash.NAV]
     assert names == ["home", "corrections", "problems", "said", "keys",
-                     "settings"], names
+                     "settings", "network"], names
     assert dash.SIDE == 0, "the rail is gone"
     for key, label in dash.NAV:
         glyph = ui.ICON[dash.NAV_GLYPH.get(key, key)]
@@ -27451,7 +27452,7 @@ def test_the_window_has_six_places_and_every_one_of_them_is_registered():
         assert board._problems_on, "the shipped config has it on"
         assert set(board.nav.items) == {label for _key, label in dash.NAV}, \
             sorted(board.nav.items)
-        # The bar holds all six words, the state and the buttons, and
+        # The bar holds all seven words, the state and the buttons, and
         # nothing in it may reach past the window: a place drawn off the
         # right edge is a place with no way to click it. Measured in the
         # state that holds the MOST buttons, which is the one that pushes
@@ -31697,6 +31698,257 @@ def test_main_hosts_the_steps_in_the_wizard_when_it_is_due():
     assert firstrun.PRIVACY_URL == f"{paths.PAGES_URL}/privacy"
 
 
+# --------------------------------- screen 12: no model that can see (PR 21)
+#
+# DISTRIBUTION_PLAN.md 6.7 and chapter 9 screen 12 (D14): where a raw
+# sentence used to say "cannot reach Ollama", the ask card paints a Hebrew
+# body and three buttons — install Ollama (dim on a CPU-only PC), use my
+# own key (the consent card), turn this key off.
+
+def test_the_chain_names_the_absent_ollama_as_its_own_error():
+    """Chain.ask: an OllamaAbsent from the local backend survives the
+    join when nothing else answered; a chain with no backend at all is
+    the same spot; an ordinary failure stays a plain QAError."""
+    import visual_qa as vq
+
+    class Local:
+        name = "ollama"
+
+        def ask(self, *a, **k):
+            raise vq.OllamaAbsent("cannot reach Ollama at http://127.0.0.1:11434 (no route)")
+
+    class Broken:
+        name = "groq"
+
+        def ask(self, *a, **k):
+            raise vq.QAError("Groq vision request failed: 500")
+
+    class Cloud:
+        name = "gemini"
+
+        def ask(self, *a, **k):
+            return "the answer"
+
+    cfg = config_mod.load(REPO / "defaults.toml")
+    cfg = dataclasses.replace(cfg, visual_qa=dataclasses.replace(cfg.visual_qa, prefer="ollama"))
+    chain = vq.Chain(cfg)
+    chain._encode_for = lambda name, image, cache: b""
+
+    def with_backends(*backends):
+        chain._backends = lambda: list(backends)
+
+    with_backends(Local())
+    try:
+        chain.ask(None, "q", [])
+    except vq.OllamaAbsent as e:
+        assert "cannot reach Ollama" in str(e)
+    else:
+        raise AssertionError("no OllamaAbsent")
+    with_backends(Local(), Broken())
+    try:
+        chain.ask(None, "q", [])
+    except vq.OllamaAbsent as e:
+        assert "ollama:" in str(e) and "groq:" in str(e), str(e)
+    else:
+        raise AssertionError("the join lost the type")
+    with_backends(Local(), Cloud())
+    assert chain.ask(None, "q", []) == ("the answer", "gemini")
+    with_backends(Broken())
+    try:
+        chain.ask(None, "q", [])
+    except vq.OllamaAbsent:
+        raise AssertionError("a plain failure became the three-button state")
+    except vq.QAError:
+        pass
+    with_backends()
+    try:
+        chain.ask(None, "q", [])
+    except vq.OllamaAbsent:
+        pass
+    else:
+        raise AssertionError("no backend at all is the same spot")
+
+
+def test_the_ask_card_paints_the_three_ways_out_when_nothing_can_see() -> None:
+    """The card, in its own process like its neighbours (but handed its
+    screen, so it runs hidden): an OllamaAbsent from the ask function
+    paints the panel (three hit boxes; only two on a CPU-only PC, the
+    install one dim), [Turn this key off] writes visual_qa.enabled = false
+    into the scratch settings and clears the panel, [Use my own key]
+    asks the consent card through privacy.request, a new question
+    clears the panel too."""
+    _run_window_script(r"""
+import threading, time, os, json
+from PIL import Image
+import paths, config as config_mod
+import privacy
+import visual_qa as vq
+
+import tempfile, pathlib
+home = pathlib.Path(tempfile.mkdtemp(prefix="deskit-vqa-home-"))
+paths.SETTINGS_FILE = home / "settings.toml"
+paths.STATE_FILE = home / "state.json"
+paths.CONSENT_FILE = home / "consent.json"
+img = Image.new("RGB", (320, 160), (30, 30, 30))
+holder = {}
+ready = threading.Event()
+asked_cards = []
+privacy.set_asker(lambda kind: asked_cards.append(kind))
+mode = {"absent": True}
+
+def ask(image, question, history, on_chunk=None, cancel=None, encoded_cache=None):
+    if mode["absent"]:
+        raise vq.OllamaAbsent("cannot reach Ollama at http://127.0.0.1:11434 (no route)")
+    return ("תשובה", "test")
+
+vx, vy, vw, vh = vq.virtual_screen()
+full = Image.new("RGB", (max(vw, 800), max(vh, 600)), (40, 40, 48))
+
+def flow():
+    # `full` given: no ImageGrab, so this one runs on the hidden desktop
+    # too, unlike its neighbours on NEEDS_SCREEN
+    win = vq.AskWindow(img, (100, 100, 600, 400), vq.Speaker(), "off", ask,
+                       auto_send=True, ways_out={"model": "gemma3:4b", "cpu": False},
+                       full=full)
+    holder["win"] = win
+    ready.set()
+    try:
+        win.run()
+    except Exception:
+        pass
+
+t = threading.Thread(target=flow, daemon=True)
+t.start()
+assert ready.wait(10), "the card never came up"
+win = holder["win"]
+win.post(("voice", "מה כתוב כאן?"))
+deadline = time.monotonic() + 10
+while win._ways_out is None and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert win._ways_out == {"model": "gemma3:4b", "cpu": False}, win._ways_out
+time.sleep(0.3)
+boxes = set(win.surface.boxes)
+assert {"way_install", "way_key", "way_off"} <= boxes, boxes
+assert "no model that can see" in win.status.cget("text"), win.status.cget("text")
+# use my own key: the consent card is asked (the gate is shut here)
+win.post(("way", "key"))
+time.sleep(0.4)
+assert asked_cards == ["cloud_screenshots"], asked_cards
+assert win._ways_out is None
+# the panel again, then the key is turned off
+win.post(("voice", "ומה זה?"))
+deadline = time.monotonic() + 10
+while win._ways_out is None and time.monotonic() < deadline:
+    time.sleep(0.02)
+win.post(("way", "off"))
+time.sleep(0.5)
+assert config_mod.read_settings(paths.SETTINGS_FILE).get("visual_qa.enabled") is False
+assert win._ways_out is None and "way_off" not in win.surface.boxes
+# a CPU-only PC: the install button is dim and takes no click
+win.ways_out_info = {"model": "gemma3:4b", "cpu": True}
+win.post(("voice", "שוב"))
+deadline = time.monotonic() + 10
+while win._ways_out is None and time.monotonic() < deadline:
+    time.sleep(0.02)
+time.sleep(0.3)
+boxes = set(win.surface.boxes)
+assert "way_install" not in boxes and {"way_key", "way_off"} <= boxes, boxes
+# a question that gets an answer clears the panel
+mode["absent"] = False
+win.post(("voice", "עכשיו כן"))
+deadline = time.monotonic() + 10
+while win.answer_text != "תשובה" and time.monotonic() < deadline:
+    time.sleep(0.02)
+assert win.answer_text == "תשובה" and win._ways_out is None
+win.close_soon()
+t.join(5)
+assert not t.is_alive(), "the card's thread did not exit on close"
+os._exit(0)
+""")
+
+
+def test_the_network_place_reads_the_log_and_hides_loopback():
+    """Dashboard > Network (screen 6): net.read_log parses the file's
+    eight fields (a torn line is skipped), the place paints the rows
+    newest first from the file — not from this process's own table —
+    loopback rows stay out until the toggle, the host chips are the
+    hosts seen, the door on Home counts today's requests, and an empty
+    table says the sentence that is the point."""
+    import net
+    import dashboard as dash
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-netlog-"))
+    try:
+        path = d / "network.log"
+        today = time.strftime("%Y-%m-%d")
+        rows = [net.Row("2026-01-01 09:00:00", "huggingface.co", "model-download", 0, 5000, "206",
+                        "-", "-"),
+                net.Row(f"{today} 10:00:00", "api.groq.com", "polish", 900, 300, "200", "groq",
+                        "cloud_text@v1"),
+                net.Row(f"{today} 10:00:01", "127.0.0.1", "notify", 120, 20, "200", "-", "-")]
+        path.write_text("".join(net.format_row(r) + "\n" for r in rows) + "torn line\n", "utf-8")
+        assert net.parse_row("not | a | row") is None
+        got = net.read_log(path)
+        assert got == rows, got
+        with _patched(paths, "NETWORK_LOG", path), _window() as board:
+            if board is None:
+                return
+            assert board._requests_today() == 1, "loopback counted on the door"
+            board._show("Network")
+            for _ in range(20):
+                board.root.update()
+            labels = [w.cget("text") for line in board.parts["net_rows"].winfo_children()
+                      for w in line.winfo_children() if w.winfo_class() == "Label"]
+            assert "api.groq.com" in labels and "huggingface.co" in labels, labels
+            assert "127.0.0.1" not in labels, "loopback shown without the toggle"
+            assert labels.index("api.groq.com") < labels.index("huggingface.co"), "not newest first"
+            chips = [c.itemcget(c._text, "text") for c in board.parts["net_chips"].winfo_children()]
+            assert chips == ["All", "api.groq.com", "huggingface.co"], chips
+            board._net_toggle_loopback()
+            for _ in range(5):
+                board.root.update()
+            labels = [w.cget("text") for line in board.parts["net_rows"].winfo_children()
+                      for w in line.winfo_children() if w.winfo_class() == "Label"]
+            assert "127.0.0.1" in labels
+            board._net_pick("huggingface.co")
+            labels = [w.cget("text") for line in board.parts["net_rows"].winfo_children()
+                      for w in line.winfo_children() if w.winfo_class() == "Label"]
+            assert "api.groq.com" not in labels and "huggingface.co" in labels
+            assert "1 of 3 rows" == board.parts["net_line"].cget("text"), board.parts["net_line"].cget("text")
+            path.write_text("", "utf-8")
+            board._net_pick("All")
+            texts = [w.cget("text") for w in board.parts["net_rows"].winfo_children()
+                     if w.winfo_class() == "Label"]
+            assert any("stays empty" in s for s in texts), texts
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_privacy_request_asks_the_card_outside_a_press():
+    """privacy.request: the person pressed a button — the card is asked
+    whether or not the thread is inside a key press; an open gate is
+    not asked; no asker, no card."""
+    import privacy
+
+    asked = []
+    privacy.set_asker(asked.append)
+    try:
+        assert privacy.request("cloud_screenshots") is True
+        assert asked == ["cloud_screenshots"]
+        with _consented("cloud_screenshots"):
+            assert privacy.request("cloud_screenshots") is False
+        privacy.set_asker(None)
+        assert privacy.request("cloud_screenshots") is False
+        try:
+            privacy.request("nonsense")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("an unknown kind was accepted")
+    finally:
+        privacy.set_asker(None)
+
+
 # ------------------------------------------------------ updates (PR 13)
 #
 # DISTRIBUTION_PLAN.md 11.3-11.6, D21: one weekly look at GitHub Releases
@@ -32622,7 +32874,10 @@ def test_needs_screen_list_is_complete():
         if name == "test_needs_screen_list_is_complete":
             continue                      # its own docstring says the words
         body = "\n".join(lines[node.lineno - 1:node.end_lineno])
-        if "_run_window_script(" in body and "visual_qa" in body:
+        # A body that hands the card its `full=` screen grabs nothing
+        # (AskWindow._build_stage) and may run hidden — PR 21's is one.
+        if "_run_window_script(" in body and "visual_qa" in body \
+                and "full=full" not in body:
             ask_card.append(name)
     assert len(ask_card) >= 14, ask_card
     strays = sorted(set(ask_card) - set(NEEDS_SCREEN))

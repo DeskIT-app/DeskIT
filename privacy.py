@@ -294,6 +294,25 @@ def _ask(kind: str) -> None:
         log.info("could not open the consent card for %s", kind, exc_info=True)
 
 
+def request(kind: str) -> bool:
+    """A button the person pressed that needs ``kind`` (the ask card's
+    "use my own key", the Privacy tab's [Turn on]): ask its card now,
+    inside a press or not. True when a card was asked; False when the
+    gate is already open or no card exists in this process."""
+    if kind not in KINDS:
+        raise ValueError(f"unknown consent kind {kind!r}")
+    if allowed(kind) or _asker is None:
+        return False
+    with _lock:
+        _asked.add(kind)
+    try:
+        _asker(kind)
+        return True
+    except Exception:                                        # noqa: BLE001
+        log.info("could not open the consent card for %s", kind, exc_info=True)
+        return False
+
+
 def not_now(kind: str) -> None:
     """[Not now]: the local path answers and the card stays down until
     the next start. Recorded, never written — a refusal to consent is

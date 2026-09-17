@@ -74,6 +74,7 @@ import history
 import hotkey as hotkey_mod
 import keycaps as keyboard_mod
 import launch
+import net
 import awake as awake_mod
 import hardware as hardware_mod
 import models as models_mod
@@ -292,11 +293,15 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
 #   Said         transcripts.log read back, with the search
 #   Keys         every binding, lit on a drawn keyboard
 #   Settings     config.toml, on tabs
+#   Network      every request this app made, newest first, from
+#                network.log — the window of the key-privacy proof
+#                (D12): during plain dictation the table stays empty
 #
 # Overview is gone: its state line is in the top bar now, on every place.
 NAV = (("home", "Home"), ("corrections", "Corrections"),
        ("problems", "Problems"), ("said", "Said"),
-       ("keys", "Keys"), ("settings", "Settings"))
+       ("keys", "Keys"), ("settings", "Settings"),
+       ("network", "Network"))
 
 # A place takes its glyph from ui.ICON[key] where there is one. Home,
 # Corrections, Problems and Said are new words for old screens, and
@@ -306,7 +311,7 @@ NAV = (("home", "Home"), ("corrections", "Corrections"),
 # no entry here is still a KeyError the first time the bar is built,
 # which is the point.
 NAV_GLYPH = {"home": "overview", "corrections": "review",
-             "problems": "error", "said": "history"}
+             "problems": "error", "said": "history", "network": "globe"}
 
 # The Awake screen probes the machine (powercfg, PowerShell — a few
 # seconds) the moment it opens. Off for the tests, which open every
@@ -1567,14 +1572,13 @@ class Dashboard:
             tk.Label(bar, image=badge, bg=ui.BG).place(x=PAD, y=15)
 
         self.nav = widgets.Tabs(bar, [name for _key, name in NAV], bg=ui.BG,
-                                selected="Home", command=self._show, gap=18)
-        # Six words now, so the bar is measured rather than guessed: the
-        # places start after the mark and have to end before the state
-        # chip. 24 + 26 mark + 14 air = 64; six words at gap 18 come to
-        # 471 px, so they end at 535. The chip is furthest left in the
-        # state that holds the most buttons, and its left edge there is
-        # 576 — the 41 px of clearance a test holds us to.
-        self.nav.place(x=PAD + 40, y=17)
+                                selected="Home", command=self._show, gap=12)
+        # Seven words now, so the bar is measured rather than guessed:
+        # the places start after the mark and have to end before the
+        # state chip. 24 + 26 mark + 10 air = 60; seven words at gap 12
+        # end under 576, the chip's left edge in the state that holds
+        # the most buttons — the clearance a test holds us to.
+        self.nav.place(x=PAD + 36, y=17)
 
         # The state chip and the buttons are placed from the RIGHT edge, so
         # a longer word ("Transcribing") grows leftwards into empty bar
@@ -1661,7 +1665,8 @@ class Dashboard:
          "Problems": self._screen_problems,
          "Said": self._screen_said,
          "Keys": self._screen_keys,
-         "Settings": self._screen_settings}[name]()
+         "Settings": self._screen_settings,
+         "Network": self._screen_network}[name]()
         self._refresh(self.status or None)
         self._slide_in()
 
@@ -3323,8 +3328,11 @@ class Dashboard:
                 note.pack_forget()
 
     def _door_counts(self, items: list[dict]) -> list[tuple]:
-        """The five places, each as (place, glyph, number, what the
-        number is, what the place is for).
+        """The six places, each as (place, glyph, number, what the
+        number is, what the place is for). The line after the number
+        is ONE word where it can be: six tiles across the band leave
+        ~174 px each, and "corrections waiting" was cut through the
+        letters the day the sixth door came.
 
         Every number here is the number of ROWS the place will show him
         when he gets there, which is the only kind of count worth
@@ -3345,21 +3353,23 @@ class Dashboard:
         trouble = sum(1 for i in items
                       if i["kind"] in ("problem", "question"))
         return [
-            ("Corrections", "review", proposals, "corrections waiting",
+            ("Corrections", "review", proposals, "corrections",
              "and the words it has learned from the ones you said yes to"
              if learned is None else
              f"and the {learned} words it has learned from them"),
-            ("Problems", "error", trouble, "problems open",
+            ("Problems", "error", trouble, "problems",
              "what you reported, and what the weekly routine asked you"
              if self._problems_on else
              "reporting is switched off — the switch is in Settings"),
             ("Said", "history", said, "said today",
              "the last hundred of them, with the search over them"),
-            ("Keys", "keys", len(config_mod.HOTKEY_FIELDS), "keys to press",
+            ("Keys", "keys", len(config_mod.HOTKEY_FIELDS), "keys",
              "every one of them lit on a drawn keyboard"),
             ("Settings", "settings", len(settings_mod.TABS),
-             "tabs of settings",
+             "settings tabs",
              "every setting, in the words the file's own comments use"),
+            ("Network", "globe", self._requests_today(), "requests",
+             "every connection this app made — plain dictation makes none"),
         ]
 
     def _paint_doors(self, items: list[dict]) -> None:
@@ -6647,6 +6657,144 @@ class Dashboard:
         elif not launch.open_path(path):
             self._note(f"could not open {path.name}")
 
+    # ------------------------------------------------------------ network
+
+    def _requests_today(self) -> int:
+        today = time.strftime("%Y-%m-%d")
+        try:
+            return sum(1 for r in net.read_log() if r.when.startswith(today)
+                       and r.host != "127.0.0.1")
+        except Exception:                 # noqa: BLE001
+            return 0
+
+    def _screen_network(self) -> None:
+        """Dashboard > Network (D12's window, chapter 9 screen 6): every
+        outbound request, newest first, read from network.log — the
+        record the app and this window share, since they are two
+        processes. A host filter, the loopback toggle (the phone and the
+        hook knock on 127.0.0.1 and would drown the rest), the file's
+        own button, and the sentence that is the point: during plain
+        dictation this table stays empty."""
+        self._title("Network", "every request, newest first · network.log")
+        p = self.parts
+        self._net_host = getattr(self, "_net_host", "All")
+        self._net_loopback = getattr(self, "_net_loopback", False)
+        p["net_chips"] = tk.Frame(self.sheet, bg=ui.BG)
+        p["net_chips"].place(x=PAD, y=64)
+        p["net_banner"] = tk.Label(self.sheet, text="", bg=ui.BG, fg=ui.AMBER,
+                                   font=(ui.UI, 10), anchor="w")
+        p["net_banner"].place(x=PAD, y=100)
+        page = ui.Scroller(self.sheet, CW + 10, 470, bg=ui.BG)
+        page.place(x=PAD, y=126)
+        p["net_page"] = page
+        p["net_rows"] = tk.Frame(page.inner, bg=ui.BG)
+        p["net_rows"].pack(anchor="w")
+        page.bind_wheel(page.inner)
+        foot = tk.Frame(self.sheet, bg=ui.BG)
+        foot.place(x=PAD, y=606)
+        p["net_line"] = tk.Label(foot, text="", bg=ui.BG, fg=ui.FAINT,
+                                 font=(ui.UI, 9), anchor="w")
+        p["net_line"].pack(side="left")
+        ui.Button(foot, "Open network.log", self._net_open_log, bg=ui.BG,
+                  quiet=True, w=150).pack(side="left", padx=(16, 0))
+        loop = ui.Button(foot, "Show loopback (phone)", lambda: self._net_toggle_loopback(),
+                         bg=ui.BG, quiet=True, w=196)
+        loop.pack(side="left", padx=(8, 0))
+        p["net_loop"] = loop
+        self._net_stamp = None
+        self._paint_network()
+
+    NET_COLS = ((150, "when"), (270, "host"), (120, "purpose"), (110, "bytes"),
+                (60, "result"), (90, "secret"), (200, "consent"))
+
+    def _net_filtered(self, rows: list) -> list:
+        out = []
+        for r in rows:
+            if r.host == "127.0.0.1" and not self._net_loopback:
+                continue
+            if self._net_host != "All" and r.host != self._net_host:
+                continue
+            out.append(r)
+        return out
+
+    def _paint_network(self) -> None:
+        """Every poll: the table again when the file changed, the chips
+        for the hosts seen, the banner while Offline mode is on."""
+        p = self.parts
+        holder = p.get("net_rows")
+        if holder is None or not holder.winfo_exists():
+            return
+        try:
+            stamp = paths.NETWORK_LOG.stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        key = (stamp, self._net_host, self._net_loopback)
+        if key == getattr(self, "_net_stamp", None):
+            return
+        self._net_stamp = key
+        rows = net.read_log()
+        hosts = sorted({r.host for r in rows if r.host != "127.0.0.1"})
+        chips = p["net_chips"]
+        for child in chips.winfo_children():
+            child.destroy()
+        for name in ["All"] + hosts:
+            ui.Chip(chips, name, lambda n=name: self._net_pick(n),
+                    active=(name == self._net_host), bg=ui.BG
+                    ).pack(side="left", padx=(0, 6))
+        offline = False
+        try:
+            import privacy
+            offline = bool(privacy.offline()) or bool(
+                getattr(getattr(self.cfg, "privacy", None), "offline", False))
+        except Exception:                 # noqa: BLE001
+            pass
+        p["net_banner"].configure(
+            text="Offline mode: every host but 127.0.0.1 is refused." if offline else "")
+        shown = self._net_filtered(rows)
+        for child in holder.winfo_children():
+            child.destroy()
+        head = tk.Frame(holder, bg=ui.BG)
+        head.pack(anchor="w", pady=(0, 4))
+        for width, name in self.NET_COLS:
+            # a text Label's width is in characters; ~7 px each at 9 pt
+            tk.Label(head, text=name.upper(), bg=ui.BG, fg=ui.FAINT,
+                     font=(ui.UI, 8, "bold"), anchor="w", width=int(width / 7)
+                     ).pack(side="left")
+        for r in reversed(shown[-400:]):
+            line = tk.Frame(holder, bg=ui.BG)
+            line.pack(anchor="w", pady=1)
+            values = (r.when, r.host, r.purpose, f"{r.up} ↑ {r.down} ↓",
+                      str(r.status), r.secret, r.consent)
+            for (width, _name), value in zip(self.NET_COLS, values):
+                colour = ui.FG
+                if _name == "result" and not str(value).startswith("2"):
+                    colour = ui.AMBER
+                tk.Label(line, text=value, bg=ui.BG, fg=colour, font=(ui.UI, 9),
+                         anchor="w", width=int(width / 7)).pack(side="left")
+        p["net_loop"].configure_text("Hide loopback" if self._net_loopback
+                                     else "Show loopback (phone)")
+        if not shown:
+            tk.Label(holder, text="During plain dictation this table stays "
+                                  "empty — that is the proof.",
+                     bg=ui.BG, fg=ui.DIM, font=(ui.UI, 10)).pack(anchor="w", pady=(12, 0))
+        p["net_line"].configure(
+            text=f"{len(shown)} of {len(rows)} rows" if rows else "no request yet")
+
+    def _net_pick(self, host: str) -> None:
+        self._net_host = host
+        self._paint_network()
+
+    def _net_toggle_loopback(self) -> None:
+        self._net_loopback = not self._net_loopback
+        self._paint_network()
+
+    def _net_open_log(self) -> None:
+        path = paths.NETWORK_LOG
+        if not path.exists():
+            self._note("no network.log yet — nothing has gone out")
+        elif not launch.open_path(path):
+            self._note(f"could not open {path.name}")
+
     def _screen_keys(self) -> None:
         """Every binding, lit on the board it lives on.
 
@@ -8956,7 +9104,8 @@ class Dashboard:
          "Problems": self._poll_problems,
          "Said": lambda: None,
          "Keys": self._paint_keys,
-         "Settings": self._paint_settings}[self.screen]()
+         "Settings": self._paint_settings,
+         "Network": self._paint_network}[self.screen]()
 
     # ------------------------------------------------------------ shutdown
 

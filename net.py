@@ -212,6 +212,39 @@ def format_row(row: Row) -> str:
     return " | ".join(str(f) for f in row)
 
 
+def parse_row(line: str) -> Row | None:
+    """A line of network.log back into a Row; None for a line that is
+    not one (a torn tail, a blank)."""
+    parts = [p.strip() for p in line.rstrip("\n").split(" | ")]
+    if len(parts) != 8:
+        return None
+    try:
+        return Row(parts[0], parts[1], parts[2], int(parts[3]), int(parts[4]),
+                   parts[5], parts[6], parts[7])
+    except ValueError:
+        return None
+
+
+def read_log(path=None, limit: int = 2000) -> list[Row]:
+    """The rows of network.log (and its rotations, oldest first), the
+    LAST `limit` of them — what Dashboard > Network paints. The dashboard
+    is its own process, so the file is the record the app and it share;
+    a missing file is an empty table."""
+    path = paths.NETWORK_LOG if path is None else path
+    out: list[Row] = []
+    names = [path.with_name(f"{path.name}.{i}") for i in range(LOG_KEEP, 0, -1)] + [path]
+    for name in names:
+        try:
+            with name.open("r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    row = parse_row(line)
+                    if row is not None:
+                        out.append(row)
+        except OSError:
+            continue
+    return out[-limit:]
+
+
 def _rotate(path) -> None:
     """``network.log`` -> ``.1`` -> ``.2`` -> ``.3``; the oldest falls off.
     Another process (the hook) holding the file for a millisecond makes

@@ -326,6 +326,26 @@ class QAError(Exception):
     """Every vision backend refused; str(e) names what to check."""
 
 
+class OllamaAbsent(QAError):
+    """Nothing answered at the Ollama address and no cloud backend took
+    the question: the card shows the three ways out (chapter 9 screen
+    12, D14) instead of a sentence."""
+
+
+#: Screen 12: what the card says and offers when there is no model that
+#: can see. Body Hebrew through the bitmap path; the buttons English.
+WAYS_OUT_BODY = ("שאלה על המסך צריכה מודל שרואה. Ollama מריץ אחד על "
+                 "המחשב הזה; מפתח ענן שולח את צילום המסך ל-Groq או "
+                 "ל-Google על חשבונך.")
+WAYS_OUT = {
+    "install": "Install Ollama and a small vision model (about 3 GB)",
+    "install_cpu": "Install Ollama — not recommended on this PC",
+    "key": "Use my own Groq/Gemini key",
+    "off": "Turn this key off",
+}
+OLLAMA_URL = "https://ollama.com/download"
+
+
 class ConsentRequired(QAError, privacy.ConsentRequired):
     """The cloud_screenshots gate is shut (privacy.py). A QAError too, so
     the chain skips the backend the way it skips one with no key; the
@@ -748,7 +768,7 @@ class OllamaVision:
             # 6.7 / chapter 9 screen 12, said in words until the card
             # has the three buttons: install Ollama (with the model the
             # tier suggests), use a cloud key, or leave the key off.
-            raise QAError(
+            raise OllamaAbsent(
                 f"cannot reach Ollama at {self._url} ({e.reason}). Three ways "
                 f"out: install Ollama from ollama.com and pull {self._model} "
                 f"(it answers on this PC), turn on the screenshot gate on "
@@ -1070,6 +1090,7 @@ class Chain:
                 except privacy.ConsentRequired:
                     pass
         errors: list[str] = []
+        absent = False
         for backend in self._backends():
             try:
                 answer = backend.ask(self._encode_for(backend.name, image,
@@ -1085,12 +1106,20 @@ class Chain:
                 # cloud request on text the user has already replaced.
                 raise
             except Exception as e:      # noqa: BLE001 — reported below
+                absent = absent or isinstance(e, OllamaAbsent)
                 message = str(e).splitlines()[0][:160]
                 errors.append(f"{backend.name}: {message}")
                 log.info("visual qa via %s failed (%s)", backend.name,
                          message)
                 continue
-        raise QAError("; ".join(errors) or "no visual qa backend")
+        joined = "; ".join(errors) or "no visual qa backend"
+        # Ollama was asked and was not there, and nothing else answered:
+        # the card's three-button state, not a sentence (screen 12).
+        # A chain with no backend at all (Ollama hidden by the probe,
+        # no key, gate shut) is the same person in the same spot.
+        if absent or not errors:
+            raise OllamaAbsent(joined)
+        raise QAError(joined)
 
 
 # -------------------------------------------------------------------- TTS
@@ -2303,6 +2332,8 @@ def _ask_worker(q: "queue.Queue", ask_fn, image, question: str,
                           time.monotonic() - started)))
     except Cancelled:
         pass                # a newer question is already on its way
+    except OllamaAbsent as e:
+        q.put(("ways_out", (gen, f"{e}")))
     except Exception as e:
         q.put(("error", (gen, f"{e}")))
 
@@ -2449,7 +2480,8 @@ class _CardSurface:
                 state.get("mode"), round(state.get("open", 0.0), 2),
                 state.get("listening"), state.get("speak_on"),
                 state.get("speak_ready"), state.get("copy_ready"),
-                state.get("echo_on"))
+                state.get("echo_on"),
+                tuple(sorted((state.get("ways_out") or {}).items())))
 
     def compose(self, box, state):
         """The card as an RGB image, corners and all.
@@ -2554,6 +2586,38 @@ class _CardSurface:
             strip = strip.crop((0, offset, strip.width, offset + view_h))
         out.alpha_composite(strip, (pad, view_top))
         self.boxes["view"] = (pad, view_top, pw - pad, view_top + view_h)
+
+        # ---- screen 12: no model that can see. The panel sits at the
+        #      foot of the view, over whatever the conversation held, so
+        #      the three buttons are where the answer would have been.
+        ways = state.get("ways_out")
+        if ways:
+            body = text_pil(WAYS_OUT_BODY, pw - pad * 2, pt=11.5,
+                            colour=INK, rtl=True)
+            rows_h = 3 * 38 + 4
+            panel_h = body.height + 14 + rows_h
+            py = view_top + view_h - panel_h
+            out.alpha_composite(rr_layer((pw - pad * 2, panel_h + 12), 14,
+                                         (0, 0, 0, 70)), (pad, py - 6))
+            out.alpha_composite(body, (pw - pad - body.width, py))
+            by = py + body.height + 14
+            cpu = bool(ways.get("cpu"))
+            for key, label, live in (
+                    ("install", WAYS_OUT["install_cpu" if cpu else "install"], not cpu),
+                    ("key", WAYS_OUT["key"], True),
+                    ("off", WAYS_OUT["off"], True)):
+                out.alpha_composite(
+                    rr_layer((pw - pad * 2, 34), 11,
+                             (255, 255, 255, 26 if live else 10),
+                             outline=(255, 255, 255, 46 if live else 20)),
+                    (pad, by))
+                out.alpha_composite(
+                    text_pil(label, pw - pad * 2 - 28, pt=11.5, rtl=False,
+                             colour=(206, 224, 248) if live else INK_FAINT,
+                             single=True), (pad + 14, by + 9))
+                if live:
+                    self.boxes[f"way_{key}"] = (pad, by, pw - pad, by + 34)
+                by += 38
 
         # ---- the status line, on the rail's row ----
         status = state.get("status") or ""
@@ -2684,7 +2748,7 @@ class AskWindow:
                  ask_fn, cue=lambda kind: None, auto_send: bool = True,
                  alpha: float = 0.93, reselect_fn=None, last_pos=None,
                  on_move=None, full=None, path=None, mic_live=None,
-                 echo: bool = True):
+                 echo: bool = True, ways_out: dict | None = None):
         self.image = image             # PIL image, RAM only
         # () -> True while the microphone is capturing. Not the same
         # question as _level_fn, which is only ever set for a dictation
@@ -2757,6 +2821,11 @@ class AskWindow:
         self.copy_btn = _Btn("Copy")
         self.speak_btn = (_Btn("Speak")
                           if speak_button_visible(speak_mode) else None)
+        # Screen 12: what the three-button state needs to know — the
+        # tier's vision model and whether this is a CPU-only PC — and
+        # whether it is showing.
+        self.ways_out_info = dict(ways_out or {})
+        self._ways_out: dict | None = None
 
         import tkinter as tk
         self.tk = tk
@@ -2991,9 +3060,16 @@ class AskWindow:
     def _view_h(self) -> int:
         return self._h - CARD_HEAD_H - 20 - CARD_FOOT_H
 
+    #: Screen 12's panel: the Hebrew body (three lines at most) and the
+    #: three rows. The view grows to hold it, so it never sits over the
+    #: header of an empty conversation.
+    WAYS_OUT_H = 3 * 38 + 4 + 14 + 62
+
     def _wanted_height(self) -> int:
         view = (self._user_view_h if self._user_view_h is not None
                 else min(self._content_h, self._view_cap()))
+        if self._ways_out:
+            view = max(view, self.WAYS_OUT_H)
         return CARD_HEAD_H + 20 + max(70, view) + CARD_FOOT_H
 
     def _fit_window(self) -> None:
@@ -3099,6 +3175,8 @@ class AskWindow:
             self._repaint()
         elif target == "send":
             self._ask_or_extend(self.entry.get())
+        elif target.startswith("way_"):
+            self._way_out(target[4:])
         elif target.startswith("ask"):
             self._ask_or_extend(QUICK_ASKS[int(target[3:])])
 
@@ -3499,6 +3577,10 @@ class AskWindow:
                     self._on_answer(payload)
                 elif kind == "error":
                     self._on_error(payload)
+                elif kind == "ways_out":
+                    self._on_ways_out(payload)
+                elif kind == "way":           # a test's press of one button
+                    self._way_out(payload)
                 elif kind == "listening":
                     self._on_listening(payload)
                 elif kind == "reselect":
@@ -3546,6 +3628,7 @@ class AskWindow:
             and self.speak_btn.enabled,
             "copy_ready": self.copy_btn.enabled,
             "echo_on": self.echo_on,
+            "ways_out": self._ways_out,
         }
         image = self.surface.compose(self._card_box(), state)
 
@@ -3744,6 +3827,7 @@ class AskWindow:
         cancel = threading.Event()
         self._cancel_current = cancel
         self.busy = True
+        self._ways_out = None
         self._pending_q = question
         self._pending_a = ""
         self.entry.delete(0, "end")
@@ -3822,6 +3906,58 @@ class AskWindow:
             self.entry.insert(0, failed_question)
         self._status(f"failed: {message}", AMBER)
         self.cue("error")
+
+    def _on_ways_out(self, payload) -> None:
+        """No model can see (OllamaAbsent): the failed question comes
+        back to the field like any failure, and the panel with the three
+        ways out is painted where the answer would have been."""
+        gen, message = payload
+        if self._stale(gen):
+            return
+        self.busy = False
+        self._cancel_current = None
+        failed_question = self._pending_q or ""
+        self._pending_q = None
+        self._pending_a = ""
+        self._repaint_transcript()
+        self._fit_window()
+        if failed_question and not self.entry.get().strip():
+            self.entry.insert(0, failed_question)
+        self._ways_out = dict(self.ways_out_info)
+        log.info("ask-the-screen: no model that can see (%s) — the three "
+                 "ways out are on the card", message.split(";")[0][:120])
+        self._status("no model that can see — pick a way out", AMBER)
+        self._fit_window()
+        self.cue("error")
+
+    def _way_out(self, which: str) -> None:
+        """One of the three buttons of screen 12."""
+        if which == "install":
+            import webbrowser
+            model = self.ways_out_info.get("model") or "gemma3:4b"
+            try:
+                webbrowser.open(OLLAMA_URL)
+            except Exception:                              # noqa: BLE001
+                log.info("could not open %s", OLLAMA_URL)
+            self._status(f"after installing, run:  ollama pull {model}", DIM)
+        elif which == "key":
+            # The gate opens only through its card (privacy.py); a key
+            # that is missing is then asked for on Settings > Privacy.
+            asked = privacy.request("cloud_screenshots")
+            self._status("the consent card is up — then add your key under "
+                         "Settings > Privacy" if asked else
+                         "add your Groq or Gemini key under Settings > Privacy", DIM)
+        elif which == "off":
+            try:
+                import config as config_mod
+                config_mod.save({"visual_qa.enabled": False})
+                self._status("this key is off from the next start "
+                             "(Settings > Screen turns it back on)", DIM)
+                log.info("ask-the-screen: the person turned the key off")
+            except Exception as e:                         # noqa: BLE001
+                self._status(f"could not write the setting: {e}", AMBER)
+        self._ways_out = None
+        self._fit_window()
 
     def _on_listening(self, level=None) -> None:
         """The user started talking: stop reading the last answer at them."""
@@ -4243,6 +4379,20 @@ class Controller:
         except Exception:
             log.exception("the ask card's close callback failed")
 
+    @staticmethod
+    def _ways_out_info(vq) -> dict:
+        """Screen 12's two facts: the vision model the tier suggests and
+        whether this PC has no NVIDIA card (then Ollama is not
+        recommended and the first button is dim)."""
+        cpu = False
+        try:
+            import hardware
+            cpu = hardware.recorded().get("tier") == "cpu"
+        except Exception:                                  # noqa: BLE001
+            pass
+        return {"model": getattr(vq, "ollama_model", "") or "gemma3:4b",
+                "cpu": cpu}
+
     def _open_ask(self, image, bbox) -> None:
         vq = self._cfg_of().visual_qa
         if self._speaker is None:
@@ -4256,7 +4406,8 @@ class Controller:
             full=getattr(self, "_last_full", None),
             path=getattr(self, "_last_path", None),
             mic_live=self._recording_now,
-            echo=getattr(vq, "echo_to_field", True))
+            echo=getattr(vq, "echo_to_field", True),
+            ways_out=self._ways_out_info(vq))
         with self._lock:
             self._window = window
         window.run()
