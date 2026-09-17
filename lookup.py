@@ -807,7 +807,8 @@ class Engine:
                                 self._cfg.lookup.both_ways,
                                 self._cfg.lookup.hebrew_share)
         if not decision.ok:
-            log.info("nothing to look up (%s): %.40s", decision.reason, text)
+            log.info("nothing to look up (%s): %d chars", decision.reason,
+                     len(text))
             return None
 
         target, mode = decision.target, decision.mode

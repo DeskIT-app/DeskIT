@@ -1159,8 +1159,8 @@ class App:
                     injector.inject(text, self.cfg.paste_chord,
                                     self.cfg.restore_delay_ms)
                     log.info("what you asked the screen is back in the "
-                             "field you were writing in (%d chars): %s",
-                             len(text), text)
+                             "field you were writing in (%d chars)",
+                             len(text))
                     return
                 # Focus went somewhere the owner chose. The clipboard is
                 # where every other homeless transcript in this module
@@ -1169,8 +1169,8 @@ class App:
                 beep("stop")
                 log.warning("the field you were writing in is not in front "
                             "any more — what you asked the screen is on "
-                            "your clipboard, press %s to paste it: %s",
-                            self.cfg.paste_chord, text)
+                            "your clipboard, press %s to paste it (%d chars)",
+                            self.cfg.paste_chord, len(text))
         except Exception as e:
             log.warning("could not hand the field back what you asked the "
                         "screen (%s) — it is in transcripts.log", e)
@@ -4883,7 +4883,7 @@ class App:
                 beep("stop")
                 log.warning("you moved to another window — the punctuated "
                             "text is on your clipboard, press %s to paste "
-                            "it: %s", self.cfg.paste_chord, fixed)
+                            "it (%d chars)", self.cfg.paste_chord, len(fixed))
                 return
 
             injector.paste_text(fixed, self.cfg.paste_chord,
@@ -4892,8 +4892,8 @@ class App:
             self._bump(punctuations=1)
             self._say(f"punctuated {len(text)} chars in {latency:.1f} s "
                       f"via {backend}")
-            log.info("punctuated %d chars in %.1f s via %s: %s", len(text),
-                     latency, backend, fixed)
+            log.info("punctuated %d chars -> %d in %.1f s via %s", len(text),
+                     len(fixed), latency, backend)
         except injector.ClipboardBusyError as e:
             beep("error")
             log.error("paste failed: %s — the punctuated text is in "
@@ -5042,7 +5042,7 @@ class App:
                 refuse("noop", "lookup-nothing-to-translate",
                        "nothing to translate in that selection")
                 log.info("nothing to translate in that selection (a URL, a "
-                         "path or no words at all): %.40s", text)
+                         "path or no words at all): %d chars", len(text))
             return
 
         rtl = what.target == "Hebrew"
@@ -5184,9 +5184,9 @@ class App:
                      "never anything to paste")
         self._say(f"looked up {len(text)} chars -> {answer.target} in "
                   f"{answer.seconds:.1f} s via {answer.backend}")
-        log.info("looked up %d chars in %.1f s via %s (%s -> %s): %s",
-                 len(text), answer.seconds, answer.backend, answer.mode,
-                 answer.target, answer.text)
+        log.info("looked up %d chars in %.1f s via %s (%s -> %s): %d chars "
+                 "back", len(text), answer.seconds, answer.backend,
+                 answer.mode, answer.target, len(answer.text))
 
     def _improve(self, text: str, wait: bool = True,
                  max_wait_s: float | None = None) -> str:
@@ -5517,8 +5517,8 @@ class App:
                     beep("stop")
                     log.warning("the screen-question window closed before "
                                 "the transcription landed — it is on your "
-                                "clipboard, press %s to paste it: %s",
-                                self.cfg.paste_chord, cleaned)
+                                "clipboard, press %s to paste it (%d chars)",
+                                self.cfg.paste_chord, len(cleaned))
                 except Exception as e:
                     log.warning("the screen-question window vanished before "
                                 "the transcription landed, and the "
@@ -5588,8 +5588,8 @@ class App:
                               "your clipboard")
                     log.warning("problems: the report card did not take the "
                                 "dictation — it is on your clipboard, press "
-                                "%s to paste it: %s",
-                                self.cfg.paste_chord, cleaned)
+                                "%s to paste it (%d chars)",
+                                self.cfg.paste_chord, len(cleaned))
                 except Exception as e:
                     beep("error")
                     log.warning("problems: the report card did not take the "
@@ -5701,8 +5701,8 @@ class App:
                 injector.set_text(cleaned)
             beep("stop")
             log.warning("you moved to another window — the transcript is on "
-                        "your clipboard, press %s to paste it: %s",
-                        self.cfg.paste_chord, cleaned)
+                        "your clipboard, press %s to paste it (%d chars)",
+                        self.cfg.paste_chord, len(cleaned))
             if item:
                 item.discard()
             return
@@ -5717,8 +5717,8 @@ class App:
                    latency=latency)
         self._say(f"{seconds:.1f} s spoken -> {len(cleaned)} chars in "
                   f"{latency:.1f} s via {backend}")
-        log.info("pasted %d chars (%.1f s round trip via %s; %s): %s",
-                 len(cleaned), latency, backend, status, cleaned)
+        log.info("pasted %d chars (%.1f s round trip via %s; %s)",
+                 len(cleaned), latency, backend, status)
         # AFTER the paste, never before: the reading is slower than the
         # text and must not be what the text waits for.
         self._review_submit(kept, hwnd)

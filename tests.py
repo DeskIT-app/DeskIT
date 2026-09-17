@@ -29427,6 +29427,51 @@ def test_redactor_matches_stored_secret():
         "redact.py must not read a secret value itself"
 
 
+TEXT_NAMES = frozenset({
+    "cleaned", "text", "fixed", "final", "raw", "transcript", "polished",
+    "sentence", "answer", "question", "selection", "selected", "typed",
+    "phrase", "heard", "meant", "translated", "punctuated", "pasted",
+    "shown", "body"})
+LOG_SCANNED = ("main.py", "polish.py", "punctuate.py", "translate.py",
+               "lookup.py", "visual_qa.py", "review.py", "study.py",
+               "server.py", "reading.py", "notify.py", "shelf.py",
+               "overlay.py", "dashboard.py", "history.py", "problems.py",
+               "spool.py", "vocab.py", "summary.py", "popup.py")
+
+
+def _log_calls_quoting_text() -> list[str]:
+    """Every `log.<info|warning|error|exception>(fmt, ...)` in LOG_SCANNED
+    whose arguments include a bare name, attribute or subscript whose
+    last word is in TEXT_NAMES — the shape of a line that quotes what
+    the person said or read. Wrapped in len() or any other call it
+    does not count."""
+    import ast
+
+    found = []
+    for name in LOG_SCANNED:
+        tree = ast.parse((REPO / name).read_text("utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("info", "warning", "error",
+                                           "exception")
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in ("log", "logger")):
+                continue
+            for arg in node.args[1:]:
+                # heard["text"] is text; heard["seconds"] is not
+                if isinstance(arg, ast.Subscript):
+                    key = getattr(arg.slice, "value", None)
+                    word = key if isinstance(key, str) else None
+                else:
+                    word = (arg.id if isinstance(arg, ast.Name) else
+                            arg.attr if isinstance(arg, ast.Attribute)
+                            else None)
+                if word in TEXT_NAMES:
+                    found.append(f"{name}:{node.lineno} passes {word}")
+    return found
+
+
 def test_app_log_never_quotes_text():
     """D8: the five call sites that quoted dictated text or learned pairs
     into app.log keep the COUNT only; the words go to transcripts.log
@@ -29482,6 +29527,13 @@ def test_app_log_never_quotes_text():
         ssrc = inspect.getsource(server_mod)
         assert 'log.info("open this on the phone: %s", self.url)' not in ssrc
         assert "Local URL: %s" not in ssrc
+        # 6. and every other site, statically: no app-log call in a
+        # product module hands a text-shaped variable to its format as
+        # it is. len(text) is fine, text is not; the paste line quoted
+        # every dictation this way until 2026-09-17 and the five above
+        # never covered it. Debug-level lines are exempt (never on by
+        # default, never in a report).
+        assert _log_calls_quoting_text() == [], _log_calls_quoting_text()
     finally:
         app_log.removeHandler(ca)
         tx_log.removeHandler(ct)
