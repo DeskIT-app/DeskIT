@@ -713,6 +713,7 @@ TAB_SECTIONS: dict[str, tuple[str, ...]] = {
     # not a card, it is the app's one permanent mark on the screen.
     GENERAL: ("dot",),
     "Dictation": ("", "audio", "feedback", "polish", "vocab", "study",
+                  "history",
                   "local", "review", "setup"),
     "Text": ("punctuate", "translate", "lookup", "gemini"),
     "Screen": ("visual_qa", "capture", "camera"),
@@ -1410,6 +1411,9 @@ _MORE: tuple[Friendly, ...] = (
     Friendly("privacy.offline", "Offline mode",
              "Refuse every connection except this computer's own, whatever "
              "the gates say. Dictation keeps working."),
+    Friendly("history.keep_days", "How long what you said is kept, in days",
+             "The Recent view and the clipboard-recovery path read it; "
+             "older lines are dropped. 0 keeps no history at all."),
 )
 
 # Every section of the file, said the way the owner would point at it.
@@ -1491,6 +1495,9 @@ SECTION_WORDS: dict[str, Friendly] = {
                  "Six gates that open only through their consent cards, "
                  "and two switches: the weekly update check and offline "
                  "mode."),
+        Friendly("history", "What you said, kept",
+                 "How long the record of your dictations stays on this "
+                 "PC for the Recent view."),
     )
 }
 

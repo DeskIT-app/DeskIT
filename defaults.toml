@@ -1344,6 +1344,19 @@ enabled = false
 host = ""
 port = 8756
 
+[history]
+# transcripts.log is every sentence you dictated, corrected, translated,
+# punctuated or looked up, kept beside the other logs so the Recent view
+# (the dashboard's "Said" page) and the clipboard-recovery path work. It
+# never leaves this PC and is never attached to a problem report.
+keep_days = 30                 # how long those lines are kept. Older lines
+                               # are dropped when the app starts and once a
+                               # day after that. 0 = keep no history at all:
+                               # nothing is written, the Recent view is
+                               # empty and says so. (The checkout's own
+                               # copy never drops anything: its history
+                               # is training data.)
+
 [vocab]
 # The names Whisper has never heard, fed to the decoder BEFORE it runs so it
 # never produces the garble in the first place. This is the half of "learning"

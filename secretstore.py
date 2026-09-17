@@ -253,6 +253,25 @@ def present() -> dict[str, str]:
     return found
 
 
+def scrub(text: str) -> str:
+    """``text`` with every value this store holds replaced by
+    ``[redacted:<name>]`` — the redactor's belt and braces (plan 4.5).
+    The comparison happens HERE so no value lands in a variable outside
+    this module; a value shorter than eight characters is not matched
+    (a stray "1234" in a log line is not a secret)."""
+    if not text:
+        return text
+    out = str(text)
+    for name in CRED_NAMES + FILE_NAMES:
+        try:
+            value = find_key(name)[0] if name in CRED_NAMES else get(name)
+        except Exception:                                    # noqa: BLE001
+            value = None
+        if value and len(value) >= 8 and value in out:
+            out = out.replace(value, f"[redacted:{name}]")
+    return out
+
+
 # ----------------------------------------------------- the key lookup order
 
 def read_env_file(path: Path) -> dict[str, str]:

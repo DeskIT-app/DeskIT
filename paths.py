@@ -91,6 +91,12 @@ else:
 #: places that must know (the migrate command, the Files card).
 FLAT: bool = _LAYOUT == "portable"
 
+#: The checkout's OWN data, beside its code: the owner's transcripts,
+#: recordings and read-aloud pairs — training data for the Hebrew model,
+#: never pruned and never reset (migrate.TRAINING_DATA, history.apply).
+#: False under DESKIT_HOME, so a test's scratch folder is ordinary data.
+OWNER_DATA: bool = DEVELOPER and FLAT
+
 # name -> (portable relative path, installed relative path), both under
 # DATA_DIR. The left column is what the app wrote before 2026-09-17, so
 # the owner's checkout keeps every file where it is (D4).

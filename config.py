@@ -1160,6 +1160,14 @@ TESTS_WAIT_MAX = 3600.0
 
 
 @dataclass(frozen=True)
+class HistoryConfig:
+    """[history]: how long transcripts.log keeps its lines (plan 4.2).
+    0 = history off — no handler, an empty Recent view. A developer copy
+    never prunes (history.apply says why)."""
+    keep_days: int = 30
+
+
+@dataclass(frozen=True)
 class PrivacyConfig:
     """What may leave this PC — DISTRIBUTION_PLAN.md 5.1, D7.
 
@@ -1295,6 +1303,7 @@ class Config:
     shelf: ShelfConfig = field(default_factory=ShelfConfig)
     tests: TestsConfig = field(default_factory=TestsConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
+    history: HistoryConfig = field(default_factory=HistoryConfig)
 
     @property
     def capture_hotkey(self) -> str:
@@ -1581,6 +1590,7 @@ def build(data: dict) -> Config:
     shelf = data.get("shelf", {})
     tests = data.get("tests", {})
     privacy = data.get("privacy", {})
+    history = data.get("history", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -1990,6 +2000,8 @@ def build(data: dict) -> Config:
         privacy=PrivacyConfig(**{
             name: bool(privacy.get(name, getattr(PrivacyConfig, name)))
             for name in PrivacyConfig.__dataclass_fields__}),
+        history=HistoryConfig(
+            keep_days=int(history.get("keep_days", HistoryConfig.keep_days))),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
         splash=bool(data.get("splash", Config.splash)),
@@ -2006,6 +2018,8 @@ def build(data: dict) -> Config:
         raise ConfigError("awake.keep_screens_off_s must be 0-600 seconds")
     if not 0 <= cfg.awake.vitals_minutes <= 1440:
         raise ConfigError("awake.vitals_minutes must be 0-1440 (a day)")
+    if not 0 <= cfg.history.keep_days <= 3650:
+        raise ConfigError("history.keep_days must be 0-3650 (0 = off)")
     if cfg.translate_hotkey:
         if cfg.translate.max_chars <= 0:
             raise ConfigError("translate.max_chars must be positive")

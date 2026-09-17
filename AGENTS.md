@@ -276,6 +276,12 @@ exactly what classic did.
   terminal: `main.py --consents / --consent KIND / --withdraw KIND`.
   Tests open a gate with `_consented("cloud_text")` — in the scratch
   home, never in the owner's file.
+- Logs: `app.log` never quotes dictated text, a learned pair, the phone
+  link or a key — counts and names only (D8); the words live in
+  `transcripts.log` (`OK`, `POLISHED`, `LEARNED`, `STUDIED`, `REVIEW`…),
+  which `[history] keep_days` prunes on a stranger's copy and NEVER on
+  this checkout (`paths.OWNER_DATA`). Anything that leaves in a report
+  goes through `redact.redact` / `redact.walk`.
 - The app runs windowless under `pythonw.exe`, single instance enforced by
   a named mutex (`singleton.py`); status in `app.log`, everything ever
   dictated in `transcripts.log`. Both logs are plaintext and private.
@@ -292,6 +298,13 @@ exactly what classic did.
   (the hook's phone token). An HTTP error status is a RETURN, not an
   exception: check `status`, read the body; `net.NetError` is the
   connection failing, `net.EgressRefused` the door staying shut.
+- **This checkout's transcripts, recordings and `corpus\` are training
+  data, not app data.** Never delete, prune, rotate away or "reset"
+  them here: `paths.OWNER_DATA` guards `history.apply` and
+  `migrate.reset_targets`, and any new wipe must honour it. A reset
+  on 2026-09-17 removed 72 read-aloud clips (29.6 min of the owner's
+  voice with vouched text) that cannot be re-recorded. List every
+  delete a change performs on this machine BEFORE it lands.
 - **A privacy gate is not a setting.** Never add `privacy.<gate> = true`
   to a config write, a wizard, a migration or a test fixture as a way
   to "turn the cloud on" — `config.save` refuses it, and the honest way

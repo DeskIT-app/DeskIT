@@ -64,6 +64,13 @@ STORES = (
 KEPT = ("SETTINGS_FILE", "STATE_FILE", "CONSENT_FILE", "SETUP_MARKER",
         "PHONE_TOKEN", "SECRETS_DIR", "MODELS_DIR", "PACKS_DIR")
 
+#: Never touched by a reset OF THE OWNER'S OWN DATA (paths.OWNER_DATA): the training data
+#: — every transcript, every recording, every read-aloud pair. A reset
+#: on 2026-09-17 removed 72 read-aloud clips nobody can re-record; the
+#: rule since is that the checkout's history is not app data (AGENTS.md).
+#: A stranger's copy still removes them: their data is theirs to delete.
+TRAINING_DATA = ("TRANSCRIPTS_LOG", "RECENT_DIR", "CORPUS_DIR")
+
 #: Sub-folders of problems\ that belong to the owner's tools, not to the
 #: app: the Saturday routine's journal and the nightly test logs. A reset
 #: empties problems\ around them (reports, outbox, screenshots go).
@@ -297,6 +304,8 @@ def reset_targets() -> list[Path]:
     """Everything --reset-data removes, in order, that exists right now."""
     targets: list[Path] = []
     for name in STORES:
+        if paths.OWNER_DATA and name in TRAINING_DATA:
+            continue
         p = getattr(paths, name)
         if not name.endswith("_DIR"):
             targets += [c for c in _with_siblings(p) if c.is_file()]

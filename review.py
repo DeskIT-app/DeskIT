@@ -1052,10 +1052,10 @@ class Engine:
             return
         suggestion = suggestion_from(item, result, hwnd=hwnd)
         self.store.add(suggestion)
-        log.info("second reading of %s proposes %d change(s): %s",
-                 item.wav_path.name, len(suggestion["changes"]),
-                 " | ".join(f"{c['before']} -> {c['after'] or '(drop)'}"
-                            for c in suggestion["changes"]))
+        # The proposal itself is in review.json and transcripts.log;
+        # app.log keeps the count (D8).
+        log.info("second reading of %s proposes %d change(s)",
+                 item.wav_path.name, len(suggestion["changes"]))
         if card and self._on_suggest is not None:
             try:
                 self._on_suggest(suggestion)
@@ -1127,10 +1127,8 @@ class Engine:
                 learned.append((heard, meant))
         if learned:
             self._vocab.save()
-        log.info("review %s accepted (%s): learned %d pair(s)%s",
-                 item.get("id"), by, len(learned),
-                 " — " + " | ".join(f"{h} -> {m}" for h, m in learned)
-                 if learned else "")
+        log.info("review %s accepted (%s): learned %d pair(s)",
+                 item.get("id"), by, len(learned))
         # The approved reading is the owner's word on this clip — gold,
         # like a correction — when the audio is still around to keep.
         try:

@@ -741,6 +741,12 @@ class Store:
             "env": (report.get("env")
                     if isinstance(report.get("env"), dict) else {}),
         }
+        # Every string of a report goes through the redactor before it
+        # is stored (D8, plan 4.5): a pasted key, a bearer, the phone
+        # link. The report stays on this PC today; the copy that will
+        # travel (chapter 7) is built from what is stored here.
+        import redact
+        item = redact.walk(item)
         try:
             with self._locked():
                 data = self._load()

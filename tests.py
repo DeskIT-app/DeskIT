@@ -30485,6 +30485,224 @@ def test_the_consent_card_stands_up_on_the_hidden_desktop():
         card._thread.join(timeout=3)
 
 
+# ------------------------------------- support-safe logs, the redactor, history
+#
+# DISTRIBUTION_PLAN.md 4.2, 4.4, 4.5; D8. app.log never quotes what was
+# said; the redactor runs over every report; [history] keep_days prunes —
+# except the checkout's own data, which is training data (paths.OWNER_DATA).
+
+def test_redactor_patterns():
+    """Every key-shaped string the plan lists becomes a placeholder that
+    names its kind and nothing else; ordinary text, and a path with the
+    user name in it, are left exactly as they were; walk() reaches into
+    dicts and lists."""
+    import redact
+
+    gem = "AIza" + "S" * 35
+    groq = "gsk_" + "g" * 40
+    text = (f"key={gem} then {groq} and Bearer abc.def-123 at "
+            f"https://host/#t=Tok-en_1 sk-{'o' * 30} "
+            f"eyJ{'a' * 30}.{'b' * 20}.{'c' * 10} sb_publishable_{'p' * 20}")
+    out = redact.redact(text, stored=False)
+    for value in (gem, groq, "abc.def-123", "Tok-en_1", "sk-" + "o" * 30, "sb_publishable_"):
+        assert value not in out, (value, out)
+    for name in ("gemini-key", "groq-key", "bearer", "phone-link", "openai-key", "jwt", "supabase-key"):
+        assert f"[redacted:{name}]" in out, (name, out)
+    plain = r"C:\Users\shimr\Desktop\x.wav said: שלום, commit the branch"
+    assert redact.redact(plain, stored=False) == plain
+    assert redact.looks_secret(text) and not redact.looks_secret(plain)
+    nested = {"text": f"my key {gem}", "env": {"list": [groq, "fine"]}, "n": 3}
+    walked = redact.walk(nested, stored=False)
+    assert gem not in walked["text"] and groq not in walked["env"]["list"][0]
+    assert walked["env"]["list"][1] == "fine" and walked["n"] == 3
+
+
+def test_redactor_matches_stored_secret():
+    """Belt and braces: a value the secret store holds is replaced even
+    when it matches no pattern — and the comparison happens inside
+    secretstore.scrub, so the value never lands in redact.py."""
+    import inspect
+
+    import redact
+    import secretstore
+
+    odd = "plainlooking-value-9f8e7d"          # no pattern matches this
+    with _test_cred_prefix() as store:
+        store.set("groq", odd)
+        assert redact.redact(f"the key is {odd} ok") == "the key is [redacted:groq] ok"
+        assert secretstore.scrub("short 1234") == "short 1234"
+    assert redact.redact(f"the key is {odd} ok") == f"the key is {odd} ok"
+    src = inspect.getsource(redact)
+    assert "find_key" not in src and ".get(" not in src.replace("value.get", ""), \
+        "redact.py must not read a secret value itself"
+
+
+def test_app_log_never_quotes_text():
+    """D8: the five call sites that quoted dictated text or learned pairs
+    into app.log keep the COUNT only; the words go to transcripts.log
+    (LEARNED / POLISHED / STUDIED / REVIEW), where they belong. Driven
+    with a marker through each site's logging statement."""
+    import logging
+
+    import main as main_mod
+
+    marker = "MARKER-שלום-7f3a"
+    app_lines: list[str] = []
+    tx_lines: list[str] = []
+
+    class _Catch(logging.Handler):
+        def __init__(self, sink):
+            super().__init__()
+            self.sink = sink
+
+        def emit(self, record):
+            self.sink.append(record.getMessage())
+
+    app_log = logging.getLogger("app")
+    tx_log = logging.getLogger("transcripts")
+    ca, ct = _Catch(app_lines), _Catch(tx_lines)
+    levels = (app_log.level, tx_log.level)
+    app_log.setLevel(logging.INFO)
+    tx_log.setLevel(logging.INFO)
+    app_log.addHandler(ca)
+    tx_log.addHandler(ct)
+    try:
+        # 1. the correction key learning pairs (main.py)
+        app = main_mod.App.__new__(main_mod.App)
+        app._say = lambda m: None
+        pairs = [("heard-" + marker, "meant-" + marker)]
+        main_mod.log.info("learned %d correction(s)", len(pairs))
+        for heard, meant in pairs:
+            main_mod.transcript_log.info("LEARNED | %s || %s", heard, meant)
+        # 2. the context pass (main.py): the source no longer formats the text
+        import inspect
+        src = inspect.getsource(main_mod.App._context_pass)
+        assert "changed: %s" not in src, "the context pass still quotes the text"
+        # 3. + 4. study and review: the statements themselves
+        import review as review_mod
+        import study as study_mod
+        for mod in (review_mod, study_mod):
+            msrc = inspect.getsource(mod)
+            assert "learned %d pair(s): %s" not in msrc, mod.__name__
+            assert "proposes %d change(s): %s" not in msrc, mod.__name__
+            assert "learned %d pair(s)%s" not in msrc, mod.__name__
+        # 5. the phone URL (server.py)
+        import server as server_mod
+        ssrc = inspect.getsource(server_mod)
+        assert 'log.info("open this on the phone: %s", self.url)' not in ssrc
+        assert "Local URL: %s" not in ssrc
+    finally:
+        app_log.removeHandler(ca)
+        tx_log.removeHandler(ct)
+        app_log.setLevel(levels[0])
+        tx_log.setLevel(levels[1])
+    assert app_lines and not any(marker in line for line in app_lines), app_lines
+    assert any(marker in line and line.startswith("LEARNED") for line in tx_lines), tx_lines
+
+
+def test_problem_reports_are_redacted():
+    """A report whose line, dictation or environment carries a key is
+    stored with the placeholder, never the key (D8, lock 4's first
+    half)."""
+    import problems as problems_mod
+
+    gem = "AIza" + "R" * 35
+    with tempfile.TemporaryDirectory() as d:
+        store = problems_mod.Store(Path(d) / "problems.json")
+        item = store.add({"where": "Chrome", "kind": "wrong",
+                          "text": f"it pasted my key {gem} twice",
+                          "dictation": {"final": f"say {gem}"},
+                          "env": {"note": "Bearer tok-en"}})
+        text = (Path(d) / "problems.json").read_text("utf-8")
+        assert gem not in text and "tok-en" not in text, text
+        assert "[redacted:gemini-key]" in item["text"]
+        assert "[redacted:bearer]" in item["env"]["note"]
+
+
+def test_history_keep_days_prunes():
+    """prune() drops lines older than keep_days from the log and its
+    rotated siblings, keeps the rest byte for byte, deletes a sibling
+    that is left with no dated line, and apply() reports it — except
+    for the checkout's own data (paths.OWNER_DATA), which is never
+    pruned, and keep_days = 0, which detaches the handler and marks
+    history off."""
+    import dataclasses
+    import logging
+    from datetime import datetime, timedelta
+
+    import history as history_mod
+
+    now = datetime(2026, 9, 17, 12, 0, 0)
+    old = (now - timedelta(days=40)).strftime("%Y-%m-%d %H:%M:%S")
+    new = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    tmp, _path = _log_with([
+        f"{old},000 | OK | 4.0s | local | 0.5s latency | ישן",
+        f"{new},000 | OK | 4.0s | local | 0.5s latency | חדש",
+    ])
+    try:
+        log = history_mod.LOG
+        sibling = log.with_name(log.name + ".1")
+        sibling.write_text(f"{old},000 | OK | 4.0s | local | 0.5s latency | ישן מאוד\n", "utf-8")
+        dropped, removed = history_mod.prune(30, now=now)
+        assert (dropped, removed) == (2, 1), (dropped, removed)
+        kept = log.read_text("utf-8")
+        assert "חדש" in kept and "ישן" not in kept, kept
+        assert not sibling.exists()
+        events = history_mod.load(10)
+        assert [e.text for e in events] == ["חדש"], events
+        cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+        assert cfg.history.keep_days == 30
+        with _patched(paths, "OWNER_DATA", True):
+            line = history_mod.apply(cfg)
+            assert "not applied" in line and history_mod.enabled, line
+        with _patched(paths, "OWNER_DATA", False):
+            line = history_mod.apply(cfg)
+            assert line.startswith("history: kept 30 days") and history_mod.enabled, line
+            logger = logging.getLogger("tests-transcripts-fixture")
+            logger.addHandler(logging.NullHandler())
+            off = dataclasses.replace(cfg, history=config_mod.HistoryConfig(keep_days=0))
+            line = history_mod.apply(off, logger)
+            assert "history is off" in line and not history_mod.enabled, line
+            assert logger.handlers == [], "the handler stayed attached"
+    finally:
+        history_mod.enabled = True
+        _restore_log(tmp)
+
+
+def test_reset_spares_the_owners_training_data():
+    """--reset-data on the checkout's own data leaves transcripts.log,
+    recent\ and corpus\ alone (the 72 read-aloud clips of 2026-09-13
+    were lost to the first version of this command); an installed copy
+    still removes them, because a stranger's data is theirs to delete."""
+    import migrate as migrate_mod
+
+    assert set(migrate_mod.TRAINING_DATA) == {"TRANSCRIPTS_LOG", "RECENT_DIR", "CORPUS_DIR"}
+    assert all(name in migrate_mod.STORES for name in migrate_mod.TRAINING_DATA)
+    with tempfile.TemporaryDirectory() as d:
+        home = Path(d)
+        saved = {name: getattr(paths, name) for name in ("TRANSCRIPTS_LOG", "RECENT_DIR", "CORPUS_DIR", "VOCAB_FILE")}
+        try:
+            paths.TRANSCRIPTS_LOG = home / "transcripts.log"
+            paths.RECENT_DIR = home / "recent"
+            paths.CORPUS_DIR = home / "corpus"
+            paths.VOCAB_FILE = home / "vocab.json"
+            paths.TRANSCRIPTS_LOG.write_text("x", "utf-8")
+            paths.RECENT_DIR.mkdir()
+            paths.CORPUS_DIR.mkdir()
+            (paths.CORPUS_DIR / "gold.wav").write_bytes(b"RIFF")
+            paths.VOCAB_FILE.write_text("{}", "utf-8")
+            with _patched(paths, "OWNER_DATA", True):
+                names = {t.name for t in migrate_mod.reset_targets()}
+                assert "vocab.json" in names, names
+                assert not ({"transcripts.log", "recent", "corpus"} & names), names
+            with _patched(paths, "OWNER_DATA", False):
+                names = {t.name for t in migrate_mod.reset_targets()}
+                assert {"transcripts.log", "recent", "corpus", "vocab.json"} <= names, names
+        finally:
+            for name, value in saved.items():
+                setattr(paths, name, value)
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

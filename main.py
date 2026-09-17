@@ -4618,8 +4618,11 @@ class App:
                      "learned — an insertion has no misheard form to key "
                      "on)", vocab_mod.MAX_SPAN_WORDS)
         else:
-            log.info("learned %d correction(s): %s", len(pairs),
-                     " | ".join(f"{h} -> {m}" for h, m in pairs))
+            # app.log keeps the COUNT (D8: it never quotes text or a
+            # learned pair); the pairs go to transcripts.log as LEARNED.
+            log.info("learned %d correction(s)", len(pairs))
+            for heard, meant in pairs:
+                transcript_log.info("LEARNED | %s || %s", heard, meant)
             ready = sum(1 for c in self.vocab.corrections
                         if int(c.get("hits", 1))
                         >= self.cfg.vocab.replace_after_hits)
@@ -5275,8 +5278,8 @@ class App:
             if by:
                 transcript_log.info("POLISHED | %.1fs | %s | %s",
                                     time.monotonic() - started, by, polished)
-                log.info("context pass (%s, %.1f s) changed: %s", by,
-                         time.monotonic() - started, polished)
+                log.info("context pass (%s, %.1f s) changed the text", by,
+                         time.monotonic() - started)
                 return polished
         except Exception:
             log.exception("the context pass failed — using the transcript "
@@ -6101,6 +6104,9 @@ def main() -> int:
     # The gates (privacy.py): what [privacy] says, before anything that
     # could build a cloud client. net.py learns `offline` from this too.
     privacy.configure(cfg)
+    # [history] keep_days: prune, or detach the transcripts handler.
+    import history as history_mod
+    log.info("%s", history_mod.apply(cfg, transcript_log))
 
     # The first-run wizard, BEFORE any model is loaded. Two reasons for
     # the position: a wizard that appears after 25 s of nothing has

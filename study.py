@@ -648,10 +648,10 @@ class Engine:
             for heard, meant, fam in learned:
                 transcript_log.info("STUDIED | %s | %s || %s",
                                     fam, heard, meant)
-            log.info("study of %s learned %d pair(s): %s",
-                     item.wav_path.name, len(learned),
-                     " | ".join(f"{h} -> {m} ({f})"
-                                for h, m, f in learned))
+            # The pairs are in transcripts.log (STUDIED, above); app.log
+            # keeps the count (D8).
+            log.info("study of %s learned %d pair(s)",
+                     item.wav_path.name, len(learned))
         meta = item.meta
         corrected = (meta.get("corrected") or "").strip()
         if corrected:

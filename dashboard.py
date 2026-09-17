@@ -3694,8 +3694,16 @@ class Dashboard:
         shown = found[:limit]
         self.parts["empty"].pack_forget()
         if not found:
+            # Its own process: ask the file, not history.enabled (which
+            # only the app's start-up sets).
+            try:
+                off = config_mod.load_layered().history.keep_days <= 0
+            except Exception:
+                off = False
             self.parts["empty"].config(
-                text="Nothing here yet." if not self.log
+                text="History is off (Settings > Dictation > What you said, "
+                     "kept)." if off and not self.log
+                else "Nothing here yet." if not self.log
                 else "Nothing matches that.")
             self.parts["empty"].pack(anchor="w", padx=8, pady=(24, 24))
         more = self.parts.get("more")

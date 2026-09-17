@@ -679,15 +679,18 @@ class PhoneServer:
         name = tailscale_name()
         if name:
             self.url = f"https://{name}/#t={token}"
-            log.info("open this on the phone: %s", self.url)
+            # The host only (D8): the link with the token is on the
+            # dashboard's Phone page, never in app.log.
+            log.info("phone page: https://%s/ — the link with the token "
+                     "is on the dashboard's Phone page", name)
             log.info("(needs `tailscale serve --bg %d` once — without it "
                      "there is no certificate, and the phone browser will "
                      "refuse the microphone)", port)
         else:
             self.url = f"http://{host}:{port}/#t={token}"
             log.warning("tailscale is not up — the phone cannot reach this. "
-                        "Log in to Tailscale, then restart. Local URL: %s",
-                        self.url)
+                        "Log in to Tailscale, then restart. Local page: "
+                        "http://%s:%d/", host, port)
 
     def stop(self) -> None:
         if self._srv is not None:

@@ -248,6 +248,88 @@ def _events_in(path: Path) -> list[Event]:
     return events
 
 
+#: Set by apply(): False when [history] keep_days = 0, so the Recent
+#: view can say why it is empty rather than "nothing yet".
+enabled: bool = True
+
+#: Why the checkout's own data is never pruned: its transcripts,
+#: recordings and read-aloud pairs are the owner's training data
+#: (paths.OWNER_DATA, AGENTS.md).
+DEVELOPER_KEEPS_EVERYTHING = "the checkout keeps every line (training data)"
+
+
+def apply(cfg, transcript_logger=None) -> str:
+    """Take [history] keep_days at start: 0 detaches the transcripts
+    handler (nothing is written, the Recent view says so); N prunes lines
+    older than N days from the log and its rotated siblings, except in
+    a developer copy. Returns one line for app.log."""
+    import logging
+
+    global enabled
+    days = int(getattr(getattr(cfg, "history", None), "keep_days", 30))
+    logger = transcript_logger or logging.getLogger("transcripts")
+    if days <= 0:
+        enabled = False
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:                                # noqa: BLE001
+                pass
+        return "history is off ([history] keep_days = 0): nothing is written"
+    enabled = True
+    if paths.OWNER_DATA:
+        return (f"history: keep_days = {days} is not applied — "
+                f"{DEVELOPER_KEEPS_EVERYTHING}")
+    dropped, removed = prune(days)
+    return (f"history: kept {days} days ({dropped} older line(s) dropped, "
+            f"{removed} old file(s) removed)")
+
+
+def prune(days: int, now: datetime | None = None) -> tuple[int, int]:
+    """Drop lines older than `days` from the log, atomically, and delete
+    rotated siblings whose newest line is older than that. Returns
+    (lines dropped, files removed). Never raises for a missing file."""
+    import os
+
+    now = now or datetime.now()
+    cutoff = now.timestamp() - days * 86400
+    dropped = removed = 0
+    for path in files():
+        try:
+            lines = path.read_text("utf-8", errors="replace").splitlines(keepends=True)
+        except OSError:
+            continue
+        kept = []
+        for line in lines:
+            match = STAMP.match(line)
+            if match:
+                try:
+                    when = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S").timestamp()
+                except ValueError:
+                    when = None
+                if when is not None and when < cutoff:
+                    dropped += 1
+                    continue
+            kept.append(line)
+        if len(kept) == len(lines):
+            continue
+        if path != LOG and not any(STAMP.match(l) for l in kept):
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass
+            continue
+        tmp = path.with_name(path.name + ".tmp")
+        try:
+            tmp.write_text("".join(kept), "utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
+    return dropped, removed
+
+
 def load(limit: int = 100) -> list[Event]:
     """The most recent `limit` events, newest first.
 
