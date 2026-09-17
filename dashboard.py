@@ -72,7 +72,7 @@ import config as config_mod
 import control
 import history
 import hotkey as hotkey_mod
-import keyboard as keyboard_mod
+import keycaps as keyboard_mod
 import launch
 import awake as awake_mod
 import reading as reading_mod
@@ -402,7 +402,7 @@ def cap_title(cap_id: str) -> str:
     """What a cap is called in a sentence on the Keys place: 'num5' ->
     'NUMPAD 5', 'pgup' -> 'PAGE UP', 'q' -> 'Q'.
 
-    The name comes from keyboard.name_for, which is the name the app
+    The name comes from keycaps.name_for, which is the name the app
     would BIND it by — so the sentence and the config file cannot drift
     apart. The punctuation caps have no such name and keep their id.
     """

@@ -1,29 +1,36 @@
+# The base set: what every copy of DeskIT installs (DISTRIBUTION_PLAN.md
+# 10.5, D19). `requirements.lock` is generated from this file with
+#     pip-compile --generate-hashes --allow-unsafe --output-file requirements.lock requirements.txt
+# and is the only file the build reads (10.3 steps 1 and 5); regenerate
+# it whenever a line here changes. The owner's venv may hold more than
+# this — the CUDA runtimes, skia, the odd tool — none of it ships.
 sounddevice
 numpy
 pywin32
-google-genai
 pycaw
+comtypes                    # taskbar relaunch properties (dashboard.py), pycaw's own need
+pillow                      # every card, the keyboard picture, the skin's textures
 
-# Backend B: local Hebrew transcription (no quota, works offline).
+# Backend B: local Hebrew transcription (no quota, works offline). Brings
+# ctranslate2, onnxruntime (Silero VAD), huggingface_hub, tokenizers and
+# av along as its own dependencies.
 faster-whisper
 
-# CUDA runtime libraries CTranslate2 loads at inference time. Without these
-# the local backend silently falls back to CPU (~40x slower on this box:
-# 8.2 s vs 0.20 s for a 3 s clip). Harmless to install without an NVIDIA GPU.
-nvidia-cublas-cu12
-nvidia-cudnn-cu12
+# The Gemini client and the httpx transport net.py builds for it — both
+# leave the base when chapter 5's REST port lands (D12); until then a
+# copy without them cannot use the Gemini backend at all.
+google-genai
+httpx
 
-# The look (skin\). Chrome's 2D engine, for the one thing Tk and Pillow
-# together cannot do: antialiased vector light composited PER-PIXEL over
-# the live desktop. Measured on this machine — Tk canvas antialiases
-# nothing at all (a 400x400 grab of its primitives held exactly two
-# distinct colours), and Pillow antialiases everything but has no route
-# onto the screen except a 1-bit chroma key, which fringes every soft edge
-# it draws. Skia renders straight into a layered window's own DIB, so the
-# release runs at 138 fps median at 2560x1440 with true alpha.
-#
-# OPTIONAL, and deliberately so: skin\__init__.py reports the skin off if
-# this import fails, and the app falls back to the Tk overlays it has
-# always had. A missing wheel is a downgrade, never a crash. Delete the
-# skin\ folder and this line stops being needed at all.
-skia-python
+# pip as a plain package: the pack installer of chapter 6 runs
+# `python -m pip` inside the embeddable tree, which ships no pip of its
+# own (10.2). Hashed like everything else (--allow-unsafe lets pip-tools
+# pin it).
+pip
+
+# NOT here, on purpose (10.5): nvidia-cublas-cu12 / nvidia-cudnn-cu12
+# (1,986 MB — the GPU pack, pip-downloaded on demand with the NVIDIA EULA
+# link, chapter 6); skia-python (the Skin pack — skin\__init__.py reports
+# the skin off when the import fails and the Tk overlays take over); the
+# `keyboard` PyPI package, which the local keyboard.py used to shadow —
+# that module is keycaps.py now.

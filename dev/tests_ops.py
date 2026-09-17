@@ -1150,6 +1150,52 @@ def test_the_readme_and_agents_document_the_nightly_tests() -> None:
     where = agents[agents.index("## Where things live"):]
     assert "| `nightly.py`" in where, "nightly.py is not on the map"
 
+def test_export_ignore_covers_forbidden():
+    """.gitattributes decides the product tree (10.3 step 6): an archive of
+    the working copy holds none of chapter 3 §3.10's forbidden paths and
+    none of 7.4's dev files, and does hold the product. git check-attr
+    agrees on every name, including the paths .gitignore keeps out of the
+    repo altogether (they are listed so a working-copy archive is clean)."""
+    import io
+    import subprocess
+    import zipfile
+
+    proc = subprocess.run(["git", "archive", "--worktree-attributes",
+                           "--format=zip", "HEAD"], cwd=REPO,
+                          capture_output=True, check=True)
+    names = zipfile.ZipFile(io.BytesIO(proc.stdout)).namelist()
+    tops = {n.split("/", 1)[0] for n in names}
+    forbidden_dirs = {"dev", "docs", "packaging", "android", ".github", ".claude",
+                      ".agents", "problems", "recent", "pending", "corpus",
+                      "captures"}
+    assert not (tops & forbidden_dirs), tops & forbidden_dirs
+    forbidden_files = {
+        "tests.py", "tests_quiet.py", "nightly.py", "nightly_tests.ps1",
+        "install_nightly_task.ps1", "weekly_review.ps1", "phase1_cutover.ps1",
+        "questions.py", "answer_card.py", "make_icon.py", "audio_check.py",
+        "install_fonts.py", "AGENTS.md", "DISTRIBUTION_PLAN.md",
+        "PARALLEL_FEATURES_PLAN.md", "VISUAL_QA_PLAN.md", "SKIN.md",
+        ".gitattributes", ".gitignore", "DeskIT.vbs", "Dashboard.vbs",
+        "Stop DeskIT.vbs", "skin/preview.py", "skin/record.py"}
+    leaked = forbidden_files & set(names)
+    assert not leaked, leaked
+    assert not [n for n in names if n.endswith(".html")], "an .html page"
+    for must in ("main.py", "defaults.toml", "VERSION", "version.py", "manifest.py",
+                 "paths.py", "net.py", "privacy.py", "README.md", "icon.ico",
+                 "skin/__init__.py", "transcribers/__init__.py", "fonts/"):
+        assert must in names, f"{must} is not in the archive"
+    # and the names .gitignore hides are marked too, for a working-copy tree
+    ignored = ["vocab.json", "vocab.json.bak-2026", "review.json", "transcripts.log",
+               "app.log.1", "problems.json", "questions.json", "consent.json",
+               ".setup-done", "server_token.txt", "lookup_cache.json", ".env",
+               "config.toml", "portable.txt", "network.log", "notify.json"]
+    out = subprocess.run(["git", "check-attr", "export-ignore", "--", *ignored,
+                          *sorted(forbidden_files)], cwd=REPO,
+                         capture_output=True, encoding="utf-8", check=True).stdout
+    unset = [ln for ln in out.splitlines() if not ln.endswith(": export-ignore: set")]
+    assert not unset, unset
+
+
 if __name__ == "__main__":
     if not paths.DEVELOPER:
         print("the ops suite is the owner's: it runs only in the checkout "

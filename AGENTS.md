@@ -78,7 +78,7 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   everything that needs more than a line.
 - **Said** — `transcripts.log` read back (history.py), search, filters,
   SAID_PAGE rows at a time behind a Show more.
-- **Keys** — the bindings lit on a drawn keyboard (keyboard.py); click a
+- **Keys** — the bindings lit on a drawn keyboard (keycaps.py); click a
   cap, or press a real key, to see what it does and rebind it.
 - **Settings** — General, Dictation, Text, Screen, Cards, Phone, The app
   (settings.py: TABS names lines by hand, TAB_SECTIONS gives each tab the
@@ -1169,13 +1169,17 @@ ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedg
 | `hint.py` | what the hint card says while the key is held: one row per bound key, read off the live Config under the same condition `main.App._bindings` registers it under, so a rebind moves the row and a feature switched off takes its row away. Pure Python, no Tk — the tests read every row |
 | `dashboard.py` + `ui.py` | the control window: four places along a top bar (Waiting, Said, Keys, Settings), the merged Waiting pile and "the whole list" behind it that answers the bug list and the routine's questions, the generated Settings place with Stop / cue sounds in it, and the frameless **Report a problem** card the button beside the Waiting title opens |
 | `widgets.py` | the pieces the window needs that `ui.py` does not have: the tab strip, a hairline, the state chip, an icon-in-a-label, a row whose text stops where its buttons start, `rtl_run()` for a pill inside a Hebrew sentence, and a toned Button. Every colour is read as `ui.NAME` INSIDE the call, so a repainted palette lands on the next screen drawn |
-| `keyboard.py` | the Keys place's board: 87 caps, one Pillow image and one hit table, everything measured from a single cap unit; the bindings are read from `config.HOTKEY_FIELDS` + `hotkey.parse_binding` and lit on it |
+| `keycaps.py` | the Keys place's board (keyboard.py until PR 10 — the PyPI package of that name shadowed it): 87 caps, one Pillow image and one hit table, everything measured from a single cap unit; the bindings are read from `config.HOTKEY_FIELDS` + `hotkey.parse_binding` and lit on it |
 | `prose.py` | the settings said as sentences with the controls inside the words — a hand-flowed Canvas at a fixed 34 px line. Every `Bit` names a real path in `config.toml` and a test walks them |
 | `settings.py` | config.toml as data: every key, its comment as help, `a \| b \| c` as choices — what the Settings place draws |
 | `fonts.py` | hands this process its own copy of Rubik (`AddFontResourceExW`, `FR_PRIVATE`) at the import of `ui.py` and `visual_qa.py`, before anything asks for a face |
 | `shelf.py` + `shelf_card.py` + `skin\shelf.py` | the panel beside the dot: the window/thread/queue class (modelled on `overlay.HintCard`), the pure painter (words, geometry, hit test, `INK`) and the glass. Every answer it offers calls the same `App` method the matching card does; nothing goes through `control.py` |
 | `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |
 | `version.py` | reads `VERSION` (one line, SemVer, the number every screen and report prints; the Android build reads the same file) and, in the checkout only, the git branch |
+| `manifest.py` | `MANIFEST.sha256`: the build writes one line per file under `python\` and `app\` (`write`), `--verify` reads it back (`verify`); stdlib only |
+| `packaging\` | the build's inputs that are not code: `python311._pth`, `python-embed.sha256`, `build_local.ps1` (steps 1-7 on this PC into `dist\`); never in the archive |
+| `.github/workflows/release.yml` | the build on a tag `v*` (10.3 steps 0-7 so far): wheelhouse by hash, python.org zip by SHA-256, Tk copied from the runner's same-patch Python, `git archive`, the manifest |
+| `.gitattributes` | `export-ignore` — what `git archive`, and so the product tree, never contains |
 | `tests.py` | the product suite — hundreds of plain-assert test functions, `NEEDS_SCREEN`, `--no-screen`. Not the file you run |
 | `dev\tests_ops.py` | the owner's suite: the nightly run, the git card, the routine's docs — imports `tests.py`'s fixtures, runs only in this checkout |
 | `tests_quiet.py` | how both are run: on a hidden Windows desktop, `--no-screen` while he is at the machine (house rule 8). `run_hidden()` is importable, for anything else that must not be seen |

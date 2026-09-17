@@ -1,5 +1,10 @@
 """His keyboard, drawn once, lit from the bindings.
 
+keycaps.py, not keyboard.py, since PR 10 (DISTRIBUTION_PLAN.md D19):
+a module called keyboard beside main.py shadowed the PyPI package of
+that name in the owner's venv and would have been shadowed by it in
+any tree where the package came first. Caps are what it draws.
+
 Why a picture of a keyboard rather than a list of rows: he does not
 remember that translate is F8, he remembers where his finger goes. A
 list of fifteen "Translate (tap)  [F8]" rows is a lookup table for a

@@ -11446,7 +11446,7 @@ def test_every_registered_key_has_a_place_on_the_keys_screen() -> None:
 
 
 def test_the_keyboard_lights_every_binding_on_the_cap_it_lives_on() -> None:
-    """keyboard.py draws the board and says which cap a click landed on.
+    """keycaps.py draws the board and says which cap a click landed on.
 
     Three things a hand-written table gets wrong, all of them measured:
     one cap can carry TWO bindings (F8 is translate bare and look up with
@@ -11454,7 +11454,7 @@ def test_the_keyboard_lights_every_binding_on_the_cap_it_lives_on() -> None:
     UNSIDED modifier codes (0x11, not 0xA2), so a cap map that calls the
     left one "left ctrl" lights no modifier at all; and every binding in
     HOTKEY_FIELDS has to land on a cap this board actually draws."""
-    import keyboard as kb
+    import keycaps as kb
 
     keys = {field: "" for field, _label in config_mod.HOTKEY_FIELDS}
     keys.update({"hotkey": "right ctrl", "latch_hotkey": "left",
@@ -11502,7 +11502,7 @@ def test_a_real_key_press_on_the_keys_place_lights_its_cap() -> None:
     import types
 
     import hotkey as hotkey_mod
-    import keyboard as keyboard_mod
+    import keycaps as keyboard_mod
 
     assert keyboard_mod.cap_for_vk(hotkey_mod.vk_for("r")) == "r"
     assert keyboard_mod.cap_for_vk(hotkey_mod.vk_for("f8")) == "f8"
@@ -11586,7 +11586,7 @@ def test_the_board_is_the_full_size_one_that_is_on_his_desk() -> None:
     exactly two rows tall, and board_size / unit_for still telling the
     truth about an image nobody has drawn yet.
     """
-    import keyboard as kb
+    import keycaps as kb
 
     assert kb.UNITS == 22.5, kb.UNITS
     for index, row in enumerate(kb.ROWS):
@@ -11659,7 +11659,7 @@ def test_the_pause_key_says_it_is_a_pause_and_not_a_stop() -> None:
     like a way of stopping the app. The row under the board carries the
     three words and the panel beside it the sentence.
     """
-    import keyboard as kb
+    import keycaps as kb
 
     import dashboard as dash
 
@@ -11716,7 +11716,7 @@ def test_the_keys_place_holds_the_board_the_panel_and_the_rows() -> None:
     notification" needs 259 px of row against a 253 px column.
     """
     import dashboard as dash
-    import keyboard as kb
+    import keycaps as kb
 
     def pad(child) -> int:
         """What pack keeps around a child, however Tk spells it."""
@@ -11843,7 +11843,7 @@ def test_the_keys_place_keeps_its_last_line_inside_the_window() -> None:
     2026-09-07. The line is placed upwards from the edge now and the list
     above it is given what is left, so this holds in both cases.
     """
-    import keyboard as kb
+    import keycaps as kb
 
     import dashboard as dash
 
@@ -29803,6 +29803,133 @@ def test_problems_env_fields():
     assert kinds == ["cloud_text"], kinds
     assert all(set(c) == {"kind", "text_version"}
                for c in problems_mod.env(cfg)["consents"])
+
+
+# ------------------------------------------- the build's inputs (PR 10)
+#
+# DISTRIBUTION_PLAN.md 10.2-10.3 and 10.11: the installed product is the
+# python.org embeddable 3.11 plus a hashed wheelhouse plus `git archive`
+# of the tag, listed file by file in MANIFEST.sha256 (D12 lock 5, D19).
+# These hold the inputs the build reads from the repo honest; the git
+# half (what the archive contains) is dev/tests_ops.py's.
+
+LOCK_EXCLUDED = ("keyboard", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
+                 "nvidia-cuda-nvrtc-cu12", "skia-python")
+
+
+def _requirement_names(text: str) -> list[str]:
+    """The package names a requirements file pins, in order."""
+    names = []
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or line.startswith(("-", "\\")):
+            continue
+        names.append(re.split(r"[\s=<>!~\[;]", line, 1)[0].lower())
+    return names
+
+
+def test_requirements_base_set():
+    """requirements.txt is the base set of 10.5: pillow and comtypes named
+    (they were only ever pulled in sideways), the CUDA runtimes, skia and
+    the keyboard package gone (packs, and a rename). google-genai and httpx
+    stay until chapter 5's REST port; that PR takes them out and adds
+    them to LOCK_EXCLUDED."""
+    names = _requirement_names((REPO / "requirements.txt").read_text("utf-8"))
+    for want in ("pillow", "comtypes", "faster-whisper", "sounddevice", "numpy",
+                 "pywin32", "pycaw", "pip"):
+        assert want in names, f"{want} not in requirements.txt"
+    for gone in LOCK_EXCLUDED:
+        assert gone not in names, f"{gone} is back in requirements.txt"
+
+
+def test_lock_has_hashes():
+    """Every pin in requirements.lock carries a sha256 hash and every name
+    requirements.txt asks for is pinned there; nothing the base set
+    excludes has crept in through a dependency."""
+    lock = (REPO / "requirements.lock").read_text("utf-8")
+    heads = list(re.finditer(r"^([a-z0-9][a-z0-9._-]*)==([^\s\\]+)", lock,
+                             re.M | re.I))
+    assert heads, "no pins in requirements.lock"
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(lock)
+        block = lock[m.start():end]
+        assert "--hash=sha256:" in block, f"{m.group(0)} has no hash"
+    pinned = {m.group(1).lower() for m in heads}
+    for want in _requirement_names((REPO / "requirements.txt").read_text("utf-8")):
+        assert want in pinned, f"{want} is in requirements.txt but not the lock"
+    for gone in LOCK_EXCLUDED:
+        assert gone not in pinned, f"{gone} is in the lock"
+    assert "--index-url" not in lock and "--extra-index-url" not in lock, \
+        "the lock names an index; the build uses --no-index"
+
+
+def test_pth_lines():
+    """The embeddable's python311._pth, as the build overwrites it (10.2):
+    the zip, the folder, Lib (tkinter is copied there — the plan's four
+    lines forgot that), site-packages, and `import site` so .pth files
+    and the pack installer work."""
+    text = (REPO / "packaging" / "python311._pth").read_text("utf-8")
+    assert text.splitlines() == ["python311.zip", ".", "Lib", "Lib\\site-packages",
+                                 "import site"], text
+
+
+def test_embed_sha_pinned():
+    """packaging/python-embed.sha256 is a 64-hex SHA-256 naming the
+    python.org zip of the patch version the workflow and the local
+    rehearsal both pin; the three agree with each other."""
+    text = (REPO / "packaging" / "python-embed.sha256").read_text("utf-8")
+    sha, name = text.split()
+    assert re.fullmatch(r"[0-9a-f]{64}", sha), sha
+    m = re.fullmatch(r"python-(3\.11\.\d+)-embed-amd64\.zip", name)
+    assert m, name
+    patch_ = m.group(1)
+    workflow = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    assert f'PYTHON_VERSION: "{patch_}"' in workflow, "release.yml pins another Python"
+    assert f"python-{patch_}-embed-amd64.zip" in workflow
+    local = (REPO / "packaging" / "build_local.ps1").read_text("utf-8")
+    assert f'$Embed = "{patch_}"' in local, "build_local.ps1 pins another Python"
+    assert "--require-hashes" in workflow and "--no-index" in workflow
+    assert "--require-hashes" in local and "--no-index" in local
+
+
+def test_manifest_roundtrip():
+    """manifest.py: write over a staged tree, verify it clean, then one
+    changed byte, one missing file and one stray file are each named;
+    the manifest lists only python/ and app/, never itself, sorted, with
+    forward slashes."""
+    import manifest
+
+    with tempfile.TemporaryDirectory() as d:
+        tree = Path(d)
+        (tree / "python" / "Lib").mkdir(parents=True)
+        (tree / "app" / "skin").mkdir(parents=True)
+        (tree / "python" / "python.exe").write_bytes(b"MZ" * 40)
+        (tree / "python" / "Lib" / "site.py").write_bytes(b"x = 1\n")
+        (tree / "app" / "main.py").write_bytes(b"print(1)\n")
+        (tree / "app" / "skin" / "dot.py").write_text("", "utf-8")
+        (tree / "CHANNEL").write_text("github", "utf-8")     # beside, not listed
+        out = manifest.write(tree)
+        assert out == tree / manifest.NAME
+        rows = manifest.read(out)
+        assert [r[2] for r in rows] == ["app/main.py", "app/skin/dot.py",
+                                        "python/Lib/site.py", "python/python.exe"]
+        assert all(len(r[0]) == 64 for r in rows)
+        assert rows[3][1] == 80 and rows[0][1] == 9
+        assert manifest.verify(tree) == []
+        (tree / "app" / "main.py").write_bytes(b"print(2)\n")
+        assert manifest.verify(tree) == ["changed: app/main.py"]
+        (tree / "app" / "main.py").write_bytes(b"print(1)\n")
+        (tree / "python" / "Lib" / "site.py").unlink()
+        (tree / "app" / "extra.py").write_text("", "utf-8")
+        assert manifest.verify(tree) == ["extra: app/extra.py",
+                                         "missing: python/Lib/site.py"]
+        text = out.read_text("utf-8")
+        assert "MANIFEST.sha256" not in text and "CHANNEL" not in text
+        assert "\\" not in text, "a backslash in a manifest path"
+    # the CLI is what the workflow calls
+    proc = subprocess.run([sys.executable, str(REPO / "manifest.py"), "--help"],
+                          capture_output=True, encoding="utf-8", errors="replace")
+    assert proc.returncode == 0 and "write" in proc.stdout and "verify" in proc.stdout
 
 
 # ------------------------------------------------ the split suite (PR 8)

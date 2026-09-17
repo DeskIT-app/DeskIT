@@ -43,7 +43,7 @@ otherwise edited:
 | `ui.py` | one `repaint(globals())` at the end of the palette block | the original hex literals, which are still there |
 | `visual_qa.py` | `_pump_wave` | the original `create_oval` rings |
 | `shelf.py` | `skin.shelf_run(card)` in `ShelfCard._build_and_loop` | `shelf_card.flat()` in a plain Tk window with square corners, every button still working |
-| `dashboard.py` | none — it reads `ui`'s names, and so do `widgets.py`, `keyboard.py` and `prose.py`, at call time rather than at import | whatever `ui.py`'s own literals say |
+| `dashboard.py` | none — it reads `ui`'s names, and so do `widgets.py`, `keycaps.py` and `prose.py`, at call time rather than at import | whatever `ui.py`'s own literals say |
 
 `ui.py` is the only interesting one. `from ui import CARD` binds the value
 at import time, so the repaint has to happen while `ui.py` is still

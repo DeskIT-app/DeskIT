@@ -743,7 +743,7 @@ One Pillow image and one hit table. Everything is measured from a single
 unit `u` (one 1× cap), so the board fits whatever room the screen has: at
 `u=34` it is 781×239 and draws in 22 ms, at `u=43` it is 984×298 and
 28 ms (medians of five). A click redraws all of it, under a frame, which
-is why there is no partial-repaint machinery in `keyboard.py` at all.
+is why there is no partial-repaint machinery in `keycaps.py` at all.
 
 **The place was re-measured around it**, because 22.5 units in a window
 fixed at 1160×720 means the cap is what gives. `keyboard.unit_for` picks
