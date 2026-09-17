@@ -180,7 +180,7 @@ WORDS = {
     "saved.error": "Could not save: {error}",
 }
 
-GUIDE_PRIVACY_CHECK = f"{paths.PAGES_URL}/he/privacy-check"
+GUIDE_PRIVACY_CHECK = f"{paths.PAGES_URL}/he/04-privacy"      # guide chapter 4
 PRIVACY_URL = f"{paths.PAGES_URL}/privacy"
 
 

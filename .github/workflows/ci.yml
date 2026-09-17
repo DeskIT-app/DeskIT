@@ -57,3 +57,10 @@ jobs:
       - name: Product suite
         shell: pwsh
         run: python tests.py --no-screen
+
+      # The guide (chapter 14): the generated pages are fresh for this
+      # defaults.toml, the trees are complete, every picture exists, the
+      # privacy chapter is the plan's 5.10 word for word. File checks only.
+      - name: The guide
+        shell: pwsh
+        run: python dev/test_docs.py

@@ -1150,6 +1150,17 @@ def test_the_readme_and_agents_document_the_nightly_tests() -> None:
     where = agents[agents.index("## Where things live"):]
     assert "| `nightly.py`" in where, "nightly.py is not on the map"
 
+def test_the_guide_holds_together():
+    """dev/test_docs.py, the guide's own checks (chapter 14), as one
+    test of the nightly: the trees, the pictures, the privacy chapter
+    against plan 5.10, the generated pages fresh, no owner words."""
+    import subprocess
+    out = subprocess.run([sys.executable, str(REPO / "dev" / "test_docs.py")],
+                         capture_output=True, encoding="utf-8", errors="replace",
+                         cwd=str(REPO))
+    assert out.returncode == 0, out.stdout[-2000:] + out.stderr[-1000:]
+
+
 def test_export_ignore_covers_forbidden():
     """.gitattributes decides the product tree (10.3 step 6): an archive of
     the working copy holds none of chapter 3 §3.10's forbidden paths and

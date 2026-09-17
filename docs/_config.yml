@@ -1,0 +1,29 @@
+# The GitHub Pages site (DISTRIBUTION_PLAN.md 14.1, D26): Jekyll as Pages
+# runs it, nothing else to build. The guide is Hebrew first (docs/he) with
+# an English mirror (docs/en); the privacy policy and the terms are the two
+# pages beside them; docs/strings and docs/distplan are not part of the site.
+title: DeskIT
+description: Hebrew dictation for Windows that stays on your PC — the Win+H that Hebrew never got.
+baseurl: "/DeskIT"
+url: "https://massifapp.github.io"
+lang: he
+theme: jekyll-theme-primer
+markdown: kramdown
+kramdown:
+  input: GFM
+permalink: pretty
+exclude:
+  - distplan
+  - strings
+  - README.md
+defaults:
+  - scope:
+      path: "he"
+    values:
+      lang: he
+      dir: rtl
+  - scope:
+      path: "en"
+    values:
+      lang: en
+      dir: ltr

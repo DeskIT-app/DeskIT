@@ -1,0 +1,4 @@
+{
+  "groq": "This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it only to api.groq.com. It is never written to a file, a log or a report, and never sent to the developer — see Dashboard > Network for every request.",
+  "gemini": "This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/gemini). DeskIT sends it only to generativelanguage.googleapis.com. It is never written to a file, a log or a report, and never sent to the developer — see Dashboard > Network for every request."
+}

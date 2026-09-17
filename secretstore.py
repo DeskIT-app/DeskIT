@@ -101,6 +101,22 @@ def target(name: str) -> str:
     return f"{TARGET_PREFIX}/{name}"
 
 
+#: The host each key travels to, for the sentence beside the field.
+KEY_HOSTS: dict[str, str] = {"groq": "api.groq.com",
+                             "gemini": "generativelanguage.googleapis.com"}
+
+
+def storage_sentence(name: str) -> str:
+    """The fixed wording next to every key field (plan arch-B section 4,
+    D12): the Privacy tab's block draws it, the guide quotes it from
+    docs/strings/keys.json, and a test holds the two equal."""
+    return (f"This key is stored in Windows Credential Manager on this PC "
+            f"(Control Panel > Credential Manager > Windows Credentials > "
+            f"{target(name)}). DeskIT sends it only to {KEY_HOSTS[name]}. It is "
+            f"never written to a file, a log or a report, and never sent to the "
+            f"developer — see Dashboard > Network for every request.")
+
+
 def _cred_read(name: str) -> str | None:
     import pywintypes
     import win32cred

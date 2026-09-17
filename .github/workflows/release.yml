@@ -60,6 +60,11 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      # 0b. the guide's generated pages (chapter 14.6): a release whose
+      # docs/en/settings.md is not what defaults.toml says does not ship.
+      - name: The guide is fresh
+        run: python dev/gen_settings_doc.py --check
+
       - name: The runner's Python is the embeddable's patch version
         run: |
           $got = (python -c "import platform; print(platform.python_version())").Trim()

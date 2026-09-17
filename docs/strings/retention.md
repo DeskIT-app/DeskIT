@@ -1,0 +1,1 @@
+Audio: the last 50 recordings · History: 30 days · Learned words: until you forget one · Reports: on this PC until you delete them · Lookups: the last 500 answers, on this PC · The speech model: until you delete it · Nothing on any server unless you pressed Send.

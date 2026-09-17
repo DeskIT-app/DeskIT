@@ -1,0 +1,170 @@
+{
+  "cloud_text": {
+    "kind": "cloud_text",
+    "text_version": "groq-2026-06-22+gemini-2026-04-28",
+    "title": "לשלוח טקסט לענן?",
+    "blocks": [
+      [
+        "מה יוצא",
+        "הטקסט שהכתבת או סימנת, עד 5,000 תווים בבקשה. תיקון ההכתבה שולח קטעים גם בזמן שהמקש עדיין לחוץ; זוגות המילים שלמדת ושמופיעים בטקסט נוסעים איתו; הקריאה השנייה מצרפת גם את המשפטים שהוכתבו רגע לפני."
+      ],
+      [
+        "לאן",
+        "Groq ו/או Google — תיקון, פיסוק, תרגום, חיפוש מילה, הקריאה השנייה."
+      ],
+      [
+        "על חשבון מי",
+        "עם המפתח שאתה הדבקת. אתה הלקוח שלהם — DeskIT הוא הכלי שלך, ולא עוברת דרכו שום שרת של DeskIT."
+      ],
+      [
+        "מה הספק אומר",
+        "Groq: \"not permitted to use Inputs or Outputs for training\"; בלי שמירה כברירת מחדל, יומני ניטור עד 30 יום אלא אם הפעלת Zero Data Retention בקונסולה של Groq. גיל 18 ומעלה. Google (Gemini, המסלול החינמי): התוכן משמש \"to provide, improve, and develop Google products\"; \"human reviewers may read, annotate, and process your API input and output\"; \"Do not submit sensitive, confidential, or personal information\". המכסה החינמית אינה מותרת ללקוחות API באיחוד האירופי, בבריטניה ובשווייץ. גיל 18 ומעלה."
+      ],
+      [
+        "איך מכבים",
+        "הגדרות > פרטיות > ביטול, או הסרת המפתח."
+      ]
+    ],
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+  },
+  "cloud_audio": {
+    "kind": "cloud_audio",
+    "text_version": "groq-2026-06-22+gemini-2026-04-28",
+    "title": "לשלוח הקלטות לענן?",
+    "blocks": [
+      [
+        "מה יוצא",
+        "ההקלטה של מה שאמרת עכשיו, כקובץ WAV, עם הנחיית תמלול קבועה."
+      ],
+      [
+        "לאן",
+        "Google (Gemini) או Groq, לתמלול."
+      ],
+      [
+        "על חשבון מי",
+        "עם המפתח שאתה הדבקת. אתה הלקוח שלהם — DeskIT הוא הכלי שלך, ולא עוברת דרכו שום שרת של DeskIT."
+      ],
+      [
+        "מה הספק אומר",
+        "Google (Gemini, המסלול החינמי): התוכן משמש \"to provide, improve, and develop Google products\"; \"human reviewers may read, annotate, and process your API input and output\"; \"Do not submit sensitive, confidential, or personal information\". המכסה החינמית אינה מותרת ללקוחות API באיחוד האירופי, בבריטניה ובשווייץ. גיל 18 ומעלה. Groq: \"not permitted to use Inputs or Outputs for training\"; בלי שמירה כברירת מחדל, יומני ניטור עד 30 יום אלא אם הפעלת Zero Data Retention בקונסולה של Groq. גיל 18 ומעלה."
+      ],
+      [
+        "איך מכבים",
+        "הגדרות > פרטיות > ביטול, או הסרת המפתח. המנוע חוזר להיות מקומי."
+      ]
+    ],
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+  },
+  "cloud_screenshots": {
+    "kind": "cloud_screenshots",
+    "text_version": "groq-2026-06-22+gemini-2026-04-28",
+    "title": "לשלוח תמונת מסך לענן?",
+    "blocks": [
+      [
+        "מה יוצא",
+        "תמונת JPEG של האזור שסימנת (צלע ארוכה עד 1,344 פיקסלים ל-Google, 896 ל-Groq), השאלה שלך, והשאלות והתשובות הקודמות באותו כרטיס. תמונת מסך יכולה להכיל דואר, בנק, כל מה שהיה על המסך."
+      ],
+      [
+        "לאן",
+        "Groq ו/או Google, לשאלה על המסך."
+      ],
+      [
+        "על חשבון מי",
+        "עם המפתח שאתה הדבקת. אתה הלקוח שלהם — DeskIT הוא הכלי שלך, ולא עוברת דרכו שום שרת של DeskIT."
+      ],
+      [
+        "מה הספק אומר",
+        "Groq: \"not permitted to use Inputs or Outputs for training\"; בלי שמירה כברירת מחדל, יומני ניטור עד 30 יום אלא אם הפעלת Zero Data Retention בקונסולה של Groq. גיל 18 ומעלה. Google (Gemini, המסלול החינמי): התוכן משמש \"to provide, improve, and develop Google products\"; \"human reviewers may read, annotate, and process your API input and output\"; \"Do not submit sensitive, confidential, or personal information\". המכסה החינמית אינה מותרת ללקוחות API באיחוד האירופי, בבריטניה ובשווייץ. גיל 18 ומעלה."
+      ],
+      [
+        "איך מכבים",
+        "הגדרות > פרטיות > ביטול, או הסרת המפתח."
+      ]
+    ],
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+  },
+  "account": {
+    "kind": "account",
+    "text_version": "deskit-terms-0",
+    "title": "לפתוח חשבון אנונימי?",
+    "blocks": [
+      [
+        "מה יוצא",
+        "מזהה חשבון אנונימי; גרסת האפליקציה, גרסת Windows, דרגת החומרה."
+      ],
+      [
+        "לאן",
+        "השרת של DeskIT (Supabase, פרנקפורט) — השרת היחיד של DeskIT."
+      ],
+      [
+        "על חשבון מי",
+        "על חשבון הפרויקט של DeskIT; המפתחות שלך לעולם לא נוסעים לשם — אין להם אפילו עמודה בבסיס הנתונים."
+      ],
+      [
+        "מה הספק אומר",
+        "תנאי השימוש בעמוד אחד, ומדיניות הפרטיות."
+      ],
+      [
+        "איך מכבים",
+        "הנתונים שלי > מחיקת החשבון."
+      ]
+    ],
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+  },
+  "report_upload": {
+    "kind": "report_upload",
+    "text_version": "deskit-terms-0",
+    "title": "לשלוח דיווחי בעיות?",
+    "blocks": [
+      [
+        "מה יוצא",
+        "רק מה שהתצוגה המקדימה של הדיווח הראתה — אחרי ניקוי."
+      ],
+      [
+        "לאן",
+        "השרת של DeskIT (Supabase, פרנקפורט)."
+      ],
+      [
+        "על חשבון מי",
+        "על חשבון הפרויקט של DeskIT, דרך החשבון האנונימי שלך."
+      ],
+      [
+        "מה הספק אומר",
+        "תנאי השימוש בעמוד אחד, ומדיניות הפרטיות."
+      ],
+      [
+        "איך מכבים",
+        "לשמור על המחשב הזה במקום, או הגדרות > פרטיות > ביטול."
+      ]
+    ],
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+  },
+  "settings_sync": {
+    "kind": "settings_sync",
+    "text_version": "deskit-terms-0",
+    "title": "לסנכרן הגדרות?",
+    "blocks": [
+      [
+        "מה יוצא",
+        "השינויים שלך בהגדרות ואוצר המילים — לעולם לא שמע, היסטוריה או דיווחים."
+      ],
+      [
+        "לאן",
+        "השרת של DeskIT (Supabase, פרנקפורט)."
+      ],
+      [
+        "על חשבון מי",
+        "על חשבון הפרויקט של DeskIT, דרך החשבון האנונימי שלך."
+      ],
+      [
+        "מה הספק אומר",
+        "תנאי השימוש בעמוד אחד, ומדיניות הפרטיות."
+      ],
+      [
+        "איך מכבים",
+        "הגדרות > פרטיות > ביטול."
+      ]
+    ],
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+  }
+}
