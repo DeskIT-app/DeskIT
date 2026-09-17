@@ -14,7 +14,11 @@ Two commands, both explicit, neither ever run by the app on its own
     never moved: on the owner's machine the checkout keeps being DeskIT
     Dev and keeps its own data (D30). The joined stores travel by file
     name, so a ``recent\\`` clip is still the id ``review.json`` and a
-    problem report point at.
+    problem report point at. A ``.env`` in that folder (or beside the
+    app) has its ``GROQ_API_KEY`` / ``GEMINI_API_KEY`` copied into Windows
+    Credential Manager (secretstore.py, D3) unless a key is already there;
+    the file itself is left for the person to delete, and a
+    ``CEREBRAS_API_KEY`` line is reported as no longer read.
 
 ``main.py --reset-data --yes``
     The owner's own wish for his first day on the new layout, and the
@@ -180,6 +184,8 @@ def migrate(where: Path | None = None, *, out=print) -> int:
     if folder is not None and folder.resolve() != paths.DATA_DIR.resolve():
         copied = _copy_stores(folder, out)
         out(f"stores copied from {folder}: {copied}")
+    import secretstore
+    import_env_keys(secretstore.env_file_in(folder or legacy.parent), out)
 
     if legacy.name == "config.toml" and legacy.parent == paths.APP_DIR:
         retired = legacy.with_name("config.legacy.toml")
@@ -189,6 +195,54 @@ def migrate(where: Path | None = None, *, out=print) -> int:
                 "defaults.toml + settings.toml + state.json from now on")
     out("done.")
     return 0
+
+
+def import_env_keys(env_file: Path, out=print) -> int:
+    """Copy the API keys of an old ``.env`` into Windows Credential Manager.
+
+    Never overwrites a key already there, never deletes the file (the
+    person does, once the app has run on the new copy), never prints a
+    value. Returns how many keys were stored.
+    """
+    import secretstore
+    if not env_file.is_file():
+        return 0
+    found = secretstore.read_env_file(env_file)
+    stored = 0
+    for name in secretstore.CRED_NAMES:
+        value = (found.get(secretstore.LEGACY_ENV_VARS[name])
+                 or found.get(secretstore.ENV_VARS[name]))
+        if not value:
+            continue
+        try:
+            already = secretstore.get(name)
+        except secretstore.SecretError as e:
+            out(f"  {name} key: {e}")
+            continue
+        if already:
+            out(f"  {name} key: already in Windows Credential Manager "
+                f"({secretstore.target(name)}); the .env line is not read "
+                f"while it is there")
+            continue
+        try:
+            secretstore.set(name, value)
+        except secretstore.SecretError as e:
+            out(f"  {name} key: {e}")
+            continue
+        stored += 1
+        out(f"  {name} key: copied from {env_file.name} into Windows "
+            f"Credential Manager ({secretstore.target(name)})")
+    if "CEREBRAS_API_KEY" in found:
+        out("  CEREBRAS_API_KEY: no longer read by this version (their free "
+            "tier ended) — the line can go")
+    if "GOOGLE_API_KEY" in found and "GEMINI_API_KEY" not in found:
+        out("  GOOGLE_API_KEY: no longer read — this version takes the "
+            "Gemini key only as GEMINI_API_KEY / DESKIT_GEMINI_API_KEY, or "
+            "from Credential Manager (main.py --set-key gemini)")
+    if stored:
+        out(f"  {env_file} is now redundant for those keys; delete the "
+            f"lines (or the file) when you like")
+    return stored
 
 
 def _legacy_names() -> dict[str, str]:

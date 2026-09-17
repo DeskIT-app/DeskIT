@@ -39,6 +39,12 @@ import paths as _paths_mod
 _SCRATCH_HOME = Path(tempfile.mkdtemp(prefix="deskit-tests-home-"))
 _paths_mod.SETTINGS_FILE = _SCRATCH_HOME / "settings.toml"
 _paths_mod.STATE_FILE = _SCRATCH_HOME / "state.json"
+# Same rule for the secret store: DPAPI blobs (the phone token) land in a
+# scratch secrets\ folder, and the pre-2026-09-17 token file the server
+# would import from is a scratch path too. Credential Manager entries are
+# not files — tests that write one use _test_cred_prefix below.
+_paths_mod.SECRETS_DIR = _SCRATCH_HOME / "secrets"
+_paths_mod.PHONE_TOKEN = _SCRATCH_HOME / "phone" / "server_token.txt"
 
 import apikey
 import paths
@@ -317,19 +323,20 @@ def test_fake_transcriber_is_hebrew() -> None:
 
 
 def test_api_key_file_parsing(tmp_lines=None) -> None:
-    """The .env fallback must survive comments, quotes, blank lines and a
-    UTF-8 BOM — it exists so a broken shell environment can't block us."""
-    original = apikey.ENV_FILE
+    """The developer's .env must survive comments, quotes, blank lines and
+    a UTF-8 BOM — it exists so a broken shell environment can't block us.
+    The reader is secretstore's now; the prefixed name works there too."""
+    import secretstore
+    original = secretstore.ENV_FILE
     sample = original.parent / ".env.selftest"
-    sample.write_text('﻿# comment\n\nGEMINI_API_KEY = "abc-123" \n',
-                      encoding="utf-8")
+    sample.write_text('﻿# comment\n\nGEMINI_API_KEY = "abc-123" \n'
+                      "DESKIT_GROQ_API_KEY='gsk-456'\n", encoding="utf-8")
     try:
-        apikey.ENV_FILE = sample
-        os_key = apikey._from_env_file(apikey._GEMINI_NAMES)
-        assert os_key is not None, "key file not parsed"
-        assert os_key[0] == "abc-123", os_key
+        secretstore.ENV_FILE = sample
+        assert secretstore._from_env_file("gemini") == "abc-123"
+        assert secretstore._from_env_file("groq") == "gsk-456"
     finally:
-        apikey.ENV_FILE = original
+        secretstore.ENV_FILE = original
         sample.unlink(missing_ok=True)
 
 
@@ -4655,8 +4662,9 @@ def test_reply_caps_are_sized_from_the_text() -> None:
 
 
 def test_a_missing_cerebras_key_names_the_fix() -> None:
-    """The message must say exactly which line in .env to add — a bare
-    'no key' sends someone hunting through three providers."""
+    """The message must say what happened to the key and where to go — a
+    bare 'no key' sends someone hunting through three providers. Since
+    2026-09-17 what happened is that CEREBRAS_API_KEY is not read at all."""
     import apikey as apikey_mod
     import translate as translate_mod
     from transcribers.base import TranscriptionError
@@ -4667,7 +4675,7 @@ def test_a_missing_cerebras_key_names_the_fix() -> None:
         translate_mod.CerebrasTranslator("gpt-oss-120b", 20)
     except TranscriptionError as e:
         assert "CEREBRAS_API_KEY" in str(e), e
-        assert ".env" in str(e), e
+        assert "prefer" in str(e) and "groq" in str(e), e
     else:
         raise AssertionError("a missing key must stop construction")
     finally:
@@ -29180,7 +29188,10 @@ def test_paths_checkout_is_portable_and_nothing_moved():
         "LOOKUP_CACHE": "lookup_cache.json",
     }
     for name, rel in before.items():
-        assert getattr(paths, name) == REPO / rel, (name, getattr(paths, name))
+        # PHONE_TOKEN is one of the attributes the scratch-home guard at
+        # the top of this file repoints; the layout table is the truth.
+        got = paths._rel(name) if name == "PHONE_TOKEN" else getattr(paths, name)
+        assert got == REPO / rel, (name, got)
     assert paths.LOGS_DIR == REPO and paths.PHONE_DIR == REPO
     # the modules that used to build these themselves now agree with paths
     import cues, history, server, control
@@ -29286,11 +29297,11 @@ def test_no_store_path_is_built_beside_the_code():
     paths.py. What is still allowed to hang off APP_DIR is read-only
     (fonts, skin, icon), owner-only (git, the weekly script, the Android
     build — chapter 7 moves those to dev\\), the launcher's own files
-    (chapter 10) and the .env reader (chapter 3.6 replaces it with
-    secrets.py). Shrink this list as those commits land; never grow it."""
+    (chapter 10) and the .env reader in secretstore.py (portable copies
+    only, D3). Shrink this list as those commits land; never grow it."""
     allowed = {
         "fonts", "skin", "icon.ico", "icon.png",           # read-only assets
-        ".env",                                            # apikey.py, until secrets.py
+        ".env",                                            # secretstore.py, the one reader (portable only)
         "weekly_review.ps1", "problems",                   # owner-only: the routine, problems\weekly
         "android",                                         # owner-only: the APK build
         "Dashboard.vbs", ".venv", "main.py", "dashboard.py",  # launch.py, until chapter 10
@@ -29549,6 +29560,232 @@ def test_notify_hook_reads_the_port_through_the_layers():
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
+
+
+# ------------------------------------------------------- the secret store
+
+class _test_cred_prefix:
+    """Point secretstore's Credential Manager entries at ``DeskIT.test/``
+    for the block, and leave none of them behind. The real ``DeskIT/``
+    entries are the owner's keys and no test may touch them."""
+
+    def __enter__(self):
+        import secretstore
+        self._mod = secretstore
+        self._old = secretstore.TARGET_PREFIX
+        secretstore.TARGET_PREFIX = "DeskIT.test"
+        for name in secretstore.CRED_NAMES:
+            secretstore.delete(name)
+        return secretstore
+
+    def __exit__(self, *exc):
+        for name in self._mod.CRED_NAMES:
+            self._mod.delete(name)
+        self._mod.TARGET_PREFIX = self._old
+        return False
+
+
+def test_secrets_backend_by_name():
+    """groq/gemini live in Windows Credential Manager (round trip, then
+    gone), phone_token in a DPAPI blob under secrets\ that never holds
+    the plaintext; an unknown name is refused, an empty set() deletes."""
+    import secretstore
+    with _test_cred_prefix() as store:
+        assert store.get("groq") is None
+        store.set("groq", "gsk_fixture_0123456789")
+        assert store.get("groq") == "gsk_fixture_0123456789"
+        assert store.present()["groq"] == "Windows Credential Manager (DeskIT.test/groq)"
+        assert store.delete("groq") is True and store.delete("groq") is False
+        assert store.get("groq") is None
+    # DPAPI, under the tests' scratch home
+    blob = secretstore.blob_path("phone_token")
+    assert str(blob).startswith(str(_SCRATCH_HOME)), blob
+    secretstore.delete("phone_token")
+    try:
+        secretstore.set("phone_token", "tok-fixture-abcdef")
+        assert blob.is_file()
+        assert b"tok-fixture-abcdef" not in blob.read_bytes(), "plaintext on disk"
+        assert secretstore.get("phone_token") == "tok-fixture-abcdef"
+        secretstore.set("phone_token", "")
+        assert not blob.exists() and secretstore.get("phone_token") is None
+    finally:
+        secretstore.delete("phone_token")
+    try:
+        secretstore.get("cerebras")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("an unknown secret name was accepted")
+
+
+def test_secrets_lookup_order():
+    """Credential Manager beats DESKIT_* in the environment, which beats
+    the developer's bare GROQ_API_KEY / .env; the bare name and the .env
+    are read only in a portable copy; the old GOOGLE_API_KEY and
+    CEREBRAS_API_KEY names are never read anywhere."""
+    import secretstore
+    env_file = secretstore.ENV_FILE.parent / ".env.lookup-test"
+    env_file.write_text('GROQ_API_KEY="from-dot-env"\n'
+                        "GOOGLE_API_KEY=borrowed-gcloud\n"
+                        "CEREBRAS_API_KEY=dead-tier\n", encoding="utf-8")
+    saved_env = {k: os.environ.get(k) for k in
+                 ("DESKIT_GROQ_API_KEY", "GROQ_API_KEY", "GOOGLE_API_KEY",
+                  "CEREBRAS_API_KEY", "GEMINI_API_KEY", "DESKIT_GEMINI_API_KEY")}
+    old_file, old_portable = secretstore.ENV_FILE, paths.PORTABLE
+    try:
+        for k in saved_env:
+            os.environ.pop(k, None)
+        secretstore.ENV_FILE = env_file
+        paths.PORTABLE = True
+        with _test_cred_prefix() as store:
+            assert store.find_key("groq") == ("from-dot-env", ".env.lookup-test file (developer copy)")
+            os.environ["GROQ_API_KEY"] = "from-bare-env-var"
+            assert store.find_key("groq") == ("from-bare-env-var", "environment variable GROQ_API_KEY")
+            os.environ["DESKIT_GROQ_API_KEY"] = "from-env-var"
+            assert store.find_key("groq") == ("from-env-var", "environment variable DESKIT_GROQ_API_KEY")
+            store.set("groq", "from-credential-manager")
+            assert store.find_key("groq") == ("from-credential-manager",
+                                              "Windows Credential Manager (DeskIT.test/groq)")
+            store.delete("groq")
+            os.environ.pop("DESKIT_GROQ_API_KEY")
+            paths.PORTABLE = False
+            assert store.find_key("groq") == (None, "not found"), \
+                "an installed copy read the bare variable or .env"
+            os.environ.pop("GROQ_API_KEY")
+            paths.PORTABLE = True
+            # the retired names: set in the environment AND in .env, still unread
+            os.environ["GOOGLE_API_KEY"] = "borrowed-gcloud"
+            os.environ["CEREBRAS_API_KEY"] = "dead-tier"
+            assert store.find_key("gemini") == (None, "not found")
+            assert apikey.find_key(("GOOGLE_API_KEY",)) == (None, "not found")
+            assert apikey.find_key(("CEREBRAS_API_KEY",)) == (None, "not found")
+            assert apikey.find_cerebras_key() == (None, "not found")
+            # the shim maps the old env names to the store's names
+            os.environ["DESKIT_GEMINI_API_KEY"] = "gem-from-env"
+            assert apikey.find_api_key()[0] == "gem-from-env"
+            assert apikey.find_key(("GEMINI_API_KEY", "GOOGLE_API_KEY"))[0] == "gem-from-env"
+            assert "CEREBRAS_API_KEY" in apikey.CEREBRAS_MISSING_KEY_MESSAGE
+            assert "--set-key groq" in apikey.GROQ_MISSING_KEY_MESSAGE
+    finally:
+        secretstore.ENV_FILE = old_file
+        paths.PORTABLE = old_portable
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        env_file.unlink(missing_ok=True)
+
+
+def test_secrets_never_on_disk_in_data_dir():
+    """Fresh interpreter, DESKIT_HOME: --set-key stores a fixture key,
+    --keys names where it is and never the value, and no file under the
+    data folder holds the key; --delete-key takes it back out. The
+    hatch selects the DeskIT.test/ prefix, so the owner's entries are
+    never in play."""
+    d = Path(tempfile.mkdtemp(prefix="deskit-secrets-e2e-"))
+    fixture = "gsk_fixture_e2e_" + "x" * 24
+    env = {**os.environ, "DESKIT_HOME": str(d)}
+    for var in ("DESKIT_PORTABLE", "GROQ_API_KEY", "GEMINI_API_KEY",
+                "DESKIT_GROQ_API_KEY", "DESKIT_GEMINI_API_KEY"):
+        env.pop(var, None)          # the owner's shell must not answer
+    run = lambda *args, **kw: subprocess.run(
+        [sys.executable, "main.py", *args], cwd=str(REPO), env=env,
+        capture_output=True, encoding="utf-8", errors="replace", timeout=120, **kw)
+    try:
+        out = run("--set-key", "groq", input=fixture + "\n")
+        assert out.returncode == 0, (out.stdout, out.stderr)
+        assert "DeskIT.test/groq" in out.stdout and fixture not in out.stdout, out.stdout
+        keys = run("--keys")
+        assert keys.returncode == 0 and "DeskIT.test/groq" in keys.stdout, keys.stdout
+        assert fixture not in keys.stdout
+        assert "gemini" in keys.stdout and "not set" in keys.stdout, keys.stdout
+        for p in d.rglob("*"):
+            if p.is_file():
+                assert fixture.encode() not in p.read_bytes(), p
+        gone = run("--delete-key", "groq")
+        assert gone.returncode == 0 and "Removed" in gone.stdout, gone.stdout
+        after = run("--keys").stdout
+        assert "DeskIT.test/groq" not in after and "groq" in after, after
+    finally:
+        subprocess.run([sys.executable, "main.py", "--delete-key", "groq"],
+                       cwd=str(REPO), env=env, capture_output=True, timeout=60)
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_phone_token_moves_from_the_text_file_into_dpapi():
+    """A server_token.txt from an older version is read once, kept as the
+    SAME token in the DPAPI blob (the phone bookmarked it), and deleted;
+    a copy with neither gets a fresh token that then stays put."""
+    import secretstore
+    import server as server_mod
+    legacy = _SCRATCH_HOME / "phone-legacy" / "server_token.txt"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("legacy-token-0123456789abcdef\n", encoding="utf-8")
+    old_file = server_mod.TOKEN_FILE
+    secretstore.delete("phone_token")
+    try:
+        server_mod.TOKEN_FILE = legacy
+        assert server_mod.load_token() == "legacy-token-0123456789abcdef"
+        assert not legacy.exists(), "the plaintext copy stayed behind"
+        assert secretstore.get("phone_token") == "legacy-token-0123456789abcdef"
+        assert server_mod.load_token() == "legacy-token-0123456789abcdef"
+        secretstore.delete("phone_token")
+        fresh = server_mod.load_token()
+        assert len(fresh) >= 20 and fresh != "legacy-token-0123456789abcdef"
+        assert server_mod.load_token() == fresh
+        assert not legacy.exists(), "a new token was written as plaintext"
+        import notify_hook as hook
+        assert hook.read_token() == fresh, "the hook reads the same store"
+    finally:
+        server_mod.TOKEN_FILE = old_file
+        secretstore.delete("phone_token")
+        shutil.rmtree(legacy.parent, ignore_errors=True)
+
+
+def test_migrate_imports_env_keys_into_credential_manager():
+    """--migrate's key step: the two keys of an old .env go into Credential
+    Manager unless one is already there; the retired names are reported,
+    the file is left alone, and no value is ever printed."""
+    import migrate as migrate_mod
+    d = Path(tempfile.mkdtemp(prefix="deskit-envkeys-"))
+    env_file = d / ".env"
+    env_file.write_text("GEMINI_API_KEY=gem-fixture-value\n"
+                        "GROQ_API_KEY = 'gsk-fixture-value'\n"
+                        "CEREBRAS_API_KEY=dead\n", encoding="utf-8")
+    lines: list[str] = []
+    try:
+        with _test_cred_prefix() as store:
+            store.set("gemini", "gem-already-there")
+            assert migrate_mod.import_env_keys(env_file, lines.append) == 1
+            assert store.get("groq") == "gsk-fixture-value"
+            assert store.get("gemini") == "gem-already-there", "an existing key was overwritten"
+            text = "\n".join(lines)
+            assert "groq key: copied" in text and "gemini key: already" in text, text
+            assert "CEREBRAS_API_KEY: no longer read" in text, text
+            for value in ("gem-fixture-value", "gsk-fixture-value", "gem-already-there", "dead"):
+                assert value not in text, text
+            assert env_file.exists(), ".env was deleted"
+            assert migrate_mod.import_env_keys(d / "missing.env", lines.append) == 0
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_only_secretstore_touches_the_key_backends():
+    """Static: Credential Manager, DPAPI, the .env file and the raw key
+    variable names appear in secretstore.py and nowhere else in the
+    product tree (D3, D12 lock 1). apikey.py is a shim that asks it."""
+    backends = re.compile(r"win32cred|CryptProtectData|CryptUnprotectData|"
+                          r"\bENV_FILE\b|/\s*\"\.env\"|"
+                          r"environ(?:\.get)?\(?\[?\s*[\"'](?:GROQ|GEMINI|GOOGLE|CEREBRAS)_API_KEY")
+    bad = []
+    for py in sorted(REPO.glob("*.py")) + sorted((REPO / "transcribers").glob("*.py")):
+        if py.name in ("secretstore.py",) or py.name.startswith("tests"):
+            continue
+        for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
+            if backends.search(line):
+                bad.append(f"{py.name}:{i}: {line.strip()}")
+    assert not bad, "\n".join(bad)
 
 
 if __name__ == "__main__":

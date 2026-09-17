@@ -68,6 +68,9 @@ log = logging.getLogger("app")
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 APP_DIR = Path(__file__).resolve().parent
+#: Where the token lived until 2026-09-17, a plaintext file beside the
+#: code. load_token() carries one it finds there into the secret store
+#: once and deletes it; nothing writes it any more (D3).
 TOKEN_FILE = paths.PHONE_TOKEN
 APK = (APP_DIR / "android" / "app" / "build" / "outputs" / "apk"
        / "debug" / "app-debug.apk")
@@ -102,17 +105,38 @@ def load_token() -> str:
     Generated rather than configured because a token the user has to
     invent is a token that ends up being "1234" — and this one is never
     typed by hand anyway: it travels in the URL the log prints.
+
+    It lives in the secret store (``secrets\phone_token.bin``, DPAPI,
+    this Windows account only). A ``server_token.txt`` left by an older
+    version is read ONCE, stored, and deleted — the same token, so the
+    phone that bookmarked it keeps working.
     """
+    import secretstore
     try:
-        token = TOKEN_FILE.read_text("utf-8").strip()
-        if token:
-            return token
+        token = secretstore.get("phone_token")
+    except secretstore.SecretError as e:
+        log.warning("phone token: %s — generating a new one", e)
+        token = None
+    if token:
+        return token
+    legacy = None
+    try:
+        legacy = TOKEN_FILE.read_text("utf-8").strip() or None
     except OSError:
         pass
-    token = secrets.token_urlsafe(24)
-    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-    TOKEN_FILE.write_text(token, "utf-8")
-    log.info("generated a new phone token in %s", TOKEN_FILE.name)
+    token = legacy or secrets.token_urlsafe(24)
+    secretstore.set("phone_token", token)
+    if legacy and secretstore.get("phone_token") == legacy:
+        try:
+            TOKEN_FILE.unlink()
+            log.info("moved the phone token from %s into %s (DPAPI)",
+                     TOKEN_FILE.name, secretstore.blob_path("phone_token").name)
+        except OSError as e:
+            log.warning("phone token copied into the secret store but %s "
+                        "could not be deleted: %s", TOKEN_FILE.name, e)
+    elif not legacy:
+        log.info("generated a new phone token in %s",
+                 secretstore.blob_path("phone_token").name)
     return token
 
 

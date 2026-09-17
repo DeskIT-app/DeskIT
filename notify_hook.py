@@ -15,9 +15,10 @@ SubagentStop included, is ignored — a subagent finishing is not the
 owner's business, and a Stop with `stop_hook_active` set is a turn that
 is already being continued by a hook. The event is posted to the
 running app's `/notify` route on 127.0.0.1:[server] port with the
-bearer token from server_token.txt beside this file. If the app is not
-running, the post fails and the script exits 0 in silence — a hook must
-never make Claude wait on a card.
+phone bearer token from the secret store (secretstore.py, a DPAPI blob
+the app writes at start). If the app is not running, the post fails
+and the script exits 0 in silence — a hook must never make Claude wait
+on a card.
 
 Every payload also names the window the notification CAME FROM (`hwnd`
 and `app`), because a click on the card now raises it — see
@@ -53,7 +54,7 @@ import paths
 HERE = Path(__file__).resolve().parent
 DEFAULT_PORT = 8756
 DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
-TOKEN_FILE = paths.PHONE_TOKEN
+TOKEN_FILE = paths.PHONE_TOKEN     # the pre-2026-09-17 plaintext file
 BODY_MAX = 300
 SOURCE = "claude-code"
 
@@ -390,7 +391,19 @@ def server_url() -> str:
     return f"http://127.0.0.1:{server_port()}/notify"
 
 
-def read_token(path) -> str | None:
+def read_token(path=None) -> str | None:
+    """The phone bearer: from the secret store, or — while an older app
+    has not yet moved it — the plaintext file; ``--token-file`` names a
+    file explicitly. Anything failing is None, never an exception."""
+    if path is None:
+        try:
+            import secretstore
+            token = secretstore.get("phone_token")
+            if token:
+                return token
+        except Exception:                 # noqa: BLE001
+            pass
+        path = TOKEN_FILE
     try:
         token = Path(path).read_text("utf-8").strip()
     except Exception:                     # noqa: BLE001
@@ -544,7 +557,7 @@ def _main(argv) -> None:
         payload = payload_from_hook(event) if event is not None else None
         if payload is None:
             return
-    token = read_token(args.token_file or TOKEN_FILE)
+    token = read_token(args.token_file)
     if token is None:
         return
     post(payload, args.url or server_url(), token)

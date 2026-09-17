@@ -241,16 +241,35 @@ exactly what classic did.
 - Mic: Arctis 7 headset, device index `"1"`, 16 kHz mono WAV everywhere.
 - Ollama at `http://127.0.0.1:11434` — **127.0.0.1, never localhost**
   (localhost resolves ::1 first and costs ~2 s of refused connection).
-- Keys live in `.env` (gitignored): `GEMINI_API_KEY` (translate/punctuate/
-  dictation fallback pool, 20 req/day/model), `GROQ_API_KEY`
-  (repair pass, ~1,000 req/day), `CEREBRAS_API_KEY` (present but dead —
-  their free tier ended; kept as `[polish] prefer = "cerebras"`).
+- Keys: Windows Credential Manager first (`DeskIT/groq`, `DeskIT/gemini`
+  — `main.py --set-key groq`, `--keys` lists what is where), then
+  `DESKIT_GROQ_API_KEY` / `DESKIT_GEMINI_API_KEY` in the environment, then
+  the gitignored `.env` beside `main.py` — read in THIS checkout only
+  (portable/developer mode). `secretstore.py` is the one reader; every
+  client asks it through `apikey.py`. `CEREBRAS_API_KEY` and
+  `GOOGLE_API_KEY` are no longer read at all. Gemini: translate/punctuate/
+  dictation fallback pool, 20 req/day/model; Groq: repair pass, ~1,000
+  req/day. The phone token is `secrets\phone_token.bin` (DPAPI), moved
+  there from `server_token.txt` on the first start after 2026-09-17.
 - The app runs windowless under `pythonw.exe`, single instance enforced by
   a named mutex (`singleton.py`); status in `app.log`, everything ever
   dictated in `transcripts.log`. Both logs are plaintext and private.
 
 ## Traps we already paid for — do not re-arm them
 
+- **Never name a module after a standard-library module.** The plan
+  called the secret store `secrets.py`; a file of that name beside
+  `main.py` shadows stdlib `secrets` (`token_urlsafe` in `server.py` and
+  eleven files in the venv) because the app folder is first on
+  `sys.path`. It is `secretstore.py`. Check `python -c "import X"` from
+  a folder WITHOUT the file before picking a new module name.
+- **A secret value goes into a variable in `secretstore.py` and nowhere
+  else.** `apikey.py` is a shim over it; clients get the value and use it
+  in the request. Never log one, never put one in a message, a report or
+  a settings file, never cache it in a module global. Tests that write a
+  key use the `DeskIT.test/` Credential Manager prefix (`DESKIT_HOME`
+  selects it) or the DPAPI files under the tests' scratch home — a test
+  that touches `DeskIT/groq` is a test that can delete the owner's key.
 - **Every personal-store path comes from `paths.py`, never from
   `Path(__file__)`.** Since 2026-09-17 the app has two roots: `APP_DIR`
   (code, read-only once installed) and `DATA_DIR` (everything a person

@@ -37,8 +37,11 @@ captures/
 # Generated at first run by cues.py
 cues/
 
-# Generated on first run by server.py — the phone endpoint shared secret.
+# The phone endpoint's shared secret: server_token.txt until 2026-09-17,
+# since then a DPAPI blob under secrets\ (secretstore.py) — unreadable to
+# any other Windows account, and still never committed.
 server_token.txt
+/secrets/
 
 # Android build outputs and local toolchain paths
 android/.gradle/

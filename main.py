@@ -5903,6 +5903,15 @@ def main() -> int:
                              "the settings (needs --yes)")
     parser.add_argument("--yes", action="store_true",
                         help="confirm --reset-data")
+    parser.add_argument("--keys", action="store_true",
+                        help="which cloud keys are stored and where (never "
+                             "the values)")
+    parser.add_argument("--set-key", metavar="NAME",
+                        help="store a Groq or Gemini key in Windows "
+                             "Credential Manager (prompts; NAME = groq | "
+                             "gemini)")
+    parser.add_argument("--delete-key", metavar="NAME",
+                        help="remove that key from Windows Credential Manager")
     parser.add_argument("--fake", action="store_true",
                         help="use the fake backend (no API, no mic quality "
                              "needed)")
@@ -5968,6 +5977,13 @@ def main() -> int:
     if args.reset_data:
         import migrate as migrate_mod
         return migrate_mod.reset_data(yes=args.yes)
+    if args.keys or args.set_key or args.delete_key:
+        import secretstore
+        if args.set_key:
+            return secretstore.cli_set(args.set_key.lower())
+        if args.delete_key:
+            return secretstore.cli_delete(args.delete_key.lower())
+        return secretstore.cli_list()
     paths.ensure()
     setup_logging()
 
@@ -6375,8 +6391,8 @@ def main() -> int:
                  "standing", awake_cfg.hotkey)
     ncfg = getattr(cfg, "notify", None)
     if ncfg is not None and ncfg.enabled:
-        log.info("notifications: POST /notify on the phone endpoint (token "
-                 "from server_token.txt) plays a cue and puts a card up%s; "
+        log.info("notifications: POST /notify on the phone endpoint (the "
+                 "phone token) plays a cue and puts a card up%s; "
                  "Claude Code is wired through notify_hook.py%s",
                  f"; tap {ncfg.hotkey!r} to dismiss" if ncfg.hotkey else "",
                  ", and Cowork through the desktop app's own Windows "

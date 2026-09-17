@@ -1,100 +1,66 @@
-"""Where the Gemini API key comes from.
+"""Where the cloud keys come from — a thin shim over secretstore.py.
 
-Environment variables are the documented path, but on this machine they are
-fragile: Windows Terminal shares one process across all tabs and windows,
-so a `setx` only reaches terminals opened after the whole app is restarted.
-A key file in this folder removes that failure mode entirely — it works in
-any shell, immediately.
+Every cloud client (translate.py, transcribers/gemini.py, visual_qa.py)
+asks here with the environment-variable NAMES it always used
+(``GROQ_API_KEY``, ``GEMINI_API_KEY``); this module maps them to the
+secret store's names and the store does the looking: Windows Credential
+Manager, then ``DESKIT_*`` in the environment, then — in a developer or
+portable copy only — the ``.env`` beside main.py. secretstore.py's
+docstring has the order and the reasons (D3).
 
-Lookup order:
-  1. GEMINI_API_KEY / GOOGLE_API_KEY in the environment
-  2. a `.env` file next to this module (KEY=VALUE lines)
+Two names are no longer answered, on purpose: ``GOOGLE_API_KEY`` (an alias
+that silently borrowed whatever gcloud key the shell had) and
+``CEREBRAS_API_KEY`` (their free tier ended in 2026-08; the backend stays
+in the code for whoever sets ``[polish] prefer = "cerebras"`` and gets the
+"no key" message below).
 """
 from __future__ import annotations
 
-import os
-from pathlib import Path
+import secretstore
 
-APP_DIR = Path(__file__).resolve().parent
-ENV_FILE = APP_DIR / ".env"
+#: environment-variable name -> secret store name
+_NAMES = {"GROQ_API_KEY": "groq", "GEMINI_API_KEY": "gemini"}
 
-# Each provider has its own bucket of names and its own message; the
-# LOOKUP below is shared, because the file format and the precedence are
-# not provider-specific.
-_GEMINI_NAMES = ("GEMINI_API_KEY", "GOOGLE_API_KEY")
-_CEREBRAS_NAMES = ("CEREBRAS_API_KEY",)
+_GEMINI_NAMES = ("GEMINI_API_KEY",)
 _GROQ_NAMES = ("GROQ_API_KEY",)
 
 
-def _from_environment(names: tuple[str, ...]) -> tuple[str, str] | None:
-    for name in names:
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            return value, f"environment variable {name}"
-    return None
-
-
-def _from_env_file(names: tuple[str, ...]) -> tuple[str, str] | None:
-    if not ENV_FILE.exists():
-        return None
-    try:
-        lines = ENV_FILE.read_text(encoding="utf-8-sig").splitlines()
-    except OSError:
-        return None
-    for raw in lines:
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        name, _, value = line.partition("=")
-        if name.strip().upper() in names:
-            value = value.strip().strip('"').strip("'")
-            if value:
-                return value, f"{ENV_FILE.name} file"
-    return None
-
-
 def find_key(names: tuple[str, ...]) -> tuple[str | None, str]:
-    """Returns (key, human-readable source). key is None when not found."""
-    for lookup in (_from_environment, _from_env_file):
-        found = lookup(names)
-        if found is not None:
-            return found
+    """Returns (key, human-readable source). key is None when not found.
+
+    The first name the store knows wins; a name it does not know
+    (``GOOGLE_API_KEY``, ``CEREBRAS_API_KEY``) is skipped, not looked up.
+    """
+    for name in names:
+        store_name = _NAMES.get(name.upper())
+        if store_name is not None:
+            return secretstore.find_key(store_name)
     return None, "not found"
 
 
 def find_api_key() -> tuple[str | None, str]:
-    return find_key(_GEMINI_NAMES)
-
-
-def find_cerebras_key() -> tuple[str | None, str]:
-    return find_key(_CEREBRAS_NAMES)
+    return secretstore.find_key("gemini")
 
 
 def find_groq_key() -> tuple[str | None, str]:
-    return find_key(_GROQ_NAMES)
+    return secretstore.find_key("groq")
 
 
-MISSING_KEY_MESSAGE = (
-    "No Gemini API key found.\n"
-    f"  Easiest fix: put this single line in {ENV_FILE}\n"
-    "      GEMINI_API_KEY=your-key-here\n"
-    "  (that file is read directly, so no terminal restart is ever needed)\n"
-    "  Alternative: set the GEMINI_API_KEY environment variable."
-)
+def find_cerebras_key() -> tuple[str | None, str]:
+    """Always absent: this version does not read CEREBRAS_API_KEY."""
+    return None, "not found"
 
-CEREBRAS_MISSING_KEY_MESSAGE = (
-    "No Cerebras API key found.\n"
-    "  Free tier: 1M tokens/day, no credit card — console.cerebras.ai\n"
-    f"  Then put this single line in {ENV_FILE}:\n"
-    "      CEREBRAS_API_KEY=your-key-here\n"
-    "  Until then the repair pass stays on the local model, exactly as "
-    "classic runs it.")
 
-GROQ_MISSING_KEY_MESSAGE = (
-    "No Groq API key found.\n"
-    "  Free tier, no credit card — console.groq.com\n"
-    f"  Then put this single line in {ENV_FILE}:\n"
-    "      GROQ_API_KEY=your-key-here\n"
-    "  Until then the repair pass stays on the local model, exactly as "
-    "classic runs it.")
-
+def __getattr__(name: str):
+    # The messages are built on demand so they name the current store
+    # target and the copy's own options (a developer copy mentions .env).
+    if name == "MISSING_KEY_MESSAGE":
+        return secretstore.missing_key_message("gemini")
+    if name == "GROQ_MISSING_KEY_MESSAGE":
+        return secretstore.missing_key_message("groq")
+    if name == "CEREBRAS_MISSING_KEY_MESSAGE":
+        return ("No Cerebras key: this version does not read CEREBRAS_API_KEY "
+                "any more (their free tier ended, 2026-08).\n"
+                '  Set [polish] prefer = "groq" (free, console.groq.com) or '
+                '"ollama" (local) instead.')
+    raise AttributeError(name)
