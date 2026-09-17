@@ -1175,7 +1175,7 @@ ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedg
 | `fonts.py` | hands this process its own copy of Rubik (`AddFontResourceExW`, `FR_PRIVATE`) at the import of `ui.py` and `visual_qa.py`, before anything asks for a face |
 | `shelf.py` + `shelf_card.py` + `skin\shelf.py` | the panel beside the dot: the window/thread/queue class (modelled on `overlay.HintCard`), the pure painter (words, geometry, hit test, `INK`) and the glass. Every answer it offers calls the same `App` method the matching card does; nothing goes through `control.py` |
 | `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |
-| `versions.py` | reads the branch name, and nothing else |
+| `version.py` | reads `VERSION` (one line, SemVer, the number every screen and report prints; the Android build reads the same file) and, in the checkout only, the git branch |
 | `tests.py` | the product suite — hundreds of plain-assert test functions, `NEEDS_SCREEN`, `--no-screen`. Not the file you run |
 | `dev\tests_ops.py` | the owner's suite: the nightly run, the git card, the routine's docs — imports `tests.py`'s fixtures, runs only in this checkout |
 | `tests_quiet.py` | how both are run: on a hidden Windows desktop, `--no-screen` while he is at the machine (house rule 8). `run_hidden()` is importable, for anything else that must not be seen |

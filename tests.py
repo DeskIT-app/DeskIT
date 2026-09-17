@@ -28242,7 +28242,7 @@ def test_no_store_path_is_built_beside_the_code():
         "Dashboard.vbs", ".venv", "main.py", "dashboard.py",  # launch.py, until chapter 10
     }
     owner_only_files = {"nightly.py", "make_icon.py", "install_fonts.py",
-                        "versions.py", "audio_check.py"}
+                        "audio_check.py"}
     pat = re.compile(r'(?:APP_DIR|Path\(__file__\)\.resolve\(\)\.parent)\s*/\s*"([^"]+)"')
     bad = []
     for py in sorted(REPO.glob("*.py")) + sorted((REPO / "transcribers").glob("*.py")) \
@@ -29694,6 +29694,117 @@ def test_a_strangers_copy_shows_no_owner_surface():
     assert src.index("not paths.DEVELOPER") < src.index("return benchmark(cfg)")
 
 
+# ------------------------------------------------- one number (PR 9, D21)
+#
+# DISTRIBUTION_PLAN.md 7.8 and 11.2: VERSION beside main.py is the single
+# source; version.py reads it once and asks git for the branch only in
+# the checkout; problems.env() carries the version, the Windows build and
+# the open consents — never the branch outside the checkout, never the
+# Python version, never a key; the Android build derives its numbers from
+# the same file.
+
+def test_version_file_is_single_source():
+    import version as version_mod
+
+    text = paths.VERSION_FILE.read_text("utf-8")
+    assert text.endswith("\n") and text.count("\n") == 1, repr(text)
+    line = text.strip()
+    assert version_mod.SEMVER.match(line), line
+    assert version_mod.VERSION == line
+    assert version_mod.PARTS == version_mod.parse(line)
+    assert version_mod.IS_BETA == (version_mod.PARTS[3] is not None)
+    # precedence: numbers, and a beta before its release
+    assert version_mod.key("1.2.0-beta.3") < version_mod.key("1.2.0")
+    assert version_mod.key("1.2.0") < version_mod.key("1.10.0")
+    assert version_mod.key("1.2.0-beta.2") < version_mod.key("1.2.0-beta.10")
+    for bad in ("v1.2.0", "1.2", "1.2.0-rc.1", "", "1.2.0.1"):
+        try:
+            version_mod.parse(bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{bad!r} parsed")
+    # the phone reads the same file and types no number of its own
+    gradle = (REPO / "android" / "app" / "build.gradle.kts").read_text("utf-8")
+    assert 'file("../VERSION")' in gradle, "the Android build has its own number"
+    assert not re.search(r"versionCode\s*=\s*\d", gradle), "a hand-typed versionCode"
+    assert not re.search(r'versionName\s*=\s*"', gradle), "a hand-typed versionName"
+    assert "* 10000 +" in gradle and "* 100 +" in gradle, "not D21's formula"
+    # and nothing in the product still asks the retired module
+    assert not (REPO / "versions.py").exists()
+    for name in product_modules():
+        src = (REPO / (name.replace(".", "/") + ".py")).read_text("utf-8") \
+            if name not in ("transcribers", "skin") else ""
+        assert "import versions" not in src, name
+    assert "versions" in DEV_MODULES
+
+
+def test_version_no_git_on_user_machine():
+    """An installed copy has no .git and no git on PATH: version.py must
+    not start a process to find that out. With DEVELOPER off, _branch()
+    answers "" without calling subprocess.run; with it on, the checkout's
+    branch is the one git reports."""
+    import subprocess as sp
+
+    import version as version_mod
+
+    calls: list = []
+    real = sp.run
+
+    def spy(*a, **k):
+        calls.append(a)
+        return real(*a, **k)
+
+    with _patched(sp, "run", spy):
+        with _patched(paths, "DEVELOPER", False):
+            assert version_mod._branch() == ""
+        assert calls == [], "git was spawned on a stranger's copy"
+        with _patched(paths, "DEVELOPER", True):
+            here = version_mod._branch()
+    assert calls and calls[0][0][:2] == ["git", "rev-parse"], calls
+    assert here == version_mod.BRANCH
+    assert version_mod.BRANCH, "this checkout has a branch"
+    assert version_mod.label() == f"DeskIT {version_mod.VERSION} \u00b7 {version_mod.BRANCH}"
+    with _patched(version_mod, "BRANCH", ""):
+        assert version_mod.label() == f"DeskIT {version_mod.VERSION}"
+
+
+def test_problems_env_fields():
+    """The report's environment is a whitelist (7.8): version, os_build
+    and the open consents always; branch only in the checkout; never
+    python; with a config, the model NAMES and the switches that explain
+    a bad dictation — and nothing key-shaped anywhere."""
+    import problems as problems_mod
+    import redact
+    import version as version_mod
+
+    plain = problems_mod.env()
+    assert plain["version"] == version_mod.VERSION
+    assert re.match(r"^10\.0\.\d+$", plain["os_build"]), plain["os_build"]
+    assert isinstance(plain["consents"], list)
+    assert "python" not in plain
+    assert plain.get("branch") == version_mod.BRANCH   # this IS the checkout
+    with _patched(paths, "DEVELOPER", False):
+        theirs = problems_mod.env()
+    assert "branch" not in theirs, theirs
+    assert set(theirs) == {"version", "os_build", "consents"}, theirs
+
+    cfg = config_mod.load_layered(paths.DEFAULTS_FILE, _SCRATCH_HOME / "none.toml",
+                                 _SCRATCH_HOME / "none.json")
+    full = problems_mod.env(cfg)
+    for key in ("backend", "local_model", "english_model", "beam_size",
+                "gemini_models", "vocab_enabled", "vocab_replace_after_hits",
+                "polish_when", "punctuate_auto", "review_enabled", "max_seconds"):
+        assert key in full, key
+    text = json.dumps(full, ensure_ascii=False)
+    assert redact.redact(text) == text, "something key-shaped in env()"
+    with _consented("cloud_text"):
+        kinds = [c["kind"] for c in problems_mod.env()["consents"]]
+    assert kinds == ["cloud_text"], kinds
+    assert all(set(c) == {"kind", "text_version"}
+               for c in problems_mod.env(cfg)["consents"])
+
+
 # ------------------------------------------------ the split suite (PR 8)
 #
 # DISTRIBUTION_PLAN.md 7.5 and chapter 15: this file is the product suite
@@ -29709,9 +29820,9 @@ def test_a_strangers_copy_shows_no_owner_surface():
 #: surface calls (dashboard._nightly, main._questions_mod), never at
 #: import; this file imports none of them anywhere.
 DEV_MODULES = ("nightly", "questions", "tests_quiet", "tests_ops", "inbox",
-               "weekly_review", "dev_git", "answer_card")
-#: The tree's files that are not product modules. versions.py is not
-#: here yet: dashboard and problems still import it (PR 9's version.py).
+               "weekly_review", "dev_git", "answer_card", "versions")
+#: The tree's files that are not product modules. (versions.py is gone
+#: since PR 9 — version.py, which reads VERSION, is the product's.)
 DEV_FILES = frozenset({"tests.py", "tests_quiet.py", "nightly.py",
                        "questions.py", "answer_card.py", "make_icon.py",
                        "audio_check.py", "install_fonts.py"})

@@ -123,7 +123,11 @@ translate_hotkey = "f8"
 # is selected" (Drive, Explorer, VS Code, Excel and PowerPoint on the
 # web), and none of those is a place you punctuate dictated prose.
 # "" turns it off. See [punctuate] below.
-punctuate_hotkey = "f2"
+# ctrl+f2 since 2026-09-17: the owner's own setting, which became the
+# shipped default when he asked that the defaults be what he runs (D34);
+# a bare f2 is the rename key of Explorer and Excel and a global hook
+# claims it in every window.
+punctuate_hotkey = "ctrl+f2"
 # Fix the words it got wrong RIGHT WHERE THEY LANDED — in Chrome, in
 # Claude Code, wherever you pasted — then TAP this key. It reads the
 # corrected text off the screen, diffs it against what it produced, and

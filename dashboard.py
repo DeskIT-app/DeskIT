@@ -80,6 +80,7 @@ import settings as settings_mod
 import singleton
 import summary
 import ui
+import version
 import widgets
 
 APP_DIR = Path(__file__).resolve().parent
@@ -1353,24 +1354,15 @@ class Dashboard:
         self.running = False
         self.closing = False
         # The branch this folder is on, for the Overview meta line and the
-        # Version screen. Resolved OFF this thread by the warm-up below —
-        # asking git synchronously here delayed the whole window opening,
-        # and every click on Version paid the same tax again.
-        self.branch = "?"
+        # Version screen — read once at import by version.py (git only in
+        # the checkout, "" on an installed copy), so no thread and no
+        # spawn here; the version number comes from the same module.
+        self.branch = version.BRANCH
         # Latched, not re-derived, because the pause taken by the key
         # dialog has to be undone from wherever that dialog's life ends —
         # including a route that never runs its own close handler.
         self._paused_for_capture = False
         self._events: queue.Queue = queue.Queue()
-        # The queue FIRST, and only then the thread that posts into it.
-        # git can answer in well under a millisecond on a warm repo, and
-        # when it did, _warm_versions reached _events before this line
-        # had run: "AttributeError: 'Dashboard' object has no attribute
-        # '_events'" on the warm-up thread, swallowed with the thread,
-        # and the branch label silently stayed "?" for the life of the
-        # window. Seen eight times in one run of the suite.
-        threading.Thread(target=self._warm_branch, daemon=True,
-                         name="branch-warmup").start()
         self._busy_until = 0.0     # ignore polls right after a command, so a
                                    # stale status cannot flicker the buttons
                                    # back for one frame
@@ -3533,7 +3525,8 @@ class Dashboard:
         bits = []
         phone = (self.status or {}).get("phone")
         bits.append("phone live" if phone else "phone off")
-        if getattr(self, "branch", "") not in ("", "?"):
+        bits.append(f"DeskIT {version.VERSION}")
+        if getattr(self, "branch", ""):
             bits.append(f"running {self.branch}")
         learned = _words_learned()
         if learned is not None:
@@ -7817,7 +7810,9 @@ class Dashboard:
         tk.Label(body, text="DeskIT", bg=ui.CARD,
                  fg=getattr(ui, "ACCENT_TEXT", ui.ACCENT),
                  font=(ui.DISPLAY, 17, "bold")).place(x=0, y=20)
-        tk.Label(body, text=f"branch '{self.branch}' - running now",
+        tk.Label(body, text=f"version {version.VERSION}" + (
+                     f" - branch '{self.branch}' - running now"
+                     if self.branch else ""),
                  bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.UI, 8)).place(x=0, y=50)
 
@@ -7990,26 +7985,6 @@ class Dashboard:
         # ui.Field shows and hides its own placeholder on every keystroke
         # and on the focus moving; there is nothing to place by hand.
         self._fill_settings()
-
-    # ------------------------------------------------------------- version
-
-    def _warm_branch(self) -> None:
-        """Find out which branch this is, off the Tk thread.
-
-        versions.py spawns git, and git under pythonw allocates a console
-        per spawn unless suppressed — hundreds of ms each, fatal on the UI
-        thread (it froze the Version screen solid). Both facts are handled
-        inside versions.py now; this thread's job is only to pay even that
-        smaller cost while the window is still opening, not when a tab is
-        clicked. The answer lands back on the Tk thread through _events,
-        like every other off-thread result.
-        """
-        try:
-            import versions as versions_mod
-            here = versions_mod.current_branch()
-        except Exception:
-            return
-        self._events.put(lambda: setattr(self, "branch", here))
 
     # ------------------------------------------------- talking to the app
 

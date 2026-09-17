@@ -806,7 +806,8 @@ def test_a_real_nightly_failure_files_one_report_saturday_can_read() -> None:
         assert len(text) <= problems_mod.TEXT_MAX
         assert "…" not in text, \
             "the report was cut mid-word instead of counting the rest"
-        assert item["env"].get("python"), "no evidence about the machine"
+        assert item["env"].get("version") and item["env"].get("os_build"), \
+            "no evidence about the machine"   # PR 9: version + build, no python
         # The transcript it points at is really there, and problems.md was
         # rewritten so the weekly read sees the report at all.
         assert Path(got["transcript"]).exists()

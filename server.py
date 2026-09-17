@@ -78,20 +78,19 @@ APK_GRADLE = APP_DIR / "android" / "app" / "build.gradle.kts"
 
 
 def apk_version() -> str:
-    """versionName from the build file, for the download filename.
+    """The version in the APK's download filename.
 
     Serving every build as "DeskIT.apk" means the new one lands
     next to the old one in Downloads under the same name — and tapping the
     stale copy reinstalls the previous version, which looks exactly like an
     update that refused to apply. A version in the name makes the two
-    impossible to confuse.
+    impossible to confuse. Since PR 9 the phone's versionName IS the
+    VERSION file (build.gradle.kts reads it), so this is version.VERSION.
     """
     try:
-        import re
-        m = re.search(r'versionName\s*=\s*"([^"]+)"',
-                      APK_GRADLE.read_text("utf-8"))
-        return m.group(1) if m else "0"
-    except OSError:
+        import version
+        return version.VERSION
+    except Exception:                          # noqa: BLE001
         return "0"
 
 # Bodies are speech, not uploads. A minute of Opus is ~100 KB; this is a

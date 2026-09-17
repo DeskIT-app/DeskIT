@@ -306,8 +306,8 @@ def not_now(kind: str) -> None:
 
 def _app_version() -> str:
     try:
-        import version                                       # PR 9
-        return str(getattr(version, "VERSION", "") or "dev")
+        import version
+        return version.VERSION
     except Exception:                                        # noqa: BLE001
         return "dev"
 

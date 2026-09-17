@@ -87,6 +87,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -265,21 +266,36 @@ def _plain(value):
     return str(value)
 
 
-def _branch() -> str:
+def _consents() -> list[dict]:
+    """The [privacy] gates that were open when the report was filed,
+    each with the text version the person agreed to (D7) — so the
+    owner can tell why a transcript is in the report at all."""
     try:
-        import versions
-        return str(versions.current_branch())
-    except Exception:                     # noqa: BLE001
-        return ""
+        import privacy
+        return [{"kind": s["kind"], "text_version": s["text_version"]}
+                for s in privacy.status() if s["open"]]
+    except Exception:                 # noqa: BLE001
+        return []
 
 
 def env(cfg=None) -> dict:
-    """Best effort, never raises. Branch, python, and — when cfg is not
-    None — the settings that explain a bad dictation."""
-    out: dict = {"branch": _branch(), "python": ""}
+    """Best effort, never raises. The whitelist a report carries
+    (DISTRIBUTION_PLAN.md 7.8): the app version, the Windows build,
+    the consents that were open, the branch only in the checkout, and
+    — when cfg is not None — the settings that explain a bad
+    dictation. Model names, never a key; no Python version (the build
+    pins it). gpu and tier join when the hardware probe lands (ch. 6)."""
+    out: dict = {"version": "", "os_build": "", "consents": _consents()}
     try:
-        import platform
-        out["python"] = platform.python_version()
+        import version
+        out["version"] = version.VERSION
+        if paths.DEVELOPER and version.BRANCH:
+            out["branch"] = version.BRANCH
+    except Exception:                     # noqa: BLE001
+        pass
+    try:
+        w = sys.getwindowsversion()
+        out["os_build"] = f"{w.major}.{w.minor}.{w.build}"
     except Exception:                     # noqa: BLE001
         pass
     if cfg is None:

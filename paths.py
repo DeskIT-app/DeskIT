@@ -180,6 +180,9 @@ TMP_DIR = _rel("TMP_DIR")
 #: comments, the source the Settings page is generated from, and the
 #: bottom layer of config.load_layered(). The app never writes it.
 DEFAULTS_FILE = APP_DIR / "defaults.toml"
+#: One line, SemVer, the number every screen and report prints;
+#: the build copies it beside the code (chapter 11). version.py reads it.
+VERSION_FILE = APP_DIR / "VERSION"
 
 #: Read-only assets that stay with the code in every layout.
 FONTS_DIR = APP_DIR / "fonts"
