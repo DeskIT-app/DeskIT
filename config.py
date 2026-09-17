@@ -240,18 +240,14 @@ SHELF_ROWS_MIN, SHELF_ROWS_MAX = 1, 8
 
 @dataclass(frozen=True)
 class SetupConfig:
-    """Switch the first-run wizard off by hand.
+    """The first-run wizard's record and its two per-installation facts.
 
-    NOT the record of whether it has run — that is `.setup-done`, a
-    gitignored file beside config.toml (see firstrun.MARKER). This file is
-    tracked, so whatever is committed here is what a fresh download gets:
-    true would mean nobody ever saw the wizard, false would re-run it on
-    every install that updated, and there is no third value that means
-    "this particular copy, yes; that one, no". A fact about one
-    installation belongs in a file that installations do not share.
-
-    It stays here as an override because a setting someone can find and
-    flip beats a dotfile they have to be told about.
+    `done` is a STATE key (state.json, D2): the wizard writes it when
+    its last page is passed (firstrun.record_done), `main.py --setup`
+    runs the wizard again regardless. defaults.toml ships it false, so
+    a fresh copy sees the wizard once; a fact about one installation
+    belongs in the file that installations do not share. Older copies
+    that wrote the `.setup-done` marker file are still honoured.
 
     autostart is the other per-installation fact here (a STATE key, so
     it lives in state.json): whether Windows starts the app at logon —

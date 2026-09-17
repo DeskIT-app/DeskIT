@@ -6220,10 +6220,14 @@ def main() -> int:
                         exc_info=True)
     # The Hebrew model (models.py, plan 6.4): an installed copy downloads
     # it here, once, with the size on the screen and [Not now] — never as
-    # a side effect of loading. Before the wizard, whose sentence step
-    # needs it. Declined or offline, the app still starts: every key that
-    # needs no model works, a dictation says why, the recording is kept.
-    if args.download_model or (not args.fake and models_mod.wanted(cfg)):
+    # a side effect of loading. Declined or offline, the app still
+    # starts: every key that needs no model works, a dictation says why,
+    # the recording is kept. When the WIZARD is due it hosts this step
+    # and the pack's as pages of its own (chapter 9.2), so the two
+    # standalone windows are for a set-up copy whose model went missing.
+    wizard_due = args.setup or (firstrun.needed(cfg) and not args.fake)
+    if args.download_model or (not args.fake and not wizard_due
+                               and models_mod.wanted(cfg)):
         outcome = models_mod.offer(cfg.local.model)
         log.info("model download step: %s", outcome)
         if args.download_model:
@@ -6234,7 +6238,8 @@ def main() -> int:
     # Installed, the probe runs again so the tier and its defaults are
     # the card's before any model loads.
     import packs as packs_mod
-    if args.install_pack or (not args.fake and packs_mod.wanted(cfg, facts)):
+    if args.install_pack or (not args.fake and not wizard_due
+                             and packs_mod.wanted(cfg, facts)):
         outcome = packs_mod.offer(args.install_pack or "gpu")
         log.info("pack step (%s): %s", args.install_pack or "gpu", outcome)
         if args.install_pack:
@@ -6247,10 +6252,23 @@ def main() -> int:
             except Exception:                 # noqa: BLE001
                 log.warning("the hardware probe failed after the pack",
                             exc_info=True)
-    if args.setup or (firstrun.needed(cfg) and not args.fake):
-        if firstrun.run(cfg, Path(args.config) if args.config else None):
-            cfg = _load_config(args.config)            # it wrote the device
+    open_desk = False
+    if wizard_due:
+        outcome = firstrun.run(cfg, Path(args.config) if args.config else None,
+                               facts=facts)
+        if outcome or outcome.installed_pack:
+            cfg = _load_config(args.config)   # it wrote the device / the tier
+        if outcome.installed_pack:
+            facts = None
+            try:
+                import hardware as hardware_mod
+                facts = hardware_mod.recorded()
+            except Exception:                 # noqa: BLE001
+                pass
+        open_desk = bool(outcome.open_desk)
         if args.setup:
+            if open_desk:
+                open_dashboard()
             return 0
 
     if args.check:
@@ -6498,6 +6516,10 @@ def main() -> int:
         return fail(str(e))
     stage["app"] = app
     stage["stage"] = "running"
+    if open_desk:
+        # [Open the desk] on the wizard's last page: the dashboard, now
+        # that there is an app for it to talk to.
+        open_dashboard()
     log.info("ready — hold '%s' for %s%s, release to paste. %s",
              cfg.hotkey,
              "Hebrew or English" if cfg.auto_language else "Hebrew",

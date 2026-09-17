@@ -28239,6 +28239,7 @@ def test_no_store_path_is_built_beside_the_code():
         "android",                                         # owner-only: the APK build
         "Dashboard.vbs", ".venv", "main.py", "dashboard.py",  # launch.py, until chapter 10
         "deskit.pyw",                                      # the installed entry (launch.py, autostart.py)
+        "notify_hook.py",                                  # the hook's own script, read-only (firstrun.py)
     }
     owner_only_files = {"nightly.py", "make_icon.py", "install_fonts.py",
                         "audio_check.py"}
@@ -30063,7 +30064,10 @@ def test_models_lock_is_the_shipped_list():
     e = lock[defaults.model]
     line = models.size_line(e)
     assert line.startswith("1.62 GB from huggingface.co into ") and line.endswith(
-        str(paths.MODELS_DIR / "ivrit-ai--whisper-large-v3-turbo-ct2")), line
+        paths.short(paths.MODELS_DIR / "ivrit-ai--whisper-large-v3-turbo-ct2")), line
+    assert paths.short(Path(os.environ.get("LOCALAPPDATA", r"C:\x")) / "DeskIT" / "models") \
+        == r"%LOCALAPPDATA%\DeskIT\models"
+    assert paths.short(paths.APP_DIR / "models").startswith(paths.APP_DIR.name + "\\")
     assert models.human(1_621_665_181) == "1.62 GB" and models.human(312_000_000) == "312 MB"
     assert models.human(2_710_337) == "3 MB" and models.human(1405) == "1.4 kB" and models.human(357) == "357 B"
     assert models.entry("nobody/nothing") is None
@@ -31340,6 +31344,357 @@ def test_winget_manifest_fields():
     assert re.search(rf"^## {re.escape(version.VERSION)}\s*$", log, re.M), \
         f"CHANGELOG.md has no '## {version.VERSION}' heading"
     assert "SHA-256" not in log.split(f"## {version.VERSION}")[1], "the fixed block is the workflow's"
+
+
+# ------------------------------------------- the wizard's pages (PR 20)
+#
+# DISTRIBUTION_PLAN.md 9.2 and docs/distplan/research-onboarding.md: seven
+# pages in one window; the Hebrew model, the GPU pack and the English
+# detector as a queue the wizard hosts and keeps pumping between pages;
+# the extras page's switches through their own writers; `setup.done`
+# into state.json. steps.py is split into the run (the work and its
+# state), the pane (the face) and the window (the standalone step).
+
+def test_step_run_state_machine():
+    """steps.StepRun: idle until start(); progress moves the bytes and
+    the status line; the end words — done, paused (cancelled), offline,
+    failed — each land once and read as the plan's English; said()
+    picks the Hebrew sentence and its colour."""
+    import steps
+
+    def work(progress, cancel, stage):
+        progress(5, 10)
+        stage("verifying")
+
+    def settle(run):
+        deadline = time.monotonic() + 5
+        landed = []
+        while run.state == "running" and time.monotonic() < deadline:
+            landed += run.pump()
+            time.sleep(0.01)
+        return landed
+
+    run = steps.StepRun(steps.Step(title="t", body="b", size_line="s", total=10, work=work))
+    assert run.state == "idle" and run.status() == "" and not run.ended
+    assert run.start() is True
+    settle(run)
+    assert run.state == "done" and run.done_bytes == 10 and run.status() == "10 B — verified"
+    assert run.said() == (steps.SAID["done"], "green")
+    assert run.start() is True, "a finished run may run again"
+    settle(run)
+
+    class Stop(Exception):
+        def __init__(self, reason, why):
+            super().__init__(why)
+            self.reason = reason
+
+    def offline(**kw):
+        raise Stop("offline", "no route")
+    run = steps.StepRun(steps.Step(title="t", body="b", size_line="s", total=10, work=offline))
+    run.start()
+    settle(run)
+    assert run.state == "offline" and run.status() == "No connection"
+    assert run.said()[1] == "amber"
+
+    def slow(progress, cancel, stage):
+        for i in range(200):
+            if cancel.is_set():
+                raise Stop("cancelled", "paused")
+            progress(i, 200)
+            time.sleep(0.01)
+    run = steps.StepRun(steps.Step(title="t", body="b", size_line="s", total=200, work=slow))
+    run.start()
+    time.sleep(0.1)
+    run.pause()
+    landed = settle(run)
+    assert run.state == "paused" and landed == ["paused"] and run.status() == "Paused"
+    assert 0 < run.done_bytes < 200
+
+    def broken(**kw):
+        raise RuntimeError("disk full")
+    run = steps.StepRun(steps.Step(title="t", body="b", size_line="s", total=1, work=broken,
+                                   said={"failed": "נכשל: {why}"}))
+    run.start()
+    settle(run)
+    assert run.state == "failed" and run.said() == ("נכשל: disk full", "red")
+
+
+def test_the_wizard_offers_what_this_copy_lacks():
+    """firstrun.downloads_for: nothing on a portable copy; the model
+    when the local backend has none ready; the pack when packs.wanted
+    says so; the detector only on the gpu tier and only while it is not
+    on disk. hardware_line: the three sentences of 9.2."""
+    import firstrun
+    import models
+
+    cfg = config_mod.load(REPO / "defaults.toml")
+    gpu = {"tier": "gpu", "vram_mb": 16311, "cuda_devices": 1, "driver_ok": True}
+    with _patched(paths, "PORTABLE", True):
+        out = firstrun.downloads_for(cfg, gpu)
+        assert out["portable"] and out["model"] is None and out["pack"] is None
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-wizard-"))
+    try:
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "MODELS_LOCK", tmp / "models.lock"), \
+                _patched(paths, "PACKS_DIR", tmp / "packs"), \
+                _patched(paths, "PACKS_LOCK", tmp / "packs.lock"):
+            first = models.Entry(cfg.local.model, "b" * 40, {"model.bin": (5, "0" * 64)})
+            second = models.Entry(cfg.local.english_model, "c" * 40, {"model.bin": (7, "0" * 64)})
+            models.write_lock([first, second], tmp / "models.lock")
+            _pack_lock(tmp, "gpu", {"nvidia_cublas_cu12-1.0-py3-none-win_amd64.whl": b"a" * 5})
+            out = firstrun.downloads_for(cfg, gpu)
+            assert out["model"] is not None and out["model"].repo == cfg.local.model
+            assert out["pack"] is not None and out["pack"].name == "gpu"
+            assert out["detector"] is not None and out["detector"].repo == cfg.local.english_model
+            small = dict(gpu, tier="gpu-small", vram_mb=4096)
+            assert firstrun.downloads_for(cfg, small)["detector"] is None, "no detector on 4 GB"
+            cpu = {"tier": "cpu", "cuda_devices": 0}
+            out = firstrun.downloads_for(cfg, cpu)
+            assert out["pack"] is None and out["detector"] is None and out["model"] is not None
+            cloud = dataclasses.replace(cfg, backend="gemini")
+            assert firstrun.downloads_for(cloud, gpu)["model"] is None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    assert firstrun.hardware_line(gpu).startswith("NVIDIA card, 16 GB — fast")
+    assert "smaller mode" in firstrun.hardware_line({"tier": "gpu-small", "vram_mb": 4096})
+    assert firstrun.hardware_line({"tier": "cpu", "cuda_devices": 0}).startswith("No NVIDIA card")
+    assert "too old" in firstrun.hardware_line({"tier": "cpu", "cuda_devices": 1, "driver_ok": False})
+    assert firstrun.hardware_line(None) == "This computer has not been probed yet"
+    # the detector's own words, and a name on every step for the queue line
+    e = models.Entry("x/y", "c" * 40, {"model.bin": (1_600_000_000, "0" * 64)})
+    st = models.step(e, downloader=lambda *a, **k: None, words=models.DETECTOR_TEXT)
+    assert st.title == models.DETECTOR_TEXT["title"] and "1.60 GB" in st.body
+    assert st.name == "English detector"
+    assert models.step(e, downloader=lambda *a, **k: None).name == "Hebrew model"
+    assert firstrun.microphone_allowed() in (True, False, None)
+
+
+def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
+    """The seven pages walked with Next: the queue pressed on page 2 runs
+    the model, then the pack, then the detector, one after the other,
+    while the wizard is on later pages (the pane is rebuilt on the
+    sentence page and the record button waits for the model); the pack
+    landing re-probes the hardware; the extras page's switches write
+    through their own writers; the last page writes setup.done into
+    state.json and [Open the desk] is reported to main."""
+    import firstrun
+    import hardware
+    import steps
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    order: list[str] = []
+
+    class Thing:
+        def __init__(self, name, size):
+            self.name, self.bytes, self.repo = name, size, name
+
+    def stepper(kind, thing):
+        def work(progress, cancel, stage):
+            for i in range(4):
+                progress((i + 1) * thing.bytes // 4, thing.bytes)
+                time.sleep(0.03)
+            order.append(kind)
+        return steps.Step(title=f"כותרת {kind}", body="גוף",
+                          size_line=f"{thing.bytes} B from x into y",
+                          total=thing.bytes, work=work, name=kind)
+
+    offers = {"portable": False, "model": Thing("m", 400), "pack": Thing("gpu", 300),
+              "detector": Thing("e", 200), "tier": "gpu"}
+    facts = {"tier": "gpu", "vram_mb": 16311, "cuda_devices": 1, "driver_ok": True}
+    probed = []
+
+    def fake_probe(say=None):
+        probed.append(1)
+        return dict(facts)
+
+    def pump(w, until, seconds=8.0):
+        deadline = time.monotonic() + seconds
+        while not until() and time.monotonic() < deadline:
+            try:
+                w.root.update()
+            except Exception:                                # noqa: BLE001
+                break
+            time.sleep(0.02)
+
+    import notify_hook
+    hooked: list[str] = []
+    claude_settings = d / "claude-settings.json"
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(paths, "PORTABLE", False), _patched(hardware, "run_at_start", fake_probe), \
+            _patched(notify_hook, "DEFAULT_SETTINGS", claude_settings), \
+            _patched(notify_hook, "install_hook", lambda *a, **k: hooked.append("install")), \
+            _patched(notify_hook, "uninstall_hook", lambda *a, **k: hooked.append("uninstall")):
+        try:
+            w = firstrun.Wizard(cfg, facts=facts, offers=offers, stepper=stepper)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            assert w.name == "welcome"
+            w._next()
+            assert w.name == "mic"
+            w._next()
+            assert w.name == "computer" and w.pane is not None
+            assert w.pane.run is w.runs["model"] and w.active == -1
+            assert w.want == {"pack": True, "detector": True}
+            w._download()
+            assert w.queue == ["model", "pack", "detector"] and w.active == 0
+            assert w.runs["model"].running
+            w._next()                                        # while it runs
+            assert w.name == "say" and w.pane is not None and w.pane.compact
+            assert not w.say._enabled, "the record button ran before the model landed"
+            pump(w, lambda: w.active == 2 and w.runs["detector"].ended, seconds=12)
+            assert order == ["model", "pack", "detector"], order
+            assert probed == [1], "the pack landing did not re-probe"
+            assert w.result.installed_pack
+            pump(w, lambda: w.say._enabled, seconds=3)
+            assert w.say._enabled
+            w._next()
+            assert w.name == "keys"
+            w._next()
+            assert w.name == "extras"
+            assert set(w.switches) == {"cloud", "awake", "updates", "claude", "snip"}, "D33's five"
+            assert w.switches["updates"].get() is True, "the shipped default is on (D21)"
+            assert w.switches["awake"].get() is True, "the default is what the owner runs (D34)"
+            assert w.switches["snip"].get() is True and w.switches["claude"].get() is False
+            w.switches["awake"].toggle()
+            w.switches["snip"].toggle()
+            w.switches["claude"].toggle()
+            assert w.extras["awake"] is False and w.extras["snip"] is False and w.extras["claude"]
+            w._next()
+            assert w.name == "done"
+            written = config_mod.read_settings(s)
+            assert written.get("awake.hold") is False, written
+            assert written.get("capture.capture_hotkey") == "ctrl+f11", written
+            assert written.get("notify.enabled") is None, "notify.enabled is the default already"
+            assert hooked == ["install"], hooked
+            assert set(w.switches) == {"autostart", "phone"}, "the last page's two"
+            assert w.switches["phone"].get() is False and w.switches["autostart"].get() is False
+            w.switches["phone"].toggle()
+            assert "server.enabled" not in config_mod.read_settings(s), "written on Finish, not before"
+            assert "setup.autostart" not in config_mod.read_state(t), "an unmoved switch was written"
+            assert "setup.done" not in config_mod.read_state(t)
+            w._open_desk()
+            assert w.result.saved and w.result.open_desk
+            assert config_mod.read_state(t).get("setup.done") is True
+            assert config_mod.read_settings(s).get("server.enabled") is True
+            assert bool(w.result) is True
+        finally:
+            try:
+                w.root.destroy()
+            except Exception:                                # noqa: BLE001
+                pass
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_wizard_asks_the_consent_card_before_the_cloud_switch_stays_on():
+    """The cloud switch on the extras page: flipping it opens the consent
+    card's own picture (consent_card.flat) over the wizard; [Not now]
+    leaves the switch off and no row; [Turn on] writes the row with the
+    card's text_version through privacy.grant and the switch shows it."""
+    import consent_card as cc
+    import firstrun
+    import privacy
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    offers = {"portable": True, "model": None, "pack": None, "detector": None, "tier": "gpu"}
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+        assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
+        privacy.withdraw("cloud_text")
+        try:
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            w.page = firstrun.PAGES.index("extras")
+            w._show_page()
+            w.root.update()
+            card = cc.card_for("cloud_text")
+
+            def press(name):
+                top = w.consent_window
+                w.root.update()
+                face = top.winfo_children()[0]
+                scale = 1.0
+                width, height = cc.measure(card, scale)
+                if height > firstrun.H - 40:
+                    scale = max(0.7, (firstrun.H - 40) / height)
+                x0, y0, x1, y1 = cc.regions(card, scale)[name]
+                face.event_generate("<Button-1>", x=int((x0 + x1) / 2 - cc.SHADOW),
+                                    y=int((y0 + y1) / 2 - cc.SHADOW))
+                w.root.update()
+
+            w.switches["cloud"].toggle()
+            assert w.switches["cloud"].get() is False and w.consent_window.winfo_exists()
+            press(cc.NOT_NOW)
+            assert w.extras["cloud"] is False and privacy.consent("cloud_text") is None
+            w.switches["cloud"].toggle()
+            press(cc.TURN_ON)
+            row = privacy.consent("cloud_text")
+            assert row is not None and row["text_version"] == card["text_version"], row
+            assert w.extras["cloud"] is True and w.switches["cloud"].get() is True
+            assert "Groq key" in w.note.cget("text")
+        finally:
+            privacy.withdraw("cloud_text")
+            try:
+                w.root.destroy()
+            except Exception:                                # noqa: BLE001
+                pass
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_claude_code_door_is_installed_and_removed_cleanly():
+    """notify_hook.hook_installed / uninstall_hook: a settings.json with
+    somebody else's hooks keeps them byte for byte in meaning; ours are
+    found, removed, and an empty event key goes with them."""
+    import notify_hook
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-hook-"))
+    try:
+        path = d / "settings.json"
+        assert notify_hook.hook_installed(path) is False
+        assert notify_hook.uninstall_hook(path) is False
+        theirs = {"hooks": {"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "echo hi"}]}]},
+                  "theme": "dark"}
+        path.write_text(json.dumps(theirs), "utf-8")
+        assert notify_hook.hook_installed(path) is False
+        assert notify_hook.install_hook(path, python="C:\\py\\pythonw.exe", script="C:\\app\\notify_hook.py")
+        assert notify_hook.hook_installed(path) is True
+        data = json.loads(path.read_text("utf-8"))
+        assert data["theme"] == "dark" and data["hooks"]["Stop"][0]["hooks"][0]["command"] == "echo hi"
+        assert notify_hook.uninstall_hook(path) is True
+        assert notify_hook.hook_installed(path) is False
+        assert json.loads(path.read_text("utf-8")) == theirs
+        assert notify_hook.uninstall_hook(path) is False
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_main_hosts_the_steps_in_the_wizard_when_it_is_due():
+    """Static, main.py: the two standalone step windows are shown only
+    when the wizard is not due (a set-up copy whose model went missing);
+    the wizard gets the probe's facts; its result opens the desk once
+    the app is up; --setup returns after it."""
+    import firstrun
+
+    src = (REPO / "main.py").read_text("utf-8")
+    assert "wizard_due = args.setup or (firstrun.needed(cfg) and not args.fake)" in src
+    assert "not wizard_due" in src.split("models_mod.wanted(cfg)")[0][-200:]
+    assert "not wizard_due" in src.split("packs_mod.wanted(cfg, facts)")[0][-200:]
+    assert "facts=facts)" in src and "outcome.installed_pack" in src
+    assert src.count("if open_desk:") == 2
+    wiz = (REPO / "firstrun.py").read_text("utf-8")
+    assert "import main" not in wiz, "the wizard must not import main.py"
+    assert 'config_mod.save({"setup.done": True})' in wiz
+    assert firstrun.PAGES == ("welcome", "mic", "computer", "say", "keys", "extras", "done")
+    assert firstrun.GUIDE_PRIVACY_CHECK.startswith(paths.PAGES_URL)
+    assert firstrun.PRIVACY_URL == f"{paths.PAGES_URL}/privacy"
 
 
 # ------------------------------------------------------ updates (PR 13)

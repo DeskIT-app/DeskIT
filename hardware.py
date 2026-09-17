@@ -59,6 +59,7 @@ DERIVED: dict[str, dict[str, object]] = {
     "gpu-small": {
         "local.device": "cuda", "local.compute_type": "int8_float16",
         "local.cpu_threads": 0, "local.beam_size": 5,
+        "local.english_model": "",
         "polish.max_wait_s": 6.0, "polish.ollama_model": "gemma3:4b",
         "lookup.model": "gemma3:4b", "lookup.keep_alive": "10m",
         "visual_qa.ollama_model": "gemma3:4b", "visual_qa.ollama_timeout_s": 60,
@@ -67,6 +68,8 @@ DERIVED: dict[str, dict[str, object]] = {
     "cpu": {
         "local.device": "cpu", "local.compute_type": "int8",
         "local.beam_size": 2, "review.enabled": False, "study.enabled": False,
+        # no English detector: 1.6 GB more RAM and a second full pass
+        "local.english_model": "",
         # the repair pass off (config refuses max_wait_s = 0 and an empty
         # model name; "never" is its own switch), the small models named
         # for the day Ollama turns up

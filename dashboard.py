@@ -7603,7 +7603,7 @@ class Dashboard:
 
     # ------------------------------------------------------------- about
 
-    PAGES_URL = "https://massifapp.github.io/DeskIT"
+    PAGES_URL = paths.PAGES_URL
     ISSUES_URL = "https://github.com/massifapp/DeskIT/issues/new/choose"
     MODEL_CARD_URL = "https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2"
 

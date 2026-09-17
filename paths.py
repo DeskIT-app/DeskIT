@@ -240,6 +240,25 @@ def read_channel(path: Path | None = None) -> tuple[str, str]:
 
 CHANNEL, CHANNEL_NOTE = read_channel()
 
+#: The public site (GitHub Pages of the repository, D26): the guide,
+#: the privacy policy and the terms live under it — one prefix for
+#: the wizard's links, About, the winget manifest and the listings.
+PAGES_URL = "https://massifapp.github.io/DeskIT"
+
+
+def short(path) -> str:
+    """A path the way a size line prints it: `%LOCALAPPDATA%\DeskIT\models\…`
+    for the per-user tree, the app folder's name for the checkout's own
+    tree, the full path otherwise."""
+    text = str(path)
+    app = str(APP_DIR)
+    if text.lower().startswith(app.lower().rstrip("\\") + "\\"):
+        return APP_DIR.name + text[len(app.rstrip("\\")):]
+    local = os.environ.get("LOCALAPPDATA") or ""
+    if local and text.lower().startswith(local.lower().rstrip("\\") + "\\"):
+        return "%LOCALAPPDATA%" + text[len(local.rstrip("\\")):]
+    return text
+
 
 def kernel_name(base: str) -> str:
     """``Local\\DeskIT.instance`` → ``Local\\DeskIT.dev.instance`` for Dev.

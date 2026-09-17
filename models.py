@@ -169,7 +169,7 @@ def write_lock(entries: list[Entry], path: Path | None = None) -> Path:
 
 def size_line(e: Entry) -> str:
     """The sentence the step shows BEFORE anything is fetched."""
-    return f"{human(e.bytes)} from huggingface.co into {e.folder}"
+    return f"{human(e.bytes)} from huggingface.co into {paths.short(e.folder)}"
 
 
 # --------------------------------------------------------------- the state
@@ -340,17 +340,34 @@ TEXT = {
     "offline": ("אין חיבור לאינטרנט. דסק-איט צריך להוריד את המודל פעם אחת — "
                 "נשאל שוב בהפעלה הבאה, וההורדה תימשך מאותה נקודה."),
     "done": "המודל הורד ונבדק.",
+    "name": "Hebrew model",
+}
+
+#: The English detector (6.6): the same step with its own words — the
+#: wizard offers it on the gpu tier, Settings > Speed afterwards.
+DETECTOR_TEXT = {
+    "title": "זיהוי אנגלית אוטומטי",
+    "body": ("מודל שני, כללי, שמזהה כשדיברת אנגלית ומתמלל אותה כמו שהיא. "
+             "עוד {size} להורדה ובזיכרון הכרטיס; בלעדיו משפט באנגלית "
+             "יוצא בתעתיק עברי. אפשר להוסיף או להסיר אותו אחר כך "
+             "בהגדרות > מהירות."),
+    "offline": TEXT["offline"],
+    "done": "מזהה האנגלית הורד ונבדק.",
+    "name": "English detector",
 }
 
 
-def step(e: Entry, downloader=None) -> steps.Step:
-    """The model's step: what steps.StepWindow shows and runs."""
+def step(e: Entry, downloader=None, words: dict | None = None) -> steps.Step:
+    """The model's step: what steps.StepWindow shows and runs. `words`
+    picks the detector's sentences for the second repo."""
+    words = words or TEXT
     work = downloader or download
     return steps.Step(
-        title=TEXT["title"], body=TEXT["body"].format(size=human(e.bytes)),
+        title=words["title"], body=words["body"].format(size=human(e.bytes)),
         size_line=size_line(e), total=e.bytes,
         work=lambda **kw: work(e, **kw),
-        said={"offline": TEXT["offline"], "done": TEXT["done"]},
+        said={"offline": words["offline"], "done": words["done"]},
+        name=words.get("name", ""),
     )
 
 

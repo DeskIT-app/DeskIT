@@ -279,17 +279,14 @@ scale = 0.8                   # how big you last made it (0.6 .. 1.4). The − a
                               # + on the card step this by 10% and save it
 
 [setup]
-# The first-run wizard: pick a microphone, watch the meter move, say one
-# sentence, read it back. It runs ONCE per copy of the app.
+# The first-run wizard: welcome, the microphone with its meter, what this
+# computer needs downloaded, one sentence read back, the keys, the
+# optional extras, done. It runs ONCE per copy of the app.
 #
-# THE RECORD OF "IT HAS RUN" IS NOT HERE. It is `.setup-done`, a gitignored
-# file beside this one, because it is a fact about one installation rather
-# than a setting — and because this file is TRACKED: whatever is committed
-# here is what a fresh download gets, so `true` would mean nobody ever sees
-# the wizard and `false` would re-run it on every install that updated.
-#
-# This line is the override: true switches the wizard off without hunting
-# for a dotfile. To see it again: run  main.py --setup
+# `done` is a per-installation fact and lives in state.json (the wizard
+# writes it when its last page is passed) — never in this file, which
+# ships with every copy: `true` here would mean nobody ever sees the
+# wizard. To see it again: run  main.py --setup
 done = false
 # Start with Windows: true writes the HKCU Run value that starts the
 # installed copy at logon, false removes it (autostart.py; the app

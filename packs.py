@@ -185,7 +185,7 @@ def write_lock(packs: list[Pack], path: Path | None = None) -> Path:
 
 
 def size_line(p: Pack) -> str:
-    return f"{human(p.bytes)} from files.pythonhosted.org into {p.folder}"
+    return f"{human(p.bytes)} from files.pythonhosted.org into {paths.short(p.folder)}"
 
 
 def requirements_text(p: Pack) -> str:
@@ -408,6 +408,7 @@ def step(p: Pack, installer=None) -> steps.Step:
         title=words["title"], body=words["body"].format(size=human(p.bytes)),
         size_line=size_line(p), total=p.bytes, work=lambda **kw: work(p, **kw),
         links=list(p.licenses), button="Install", said={"done": words["done"]},
+        name={"gpu": "NVIDIA libraries"}.get(p.name, p.name),
     )
 
 

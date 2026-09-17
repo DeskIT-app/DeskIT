@@ -30,7 +30,7 @@ Date of research: 2026-09-17. Read from source where the app is open (Handy `src
 - Handy's and Vibe's blocking on the download: in DeskIT the download keeps running while the wizard moves on, and the sentence page waits for it or is skipped.
 - A model picker: there is one Hebrew model (D13); the English detector (+1.6 GB) is a fifth decision nobody can judge on first run — Settings > Speed only, not the wizard (`arch-A §1 P2`: at most four decisions).
 
-## Proposed page order (hosts `steps.py`)
+## Proposed page order (hosts `steps.py`) — built as `firstrun.py` in PR 20 (2026-09-18); the departures are recorded under D18
 
 | page | chrome | hosts | decision | skippable |
 |---|---|---|---|---|

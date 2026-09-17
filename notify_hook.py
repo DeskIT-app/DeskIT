@@ -486,6 +486,48 @@ def install_hook(settings_path, python: str | None = None,
     return True
 
 
+def hook_installed(settings_path=None) -> bool:
+    """Is one of our entries in Claude Code's settings.json? What the
+    wizard's and the Settings page's "Connect Claude Code" switch shows."""
+    settings_path = Path(settings_path or DEFAULT_SETTINGS)
+    try:
+        data = json.loads(settings_path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return False
+    hooks = data.get("hooks") if isinstance(data, dict) else None
+    if not isinstance(hooks, dict):
+        return False
+    return any(_is_ours(e) for entries in hooks.values()
+               if isinstance(entries, list) for e in entries)
+
+
+def uninstall_hook(settings_path=None) -> bool:
+    """Take our entries out again, everything else kept; True if the
+    file changed. A missing file is nothing to do."""
+    settings_path = Path(settings_path or DEFAULT_SETTINGS)
+    try:
+        data = json.loads(settings_path.read_text("utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(data, dict) or not isinstance(data.get("hooks"), dict):
+        return False
+    before = copy.deepcopy(data)
+    for event, entries in list(data["hooks"].items()):
+        if isinstance(entries, list):
+            kept = [e for e in entries if not _is_ours(e)]
+            if kept:
+                data["hooks"][event] = kept
+            else:
+                del data["hooks"][event]
+    if data == before:
+        return False
+    tmp = settings_path.with_name(f"{settings_path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n",
+                   "utf-8")
+    os.replace(tmp, settings_path)
+    return True
+
+
 def _read_stdin_json() -> dict | None:
     """The hook event, or None. pythonw has no stdin at all (sys.stdin is
     None), and a console python's stdin is decoded in the console's code
