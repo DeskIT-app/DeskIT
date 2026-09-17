@@ -4,6 +4,12 @@
     .venv\\Scripts\\python.exe tests_quiet.py --out x.txt # keep the transcript
     .venv\\Scripts\\python.exe tests_quiet.py --no-screen # nothing on your screen
 
+"The suite" is two files since PR 8 (DISTRIBUTION_PLAN.md 7.5): tests.py,
+the product's, which GitHub's CI also runs, and dev\\tests_ops.py, the
+owner's — the nightly run, the git card, the routine's docs — which only
+this checkout can run. Both go on the hidden desktop, one after the
+other; the sixteen below are tests.py's.
+
 The suite stands up real windows — cards, the dashboard, overlays — and
 while it runs they pop over whatever the owner is doing. Windows lets a
 process be started on a SECOND desktop object of the same window station
@@ -53,28 +59,27 @@ GENERIC_ALL = 0x10000000
 CREATE_NO_WINDOW = 0x08000000
 INFINITE = 0xFFFFFFFF
 
-# Tests that need the display or the mouse. Kept as data so the list is
-# one place to edit when such a test is added; a test that fails hidden
-# and is NOT here is re-run in the open to tell a real failure from a
-# hidden-desktop artefact.
-NEEDS_SCREEN = (
-    "test_a_busy_clipboard_is_a_message_not_a_traceback",
-    "test_a_closed_card_leaves_no_interpreter_for_another_thread_to_free",
-    "test_a_dictated_question_asks_itself_without_a_keypress",
-    "test_a_drag_with_no_button_left_in_it_lets_go",
-    "test_a_lasso_sends_only_what_was_lassoed",
-    "test_a_new_selection_starts_a_new_conversation",
-    "test_an_arriving_answer_never_eats_what_you_typed_while_waiting",
-    "test_closing_the_card_mid_answer_does_not_hand_it_to_the_ask_thread",
-    "test_ctrl_c_is_swallowed_only_when_the_box_has_a_selection",
-    "test_dragging_the_card_redraws_only_what_moved",
-    "test_every_painted_control_is_clickable_where_it_is_painted",
-    "test_no_global_keeps_a_card_interpreter_alive_past_its_thread",
-    "test_talking_over_an_answer_folds_both_sentences_into_one_question",
-    "test_the_card_grows_to_fit_a_long_answer_and_then_scrolls",
-    "test_the_card_has_a_switch_for_where_a_question_also_goes",
-    "test_the_card_is_a_borderless_pane_that_can_be_moved",
-)
+# The tests that need the display or the mouse are tests.py's own list,
+# NEEDS_SCREEN, kept there since PR 8 so that `tests.py --no-screen` and
+# test_needs_screen_list_is_complete see the same names as this runner.
+# Read with ast rather than imported: importing the suite here would pull
+# in Tk, numpy and every product module before a single test ran. A test
+# that fails hidden and is NOT on the list is re-run in the open to tell
+# a real failure from a hidden-desktop artefact.
+OPS = Path("dev") / "tests_ops.py"
+
+
+def needs_screen() -> tuple[str, ...]:
+    """tests.py's NEEDS_SCREEN, read off the file."""
+    import ast
+    tree = ast.parse((HERE / "tests.py").read_text("utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "NEEDS_SCREEN"
+                for t in node.targets):
+            return tuple(ast.literal_eval(node.value))
+    raise LookupError("tests.py has no NEEDS_SCREEN")
+
 
 _user32 = ctypes.WinDLL("user32", use_last_error=True)
 _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -155,29 +160,43 @@ def main(argv=None) -> int:
     python = Path(sys.executable)
     started = time.monotonic()
     tmp = Path(tempfile.mkdtemp(prefix="tests-quiet-"))
-    hidden_out, open_out = tmp / "hidden.txt", tmp / "open.txt"
+    hidden_out, ops_out, open_out = (tmp / "hidden.txt", tmp / "ops.txt",
+                                     tmp / "open.txt")
+    NEEDS_SCREEN = needs_screen()
 
-    # 1. everything that can run unseen, unseen
-    skips = " ".join(f"-{name}" for name in NEEDS_SCREEN)
-    run_hidden(f'"{python}" tests.py {skips} > "{hidden_out}" 2>&1', HERE)
-    hidden_text = _read(hidden_out)
-    hidden_failed = _FAIL.findall(hidden_text)
+    # 1. everything that can run unseen, unseen: the product suite without
+    #    the sixteen, then the owner's suite (all of it — nothing there
+    #    needs the screen), each in a process of its own
+    run_hidden(f'"{python}" tests.py --no-screen > "{hidden_out}" 2>&1',
+               HERE)
+    run_hidden(f'"{python}" {OPS} > "{ops_out}" 2>&1', HERE)
+    product_text, ops_text = _read(hidden_out), _read(ops_out)
+    hidden_text = product_text + f"\n---- {OPS} ----\n" + ops_text
+    product_failed = _FAIL.findall(product_text)
+    ops_failed = _FAIL.findall(ops_text)
+    hidden_failed = product_failed + ops_failed
 
     # 2. the screen tests, and anything that failed hidden, in the open —
     #    unless he is sitting there, in which case nothing runs in the
-    #    open at all and the seventeen are simply not run.
-    picks = list(NEEDS_SCREEN) + [n for n in hidden_failed
+    #    open at all and the sixteen are simply not run. An ops test that
+    #    failed hidden is re-run through its own file.
+    picks = list(NEEDS_SCREEN) + [n for n in product_failed
                                   if n not in NEEDS_SCREEN]
     if args.no_screen:
         picks = []
         open_text = ""
         open_failed = list(hidden_failed)
     else:
-        open_proc = subprocess.run([str(python), "tests.py", *picks],
-                                   cwd=HERE, capture_output=True,
-                                   text=True, encoding="utf-8",
-                                   errors="replace")
-        open_text = (open_proc.stdout or "") + (open_proc.stderr or "")
+        runs = [("tests.py", picks)]
+        if ops_failed:
+            runs.append((str(OPS), ops_failed))
+        open_text = ""
+        for script, names in runs:
+            open_proc = subprocess.run([str(python), script, *names],
+                                       cwd=HERE, capture_output=True,
+                                       text=True, encoding="utf-8",
+                                       errors="replace")
+            open_text += (open_proc.stdout or "") + (open_proc.stderr or "")
         open_failed = _FAIL.findall(open_text)
 
     transcript = hidden_text if args.no_screen else (
@@ -205,7 +224,7 @@ def main(argv=None) -> int:
     else:
         print("\nall tests passed (quietly)")
         code = 0
-    for p in (hidden_out, open_out):
+    for p in (hidden_out, ops_out, open_out):
         try:
             os.remove(p)
         except OSError:

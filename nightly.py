@@ -1,7 +1,7 @@
 """The whole test suite, once a night, with one question first.
 
 Sixteen of the suite's tests need the REAL screen and the REAL mouse
-(`tests_quiet.NEEDS_SCREEN`): the ask card grabs the display and the drag
+(`tests.NEEDS_SCREEN`): the ask card grabs the display and the drag
 tests move the pointer. House rule 8 says that while the owner is at the
 machine the command is `tests_quiet.py --no-screen`, which skips those
 sixteen outright — and he is at the machine every day, so they had not

@@ -75,7 +75,6 @@ import hotkey as hotkey_mod
 import keyboard as keyboard_mod
 import launch
 import awake as awake_mod
-import nightly as nightly_mod
 import reading as reading_mod
 import settings as settings_mod
 import singleton
@@ -754,6 +753,16 @@ Q_FIELD_LINES_MIN = getattr(_ac, "FIELD_LINES_MIN", 2)
 Q_FIELD_CAP = getattr(_ac, "FIELD_CAP",
                       "In your own words — add to a choice, or answer "
                       "instead.")
+
+
+def _nightly():
+    """nightly.py, the owner's nightly test run (DISTRIBUTION_PLAN.md
+    D15). It is not in the product build, so it is imported here — on
+    the poll that asks whether a run is going, on the Stop press — and
+    never at start: a copy without the file must open this window.
+    test_product_suite_imports_no_dev_modules holds the line."""
+    import nightly
+    return nightly
 
 
 def _answerable(choice, typed: str) -> bool:
@@ -8130,7 +8139,7 @@ class Dashboard:
         if not paths.DEVELOPER:
             return False                  # the nightly run is the owner's
         try:
-            return bool(nightly_mod.running(APP_DIR))
+            return bool(_nightly().running(APP_DIR))
         except Exception:                 # noqa: BLE001
             return False
 
@@ -8144,7 +8153,7 @@ class Dashboard:
         takes a second to come out of, and a button that vanished on the
         press would leave him wondering whether it took."""
         button = self.parts.get("tests_stop")
-        if nightly_mod.ask_stop(APP_DIR):
+        if _nightly().ask_stop(APP_DIR):
             if button is not None and button.winfo_exists():
                 button.configure_text("Stopping…")
             self._note("stopping the nightly test run — it is recorded as "

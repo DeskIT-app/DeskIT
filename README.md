@@ -4422,12 +4422,14 @@ cannot see them, on purpose.
 
 ## Tests
 
-The suite is one file, `tests.py`, and it is not the file you run. It
-stands up real windows — cards, the dashboard, overlays, the correction
-box — and every one of them would land on top of whatever you are doing.
-So it is run through `tests_quiet.py`, which starts it on a second
-Windows desktop: a real desktop with a foreground window and a
-clipboard, that nobody is looking at. Type this:
+The suite is two files — `tests.py`, the product's, and
+`dev\tests_ops.py`, the owner's (the nightly run, the git card) —
+and neither is the file you run. They stand up real windows — cards,
+the dashboard, overlays, the correction box — and every one of them
+would land on top of whatever you are doing. So they are run through
+`tests_quiet.py`, which starts them on a second Windows desktop: a
+real desktop with a foreground window and a clipboard, that nobody is
+looking at. Type this:
 
 ```
 .venv\Scripts\python.exe tests_quiet.py --no-screen
@@ -4439,7 +4441,7 @@ desk, and it has been the rule since 2026-09-07.
 `--no-screen` is what makes it silent. Sixteen of the tests cannot live
 on a hidden desktop — the ask card photographs the display, and the drag
 tests move your actual mouse — so they are named in
-`tests_quiet.NEEDS_SCREEN`, and without the flag they run in the open at
+`tests.NEEDS_SCREEN`, and without the flag they run in the open at
 the end: about fifteen seconds of windows over your work with your
 pointer taken away from you. With the flag they are skipped outright.
 

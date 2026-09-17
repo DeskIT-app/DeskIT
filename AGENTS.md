@@ -186,11 +186,12 @@ exactly what classic did.
    --no-screen`.** His words, 2026-09-07: "מהיום אני רוצה שאת כל הטסטים שאתה עושה לעשות בשולחן נסתר כמו שאתה עושה עכשיו, זה נהדר ולא קופץ לי על המסך" —
    from today, do every test on a hidden desktop the way it is being
    done now; it is excellent and nothing jumps onto his screen.
-   `tests_quiet.py` starts `tests.py` on a SECOND Windows desktop object
-   (`CreateDesktopW` + `STARTUPINFO.lpDesktop` + `CreateProcessW`), so
-   every window the suite stands up — cards, the dashboard, overlays —
+   `tests_quiet.py` starts `tests.py` — and then `dev\tests_ops.py`, the
+   owner's half of the suite since PR 8 — on a SECOND Windows desktop
+   object (`CreateDesktopW` + `STARTUPINFO.lpDesktop` + `CreateProcessW`),
+   so every window the suite stands up — cards, the dashboard, overlays —
    is born where nobody is looking. Sixteen tests cannot live there and
-   are named in `tests_quiet.NEEDS_SCREEN`: the ask card grabs the
+   are named in `tests.NEEDS_SCREEN`: the ask card grabs the
    display with `ImageGrab`, the drag tests move the REAL mouse. Without
    `--no-screen` those sixteen run in the OPEN at the end, which is
    about fifteen seconds of windows over his work with his pointer taken
@@ -198,8 +199,10 @@ exactly what classic did.
    and the whole run is invisible. The price is that its exit code then
    covers only what ran, so the plain `tests_quiet.py` still has to
    happen once before shipping: when he is away from the desk, and only
-   after saying so. `.venv\Scripts\python.exe tests.py` is the entire
-   suite in the open — never reach for it while he is sitting there.
+   after saying so. `.venv\Scripts\python.exe tests.py` is the product
+   suite in the open — never reach for it while he is sitting there;
+   `tests.py --no-screen` is the same minus the sixteen, and is what
+   the product CI runs (`.github/workflows/ci.yml`).
 
    The rule is not only about the suite: `tests_quiet.run_hidden(command,
    cwd, desktop=...)` is importable, and any probe, screenshot or
@@ -311,6 +314,15 @@ exactly what classic did.
   on 2026-09-17 removed 72 read-aloud clips (29.6 min of the owner's
   voice with vouched text) that cannot be re-recorded. List every
   delete a change performs on this machine BEFORE it lands.
+- **A product module never imports an owner module at the top.**
+  `nightly`, `questions`, `answer_card`, `tests_quiet`, `inbox`,
+  `weekly_review`, `dev_git` (`tests.DEV_MODULES`) are not in the build
+  (plan 7.4), so `import nightly` at the top of `dashboard.py` was a
+  copy that could not open its window. Reach for one inside the
+  function only the owner's surface calls — `dashboard._nightly()`,
+  `main._questions_mod()` — and let `paths.DEVELOPER` decide whether
+  that function runs. `test_product_suite_imports_no_dev_modules`
+  imports every product module with those names blocked.
 - **A privacy gate is not a setting.** Never add `privacy.<gate> = true`
   to a config write, a wizard, a migration or a test fixture as a way
   to "turn the cloud on" — `config.save` refuses it, and the honest way
@@ -356,13 +368,24 @@ exactly what classic did.
   while he is at the machine, the plain `tests_quiet.py` only when he is
   away and has been told (asked for 2026-09-02, the `--no-screen` half
   on 2026-09-07). Same tests.py, same exit code, output printed at the
-  end. The trap that is left is the LIST: `tests_quiet.NEEDS_SCREEN`
-  holds the sixteen names that need the real display or the real mouse,
-  and it is data precisely so it can be kept in step. Add a test that
-  photographs the screen or moves the pointer and its name goes in
-  there — a test that fails hidden and is NOT in the tuple gets re-run
-  in the open, so a missing name costs a second run rather than a wrong
-  answer, and `--no-screen` will not know to skip it.
+  end. The suite is two files since PR 8 (DISTRIBUTION_PLAN.md 7.5):
+  `tests.py` is the product's — GitHub runs it on `windows-latest`
+  with `--no-screen` (`.github/workflows/ci.yml`) — and
+  `dev\tests_ops.py` is the owner's (the nightly run, the git card,
+  the routine's docs), importing its fixtures from `tests.py` and
+  running only in this checkout. A test that imports `nightly`,
+  drives Push/Undo or reads a file the build never ships goes in the
+  second; `test_product_suite_imports_no_dev_modules` refuses the
+  first one that reaches for an owner module. The trap that is left
+  is the LIST: `tests.NEEDS_SCREEN` holds the sixteen names that need
+  the real display or the real mouse, and it is data precisely so it
+  can be kept in step (`test_needs_screen_list_is_complete` checks
+  every name is a test and every ask-card window script is on it).
+  Add a test that photographs the screen or moves the pointer and its
+  name goes in there — a test that fails hidden and is NOT in the
+  tuple gets re-run in the open, so a missing name costs a second run
+  rather than a wrong answer, and `--no-screen` will not know to skip
+  it.
   `.venv\Scripts\python.exe tests.py` is the same suite in the open —
   plain asserts, **hundreds** of test functions carrying thousands of
   them, safe to run while dictation is live (two bugs that used to kill
@@ -1153,5 +1176,7 @@ ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedg
 | `shelf.py` + `shelf_card.py` + `skin\shelf.py` | the panel beside the dot: the window/thread/queue class (modelled on `overlay.HintCard`), the pure painter (words, geometry, hit test, `INK`) and the glass. Every answer it offers calls the same `App` method the matching card does; nothing goes through `control.py` |
 | `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |
 | `versions.py` | reads the branch name, and nothing else |
-| `tests.py` | the suite itself — hundreds of plain-assert test functions. Not the file you run |
-| `tests_quiet.py` | how the suite is run: `tests.py` on a hidden Windows desktop, `--no-screen` while he is at the machine (house rule 8). `run_hidden()` is importable, for anything else that must not be seen |
+| `tests.py` | the product suite — hundreds of plain-assert test functions, `NEEDS_SCREEN`, `--no-screen`. Not the file you run |
+| `dev\tests_ops.py` | the owner's suite: the nightly run, the git card, the routine's docs — imports `tests.py`'s fixtures, runs only in this checkout |
+| `tests_quiet.py` | how both are run: on a hidden Windows desktop, `--no-screen` while he is at the machine (house rule 8). `run_hidden()` is importable, for anything else that must not be seen |
+| `.github/workflows/ci.yml` | the product suite on `windows-latest`, `tests.py --no-screen`, on every push |

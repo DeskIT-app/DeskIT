@@ -46,7 +46,6 @@ import notify as notify_mod
 import notify_watch as notify_watch_mod
 import popup as popup_mod
 import problems as problems_mod
-import questions as questions_mod
 import reading as reading_mod
 import server as server_mod
 import singleton
@@ -312,6 +311,17 @@ def cursor_point() -> tuple[int, int] | None:
     return None
 
 
+def _questions_mod():
+    """questions.py, the Saturday routine's store — the owner's
+    (DISTRIBUTION_PLAN.md D15). It is not in the product build, so it
+    is imported only where the store is actually on (`[questions]
+    enabled = true`, off by default) and never at start: a copy
+    without the file must still dictate.
+    test_product_suite_imports_no_dev_modules holds the line."""
+    import questions
+    return questions
+
+
 class App:
     # Class-level defaults for the visual-QA and capture slots on purpose:
     # the test suite builds half-initialised Apps by hand (no __init__),
@@ -426,7 +436,7 @@ class App:
         # brings it back whole if the asking ever moves back into the app.
         qcfg = getattr(cfg, "questions", None)
         self.questions = (
-            questions_mod.Store(paths.QUESTIONS_FILE)
+            _questions_mod().Store(paths.QUESTIONS_FILE)
             if qcfg is not None and getattr(qcfg, "enabled", False) else None)
         # (size, mtime_ns) as of the last look. questions.Store.stamp()
         # exists for exactly this — notice a headless write without reading
@@ -2088,7 +2098,7 @@ class App:
             self._q_watcher.start()
             log.info("questions: watching %s every %.0f s; a card goes up "
                      "after %.0f s of stillness and waits %.0f min if he "
-                     "escapes it", questions_mod.STORE_NAME,
+                     "escapes it", _questions_mod().STORE_NAME,
                      QUESTION_POLL_S, QUESTION_SETTLE_S,
                      QUESTION_REASK_S / 60.0)
         if self.cfg.auto_pause_fullscreen:
@@ -3442,7 +3452,7 @@ class App:
         store = getattr(self, "questions", None)
         if store is not None:
             try:
-                for item in store.items(questions_mod.PENDING):
+                for item in store.items(_questions_mod().PENDING):
                     rows.append({
                         "kind": "question",
                         "id": item.get("id"),
@@ -4119,7 +4129,7 @@ class App:
             # goes before one written this morning.
             self._q_stamp = stamp
             self._q_pending = list(
-                reversed(store.items(questions_mod.PENDING)))
+                reversed(store.items(_questions_mod().PENDING)))
             log.info("questions: %d waiting on him", len(self._q_pending))
         if not self._q_pending:
             return

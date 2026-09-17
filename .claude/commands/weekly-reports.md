@@ -967,7 +967,7 @@ commit for this report**:
 **No `--no-screen`, and that is deliberate.** House rule 8 in `AGENTS.md` says
 every test run happens on a hidden desktop, and `tests_quiet.py` is exactly
 that — but its plain form finishes by running the sixteen tests in
-`tests_quiet.NEEDS_SCREEN` in the open, because they need the real display and
+`tests.NEEDS_SCREEN` in the open, because they need the real display and
 the real mouse. That costs about fifteen seconds of windows and a stolen
 pointer, which is why anyone running the suite at his desk adds `--no-screen`.
 Here nobody is at the desk — this is a scheduled task and he is asleep — so
