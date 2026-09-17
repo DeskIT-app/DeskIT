@@ -56,6 +56,11 @@ STORES = (
 KEPT = ("SETTINGS_FILE", "STATE_FILE", "CONSENT_FILE", "SETUP_MARKER",
         "PHONE_TOKEN", "SECRETS_DIR", "MODELS_DIR", "PACKS_DIR")
 
+#: Sub-folders of problems\ that belong to the owner's tools, not to the
+#: app: the Saturday routine's journal and the nightly test logs. A reset
+#: empties problems\ around them (reports, outbox, screenshots go).
+OWNER_PROBLEM_DIRS = ("weekly", "nightly")
+
 
 def _running() -> bool:
     """Is a DeskIT holding this copy's mutex? Skipped under DESKIT_HOME:
@@ -235,11 +240,15 @@ def reset_targets() -> list[Path]:
     targets: list[Path] = []
     for name in STORES:
         p = getattr(paths, name)
-        if name.endswith("_DIR"):
-            if p.is_dir():
-                targets.append(p)
-        else:
+        if not name.endswith("_DIR"):
             targets += [c for c in _with_siblings(p) if c.is_file()]
+        elif not p.is_dir():
+            continue
+        elif name == "PROBLEMS_DIR":
+            targets += [c for c in sorted(p.iterdir())
+                        if c.name not in OWNER_PROBLEM_DIRS]
+        else:
+            targets.append(p)
     # problems.md, the digest regenerated from the store
     digest = paths.PROBLEMS_FILE.with_suffix(".md")
     if digest.is_file():

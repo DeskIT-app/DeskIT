@@ -29481,7 +29481,8 @@ def test_migrate_writes_the_two_files_and_retires_the_old_one():
     """End to end in a scratch DATA_DIR (fresh interpreter, DESKIT_HOME):
     --migrate <old config.toml> writes settings.toml + state.json, a
     second run finds nothing new, and --reset-data --yes removes the
-    stores and keeps the two files."""
+    stores and keeps the two files, plus the routine's journal under
+    problems\weekly (the owner's, not the app's)."""
     d = Path(tempfile.mkdtemp(prefix="deskit-migrate-e2e-"))
     try:
         old = d / "old" / "config.toml"
@@ -29507,13 +29508,23 @@ def test_migrate_writes_the_two_files_and_retires_the_old_one():
         assert again.returncode == 0, (again.stdout, again.stderr)
         assert any(l.startswith("stores copied") and l.endswith(": 0")
                    for l in again.stdout.splitlines()), again.stdout
+        (home / "problems" / "weekly").mkdir(parents=True)
+        (home / "problems" / "weekly" / "run.log").write_text("routine", encoding="utf-8")
+        (home / "problems" / "outbox").mkdir()
+        (home / "problems" / "20260904-224345-0332.json").write_text("{}", encoding="utf-8")
+        (home / "vocab.json.bak-20260828").write_text("{}", encoding="utf-8")
         dry = run("--reset-data")
         assert dry.returncode == 1 and "Add --yes" in dry.stdout, dry.stdout
         assert (home / "vocab.json").exists()
+        assert "weekly" not in dry.stdout and "outbox" in dry.stdout, dry.stdout
         wipe = run("--reset-data", "--yes")
         assert wipe.returncode == 0, (wipe.stdout, wipe.stderr)
         assert not (home / "vocab.json").exists()
+        assert not (home / "vocab.json.bak-20260828").exists()
         assert not (home / "audio" / "recent").exists()
+        assert not (home / "problems" / "outbox").exists()
+        assert not (home / "problems" / "20260904-224345-0332.json").exists()
+        assert (home / "problems" / "weekly" / "run.log").exists(), "the routine's journal stays"
         assert (home / "settings.toml").exists() and (home / "state.json").exists()
     finally:
         shutil.rmtree(d, ignore_errors=True)
