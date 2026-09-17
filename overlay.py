@@ -3584,6 +3584,280 @@ class ReviewCard(HintCard):
             gc.collect()
 
 
+class ConsentCard(HintCard):
+    """The card that asks before anything personal leaves this PC
+    (consent_card.py holds the words; privacy.py the rule).
+
+    The review card's contract, inherited — its own thread, callers only
+    ever enqueue, a flat Tk face — with the two things a card that asks
+    a yes-or-no question needs:
+
+    - IT TAKES CLICKS on two buttons and nowhere else; the rest of the
+      face is the handle you drag it by. Mid-height on the right edge,
+      away from any window's close button, so it can be solid.
+    - IT KEEPS NO CLOCK. A consent that times out is a consent nobody
+      gave; the card stays until it is answered, and a second kind that
+      needs asking waits its turn behind it.
+
+    Answers go out through `on_answer(kind, name)` on the painter's
+    thread — `consent_card.TURN_ON` or `consent_card.NOT_NOW` — so that
+    callback must only enqueue or do the small thing privacy.grant does
+    (two file writes).
+    """
+
+    CORNERS = ("right", "left", "top-right", "top-left",
+               "bottom-right", "bottom-left")
+
+    def __init__(self, corner: str = "right", margin: int = 14,
+                 scale: float = 1.0, on_answer=None) -> None:
+        super().__init__(after_ms=0, corner=corner, margin=margin,
+                         scale=scale)
+        self._on_answer = on_answer
+        self.rect = None
+        self._current: str | None = None      # the kind on screen
+        self._waiting: list[str] = []         # kinds asked while one was up
+        self._state_lock = threading.Lock()
+
+    def start(self) -> None:
+        if not self._enabled:
+            return
+        try:
+            import tkinter  # noqa: F401
+        except Exception:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="consent-card")
+        self._thread.start()
+        self._alive.wait(timeout=3)
+
+    # -- caller's threads --
+
+    def show(self, kind: str) -> None:
+        """Ask about `kind`. Only enqueues, so safe from any thread. A
+        kind already up or already waiting is not asked twice; a second
+        kind waits behind the one on screen."""
+        if self._thread is None or not self._enabled:
+            return
+        import consent_card as cc
+        with self._state_lock:
+            if kind == self._current or kind in self._waiting:
+                return
+            if self._current is not None:
+                self._waiting.append(kind)
+                return
+            self._current = kind
+        self._q.put(cc.card_for(kind))
+
+    def hide(self) -> None:
+        with self._state_lock:
+            self._current = None
+            self._waiting.clear()
+        if self._thread is not None:
+            self._q.put(None)
+
+    def visible(self) -> bool:
+        return self._current is not None
+
+    def current(self):
+        return self._current
+
+    def pressed(self, name: str) -> None:
+        """A button. Takes the card down, reports, and puts up the next
+        kind that was waiting, if any."""
+        import consent_card as cc
+        if name not in (cc.TURN_ON, cc.NOT_NOW):
+            return
+        with self._state_lock:
+            kind, self._current = self._current, None
+            following = self._waiting.pop(0) if self._waiting else None
+            if following is not None:
+                self._current = following
+        if self._thread is not None:
+            self._q.put(cc.card_for(following) if following else None)
+        if kind is None or self._on_answer is None:
+            return
+        try:
+            self._on_answer(kind, name)
+        except Exception:
+            _log.info("consent card: could not report an answer",
+                      exc_info=True)
+
+    # -- placement --
+
+    def origin(self, width: int, height: int, screen: tuple,
+               inset: int = 0, bounds=None) -> tuple:
+        if self.moved() or self._corner not in ("right", "left"):
+            return super().origin(width, height, screen, inset, bounds)
+        sw, sh = screen
+        m = self._margin
+        x = (m - inset) if self._corner == "left" \
+            else (sw - m - width + inset)
+        y = (sh - height) // 2
+        return int(x), int(y)
+
+    # -- overlay thread --
+
+    def _run(self) -> None:
+        try:
+            self._build_and_loop()
+        except Exception as e:
+            _log.info("consent card unavailable: %r", e)
+        finally:
+            self._alive.set()
+
+    def _build_and_loop(self) -> None:
+        """The card on a flat face, in Tk — consent_card.flat paints the
+        whole thing as one image; this window only shows it, moves it,
+        and turns a click into `pressed`. Same teardown as the hint
+        card's: destroyed on the thread that built it."""
+        import tkinter as tk
+        import consent_card as cc
+        from PIL import ImageTk
+
+        root = tk.Tk()
+        root.withdraw()
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.configure(bg=CARD_BG)
+        canvas = tk.Canvas(root, bg=CARD_BG, highlightthickness=0, bd=0)
+        canvas.pack()
+        self._alive.set()
+
+        st = {"card": None, "up": False, "hover": None, "drag": None,
+              "photo": None, "hushed": False}
+        cache: dict = {}
+
+        def hide() -> None:
+            st["card"], st["hover"] = None, None
+            self.rect = None
+            cache.clear()
+            if st["up"]:
+                root.withdraw()
+                st["up"] = False
+
+        def paint() -> None:
+            if st["card"] is None:
+                return
+            img = cc.flat(st["card"], self.scale, st["hover"], cache)
+            photo = ImageTk.PhotoImage(img, master=root)
+            canvas.delete("all")
+            canvas.configure(width=img.width, height=img.height)
+            canvas.create_image(0, 0, anchor="nw", image=photo)
+            st["photo"] = photo
+
+        def map_card() -> None:
+            card = st["card"]
+            if card is None:
+                return
+            w, h = cc.measure(card, self.scale, cache)
+            x, y = self.origin(w, h, (root.winfo_screenwidth(),
+                                      root.winfo_screenheight()))
+            paint()
+            root.geometry(f"{w}x{h}+{x}+{y}")
+            self.rect = (x, y, x + w, y + h)
+            root.deiconify()
+            root.update_idletasks()
+            if not st["up"]:
+                _no_activate(root)
+            st["up"] = True
+
+        def put_up(card: dict) -> None:
+            st["card"], st["hover"] = card, None
+            cache.clear()
+            if not st["hushed"]:
+                map_card()
+
+        def set_hushed(on: bool) -> None:
+            if on == st["hushed"]:
+                return
+            st["hushed"] = on
+            if on:
+                if st["up"]:
+                    root.withdraw()
+                    st["up"] = False
+                self.rect = None
+            else:
+                map_card()
+
+        def hit(event):
+            if st["card"] is None:
+                return None, None
+            return cc.hit_test(st["card"], self.scale, event.x + cc.SHADOW,
+                               event.y + cc.SHADOW, cache)
+
+        def on_press(event) -> None:
+            code, what = hit(event)
+            if code == cc.HTCLIENT and what:
+                self.pressed(what)
+            elif code == cc.HTCAPTION:
+                st["drag"] = (event.x_root - root.winfo_x(),
+                              event.y_root - root.winfo_y())
+
+        def on_motion(event) -> None:
+            if st["drag"] is not None:
+                dx, dy = st["drag"]
+                root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+                return
+            code, what = hit(event)
+            want = what if code == cc.HTCLIENT else None
+            if want != st["hover"]:
+                st["hover"] = want
+                paint()
+
+        def on_leave(_event) -> None:
+            if st["hover"] is not None:
+                st["hover"] = None
+                paint()
+
+        def on_release(_event) -> None:
+            if st["drag"] is None:
+                return
+            st["drag"] = None
+            x, y = root.winfo_x(), root.winfo_y()
+            if st["card"] is not None:
+                w, h = cc.measure(st["card"], self.scale, cache)
+                self.rect = (x, y, x + w, y + h)
+            self.placed(x, y)
+
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_motion)
+        canvas.bind("<Motion>", on_motion)
+        canvas.bind("<Leave>", on_leave)
+        canvas.bind("<ButtonRelease-1>", on_release)
+
+        def pump() -> None:
+            try:
+                while True:
+                    item = self._q.get_nowait()
+                    if item is _DONE:
+                        self._closing.set()
+                        return
+                    if item is None:
+                        hide()
+                    else:
+                        put_up(item)
+            except queue.Empty:
+                pass
+            set_hushed(self._hushed.is_set())
+            root.after(30, pump)
+
+        pump()
+        try:
+            _pump_until(root, self._closing)
+        finally:
+            import gc                       # see Splash: same Tcl teardown
+            try:
+                _forget_window(root)
+                root.destroy()
+            except Exception:
+                pass
+            st.clear()
+            cache.clear()
+            paint = pump = hide = put_up = None          # noqa: F841
+            canvas = root = None                          # noqa: F841
+            gc.collect()
+
+
 class NotifyCard(HintCard):
     """The card that says something ARRIVED: Claude finished, Claude is
     waiting, a program on this machine has news (notify.py).

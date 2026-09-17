@@ -171,7 +171,7 @@ folder is treated the way transcripts.log is: it lives beside the app, it
 is gitignored, and nothing in it is ever uploaded anywhere by this module.
 There is no cloud path in this file at all; the only way a capture reaches
 a model is the Ask button, which hands the pixels to visual_qa and obeys
-`visual_qa.allow_screenshot_upload` like every other question.
+the [privacy] cloud_screenshots gate like every other question.
 
 The camera is the sharper end of that. Nothing in this app opens it but
 `ctrl+f6`, it is open only while the card is up, and it is released the

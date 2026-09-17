@@ -20,6 +20,7 @@ from google.genai import errors, types
 
 import gemini_pool
 import net
+import privacy
 from apikey import MISSING_KEY_MESSAGE, find_api_key
 from gemini_pool import MAX_COOLDOWN_S, PER_DAY_COOLDOWN_S
 from gemini_pool import parse_429 as _parse_429
@@ -28,8 +29,17 @@ from .base import TranscriptionError
 
 log = logging.getLogger("app")
 
-__all__ = ["GeminiTranscriber", "_parse_429", "PER_DAY_COOLDOWN_S",
-           "MAX_COOLDOWN_S"]
+__all__ = ["GeminiTranscriber", "ConsentRequired", "_parse_429",
+           "PER_DAY_COOLDOWN_S", "MAX_COOLDOWN_S"]
+
+
+class ConsentRequired(TranscriptionError, privacy.ConsentRequired):
+    """The cloud_audio gate is shut: the recording may not leave until
+    the person says so on the card. A TranscriptionError, so the start-up
+    path falls to the local backend the way it does for a missing key."""
+
+    def __init__(self, kind: str, why: str):
+        privacy.ConsentRequired.__init__(self, kind, why)
 
 _SYSTEM_PROMPT = """\
 You are a transcription engine for Hebrew speech. The user dictates text \
@@ -61,6 +71,10 @@ class GeminiTranscriber:
     name = "gemini"
 
     def __init__(self, models: list[str] | str, timeout_s: int):
+        try:
+            privacy.require("cloud_audio")
+        except privacy.ConsentRequired as e:
+            raise ConsentRequired(e.kind, e.why) from None
         api_key, self.key_source = find_api_key()
         if not api_key:
             raise TranscriptionError(MISSING_KEY_MESSAGE)

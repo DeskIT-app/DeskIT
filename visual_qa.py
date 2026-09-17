@@ -107,8 +107,9 @@ PRIVACY, stated plainly because it decides the defaults
 A screenshot is strictly more sensitive than transcript text: it can hold
 mail, banking, anything ever shown on this screen. So local-first is not
 a preference here, it is the design: the default chain is Ollama ONLY,
-and `allow_screenshot_upload = false` (the default) makes the cloud
-builders UNCONSTRUCTABLE — enforced in Chain._builders(), with a test
+and the shut [privacy] cloud_screenshots gate (the default, until its
+consent card is answered) makes the cloud builders UNCONSTRUCTABLE —
+enforced in Chain._builders() AND in each cloud constructor, with a test
 asserting the built chain contains no cloud backend rather than trusting
 a runtime `if`. With the gate open the order is ollama -> groq ->
 gemini-pool, built the way polish.py builds its repair chain. When the
@@ -198,6 +199,7 @@ import threading
 import time
 
 import net
+import privacy
 
 log = logging.getLogger("app")
 transcript_log = logging.getLogger("transcripts")
@@ -322,6 +324,22 @@ _TINY_PNG_B64 = (
 
 class QAError(Exception):
     """Every vision backend refused; str(e) names what to check."""
+
+
+class ConsentRequired(QAError, privacy.ConsentRequired):
+    """The cloud_screenshots gate is shut (privacy.py). A QAError too, so
+    the chain skips the backend the way it skips one with no key; the
+    ask card's controller opens the consent card on the first press."""
+
+    def __init__(self, kind: str, why: str):
+        privacy.ConsentRequired.__init__(self, kind, why)
+
+
+def _require_screenshots() -> str:
+    try:
+        return privacy.require("cloud_screenshots")
+    except privacy.ConsentRequired as e:
+        raise ConsentRequired(e.kind, e.why) from None
 
 
 class Cancelled(Exception):
@@ -775,6 +793,7 @@ class GroqVision:
     def __init__(self, model: str, timeout_s: int, num_predict: int):
         import apikey
 
+        _require_screenshots()
         # Presence and source only; net.py attaches the value by name.
         key, self.key_source = apikey.find_key(("GROQ_API_KEY",))
         if not key:
@@ -893,6 +912,7 @@ class GeminiVision:
 
         from apikey import MISSING_KEY_MESSAGE, find_api_key
 
+        _require_screenshots()
         api_key, self.key_source = find_api_key()
         if not api_key:
             raise QAError(MISSING_KEY_MESSAGE)
@@ -958,10 +978,11 @@ class Chain:
     """The backend chain, built the way polish.py builds its repair chain.
 
     THE GATE IS THE BUILDERS, not a runtime branch at request time:
-    with allow_screenshot_upload = false the cloud constructors are never
-    even listed, so a bug elsewhere cannot leak pixels to the network —
-    there is no object to leak them WITH. Tests assert the built list,
-    not the flag.
+    while privacy.allowed("cloud_screenshots") is false the cloud
+    constructors are never even listed, so a bug elsewhere cannot leak
+    pixels to the network — there is no object to leak them WITH. Tests
+    assert the built list, not the flag. The constructors check the same
+    gate again (privacy.require), and net.py a third time per request.
     """
 
     def __init__(self, cfg):
@@ -987,8 +1008,10 @@ class Chain:
 
         order["ollama"], order["groq"], order["gemini"] = \
             ollama, groq, gemini
+        import privacy
+
         allowed = ["ollama"]
-        if vq.allow_screenshot_upload:
+        if privacy.allowed("cloud_screenshots"):
             if vq.gemini_fallback:
                 allowed += ["groq", "gemini"]
             else:
@@ -1038,6 +1061,17 @@ class Chain:
             encoded_cache: dict | None = None) -> tuple[str, str]:
         """(answer, backend_name). Raises QAError when every backend
         refused — including the honest case: gate shut, Ollama down."""
+        # A question the person asked, with a config that prefers the
+        # cloud, while the cloud_screenshots gate is shut: this is the
+        # press that asks the card (plan 5.2). The builders left the
+        # cloud out already, so the ask is explicit here; with `prefer =
+        # "ollama"` nothing is asked — the local model is the answer.
+        if self._cfg.visual_qa.prefer != "ollama":
+            with privacy.pressed():
+                try:
+                    privacy.require("cloud_screenshots")
+                except privacy.ConsentRequired:
+                    pass
         errors: list[str] = []
         for backend in self._backends():
             try:

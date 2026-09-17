@@ -43,8 +43,22 @@ def get_transcriber(cfg, hotwords=None) -> Transcriber:
     backend works without google-genai and the local stub without
     faster-whisper."""
     if cfg.backend == "gemini":
-        from .gemini import GeminiTranscriber
-        return GeminiTranscriber(list(cfg.gemini.models), cfg.gemini.timeout_s)
+        from .gemini import ConsentRequired, GeminiTranscriber
+        try:
+            return GeminiTranscriber(list(cfg.gemini.models),
+                                     cfg.gemini.timeout_s)
+        except ConsentRequired as e:
+            # The cloud_audio gate is shut (privacy.py): a shut gate must
+            # never keep the app from starting — the person dictates on
+            # this PC until the card is answered (plan 5.2). A MISSING key
+            # still raises, as it always did: that is a setup error the
+            # log should shout about.
+            import logging
+            logging.getLogger("app").warning(
+                "backend = \"gemini\" but %s — transcribing on this PC "
+                "instead until it is granted", e)
+            from .local_whisper import LocalWhisperTranscriber
+            return LocalWhisperTranscriber(**local_kwargs(cfg, hotwords))
     if cfg.backend == "fake":
         from .fake import FakeTranscriber
         return FakeTranscriber()

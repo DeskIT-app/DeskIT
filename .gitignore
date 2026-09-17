@@ -105,6 +105,9 @@ problems/
 /settings.toml
 /settings.toml.bak
 /state.json
+# the consent rows (privacy.py): what the person allowed, when, which words
+/consent.json
+/consent.json.tmp
 /config.toml
 /config.legacy.toml
 

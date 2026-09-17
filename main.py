@@ -36,6 +36,7 @@ APP_DIR = Path(__file__).resolve().parent
 import paths
 import config as config_mod
 import control
+import privacy
 import cues
 import firstrun
 import hint as hint_mod
@@ -144,7 +145,12 @@ LIVE_SECTIONS = {"punctuate": "_punctuator", "translate": "_translator",
                  # as "Move the dot" and "Back to the corner", which both
                  # act at once. A control beside two honest ones has to be
                  # honest too. See App._dot_power.
-                 "dot": None}
+                 "dot": None,
+                 # [privacy] since 2026-09-17: `offline` is a veto net.py
+                 # reads per request, so the switch acts the moment it is
+                 # written; the six gates are not written here at all
+                 # (config.save refuses them — privacy.py owns them).
+                 "privacy": None}
 LIVE_TOP_LEVEL = ("auto_pause_fullscreen", "paste_chord", "restore_delay_ms")
 
 # THE WEEKLY ROUTINE'S QUESTION, and the three numbers that decide when it
@@ -678,6 +684,13 @@ class App:
             on_edit=self._review_edit)
             if rcfg is not None and rcfg.enabled and rcfg.card_seconds > 0
             else overlay_mod.ReviewCard.off())
+        # The consent card (consent_card.py, privacy.py): asks ONCE per
+        # kind, on the first key press that needs a cloud pass while its
+        # gate is shut, and never from a warm-up. Built like the others,
+        # off when Tk is missing; privacy.py is handed its `show`.
+        self.consent_card = overlay_mod.ConsentCard(
+            on_answer=self._consent_answered)
+        privacy.set_asker(self.consent_card.show)
         # The notification card and its engine (notify.py). The card class
         # is looked up rather than named: it lands with the card package,
         # and until then — or on a branch without it — the engine gets the
@@ -870,7 +883,8 @@ class App:
         touched from here, which is the rule in AGENTS.md that costs a
         day every time it is broken. Cheap enough for the keyboard hook.
         """
-        for name in ("notify_card", "review_card", "hint", "shelf"):
+        for name in ("notify_card", "review_card", "consent_card", "hint",
+                     "shelf"):
             card = getattr(self, name, None)
             if card is None:
                 continue
@@ -1982,12 +1996,31 @@ class App:
                 self._shelf_power(getattr(fresh, "shelf", None))
             if section == "dot":
                 self._dot_power(fresh)
+            if section == "privacy":
+                privacy.configure(fresh)
             live = True
         message = (f"{name} saved" if live
                    else f"{name} saved — it applies the next time it starts")
         self._say(message)
         log.info("%s", message)
         return message
+
+    def _consent_answered(self, kind: str, answer: str) -> None:
+        """A button on the consent card, on the card's thread. [Turn on]
+        writes the row (privacy.grant: two small files) and the next
+        press uses the cloud; [Not now] keeps the local path and the
+        card down until the next start."""
+        import consent_card as cc
+        if answer == cc.TURN_ON:
+            try:
+                privacy.grant(kind)
+            except Exception as e:                           # noqa: BLE001
+                log.warning("could not record the consent for %s: %s",
+                            kind, e)
+                return
+            self._say(f"{kind}: on — from the next press")
+        else:
+            privacy.not_now(kind)
 
     def _set_auto_pause(self, value: bool) -> str:
         """The one option with a side effect beyond the Config: the
@@ -2023,7 +2056,18 @@ class App:
         self.dot.start()
         self.hint.start()
         self.review_card.start()
+        self.consent_card.start()
         self.notify_card.start()
+        # backend = "gemini" with the cloud_audio gate shut fell to the
+        # local model at start (transcribers.get_transcriber): that is a
+        # choice the person made in Settings, so the card asks now.
+        if self.cfg.backend == "gemini" and \
+                getattr(self.transcriber, "name", "") != "gemini":
+            with privacy.pressed():
+                try:
+                    privacy.require("cloud_audio")
+                except privacy.ConsentRequired:
+                    pass
         # The shelf's thread, up before the key is ever pressed: the
         # panel is built when it opens, but the presenter has to be
         # waiting for it. Off with [shelf] enabled = false, in which case
@@ -2145,6 +2189,8 @@ class App:
         self.dot.stop()
         self.hint.stop()
         self.review_card.stop()
+        if getattr(self, "consent_card", None) is not None:
+            self.consent_card.stop()
         if getattr(self, "shelf", None) is not None:
             self.shelf.stop()
         # The watcher first — it feeds the engine, and an arrival during
@@ -4596,7 +4642,7 @@ class App:
                 # keystrokes: these borrow the clipboard for the duration,
                 # and a deferred context-pass repair landing in the middle
                 # would restore a clipboard this is still using.
-                with self._cursor_lock:
+                with self._cursor_lock, privacy.pressed():
                     if action == "punctuate":
                         self._punctuate(hwnd)
                     else:
@@ -4857,7 +4903,8 @@ class App:
                 # back (see _lookup). Holding it across the model call
                 # would block a dictation paste for seconds to protect a
                 # clipboard nobody is using any more.
-                self._lookup(hwnd, anchor)
+                with privacy.pressed():
+                    self._lookup(hwnd, anchor)
             except Exception:
                 # Take the box down with it. Only TranscriptionError is
                 # caught inside _lookup and turned into a line the box can
@@ -5223,7 +5270,8 @@ class App:
             started = time.monotonic()
             log.info("checking the transcript against %d learned "
                      "confusion(s)...", len(self.vocab))
-            polished, by = polisher.polish(text, max_wait_s)
+            with privacy.pressed():
+                polished, by = polisher.polish(text, max_wait_s)
             if by:
                 transcript_log.info("POLISHED | %.1fs | %s | %s",
                                     time.monotonic() - started, by, polished)
@@ -5912,6 +5960,16 @@ def main() -> int:
                              "gemini)")
     parser.add_argument("--delete-key", metavar="NAME",
                         help="remove that key from Windows Credential Manager")
+    parser.add_argument("--consents", action="store_true",
+                        help="which cloud gates are open, since when, and "
+                             "which card each needs")
+    parser.add_argument("--consent", metavar="KIND",
+                        help="open a cloud gate from the terminal, as the "
+                             "card's [Turn on] would (KIND = cloud_text | "
+                             "cloud_audio | cloud_screenshots | ...)")
+    parser.add_argument("--withdraw", metavar="KIND",
+                        help="close a cloud gate; the local path answers "
+                             "from the next press")
     parser.add_argument("--fake", action="store_true",
                         help="use the fake backend (no API, no mic quality "
                              "needed)")
@@ -5984,6 +6042,17 @@ def main() -> int:
         if args.delete_key:
             return secretstore.cli_delete(args.delete_key.lower())
         return secretstore.cli_list()
+    if args.consents or args.consent or args.withdraw:
+        try:
+            privacy.configure(_load_config(args.config))
+        except ConfigError as e:
+            print(f"settings would not load: {e}")
+            return 1
+        if args.consent:
+            return privacy.cli_grant(args.consent.lower())
+        if args.withdraw:
+            return privacy.cli_withdraw(args.withdraw.lower())
+        return privacy.cli_list()
     paths.ensure()
     setup_logging()
 
@@ -6029,6 +6098,9 @@ def main() -> int:
         return 1
     if args.fake:
         cfg = dataclasses.replace(cfg, backend="fake")
+    # The gates (privacy.py): what [privacy] says, before anything that
+    # could build a cloud client. net.py learns `offline` from this too.
+    privacy.configure(cfg)
 
     # The first-run wizard, BEFORE any model is loaded. Two reasons for
     # the position: a wizard that appears after 25 s of nothing has
@@ -6327,7 +6399,7 @@ def main() -> int:
                  "never written to disk%s.",
                  vqa_cfg.hotkey, cfg.hotkey,
                  vqa_cfg.ollama_model,
-                 ", cloud upload OFF" if not vqa_cfg.allow_screenshot_upload
+                 ", cloud upload OFF" if not privacy.allowed("cloud_screenshots")
                  else f", then {vqa_cfg.groq_model} (upload is ON)",
                  "" if vqa_cfg.speak == "off"
                  else f"; speak = '{vqa_cfg.speak}'")

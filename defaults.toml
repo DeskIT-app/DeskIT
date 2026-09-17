@@ -566,12 +566,13 @@ skip_consoles = true
 # PRIVACY IS THE DESIGN HERE, not a preference. A screenshot can hold
 # mail, banking, anything ever shown on this screen, which makes it
 # strictly more sensitive than transcript text (the one thing [polish] may
-# already send out). So the default chain is LOCAL ONLY and
-# allow_screenshot_upload below defaults to FALSE, where false does not
-# mean "cloud second" — it means the cloud backends are never even built,
-# enforced in visual_qa.py's chain builder and asserted by a test. With
-# the gate shut and Ollama down, the window says so instead of falling
-# through to the cloud on its own initiative. The screenshot is never
+# already send out). So the default chain is LOCAL ONLY: the cloud gate is
+# [privacy] cloud_screenshots, shut until its consent card is answered,
+# and shut does not mean "cloud second" — it means the cloud backends are
+# never even built, enforced in visual_qa.py's chain builder and asserted
+# by a test. With the gate shut and Ollama down, the window says so
+# instead of falling through to the cloud on its own initiative. The
+# screenshot is never
 # written to disk, never logged, never cached — the screen changes between
 # presses, so there is nothing worth caching — and it dies with its window.
 #
@@ -595,14 +596,11 @@ visual_qa_hotkey = "ctrl+f10"  # measured-free like the other ctrl+F keys:
                                # (f1-f6, f10-f16 under ctrl) reached the
                                # page untouched in Chrome and Edge. Rebind
                                # from the dashboard like any other key.
-allow_screenshot_upload = false
-                               # NAMED SO NOBODY CAN MISREAD IT. false = no
-                               # cloud backend for screenshots exists, full
-                               # stop. true turns the chain into ollama ->
-                               # groq -> gemini-pool. The trade if you flip
-                               # it: pixels leave the machine under Groq/
-                               # Google's terms, in exchange for speed when
-                               # the local model cannot answer.
+# The cloud gate used to be `allow_screenshot_upload` here; since
+# 2026-09-17 it is [privacy] cloud_screenshots, and only its consent card
+# opens it. With it open the chain is ollama -> groq -> gemini-pool; the
+# trade is pixels leaving the machine under Groq/Google's terms, in
+# exchange for speed when the local model cannot answer.
 prefer = "ollama"              # ollama | groq | gemini — who asks first;
                                # the others follow underneath when allowed,
                                # ollama always among them, exactly the
@@ -748,7 +746,7 @@ cloud_timeout_s = 30           # Groq answers in half a second and Gemini in
 # to disk. So `folder` is treated the way transcripts.log is: beside the
 # app, gitignored, and never uploaded by anything in capture.py. The only
 # route from a capture to a model is the editor's Ask button, which hands
-# the pixels to the ask card and obeys allow_screenshot_upload above.
+# the pixels to the ask card and obeys [privacy] cloud_screenshots.
 #
 # MEASURED ON THIS MACHINE, 2026-08-25, live:
 #   grab, reused DIB + BitBlt      10.1 ms at 720p · 21.7 ms at 1440p
@@ -941,8 +939,8 @@ announce = true                # say "Recording started" for 2.6 s before
 # closes, so the light beside the lens means what it looks like it means.
 # The photo is written to `folder` beside the app, gitignored, and nothing
 # here uploads anything anywhere. The one route from a photo to a model is
-# the editor's Ask button, which obeys visual_qa.allow_screenshot_upload
-# like every other question. `enabled = false` unregisters the key.
+# the editor's Ask button, which obeys [privacy] cloud_screenshots like
+# every other question. `enabled = false` unregisters the key.
 #
 # MEASURED ON THIS MACHINE, 2026-08-26, live, on an eMeet C960:
 #   open -> first frame         654-829 ms over six opens (so the card
@@ -1293,6 +1291,46 @@ hush_notifications = true      # while the panel is open the notification
                                # one corner is one too many. They come
                                # straight back when it closes, nothing is
                                # marked seen and no reminder is lost
+
+[privacy]
+# WHAT MAY LEAVE THIS PC. Six gates and two switches. A gate is not a
+# setting: the Settings page shows it but cannot flip it, and neither can
+# editing this file - it opens only when you press "Turn on" on its card,
+# the first time a feature needs the cloud, and closes with "Withdraw"
+# there. The card says what leaves, to whom, under whose account, and
+# quotes the provider's own terms. Every connection the app makes is
+# listed under Dashboard > Network and in network.log beside the other
+# logs. (DISTRIBUTION_PLAN.md chapter 5; privacy.py holds the rules.)
+cloud_text = false             # the text you dictated or selected may go
+                               # to Groq or Google under YOUR key: the
+                               # repair pass, punctuation, translation,
+                               # lookup, the second reading. Off = those
+                               # run on this computer (Ollama) or not at
+                               # all. Opens only through its card.
+cloud_audio = false            # a recording of what you said may go to
+                               # Google or Groq for transcription
+                               # (backend = "gemini"). Off = the model on
+                               # this computer transcribes. Card only.
+cloud_screenshots = false      # a picture of the screen region you asked
+                               # about may go to Groq or Google. Off = only
+                               # the model on this computer ever sees your
+                               # screen, and the cloud backends are never
+                               # even built. Card only.
+account = false                # the app may hold an anonymous account with
+                               # DeskIT's own server, for problem reports
+                               # you choose to send. Card only.
+report_upload = false          # problem reports you queued may upload -
+                               # only what the preview showed. Card only.
+settings_sync = false          # your settings and vocabulary may sync
+                               # between your PCs (not yet built). Card only.
+update_check = true            # once a week, one request to GitHub asking
+                               # whether a newer version exists. Carries no
+                               # identifier. Off = you check by hand.
+offline = false                # true refuses EVERY connection except this
+                               # computer's own (Ollama, the phone, the
+                               # hook), whatever the gates above say, and
+                               # the dashboard shows a lock. Dictation,
+                               # learning and the phone keep working.
 
 [server]
 # Dictate from the PHONE, transcribe on this GPU: the phone records and

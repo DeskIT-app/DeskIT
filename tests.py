@@ -48,6 +48,9 @@ _paths_mod.PHONE_TOKEN = _SCRATCH_HOME / "phone" / "server_token.txt"
 # And the egress log: every net.py row a test provokes lands here, not in
 # the checkout's network.log the owner reads.
 _paths_mod.NETWORK_LOG = _SCRATCH_HOME / "network.log"
+# And the consents: a test that grants one grants it in the scratch file,
+# never in the owner's consent.json (privacy.py reads paths.CONSENT_FILE).
+_paths_mod.CONSENT_FILE = _SCRATCH_HOME / "consent.json"
 
 import apikey
 import paths
@@ -4620,17 +4623,26 @@ def test_the_context_pass_never_reaches_for_gemini() -> None:
         # A machine without any cloud key: neither fast backend can be
         # built, so the pass must degrade to exactly what classic ran.
         apikey_mod.find_key = no_keys
-        names = [b.name for b in polisher._backends(text)]
+        with _consented("cloud_text"):
+            names = [b.name for b in polisher._backends(text)]
         assert "gemini" not in names, names
         assert names == ["ollama"], (
             f"without keys the pass must be classic-shaped: {names}")
 
-        # With keys: groq first (prefer's default), Ollama behind it, and
-        # NOT Cerebras — their free tier answers 402 to everything, so as a
-        # fallback it can only spend the user's wait to fail. It is opt-in
-        # now: only prefer = "cerebras" builds it.
+        # With keys but NO consent (a fresh install): the same shape —
+        # the gate is checked before the key (D7), and a bug elsewhere
+        # cannot build a cloud leg the person never allowed.
         apikey_mod.find_key = all_keys
         names = [b.name for b in polisher._backends(text)]
+        assert names == ["ollama"], (
+            f"without consent the pass must be classic-shaped: {names}")
+
+        # With keys and consent: groq first (prefer's default), Ollama
+        # behind it, and NOT Cerebras — their free tier answers 402 to
+        # everything, so as a fallback it can only spend the user's wait
+        # to fail. It is opt-in now: only prefer = "cerebras" builds it.
+        with _consented("cloud_text"):
+            names = [b.name for b in polisher._backends(text)]
         assert names == ["groq", "ollama"], names
     finally:
         apikey_mod.find_key = original
@@ -4651,7 +4663,8 @@ def test_polish_prefer_ollama_reverses_the_repair_order() -> None:
     original = apikey_mod.find_key
     try:
         apikey_mod.find_key = lambda names: ("test-key", "test")
-        names = [b.name for b in polisher._backends("משפט לבדיקה בבקשה")]
+        with _consented("cloud_text"):
+            names = [b.name for b in polisher._backends("משפט לבדיקה בבקשה")]
     finally:
         apikey_mod.find_key = original
     assert names == ["ollama", "groq"], names
@@ -4672,7 +4685,8 @@ def test_cerebras_is_opt_in_but_still_reachable() -> None:
     original = apikey_mod.find_key
     try:
         apikey_mod.find_key = lambda names: ("test-key", "test")
-        names = [b.name for b in polisher._backends("משפט לבדיקה בבקשה")]
+        with _consented("cloud_text"):
+            names = [b.name for b in polisher._backends("משפט לבדיקה בבקשה")]
     finally:
         apikey_mod.find_key = original
     assert names == ["cerebras", "groq", "ollama"], names
@@ -4700,7 +4714,8 @@ def test_a_missing_cerebras_key_names_the_fix() -> None:
     original = apikey_mod.find_key
     apikey_mod.find_key = lambda names: (None, "not found")
     try:
-        translate_mod.CerebrasTranslator("gpt-oss-120b", 20)
+        with _consented("cloud_text"):
+            translate_mod.CerebrasTranslator("gpt-oss-120b", 20)
     except TranscriptionError as e:
         assert "CEREBRAS_API_KEY" in str(e), e
         assert "prefer" in str(e) and "groq" in str(e), e
@@ -10845,43 +10860,41 @@ def test_the_screenshot_pipeline_is_bytes_in_bytes_out() -> None:
     assert blob == again
 
 
-def test_screenshot_upload_gate_keeps_cloud_out_of_the_chain() -> None:
-    """THE privacy test. With allow_screenshot_upload = false the built
-    chain contains NO cloud backend — asserted against the built list,
-    never against the flag, because a runtime `if` is exactly the kind of
-    guard a refactor silently deletes."""
+def test_screenshot_chain_follows_privacy_gate() -> None:
+    """THE privacy test, generalised (plan 5.2): while the cloud_screenshots
+    gate is shut the built chain contains NO cloud backend — asserted
+    against the built list, never against a flag, because a runtime `if`
+    is exactly the kind of guard a refactor silently deletes. Even a
+    config that PREFERS the cloud cannot build it while shut; with the
+    gate open the order is ollama -> groq -> gemini, prefer first, and
+    gemini_fallback = false drops the pool."""
     import dataclasses
 
+    import privacy
     import visual_qa as vq
 
     cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
-    assert cfg.visual_qa.allow_screenshot_upload is False
+    assert not hasattr(cfg.visual_qa, "allow_screenshot_upload"), \
+        "the old flag is gone; the gate is [privacy] cloud_screenshots"
+    assert privacy.allowed("cloud_screenshots") is False
     shut = [name for name, _build in vq.Chain(cfg)._builders()]
     assert shut == ["ollama"], \
         f"the gate leaked cloud builders into the chain: {shut}"
-    # Even a config that PREFERS the cloud cannot build it while shut.
     sneaky = dataclasses.replace(
         cfg, visual_qa=dataclasses.replace(cfg.visual_qa, prefer="groq"))
     assert [n for n, _ in vq.Chain(sneaky)._builders()] == ["ollama"]
-
-    # Gate open: ollama first by default, then groq, then the shared pool.
-    open_cfg = dataclasses.replace(
-        cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
-                                           allow_screenshot_upload=True))
-    names = [n for n, _ in vq.Chain(open_cfg)._builders()]
-    assert names == ["ollama", "groq", "gemini"], names
-    prefer_groq = dataclasses.replace(
-        cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
-                                           allow_screenshot_upload=True,
-                                           prefer="groq"))
-    assert [n for n, _ in vq.Chain(prefer_groq)._builders()] == \
-        ["groq", "ollama", "gemini"]
-    no_gemini = dataclasses.replace(
-        cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
-                                           allow_screenshot_upload=True,
-                                           gemini_fallback=False))
-    assert [n for n, _ in vq.Chain(no_gemini)._builders()] == \
-        ["ollama", "groq"]
+    with _consented("cloud_screenshots"):
+        names = [n for n, _ in vq.Chain(cfg)._builders()]
+        assert names == ["ollama", "groq", "gemini"], names
+        assert [n for n, _ in vq.Chain(sneaky)._builders()] == \
+            ["groq", "ollama", "gemini"]
+        no_gemini = dataclasses.replace(
+            cfg, visual_qa=dataclasses.replace(cfg.visual_qa,
+                                               gemini_fallback=False))
+        assert [n for n, _ in vq.Chain(no_gemini)._builders()] == \
+            ["ollama", "groq"]
+    # Withdrawn: the very next build is local again, no restart.
+    assert [n for n, _ in vq.Chain(cfg)._builders()] == ["ollama"]
 
 
 def _bare_groq_vision():
@@ -11025,7 +11038,6 @@ def test_visual_qa_section_parses_with_defaults_and_overrides() -> None:
             "[visual_qa]\n"
             "enabled = false\n"
             'visual_qa_hotkey = "f15"\n'
-            "allow_screenshot_upload = true\n"
             'prefer = "groq"\n'
             "max_side_px = 900\n"
             "num_predict = 256\n"
@@ -11036,7 +11048,6 @@ def test_visual_qa_section_parses_with_defaults_and_overrides() -> None:
         assert vq.enabled is False
         assert vq.hotkey == "f15"          # the TOML key's real name
         assert cfg.visual_qa_hotkey == "f15"   # ...and its public face
-        assert vq.allow_screenshot_upload is True
         assert vq.prefer == "groq"
         assert vq.max_side_px == 900
         assert vq.num_predict == 256
@@ -11045,7 +11056,7 @@ def test_visual_qa_section_parses_with_defaults_and_overrides() -> None:
         assert vq.groq_model == "qwen/qwen3.6-27b"
 
         defaults = config_mod.VisualQAConfig()
-        assert defaults.allow_screenshot_upload is False, \
+        assert config_mod.PrivacyConfig().cloud_screenshots is False, \
             "the privacy default is OFF and must stay off"
         assert defaults.hotkey == "ctrl+f10"
         assert defaults.max_side_px == 1344
@@ -29598,6 +29609,30 @@ def test_notify_hook_reads_the_port_through_the_layers():
 
 # ------------------------------------------------------- the secret store
 
+class _consented:
+    """Open the named [privacy] gates for the block, the way the person's
+    [Turn on] would — a row in the tests' scratch consent.json and the
+    mirrored key in the scratch settings.toml — and shut them again on
+    the way out. Nothing here can reach the owner's files: paths.CONSENT_FILE
+    and paths.SETTINGS_FILE were repointed at import."""
+
+    def __init__(self, *kinds):
+        self.kinds = kinds
+
+    def __enter__(self):
+        import privacy
+        assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
+        self._mod = privacy
+        for kind in self.kinds:
+            privacy.grant(kind)
+        return privacy
+
+    def __exit__(self, *exc):
+        for kind in self.kinds:
+            self._mod.withdraw(kind)
+        return False
+
+
 class _test_cred_prefix:
     """Point secretstore's Credential Manager entries at ``DeskIT.test/``
     for the block, and leave none of them behind. The real ``DeskIT/``
@@ -29935,7 +29970,8 @@ def test_net_never_puts_key_in_url():
 
     google = "https://generativelanguage.googleapis.com/v1beta/models"
     groq = "https://api.groq.com/openai/v1/chat/completions"
-    with _test_cred_prefix() as store, _patched(net_mod, "_connect", fake_connect):
+    with _test_cred_prefix() as store, _consented("cloud_text"), \
+            _patched(net_mod, "_connect", fake_connect):
         store.set("groq", groq_fixture)
         store.set("gemini", gem_fixture)
         for url, purpose, secret, why in (
@@ -29980,7 +30016,8 @@ def test_net_never_puts_key_in_url():
         assert value not in text, "a secret value reached network.log"
     tail = text.splitlines()[-4:]
     assert any("| catalog | 0 | 2 | 200 | gemini | -" in line for line in tail), tail
-    assert any("| polish | 8 | 2 | 200 | groq | -" in line for line in tail), tail
+    assert any("| polish | 8 | 2 | 200 | groq | cloud_text@groq-2026-06-22+gemini-2026-04-28"
+               in line for line in tail), tail
 
 
 def test_network_log_row_shape():
@@ -30083,6 +30120,369 @@ def test_plain_dictation_touches_only_loopback():
     finally:
         os.environ.update(hidden)
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------------------ privacy.py: the gates
+#
+# DISTRIBUTION_PLAN.md 5.1-5.3, D7. Every test grants in the scratch
+# consent.json (_consented) and shuts the gate again on the way out.
+
+def test_privacy_gate_refuses_every_cloud_constructor():
+    """With every gate shut each cloud constructor raises ConsentRequired
+    BEFORE it looks for a key — and the exception is also the module's
+    own error class, so every chain that skips a keyless backend skips
+    it the same way. With the gate open and a fixture key it builds;
+    with a stale text_version on file it refuses again."""
+    import json as json_mod
+
+    import privacy
+    import translate as translate_mod
+    import transcribers.gemini as tg
+    import visual_qa as vq
+
+    import secretstore
+
+    looked = []
+
+    def spy_find_key(name):
+        looked.append(name)
+        return "gsk_fixture_gate_" + "k" * 20, "test"
+
+    with _patched(secretstore, "find_key", spy_find_key):
+        for build, error, kind in (
+                (lambda: translate_mod.GroqTranslator("m", 5), translate_mod.TranslationError, "cloud_text"),
+                (lambda: translate_mod.GeminiTranslator(["m"], 5), translate_mod.TranslationError, "cloud_text"),
+                (lambda: vq.GroqVision("m", 5, 10), vq.QAError, "cloud_screenshots"),
+                (lambda: vq.GeminiVision(["m"], 5), vq.QAError, "cloud_screenshots"),
+                (lambda: tg.GeminiTranscriber(["m"], 5), tg.TranscriptionError, "cloud_audio")):
+            try:
+                build()
+            except error as e:
+                assert isinstance(e, privacy.ConsentRequired), type(e)
+                assert e.kind == kind, (e.kind, kind)
+            else:
+                raise AssertionError(f"{kind}: built with the gate shut")
+        assert looked == [], "a key was looked up before the gate was asked"
+        with _consented("cloud_text", "cloud_screenshots", "cloud_audio"):
+            assert translate_mod.GroqTranslator("m", 5).key_source == "test"
+            assert vq.GroqVision("m", 5, 10).key_source == "test"
+            assert tg.GeminiTranscriber(["m"], 5).key_source == "test"
+        assert looked, "the open gate never reached the key"
+        # A row whose words are older than the card: shut, and says so.
+        stale = {"consents": [{"kind": "cloud_text", "text_version": "groq-2020-01-01",
+                               "when": "2026-01-01T00:00:00", "app_version": "dev"}]}
+        paths.CONSENT_FILE.write_text(json_mod.dumps(stale), "utf-8")
+        privacy._gates["cloud_text"] = True
+        try:
+            try:
+                translate_mod.GroqTranslator("m", 5)
+            except translate_mod.TranslationError as e:
+                assert "words changed" in str(e), e
+            else:
+                raise AssertionError("a stale consent opened the gate")
+        finally:
+            privacy.withdraw("cloud_text")
+
+
+def test_consent_round_trip_and_withdraw_teardown():
+    """grant writes one atomic row (kind, text_version, when, app_version)
+    and mirrors the key into settings.toml; withdraw removes the row,
+    clears the key and runs every registered reset once (grant runs
+    them too — a leg cached as unavailable must not outlive the card);
+    a second withdraw is a no-op; a row removed BEHIND this process's
+    back — the dashboard, another process — runs the same resets on the
+    next look, and net.py refuses the next request."""
+    import json as json_mod
+
+    import net as net_mod
+    import privacy
+
+    torn: list[str] = []
+    privacy.on_change("cloud_text", lambda: torn.append("polisher"))
+    privacy.on_change("cloud_text", lambda: torn.append("punctuator"))
+    assert privacy.allowed("cloud_text") is False
+    row = privacy.grant("cloud_text")
+    assert torn == ["polisher", "punctuator"], "a grant must reset the cached legs too"
+    torn.clear()
+    assert set(row) == {"kind", "text_version", "when", "app_version"}, row
+    on_disk = json_mod.loads(paths.CONSENT_FILE.read_text("utf-8"))["consents"]
+    assert on_disk == [row], on_disk
+    assert "privacy.cloud_text = true" in paths.SETTINGS_FILE.read_text("utf-8")
+    assert privacy.allowed("cloud_text") is True
+    assert privacy.tag("cloud_text") == "cloud_text@" + privacy.TEXT_VERSIONS["cloud_text"]
+    assert privacy.withdraw("cloud_text") is True
+    assert torn == ["polisher", "punctuator"], torn
+    assert privacy.allowed("cloud_text") is False
+    assert "privacy.cloud_text" not in paths.SETTINGS_FILE.read_text("utf-8"), \
+        "false is the default and must not linger as an override"
+    assert privacy.withdraw("cloud_text") is False and torn == ["polisher", "punctuator"]
+    # Behind our back: another process empties the file.
+    privacy.grant("cloud_text")
+    torn.clear()
+    time.sleep(0.02)
+    paths.CONSENT_FILE.write_text(json_mod.dumps({"consents": []}), "utf-8")
+    assert privacy.allowed("cloud_text") is False
+    assert torn == ["polisher", "punctuator"], torn
+    seen: list[str] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        seen.append(url)
+        return _FakeRaw(b"{}")
+
+    with _patched(net_mod, "_connect", fake_connect), _test_cred_prefix() as store:
+        store.set("groq", "gsk_fixture_rt_" + "r" * 24)
+        try:
+            net_mod.request("GET", "https://api.groq.com/openai/v1/x", "polish", secret="groq")
+        except net_mod.EgressRefused as e:
+            assert "no consent" in e.reason, e
+        else:
+            raise AssertionError("a withdrawn consent still let a request out")
+        assert seen == []
+    privacy._resets.pop("cloud_text", None)
+
+
+def test_settings_page_cannot_write_privacy_keys():
+    """config.save and config.set_values refuse the six gates (a config
+    write can never open one — only privacy.grant may, D7); the two
+    switches are ordinary; the generated Settings page lists the gates
+    as rows that are not editable and the switches as editable."""
+    import settings as settings_mod
+
+    for key in ("privacy.cloud_text", "privacy.account"):
+        try:
+            config_mod.save({key: True})
+        except config_mod.ConfigError as e:
+            assert "consent card" in str(e), e
+        else:
+            raise AssertionError(f"{key} was written by config.save")
+    written = paths.SETTINGS_FILE.read_text("utf-8") if paths.SETTINGS_FILE.exists() else ""
+    assert "privacy.cloud_text" not in written
+    config_mod.save({"privacy.offline": True})
+    assert "privacy.offline = true" in paths.SETTINGS_FILE.read_text("utf-8")
+    config_mod.save({"privacy.offline": False})
+    with tempfile.TemporaryDirectory() as d:
+        one = Path(d) / "config.toml"
+        one.write_text('hotkey = "right ctrl"\n[privacy]\ncloud_audio = false\n', "utf-8")
+        try:
+            config_mod.set_values(one, {"privacy.cloud_audio": True})
+        except config_mod.ConfigError:
+            pass
+        else:
+            raise AssertionError("set_values wrote a gate")
+        assert "cloud_audio = false" in one.read_text("utf-8")
+    sections = settings_mod.read(Path(__file__).resolve().parent / "defaults.toml")
+    rows = {st.path: st for st in settings_mod.flatten(sections) if st.section == "privacy"}
+    assert set(rows) == {f"privacy.{k}" for k in
+                         ("cloud_text", "cloud_audio", "cloud_screenshots", "account",
+                          "report_upload", "settings_sync", "update_check", "offline")}, rows
+    for path, st in rows.items():
+        if st.key in settings_mod.CONSENT_GATES:
+            assert st.consent and not st.editable, path
+        else:
+            assert not st.consent and st.editable, path
+    assert "Privacy" in settings_mod.tab_names(sections)
+
+
+def test_warmups_never_open_a_card():
+    """Start-up warm-ups with every gate shut make zero remote requests
+    and raise nothing: a shut gate is one INFO line, like a missing key.
+    (The card is the controller's to open on a key press, never the
+    constructor's — plan 5.2.)"""
+    import dataclasses
+
+    import net as net_mod
+    import polish as polish_mod
+    import visual_qa as vq
+
+    tried: list[str] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        tried.append(url)
+        raise net_mod.NetError("refused") from ConnectionRefusedError(10061, "refused")
+
+    import privacy
+
+    asked: list[str] = []
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    cfg = dataclasses.replace(cfg, polish=dataclasses.replace(cfg.polish, max_wait_s=0.5))
+    with _patched(apikey, "find_key", lambda names: ("gsk_fixture_warm", "test")), \
+            _patched(net_mod, "_connect", fake_connect), \
+            _patched(privacy, "_asker", asked.append):
+        polish_mod.Polisher(cfg, _tmp_vocab()).warm()
+        for name, build in vq.Chain(cfg)._builders():
+            assert name == "ollama", name
+            try:
+                build().warm()
+            except Exception:
+                pass
+        assert asked == [], f"a warm-up opened a card: {asked}"
+        # The same refusal inside a press the person made asks — once.
+        with privacy.pressed():
+            for _ in range(3):
+                for _b in polish_mod.Polisher(cfg, _tmp_vocab())._backends("שלום"):
+                    pass
+        assert asked == ["cloud_text"], asked
+        privacy._asked.discard("cloud_text")
+    from urllib.parse import urlsplit
+    remote = [u for u in tried if urlsplit(u).hostname != "127.0.0.1"]
+    assert tried and not remote, (tried, remote)
+
+
+def test_net_offline_refuses_all_but_loopback():
+    """privacy.offline (5.9): every allowlisted host is refused with a
+    row that says so, even with a key stored and the gate open, and
+    127.0.0.1 still passes; the switch reaches net.py through
+    privacy.configure, the way main and the live option path call it."""
+    import dataclasses
+
+    import net as net_mod
+    import privacy
+
+    seen: list[str] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        seen.append(url)
+        return _FakeRaw(b"{}")
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    on = dataclasses.replace(cfg, privacy=dataclasses.replace(cfg.privacy, offline=True))
+    try:
+        with _test_cred_prefix() as store, _consented("cloud_text"), \
+                _patched(net_mod, "_connect", fake_connect):
+            store.set("groq", "gsk_fixture_off_" + "o" * 22)
+            privacy.configure(on)
+            assert net_mod.offline is True and privacy.allowed("cloud_text") is False
+            for url, purpose, secret in (
+                    ("https://api.groq.com/openai/v1/chat/completions", "polish", "groq"),
+                    ("https://api.groq.com/openai/v1/models", "key-test", None),
+                    ("https://api.github.com/repos/x/releases/latest", "update-check", None)):
+                try:
+                    net_mod.request("GET", url, purpose, secret=secret)
+                except net_mod.EgressRefused as e:
+                    assert "offline" in e.reason, e
+                else:
+                    raise AssertionError(f"offline let {purpose} out")
+            status, _h, _b = net_mod.request("GET", "http://127.0.0.1:11434/api/ps", "ollama")
+            assert status == 200 and seen == ["http://127.0.0.1:11434/api/ps"], seen
+            privacy.configure(config_mod.load_layered())   # the mirrored key
+            assert net_mod.offline is False and privacy.allowed("cloud_text") is True
+            net_mod.request("GET", "https://api.groq.com/openai/v1/models", "key-test")
+            assert len(seen) == 2
+    finally:
+        privacy.configure(cfg)
+    rows = [net_mod.format_row(r) for r in net_mod.rows()[-5:]]
+    assert sum("| refused |" in r for r in rows) == 3, rows
+
+
+def test_consent_card_words_and_layout():
+    """Every kind has a card whose text_version is the one privacy.py
+    writes; each card has a title, the five blocks of plan 5.3 in order,
+    the one footer, and two buttons drawn where they are pressed — the
+    hit test and regions() agree, the shadow margin belongs to nobody,
+    and the card grows with its words rather than clipping them."""
+    import consent_card as cc
+    import privacy
+
+    for kind in privacy.KINDS:
+        words = cc.TEXTS[kind]
+        assert words["version"] == privacy.TEXT_VERSIONS[kind], kind
+        card = cc.card_for(kind)
+        assert card["title"] and card["footer"] == cc.FOOTER
+        labels = [label for label, _text in card["blocks"]]
+        assert labels == [cc.WHAT, cc.WHOM, cc.ACCOUNT, cc.TERMS, cc.OFF], (kind, labels)
+        assert all(text.strip() for _l, text in card["blocks"]), kind
+        cache: dict = {}
+        w, h = cc.measure(card, 1.0, cache)
+        assert w == cc.CARD_W and 200 < h < 900, (kind, w, h)
+        boxes = cc.regions(card, 1.0, cache)
+        for name, _w in cc.BUTTONS:
+            x0, y0, x1, y1 = boxes[name]
+            assert cc.hit_test(card, 1.0, (x0 + x1) / 2, (y0 + y1) / 2, cache) == (cc.HTCLIENT, name)
+            assert cc.SHADOW <= x0 < x1 <= cc.SHADOW + w and y1 <= cc.SHADOW + h, (name, boxes[name])
+        assert cc.hit_test(card, 1.0, cc.SHADOW + 10, cc.SHADOW + 10, cache) == (cc.HTCAPTION, cc.DRAG)
+        assert cc.hit_test(card, 1.0, 3, 3, cache) == (cc.HTTRANSPARENT, None)
+        img = cc.flat(card, 1.0, cc.TURN_ON, cache)
+        assert (img.width, img.height) == (w, h)
+        small_w, small_h = cc.measure(card, 0.6, cache)
+        assert small_w < w and small_h < h
+    # The cloud cards quote the providers' own words, in their words.
+    for kind in ("cloud_text", "cloud_audio", "cloud_screenshots"):
+        terms = dict(cc.TEXTS[kind]["blocks"])[cc.TERMS]
+        assert "not permitted to use Inputs or Outputs for training" in terms, kind
+        assert "human reviewers may read" in terms, kind
+
+
+def test_the_card_answers_reach_privacy():
+    """[Turn on] on the overlay card grants the kind (a row, the mirrored
+    key, the resets) and [Not now] records a refusal that keeps the card
+    down until the next start; a kind asked while one is up waits its
+    turn; the same kind is never queued twice. Driven through the card
+    object with its thread stubbed out — the painter is the flat image
+    the layout test already checks."""
+    import consent_card as cc
+    import overlay as overlay_mod
+    import privacy
+
+    answers: list[tuple] = []
+    card = overlay_mod.ConsentCard(on_answer=lambda k, a: answers.append((k, a)))
+    card._thread = object()           # "started": show() enqueues
+    card.show("cloud_text")
+    card.show("cloud_text")
+    card.show("cloud_screenshots")
+    assert card.current() == "cloud_text" and card._waiting == ["cloud_screenshots"]
+    queued = card._q.get_nowait()
+    assert queued["kind"] == "cloud_text" and card._q.empty()
+    card.pressed(cc.TURN_ON)
+    assert answers == [("cloud_text", cc.TURN_ON)]
+    assert card.current() == "cloud_screenshots", "the waiting kind did not come up"
+    assert card._q.get_nowait()["kind"] == "cloud_screenshots"
+    card.pressed(cc.NOT_NOW)
+    assert answers[-1] == ("cloud_screenshots", cc.NOT_NOW)
+    assert card.current() is None and card._q.get_nowait() is None
+    card.pressed("bogus")
+    assert len(answers) == 2
+    # main's answer handler, on a bare App
+    import main as main_mod
+    app = main_mod.App.__new__(main_mod.App)
+    said: list[str] = []
+    app._say = said.append
+    try:
+        app._consent_answered("cloud_text", cc.TURN_ON)
+        assert privacy.allowed("cloud_text") is True and said, said
+        app._consent_answered("cloud_screenshots", cc.NOT_NOW)
+        assert "cloud_screenshots" in privacy._asked
+        assert privacy.allowed("cloud_screenshots") is False
+    finally:
+        privacy.withdraw("cloud_text")
+        privacy._asked.discard("cloud_screenshots")
+
+
+def test_the_consent_card_stands_up_on_the_hidden_desktop():
+    """The overlay thread builds its Tk window, maps a card at the right
+    edge, takes it down, and buries its own interpreter — the contract
+    every card here keeps. Skipped where Tk cannot open a window."""
+    import overlay as overlay_mod
+
+    card = overlay_mod.ConsentCard(on_answer=lambda k, a: None)
+    card.start()
+    if card._thread is None or not card._alive.is_set():
+        return
+    try:
+        card.show("cloud_audio")
+        deadline = time.monotonic() + 3
+        while card.rect is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert card.rect is not None, "the card never mapped"
+        x0, y0, x1, y1 = card.rect
+        assert x1 - x0 > 300 and y1 - y0 > 200, card.rect
+        card.hide()
+        deadline = time.monotonic() + 3
+        while card.rect is not None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert card.rect is None, "the card stayed up after hide()"
+    finally:
+        card.stop()
+        card._thread.join(timeout=3)
 
 
 if __name__ == "__main__":

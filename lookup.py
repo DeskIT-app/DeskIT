@@ -619,6 +619,10 @@ class Engine:
         self._model = cfg.lookup.model or cfg.translate.ollama_model
         self._gemini = None       # None = not built, False = unavailable
         self._ollama = None
+        # Forgotten when the cloud_text gate opens or closes (privacy.py):
+        # the next lookup rebuilds the leg whichever way the gate points.
+        import privacy
+        privacy.on_change("cloud_text", self._forget_cloud)
         self._warming = threading.Event()
         # The mode and direction of the request being built, per thread.
         # NOT an attribute on self: resolve_prompt() is called inside the
@@ -631,6 +635,9 @@ class Engine:
             cfg.lookup.cache_entries)
 
     # ---- the prompt hook the backends call back into ----
+
+    def _forget_cloud(self) -> None:
+        self._gemini = None
 
     def _system_prompt(self) -> str:
         return prompt_for(getattr(self._state, "target", "Hebrew"),

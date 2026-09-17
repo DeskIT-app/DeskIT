@@ -30,6 +30,7 @@ import re
 import time
 
 import net
+import privacy
 from transcribers.base import RateLimitError, TranscriptionError
 
 log = logging.getLogger("app")
@@ -42,6 +43,24 @@ HEBREW = re.compile("[֐-׿יִ-ﭏ]")
 
 class TranslationError(TranscriptionError):
     """Translation failed. str(e) is a console-friendly message."""
+
+
+class ConsentRequired(TranslationError, privacy.ConsentRequired):
+    """The cloud_text gate is shut (privacy.py): the person has not yet
+    said the text may leave. A TranslationError too, so every chain
+    that skips a backend with no key skips this one the same way; the
+    key's controller opens the consent card on the first press."""
+
+    def __init__(self, kind: str, why: str):
+        privacy.ConsentRequired.__init__(self, kind, why)
+
+
+def _require_text() -> str:
+    """The first statement of every cloud constructor here (plan 5.2)."""
+    try:
+        return privacy.require("cloud_text")
+    except privacy.ConsentRequired as e:
+        raise ConsentRequired(e.kind, e.why) from None
 
 
 def needs_translation(text: str, target: str = "English") -> bool:
@@ -125,6 +144,7 @@ class GeminiTranslator:
 
         from apikey import MISSING_KEY_MESSAGE, find_api_key
 
+        _require_text()
         api_key, self.key_source = find_api_key()
         if not api_key:
             raise TranslationError(MISSING_KEY_MESSAGE)
@@ -439,6 +459,7 @@ class CerebrasTranslator:
                  purpose: str = "translate"):
         import apikey
 
+        _require_text()
         # find_key directly, not a per-provider helper: the subclass below
         # changes only key_names, and one lookup covers both. Only the
         # presence and the SOURCE are kept; the value is dropped on the
@@ -577,6 +598,11 @@ class Translator:
         self._cfg = cfg
         self._cloud = None      # None = not built, False = unavailable
         self._local = None
+        # Forgotten when the cloud_text gate opens or closes (privacy.py).
+        privacy.on_change("cloud_text", self._forget_cloud)
+
+    def _forget_cloud(self) -> None:
+        self._cloud = None
 
     def _cloud_backend(self):
         if self._cloud is None:

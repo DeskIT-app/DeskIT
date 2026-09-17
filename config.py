@@ -466,18 +466,18 @@ class VisualQAConfig:
     — see visual_qa.py.
 
     LOCAL-FIRST BY DEFAULT, and stricter than every other feature here:
-    `allow_screenshot_upload = false` does not merely prefer the local
-    model, it makes the cloud builders UNCONSTRUCTABLE — a screenshot can
-    hold mail, banking, anything on screen, so it is treated as strictly
-    more sensitive than transcript text (which [polish] may already send).
-    The gate is enforced in the backend-chain builder, not at request time,
-    and there is a test asserting the chain is cloud-free while it is off.
+    the [privacy] cloud_screenshots gate (PrivacyConfig, shut until its
+    consent card is answered) does not merely prefer the local model, it
+    makes the cloud builders UNCONSTRUCTABLE — a screenshot can hold
+    mail, banking, anything on screen, so it is treated as strictly more
+    sensitive than transcript text (which [polish] may already send). The
+    gate is enforced in the backend-chain builder, not at request time,
+    and there is a test asserting the chain is cloud-free while it is
+    shut. (`allow_screenshot_upload` was the gate until 2026-09-17;
+    --migrate retires it.)
     """
     # false unregisters the hotkey entirely — the kill switch.
     enabled: bool = True
-    # Named so nobody can misread it. false (the default) makes the cloud
-    # vision backends unconstructable — see the class docstring above.
-    allow_screenshot_upload: bool = False
     hotkey: str = "ctrl+f10"
     # Which backend asks first; the others follow underneath it, ollama
     # always among them. Cloud names only matter while the upload gate
@@ -534,8 +534,8 @@ class CaptureConfig:
     `folder` is treated the way transcripts.log is — it sits beside the
     app, it is gitignored, and nothing in capture.py uploads anything
     anywhere. The only route from a capture to a model is the editor's Ask
-    button, which hands the pixels to visual_qa and obeys
-    `visual_qa.allow_screenshot_upload` like every other question.
+    button, which hands the pixels to visual_qa and obeys the
+    [privacy] cloud_screenshots gate like every other question.
 
     The microphone is off by default. A screen recorder that quietly opens
     the mic is a surprise, and this app's rule is that audio does not
@@ -1160,6 +1160,53 @@ TESTS_WAIT_MAX = 3600.0
 
 
 @dataclass(frozen=True)
+class PrivacyConfig:
+    """What may leave this PC — DISTRIBUTION_PLAN.md 5.1, D7.
+
+    The six gates are NOT settings: a gate is true only after the person
+    pressed [Turn on] on its consent card, which writes a row into
+    consent.json AND mirrors the key here through privacy.grant. The
+    Settings page shows them read-only, and config.save refuses them
+    (CONSENT_KEYS) unless privacy.py is the caller — so a click, a hand
+    edit or a sync can never open one. privacy.allowed(kind) is the one
+    place that decides; this dataclass is what it was told at start-up.
+
+    The last two are ordinary switches: the weekly update check (on by
+    default, asked once in the wizard) and offline mode, a veto over
+    every gate (5.9).
+    """
+    cloud_text: bool = False
+    cloud_audio: bool = False
+    cloud_screenshots: bool = False
+    account: bool = False
+    report_upload: bool = False
+    settings_sync: bool = False
+    update_check: bool = True
+    offline: bool = False
+
+
+#: The [privacy] keys only privacy.grant / privacy.withdraw may write.
+CONSENT_KEYS: frozenset[str] = frozenset({
+    "privacy.cloud_text", "privacy.cloud_audio", "privacy.cloud_screenshots",
+    "privacy.account", "privacy.report_upload", "privacy.settings_sync",
+})
+
+
+def _refuse_consent_keys(updates: dict, allow_consent: bool) -> None:
+    """A gate flips only through its consent card (D7): the two writers
+    below raise before touching a file when a consent key is among the
+    updates and the caller is not privacy.py."""
+    if allow_consent:
+        return
+    hit = sorted(k for k in updates if k in CONSENT_KEYS)
+    if hit:
+        raise ConfigError(
+            f"{', '.join(hit)}: a privacy gate is not a setting — it opens "
+            f"only through its consent card and closes with Withdraw "
+            f"(Settings > Privacy)")
+
+
+@dataclass(frozen=True)
 class Config:
     hotkey: str = "right ctrl"
     # A dedicated key that declares "this one is English". Redundant once
@@ -1247,6 +1294,7 @@ class Config:
     problems: ProblemsConfig = field(default_factory=ProblemsConfig)
     shelf: ShelfConfig = field(default_factory=ShelfConfig)
     tests: TestsConfig = field(default_factory=TestsConfig)
+    privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
 
     @property
     def capture_hotkey(self) -> str:
@@ -1532,6 +1580,7 @@ def build(data: dict) -> Config:
     problems = data.get("problems", {})
     shelf = data.get("shelf", {})
     tests = data.get("tests", {})
+    privacy = data.get("privacy", {})
 
     # models = [...] is the current form; model = "..." is still honoured so
     # an older config.toml keeps working.
@@ -1770,9 +1819,6 @@ def build(data: dict) -> Config:
         visual_qa=VisualQAConfig(
             enabled=bool(visual_qa.get("enabled",
                                        VisualQAConfig.enabled)),
-            allow_screenshot_upload=bool(visual_qa.get(
-                "allow_screenshot_upload",
-                VisualQAConfig.allow_screenshot_upload)),
             hotkey=str(visual_qa.get(
                 "visual_qa_hotkey",
                 VisualQAConfig.hotkey)).strip().lower(),
@@ -1941,6 +1987,9 @@ def build(data: dict) -> Config:
             wait_seconds=float(tests.get("wait_seconds",
                                          TestsConfig.wait_seconds)),
         ),
+        privacy=PrivacyConfig(**{
+            name: bool(privacy.get(name, getattr(PrivacyConfig, name)))
+            for name in PrivacyConfig.__dataclass_fields__}),
         fallback_to_local=bool(data.get("fallback_to_local",
                                         Config.fallback_to_local)),
         splash=bool(data.get("splash", Config.splash)),
@@ -2355,7 +2404,8 @@ def _section_span(lines: list[str], section: str) -> tuple[int, int]:
     raise ConfigError(f"no [{section}] section in config.toml")
 
 
-def set_values(path: Path, updates: dict[str, object]) -> None:
+def set_values(path: Path, updates: dict[str, object], *,
+               allow_consent: bool = False) -> None:
     """Change settings in place, keeping every comment.
 
     Top-level keys are matched in the top-level block only. A dotted name
@@ -2370,6 +2420,7 @@ def set_values(path: Path, updates: dict[str, object]) -> None:
     box, and it must not be possible to get there by clicking a key in a
     dashboard.
     """
+    _refuse_consent_keys(updates, allow_consent)
     if not path.exists():
         raise ConfigError(f"Config file not found: {path}")
     raw = path.read_text("utf-8")
@@ -2631,7 +2682,7 @@ def defaults_flat(defaults=None) -> dict[str, object]:
 
 
 def save(updates: dict[str, object], *, defaults=None, settings=None,
-         state=None) -> None:
+         state=None, allow_consent: bool = False) -> None:
     """Write a change into the per-user files.
 
     STATE_KEYS go to state.json. Everything else goes to settings.toml —
@@ -2641,6 +2692,7 @@ def save(updates: dict[str, object], *, defaults=None, settings=None,
     reason set_values validates before it swaps: a value that stops the
     app from starting must not be reachable from a click.
     """
+    _refuse_consent_keys(updates, allow_consent)
     d, s, t = _layer_paths(defaults, settings, state)
     flat_defaults = flatten(_read_toml(d))
     overrides = read_settings(s)

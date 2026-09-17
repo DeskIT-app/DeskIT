@@ -237,6 +237,15 @@ class Punctuator:
         self._groq = None        # None = not built, False = unavailable
         self._gemini = None
         self._ollama = None
+        # The cloud legs are forgotten when the cloud_text gate opens or
+        # closes (privacy.py), so the next press rebuilds them whichever
+        # way the gate now points — a leg cached as "unavailable" before
+        # the card was answered must not stay local until a restart.
+        import privacy
+        privacy.on_change("cloud_text", self._forget_cloud)
+
+    def _forget_cloud(self) -> None:
+        self._groq = self._gemini = None
 
     def _system_prompt(self) -> str:
         return _prompt(self._cfg.punctuate.nikud)

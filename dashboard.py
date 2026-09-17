@@ -7356,7 +7356,12 @@ class Dashboard:
         p = self.parts
         right = CW - 18
         value = p["values"].setdefault(setting.path, setting.value)
-        if setting.kind == "bool":
+        if getattr(setting, "consent", False):
+            # A gate: never a switch. What it shows is the consent row —
+            # granted when, for which words — and the one button that may
+            # close it. It opens only through its card (D7).
+            self._draw_consent_row(card, setting, right, y)
+        elif setting.kind == "bool":
             switch = ui.Switch(card, bool(value),
                                command=lambda v, s=setting:
                                self._apply_setting(s, v), bg=ui.CARD)
@@ -7401,6 +7406,60 @@ class Dashboard:
 
     def _register_row(self, setting, kind: str, widget) -> None:
         self.parts["rows"].setdefault(setting.path, []).append((kind, widget))
+
+    def _draw_consent_row(self, card, setting, right: int, y: int) -> None:
+        """One of the six [privacy] gates: what the consent file says —
+        open since when, for which words, stale, or never granted — and
+        a Withdraw button while it is open. No switch: it opens only
+        through its card, the first time a feature needs it (D7)."""
+        import privacy
+
+        kind = setting.key
+        try:
+            row = next(s for s in privacy.status() if s["kind"] == kind)
+        except Exception:
+            row = {"open": False, "stale": False, "when": "", "gate": False}
+        if row["open"]:
+            when = str(row.get("when", ""))[:10]
+            text, colour = f"On since {when}", ui.FG
+        elif row.get("stale"):
+            text, colour = "Its card changed — it will ask again", ui.FAINT
+        elif row.get("when"):
+            text, colour = "Off", ui.FAINT
+        else:
+            text, colour = "Off — its card opens on first use", ui.FAINT
+        x = right
+        if row["open"]:
+            button = ui.Button(card, "Withdraw",
+                               lambda k=kind, s=setting: self._withdraw(k, s),
+                               w=widgets.button_width("Withdraw"), h=30,
+                               quiet=True)
+            card.create_window(right, y - 2, window=button, anchor="ne")
+            x = right - widgets.button_width("Withdraw") - 12
+        # The text is the row's one control — registered so the page
+        # counts it like any other line (one widget per line, a test
+        # holds), and so a repaint can find it.
+        item = card.create_text(x, y + 13, text=text, anchor="e",
+                                font=(ui.UI, 10), fill=colour)
+        self._register_row(setting, "consent", (card, item))
+
+    def _withdraw(self, kind: str, setting) -> None:
+        """Settings > Privacy > Withdraw. privacy.withdraw writes the
+        consent file and mirrors the key; the running app notices the
+        row is gone on its next gate check (privacy.rows) and net.py
+        refuses the next request either way — no pipe message needed."""
+        import privacy
+
+        try:
+            privacy.withdraw(kind)
+        except Exception as e:
+            self._note(str(e))
+            return
+        self.parts["values"][setting.path] = False
+        self._note(f"{kind}: withdrawn — the local path answers from the "
+                   f"next press; the card will ask again when a feature "
+                   f"needs the cloud")
+        self._draw_settings()
 
     def _files_card(self, scroller) -> None:
         # Named for what they ARE, not what they are called on disk — the

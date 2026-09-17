@@ -44,7 +44,11 @@ import paths
 #: Keys the layered build knows but does not want carried from an old
 #: file — retired sections and settings (chapter 3.8 step 5).
 DROPPED_PREFIXES = ("tests.",)
-DROPPED_KEYS = frozenset({"lookup.dwell_ms"})
+DROPPED_KEYS = frozenset({"lookup.dwell_ms",
+                          # the screenshot cloud gate is [privacy]
+                          # cloud_screenshots since 2026-09-17, opened
+                          # only by its consent card (chapter 5)
+                          "visual_qa.allow_screenshot_upload"})
 
 #: The personal stores, by paths.py name, in the order a reset lists them.
 #: Folders are removed whole; files by name, with their rotated siblings

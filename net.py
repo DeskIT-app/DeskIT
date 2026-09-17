@@ -122,9 +122,9 @@ _SECRET_HEADERS: frozenset[str] = frozenset({
 #: against api.cerebras.ai 2026-08-22. Any named client passes.
 USER_AGENT = "deskit/1.0"
 
-#: ``privacy.offline`` (5.9): everything but loopback is refused. Flipped
-#: by the Settings switch once privacy.py exists (PR 5); a module flag
-#: here so the refusal is the transport's, not a feature's.
+#: ``privacy.offline`` (5.9): everything but loopback is refused. Set by
+#: ``privacy.configure`` from the settings; a module flag here so the
+#: refusal is the transport's, not a feature's.
 offline = False
 
 #: The log rotates at this size; ``.1`` ``.2`` ``.3`` are kept.
@@ -231,10 +231,12 @@ def _host_allowed(host: str) -> bool:
 
 
 def _admit(url: str, purpose: str, secret: str | None,
-           headers: dict | None, *, sdk: bool = False) -> str:
-    """Every check that happens BEFORE a socket exists. Returns the host;
-    raises ``EgressRefused`` (after writing the refused row) or
-    ``ValueError`` for a caller's programming error."""
+           headers: dict | None, *, sdk: bool = False) -> tuple[str, str | None]:
+    """Every check that happens BEFORE a socket exists. Returns the host
+    and the consent that authorised the call (``kind@text_version``, or
+    None for a purpose that needs none); raises ``EgressRefused`` (after
+    writing the refused row) or ``ValueError`` for a caller's programming
+    error."""
     if purpose not in PURPOSES:
         raise ValueError(f"unknown network purpose {purpose!r}")
     parts = urllib.parse.urlsplit(url)
@@ -252,6 +254,19 @@ def _admit(url: str, purpose: str, secret: str | None,
         refuse("offline mode is on")
     if parts.scheme != "https" and host != LOOPBACK:
         refuse(f"{parts.scheme or 'no'} scheme; only https leaves this PC")
+    # The gate for the purpose (5.1): asked here for EVERY remote call,
+    # not only at construction, so a consent withdrawn from the dashboard
+    # — another process — stops the next request without a restart.
+    consent = None
+    if host != LOOPBACK:
+        import privacy
+
+        kind = privacy.kind_for(purpose)
+        if kind is not None:
+            try:
+                consent = privacy.require(kind)
+            except privacy.ConsentRequired as e:
+                refuse(f"no consent for {kind}: {e.why}")
     for name, _value in urllib.parse.parse_qsl(parts.query,
                                                keep_blank_values=True):
         if name.lower() in QUERY_NEVER:
@@ -269,7 +284,7 @@ def _admit(url: str, purpose: str, secret: str | None,
         for key in headers or {}:
             if key.lower() in _SECRET_HEADERS:
                 refuse(f"caller-supplied {key} header; pass secret=<name>")
-    return host
+    return host, consent
 
 
 def _resolve(secret: str) -> str:
@@ -387,7 +402,8 @@ def open(method: str, url: str, purpose: str, *, secret: str | None = None,  # n
     ``r.status`` with the provider's body readable, because a 429 or a
     404 is an answer the caller parses.
     """
-    host = _admit(url, purpose, secret, headers)
+    host, granted = _admit(url, purpose, secret, headers)
+    consent = consent or granted
     hdrs = {str(k): str(v) for k, v in (headers or {}).items()}
     hdrs.setdefault("User-Agent", USER_AGENT)
     if secret is not None:
@@ -458,7 +474,8 @@ def _httpx_transport(purpose: str, secret: str | None):
 
     class _Transport(httpx.HTTPTransport):
         def handle_request(self, request):
-            host = _admit(str(request.url), purpose, secret, None, sdk=True)
+            host, consent = _admit(str(request.url), purpose, secret, None,
+                                   sdk=True)
             try:
                 up = int(request.headers.get("content-length") or 0)
             except ValueError:
@@ -466,12 +483,14 @@ def _httpx_transport(purpose: str, secret: str | None):
             try:
                 response = super().handle_request(request)
             except Exception as e:                           # noqa: BLE001
-                _record(host, purpose, up, 0, type(e).__name__, secret, None)
+                _record(host, purpose, up, 0, type(e).__name__, secret,
+                        consent)
                 raise
             status = response.status_code
             stream = _Counting(
                 response.stream,
-                lambda n: _record(host, purpose, up, n, status, secret, None))
+                lambda n: _record(host, purpose, up, n, status, secret,
+                                  consent))
             return httpx.Response(status, headers=response.headers,
                                   stream=stream, extensions=response.extensions)
 

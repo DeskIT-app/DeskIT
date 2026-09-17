@@ -83,10 +83,26 @@ class Setting:
     def editable(self) -> bool:
         """A list is edited in the file — the line editor writes scalars —
         and so is a Hebrew string: Tk has no bidi caret (see ui.py), and a
-        field that reverses what you type is worse than no field."""
-        if self.kind == "list":
+        field that reverses what you type is worse than no field. A
+        consent gate is edited by nobody: it opens through its card and
+        closes with Withdraw (config.CONSENT_KEYS, D7)."""
+        if self.kind == "list" or self.consent:
             return False
         return not (self.kind == "str" and is_rtl(str(self.value)))
+
+    @property
+    def consent(self) -> bool:
+        """One of the six [privacy] gates — drawn read-only with the date
+        it was granted, never as a switch."""
+        return self.section == "privacy" and self.key in CONSENT_GATES
+
+
+#: The six gates of [privacy] (privacy.KINDS, spelled here so this module
+#: keeps importing nothing but the standard library).
+CONSENT_GATES: frozenset[str] = frozenset({
+    "cloud_text", "cloud_audio", "cloud_screenshots",
+    "account", "report_upload", "settings_sync",
+})
 
 
 @dataclass(frozen=True)
@@ -559,10 +575,6 @@ TABS: tuple[Tab, ...] = (
             Friendly("visual_qa.speak", "Read the answer aloud",
                      "Whether the card offers to say the answer, says every "
                      "answer as it lands, or never speaks.", _SPEAK),
-            Friendly("visual_qa.allow_screenshot_upload",
-                     "Let a picture of your screen go to the cloud",
-                     "Off, only the model on this computer ever sees your "
-                     "screen."),
             Friendly("visual_qa.echo_to_field",
                      "Type what you asked into the field you were in",
                      "Once the card closes, so the question becomes part of "
@@ -636,6 +648,38 @@ TABS: tuple[Tab, ...] = (
                      "and remember it."),
         )),
     )),
+    Tab("Privacy", (
+        Group("WHAT MAY LEAVE THIS PC", (
+            Friendly("privacy.cloud_text", "Text to the cloud",
+                     "What you dictated or selected may go to Groq or "
+                     "Google under your own key, for the repair pass, "
+                     "punctuation, translation, lookup and the second "
+                     "reading. Opens only through its card, the first time "
+                     "a feature needs it."),
+            Friendly("privacy.cloud_audio", "Recordings to the cloud",
+                     "What you said, as audio, may go to Google or Groq "
+                     "for transcription. Opens only through its card."),
+            Friendly("privacy.cloud_screenshots", "Screen pictures to the cloud",
+                     "The part of the screen you asked about may go to "
+                     "Groq or Google. Opens only through its card."),
+            Friendly("privacy.account", "An anonymous account",
+                     "For problem reports you choose to send. Opens only "
+                     "through its card."),
+            Friendly("privacy.report_upload", "Sending problem reports",
+                     "Only what the preview showed. Opens only through its "
+                     "card."),
+            Friendly("privacy.settings_sync", "Syncing settings",
+                     "Not built yet."),
+        )),
+        Group("SWITCHES", (
+            Friendly("privacy.update_check", "Look for a newer version weekly",
+                     "One request to GitHub, carrying no identifier."),
+            Friendly("privacy.offline", "Offline mode",
+                     "Refuse every connection except this computer's own — "
+                     "Ollama, the phone, the hook — whatever the gates "
+                     "above say. Dictation keeps working."),
+        )),
+    )),
     Tab("Phone", (
         Group("DICTATING FROM THE PHONE", (
             Friendly("server.enabled", "Dictate from the phone",
@@ -674,6 +718,9 @@ TAB_SECTIONS: dict[str, tuple[str, ...]] = {
     "Screen": ("visual_qa", "capture", "camera"),
     "Cards": ("hint", "notify", "problems", "shelf"),
     "Phone": ("server",),
+    # [privacy] has its own page (D18-4): the six gates, read-only with
+    # the date they were granted, and the two switches.
+    "Privacy": ("privacy",),
     # [tests] IS ON "The app" beside [awake], because they are the same
     # kind of thing: what the app does to the machine while nobody is
     # asking it to do anything. Holding the computer awake and checking
@@ -1339,6 +1386,30 @@ _MORE: tuple[Friendly, ...] = (
              "How long that card waits for you, in seconds",
              "Say no and nothing happens; say nothing at all and it runs "
              "anyway, because that is safer than guessing you are here."),
+    # -- [privacy]: the six gates and the two switches. The gates are
+    #    read-only here (Setting.consent); their words are on the Privacy
+    #    tab too, said once in each place.
+    Friendly("privacy.cloud_text", "Text to the cloud",
+             "What you dictated or selected may go to Groq or Google under "
+             "your own key. Opens only through its card."),
+    Friendly("privacy.cloud_audio", "Recordings to the cloud",
+             "What you said, as audio, may go to Google or Groq. Opens only "
+             "through its card."),
+    Friendly("privacy.cloud_screenshots", "Screen pictures to the cloud",
+             "The part of the screen you asked about may go to Groq or "
+             "Google. Opens only through its card."),
+    Friendly("privacy.account", "An anonymous account",
+             "For problem reports you choose to send. Opens only through "
+             "its card."),
+    Friendly("privacy.report_upload", "Sending problem reports",
+             "Only what the preview showed. Opens only through its card."),
+    Friendly("privacy.settings_sync", "Syncing settings",
+             "Not built yet."),
+    Friendly("privacy.update_check", "Look for a newer version weekly",
+             "One request to GitHub, carrying no identifier."),
+    Friendly("privacy.offline", "Offline mode",
+             "Refuse every connection except this computer's own, whatever "
+             "the gates say. Dictation keeps working."),
 )
 
 # Every section of the file, said the way the owner would point at it.
@@ -1416,6 +1487,10 @@ SECTION_WORDS: dict[str, Friendly] = {
         Friendly("tests", "Checking itself at night",
                  "Once a night, while nobody is here, the app runs its "
                  "own checks — including the ones that need the screen."),
+        Friendly("privacy", "What may leave this PC",
+                 "Six gates that open only through their consent cards, "
+                 "and two switches: the weekly update check and offline "
+                 "mode."),
     )
 }
 

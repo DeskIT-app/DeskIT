@@ -262,6 +262,20 @@ exactly what classic did.
   `network.log` (gitignored). A test stands in for the wire at
   `net._connect` (tests' `_FakeRaw`). The google-genai clients get
   `net.genai_http_options(purpose, timeout_s)` + `vertexai=False`.
+- Consent: nothing personal leaves until the person said so. `privacy.py`
+  holds six gates (`cloud_text`, `cloud_audio`, `cloud_screenshots`,
+  `account`, `report_upload`, `settings_sync`) that open ONLY through
+  their consent card (`privacy.grant`) — never a settings write, never a
+  config edit — and two switches (`update_check`, `offline`). A cloud
+  constructor's first line is `privacy.require(kind)`; `net.py` asks
+  again per request. `consent.json` beside the settings is the record;
+  the Settings page's Privacy tab shows it and offers Withdraw. The
+  card (`consent_card.py` words + `overlay.ConsentCard`) opens on the
+  first key press that needs the cloud — a controller wraps the press
+  in `privacy.pressed()`; outside one a refusal is silent. From a
+  terminal: `main.py --consents / --consent KIND / --withdraw KIND`.
+  Tests open a gate with `_consented("cloud_text")` — in the scratch
+  home, never in the owner's file.
 - The app runs windowless under `pythonw.exe`, single instance enforced by
   a named mutex (`singleton.py`); status in `app.log`, everything ever
   dictated in `transcripts.log`. Both logs are plaintext and private.
@@ -278,6 +292,12 @@ exactly what classic did.
   (the hook's phone token). An HTTP error status is a RETURN, not an
   exception: check `status`, read the body; `net.NetError` is the
   connection failing, `net.EgressRefused` the door staying shut.
+- **A privacy gate is not a setting.** Never add `privacy.<gate> = true`
+  to a config write, a wizard, a migration or a test fixture as a way
+  to "turn the cloud on" — `config.save` refuses it, and the honest way
+  is the card (`privacy.grant`, or `_consented(...)` in a test). Warm-ups
+  at start-up must swallow `ConsentRequired` like a missing key and open
+  nothing; only a key press the person made may open a card.
 - **`net.py` defines `open()`; inside it, write files with
   `path.open(...)`.** A bare `open(path, "a")` in that module calls the
   request function and fails on "unknown purpose 'a'" — silently, in
