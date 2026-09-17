@@ -6200,6 +6200,13 @@ def main() -> int:
     if args.vocab:
         return show_vocab(cfg)
 
+    if (args.benchmark or args.study or args.review) and not paths.DEVELOPER:
+        # The owner's tools (D15): the benchmark, the study pass over the
+        # corpus and the review run belong to the checkout, and an
+        # installed copy has no corpus for them to work on.
+        print("that command is for the developer's checkout only.")
+        return 2
+
     if args.benchmark:
         return benchmark(cfg)
 

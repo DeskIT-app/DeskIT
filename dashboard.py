@@ -204,6 +204,12 @@ SAID_W = CW - 320
 # are one story — the words it learned from him, and the voice it is
 # learning from him.
 CORR_TABS = (("waiting", "Waiting"), ("read", "Read aloud"))
+
+
+def corr_tabs() -> tuple:
+    """The Corrections tabs this copy shows: Read aloud is the owner's
+    corpus tool (reading.py) and is not in the product (D15, PR 7)."""
+    return CORR_TABS if paths.DEVELOPER else CORR_TABS[:1]
 CORR_CHIPS_Y = 62
 CORR_HEAD_Y = 110        # the "N proposals" line, under the chips
 CORR_PAGE_Y = 140
@@ -2097,7 +2103,7 @@ class Dashboard:
         chips = tk.Frame(self.sheet, bg=ui.BG)
         chips.place(x=PAD, y=CORR_CHIPS_Y)
         p["corr_chips"] = {}
-        for key, name in CORR_TABS:
+        for key, name in corr_tabs():
             chip = ui.Chip(chips, name, lambda k=key: self._corr_tab_to(k),
                            active=(key == self._corr_tab), bg=ui.BG)
             chip.pack(side="left", padx=(0, 6))
@@ -3969,7 +3975,10 @@ class Dashboard:
         dictation.
         """
         module, store = self._questions(), self._questions_store()
-        if module is None or store is None:
+        if module is None or store is None or not paths.DEVELOPER:
+            # The questions are the Saturday routine's, and the routine
+            # runs only on the owner's checkout (D15, D33): a stranger's
+            # copy has nobody to ask them.
             return []
         try:
             return store.items(module.PENDING)
@@ -4064,23 +4073,29 @@ class Dashboard:
                       "first.",
                  bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
                  wraplength=CW - 190, justify="left").place(x=PAD, y=620)
-        wide = widgets.button_width("Open problems.md", icon=True)
-        ui.Button(self.sheet, "Open problems.md", self._open_digest, w=wide,
-                  h=30, quiet=True, bg=ui.BG,
-                  icon=ui.ICON["page"]).place(x=PAD + CW - wide, y=616)
+        if paths.DEVELOPER:
+            # problems.md is the digest the Saturday routine reads; the
+            # button and the file are the owner's (PR 7).
+            wide = widgets.button_width("Open problems.md", icon=True)
+            ui.Button(self.sheet, "Open problems.md", self._open_digest,
+                      w=wide, h=30, quiet=True, bg=ui.BG,
+                      icon=ui.ICON["page"]).place(x=PAD + CW - wide, y=616)
         self._problems_stamp = None
         self._questions_stamp = None
         # A "delete this?" does not survive leaving the tab and coming
         # back to it: he answered it by walking away.
         self._problem_asking = ""
-        # Opening the tab is the cue: the weekly read wants problems.md
-        # current, and this is the moment it is known to be looked at.
-        self._write_digest()
-        # The changes are git, and git is a process spawn per question —
-        # so they are asked for off this thread when the tab opens, and
-        # again after each button. Never on the poll: five spawns a
-        # second for a list that changes when a session commits.
-        self._scan_changes()
+        if paths.DEVELOPER:
+            # Opening the tab is the cue: the weekly read wants
+            # problems.md current, and this is the moment it is known to
+            # be looked at.
+            self._write_digest()
+            # The changes are git, and git is a process spawn per
+            # question — so they are asked for off this thread when the
+            # tab opens, and again after each button. Never on the poll:
+            # five spawns a second for a list that changes when a
+            # session commits. A stranger's copy has no git at all.
+            self._scan_changes()
         self._fill_problems(home=True)
 
     def _waiting_all(self) -> None:
@@ -4127,7 +4142,7 @@ class Dashboard:
                 waiting, done, summary = [], [], {}
         qmodule = self._questions()
         asked = self._pending_questions()
-        changes = self._changes or {}
+        changes = (self._changes or {}) if paths.DEVELOPER else {}
         ahead = bool(changes.get("commits"))
         head = self.parts["problems_head"]
         asking = self.parts["questions_head"]
@@ -8112,6 +8127,8 @@ class Dashboard:
         will not answer: all of those mean "no run", which is the same
         bar he has had all along.
         """
+        if not paths.DEVELOPER:
+            return False                  # the nightly run is the owner's
         try:
             return bool(nightly_mod.running(APP_DIR))
         except Exception:                 # noqa: BLE001

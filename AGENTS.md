@@ -276,6 +276,12 @@ exactly what classic did.
   terminal: `main.py --consents / --consent KIND / --withdraw KIND`.
   Tests open a gate with `_consented("cloud_text")` — in the scratch
   home, never in the owner's file.
+- Owner-only surface: the git block, the routine's questions and
+  `problems.md`, the nightly tests, the Read-aloud tab, the `[tests]`,
+  `awake.vitals_minutes`, `notify.watch` and `study.read_*` rows, and
+  `--benchmark/--study/--review` exist only while `paths.DEVELOPER` is
+  true (the `.git` beside `main.py`). A new owner tool goes behind the
+  same flag (`dashboard.corr_tabs`, `settings.developer_only`).
 - Logs: `app.log` never quotes dictated text, a learned pair, the phone
   link or a key — counts and names only (D8); the words live in
   `transcripts.log` (`OK`, `POLISHED`, `LEARNED`, `STUDIED`, `REVIEW`…),

@@ -30703,6 +30703,54 @@ def test_reset_spares_the_owners_training_data():
                 setattr(paths, name, value)
 
 
+# ------------------------------------------- the owner's surface, hidden
+#
+# DISTRIBUTION_PLAN.md D15, PR 7: what only the checkout has — the git
+# block, the Saturday routine's questions and problems.md, the nightly
+# tests, the read-aloud corpus tool, the developer rows on Settings, the
+# three owner commands — is behind paths.DEVELOPER. On this checkout it
+# is all there; the test flips the flag and looks at a stranger's copy.
+
+def test_a_strangers_copy_shows_no_owner_surface():
+    import inspect
+
+    import dashboard as dash
+    import main as main_mod
+    import settings as settings_mod
+
+    defaults = Path(__file__).resolve().parent / "defaults.toml"
+    mine = settings_mod.read(defaults)
+    theirs = settings_mod.read(defaults, developer=False)
+    mine_paths = {s.path for s in settings_mod.flatten(mine)}
+    their_paths = {s.path for s in settings_mod.flatten(theirs)}
+    hidden = mine_paths - their_paths
+    assert "tests" in {s.name for s in mine} and "tests" not in {s.name for s in theirs}
+    assert {"awake.vitals_minutes", "notify.watch", "tests.nightly",
+            "tests.wait_seconds"} <= hidden, hidden
+    assert all(p.startswith("study.read_") for p in hidden
+               if p.startswith("study.")), hidden
+    assert any(p.startswith("study.read_") for p in hidden), "study.read_* stayed"
+    assert all(settings_mod.developer_only(p) for p in hidden), hidden
+    assert not any(settings_mod.developer_only(p) for p in their_paths)
+    # the same page, with nothing else missing: every product line is
+    # still drawn, and the Privacy tab is one of theirs
+    assert their_paths == {p for p in mine_paths if not settings_mod.developer_only(p)}
+    assert "Privacy" in settings_mod.tab_names(theirs)
+
+    with _patched(paths, "DEVELOPER", False):
+        assert [k for k, _n in dash.corr_tabs()] == ["waiting"]
+
+        class _Board:
+            _questions = staticmethod(lambda: object())
+            _questions_store = staticmethod(lambda: object())
+        assert dash.Dashboard._pending_questions(_Board()) == []
+        assert dash.Dashboard._nightly_running(_Board()) is False
+    assert [k for k, _n in dash.corr_tabs()] == ["waiting", "read"]
+    src = inspect.getsource(main_mod.main)
+    assert "for the developer's checkout only" in src
+    assert src.index("not paths.DEVELOPER") < src.index("return benchmark(cfg)")
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

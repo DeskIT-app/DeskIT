@@ -201,7 +201,33 @@ def _choices(trailing: str) -> tuple[tuple[str, ...], str]:
     return choices, rest
 
 
-def read(path: Path | str, overrides: dict | None = None) -> list[Section]:
+#: Lines and sections that exist for the owner's own machinery — the
+#: nightly tests, the awake vitals, the notify watch, the read-aloud
+#: corpus — and are not drawn on a stranger's copy (D15, PR 7). Kept in
+#: defaults.toml so the checkout keeps working; hidden by read().
+DEVELOPER_SECTIONS: frozenset[str] = frozenset({"tests"})
+DEVELOPER_PATHS: frozenset[str] = frozenset({
+    "awake.vitals_minutes", "notify.watch",
+})
+DEVELOPER_PREFIXES: tuple[str, ...] = ("study.read_",)
+
+
+def developer_only(path: str) -> bool:
+    section = path.partition(".")[0] if "." in path else ""
+    return (section in DEVELOPER_SECTIONS or path in DEVELOPER_PATHS
+            or path.startswith(DEVELOPER_PREFIXES))
+
+
+def _is_developer() -> bool:
+    try:
+        import paths
+        return bool(paths.DEVELOPER)
+    except Exception:                                        # noqa: BLE001
+        return True
+
+
+def read(path: Path | str, overrides: dict | None = None,
+         developer: bool | None = None) -> list[Section]:
     """The file, section by section, in the order it is written.
 
     `overrides` is the person's layer (config.read_settings plus
@@ -210,6 +236,18 @@ def read(path: Path | str, overrides: dict | None = None) -> list[Section]:
     is how the page shows what the app actually runs on while the file
     it is generated from stays the untouched defaults.toml (D2)."""
     sections = _read(path)
+    developer = _is_developer() if developer is None else developer
+    if not developer:
+        # The owner's lines leave the page, section and all: a stranger's
+        # copy shows nothing it cannot use (D15, PR 7).
+        trimmed: list[Section] = []
+        for section in sections:
+            if section.name in DEVELOPER_SECTIONS:
+                continue
+            rows = tuple(s for s in section.settings
+                         if not developer_only(s.path))
+            trimmed.append(dataclasses.replace(section, settings=rows))
+        sections = trimmed
     if not overrides:
         return sections
     out: list[Section] = []
