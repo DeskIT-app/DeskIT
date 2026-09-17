@@ -80,6 +80,7 @@ import settings as settings_mod
 import singleton
 import summary
 import ui
+import updates
 import version
 import widgets
 
@@ -7788,7 +7789,7 @@ class Dashboard:
             cues_mod = None
         kinds = list(getattr(cues_mod, "CUES", {})) if cues_mod else []
         sound_rows = (len(kinds) + SOUND_COLUMNS - 1) // SOUND_COLUMNS
-        height = 150 + (30 + sound_rows * 30 if kinds else 0)
+        height = 190 + (30 + sound_rows * 30 if kinds else 0)
         card = ui.Card(scroller.inner, CW, height, bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
@@ -7812,6 +7813,22 @@ class Dashboard:
                      if self.branch else ""),
                  bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.UI, 8)).place(x=0, y=50)
+        # UPDATES (plan 11.4-11.5): what the last weekly look found, a
+        # Check now that ignores the cadence, and — only when a newer
+        # version exists — the three choices. Nothing downloads before
+        # the first button; the checkout's row checks but never installs.
+        line = tk.Label(body, text=updates.status_line(), bg=ui.CARD,
+                        fg=ui.DIM, font=(ui.UI, 9), anchor="w")
+        line.place(x=0, y=74)
+        self.parts["updates_line"] = line
+        x = 0
+        buttons = self._update_buttons()
+        self.parts["updates_buttons"] = [label for label, _c in buttons]
+        for label, command in buttons:
+            w = widgets.button_width(label)
+            ui.Button(body, label, command, h=28, w=w, quiet=True,
+                      bg=ui.CARD).place(x=x, y=100)
+            x += w + 8
 
         # THE SAME DOOR AS THE BAR'S STOP, in one press, and it is here
         # as well because this is where the 25 seconds are written down —
@@ -7832,23 +7849,110 @@ class Dashboard:
         tk.Label(body, text="stopping unloads the models; starting again "
                             "takes about 25 seconds",
                  bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8)).place(
-            x=CW - 36, y=100, anchor="ne")
+            x=CW - 36, y=140, anchor="ne")
 
         if kinds:
             widgets.rule(body, CW - 36, bg=ui.CARD, colour=ui.LINE, x=0,
-                         y=140)
+                         y=180)
             tk.Label(body, text="S O U N D S", bg=ui.CARD, fg=ui.FAINT,
-                     font=(ui.MEDIUM, 8)).place(x=0, y=152)
+                     font=(ui.MEDIUM, 8)).place(x=0, y=192)
             column = (CW - 36) // SOUND_COLUMNS
             for index, kind in enumerate(kinds):
                 cx = (index % SOUND_COLUMNS) * column
-                cy = 176 + (index // SOUND_COLUMNS) * 30
+                cy = 216 + (index // SOUND_COLUMNS) * 30
                 ui.Button(body, "▶", lambda k=kind: self._play_cue(k),
                           w=30, h=24, quiet=True, bg=ui.CARD).place(x=cx,
                                                                     y=cy)
                 tk.Label(body, text=kind, bg=ui.CARD, fg=ui.DIM,
                          font=(ui.UI, 9)).place(x=cx + 38, y=cy + 4)
         scroller.bind_wheel(card)
+
+    # ------------------------------------------------------------ updates
+
+    def _update_buttons(self) -> list:
+        """Check now always (the checkout too — it pulls, but it can look);
+        the three of plan 11.5 only when a newer version is known; on
+        winget the download button is the one-liner to copy."""
+        s = updates.status()
+        rows = [("Check now", self._update_check)]
+        rel = s["available"]
+        if rel is None or s["mode"] in ("store", "off", "offline"):
+            return rows
+        if s["winget_command"]:
+            rows.append(("Copy the winget command",
+                         lambda c=s["winget_command"]: self._copy_text(c)))
+        elif not paths.DEVELOPER:
+            rows.append(("Download and install",
+                         lambda r=rel: self._update_install(r)))
+        rows.append(("Release notes",
+                     lambda r=rel: self._open_url(r.notes_url)))
+        rows.append(("Skip this version", lambda r=rel: self._update_skip(r)))
+        return rows
+
+    def _copy_text(self, text: str) -> None:
+        self.root.clipboard_clear()
+        self.root.clipboard_append(text)
+        self._note(f"copied: {text}")
+
+    def _open_url(self, url: str) -> None:
+        import webbrowser
+        if url.startswith("https://github.com/"):
+            webbrowser.open(url)
+
+    def _updates_say(self, text: str) -> None:
+        """On the Tk thread: the row's line, and the buttons redrawn
+        with the place when a version turned up."""
+        line = self.parts.get("updates_line")
+        if line is not None and line.winfo_exists():
+            line.configure(text=text)
+        self._note(text)
+
+    def _update_check(self) -> None:
+        self._updates_say("checking GitHub for a newer version…")
+
+        def work() -> None:
+            try:
+                rel = updates.check(force=True)
+            except Exception as e:                       # noqa: BLE001
+                self._events.put(lambda: self._updates_say(f"the check failed ({e})"))
+                return
+            self._events.put(lambda: self._updates_say(updates.status_line()))
+            if rel is not None and self.screen == "Settings":
+                self._events.put(lambda: self._show("Settings"))
+        threading.Thread(target=work, daemon=True, name="update-check").start()
+
+    def _update_skip(self, release) -> None:
+        try:
+            updates.skip(release)
+        except Exception as e:                           # noqa: BLE001
+            self._note(str(e))
+            return
+        self._updates_say(f"DeskIT {release.version} skipped — a newer one is offered again")
+        if self.screen == "Settings":
+            self._show("Settings")
+
+    def _update_install(self, release) -> None:
+        """Download, verify, start the installer, and ask the app to
+        leave — plan 11.5. This window closes with it; Restart Manager
+        would close it anyway."""
+        self._updates_say(f"downloading DeskIT {release.version}…")
+
+        def progress(done: int, total: int) -> None:
+            pct = int(done * 100 / total) if total else 0
+            self._events.put(lambda: self._updates_say(
+                f"downloading DeskIT {release.version}… {pct}%"))
+
+        def work() -> None:
+            try:
+                path = updates.download(release, on_progress=progress)
+                self._events.put(lambda: self._updates_say(
+                    "Installing… DeskIT will close and reopen"))
+                updates.install(path, release, quit_app=singleton.request_quit)
+            except Exception as e:                       # noqa: BLE001
+                self._events.put(lambda: self._updates_say(str(e)))
+                return
+            self._events.put(lambda: self.root.after(1500, self.root.destroy))
+        threading.Thread(target=work, daemon=True, name="update-install").start()
 
     def _play_cue(self, kind: str) -> None:
         """One sound, from THIS process. The app has its own cue player

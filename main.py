@@ -2114,6 +2114,15 @@ class App:
                      "escapes it", _questions_mod().STORE_NAME,
                      QUESTION_POLL_S, QUESTION_SETTLE_S,
                      QUESTION_REASK_S / 60.0)
+        # The weekly look at GitHub Releases (updates.py, plan 11.4): ten
+        # minutes after this start, then weekly; a newer version is one
+        # line on the card and a row on the dashboard, never a download.
+        import updates as updates_mod
+        updates_mod.start_worker(say=self._say)
+        said = updates_mod.after_update()
+        if said:
+            self._say(said)
+            log.info("%s", said)
         if self.cfg.auto_pause_fullscreen:
             self._watcher = threading.Thread(target=self._watch_fullscreen,
                                              daemon=True, name="fullscreen")
@@ -6136,6 +6145,16 @@ def main() -> int:
     # start, so an install that moved never leaves a stale entry (10.2).
     import autostart
     autostart.sync(cfg)
+    # Restart Manager relaunches the app after an update with THIS
+    # command (plan 11.6); an installed copy registers, the checkout
+    # does not.
+    if not paths.DEVELOPER:
+        try:
+            import ctypes as _ct
+            _ct.windll.kernel32.RegisterApplicationRestart(
+                f'"{paths.APP_DIR / "deskit.pyw"}"', 0)
+        except Exception:                     # noqa: BLE001
+            log.debug("RegisterApplicationRestart failed", exc_info=True)
     if paths.CHANNEL_NOTE:
         log.warning("%s", paths.CHANNEL_NOTE)
     # [history] keep_days: prune, or detach the transcripts handler.

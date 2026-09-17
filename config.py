@@ -264,6 +264,16 @@ class SetupConfig:
 
 
 @dataclass(frozen=True)
+class UpdatesConfig:
+    """The weekly look at GitHub Releases (updates.py, plan 11.4). The
+    switch itself is [privacy] update_check; these are the channel and
+    the version the person chose to skip. last_check, latest_seen and
+    installed_version are state keys, never settings."""
+    channel: str = "stable"
+    skipped: str = ""
+
+
+@dataclass(frozen=True)
 class LocalConfig:
     model: str = "ivrit-ai/whisper-large-v3-turbo-ct2"
     language: str = "he"  # pinned — the ivrit-ai fine-tune broke autodetect
@@ -1293,6 +1303,7 @@ class Config:
     dot: DotConfig = field(default_factory=DotConfig)
     hint: HintConfig = field(default_factory=HintConfig)
     setup: SetupConfig = field(default_factory=SetupConfig)
+    updates: UpdatesConfig = field(default_factory=UpdatesConfig)
     translate: TranslateConfig = field(default_factory=TranslateConfig)
     punctuate: PunctuateConfig = field(default_factory=PunctuateConfig)
     lookup: LookupConfig = field(default_factory=LookupConfig)
@@ -1580,6 +1591,7 @@ def build(data: dict) -> Config:
     dot_corner = str(dot.get("corner", DotConfig.corner)).strip().lower()
     hint = data.get("hint", {})
     setup = data.get("setup", {})
+    updates_ = data.get("updates", {})
     translate = data.get("translate", {})
     punctuate = data.get("punctuate", {})
     lookup = data.get("lookup", {})
@@ -1695,6 +1707,11 @@ def build(data: dict) -> Config:
         setup=SetupConfig(
             done=bool(setup.get("done", SetupConfig.done)),
             autostart=bool(setup.get("autostart", SetupConfig.autostart)),
+        ),
+        updates=UpdatesConfig(
+            channel=(str(updates_.get("channel", UpdatesConfig.channel))
+                     .strip().lower() or "stable"),
+            skipped=str(updates_.get("skipped", UpdatesConfig.skipped)).strip(),
         ),
         translate=TranslateConfig(
             target=str(translate.get("target",
@@ -2549,6 +2566,7 @@ STATE_KEYS: frozenset[str] = frozenset({
     "review.x", "review.y", "review.scale",
     "audio.device", "camera.device", "visual_qa.voice",
     "server.port", "setup.done", "setup.autostart", "config_version",
+    "updates.last_check", "updates.latest_seen", "updates.installed_version",
 })
 
 #: What settings.toml may hold: the scalar kinds config.toml uses, and a

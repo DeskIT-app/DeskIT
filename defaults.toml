@@ -298,6 +298,16 @@ done = false
 # Does nothing in a checkout, which starts from its own shortcut.
 autostart = false
 
+[updates]
+# The weekly look at GitHub Releases (the switch is [privacy]
+# update_check). "stable" reads the latest release, "beta" the newest
+# pre-release. The download is verified against the release's SHA-256
+# before it runs, and the installer is the same one you ran once.
+channel = "stable"          # stable | beta
+# A version you chose not to install ("Skip this version" on the
+# dashboard); a newer one is offered again. "" = nothing skipped.
+skipped = ""
+
 [audio]
 sample_rate = 16000
 device = ""

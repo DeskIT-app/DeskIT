@@ -368,6 +368,16 @@ class Response:
             self._down += len(line)
             yield line
 
+    def chunks(self, size: int = 1 << 18):
+        """The body in pieces of `size` bytes — a download that reports
+        progress and hashes as it goes (updates.py), counted like read()."""
+        while True:
+            chunk = self._raw.read(size)
+            if not chunk:
+                return
+            self._down += len(chunk)
+            yield chunk
+
     def close(self) -> None:
         with self._close_lock:
             if self._closed:

@@ -429,6 +429,7 @@ _REPAIR = (("always", "Always"),
 _PUNCTUATORS = (("groq", "Groq — fast, free tier"),
                 ("gemini", "Gemini"),
                 ("ollama", "Ollama, on this computer"))
+_CHANNELS = (("stable", "Stable"), ("beta", "Beta, a little earlier"))
 _CORNERS = (("top-right", "Top right"), ("top-left", "Top left"),
             ("bottom-right", "Bottom right"), ("bottom-left", "Bottom left"))
 # The two corners the status dot may sit in, and the cards' menu with
@@ -584,6 +585,15 @@ TABS: tuple[Tab, ...] = (
             Friendly("setup.autostart", "Start with Windows",
                      "Windows starts DeskIT when you sign in. Off, you "
                      "open it from the Start menu."),
+        )),
+        Group("UPDATES", (
+            Friendly("updates.channel", "Which releases to look at",
+                     "Stable is the tested one; beta gets each version "
+                     "a little earlier. The weekly check itself is the "
+                     "switch on Privacy.", _CHANNELS),
+            Friendly("updates.skipped", "A version you chose to skip",
+                     "Empty means none. A newer version than this one is "
+                     "offered again."),
         )),
     )),
     Tab("Text", (
@@ -1539,6 +1549,9 @@ SECTION_WORDS: dict[str, Friendly] = {
         Friendly("history", "What you said, kept",
                  "How long the record of your dictations stays on this "
                  "PC for the Recent view."),
+        Friendly("updates", "New versions",
+                 "Which releases the weekly check looks at, and a version "
+                 "you chose to skip."),
     )
 }
 

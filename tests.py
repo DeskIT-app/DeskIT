@@ -891,8 +891,11 @@ class _FakeRaw:
         self.headers = headers or {}
         self.closed = False
 
-    def read(self) -> bytes:
-        body, self._body = self._body, b""
+    def read(self, n: int = -1) -> bytes:
+        if n is None or n < 0:
+            body, self._body = self._body, b""
+            return body
+        body, self._body = self._body[:n], self._body[n:]
         return body
 
     def __iter__(self):
@@ -29795,6 +29798,330 @@ def test_problems_env_fields():
     assert kinds == ["cloud_text"], kinds
     assert all(set(c) == {"kind", "text_version"}
                for c in problems_mod.env(cfg)["consents"])
+
+
+# ------------------------------------------------------ updates (PR 13)
+#
+# DISTRIBUTION_PLAN.md 11.3-11.6, D21: one weekly look at GitHub Releases
+# through net.py, the feed's schema refused loudly, the installer
+# downloaded into tmp\ and verified against the feed's SHA-256 before it
+# gets its name, started detached with 11.6's switches, and the checkout
+# never installing anything.
+
+_FEED = {"version": "9.9.9", "url": "https://github.com/massifapp/DeskIT/releases/download/v9.9.9/DeskIT-Setup-9.9.9.exe",
+         "sha256": "", "size": 0, "min_config_version": 1,
+         "notes_url": "https://github.com/massifapp/DeskIT/releases/tag/v9.9.9",
+         "published": "2026-10-01T00:00:00Z"}
+
+
+def _feed_for(payload: bytes, **over) -> dict:
+    import hashlib
+    d = dict(_FEED, sha256=hashlib.sha256(payload).hexdigest(), size=len(payload))
+    d.update(over)
+    return d
+
+
+def _github(feed: dict, installer: bytes = b"MZ-not-really"):
+    """A fake wire: the API's latest release, the feed behind one redirect,
+    the installer behind one redirect — every request written down."""
+    api = "https://api.github.com/repos/massifapp/DeskIT/releases/latest"
+    feed_url = "https://github.com/massifapp/DeskIT/releases/download/v9.9.9/latest.json"
+    feed_cdn = "https://objects.githubusercontent.com/x/latest.json"
+    exe_cdn = "https://objects.githubusercontent.com/x/DeskIT-Setup-9.9.9.exe"
+    seen: list[tuple[str, str, dict]] = []
+
+    def connect(method, url, headers, body, timeout_s):
+        seen.append((method, url, dict(headers)))
+        if url == api:
+            return _FakeRaw(json.dumps({"tag_name": "v9.9.9", "prerelease": False, "assets": [
+                {"name": "DeskIT-Setup-9.9.9.exe", "browser_download_url": feed["url"]},
+                {"name": "latest.json", "browser_download_url": feed_url}]}).encode())
+        if url == feed_url:
+            return _FakeRaw(b"", 302, {"Location": feed_cdn})
+        if url == feed_cdn:
+            return _FakeRaw(json.dumps(feed).encode())
+        if url == feed["url"]:
+            return _FakeRaw(b"", 302, {"Location": exe_cdn})
+        if url == exe_cdn:
+            return _FakeRaw(installer)
+        return _FakeRaw(b"not found", 404)
+    return connect, seen
+
+
+def test_latest_json_schema():
+    """Release.parse takes the file release.yml writes and refuses every
+    field that is off — a wrong file must never become a download."""
+    import updates
+
+    good = _feed_for(b"x" * 10)
+    rel = updates.Release.parse(good)
+    assert rel.version == "9.9.9" and rel.size == 10 and rel.published.startswith("2026")
+    assert rel.newer_than("1.1.0") and not rel.newer_than("9.9.9") and not rel.newer_than("10.0.0")
+    for bad in ({**good, "version": "v9.9.9"}, {**good, "url": "https://evil.example/x.exe"},
+                {**good, "url": good["url"][:-4]}, {**good, "sha256": "abc"},
+                {**good, "size": 0}, {**good, "notes_url": "http://github.com/x"}, [], {}):
+        try:
+            updates.Release.parse(bad)
+        except (ValueError, TypeError):
+            pass
+        else:
+            raise AssertionError(f"parsed: {bad}")
+    # the workflow writes exactly these keys
+    wf = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    for key in ("version", "url", "sha256", "size", "min_config_version", "notes_url"):
+        assert f"{key} = " in wf, f"release.yml does not write {key}"
+    assert "releases/download/v$version/DeskIT-Setup-$version.exe" in wf
+
+
+def test_update_check_cadence():
+    """Once a week from updates.last_check; a missing or unreadable stamp
+    is due; an un-forced check that is not due touches no wire."""
+    import net as net_mod
+    import updates
+
+    connect, seen = _github(_feed_for(b"x"))
+    with _patched(net_mod, "_connect", connect):
+        for stamp, want in (("", True), ("garbage", True),
+                            (time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - 8 * 86400)), True),
+                            (time.strftime("%Y-%m-%dT%H:%M:%S"), False)):
+            with _patched(updates, "_state", lambda s=stamp: {"updates.last_check": s}):
+                assert updates.due() is want, (stamp, want)
+        with _patched(updates, "_state", lambda: {"updates.last_check": time.strftime("%Y-%m-%dT%H:%M:%S")}), \
+                _patched(updates, "_last", {}):
+            assert updates.check() is None
+        assert seen == [], "a check that was not due went out"
+    assert updates.CADENCE_S == 7 * 86400 and updates.FIRST_DELAY_S == 600
+
+
+def test_update_check_respects_gate():
+    """The switch off, the Store channel and Offline each mean no request
+    at all — even forced — and the row says which."""
+    import privacy
+    import net as net_mod
+    import updates
+
+    connect, seen = _github(_feed_for(b"x"))
+    with _patched(net_mod, "_connect", connect):
+        with _patched(paths, "CHANNEL", "store"):
+            assert updates.mode() == "store" and updates.check(force=True) is None
+            assert "Microsoft Store" in updates.status_line()
+        was = privacy._gates["update_check"]
+        privacy._gates["update_check"] = False
+        try:
+            assert updates.mode() == "off" and updates.check(force=True) is None
+            assert "off" in updates.status_line()
+        finally:
+            privacy._gates["update_check"] = was
+        was = privacy._gates["offline"]
+        privacy._gates["offline"] = True
+        try:
+            assert updates.mode() == "offline" and updates.check(force=True) is None
+            assert "Offline" in updates.status_line()
+        finally:
+            privacy._gates["offline"] = was
+        assert seen == [], seen
+        assert updates.start_worker() is None, "the checkout started a weekly worker"
+
+
+def test_update_check_request_shape():
+    """Two GETs through net.py — the API with the GitHub Accept header and
+    no query string, then the feed behind its redirect — both rows with
+    the update-check purpose and no secret; the newer release is
+    remembered, the state stamped, the row says so; Skip hides it and a
+    higher version un-skips."""
+    import net as net_mod
+    import updates
+
+    feed = _feed_for(b"x" * 100)
+    connect, seen = _github(feed)
+    stamps: dict = {}
+    with _patched(net_mod, "_connect", connect), _patched(updates, "_last", {}), \
+            _patched(updates, "_state", lambda: dict(stamps)), \
+            _patched(updates, "_record", lambda **v: stamps.update(v)), \
+            _patched(updates, "_settings", lambda: config_mod.UpdatesConfig()):
+        rel = updates.check(force=True)
+        assert rel is not None and rel.version == "9.9.9", rel
+        urls = [u for _m, u, _h in seen]
+        assert urls == ["https://api.github.com/repos/massifapp/DeskIT/releases/latest",
+                        "https://github.com/massifapp/DeskIT/releases/download/v9.9.9/latest.json",
+                        "https://objects.githubusercontent.com/x/latest.json"], urls
+        assert seen[0][2].get("Accept") == "application/vnd.github+json"
+        assert all("?" not in u for u in urls)
+        assert not any(k.lower() in ("authorization", "cookie") for _m, _u, h in seen for k in h)
+        rows = [r for r in net_mod.rows() if r.purpose == "update-check"][-3:]
+        assert [r.host for r in rows] == ["api.github.com", "github.com", "objects.githubusercontent.com"]
+        assert all(r.secret == "-" for r in rows)
+        assert stamps["updates.latest_seen"] == "9.9.9" and stamps["updates.last_check"]
+        assert updates.available() is rel
+        assert "9.9.9 is available" in updates.status_line() and "you have" in updates.status_line()
+        # skipped: hidden; a higher version comes through
+        with _patched(updates, "_settings", lambda: config_mod.UpdatesConfig(skipped="9.9.9")):
+            assert updates.check(force=True) is None and updates.available() is None
+        with _patched(updates, "_settings", lambda: config_mod.UpdatesConfig(skipped="9.0.0")):
+            assert updates.check(force=True).version == "9.9.9"
+        # not newer: nothing shown, nothing remembered
+        old = _feed_for(b"x", version="0.1.0")
+        connect2, _seen2 = _github(old)
+        with _patched(net_mod, "_connect", connect2):
+            assert updates.check(force=True) is None and updates.available() is None
+            assert stamps["updates.latest_seen"] == "0.1.0"
+        # a failed check is quiet and keeps what it knew
+        with _patched(net_mod, "_connect", lambda *a, **k: _FakeRaw(b"rate limited", 403)):
+            assert updates.check(force=True) is None
+
+
+def test_update_download_sha_match_runs_inno():
+    """The installer lands in tmp\ as .part, is hashed as it streams
+    (through the redirect), gets its name only when the digest matches,
+    and install() copies settings.toml to .bak, starts exactly 11.6's
+    argv detached and asks the app to quit. The checkout refuses."""
+    import subprocess as sp
+
+    import updates
+
+    payload = bytes(range(256)) * 4000            # ~1 MB, several chunks
+    feed = _feed_for(payload)
+    connect, seen = _github(feed, installer=payload)
+    import net as net_mod
+    with tempfile.TemporaryDirectory() as d, _patched(net_mod, "_connect", connect):
+        rel = updates.Release.parse(feed)
+        progress: list = []
+        got = updates.download(rel, on_progress=lambda a, b: progress.append((a, b)),
+                               dest_dir=Path(d))
+        assert got == Path(d) / "DeskIT-Setup-9.9.9.exe" and got.read_bytes() == payload
+        assert not list(Path(d).glob("*.part"))
+        assert progress and progress[-1] == (len(payload), len(payload))
+        assert [u for _m, u, _h in seen][-2:] == [feed["url"], "https://objects.githubusercontent.com/x/DeskIT-Setup-9.9.9.exe"]
+        row = [r for r in net_mod.rows() if r.purpose == "update-download"][-1]
+        assert row.down == len(payload) and row.host == "objects.githubusercontent.com"
+        # the checkout never installs
+        try:
+            updates.install(got, rel)
+        except updates.UpdateError as e:
+            assert "checkout" in str(e)
+        else:
+            raise AssertionError("the checkout ran an installer")
+        spawned: list = []
+        quit_calls: list = []
+        settings = _SCRATCH_HOME / "upd" / "settings.toml"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text("punctuate_hotkey = \"f9\"\n", "utf-8")
+        with _patched(paths, "DEVELOPER", False), _patched(paths, "SETTINGS_FILE", settings), \
+                _patched(paths, "LOGS_DIR", Path(d) / "logs"), \
+                _patched(sp, "Popen", lambda argv, **k: spawned.append((argv, k))), \
+                _patched(updates, "_record", lambda **v: None):
+            argv = updates.install(got, rel, quit_app=lambda: quit_calls.append(1))
+        assert spawned and spawned[0][0] == argv
+        assert argv[0] == str(got)
+        assert argv[1:5] == ["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART"]
+        assert argv[5] == f'/LOG="{Path(d) / "logs" / "setup-9.9.9.log"}"' and len(argv) == 6
+        assert "/VERYSILENT" not in argv
+        assert spawned[0][1]["creationflags"] == 0x00000008 | 0x00000200
+        assert settings.with_suffix(".toml.bak").read_text("utf-8") == "punctuate_hotkey = \"f9\"\n"
+        assert quit_calls == [1]
+        # cancel: the part file is gone and nothing named remains
+        connect3, _s3 = _github(feed, installer=payload)
+        with _patched(net_mod, "_connect", connect3):
+            try:
+                updates.download(rel, cancel=lambda: True, dest_dir=Path(d) / "c")
+            except updates.UpdateError as e:
+                assert "cancelled" in str(e)
+            else:
+                raise AssertionError("cancel ignored")
+        assert not list((Path(d) / "c").glob("*"))
+
+
+def test_update_download_sha_mismatch_discards():
+    """A file whose digest is not the feed's is deleted, both digests are
+    logged, the error names the checksum, and nothing is executed."""
+    import subprocess as sp
+
+    import net as net_mod
+    import updates
+
+    payload = b"MZ" * 500
+    feed = _feed_for(b"something else entirely")
+    connect, _seen = _github(feed, installer=payload)
+    spawned: list = []
+    with tempfile.TemporaryDirectory() as d, _patched(net_mod, "_connect", connect), \
+            _patched(sp, "Popen", lambda *a, **k: spawned.append(a)):
+        rel = updates.Release.parse(feed)
+        import logging
+        lines: list[str] = []
+
+        class _Catch(logging.Handler):
+            def emit(self, record):
+                lines.append(record.getMessage())
+        catcher = _Catch()
+        app_log = logging.getLogger("app")
+        level = app_log.level
+        app_log.setLevel(logging.INFO)
+        app_log.addHandler(catcher)
+        try:
+            try:
+                updates.download(rel, dest_dir=Path(d))
+            except updates.UpdateError as e:
+                assert "did not match its checksum" in str(e), e
+            else:
+                raise AssertionError("a wrong digest was accepted")
+        finally:
+            app_log.removeHandler(catcher)
+            app_log.setLevel(level)
+        assert not list(Path(d).glob("*")), list(Path(d).glob("*"))
+        assert any(rel.sha256 in ln and "discarded" in ln for ln in lines), lines
+        assert spawned == []
+
+
+def test_inno_script_never_names_data_dir():
+    """The installer touches APP_DIR only: {localappdata}\\DeskIT appears
+    in the script solely as {localappdata}\\Programs\\DeskIT (11.6)."""
+    iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
+    assert iss.count("{localappdata}") == iss.count("{localappdata}\\Programs\\DeskIT"), \
+        "the installer names the data folder"
+    assert "{userappdata}" not in iss and "{userdocs}" not in iss
+    assert "updates.py" not in iss, "the script does not do the app's job"
+    for key in ("updates.last_check", "updates.latest_seen", "updates.installed_version"):
+        assert key in config_mod.STATE_KEYS, key
+    assert config_mod.UpdatesConfig().channel == "stable" and config_mod.UpdatesConfig().skipped == ""
+
+
+def test_the_app_tab_carries_the_updates_row():
+    """Settings > The app: the line under the version says what the last
+    look found and Check now is there; with a newer release known the
+    three choices of 11.5 appear — but never Download in the checkout,
+    which pulls. Nothing here touches the wire."""
+    import settings as settings_mod
+    import updates
+
+    feed = _feed_for(b"x" * 7)
+    rel = updates.Release.parse(feed)
+    with _window() as board:
+        if board is None:
+            return
+        def drawn():
+            board._show("Settings")
+            board._settings_go(settings_mod.APP)
+            board._finish_settings()
+            board.root.update_idletasks()
+            return (board.parts["updates_line"].cget("text"),
+                    list(board.parts["updates_buttons"]))
+        with _patched(updates, "_last", {"release": None}):
+            line, buttons = drawn()
+        assert line.startswith("Updates:"), line
+        assert buttons == ["Check now"], buttons
+        with _patched(updates, "_last", {"release": rel}):
+            line, buttons = drawn()
+        assert "9.9.9 is available" in line and "you have" in line, line
+        assert buttons == ["Check now", "Release notes", "Skip this version"], \
+            "the checkout offered an installer"
+        with _patched(updates, "_last", {"release": rel}), _patched(paths, "DEVELOPER", False):
+            line, buttons = drawn()
+        assert buttons == ["Check now", "Download and install", "Release notes",
+                           "Skip this version"], buttons
+        with _patched(updates, "_last", {"release": rel}), _patched(paths, "DEVELOPER", False), \
+                _patched(paths, "CHANNEL", "winget"):
+            line, buttons = drawn()
+        assert buttons[1] == "Copy the winget command", buttons
 
 
 # ------------------------------------------- Gemini over REST (PR 12)
