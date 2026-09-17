@@ -2,7 +2,8 @@
 
 Until 2026-09-17 five modules opened their own sockets — ``urllib`` in
 translate.py, visual_qa.py, lookup.py and notify_hook.py, ``httpx`` inside
-the google-genai SDK — and the only way to know what the app talked to
+the google-genai SDK (gone since the REST port, gemini_pool.Client) — and
+the only way to know what the app talked to
 was to read all of them. DISTRIBUTION_PLAN.md chapter 5.4 and decision
 D12 ask for one chokepoint a stranger can read in ten minutes; this is
 it. The rules, each of which a test in tests.py holds:
@@ -32,12 +33,10 @@ it. The rules, each of which a test in tests.py holds:
 the Network window shows beside the host, and what the privacy gates of
 chapter 5 (PR 5) will consult.
 
-The google-genai SDK cannot call ``request()`` — it owns its own httpx
-client — so until the REST port (phase 2, D27) it is given a transport
-BUILT HERE (``genai_http_options``): same host check, same log row, and
-``base_url`` pinned to the allowlisted host so no environment variable
-can steer it elsewhere. The SDK still holds the Gemini key value itself;
-that is the interim and it ends with the port.
+Gemini speaks REST through here too (gemini_pool.Client, plan 5.6): the
+google-genai SDK, which owned its own httpx client and read the key from
+the environment on its own, is gone, and with it the transport this
+module used to build for it.
 """
 from __future__ import annotations
 
@@ -444,69 +443,3 @@ def post_json(url: str, purpose: str, payload: dict, *,
     return request("POST", url, purpose, secret=secret, headers=hdrs,
                    body=json.dumps(payload).encode("utf-8"),
                    timeout_s=timeout_s, consent=consent)
-
-
-# -------------------------------------------------- the google-genai bridge
-
-def _httpx_transport(purpose: str, secret: str | None):
-    """An ``httpx`` transport that admits and logs like ``open()``. Built
-    on demand: httpx is the SDK's dependency, not the app's, and an
-    installed copy without the SDK never imports it."""
-    import httpx
-
-    class _Counting(httpx.SyncByteStream):
-        def __init__(self, inner, on_close):
-            self._inner, self._on_close, self.n = inner, on_close, 0
-            self._done = False
-
-        def __iter__(self):
-            for chunk in self._inner:
-                self.n += len(chunk)
-                yield chunk
-
-        def close(self):
-            try:
-                self._inner.close()
-            finally:
-                if not self._done:
-                    self._done = True
-                    self._on_close(self.n)
-
-    class _Transport(httpx.HTTPTransport):
-        def handle_request(self, request):
-            host, consent = _admit(str(request.url), purpose, secret, None,
-                                   sdk=True)
-            try:
-                up = int(request.headers.get("content-length") or 0)
-            except ValueError:
-                up = 0
-            try:
-                response = super().handle_request(request)
-            except Exception as e:                           # noqa: BLE001
-                _record(host, purpose, up, 0, type(e).__name__, secret,
-                        consent)
-                raise
-            status = response.status_code
-            stream = _Counting(
-                response.stream,
-                lambda n: _record(host, purpose, up, n, status, secret,
-                                  consent))
-            return httpx.Response(status, headers=response.headers,
-                                  stream=stream, extensions=response.extensions)
-
-    return _Transport()
-
-
-def genai_http_options(purpose: str, timeout_s: float) -> dict:
-    """``http_options`` for ``google.genai.Client``: the base URL pinned
-    to the allowlisted host and the SDK's httpx client riding this
-    module's transport, so its rows appear in the window like everyone
-    else's. Pass ``vertexai=False`` beside it — the SDK otherwise reads
-    ``GOOGLE_GENAI_USE_VERTEXAI`` from the environment."""
-    if purpose not in PURPOSES:
-        raise ValueError(f"unknown network purpose {purpose!r}")
-    return {
-        "base_url": GEMINI_BASE_URL,
-        "timeout": int(timeout_s * 1000),
-        "client_args": {"transport": _httpx_transport(purpose, "gemini")},
-    }

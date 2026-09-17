@@ -25,6 +25,12 @@ class RateLimitError(TranscriptionError):
         self.per_day = per_day
 
 
+class TooLongForCloud(TranscriptionError):
+    """The recording would not fit Google's inline request cap, so it
+    was never sent (plan 5.6): the caller decodes it here and says so
+    on the card. Never spooled for a later cloud attempt."""
+
+
 @runtime_checkable
 class Transcriber(Protocol):
     name: str

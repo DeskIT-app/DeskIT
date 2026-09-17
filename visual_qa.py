@@ -907,8 +907,7 @@ class GeminiVision:
     name = "gemini"
 
     def __init__(self, models: list[str], timeout_s: int):
-        from google import genai
-        from google.genai import types
+        import gemini_pool
 
         from apikey import MISSING_KEY_MESSAGE, find_api_key
 
@@ -916,14 +915,12 @@ class GeminiVision:
         api_key, self.key_source = find_api_key()
         if not api_key:
             raise QAError(MISSING_KEY_MESSAGE)
+        del api_key                       # net.py attaches it by name
         self._models = list(models)
-        self._types = types
-        # The SDK still holds the key (interim, plan 5.6); the transport
-        # and the base URL are net.py's, so the host is pinned and every
-        # call is a row in network.log.
-        self._client = genai.Client(
-            api_key=api_key, vertexai=False,
-            http_options=net.genai_http_options(PURPOSE, timeout_s))
+        # REST through net.py (plan 5.6): the key by name, the host
+        # pinned, one row in network.log per call.
+        self._client = gemini_pool.Client(PURPOSE, timeout_s)
+        self._thinking: dict[str, str] = {}
         # Same per-feature rotation state as the translators: a model that
         # is spent for text is spent for vision too, but each feature
         # learning that independently would cost one 429 each.
@@ -932,38 +929,33 @@ class GeminiVision:
 
     def _one(self, model: str, image_b64: str, question: str,
              history: list[dict]) -> str:
-        import base64 as b64mod
-
         import gemini_pool
 
-        types = self._types
+        # The picture is base64 already (the same bytes every backend
+        # gets); inlineData takes it as it is.
+        image = {"inlineData": {"mimeType": "image/jpeg", "data": image_b64}}
         contents: list = []
         first = True
         for turn in history:
             parts = []
             if turn["role"] == "user" and first:
-                parts.append(types.Part.from_bytes(
-                    data=b64mod.b64decode(image_b64), mime_type="image/jpeg"))
+                parts.append(image)
                 first = False
-            parts.append(turn["content"])
-            contents.append(types.Content(role="user"
-                             if turn["role"] == "user" else "model",
-                             parts=parts))
+            parts.append(gemini_pool.text_part(turn["content"]))
+            contents.append({"role": "user" if turn["role"] == "user"
+                             else "model", "parts": parts})
         if first:
-            contents.append(types.Content(role="user", parts=[
-                types.Part.from_bytes(data=b64mod.b64decode(image_b64),
-                                      mime_type="image/jpeg"),
-                question,
-            ]))
+            contents.append({"role": "user",
+                             "parts": [image, gemini_pool.text_part(question)]})
         else:
-            contents.append(types.Content(role="user", parts=[question]))
-        cfg = types.GenerateContentConfig(
-            system_instruction="\n".join(SYSTEM_PROMPT), temperature=0.2)
+            contents.append({"role": "user",
+                             "parts": [gemini_pool.text_part(question)]})
 
         def attempt(model_name: str) -> str:
-            response = self._client.models.generate_content(
-                model=model_name, contents=contents, config=cfg)
-            return (response.text or "").strip()
+            response = self._client.generate(
+                model_name, contents, system="\n".join(SYSTEM_PROMPT),
+                temperature=0.2, thinking=self._thinking)
+            return (gemini_pool.text_of(response) or "").strip()
 
         return gemini_pool.rotate(self._models, self._cooldown,
                                   self._strikes, attempt, what="visual qa")

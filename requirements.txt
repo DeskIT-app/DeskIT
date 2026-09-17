@@ -16,12 +16,6 @@ pillow                      # every card, the keyboard picture, the skin's textu
 # av along as its own dependencies.
 faster-whisper
 
-# The Gemini client and the httpx transport net.py builds for it — both
-# leave the base when chapter 5's REST port lands (D12); until then a
-# copy without them cannot use the Gemini backend at all.
-google-genai
-httpx
-
 # pip as a plain package: the pack installer of chapter 6 runs
 # `python -m pip` inside the embeddable tree, which ships no pip of its
 # own (10.2). Hashed like everything else (--allow-unsafe lets pip-tools
@@ -33,4 +27,7 @@ pip
 # link, chapter 6); skia-python (the Skin pack — skin\__init__.py reports
 # the skin off when the import fails and the Tk overlays take over); the
 # `keyboard` PyPI package, which the local keyboard.py used to shadow —
-# that module is keycaps.py now.
+# that module is keycaps.py now; google-genai (~50 MB with pydantic and
+# google-auth), since Gemini speaks REST through net.py (gemini_pool.Client,
+# plan 5.6). httpx still arrives as huggingface-hub's dependency; nothing of
+# ours imports it.

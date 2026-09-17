@@ -1,9 +1,9 @@
 """Backend A: Gemini API. Transcription + cleanup in one request.
 
-The key comes from the secret store (secretstore.py, through apikey.py);
-the SDK's HTTP client rides net.py's transport with the base URL pinned,
-so the one host it can reach is the allowlisted one and every call is a
-row in network.log (D12; the REST port of plan 5.6 retires the SDK).
+The key lives in the secret store (secretstore.py, through apikey.py)
+and this module never sees its value: gemini_pool.Client speaks REST
+through net.py, which attaches the key by NAME to the one host it
+belongs to and writes a row in network.log per call (D12, plan 5.6).
 
 Free-tier quota is counted PER MODEL (measured: gemini-2.5-flash allows 20
 generate_content requests per day), so this backend is given a list of
@@ -15,17 +15,13 @@ from __future__ import annotations
 import logging
 import time
 
-from google import genai
-from google.genai import errors, types
-
 import gemini_pool
-import net
 import privacy
 from apikey import MISSING_KEY_MESSAGE, find_api_key
 from gemini_pool import MAX_COOLDOWN_S, PER_DAY_COOLDOWN_S
 from gemini_pool import parse_429 as _parse_429
 
-from .base import TranscriptionError
+from .base import TooLongForCloud, TranscriptionError
 
 log = logging.getLogger("app")
 
@@ -78,6 +74,7 @@ class GeminiTranscriber:
         api_key, self.key_source = find_api_key()
         if not api_key:
             raise TranscriptionError(MISSING_KEY_MESSAGE)
+        del api_key                       # net.py attaches it by name
         self._models = [models] if isinstance(models, str) else list(models)
         if not self._models:
             raise TranscriptionError("no gemini models configured")
@@ -85,9 +82,7 @@ class GeminiTranscriber:
         self._cooldown: dict[str, float] = {}
         self._strikes: dict[str, int] = {}
         self._thinking: dict[str, str] = {}   # model -> budget|level|none
-        self._client = genai.Client(
-            api_key=api_key, vertexai=False,
-            http_options=net.genai_http_options("transcribe", timeout_s))
+        self._client = gemini_pool.Client("transcribe", timeout_s)
 
     @property
     def model(self) -> str:
@@ -98,15 +93,15 @@ class GeminiTranscriber:
                 return m
         return self._models[0]
 
-    def _config(self, model: str) -> types.GenerateContentConfig:
-        cfg = types.GenerateContentConfig(
-            system_instruction=_SYSTEM_PROMPT,
-            temperature=0.2,
-        )
-        return gemini_pool.apply_thinking(cfg, model, self._thinking)
-
     def _one(self, model: str, wav_bytes: bytes,
              language: str | None = None) -> str:
+        # Measured before anything is sent (plan 5.6): over the cap the
+        # request would be refused anyway, and the local model is right
+        # here. Never spooled for a later cloud attempt.
+        if gemini_pool.inline_size(wav_bytes) + 4096 > gemini_pool.INLINE_CAP_BYTES:
+            raise TooLongForCloud(
+                f"{len(wav_bytes) / 1_048_576:.1f} MB of audio is too long for "
+                "the cloud pass — decoded on this PC")
         instruction = "Transcribe this recording following the system rules."
         if language == "en":
             # The system prompt is written for Hebrew; the user pressed the
@@ -117,38 +112,20 @@ class GeminiTranscriber:
                            "Hebrew. Follow the other system rules "
                            "(no preamble, remove fillers, punctuate).")
         contents = [
-            types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
-            instruction,
+            gemini_pool.blob_part(wav_bytes, "audio/wav"),
+            gemini_pool.text_part(instruction),
         ]
-        try:
-            response = self._client.models.generate_content(
-                model=model, contents=contents, config=self._config(model))
-        except errors.APIError as e:
-            # An unknown future model may reject both knobs. Rather than lose
-            # the model, drop the thinking config for it from now on.
-            if getattr(e, "code", None) == 400 and \
-                    self._thinking.get(model) != "none":
-                log.info("%s rejected the thinking setting — retrying "
-                         "without it (slower, still correct)", model)
-                self._thinking[model] = "none"
-                response = self._client.models.generate_content(
-                    model=model, contents=contents,
-                    config=self._config(model))
-            else:
-                raise
-        try:
-            text = response.text
-        except Exception:
-            text = None
+        # The thinking knob's 400 rescue lives in Client.generate: an
+        # unknown future model that rejects both knobs is retried
+        # without one and remembered, rather than lost.
+        response = self._client.generate(
+            model, contents, system=_SYSTEM_PROMPT, temperature=0.2,
+            thinking=self._thinking)
+        text = gemini_pool.text_of(response)
         if text is not None:
             return text.strip()
 
-        reason = ""
-        try:
-            if response.candidates:
-                reason = str(response.candidates[0].finish_reason)
-        except Exception:
-            pass
+        reason = gemini_pool.finish_reason(response)
         # The system prompt tells the model to emit nothing when it hears no
         # intelligible speech, so "finished normally, no text" is silence —
         # not a failure. Retrying or spooling it would be pointless.
@@ -169,6 +146,6 @@ class GeminiTranscriber:
 
     def check(self) -> str:
         """One tiny text-only request to validate key + model + quota."""
-        response = self._client.models.generate_content(
-            model=self.model, contents="Reply with exactly: OK")
-        return (response.text or "").strip()
+        response = self._client.generate(
+            self.model, [gemini_pool.text_part("Reply with exactly: OK")])
+        return (gemini_pool.text_of(response) or "").strip()

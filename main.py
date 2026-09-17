@@ -59,6 +59,7 @@ from launch import open_dashboard
 from recorder import Recorder, SILENT_AFTER_S, SILENT_PEAK
 from spool import Spool
 from transcribers import RateLimitError, TranscriptionError, get_transcriber
+from transcribers.base import TooLongForCloud
 
 log = logging.getLogger("app")
 transcript_log = logging.getLogger("transcripts")
@@ -4428,10 +4429,15 @@ class App:
                 self._last_windows = list(
                     getattr(self.transcriber, "last_windows", None) or [])
                 return text, self.transcriber.name
-            except RateLimitError:
+            except (RateLimitError, TooLongForCloud) as e:
                 local = self._local_backend()
                 if local is None:
                     raise
+                if isinstance(e, TooLongForCloud):
+                    # never sent (plan 5.6): the card says why the
+                    # cloud pass did not happen this once
+                    self._say(str(e))
+                    log.info("%s", e)
                 text = self._call(local, wav, language)
                 self._last_words = list(
                     getattr(local, "last_words", None) or [])

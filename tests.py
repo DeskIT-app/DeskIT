@@ -609,24 +609,16 @@ def test_erase_units_counts_utf16() -> None:
 
 
 def test_parse_429_reads_per_day_cap() -> None:
-    from google.genai import errors as genai_errors
-
+    import gemini_pool
     from transcribers.gemini import _parse_429
-
-    class FakeAPIError(genai_errors.APIError):
-        def __init__(self, message, details=None):
-            self.message = message
-            self.details = details
-            self.code = 429
 
     msg = ("You exceeded your current quota. * Quota exceeded for metric: "
            "generate_content_free_tier_requests, limit: 20, model: "
            "gemini-2.5-flash\nPlease retry in 17.07s.")
-    retry_after, per_day, limit = _parse_429(
-        FakeAPIError.__new__(FakeAPIError))
+    retry_after, per_day, limit = _parse_429(gemini_pool.APIError(429, ""))
+    assert (retry_after, per_day, limit) == (0.0, False, None)
     # message-only path
-    err = FakeAPIError.__new__(FakeAPIError)
-    err.message, err.details, err.code = msg, None, 429
+    err = gemini_pool.APIError(429, msg)
     retry_after, per_day, limit = _parse_429(err)
     assert abs(retry_after - 17.07) < 0.01, retry_after
     assert limit == 20, limit
@@ -697,16 +689,15 @@ def test_gemini_reports_when_every_model_is_spent() -> None:
 
 
 def _fake_429():
-    from google.genai import errors as genai_errors
-    e = genai_errors.APIError.__new__(genai_errors.APIError)
-    e.code = 429
-    e.message = ("Quota exceeded for metric: generate_content_free_tier_"
-                 "requests, limit: 20, model: x. Please retry in 15s.")
-    e.details = {"error": {"details": [
-        {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
-         "violations": [{"quotaId": "GenerateRequestsPerDayPerProject"
-                                    "PerModel-FreeTier"}]}]}}
-    return e
+    import gemini_pool
+    return gemini_pool.APIError(
+        429,
+        "Quota exceeded for metric: generate_content_free_tier_"
+        "requests, limit: 20, model: x. Please retry in 15s.",
+        {"error": {"details": [
+            {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+             "violations": [{"quotaId": "GenerateRequestsPerDayPerProject"
+                                        "PerModel-FreeTier"}]}]}})
 
 
 def test_spool_saves_and_recovers_audio() -> None:
@@ -29806,6 +29797,177 @@ def test_problems_env_fields():
                for c in problems_mod.env(cfg)["consents"])
 
 
+# ------------------------------------------- Gemini over REST (PR 12)
+#
+# DISTRIBUTION_PLAN.md 5.6, D12: the google-genai SDK is gone. The three
+# Gemini classes speak generateContent through net.py with the key by
+# NAME; a recording over Google's inline cap is never sent; a 429 is read
+# off the JSON body the way it was read off the SDK's exception.
+
+def _gemini_reply(text: str, finish: str = "STOP") -> bytes:
+    return json.dumps({"candidates": [{"content": {"parts": [{"text": text}],
+                                                   "role": "model"},
+                                       "finishReason": finish}]}).encode("utf-8")
+
+
+def test_gemini_rest_request_shape():
+    """The transcribe request is one POST to models/<model>:generateContent
+    on the allowlisted host, JSON with the system instruction, an
+    inlineData part of audio/wav, a text part, and a thinkingConfig that
+    matches gemini_pool.thinking_style for the model; the key rides in
+    x-goog-api-key and nowhere else; the row in network.log names the
+    secret and the purpose. The translator and the screen question use
+    the same client with their own parts."""
+    import gemini_pool
+    import net as net_mod
+    from transcribers.gemini import GeminiTranscriber
+
+    gem_fixture = "AIza_fixture_rest_" + "g" * 20
+    seen: list[tuple[str, str, dict, dict]] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        seen.append((method, url, dict(headers), json.loads(body)))
+        return _FakeRaw(_gemini_reply("שלום עולם"))
+
+    with _test_cred_prefix() as store, _consented("cloud_audio", "cloud_text"), \
+            _patched(net_mod, "_connect", fake_connect):
+        store.set("gemini", gem_fixture)
+        t = GeminiTranscriber(["gemini-2.5-flash", "gemini-flash-latest"], 30)
+        assert not hasattr(t, "_api_key") and "AIza" not in repr(vars(t))
+        wav = b"RIFF" + bytes(2000)
+        assert t.transcribe(wav) == "שלום עולם"
+        method, url, headers, payload = seen[-1]
+        assert method == "POST"
+        assert url == ("https://generativelanguage.googleapis.com/v1beta/models/"
+                       "gemini-2.5-flash:generateContent"), url
+        assert "?" not in url
+        assert headers.get("x-goog-api-key") == gem_fixture
+        assert "Authorization" not in headers
+        from transcribers.gemini import _SYSTEM_PROMPT
+        assert payload["systemInstruction"] == {"parts": [{"text": _SYSTEM_PROMPT}]}
+        parts = payload["contents"][0]["parts"]
+        assert payload["contents"][0]["role"] == "user"
+        assert parts[0]["inlineData"]["mimeType"] == "audio/wav"
+        import base64
+        assert base64.b64decode(parts[0]["inlineData"]["data"]) == wav
+        assert parts[1] == {"text": "Transcribe this recording following the system rules."}
+        assert payload["generationConfig"]["temperature"] == 0.2
+        assert payload["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
+        assert gemini_pool.thinking_style("gemini-2.5-flash", {}) == "budget"
+        row = net_mod.rows()[-1]
+        assert row.host == "generativelanguage.googleapis.com"
+        assert row.purpose == "transcribe" and row.secret == "gemini"
+        assert gem_fixture not in net_mod.format_row(row)
+        # the -latest alias takes the level knob
+        t2 = GeminiTranscriber("gemini-flash-latest", 30)
+        t2.transcribe(wav)
+        assert seen[-1][3]["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+        # a 400 on the knob: retried once without it, remembered
+        answers = iter([_FakeRaw(json.dumps({"error": {"code": 400, "message":
+                                  "thinking_budget is not supported"}}).encode(), 400),
+                        _FakeRaw(_gemini_reply("שוב"))])
+
+        def flaky(method, url, headers, body, timeout_s):
+            seen.append((method, url, dict(headers), json.loads(body)))
+            return next(answers)
+        with _patched(net_mod, "_connect", flaky):
+            assert t.transcribe(wav) == "שוב"
+        assert "thinkingConfig" not in seen[-1][3].get("generationConfig", {})
+        assert t._thinking["gemini-2.5-flash"] == "none"
+        # the translator: a text part, the translate purpose
+        import translate as translate_mod
+        tr = translate_mod.GeminiTranslator("gemini-2.5-flash", 30, target="English")
+        assert tr.translate("בוקר טוב") == "שלום עולם"
+        method, url, headers, payload = seen[-1]
+        assert payload["contents"][0]["parts"] == [{"text": "בוקר טוב"}]
+        assert net_mod.rows()[-1].purpose == "translate"
+        # the key test: GET models, the catalog purpose, ids without the prefix
+        with _patched(net_mod, "_connect", lambda *a, **k: _FakeRaw(json.dumps(
+                {"models": [{"name": "models/gemini-2.5-flash"}, {"name": "models/x"}]}).encode())):
+            assert gemini_pool.Client("catalog", 5).list_models() == ["gemini-2.5-flash", "x"]
+    assert "google.genai" not in (REPO / "gemini_pool.py").read_text("utf-8")
+    for name in ("transcribers/gemini.py", "translate.py", "visual_qa.py", "net.py"):
+        src = (REPO / name).read_text("utf-8")
+        assert "from google" not in src and "import genai" not in src, name
+
+
+def test_gemini_inline_limit_refused_before_send():
+    """A WAV over the inline cap makes zero requests: TooLongForCloud is
+    raised before the wire, the app decodes it locally and says so."""
+    import gemini_pool
+    import net as net_mod
+    from transcribers.base import TooLongForCloud
+    from transcribers.gemini import GeminiTranscriber
+
+    calls: list = []
+    with _test_cred_prefix() as store, _consented("cloud_audio"), \
+            _patched(net_mod, "_connect", lambda *a, **k: calls.append(1) or _FakeRaw(_gemini_reply("x"))):
+        store.set("gemini", "AIza_fixture_cap_" + "g" * 20)
+        t = GeminiTranscriber("gemini-2.5-flash", 30)
+        big = bytes(gemini_pool.INLINE_CAP_BYTES)     # base64 makes it a third bigger
+        try:
+            t.transcribe(big)
+        except TooLongForCloud as e:
+            assert "too long for the cloud pass" in str(e), e
+        else:
+            raise AssertionError("a recording over the cap was sent")
+        assert calls == [], "a request left for the wire"
+        assert gemini_pool.inline_size(b"abc") == 4 and gemini_pool.inline_size(b"ab") == 4
+        assert gemini_pool.inline_size(bytes(3000)) == 4000
+    # main.py: the same except that rests a spent cloud decodes this one here
+    import inspect
+
+    import main as main_mod
+    src = inspect.getsource(main_mod.App._transcribe)
+    assert "except (RateLimitError, TooLongForCloud)" in src, "main.py does not fall back"
+    assert "self._say(str(e))" in src, "the card is not told"
+
+
+def test_gemini_429_parsed_from_json_body():
+    """A 429 answer is an APIError carrying Google's message and the parsed
+    body; parse_429 reads the retry delay and the per-day cap out of it;
+    rotate() rests the model and moves on, as it did with the SDK."""
+    import gemini_pool
+    import net as net_mod
+
+    body = {"error": {"code": 429, "message":
+            "You exceeded your current quota. Please retry in 21.5s.",
+            "status": "RESOURCE_EXHAUSTED", "details": [
+                {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                 "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier",
+                                 "quotaValue": "20"}]},
+                {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "21s"}]}}
+    replies = iter([_FakeRaw(json.dumps(body).encode(), 429), _FakeRaw(_gemini_reply("ok"))])
+    with _test_cred_prefix() as store, _consented("cloud_text"), \
+            _patched(net_mod, "_connect", lambda *a, **k: next(replies)):
+        store.set("gemini", "AIza_fixture_429_" + "g" * 20)
+        client = gemini_pool.Client("translate", 5)
+        try:
+            client.generate("dead", [gemini_pool.text_part("hi")])
+        except gemini_pool.APIError as e:
+            assert e.code == 429 and "retry in 21.5s" in e.message and e.model == "dead"
+            retry_after, per_day, limit = gemini_pool.parse_429(e)
+            assert retry_after == 21.0 and per_day is True and limit == 20, (retry_after, per_day, limit)
+        else:
+            raise AssertionError("a 429 did not raise")
+        cooldown, strikes, tried = {}, {}, []
+
+        def attempt(model):
+            tried.append(model)
+            return gemini_pool.text_of(client.generate(model, [gemini_pool.text_part("hi")]))
+        replies = iter([_FakeRaw(json.dumps(body).encode(), 429), _FakeRaw(_gemini_reply("ok"))])
+        assert gemini_pool.rotate(["dead", "alive"], cooldown, strikes, attempt) == "ok"
+        assert tried == ["dead", "alive"] and cooldown["dead"] > time.monotonic()
+        # a body that is not JSON still becomes an error with the status
+        with _patched(net_mod, "_connect", lambda *a, **k: _FakeRaw(b"<html>bad gateway</html>", 502)):
+            try:
+                client.generate("m", [gemini_pool.text_part("hi")])
+            except gemini_pool.APIError as e:
+                assert e.code == 502 and "bad gateway" in e.message
+            else:
+                raise AssertionError("a 502 did not raise")
+
+
 # ------------------------------------------------- the installer (PR 11)
 #
 # DISTRIBUTION_PLAN.md 10.2 and 10.4: packaging/DeskIT.iss is the per-user
@@ -29956,7 +30118,7 @@ def test_deskit_pyw_is_the_entry_and_the_window_is_relaunched_by_layout():
 # half (what the archive contains) is dev/tests_ops.py's.
 
 LOCK_EXCLUDED = ("keyboard", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
-                 "nvidia-cuda-nvrtc-cu12", "skia-python")
+                 "nvidia-cuda-nvrtc-cu12", "skia-python", "google-genai")
 
 
 def _requirement_names(text: str) -> list[str]:
@@ -29972,10 +30134,11 @@ def _requirement_names(text: str) -> list[str]:
 
 def test_requirements_base_set():
     """requirements.txt is the base set of 10.5: pillow and comtypes named
-    (they were only ever pulled in sideways), the CUDA runtimes, skia and
-    the keyboard package gone (packs, and a rename). google-genai and httpx
-    stay until chapter 5's REST port; that PR takes them out and adds
-    them to LOCK_EXCLUDED."""
+    (they were only ever pulled in sideways), the CUDA runtimes, skia,
+    the keyboard package, and — since the REST port — google-genai gone
+    (packs, a rename, gemini_pool.Client). httpx is still in the lock as
+    huggingface-hub's dependency; nothing of ours imports it
+    (test_only_net_imports_transport)."""
     names = _requirement_names((REPO / "requirements.txt").read_text("utf-8"))
     for want in ("pillow", "comtypes", "faster-whisper", "sounddevice", "numpy",
                  "pywin32", "pycaw", "pip"):

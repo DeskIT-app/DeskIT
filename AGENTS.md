@@ -263,8 +263,10 @@ exactly what classic did.
   before a socket opens. One row per call — host, purpose, bytes,
   status, secret name, never a body or a URL — in `net.rows()` and
   `network.log` (gitignored). A test stands in for the wire at
-  `net._connect` (tests' `_FakeRaw`). The google-genai clients get
-  `net.genai_http_options(purpose, timeout_s)` + `vertexai=False`.
+  `net._connect` (tests' `_FakeRaw`). Gemini is `gemini_pool.Client`
+  (REST, plan 5.6): `generate(model, parts, system=, temperature=,
+  thinking=)`, `list_models()`, `APIError` with Google's message and the
+  parsed body; the SDK is gone.
 - Consent: nothing personal leaves until the person said so. `privacy.py`
   holds six gates (`cloud_text`, `cloud_audio`, `cloud_screenshots`,
   `account`, `report_upload`, `settings_sync`) that open ONLY through

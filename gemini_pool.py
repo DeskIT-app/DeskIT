@@ -1,4 +1,4 @@
-"""Shared Gemini plumbing: 429 parsing and model rotation.
+"""Shared Gemini plumbing: the REST client, 429 parsing and model rotation.
 
 The free tier counts generate_content requests PER MODEL PER DAY (measured
 2026-08-12: gemini-2.5-flash allows 20). Transcription and translation both
@@ -29,8 +29,9 @@ MAX_COOLDOWN_S = 60 * 60
 def parse_429(e) -> tuple[float, bool, int | None]:
     """(retry_after_seconds, is_per_day, limit) from a 429 body.
 
-    The SDK surfaces the message text reliably; the structured RetryInfo is
-    not always populated, so both are read out of the message as a fallback.
+    `e` is an APIError (below): `message` is Google's error.message and
+    `details` the parsed JSON body. The structured RetryInfo is not always
+    populated, so both are read out of the message as a fallback.
     """
     message = str(getattr(e, "message", "") or e)
     retry_after, per_day, limit = 0.0, False, None
@@ -77,18 +78,6 @@ def thinking_style(model: str, cache: dict[str, str]) -> str:
     return style
 
 
-def apply_thinking(cfg, model: str, cache: dict[str, str]):
-    """Attach the thinking knob this model accepts to a config object."""
-    from google.genai import types
-
-    style = thinking_style(model, cache)
-    if style == "budget":
-        cfg.thinking_config = types.ThinkingConfig(thinking_budget=0)
-    elif style == "level":
-        cfg.thinking_config = types.ThinkingConfig(thinking_level="low")
-    return cfg
-
-
 def rotate(models: list[str], cooldown: dict[str, float],
            strikes: dict[str, int], attempt, what: str = "request") -> str:
     """Run `attempt(model)` against the first model that is not resting.
@@ -98,8 +87,6 @@ def rotate(models: list[str], cooldown: dict[str, float],
     cost. Raises RateLimitError only once EVERY model is spent, so callers
     can treat that as "the cloud is done for today" and fall back locally.
     """
-    from google.genai import errors
-
     now = time.monotonic()
     soonest = None
     tried = False
@@ -111,7 +98,7 @@ def rotate(models: list[str], cooldown: dict[str, float],
         tried = True
         try:
             return attempt(model)
-        except errors.APIError as e:
+        except APIError as e:
             code = getattr(e, "code", None)
             if code != 429:
                 raise TranscriptionError(
@@ -147,3 +134,176 @@ def rotate(models: list[str], cooldown: dict[str, float],
         f"(retry in ~{wait_s / 60:.0f} min)"
         + ("" if tried else " — all still resting from earlier 429s"),
         retry_after=wait_s, per_day=True)
+
+
+# ------------------------------------------------ the REST client (5.6)
+#
+# What the google-genai SDK used to do, done by hand over net.request with
+# secret="gemini": one POST per generateContent, the key in x-goog-api-key
+# (net.py attaches it by name; nothing here ever sees the value), the base
+# URL net.GEMINI_BASE_URL and nothing else. The SDK read GOOGLE_API_KEY
+# from the environment on its own, hid its transport from the chokepoint
+# and weighed 50 MB in the wheelhouse; this is ~100 lines and one row in
+# network.log per call (D12, D19).
+
+#: Google's cap on a request whose parts are inline (base64 in the JSON):
+#: 20 MB in all. 16 kHz mono 16-bit is ~32 KB a second and base64 adds a
+#: third, so a single dictation fits up to roughly seven minutes.
+INLINE_CAP_BYTES = 20 * 1024 * 1024
+
+
+class APIError(Exception):
+    """A non-2xx answer from generativelanguage.googleapis.com: the status
+    code, Google's `error.message`, and the parsed body under `details`
+    (`{"error": {"details": [...]}}`) — the shape parse_429 reads."""
+
+    def __init__(self, code: int, message: str, details: dict | None = None,
+                 model: str = ""):
+        super().__init__(f"{code}: {message}")
+        self.code = code
+        self.message = message
+        self.details = details or {}
+        self.model = model
+
+
+def text_part(text: str) -> dict:
+    return {"text": str(text)}
+
+
+def blob_part(data: bytes, mime_type: str) -> dict:
+    """An inline part: audio or an image, base64 in the JSON."""
+    import base64
+    return {"inlineData": {"mimeType": mime_type,
+                           "data": base64.b64encode(data).decode("ascii")}}
+
+
+def inline_size(data: bytes) -> int:
+    """What `data` weighs once it is base64 inside the request."""
+    return (len(data) + 2) // 3 * 4
+
+
+def thinking_config(model: str, cache: dict[str, str]) -> dict | None:
+    """The `thinkingConfig` this model accepts, or None once a 400 taught
+    us it takes neither knob ("none" in the cache)."""
+    style = thinking_style(model, cache)
+    if style == "budget":
+        return {"thinkingBudget": 0}
+    if style == "level":
+        return {"thinkingLevel": "low"}
+    return None
+
+
+def text_of(response: dict) -> str | None:
+    """The answer's text — every text part of the first candidate joined —
+    or None when there is no candidate with content."""
+    try:
+        parts = response["candidates"][0]["content"]["parts"]
+    except (KeyError, IndexError, TypeError):
+        return None
+    texts = [p["text"] for p in parts if isinstance(p, dict) and "text" in p]
+    return "".join(texts) if texts else None
+
+
+def finish_reason(response: dict) -> str:
+    try:
+        return str(response["candidates"][0].get("finishReason") or "")
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return ""
+
+
+def _error_from(status: int, body: bytes, model: str) -> APIError:
+    import json
+    try:
+        details = json.loads(body.decode("utf-8", "replace"))
+    except ValueError:
+        details = {}
+    err = details.get("error") if isinstance(details, dict) else None
+    message = (str(err.get("message")) if isinstance(err, dict) and err.get("message")
+               else body.decode("utf-8", "replace")[:300] or f"HTTP {status}")
+    return APIError(status, message, details if isinstance(details, dict) else {},
+                    model)
+
+
+class Client:
+    """generateContent and the model catalog, for one purpose and timeout.
+
+    `purpose` is the word net.py logs for every call this client makes
+    (transcribe, translate, ask-screen, ...); the secret is always the
+    Gemini key by NAME. Construction touches nothing; the constructors
+    that build one have already passed the consent gate and checked the
+    key exists (apikey.find_api_key)."""
+
+    def __init__(self, purpose: str, timeout_s: float):
+        self.purpose = purpose
+        self.timeout_s = float(timeout_s)
+
+    def generate(self, model: str, contents: list[dict], *,
+                 system: str | None = None, temperature: float | None = None,
+                 thinking: dict[str, str] | None = None) -> dict:
+        """One POST models/<model>:generateContent. `contents` is a list of
+        turns (`{"role": "user"|"model", "parts": [...]}`); a list of bare
+        parts is taken as one user turn. The thinking knob comes from
+        `thinking` (the caller's per-model cache): a 400 with the knob
+        set retries once without it and remembers "none" for the model —
+        an unknown future model must not be lost over a knob."""
+        if contents and isinstance(contents[0], dict) and "parts" not in contents[0]:
+            contents = [{"role": "user", "parts": list(contents)}]
+        payload: dict = {"contents": contents}
+        if system:
+            payload["systemInstruction"] = {"parts": [{"text": system}]}
+        gen: dict = {}
+        if temperature is not None:
+            gen["temperature"] = temperature
+        knob = thinking_config(model, thinking) if thinking is not None else None
+        if knob:
+            gen["thinkingConfig"] = knob
+        if gen:
+            payload["generationConfig"] = gen
+        try:
+            return self._post(model, payload)
+        except APIError as e:
+            if e.code == 400 and knob and thinking is not None \
+                    and thinking.get(model) != "none":
+                log.info("%s rejected the thinking setting — retrying "
+                         "without it (slower, still correct)", model)
+                thinking[model] = "none"
+                gen.pop("thinkingConfig", None)
+                if not gen:
+                    payload.pop("generationConfig", None)
+                return self._post(model, payload)
+            raise
+
+    def _post(self, model: str, payload: dict) -> dict:
+        import json
+
+        import net
+
+        url = f"{net.GEMINI_BASE_URL}v1beta/models/{model}:generateContent"
+        status, _headers, body = net.post_json(
+            url, self.purpose, payload, secret="gemini",
+            timeout_s=self.timeout_s)
+        if status != 200:
+            raise _error_from(status, body, model)
+        try:
+            return json.loads(body.decode("utf-8"))
+        except ValueError as e:
+            raise APIError(status, f"not JSON: {e}", {}, model) from None
+
+    def list_models(self) -> list[str]:
+        """GET models: every id the key can see, without the `models/`
+        prefix — the key test and the drift oracle (5.7)."""
+        import json
+
+        import net
+
+        status, _headers, body = net.request(
+            "GET", f"{net.GEMINI_BASE_URL}v1beta/models?pageSize=200",
+            "catalog", secret="gemini", timeout_s=self.timeout_s)
+        if status != 200:
+            raise _error_from(status, body, "")
+        data = json.loads(body.decode("utf-8"))
+        names = []
+        for m in data.get("models", []):
+            name = str(m.get("name", ""))
+            names.append(name[7:] if name.startswith("models/") else name)
+        return names

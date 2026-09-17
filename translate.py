@@ -139,8 +139,7 @@ class GeminiTranslator:
     def __init__(self, models: list[str] | str, timeout_s: int,
                  target: str = "English", system_prompt=None,
                  purpose: str = "translate"):
-        from google import genai
-        from google.genai import types
+        import gemini_pool
 
         from apikey import MISSING_KEY_MESSAGE, find_api_key
 
@@ -148,6 +147,7 @@ class GeminiTranslator:
         api_key, self.key_source = find_api_key()
         if not api_key:
             raise TranslationError(MISSING_KEY_MESSAGE)
+        del api_key                       # net.py attaches it by name
         self._models = [models] if isinstance(models, str) else list(models)
         if not self._models:
             raise TranslationError("no gemini models configured")
@@ -159,39 +159,20 @@ class GeminiTranslator:
         self._cooldown: dict[str, float] = {}
         self._strikes: dict[str, int] = {}
         self._thinking: dict[str, str] = {}
-        self._types = types
-        # The SDK still holds the key (interim until the REST port, plan
-        # 5.6); its transport and base URL are net.py's, so the host is
-        # pinned and every call is a row in network.log.
-        self._client = genai.Client(
-            api_key=api_key, vertexai=False,
-            http_options=net.genai_http_options(purpose, timeout_s))
+        # REST through net.py (plan 5.6): the key by name, the host
+        # pinned, one row in network.log per call.
+        self._client = gemini_pool.Client(purpose, timeout_s)
 
     def _one(self, model: str, text: str) -> str:
         import gemini_pool
 
-        cfg = self._types.GenerateContentConfig(
-            system_instruction=resolve_prompt(self._system, self._target),
-            temperature=0.2)
-        gemini_pool.apply_thinking(cfg, model, self._thinking)
-        try:
-            response = self._client.models.generate_content(
-                model=model, contents=text, config=cfg)
-        except Exception as e:
-            # Same rescue as the transcriber: an unknown future model may
-            # reject both thinking knobs — drop it rather than lose the
-            # model entirely.
-            if getattr(e, "code", None) == 400 and \
-                    self._thinking.get(model) != "none":
-                log.info("%s rejected the thinking setting — retrying "
-                         "without it (slower, still correct)", model)
-                self._thinking[model] = "none"
-                cfg.thinking_config = None
-                response = self._client.models.generate_content(
-                    model=model, contents=text, config=cfg)
-            else:
-                raise
-        out = _clean(response.text or "")
+        # The thinking knob's 400 rescue is Client.generate's, the same
+        # for the transcriber and the screen question.
+        response = self._client.generate(
+            model, [gemini_pool.text_part(text)],
+            system=resolve_prompt(self._system, self._target),
+            temperature=0.2, thinking=self._thinking)
+        out = _clean(gemini_pool.text_of(response) or "")
         if not out:
             raise TranslationError(f"Gemini returned no translation "
                                    f"({model})")
