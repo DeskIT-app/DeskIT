@@ -1,0 +1,59 @@
+{
+  "_": "The models an installed copy may download (models.py, plan 6.4): repo, pinned commit, each file's size and SHA-256. Written by `python models.py --lock`, never by hand.",
+  "models": {
+    "ivrit-ai/whisper-large-v3-turbo-ct2": {
+      "revision": "72ad623a37947395efcc3933132353790e5a12f5",
+      "license": "apache-2.0",
+      "bytes": 1621665181,
+      "files": {
+        "config.json": {
+          "size": 1405,
+          "sha256": "c805eff43fc2a1d00d5cfa315e4b2230895f34994257c185959808a116e7c4f0"
+        },
+        "model.bin": {
+          "size": 1617884968,
+          "sha256": "db2a2265aa012c16c7db9edda3d699c99f984efdd3f2e22a72a8ce7e9720f3a2"
+        },
+        "preprocessor_config.json": {
+          "size": 357,
+          "sha256": "654cf18d3e163b948ceaf9766da56ce0b52de265d58673cf61c9376f126bd499"
+        },
+        "tokenizer.json": {
+          "size": 2710337,
+          "sha256": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd"
+        },
+        "vocabulary.json": {
+          "size": 1068114,
+          "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1"
+        }
+      }
+    },
+    "deepdml/faster-whisper-large-v3-turbo-ct2": {
+      "revision": "4df90f75321148c3a29a9e2351b7ddf8f5b115a8",
+      "license": "mit",
+      "bytes": 1621665983,
+      "files": {
+        "config.json": {
+          "size": 2263,
+          "sha256": "b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e"
+        },
+        "model.bin": {
+          "size": 1617884929,
+          "sha256": "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da"
+        },
+        "preprocessor_config.json": {
+          "size": 340,
+          "sha256": "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711"
+        },
+        "tokenizer.json": {
+          "size": 2710337,
+          "sha256": "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd"
+        },
+        "vocabulary.json": {
+          "size": 1068114,
+          "sha256": "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1"
+        }
+      }
+    }
+  }
+}

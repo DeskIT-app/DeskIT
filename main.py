@@ -42,6 +42,7 @@ import firstrun
 import hint as hint_mod
 import injector
 import awake as awake_mod
+import models as models_mod
 import notify as notify_mod
 import notify_watch as notify_watch_mod
 import popup as popup_mod
@@ -59,7 +60,7 @@ from launch import open_dashboard
 from recorder import Recorder, SILENT_AFTER_S, SILENT_PEAK
 from spool import Spool
 from transcribers import RateLimitError, TranscriptionError, get_transcriber
-from transcribers.base import TooLongForCloud
+from transcribers.base import ModelMissing, TooLongForCloud
 
 log = logging.getLogger("app")
 transcript_log = logging.getLogger("transcripts")
@@ -5425,6 +5426,7 @@ class App:
         last_error = ""
         attempt = 0
         text = backend = None
+        no_model = False     # the model is not on disk: said as such
         # What the rolling transcriber finished while the key was held.
         # finish() waits for the decode it is in the middle of, if any —
         # bounded, and inside the latency that is measured, because it
@@ -5448,6 +5450,7 @@ class App:
                 break
             except TranscriptionError as e:
                 last_error = str(e)
+                no_model = isinstance(e, ModelMissing)
                 # Save the audio BEFORE deciding whether to retry, so a
                 # crash or a quit between attempts still cannot lose it.
                 if item is None:
@@ -5479,8 +5482,13 @@ class App:
                     injector.clear_placeholder(placeholder, hwnd)
             beep("error")
             self._bump(failures=1)
-            self._say(f"gave up after {latency:.0f} s — the audio is kept in "
-                      f"pending\\, run --drain later")
+            if no_model:
+                self._say("the Hebrew model is not downloaded yet — the "
+                          "recording is kept; start DeskIT again to "
+                          "download it")
+            else:
+                self._say(f"gave up after {latency:.0f} s — the audio is "
+                          f"kept in pending\\, run --drain later")
             transcript_log.info("ERROR | %.1fs | %s | %s | kept: %s", seconds,
                                 self.transcriber.name, last_error,
                                 item.wav_path.name if item else "NOT SAVED")
@@ -6043,6 +6051,10 @@ def main() -> int:
                              "sentence and read it back. It runs on its "
                              "own the first time; this is how to see it "
                              "afterwards")
+    parser.add_argument("--download-model", action="store_true",
+                        help="show the model download step on its own "
+                             "(an installed copy shows it at start while "
+                             "the Hebrew model is not on disk) and exit")
     parser.add_argument("--benchmark", action="store_true",
                         help="replay every recording you have corrected, "
                              "with the learned vocabulary on and off, and "
@@ -6095,6 +6107,11 @@ def main() -> int:
         return privacy.cli_list()
     paths.ensure()
     setup_logging()
+    # An installed copy tells huggingface_hub where its home is and that
+    # it is offline BEFORE anything imports it (models.py): the loader
+    # is given a folder, so the library never needs the network, and
+    # nothing lands in the person's global cache.
+    models_mod.env()
 
     if args.dashboard:
         import dashboard
@@ -6176,6 +6193,16 @@ def main() -> int:
         except Exception:                     # noqa: BLE001
             log.warning("the hardware probe failed; running as before",
                         exc_info=True)
+    # The Hebrew model (models.py, plan 6.4): an installed copy downloads
+    # it here, once, with the size on the screen and [Not now] — never as
+    # a side effect of loading. Before the wizard, whose sentence step
+    # needs it. Declined or offline, the app still starts: every key that
+    # needs no model works, a dictation says why, the recording is kept.
+    if args.download_model or (not args.fake and models_mod.wanted(cfg)):
+        outcome = models_mod.offer(cfg.local.model)
+        log.info("model download step: %s", outcome)
+        if args.download_model:
+            return 0 if outcome == "done" else 1
     if args.setup or (firstrun.needed(cfg) and not args.fake):
         if firstrun.run(cfg, Path(args.config) if args.config else None):
             cfg = _load_config(args.config)            # it wrote the device

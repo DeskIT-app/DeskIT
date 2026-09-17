@@ -69,3 +69,5 @@ notify.json             export-ignore
 awake_state.json        export-ignore
 captures/               export-ignore
 cues/                   export-ignore
+models/                 export-ignore
+packs/                  export-ignore

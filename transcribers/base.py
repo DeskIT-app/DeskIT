@@ -31,6 +31,23 @@ class TooLongForCloud(TranscriptionError):
     on the card. Never spooled for a later cloud attempt."""
 
 
+class ModelMissing(TranscriptionError):
+    """The local model is not on this disk — not downloaded, half
+    downloaded, or from a lock that has moved on (models.py, plan 6.4).
+    Raised BEFORE WhisperModel is asked for anything, so a partial
+    snapshot is never loaded. `state` is models.state()'s word; the
+    message is the sentence a card can show. `retry_after` is infinite
+    on purpose: main's retry loop reads it, and no amount of waiting
+    brings a file that is not there."""
+
+    retry_after = float("inf")
+    per_day = False
+
+    def __init__(self, repo: str, state: str, message: str):
+        super().__init__(message)
+        self.repo, self.state = repo, state
+
+
 @runtime_checkable
 class Transcriber(Protocol):
     name: str

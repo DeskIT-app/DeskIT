@@ -1,10 +1,10 @@
 """Pluggable transcription backends behind one interface."""
 from __future__ import annotations
 
-from .base import RateLimitError, Transcriber, TranscriptionError
+from .base import ModelMissing, RateLimitError, Transcriber, TranscriptionError
 
 __all__ = ["Transcriber", "TranscriptionError", "RateLimitError",
-           "get_transcriber", "local_kwargs"]
+           "ModelMissing", "get_transcriber", "local_kwargs"]
 
 
 def local_kwargs(cfg, hotwords=None) -> dict:
@@ -40,6 +40,22 @@ def local_kwargs(cfg, hotwords=None) -> dict:
                 boilerplate=boilerplate)
 
 
+def _local(cfg, hotwords) -> Transcriber:
+    """The local backend — or, on an installed copy whose model is not
+    on disk yet (models.py), the stand-in that lets the app start and
+    says so at the first dictation. The checkout never meets this: its
+    model comes from the global cache as always (D4)."""
+    from .local_whisper import LocalWhisperTranscriber
+    try:
+        return LocalWhisperTranscriber(**local_kwargs(cfg, hotwords))
+    except ModelMissing as e:
+        import logging
+        logging.getLogger("app").warning(
+            "%s — starting without local transcription", e)
+        from .missing import MissingModelTranscriber
+        return MissingModelTranscriber(e)
+
+
 def get_transcriber(cfg, hotwords=None) -> Transcriber:
     """Build the backend selected in config. Imports lazily so the fake
     backend works without google-genai and the local stub without
@@ -59,12 +75,10 @@ def get_transcriber(cfg, hotwords=None) -> Transcriber:
             logging.getLogger("app").warning(
                 "backend = \"gemini\" but %s — transcribing on this PC "
                 "instead until it is granted", e)
-            from .local_whisper import LocalWhisperTranscriber
-            return LocalWhisperTranscriber(**local_kwargs(cfg, hotwords))
+            return _local(cfg, hotwords)
     if cfg.backend == "fake":
         from .fake import FakeTranscriber
         return FakeTranscriber()
     if cfg.backend == "local":
-        from .local_whisper import LocalWhisperTranscriber
-        return LocalWhisperTranscriber(**local_kwargs(cfg, hotwords))
+        return _local(cfg, hotwords)
     raise ValueError(f"unknown backend: {cfg.backend!r}")

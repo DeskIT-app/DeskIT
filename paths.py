@@ -183,6 +183,10 @@ DEFAULTS_FILE = APP_DIR / "defaults.toml"
 #: One line, SemVer, the number every screen and report prints;
 #: the build copies it beside the code (chapter 11). version.py reads it.
 VERSION_FILE = APP_DIR / "VERSION"
+#: The models an installed copy may download: repo, pinned commit, every
+#: file with its size and SHA-256 (chapter 6.4, D13). Written by the
+#: owner (`models.py --lock`), shipped beside the code, read by models.py.
+MODELS_LOCK = APP_DIR / "models.lock"
 
 #: Read-only assets that stay with the code in every layout.
 FONTS_DIR = APP_DIR / "fonts"

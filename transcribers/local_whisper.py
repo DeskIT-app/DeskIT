@@ -25,8 +25,12 @@ Notes that cost real time to discover, keep them:
   decoder guards, and a tail-only filter for that boilerplate. Silence
   alone does NOT trigger it — that was tested and ruled out; VAD strips
   silence and clicks and the output is empty.
-- The first construction downloads ~1.6 GB into the Hugging Face cache; the
-  app therefore builds this lazily, only when it is actually needed.
+- The first construction used to download ~1.6 GB into the Hugging Face
+  cache, so the app builds this lazily, only when it is actually needed.
+  Since 2026-09-17 that is true of the checkout only (D4): an installed
+  copy is handed the folder models.py downloaded and verified, and a
+  folder that is not there is a typed ModelMissing BEFORE WhisperModel
+  is asked for anything — the library can load, never fetch.
 """
 from __future__ import annotations
 
@@ -41,6 +45,7 @@ from io import BytesIO
 from pathlib import Path
 
 import cleanup as cleanup_mod
+import models as models_mod
 
 from .base import TranscriptionError
 
@@ -236,11 +241,15 @@ class LocalWhisperTranscriber:
     _beam_size = 5
 
     def _load(self, model_name: str):
-        """Second model, loaded lazily and sharing the device we settled on."""
+        """Second model, loaded lazily and sharing the device we settled on.
+        On an installed copy the detector, too, must be on disk and
+        verified (models.source); a missing one is Hebrew-only, said
+        once by the caller, never a download."""
+        source = models_mod.source(model_name)
         from faster_whisper import WhisperModel
         compute = "float16" if self.device == "cuda" else "int8"
         log.info("loading English model %s on %s...", model_name, self.device)
-        return WhisperModel(model_name, device=self.device,
+        return WhisperModel(source, device=self.device,
                             compute_type=compute)
 
     def _pick_language(self, audio) -> str:
@@ -296,6 +305,14 @@ class LocalWhisperTranscriber:
                  hotwords=None, beam_size: int = 5,
                  compute_type: str = "auto", cpu_threads: int = 0):
         _register_cuda_dlls()
+        # Where the weights come from (models.py, plan 6.4): the hub name
+        # and the global cache in the checkout, the verified folder on an
+        # installed copy — asked BEFORE faster_whisper is imported, since
+        # the environment models.env() sets is read once, at that import,
+        # and a model that is not there must be said here, typed, and
+        # never fetched by the library.
+        models_mod.env()
+        source = models_mod.source(model)
         try:
             from faster_whisper import WhisperModel
         except ImportError as e:
@@ -370,7 +387,7 @@ class LocalWhisperTranscriber:
         last: Exception | None = None
         for dev, compute in attempts:
             try:
-                candidate = WhisperModel(model, device=dev,
+                candidate = WhisperModel(source, device=dev,
                                          compute_type=compute, **threads)
                 # Constructing on "cuda" succeeds even when the CUDA math
                 # libraries are missing — the failure only surfaces on the

@@ -4259,6 +4259,29 @@ for `מבשרים`, all of which the local model got right.
     validated with a real warm-up inference at load, because constructing
     on `cuda` succeeds even when the CUDA libraries are missing — the
     failure otherwise only appears on your first dictation.
+  - **Where the model comes from** (`models.py`, since 2026-09-17). In
+    this checkout nothing changed: the first construction downloads it
+    into your global Hugging Face cache and the name goes to the library.
+    An *installed* copy is different on purpose: the library is only
+    ever handed a folder that `models.py` downloaded and verified —
+    `%LOCALAPPDATA%\DeskIT\models\ivrit-ai--whisper-large-v3-turbo-ct2`
+    — and a folder that is not there is a typed *model missing* before
+    the library is asked, never a silent 1.6 GB fetch behind the splash.
+    The download is a step of its own at start (before the wizard):
+    the size and the folder first, **Download** / **Not now**, a bar,
+    **Pause** — a pause keeps the part and the next start continues it
+    with a Range request (checked live against the Hub's CDN). Every
+    file is hashed against `models.lock` (repo, pinned commit, sizes,
+    SHA-256 — `python models.py --lock` rewrites it from the Hub's own
+    metadata, `--verify REPO` hashes a folder) and only then is
+    `.complete` written. Declined or offline, the app still starts:
+    every key that needs no model works, a dictation says so and keeps
+    the recording in `pending\` for a later `--drain`. `main.py
+    --download-model` shows the step on its own. Every request goes
+    through `net.py` to `huggingface.co` and its CDN under `hf.co` and
+    is a row in the Network log; no token ever leaves, and an
+    installed copy sets `HF_HUB_OFFLINE=1` for the whole process, so
+    the library itself never touches the network.
 
 ## Config reference (`config.toml`)
 
@@ -4306,7 +4329,7 @@ for `מבשרים`, all of which the local model got right.
 | `[feedback] retry_seconds` | `45` | how long to keep retrying before leaving the audio in `pending\` |
 | `[gemini] models` | 4 flash models | tried in order; per-model daily quota makes a list a longer runway (`model = "..."` still accepted) |
 | `[gemini] timeout_s` | `30` | API request timeout |
-| `[local] model` | `ivrit-ai/whisper-large-v3-turbo-ct2` | ~1.6 GB, downloaded on first use |
+| `[local] model` | `ivrit-ai/whisper-large-v3-turbo-ct2` | ~1.6 GB. In the checkout, downloaded on first use into the global Hugging Face cache; an installed copy downloads it once, with consent, into `models\` (see Backends) |
 | `[local] language` | `he` | **must stay pinned** — the fine-tune broke autodetect |
 | `[local] device` | `auto` | `auto` \| `cuda` \| `cpu` |
 | `[local] cleanup` | `true` | strip hesitations and collapse restarted phrases |

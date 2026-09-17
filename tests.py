@@ -29971,6 +29971,481 @@ def test_the_ladder_honours_the_number_format():
     assert config_mod.LocalConfig().compute_type == "auto" and config_mod.LocalConfig().cpu_threads == 0
 
 
+# ------------------------------------------------ the model on disk (PR 15)
+#
+# DISTRIBUTION_PLAN.md 6.4, D13: models.lock names what an installed copy
+# may download (repo, pinned commit, every file's size and SHA-256);
+# models.py fetches it through net.py into DATA_DIR\models, resumes a
+# part, hashes the lot and only then writes .complete; the loader is
+# handed the verified folder and raises a typed ModelMissing for anything
+# less, so a partial snapshot is never loaded. The checkout and a portable
+# copy keep the hub name and the global cache (D4). Every wire below is a
+# fake standing in for net._connect — nothing here touches huggingface.co.
+
+def _model_lock(tmp: Path, bodies: dict[str, bytes], repo: str = "test-org/tiny-ct2",
+                revision: str = "a" * 40) -> "models.Entry":
+    """A lock file for a made-up repo whose files are `bodies`; returns
+    the entry as the lock reads it back."""
+    import hashlib
+
+    import models
+
+    files = {name: (len(body), hashlib.sha256(body).hexdigest())
+             for name, body in bodies.items()}
+    entry = models.Entry(repo, revision, files, "apache-2.0")
+    models.write_lock([entry], tmp / "models.lock")
+    return models.read_lock(tmp / "models.lock")[repo]
+
+
+class _Hub:
+    """The Hub as the download meets it: /resolve/ answers a redirect —
+    absolute to a CDN host under Hugging Face's domain for the big file
+    (the way model.bin is served), RELATIVE for a small one (the way
+    /api/resolve-cache is, 2026-09-17) — and the file host honours a
+    Range with a 206 unless told to ignore it, like a server that never
+    heard of resuming. Every request's headers are kept for the asserts."""
+
+    def __init__(self, entry, bodies: dict[str, bytes], *, ignore_range: bool = False,
+                 redirect_to: str | None = None):
+        self.entry, self.bodies = entry, bodies
+        self.ignore_range, self.redirect_to = ignore_range, redirect_to
+        self.asked: list[tuple[str, dict]] = []
+        self.down = False
+
+    def __call__(self, method, url, headers, body, timeout_s):
+        import net as net_mod
+        self.asked.append((url, dict(headers)))
+        if self.down:
+            raise net_mod.NetError("no route to host")
+        parts = url.split("/")
+        name = parts[-1].split("?")[0]
+        if "/resolve/" in url and "cdn" not in url:
+            if self.redirect_to:
+                where = self.redirect_to
+            elif name == "model.bin":
+                where = f"https://us.aws.cdn.hf.co/xet-bridge-us/abc/{name}?X-Xet-Cas-Uid=public"
+            else:
+                where = f"/api/resolve-cache/models/{self.entry.repo}/{self.entry.revision}/{name}?cache=1"
+            return _FakeRaw(b"", status=302 if name == "model.bin" else 307,
+                            headers={"Location": where})
+        data = self.bodies[name]
+        rng = headers.get("Range")
+        if rng and not self.ignore_range:
+            start = int(rng.split("=")[1].rstrip("-"))
+            return _FakeRaw(data[start:], status=206,
+                            headers={"Content-Range": f"bytes {start}-{len(data) - 1}/{len(data)}"})
+        return _FakeRaw(data, status=200)
+
+
+def test_models_lock_is_the_shipped_list():
+    """The lock beside the code names the two models defaults.toml
+    names, each at a full commit sha, each file one faster-whisper loads,
+    with a size and a 64-hex SHA-256; the size line says 1.62 GB from
+    huggingface.co and the folder before anything is fetched."""
+    import models
+
+    lock = models.read_lock()
+    defaults = config_mod.LocalConfig()
+    for repo in (defaults.model, defaults.english_model):
+        assert repo in lock, f"{repo} is not in models.lock"
+        e = lock[repo]
+        assert re.fullmatch(r"[0-9a-f]{40}", e.revision), e.revision
+        assert set(e.files) <= set(models.WANTED) and "model.bin" in e.files, list(e.files)
+        for name, (size, sha) in e.files.items():
+            assert size > 0 and re.fullmatch(r"[0-9a-f]{64}", sha), (name, size, sha)
+        assert e.bytes == sum(s for s, _ in e.files.values()) > 1_600_000_000
+        assert e.license in ("apache-2.0", "mit"), e.license
+        assert e.url("model.bin") == f"https://huggingface.co/{repo}/resolve/{e.revision}/model.bin"
+    e = lock[defaults.model]
+    line = models.size_line(e)
+    assert line.startswith("1.62 GB from huggingface.co into ") and line.endswith(
+        str(paths.MODELS_DIR / "ivrit-ai--whisper-large-v3-turbo-ct2")), line
+    assert models.human(1_621_665_181) == "1.62 GB" and models.human(312_000_000) == "312 MB"
+    assert models.human(2_710_337) == "3 MB" and models.human(1405) == "1.4 kB" and models.human(357) == "357 B"
+    assert models.entry("nobody/nothing") is None
+    assert models.read_lock(Path(tempfile.gettempdir()) / "no-such-models.lock") == {}
+
+
+def test_models_state_and_source_on_an_installed_copy():
+    """absent -> incomplete -> stale -> ready, each a word and a
+    sentence; source() is the verified folder and nothing less, a
+    folder the person named passes through, an unknown repo is said to
+    be outside the lock; ModelMissing is a TranscriptionError main's
+    retry loop gives up on at once."""
+    import models
+    from transcribers.base import ModelMissing, TranscriptionError
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-models-"))
+    try:
+        e = _model_lock(tmp, {"model.bin": b"x" * 10, "config.json": b"{}"})
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "MODELS_LOCK", tmp / "models.lock"):
+            assert models.state(e.repo) == "absent" and not models.ready(e.repo)
+            try:
+                models.source(e.repo)
+            except ModelMissing as err:
+                assert err.state == "absent" and err.repo == e.repo
+                assert "not downloaded yet" in str(err) and "12 B from huggingface.co" in str(err), str(err)
+                assert isinstance(err, TranscriptionError) and err.retry_after == float("inf")
+            else:
+                raise AssertionError("an absent model was handed to the loader")
+            e.folder.mkdir(parents=True)
+            (e.folder / "model.bin").write_bytes(b"x" * 10)
+            assert models.state(e.repo) == "incomplete"
+            try:
+                models.require(e.repo)
+            except ModelMissing as err:
+                assert err.state == "incomplete" and "did not finish" in str(err)
+            (e.folder / models.COMPLETE).write_text(json.dumps({"revision": "b" * 40}), "utf-8")
+            assert models.state(e.repo) == "stale"
+            try:
+                models.require(e.repo)
+            except ModelMissing as err:
+                assert err.state == "stale" and "older release" in str(err)
+            (e.folder / models.COMPLETE).write_text(json.dumps({"revision": e.revision}), "utf-8")
+            assert models.state(e.repo) == "ready" and models.ready(e.repo)
+            assert models.source(e.repo) == str(e.folder)
+            assert models.state("nobody/nothing") == "unknown"
+            try:
+                models.source("nobody/nothing")
+            except ModelMissing as err:
+                assert err.state == "unknown" and "models.lock" in str(err)
+            assert models.source(str(tmp)) == str(tmp), "a folder of the person's own"
+            assert models.remove(e.repo) and not e.folder.exists() and models.state(e.repo) == "absent"
+            assert models.remove(e.repo) is False
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_models_portable_mode_untouched():
+    """The checkout and a portable copy (D4): the hub name goes to the
+    loader as it always did, no folder is looked at, env() sets nothing,
+    and the step is never wanted."""
+    import models
+
+    class _NoDisk:
+        def __truediv__(self, other):
+            raise AssertionError(f"MODELS_DIR was touched: {other}")
+
+    with _patched(paths, "PORTABLE", True), _patched(paths, "MODELS_DIR", _NoDisk()):
+        assert models.source("ivrit-ai/whisper-large-v3-turbo-ct2") == "ivrit-ai/whisper-large-v3-turbo-ct2"
+        assert models.env() == {}
+        assert not models.wanted(config_mod.Config())
+    assert paths.PORTABLE, "this suite runs in the checkout"
+    before = dict(os.environ)
+    try:
+        models.env()
+        assert "HF_HUB_OFFLINE" not in os.environ or before.get("HF_HUB_OFFLINE") == os.environ["HF_HUB_OFFLINE"]
+    finally:
+        os.environ.clear()
+        os.environ.update(before)
+
+
+def test_models_env_is_set_on_an_installed_copy():
+    """HF_HOME under the data folder, offline, no implicit token, no
+    telemetry — the values huggingface_hub reads once at import, which is
+    why main calls env() before anything imports it; and no product
+    module imports faster_whisper or huggingface_hub at module level."""
+    import models
+
+    before = dict(os.environ)
+    try:
+        with _patched(paths, "PORTABLE", False), _patched(paths, "CACHE_DIR", Path("C:/x/cache")):
+            values = models.env()
+        assert values["HF_HUB_OFFLINE"] == "1" and values["HF_HUB_DISABLE_IMPLICIT_TOKEN"] == "1"
+        assert values["HF_HUB_DISABLE_TELEMETRY"] == "1"
+        assert values["HF_HOME"] == str(Path("C:/x/cache") / "hf")
+        for k, v in values.items():
+            assert os.environ[k] == v, k
+    finally:
+        os.environ.clear()
+        os.environ.update(before)
+    hub_import = re.compile(r"^(?:import|from)\s+(?:faster_whisper|huggingface_hub)\b")
+    bad = []
+    for name in product_modules():
+        py = REPO / (name.replace(".", "/") + ".py")
+        if not py.exists():
+            py = REPO / name.replace(".", "/") / "__init__.py"
+        for i, line in enumerate(py.read_text("utf-8").splitlines(), 1):
+            if hub_import.match(line):
+                bad.append(f"{py.name}:{i}: {line.strip()}")
+    assert not bad, "the hub imported before models.env() could run:\n" + "\n".join(bad)
+
+
+def test_models_download_resumes_verifies_and_marks_complete():
+    """The download through net.py: the Hub's redirect followed by hand
+    (absolute to a CDN host under hf.co, relative for a small file), a
+    pause that keeps the part, a second attempt that asks for the rest
+    with a Range and gets a 206, the hash of every file against the
+    lock, then .complete with the revision — and every hop a row under
+    model-download, with no token in any header."""
+    import models
+    import net as net_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-models-"))
+    try:
+        big = bytes(range(256)) * 1200                      # 300 kB
+        bodies = {"config.json": b'{"model_type": "whisper"}', "model.bin": big}
+        e = _model_lock(tmp, bodies)
+        hub = _Hub(e, bodies)
+        seen: list[tuple[int, int]] = []
+        stages: list[str] = []
+        cancel = threading.Event()
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "MODELS_LOCK", tmp / "models.lock"), \
+                _patched(net_mod, "_connect", hub), \
+                _patched(models, "_CHUNK", 64 * 1024):
+            # a pause after the first chunk of the big file
+            def pause_early(done, total):
+                seen.append((done, total))
+                if done >= len(bodies["config.json"]) + 64 * 1024:
+                    cancel.set()
+            try:
+                models.download(e, progress=pause_early, cancel=cancel, stage=stages.append)
+            except models.DownloadError as err:
+                assert err.reason == "cancelled", err
+            else:
+                raise AssertionError("the pause was not honoured")
+            part = e.folder / "model.bin.part"
+            assert part.exists() and part.stat().st_size == 64 * 1024, part.stat().st_size
+            assert (e.folder / "config.json").exists() and not (e.folder / models.COMPLETE).exists()
+            assert models.state(e.repo) == "incomplete"
+            assert seen and all(t == e.bytes for _d, t in seen) and seen[0][0] > 0
+            # the second attempt: the rest, from where the part left off
+            hub.asked.clear()
+            seen.clear()
+            folder = models.download(e, progress=lambda d, t: seen.append((d, t)), stage=stages.append)
+            assert folder == e.folder and not part.exists()
+            ranged = [h for u, h in hub.asked if "Range" in h]
+            assert ranged and all(h["Range"] == f"bytes={64 * 1024}-" for h in ranged), hub.asked
+            assert not any(k.lower() == "authorization" for _u, h in hub.asked for k in h), "a token left"
+            assert [u for u, _h in hub.asked] == [e.url("model.bin"),
+                                                  "https://us.aws.cdn.hf.co/xet-bridge-us/abc/model.bin?X-Xet-Cas-Uid=public"]
+            assert (e.folder / "model.bin").read_bytes() == big
+            assert json.loads((e.folder / models.COMPLETE).read_text("utf-8"))["revision"] == e.revision
+            assert models.state(e.repo) == "ready" and models.verify(e) == []
+            assert seen[-1] == (e.bytes, e.bytes), seen[-1]
+            assert stages == ["downloading", "downloading", "verifying"], stages
+            rows = [r for r in net_mod.rows() if r.purpose == "model-download"]
+            assert {r.host for r in rows} >= {"huggingface.co", "us.aws.cdn.hf.co"}, rows
+            assert {r.status for r in rows} >= {302, 307, 200, 206}, rows
+            assert any(r.down == 300 * 1024 - 64 * 1024 for r in rows), "the 206 row counts its bytes"
+            # a server that ignores the Range starts the file over, and it still completes
+            part.write_bytes(big[:1000])
+            (e.folder / "model.bin").unlink()
+            hub.ignore_range = True
+            models.download(e)
+            assert (e.folder / "model.bin").read_bytes() == big and models.state(e.repo) == "ready"
+            # the file host is off the allowlist: refused before a socket, said as such
+            models.remove(e.repo)
+            hub.redirect_to = "https://evil.example.com/model.bin"
+            try:
+                models.download(e)
+            except models.DownloadError as err:
+                assert err.reason == "refused" and "evil.example.com" in str(err), err
+            else:
+                raise AssertionError("a redirect off Hugging Face's domains was followed")
+            assert net_mod.rows()[-1].status == "refused"
+            # no connection: offline, the part untouched, .complete absent
+            hub.redirect_to = None
+            hub.down = True
+            (e.folder).mkdir(parents=True, exist_ok=True)
+            part.write_bytes(big[:5000])
+            try:
+                models.download(e)
+            except models.DownloadError as err:
+                assert err.reason == "offline" and "huggingface.co" in str(err), err
+            assert part.read_bytes() == big[:5000] and models.state(e.repo) == "incomplete"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_models_verify_hashes():
+    """A file whose SHA-256 is not the lock's is deleted and NAMED,
+    .complete is not written, the good file stays; verify() on a folder
+    that is exactly the lock is []."""
+    import models
+    import net as net_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-models-"))
+    try:
+        bodies = {"config.json": b'{"a": 1}', "model.bin": b"m" * 5000}
+        e = _model_lock(tmp, bodies)
+        wrong = dict(e.files)
+        wrong["config.json"] = (len(bodies["config.json"]), "0" * 64)
+        bad_entry = models.Entry(e.repo, e.revision, wrong, e.license)
+        hub = _Hub(e, bodies)
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "MODELS_LOCK", tmp / "models.lock"), \
+                _patched(net_mod, "_connect", hub):
+            try:
+                models.download(bad_entry)
+            except models.DownloadError as err:
+                assert err.reason == "verify" and err.files == ("config.json",), err
+                assert "config.json" in str(err) and "checksum" in str(err)
+            else:
+                raise AssertionError("a wrong hash was accepted")
+            assert not (e.folder / "config.json").exists() and (e.folder / "model.bin").exists()
+            assert not (e.folder / models.COMPLETE).exists() and models.state(e.repo) == "incomplete"
+            assert models.verify(bad_entry) == ["config.json"]
+            assert models.verify(e) == ["config.json"], "missing counts as bad"
+            (e.folder / "config.json").write_bytes(bodies["config.json"])
+            assert models.verify(e) == []
+            (e.folder / "model.bin").write_bytes(b"m" * 4999)
+            assert models.verify(e) == ["model.bin"], "a short file counts as bad"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_models_partial_never_loads():
+    """On an installed copy the loader asks models.py first: a folder
+    without .complete is ModelMissing and WhisperModel is never built; a
+    verified folder is what WhisperModel receives — the path, not the
+    name; get_transcriber hands main the stand-in instead of raising, and
+    the stand-in's transcribe is the same typed error."""
+    import models
+    import transcribers
+    import transcribers.local_whisper as lw
+    from transcribers.base import ModelMissing
+
+    built: list = []
+
+    class _FakeModel:
+        def __init__(self, model, device, compute_type, **kw):
+            built.append(model)
+
+        def transcribe(self, *a, **k):
+            return iter(()), None
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-models-"))
+    before = dict(os.environ)
+    try:
+        e = _model_lock(tmp, {"model.bin": b"x" * 10})
+        import faster_whisper
+        with _patched(faster_whisper, "WhisperModel", _FakeModel), \
+                _patched(lw, "_register_cuda_dlls", lambda: None), \
+                _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "MODELS_LOCK", tmp / "models.lock"), \
+                _patched(paths, "CACHE_DIR", tmp / "cache"):
+            e.folder.mkdir(parents=True)
+            (e.folder / "model.bin").write_bytes(b"x" * 10)
+            try:
+                lw.LocalWhisperTranscriber(e.repo, "he", english_model="")
+            except ModelMissing as err:
+                assert err.state == "incomplete", err
+            else:
+                raise AssertionError("a folder without .complete was loaded")
+            assert built == [], "WhisperModel was constructed for a partial model"
+            assert os.environ.get("HF_HUB_OFFLINE") == "1", "env() did not run before the import"
+            cfg = dataclasses.replace(config_mod.Config(), backend="local")
+            cfg = dataclasses.replace(cfg, local=dataclasses.replace(cfg.local, model=e.repo, english_model=""))
+            t = transcribers.get_transcriber(cfg)
+            assert t.name == "missing" and isinstance(t, transcribers.Transcriber)
+            try:
+                t.transcribe(b"RIFF")
+            except ModelMissing as err:
+                assert err.state == "incomplete" and err.retry_after == float("inf")
+            else:
+                raise AssertionError("the stand-in transcribed")
+            (e.folder / models.COMPLETE).write_text(json.dumps({"revision": e.revision}), "utf-8")
+            t = lw.LocalWhisperTranscriber(e.repo, "he", english_model="deepdml/x")
+            assert built == [str(e.folder)], built
+            assert t._english is None, "an absent detector is Hebrew-only, not a download"
+            assert transcribers.get_transcriber(cfg).name == "local"
+        # the checkout: the name, as always
+        with _patched(faster_whisper, "WhisperModel", _FakeModel), \
+                _patched(lw, "_register_cuda_dlls", lambda: None):
+            built.clear()
+            lw.LocalWhisperTranscriber("ivrit-ai/whisper-large-v3-turbo-ct2", "he", english_model="")
+            assert built == ["ivrit-ai/whisper-large-v3-turbo-ct2"], built
+    finally:
+        os.environ.clear()
+        os.environ.update(before)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_models_window_offers_downloads_and_closes():
+    """The step as a window: the size line before anything is fetched,
+    [Download] runs the transfer on a thread while the bar moves, a
+    verified download closes the window with `done`; a connection that
+    is not there says so in the window and [Close] is `later`; wanted()
+    is an installed copy, the local backend, and no model."""
+    import models
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-models-"))
+    try:
+        e = _model_lock(tmp, {"model.bin": b"x" * 2_000_000, "config.json": b"{}"})
+
+        def fake_download(entry, *, progress=None, cancel=None, stage=None):
+            stage("downloading")
+            for done in (500_000, 1_000_000, entry.bytes):
+                progress(done, entry.bytes)
+                time.sleep(0.05)
+            stage("verifying")
+            return entry.folder
+
+        def pump(w, until, seconds=8.0):
+            deadline = time.monotonic() + seconds
+            while not until() and time.monotonic() < deadline:
+                try:
+                    w.root.update()
+                except Exception:                            # noqa: BLE001
+                    break
+                time.sleep(0.02)
+
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "MODELS_LOCK", tmp / "models.lock"):
+            try:
+                w = models.Offer(e, downloader=fake_download)
+            except Exception as err:                         # noqa: BLE001
+                print(f"    (skipped: no Tk window — {err})")
+                return
+            assert w.outcome == "later" and w.status_text == ""
+            w.start()
+            pump(w, lambda: w.outcome == "done")
+            assert w.outcome == "done", w.status_text
+            assert w.status_text == "2 MB — verified", w.status_text
+
+            def offline(entry, **kw):
+                raise models.DownloadError("offline", "no connection to huggingface.co: no route")
+            w = models.Offer(e, downloader=offline)
+            w.start()
+            pump(w, lambda: w.status_text == "No connection")
+            assert w.status_text == "No connection", w.status_text
+            w._not_now()
+            assert w.outcome == "later"
+            assert models.offer("nobody/nothing") == "later"
+            cfg = dataclasses.replace(config_mod.Config(), backend="local")
+            cfg = dataclasses.replace(cfg, local=dataclasses.replace(cfg.local, model=e.repo))
+            assert models.wanted(cfg)
+            assert not models.wanted(dataclasses.replace(cfg, backend="gemini"))
+            e.folder.mkdir(parents=True, exist_ok=True)
+            (e.folder / models.COMPLETE).write_text(json.dumps({"revision": e.revision}), "utf-8")
+            assert not models.wanted(cfg)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_net_admits_the_hub_by_domain():
+    """Hugging Face's CDN hostname moves (cdn-lfs.huggingface.co,
+    cas-bridge.xethub.hf.co, us.aws.cdn.hf.co on 2026-09-17): the rule
+    is the two domains, and a look-alike is not under them."""
+    import net as net_mod
+
+    for host in ("huggingface.co", "us.aws.cdn.hf.co", "cdn-lfs-eu-1.hf.co",
+                 "cas-bridge.xethub.hf.co", "cdn-lfs.huggingface.co"):
+        assert net_mod._host_allowed(host), host
+    for host in ("evil-hf.co", "hf.co.evil.com", "huggingface.co.evil.com",
+                 "notthehf.co", "example.com"):
+        assert not net_mod._host_allowed(host), host
+    assert net_mod.ALLOWED_SUFFIXES == (".huggingface.co", ".hf.co")
+
+
 # ------------------------------------------------------ updates (PR 13)
 #
 # DISTRIBUTION_PLAN.md 11.3-11.6, D21: one weekly look at GitHub Releases

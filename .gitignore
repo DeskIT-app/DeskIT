@@ -95,6 +95,11 @@ problems/
 # pointed at the checkout for a test would.
 /cache/
 /tmp/
+# models.py / packs.py (chapter 6): the downloaded model and the
+# wheel packs — an installed copy's, but `--download-model` in a
+# checkout lands them here too.
+/models/
+/packs/
 # The marker that keeps a copy in portable mode without a .git beside it.
 /portable.txt
 

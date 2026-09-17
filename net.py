@@ -12,9 +12,11 @@ it. The rules, each of which a test in tests.py holds:
    (``urllib.request``, ``http.client``, ``httpx``, ``socket``, ``ssl``).
    ``test_only_net_imports_transport`` is the grep.
 2. ``ALLOWED_HOSTS`` is a frozen constant near the top of this file. A URL
-   whose host is not in it raises ``EgressRefused`` BEFORE any socket is
-   opened, and the refusal is itself a row in the log, so the person sees
-   what tried to leave. Loopback is the one host allowed in offline mode.
+   whose host is not in it (or under ``ALLOWED_SUFFIXES`` — Hugging
+   Face's two domains, for the model CDN whose hostname moves) raises
+   ``EgressRefused`` BEFORE any socket is opened, and the refusal is
+   itself a row in the log, so the person sees what tried to leave.
+   Loopback is the one host allowed in offline mode.
 3. A secret is passed by NAME (``groq``, ``gemini``, ``phone_token``),
    never by value: this module resolves it through secretstore.py and
    attaches it in the header that provider expects, and only to the host
@@ -74,6 +76,15 @@ ALLOWED_HOSTS: frozenset[str] = frozenset({
     "github.com",
     "objects.githubusercontent.com",
 })
+
+#: Hugging Face's download hosts, by DOMAIN: the Hub answers a model
+#: file with a redirect to a CDN whose hostname changes by region and by
+#: year — `cdn-lfs.huggingface.co`, `cas-bridge.xethub.hf.co`, and on
+#: 2026-09-17 `us.aws.cdn.hf.co` — and every one of them sits under a
+#: domain Hugging Face owns. A name-by-name list would refuse the next
+#: rename and leave every new user without a model; a redirect off these
+#: two domains is refused exactly as before. Nothing else gets a suffix.
+ALLOWED_SUFFIXES: tuple[str, ...] = (".huggingface.co", ".hf.co")
 
 #: ``<ref>.supabase.co`` — set in phase 3 with the project ref; refused
 #: until then. A suffix rule would admit any project, so it is a value,
@@ -225,8 +236,9 @@ def _record(host: str, purpose: str, up: int, down: int, status,
 # --------------------------------------------------------------- admission
 
 def _host_allowed(host: str) -> bool:
-    return host in ALLOWED_HOSTS or (SUPABASE_HOST is not None
-                                     and host == SUPABASE_HOST)
+    return (host in ALLOWED_HOSTS
+            or host.endswith(ALLOWED_SUFFIXES)
+            or (SUPABASE_HOST is not None and host == SUPABASE_HOST))
 
 
 def _admit(url: str, purpose: str, secret: str | None,
