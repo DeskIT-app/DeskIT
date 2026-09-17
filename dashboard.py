@@ -7352,6 +7352,7 @@ class Dashboard:
             # the version, the sounds and the files on The app.
             if name == settings_mod.APP:
                 builders.append(lambda: self._awake_block(scroller))
+                builders.append(lambda: self._claude_block(scroller))
                 builders.append(lambda: self._app_block(scroller))
                 builders.append(lambda: self._about_card(scroller))
                 builders.append(lambda: self._files_card(scroller))
@@ -7359,8 +7360,12 @@ class Dashboard:
                 builders.append(lambda: self._phone_block(scroller))
             elif name == "Speed":
                 builders.append(lambda: self._speed_block(scroller))
-            elif name == "Screen" and hardware_mod.no_voice():
-                builders.append(lambda: self._voice_block(scroller))
+            elif name == "Privacy":
+                builders.append(lambda: self._keys_block(scroller))
+            elif name == "Screen":
+                builders.append(lambda: self._snip_block(scroller, sections))
+                if hardware_mod.no_voice():
+                    builders.append(lambda: self._voice_block(scroller))
             elif name == settings_mod.GENERAL:
                 # FIRST ON GENERAL, because that is where he went looking
                 # for it: "I'm going to General and then 'which corner the
@@ -8133,6 +8138,249 @@ class Dashboard:
                   w=widgets.button_width("Copy link", icon=True),
                   icon=ui.ICON["link"]).place(x=CW - 36, y=20, anchor="ne")
         scroller.bind_wheel(card)
+
+    # --------------------------------------------------- your cloud keys
+
+    KEY_PROVIDERS = (("groq", "Groq", "https://console.groq.com",
+                      "recommended first: one key unlocks the repair pass, punctuation, "
+                      "lookup and, without an NVIDIA card, cloud transcription"),
+                     ("gemini", "Gemini", "https://aistudio.google.com",
+                      "for translation and ask-the-screen"))
+
+    def _keys_block(self, scroller) -> None:
+        """YOUR CLOUD KEYS on Settings > Privacy (chapter 9 screen 3, D10-
+        D12): a row per provider — a masked field that takes a paste and
+        never shows the value again, [Save and test] (the key into
+        Windows Credential Manager through secretstore, then one
+        `key-test` call through net.py that lists the provider's models),
+        [Remove] — and under each the fixed storage sentence the guide
+        quotes. The gates on the rows below open only through their
+        cards; a key is what lets a card's [Turn on] mean anything."""
+        import secretstore
+        present = {}
+        try:
+            present = secretstore.present()
+        except Exception:                 # noqa: BLE001
+            pass
+        rows = len(self.KEY_PROVIDERS)
+        card = ui.Card(scroller.inner, CW, 40 + rows * 132, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="Y O U R   C L O U D   K E Y S", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        self.parts["key_fields"] = {}
+        self.parts["key_lines"] = {}
+        y = 24
+        for name, label, url, why in self.KEY_PROVIDERS:
+            tk.Label(body, text=label, bg=ui.CARD, fg=ui.FG,
+                     font=(ui.UI, 11, "bold")).place(x=0, y=y)
+            link = tk.Label(body, text="Get a free key", bg=ui.CARD, fg=ui.ACCENT_TEXT,
+                            font=(ui.UI, 9, "underline"), cursor="hand2")
+            link.place(x=80, y=y + 2)
+            link.bind("<Button-1>", lambda _e, u=url: self._open_url(u))
+            tk.Label(body, text=why, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                     wraplength=CW - 360, justify="left").place(x=190, y=y + 2)
+            field = ui.Field(body, "", w=320, h=30, justify="left",
+                             placeholder="paste the key here", bg=ui.CARD, pt=10)
+            field.entry.configure(show="•")
+            field.place(x=0, y=y + 28)
+            self.parts["key_fields"][name] = field
+            x = 332
+            for text, command in (("Save and test", lambda n=name: self._key_save(n)),
+                                  ("Remove", lambda n=name: self._key_remove(n))):
+                w = widgets.button_width(text)
+                ui.Button(body, text, command, h=30, w=w, quiet=True,
+                          bg=ui.CARD).place(x=x, y=y + 28)
+                x += w + 8
+            stored = name in present
+            line = tk.Label(body, text=(f"Stored in {present[name]}" if stored
+                                        else "no key"),
+                            bg=ui.CARD, fg=ui.FG if stored else ui.FAINT,
+                            font=(ui.UI, 9), anchor="w")
+            line.place(x=0, y=y + 64)
+            self.parts["key_lines"][name] = line
+            tk.Label(body, text=secretstore.storage_sentence(name), bg=ui.CARD,
+                     fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 40,
+                     justify="left").place(x=0, y=y + 82)
+            y += 132
+        scroller.bind_wheel(card)
+
+    def _key_say(self, name: str, text: str, colour: str | None = None) -> None:
+        line = self.parts.get("key_lines", {}).get(name)
+        if line is not None and line.winfo_exists():
+            line.configure(text=text, fg=colour or ui.FG)
+
+    def _key_save(self, name: str) -> None:
+        """The pasted value into the store — never into a file — then
+        the test; the field is emptied either way, so the value is on
+        screen for exactly as long as it takes to press the button."""
+        import secretstore
+        field = self.parts.get("key_fields", {}).get(name)
+        value = field.get().strip() if field is not None else ""
+        if field is not None:
+            field.set("")
+        if not value:
+            self._key_test(name)
+            return
+        try:
+            secretstore.set(name, value)
+        except Exception as e:                                # noqa: BLE001
+            self._key_say(name, f"could not store the key: {e}", ui.RED)
+            return
+        del value
+        self._key_say(name, f"Stored in Windows Credential Manager as "
+                            f"{secretstore.target(name)} — testing…", ui.DIM)
+        self._key_test(name)
+
+    def _key_test(self, name: str) -> None:
+        """One `key-test` call through net.py, on a thread: the
+        provider's model list under the stored key. The key value never
+        touches this method — net.py attaches it by name."""
+        import secretstore
+        if name not in secretstore.present():
+            self._key_say(name, "no key", ui.FAINT)
+            return
+
+        results: dict = self.__dict__.setdefault("_key_results", {})
+        results.pop(name, None)
+
+        def work() -> None:
+            try:
+                count = self._key_probe(name)
+                results[name] = (f"Works · {count} models visible · stored as "
+                                 f"{secretstore.target(name)}", ui.GREEN)
+            except Exception as e:                            # noqa: BLE001
+                results[name] = (f"stored, but the provider said: {str(e)[:160]}", ui.AMBER)
+        threading.Thread(target=work, daemon=True, name="key-test").start()
+        # Polled from the Tk side rather than root.after from the thread:
+        # a Tk call from another thread needs the main loop, which a test
+        # driving update() does not run.
+        self.root.after(100, lambda: self._key_poll(name))
+
+    def _key_poll(self, name: str) -> None:
+        if self.closing:
+            return
+        said = self.__dict__.get("_key_results", {}).pop(name, None)
+        if said is None:
+            self.root.after(100, lambda: self._key_poll(name))
+            return
+        self._key_say(name, *said)
+
+    @staticmethod
+    def _key_probe(name: str) -> int:
+        """How many models the key can see — the one allowed call."""
+        import json as json_mod
+
+        import net
+        if name == "groq":
+            status, _h, body = net.request(
+                "GET", "https://api.groq.com/openai/v1/models", "key-test",
+                secret="groq", timeout_s=20)
+        else:
+            status, _h, body = net.request(
+                "GET", f"{net.GEMINI_BASE_URL}v1beta/models?pageSize=200", "key-test",
+                secret="gemini", timeout_s=20)
+        if status != 200:
+            detail = body.decode("utf-8", "replace")[:200]
+            raise RuntimeError(f"HTTP {status}: {detail}")
+        data = json_mod.loads(body.decode("utf-8"))
+        items = data.get("data") if name == "groq" else data.get("models")
+        return len(items or [])
+
+    def _key_remove(self, name: str) -> None:
+        import secretstore
+        try:
+            had = secretstore.delete(name)
+        except Exception as e:                                # noqa: BLE001
+            self._key_say(name, f"could not remove the key: {e}", ui.RED)
+            return
+        self._key_say(name, "no key" if had else "no key to remove", ui.FAINT)
+        self._note(f"{name}: the key is gone from Windows Credential Manager"
+                   if had else f"{name}: there was no key")
+
+    # ------------------------------------------------ the two D33 switches
+
+    def _claude_block(self, scroller) -> None:
+        """Connect Claude Code on Settings > The app (D15, D33): the
+        switch the wizard's extras page asked once — two hook lines in
+        ~/.claude/settings.json, written and removed through notify_hook."""
+        import notify_hook
+        card = ui.Card(scroller.inner, CW, 92, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="C L A U D E   C O D E", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        on = False
+        try:
+            on = notify_hook.hook_installed()
+        except Exception:                 # noqa: BLE001
+            pass
+        switch = ui.Switch(body, on, lambda v: self._claude_flip(v), bg=ui.CARD)
+        switch.place(x=0, y=26)
+        self.parts["claude_switch"] = switch
+        tk.Label(body, text="Connect Claude Code", bg=ui.CARD, fg=ui.FG,
+                 font=(ui.UI, 10)).place(x=60, y=24)
+        tk.Label(body, text=("Two hook lines in ~/.claude/settings.json: when Claude Code "
+                             "finishes or asks, DeskIT shows a card and plays a cue. Off "
+                             "removes the lines."),
+                 bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 100,
+                 justify="left").place(x=60, y=46)
+        scroller.bind_wheel(card)
+
+    def _claude_flip(self, on: bool) -> None:
+        import launch
+        import notify_hook
+        try:
+            if on:
+                notify_hook.install_hook(notify_hook.DEFAULT_SETTINGS,
+                                         python=launch.pythonw(),
+                                         script=str(APP_DIR / "notify_hook.py"))
+                config_mod.save({"notify.enabled": True})
+                self._note("Claude Code connected — the hook lines are in "
+                           "~/.claude/settings.json")
+            else:
+                notify_hook.uninstall_hook(notify_hook.DEFAULT_SETTINGS)
+                self._note("Claude Code disconnected — the hook lines are gone")
+        except Exception as e:                                # noqa: BLE001
+            self._note(f"could not write the hook: {e}")
+
+    SNIP_KEY, PLAIN_SNIP_KEY = "win+shift+s", "ctrl+f11"
+
+    def _snip_block(self, scroller, sections) -> None:
+        """The Snipping-Tool key on Settings > Screen (chapter 9 screen 13,
+        D25, D33): the switch the wizard asked once — on, DeskIT's
+        screenshot key is Win+Shift+S and Windows' own Snipping Tool
+        stops answering it while DeskIT runs; off, the key is Ctrl+F11.
+        Written like any other key — capture_hotkey through _apply_key —
+        so the running app rebinds live and a collision is refused."""
+        setting = settings_mod.find(sections, "capture.capture_hotkey")
+        if setting is None:
+            return
+        card = ui.Card(scroller.inner, CW, 92, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="T H E   S N I P P I N G - T O O L   K E Y", bg=ui.CARD,
+                 fg=ui.FAINT, font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        current = str(self.parts["values"].get(setting.path, setting.value)).strip().lower()
+        switch = ui.Switch(body, current == self.SNIP_KEY,
+                           lambda v, s=setting: self._snip_flip(s, v), bg=ui.CARD)
+        switch.place(x=0, y=26)
+        self.parts["snip_switch"] = switch
+        tk.Label(body, text="Take over Win+Shift+S for DeskIT's screenshot key",
+                 bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10)).place(x=60, y=24)
+        tk.Label(body, text=("Windows' own Snipping Tool stops answering that shortcut "
+                             "while DeskIT runs; off, the screenshot key is Ctrl+F11. "
+                             "Any other key: the Keys place."),
+                 bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 100,
+                 justify="left").place(x=60, y=46)
+        scroller.bind_wheel(card)
+
+    def _snip_flip(self, setting, on: bool) -> None:
+        """The same road as the Keys place: validated against the other
+        keys, live through the app's `rebind` when it runs."""
+        value = self.SNIP_KEY if on else self.PLAIN_SNIP_KEY
+        self.parts["values"][setting.path] = value
+        self._apply_key("capture_hotkey", value)
 
     def _speed_block(self, scroller) -> None:
         """This PC, the model and the GPU pack, each with its standing

@@ -31949,6 +31949,127 @@ def test_privacy_request_asks_the_card_outside_a_press():
         privacy.set_asker(None)
 
 
+# ------------------- YOUR CLOUD KEYS, and the two D33 switches (PR 23)
+#
+# Chapter 9 screen 3 (D10-D12) on Settings > Privacy: a masked field per
+# provider, [Save and test], [Remove], the storage sentence; the key goes
+# to secretstore and the test through net.py by NAME. D33: Connect
+# Claude Code on The app, the Snipping-Tool key on Screen — the switches
+# the wizard asked once, as switches afterwards.
+
+def test_the_keys_block_stores_tests_and_removes_without_showing_the_value():
+    """Settings > Privacy draws YOUR CLOUD KEYS: a masked field (show=•)
+    per provider, the storage sentence secretstore.storage_sentence()
+    under each; [Save and test] puts the pasted value into the store
+    (the test prefix, never DeskIT/), empties the field, and runs one
+    `key-test` request through net.py that names the secret and never
+    carries the value in the URL; [Remove] deletes it; the line under
+    the field says what stands. Nothing here reads the value back."""
+    import net
+    import secretstore
+    import dashboard as dash
+
+    calls: list = []
+
+    def fake_request(method, url, purpose, *, secret=None, headers=None, body=None,
+                     timeout_s=0, consent=None):
+        calls.append((method, url, purpose, secret))
+        assert "key" not in url.lower().split("?")[-1], url
+        payload = b'{"data": [1, 2, 3]}' if secret == "groq" else b'{"models": [1, 2]}'
+        return 200, {}, payload
+
+    with _test_cred_prefix(), _patched(net, "request", fake_request), _window() as board:
+        if board is None:
+            return
+        board._show("Settings")
+        board._settings_go("Privacy")
+        board._finish_settings()
+        board.root.update_idletasks()
+        fields = board.parts["key_fields"]
+        assert set(fields) == {"groq", "gemini"}
+        assert fields["groq"].entry.cget("show") == "•", "the key would be readable on screen"
+        sentence = secretstore.storage_sentence("groq")
+        texts = [w.cget("text") for w in fields["groq"].master.winfo_children()
+                 if w.winfo_class() == "Label"]
+        assert sentence in texts, "the storage sentence is not under the field"
+        assert board.parts["key_lines"]["groq"].cget("text") == "no key"
+        fields["groq"].set("gsk_test_0123456789abcdef0123456789abcdef0123456789")
+        board._key_save("groq")
+        assert fields["groq"].get() == "", "the value stayed on screen"
+        deadline = time.monotonic() + 8
+        while "Works" not in board.parts["key_lines"]["groq"].cget("text") \
+                and time.monotonic() < deadline:
+            board.root.update()
+            time.sleep(0.02)
+        line = board.parts["key_lines"]["groq"].cget("text")
+        assert line.startswith("Works · 3 models visible"), line
+        assert secretstore.target("groq") in line and secretstore.TARGET_PREFIX == "DeskIT.test"
+        assert calls == [("GET", "https://api.groq.com/openai/v1/models", "key-test", "groq")], calls
+        assert secretstore.get("groq") is not None
+        board._key_remove("groq")
+        assert secretstore.get("groq") is None
+        assert board.parts["key_lines"]["groq"].cget("text") == "no key"
+        # a key the provider refuses: stored, and the line says what it said
+        def refused(method, url, purpose, **kw):
+            return 401, {}, b'{"error": {"message": "Invalid API Key"}}'
+        with _patched(net, "request", refused):
+            fields["gemini"].set("AIza_test_key")
+            board._key_save("gemini")
+            deadline = time.monotonic() + 8
+            while "provider said" not in board.parts["key_lines"]["gemini"].cget("text") \
+                    and time.monotonic() < deadline:
+                board.root.update()
+                time.sleep(0.02)
+            assert "HTTP 401" in board.parts["key_lines"]["gemini"].cget("text")
+        board._key_remove("gemini")
+
+
+def test_the_two_d33_switches_live_on_their_tabs():
+    """Connect Claude Code on The app (notify_hook.install_hook /
+    uninstall_hook, notify.enabled) and the Snipping-Tool key on Screen
+    (capture_hotkey = win+shift+s / ctrl+f11 through _apply_key, the
+    Keys place's own road), each drawn as it stands."""
+    import notify_hook
+    import settings as settings_mod
+    import dashboard as dash
+
+    hooked: list[str] = []
+    d = Path(tempfile.mkdtemp(prefix="deskit-d33-"))
+    try:
+        with _patched(notify_hook, "DEFAULT_SETTINGS", d / "settings.json"), \
+                _patched(notify_hook, "install_hook", lambda *a, **k: hooked.append("install")), \
+                _patched(notify_hook, "uninstall_hook", lambda *a, **k: hooked.append("uninstall")), \
+                _patched(paths, "SETTINGS_FILE", d / "s.toml"), _patched(paths, "STATE_FILE", d / "t.json"), \
+                _window() as board:
+            if board is None:
+                return
+            board._show("Settings")
+            board._settings_go(settings_mod.APP)
+            board._finish_settings()
+            board.root.update_idletasks()
+            switch = board.parts["claude_switch"]
+            assert switch.get() is False, "no hook in the scratch settings.json"
+            switch.toggle()
+            assert hooked == ["install"]
+            assert config_mod.read_settings(d / "s.toml").get("notify.enabled") in (None, True)
+            switch.toggle()
+            assert hooked == ["install", "uninstall"]
+
+            applied: list = []
+            board._apply_key = lambda field, key: applied.append((field, key))
+            board._settings_go("Screen")
+            board._finish_settings()
+            board.root.update_idletasks()
+            snip = board.parts["snip_switch"]
+            assert snip.get() is True, "the shipped default is win+shift+s (D34)"
+            snip.toggle()
+            assert applied == [("capture_hotkey", "ctrl+f11")], applied
+            snip.toggle()
+            assert applied[-1] == ("capture_hotkey", "win+shift+s")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 # ------------------------------------------------------ updates (PR 13)
 #
 # DISTRIBUTION_PLAN.md 11.3-11.6, D21: one weekly look at GitHub Releases

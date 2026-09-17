@@ -34,7 +34,7 @@ title: 5. תכונות ענן
 **Gemini** רק לתרגום ולשאלה על המסך, ב־[aistudio.google.com](https://aistudio.google.com).
 
 ואז **Settings > Privacy > YOUR CLOUD KEYS**: מדביקים את המפתח בשדה המוסתר (הוא לא מוצג
-שוב לעולם), לוחצים **Test** — "Works" או השגיאה של הספק עצמו — והמפתח נשמר. **Remove** מוחק
+שוב לעולם), לוחצים **Save and test** — "Works · N models visible" או השגיאה של הספק עצמו — והמפתח נשמר. **Remove** מוחק
 אותו. המשפט מתחת לכל שדה:
 
 > This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it only to api.groq.com. It is never written to a file, a log or a report, and never sent to the developer — see Dashboard > Network for every request.
