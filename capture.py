@@ -204,6 +204,8 @@ import threading
 import time
 from pathlib import Path
 
+import paths
+
 log = logging.getLogger("app")
 
 # visual_qa owns the paint. Importing it costs nothing: like this module it
@@ -1678,9 +1680,7 @@ def capture_dir(folder: str) -> Path:
     shortcut and from a scheduled task, and all three have different ideas
     about the working directory.
     """
-    path = Path(folder).expanduser()
-    if not path.is_absolute():
-        path = Path(__file__).resolve().parent / path
+    path = paths.resolve_folder(folder)
     path.mkdir(parents=True, exist_ok=True)
     return path
 

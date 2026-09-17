@@ -29,8 +29,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+import paths
+
 APP_DIR = Path(__file__).resolve().parent
-LOG = APP_DIR / "transcripts.log"
+LOG = paths.TRANSCRIPTS_LOG
 
 # "2026-08-20 20:55:13,139 | OK | ..."  — the ",139" is milliseconds, which
 # nothing here shows and everything here ignores.

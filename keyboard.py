@@ -58,6 +58,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk
 
+import paths
+
 import config as config_mod
 import hotkey as hotkey_mod
 import ui
@@ -295,7 +297,7 @@ def bindings(keys: dict | None = None) -> tuple[dict, list]:
     """
     if keys is None:
         try:
-            cfg = config_mod.load(APP_DIR / "config.toml")
+            cfg = config_mod.load(paths.CONFIG_FILE)
             keys = {name: getattr(cfg, name, "")
                     for name, _label in config_mod.HOTKEY_FIELDS}
         except Exception:                 # noqa: BLE001 — unreadable config

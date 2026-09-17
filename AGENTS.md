@@ -251,6 +251,21 @@ exactly what classic did.
 
 ## Traps we already paid for — do not re-arm them
 
+- **Every personal-store path comes from `paths.py`, never from
+  `Path(__file__)`.** Since 2026-09-17 the app has two roots: `APP_DIR`
+  (code, read-only once installed) and `DATA_DIR` (everything a person
+  produces — `%LOCALAPPDATA%\DeskIT` for an installed copy). THIS checkout
+  is portable (the `.git` beside `main.py` decides it): `DATA_DIR` IS
+  `APP_DIR`, every file stays where it always was, and the checkout is
+  "DeskIT Dev" — its mutex, pipe and AppUserModelID carry a `.dev` mark so
+  the released copy can run beside it. A new store gets a row in
+  `paths._LAYOUTS` (flat name | installed name) and a constant; a module
+  that builds `APP_DIR / "something"` for anything but fonts, skin or
+  the icon fails `test_no_store_path_is_built_beside_the_code`. Never
+  create a folder in the checkout that the app did not make before —
+  `paths.ensure()` is deliberately smaller in the flat layout. The whole
+  argument is DISTRIBUTION_PLAN.md chapter 3; the decisions are D1, D4,
+  D5 and D30.
 - **Tests:** how you run them is **house rule 8 above**, not a
   preference — `.venv\Scripts\python.exe tests_quiet.py --no-screen`
   while he is at the machine, the plain `tests_quiet.py` only when he is

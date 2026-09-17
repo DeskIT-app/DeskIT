@@ -48,10 +48,12 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import paths
+
 HERE = Path(__file__).resolve().parent
 DEFAULT_PORT = 8756
 DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
-TOKEN_FILE = HERE / "server_token.txt"
+TOKEN_FILE = paths.PHONE_TOKEN
 BODY_MAX = 300
 SOURCE = "claude-code"
 
@@ -367,7 +369,7 @@ def server_url() -> str:
     edit here; 8756 when the file or the key is missing."""
     port = DEFAULT_PORT
     try:
-        data = tomllib.loads((HERE / "config.toml").read_text("utf-8"))
+        data = tomllib.loads(paths.CONFIG_FILE.read_text("utf-8"))
         port = int(data.get("server", {}).get("port", DEFAULT_PORT))
     except Exception:                     # noqa: BLE001
         port = DEFAULT_PORT

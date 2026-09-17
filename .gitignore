@@ -86,3 +86,11 @@ problems/
 # Only the per-machine leftovers are ignored — settings.local.json is
 # this copy's permission answers, not a decision about the app.
 .claude/settings.local.json
+
+# paths.py (2026-09-17): the installed layout's scratch folders. A checkout
+# never makes them (portable mode keeps the flat layout), but a DESKIT_HOME
+# pointed at the checkout for a test would.
+/cache/
+/tmp/
+# The marker that keeps a copy in portable mode without a .git beside it.
+/portable.txt

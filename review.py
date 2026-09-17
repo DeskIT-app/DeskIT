@@ -65,6 +65,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import paths
+
 import vocab as vocab_mod
 from vocab import words
 
@@ -1198,7 +1200,7 @@ def review_all(cfg, app_dir: Path, pause_s: float = 4.0) -> int:
                     and (meta.get("text") or "").strip():
                 labelled.append((_Labelled(wav, {"seconds": meta.get(
                     "seconds", 0.0)}), meta["text"].strip()))
-    recent = Spool(app_dir / "recent", keep=cfg.vocab.keep_audio)
+    recent = Spool(paths.RECENT_DIR, keep=cfg.vocab.keep_audio)
     seen = {i.wav_path.name for i, _ in labelled}
     for item in recent.pending():
         meta = item.meta
@@ -1211,7 +1213,7 @@ def review_all(cfg, app_dir: Path, pause_s: float = 4.0) -> int:
               "measure.")
         return 0
 
-    v = vocab_mod.Vocab(app_dir / "vocab.json", seed_terms=cfg.vocab.terms,
+    v = vocab_mod.Vocab(paths.VOCAB_FILE, seed_terms=cfg.vocab.terms,
                         max_terms=cfg.vocab.max_terms,
                         replace_after_hits=cfg.vocab.replace_after_hits,
                         hebrew_after_hits=getattr(cfg.vocab,

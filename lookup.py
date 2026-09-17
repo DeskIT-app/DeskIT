@@ -51,6 +51,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
+import paths
+
 from transcribers.base import RateLimitError, TranscriptionError
 from translate import HEBREW, TranslationError
 
@@ -625,7 +627,7 @@ class Engine:
         # prompt for a paragraph.
         self._state = threading.local()
         self.cache = cache if cache is not None else Cache(
-            Path(__file__).resolve().parent / "lookup_cache.json",
+            paths.LOOKUP_CACHE,
             cfg.lookup.cache_entries)
 
     # ---- the prompt hook the backends call back into ----
@@ -930,7 +932,7 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         raise SystemExit('usage: python lookup.py "text to look up"')
     selection = " ".join(sys.argv[1:])
-    cfg = config_mod.load(Path(__file__).resolve().parent / "config.toml")
+    cfg = config_mod.load(paths.CONFIG_FILE)
     what = classify(selection, cfg.lookup.max_chars, cfg.lookup.both_ways,
                     cfg.lookup.hebrew_share)
     if not what.ok:

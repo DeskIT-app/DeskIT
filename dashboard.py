@@ -84,7 +84,8 @@ import ui
 import widgets
 
 APP_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = APP_DIR / "config.toml"
+import paths
+CONFIG_PATH = paths.CONFIG_FILE
 ICON_PATH = APP_DIR / "icon.ico"
 ICON_PNG = APP_DIR / "icon.png"
 
@@ -92,7 +93,7 @@ ICON_PNG = APP_DIR / "icon.png"
 # buttons and picks their icon by this; without one the window inherits
 # pythonw.exe's identity, which is why the taskbar showed a generic file
 # icon rather than the app's.
-APP_ID = "Yoav.DeskIT.Dashboard"
+APP_ID = paths.APP_ID + ".Dashboard"
 
 W, H = 1160, 720         # fixed, which is what lets every bitmap be cached
 SIDE = 0                 # the rail is gone; the places are along the top
@@ -210,9 +211,9 @@ READ_CARD_Y = 112
 READ_PAD = 24            # the sentence card's own padding
 READ_ARM_EVERY_S = 3.0   # how long before an unanswered arm is sent again
 READ_ARM_GRACE_S = 1.5   # how long a just-sent arm is taken on trust
-READ_DIR = APP_DIR / "corpus" / "read"
+READ_DIR = paths.READ_DIR
 READ_TEXTS = READ_DIR / reading_mod.TEXTS   # the prose he reads, a file each
-CORPUS_DIR = APP_DIR / "corpus"
+CORPUS_DIR = paths.CORPUS_DIR
 
 # The Keys place, top to bottom. THE BOARD IS THE FULL-SIZE ONE since
 # 2026-09-07 — 22.5 cap units wide against the tenkeyless 18.25, because
@@ -458,7 +459,7 @@ def _words_learned() -> int | None:
     file. The COUNT only — the words themselves are his."""
     import json
     try:
-        with (APP_DIR / "vocab.json").open(encoding="utf-8") as fh:
+        with (paths.VOCAB_FILE).open(encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         return None
@@ -2244,7 +2245,7 @@ class Dashboard:
     @staticmethod
     def _read_build_deck() -> list:
         try:
-            return reading_mod.deck(READ_TEXTS, APP_DIR / "vocab.json",
+            return reading_mod.deck(READ_TEXTS, paths.VOCAB_FILE,
                                     READ_DIR)
         except Exception:                 # noqa: BLE001 — a bad file
             return []
@@ -2443,7 +2444,7 @@ class Dashboard:
             cfg = config_mod.load(CONFIG_PATH)
             found = reading_mod.Writer(cfg).write(
                 seed=reading_mod.written_count(READ_TEXTS),
-                names=reading_mod.names_of(APP_DIR / "vocab.json"))
+                names=reading_mod.names_of(paths.VOCAB_FILE))
             if found:
                 path = reading_mod.save_written(READ_TEXTS, found)
         except Exception:                 # noqa: BLE001
@@ -3623,7 +3624,7 @@ class Dashboard:
             return out
         import json
         try:
-            with (APP_DIR / "vocab.json").open(encoding="utf-8") as fh:
+            with (paths.VOCAB_FILE).open(encoding="utf-8") as fh:
                 data = json.load(fh)
         except (OSError, ValueError):
             return out
@@ -3819,11 +3820,11 @@ class Dashboard:
         list and decide proposals while nothing is running, the same
         reason History reads transcripts.log itself."""
         import review as review_mod
-        return review_mod.Store(APP_DIR / review_mod.STORE_NAME)
+        return review_mod.Store(paths.REVIEW_FILE)
 
     def _review_stat(self):
         try:
-            st = os.stat(APP_DIR / "review.json")
+            st = os.stat(paths.REVIEW_FILE)
             return (st.st_size, st.st_mtime_ns)
         except OSError:
             return None
@@ -3876,7 +3877,7 @@ class Dashboard:
         if module is None:
             return None
         try:
-            return module.Store(APP_DIR / module.STORE_NAME)
+            return module.Store(paths.DATA_DIR / module.STORE_NAME)
         except Exception:                 # noqa: BLE001
             return None
 
@@ -3938,7 +3939,7 @@ class Dashboard:
         if qcfg is None or not getattr(qcfg, "enabled", False):
             return None
         try:
-            return module.Store(APP_DIR / module.STORE_NAME)
+            return module.Store(paths.DATA_DIR / module.STORE_NAME)
         except Exception:                 # noqa: BLE001
             return None
 
@@ -3979,7 +3980,7 @@ class Dashboard:
         if module is None or store is None:
             return
         try:
-            module.digest(store, APP_DIR / module.DIGEST_NAME)
+            module.digest(store, paths.DATA_DIR / module.DIGEST_NAME)
         except Exception:                 # noqa: BLE001 — a digest that
             pass                          # did not get written is nothing
 
@@ -3989,7 +3990,7 @@ class Dashboard:
         cannot drift; the fallback is for the module being absent, when
         the file will not be there either and open_path says so."""
         name = getattr(self._problems(), "DIGEST_NAME", "problems.md")
-        launch.open_path(APP_DIR / name)
+        launch.open_path(paths.DATA_DIR / name)
 
     def _screen_problems(self) -> None:
         """A place of its own: every report, every question the routine
@@ -4279,7 +4280,7 @@ class Dashboard:
         scratch on every poll that sees a new stamp.
         """
         try:
-            png = module.thumb(APP_DIR, item)
+            png = module.thumb(paths.DATA_DIR, item)
         except Exception:                 # noqa: BLE001 — never a traceback
             return None                   #                into a redraw
         if not png:
@@ -5516,7 +5517,7 @@ class Dashboard:
         if kind not in ("wrong", "slow"):
             return None
         try:
-            wavs = sorted((APP_DIR / "recent").glob("*.wav"),
+            wavs = sorted(paths.RECENT_DIR.glob("*.wav"),
                           key=lambda p: p.stat().st_mtime)
         except OSError:
             return None
@@ -5568,7 +5569,7 @@ class Dashboard:
         try:
             with os.fdopen(fd, "wb") as handle:
                 handle.write(jpeg)
-            png = module.thumb(APP_DIR, name)
+            png = module.thumb(paths.DATA_DIR, name)
         except Exception:                 # noqa: BLE001 — no picture, no row
             png = None
         finally:
@@ -6206,7 +6207,7 @@ class Dashboard:
         except Exception:                 # noqa: BLE001 — env is a bonus
             cfg = None
         try:
-            item = module.record(APP_DIR, {"where": where, "kind": kind,
+            item = module.record(paths.DATA_DIR, {"where": where, "kind": kind,
                                            "text": text},
                                  cfg=cfg, last=self._last_dictation(kind),
                                  jpeg=jpeg)
@@ -6476,11 +6477,11 @@ class Dashboard:
             import notify as notify_mod
         except Exception:                 # noqa: BLE001 — no notify.py here
             return None
-        return notify_mod.Store(APP_DIR / notify_mod.STORE_NAME)
+        return notify_mod.Store(paths.NOTIFY_FILE)
 
     def _notify_stat(self):
         try:
-            st = os.stat(APP_DIR / "notify.json")
+            st = os.stat(paths.NOTIFY_FILE)
             return (st.st_size, st.st_mtime_ns)
         except OSError:
             return None
@@ -6511,7 +6512,7 @@ class Dashboard:
         self._fill_waiting()
 
     def _notify_open_log(self) -> None:
-        path = APP_DIR / "notify.log"
+        path = paths.NOTIFY_LOG
         if not path.exists():
             self._note("no notify.log yet — nothing has arrived")
         elif not launch.open_path(path):
@@ -7405,16 +7406,16 @@ class Dashboard:
         openers = (
             ("file", "Everything you said",
              "transcripts.log — every dictation, translation and lookup",
-             APP_DIR / "transcripts.log"),
+             paths.TRANSCRIPTS_LOG),
             ("page", "The app's diary",
              "app.log — what it did and why, for when something looks off",
-             APP_DIR / "app.log"),
+             paths.APP_LOG),
             ("settings", "The settings file",
              "config.toml — every knob, its measurements kept as comments",
              CONFIG_PATH),
             ("folder", "The app's folder",
-             str(APP_DIR),
-             APP_DIR),
+             str(paths.DATA_DIR),
+             paths.DATA_DIR),
         )
         files = ui.Card(scroller.inner, CW, 60 + len(openers) * 44, pad=18,
                         bg=ui.BG)
@@ -7940,7 +7941,17 @@ class Dashboard:
             # about ten milliseconds; stat()ing it costs nothing, and most
             # polls happen with nobody dictating.
             stamp = history.stamp()
-            if stamp != self._log_stamp:
+            # The window may have been closed and BURIED while send() was
+            # out: _bury clears __dict__ and leaves only `closing` and
+            # `_events` behind (see its docstring), so anything else read
+            # from self past this point must first ask whether there is
+            # still a self to read. Found the day the control pipe got its
+            # per-copy name: with nothing listening, send() returns at
+            # once instead of after a round trip, and this thread reached
+            # `_log_stamp` a few microseconds after it was gone.
+            if self.closing:
+                return
+            if stamp != getattr(self, "_log_stamp", stamp):
                 self._log_stamp = stamp
                 events = history.load(HISTORY_ROWS)
                 self._events.put(lambda e=events: self._log_arrived(e))

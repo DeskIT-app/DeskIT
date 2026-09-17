@@ -40,7 +40,9 @@ import threading
 import time
 from typing import Callable
 
-PIPE_NAME = r"\\.\pipe\DeskIT.control"
+import paths
+
+PIPE_NAME = paths.kernel_name(r"\\.\pipe\DeskIT.control")
 MAX_MESSAGE = 1 << 16
 # pywin32 RETURNS this as ReadFile's status rather than raising it, which
 # is exactly how it gets dropped on the floor.

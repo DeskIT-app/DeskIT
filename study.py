@@ -77,6 +77,8 @@ import threading
 import time
 from pathlib import Path
 
+import paths
+
 import vocab as vocab_mod
 from vocab import words
 
@@ -687,7 +689,7 @@ def study_all(cfg, app_dir: Path) -> int:
     from spool import Spool
     from main import word_error_rate
 
-    recent = Spool(app_dir / "recent", keep=cfg.vocab.keep_audio)
+    recent = Spool(paths.RECENT_DIR, keep=cfg.vocab.keep_audio)
     todo = [i for i in recent.pending() if needs_study(i)]
     labelled = [i for i in recent.pending()
                 if (i.meta.get("corrected") or "").strip()]
@@ -695,7 +697,7 @@ def study_all(cfg, app_dir: Path) -> int:
         print("Nothing to study — recent\\ holds no recordings with text.")
         return 0
 
-    v = vocab_mod.Vocab(app_dir / "vocab.json", seed_terms=cfg.vocab.terms,
+    v = vocab_mod.Vocab(paths.VOCAB_FILE, seed_terms=cfg.vocab.terms,
                         max_terms=cfg.vocab.max_terms,
                         replace_after_hits=cfg.vocab.replace_after_hits,
                         hebrew_after_hits=getattr(cfg.vocab,

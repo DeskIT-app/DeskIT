@@ -33,6 +33,7 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
 
+import paths
 import config as config_mod
 import control
 import cues
@@ -70,7 +71,7 @@ HAS_CONSOLE = sys.stdout is not None
 # dashboard is the control window, this is the app itself, and one identity
 # across both would let the shell fold them into a single taskbar button
 # whose relaunch command opens whichever of the two it saw first.
-APP_ID = "Yoav.DeskIT"
+APP_ID = paths.APP_ID
 
 
 def claim_app_identity() -> None:
@@ -321,7 +322,7 @@ class App:
         self.cfg = cfg
         # Where a key change is written back to. Carried rather than
         # recomputed so --config keeps pointing at the file it was given.
-        self.config_path = Path(config_path or (APP_DIR / "config.toml"))
+        self.config_path = Path(config_path or paths.CONFIG_FILE)
         self._stopping = threading.Event()
         self._watcher: threading.Thread | None = None
         parse_chord(cfg.paste_chord)  # fail fast on a bad chord name
@@ -335,7 +336,7 @@ class App:
         # callable at construction, and a vocabulary that arrived afterwards
         # would silently do nothing until the next restart.
         self.vocab = vocab_mod.Vocab(
-            APP_DIR / "vocab.json", seed_terms=cfg.vocab.terms,
+            paths.VOCAB_FILE, seed_terms=cfg.vocab.terms,
             max_terms=cfg.vocab.max_terms,
             replace_after_hits=cfg.vocab.replace_after_hits,
             hebrew_after_hits=getattr(cfg.vocab, "hebrew_after_hits", 3))
@@ -348,12 +349,12 @@ class App:
         # it is what their edit is a diff against.
         self._last: dict | None = None
         self._last_lock = threading.Lock()
-        self.spool = Spool(APP_DIR / "pending")
+        self.spool = Spool(paths.PENDING_DIR)
         # A ring of recent recordings, kept so a correction can be tied to
         # the audio that produced it. Without this the app can only be told
         # that a word is wrong, never SHOWN — and no vocabulary change can
         # ever be measured, only assumed. See --benchmark.
-        self.recent = (Spool(APP_DIR / "recent", keep=cfg.vocab.keep_audio)
+        self.recent = (Spool(paths.RECENT_DIR, keep=cfg.vocab.keep_audio)
                        if cfg.vocab.keep_audio > 0 else None)
         # His own bug list (problems.py). Next to `recent` because that is
         # where the evidence comes from: a report pins the clip out of the
@@ -361,13 +362,13 @@ class App:
         # getattr, like every other optional section: a Config without
         # [problems] leaves this None, and every use of it is guarded.
         pcfg = getattr(cfg, "problems", None)
-        self.problems = (problems_mod.Store(APP_DIR / problems_mod.STORE_NAME)
+        self.problems = (problems_mod.Store(paths.PROBLEMS_FILE)
                          if pcfg is not None and pcfg.enabled else None)
         # Read this to me (reading.py): the sentence the dashboard has
         # put up, and what came back for it. Its folder sits BESIDE the
         # corpus, not in it, so [study] corpus_keep can never trim away
         # what he sat down to read.
-        self.reading = reading_mod.Reading(APP_DIR / "corpus" / "read")
+        self.reading = reading_mod.Reading(paths.READ_DIR)
         # The OTHER direction of the same conversation (questions.py). The
         # bug list is what he tells the app; this is what the weekly
         # routine asks him back when a report cannot be explained from the
@@ -398,7 +399,7 @@ class App:
         # brings it back whole if the asking ever moves back into the app.
         qcfg = getattr(cfg, "questions", None)
         self.questions = (
-            questions_mod.Store(APP_DIR / questions_mod.STORE_NAME)
+            questions_mod.Store(paths.QUESTIONS_FILE)
             if qcfg is not None and getattr(qcfg, "enabled", False) else None)
         # (size, mtime_ns) as of the last look. questions.Store.stamp()
         # exists for exactly this — notice a headless write without reading
@@ -484,7 +485,9 @@ class App:
         # hold goes up in start()), and the screens off on a key. Built
         # whether or not the key is bound — the dashboard's button goes
         # through the control channel and needs the engine either way.
-        self.awake = awake_mod.Engine(APP_DIR, getattr(cfg, "awake", None))
+        self.awake = awake_mod.Engine(paths.DATA_DIR, getattr(cfg, "awake", None),
+                                      state_path=paths.AWAKE_STATE,
+                                      log_path=paths.AWAKE_LOG)
         # What the dot is showing, kept here so the dashboard can report the
         # same thing in words. Every set_state goes through _set_state.
         self._activity = "ready"
@@ -684,8 +687,10 @@ class App:
             self.notify_card = card_cls(ncfg.corner, **fields)
         else:
             self.notify_card = notify_mod.NullCard()
-        self.notify = notify_mod.Engine(APP_DIR, ncfg, cue=beep,
-                                        card=self.notify_card)
+        self.notify = notify_mod.Engine(paths.DATA_DIR, ncfg, cue=beep,
+                                        card=self.notify_card,
+                                        store_path=paths.NOTIFY_FILE,
+                                        log_path=paths.NOTIFY_LOG)
         # The half of Claude that cannot knock (notify_watch.py). A Cowork
         # session runs in Anthropic's cloud, so there is no hook on this
         # machine to install for it — but the desktop app raises a Windows
@@ -2081,9 +2086,9 @@ class App:
                 import review as review_mod
                 self._review = review_mod.Engine(
                     self.cfg, self.transcriber, self.vocab, self.recent,
-                    review_mod.Store(APP_DIR / review_mod.STORE_NAME),
+                    review_mod.Store(paths.REVIEW_FILE),
                     model_lock=self._model_lock,
-                    quiet=self._learning_quiet, app_dir=APP_DIR,
+                    quiet=self._learning_quiet, app_dir=paths.DATA_DIR,
                     on_suggest=self._review_show,
                     on_accept=self._review_fix)
                 self._review.start()
@@ -2100,7 +2105,7 @@ class App:
                     model_lock=self._model_lock,
                     quiet=self._learning_quiet,
                     fingerprint=self._learning_fingerprint,
-                    app_dir=APP_DIR)
+                    app_dir=paths.DATA_DIR)
                 self._study.start()
             except Exception as e:      # noqa: BLE001 — optional feature
                 log.info("study engine unavailable (%s)", e)
@@ -2413,7 +2418,7 @@ class App:
         if engine is not None:
             return engine.store
         import review as review_mod
-        return review_mod.Store(APP_DIR / review_mod.STORE_NAME)
+        return review_mod.Store(paths.REVIEW_FILE)
 
     def _review_pending_for_phone(self) -> list:
         """GET /review: every proposal still waiting, newest last."""
@@ -3522,7 +3527,7 @@ class App:
             return
         try:
             store.resolve(ident, problems_mod.CLOSED, by="shelf")
-            problems_mod.digest(store, APP_DIR / problems_mod.DIGEST_NAME)
+            problems_mod.digest(store, paths.PROBLEMS_FILE.with_name(problems_mod.DIGEST_NAME))
             self._say("report closed")
         except Exception:                        # noqa: BLE001
             log.exception("shelf: could not close %s", ident)
@@ -3859,7 +3864,7 @@ class App:
         still better than a traceback out of a UI callback.
         """
         try:
-            item = problems_mod.record(APP_DIR,
+            item = problems_mod.record(paths.DATA_DIR,
                                        {"text": text, "where": where,
                                         "kind": kind},
                                        cfg=self.cfg, last=last, jpeg=jpeg)
@@ -5651,14 +5656,14 @@ def setup_logging() -> None:
     # Always mirror the status log to a file: when launched windowless this
     # is the only place errors can be read.
     app_file = logging.handlers.RotatingFileHandler(
-        APP_DIR / "app.log", maxBytes=500_000, backupCount=2,
+        paths.APP_LOG, maxBytes=500_000, backupCount=2,
         encoding="utf-8")
     app_file.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | "
                                             "%(message)s"))
     handlers.append(app_file)
     logging.basicConfig(level=logging.INFO, handlers=handlers)
     file_handler = logging.handlers.RotatingFileHandler(
-        APP_DIR / "transcripts.log", maxBytes=1_000_000, backupCount=3,
+        paths.TRANSCRIPTS_LOG, maxBytes=1_000_000, backupCount=3,
         encoding="utf-8")
     file_handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
     transcript_log.addHandler(file_handler)
@@ -5672,7 +5677,7 @@ def drain(cfg: config_mod.Config) -> int:
     free-tier daily cap). The audio was never thrown away, so this recovers
     the speech once quota is back.
     """
-    spool = Spool(APP_DIR / "pending")
+    spool = Spool(paths.PENDING_DIR)
     items = spool.pending()
     if not items:
         print("Nothing pending — no recordings were lost.")
@@ -5729,7 +5734,7 @@ def benchmark(cfg: config_mod.Config) -> int:
     One model, transcribed twice — building two would double the VRAM for
     nothing, since the only difference is a prompt.
     """
-    recent = Spool(APP_DIR / "recent")
+    recent = Spool(paths.RECENT_DIR)
     cases = [i for i in recent.pending() if i.meta.get("corrected")]
     if not cases:
         print("No corrected recordings yet, so there is nothing to measure.")
@@ -5740,7 +5745,7 @@ def benchmark(cfg: config_mod.Config) -> int:
                   "kept — corrections can never be replayed.")
         return 0
 
-    v = vocab_mod.Vocab(APP_DIR / "vocab.json", seed_terms=cfg.vocab.terms,
+    v = vocab_mod.Vocab(paths.VOCAB_FILE, seed_terms=cfg.vocab.terms,
                         max_terms=cfg.vocab.max_terms,
                         replace_after_hits=cfg.vocab.replace_after_hits,
                         hebrew_after_hits=cfg.vocab.hebrew_after_hits)
@@ -5804,7 +5809,7 @@ def show_vocab(cfg: config_mod.Config) -> int:
     that garble still not being repaired" — are about the derived hotword
     list and the hit threshold, neither of which is visible in the file.
     """
-    v = vocab_mod.Vocab(APP_DIR / "vocab.json", seed_terms=cfg.vocab.terms,
+    v = vocab_mod.Vocab(paths.VOCAB_FILE, seed_terms=cfg.vocab.terms,
                         max_terms=cfg.vocab.max_terms,
                         replace_after_hits=cfg.vocab.replace_after_hits,
                         hebrew_after_hits=cfg.vocab.hebrew_after_hits)
@@ -5856,7 +5861,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Hebrew push-to-talk dictation (hold hotkey, speak, "
                     "release).")
-    parser.add_argument("--config", default=str(APP_DIR / "config.toml"))
+    parser.add_argument("--config", default=str(paths.CONFIG_FILE))
     parser.add_argument("--fake", action="store_true",
                         help="use the fake backend (no API, no mic quality "
                              "needed)")
@@ -5914,6 +5919,7 @@ def main() -> int:
                         help="open the control window (start/pause/stop and "
                              "the keys), then exit")
     args = parser.parse_args()
+    paths.ensure()
     setup_logging()
 
     if args.dashboard:
@@ -6067,7 +6073,7 @@ def main() -> int:
         if getattr(cfg, "study", None) is None:
             print("config.toml has no [study] section.")
             return 2
-        return study_mod.study_all(cfg, APP_DIR)
+        return study_mod.study_all(cfg, paths.DATA_DIR)
 
     if args.review:
         try:
@@ -6079,7 +6085,7 @@ def main() -> int:
         if getattr(cfg, "review", None) is None:
             print("config.toml has no [review] section.")
             return 2
-        return review_mod.review_all(cfg, APP_DIR)
+        return review_mod.review_all(cfg, paths.DATA_DIR)
 
     if args.drain:
         return drain(cfg)
@@ -6172,7 +6178,7 @@ def main() -> int:
     # a crash, a power cut): the hold went with the process, but a pinned
     # sleep timer did not. Put it back before anything else, so a bad
     # exit cannot become a permanent setting.
-    leftover = awake_mod.recover(APP_DIR)
+    leftover = awake_mod.recover(paths.DATA_DIR, log_path=paths.AWAKE_LOG)
     if leftover:
         log.warning("%s", leftover)
     try:
@@ -6330,7 +6336,7 @@ def main() -> int:
                  if getattr(ncfg, "watch", "off") != "off" else "")
     log.info("mic: %s | backend: %s | transcripts: %s",
              app.recorder.device_label(), cfg.backend,
-             APP_DIR / "transcripts.log")
+             paths.TRANSCRIPTS_LOG)
     key_source = getattr(app.transcriber, "key_source", None)
     if key_source:
         log.info("api key from: %s", key_source)

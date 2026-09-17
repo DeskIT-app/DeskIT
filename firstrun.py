@@ -44,12 +44,13 @@ import tkinter as tk
 from pathlib import Path
 
 import config as config_mod
+import paths
 import ui
 
 log = logging.getLogger("app")
 
 APP_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = APP_DIR / "config.toml"
+CONFIG_PATH = paths.CONFIG_FILE
 # "This copy has been set up" is not a setting, it is a fact about one
 # installation, and it lives in a gitignored file for the same reason .env
 # and vocab.json do.
@@ -62,7 +63,7 @@ CONFIG_PATH = APP_DIR / "config.toml"
 # is already in the file — so on any config.toml written before this
 # existed, marking the wizard finished raised, and it would have come back
 # on every launch for ever.
-MARKER = APP_DIR / ".setup-done"
+MARKER = paths.SETUP_MARKER
 
 W, H = 720, 560
 PAD = 28

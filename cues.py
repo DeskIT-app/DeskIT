@@ -20,7 +20,9 @@ import math
 import wave
 from pathlib import Path
 
-CUE_DIR = Path(__file__).resolve().parent / "cues"
+import paths
+
+CUE_DIR = paths.CUES_DIR
 SAMPLE_RATE = 44100
 VOLUME = 0.5
 

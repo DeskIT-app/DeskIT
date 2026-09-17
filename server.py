@@ -42,6 +42,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 from pathlib import Path
 
+import paths
+
 log = logging.getLogger("app")
 
 # tailscale.exe is a CONSOLE program and this app runs under pythonw,
@@ -66,7 +68,7 @@ log = logging.getLogger("app")
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 
 APP_DIR = Path(__file__).resolve().parent
-TOKEN_FILE = APP_DIR / "server_token.txt"
+TOKEN_FILE = paths.PHONE_TOKEN
 APK = (APP_DIR / "android" / "app" / "build" / "outputs" / "apk"
        / "debug" / "app-debug.apk")
 APK_GRADLE = APP_DIR / "android" / "app" / "build.gradle.kts"
@@ -108,6 +110,7 @@ def load_token() -> str:
     except OSError:
         pass
     token = secrets.token_urlsafe(24)
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
     TOKEN_FILE.write_text(token, "utf-8")
     log.info("generated a new phone token in %s", TOKEN_FILE.name)
     return token

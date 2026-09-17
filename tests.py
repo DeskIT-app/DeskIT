@@ -12,6 +12,9 @@ import gc
 import io
 import json
 import os
+import re
+import shutil
+import subprocess
 import queue
 import sys
 import tempfile
@@ -25,6 +28,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import apikey
+import capture as capture_mod
 import config as config_mod
 import hint as hint_mod
 import injector
@@ -29107,6 +29111,188 @@ def test_the_repair_pass_skips_the_stretches_repaired_while_he_spoke():
     finally:
         import shutil
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ----------------------------------------------------------------- paths.py
+# Where the app's files live (DISTRIBUTION_PLAN.md chapter 3, D1/D4/D5/D30).
+# The checkout is portable: every store keeps the name it had before
+# paths.py existed, so nothing on the owner's machine moves. An installed
+# copy gets %LOCALAPPDATA%\DeskIT with grouped sub-folders. DESKIT_HOME is
+# the test hatch into that layout.
+
+_PATHS_PROBE = (
+    "import json, sys; sys.path.insert(0, sys.argv[1]); import paths;"
+    "print(json.dumps({k: str(getattr(paths, k)) for k in ("
+    "'APP_DIR','DATA_DIR','PORTABLE','DEVELOPER','FLAT','RECENT_DIR',"
+    "'PENDING_DIR','APP_LOG','TRANSCRIPTS_LOG','PHONE_TOKEN','CUES_DIR',"
+    "'VOCAB_FILE','CONFIG_FILE','APP_ID','DEFAULT_PORT')}"
+    " | {'mutex': paths.kernel_name(r'Local\\DeskIT.instance'),"
+    "    'pipe': paths.kernel_name(r'\\\\.\\pipe\\DeskIT.control'),"
+    "    'ensured': str(paths.ensure())}))"
+)
+
+
+def _probe_paths(code_dir: Path, env: dict) -> dict:
+    """paths.py's answers from a FRESH interpreter, because the module
+    decides everything at import and this process has already imported it."""
+    full = {k: v for k, v in os.environ.items()
+            if k not in ("DESKIT_HOME", "DESKIT_PORTABLE")}
+    full.update(env)
+    out = subprocess.run([sys.executable, "-c", _PATHS_PROBE, str(code_dir)],
+                         capture_output=True, encoding="utf-8",
+                         errors="replace", timeout=60, env=full)
+    assert out.returncode == 0, (out.stdout, out.stderr)
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+def test_paths_checkout_is_portable_and_nothing_moved():
+    """In this checkout (.git beside main.py) every store resolves to the
+    exact file it resolved to before paths.py existed."""
+    import paths
+    assert paths.DEVELOPER and paths.PORTABLE and paths.FLAT
+    assert paths.DATA_DIR == paths.APP_DIR == REPO
+    before = {
+        "RECENT_DIR": "recent", "PENDING_DIR": "pending", "CORPUS_DIR": "corpus",
+        "READ_DIR": "corpus/read", "VOCAB_FILE": "vocab.json",
+        "REVIEW_FILE": "review.json", "PROBLEMS_FILE": "problems.json",
+        "PROBLEMS_DIR": "problems", "QUESTIONS_FILE": "questions.json",
+        "NOTIFY_FILE": "notify.json", "NOTIFY_LOG": "notify.log",
+        "AWAKE_STATE": "awake_state.json", "AWAKE_LOG": "awake.log",
+        "APP_LOG": "app.log", "TRANSCRIPTS_LOG": "transcripts.log",
+        "CONFIG_FILE": "config.toml", "SETUP_MARKER": ".setup-done",
+        "PHONE_TOKEN": "server_token.txt", "CUES_DIR": "cues",
+        "LOOKUP_CACHE": "lookup_cache.json",
+    }
+    for name, rel in before.items():
+        assert getattr(paths, name) == REPO / rel, (name, getattr(paths, name))
+    assert paths.LOGS_DIR == REPO and paths.PHONE_DIR == REPO
+    # the modules that used to build these themselves now agree with paths
+    import cues, history, server, control
+    assert cues.CUE_DIR == paths.CUES_DIR
+    assert history.LOG == paths.TRANSCRIPTS_LOG
+    assert server.TOKEN_FILE == paths.PHONE_TOKEN
+    assert capture_mod.capture_dir("captures") == REPO / "captures"
+    assert control.PIPE_NAME.startswith(r"\\.\pipe\DeskIT")
+
+
+def test_paths_installed_layout_through_deskit_home():
+    """DESKIT_HOME points DATA_DIR at a folder of our choosing with the
+    installed layout: audio\\, logs\\, phone\\, cache\\cues, and ensure()
+    creates what the first log line needs."""
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-home-"))
+    try:
+        got = _probe_paths(REPO, {"DESKIT_HOME": str(tmp)})
+        home = str(tmp.resolve())
+        assert got["DATA_DIR"] == home, got
+        assert got["FLAT"] == "False" and got["DEVELOPER"] == "True", got
+        assert got["RECENT_DIR"] == str(tmp / "audio" / "recent")
+        assert got["PENDING_DIR"] == str(tmp / "audio" / "pending")
+        assert got["APP_LOG"] == str(tmp / "logs" / "app.log")
+        assert got["TRANSCRIPTS_LOG"] == str(tmp / "logs" / "transcripts.log")
+        assert got["PHONE_TOKEN"] == str(tmp / "phone" / "server_token.txt")
+        assert got["CUES_DIR"] == str(tmp / "cache" / "cues")
+        assert got["VOCAB_FILE"] == str(tmp / "vocab.json")
+        assert got["CONFIG_FILE"] == str(tmp / "config.toml")
+        for sub in ("logs", "audio/recent", "audio/pending", "problems",
+                    "cache", "tmp"):
+            assert (tmp / sub).is_dir(), sub
+        # ...and the flat layout grows nothing: only the three folders the
+        # app made for itself before paths.py existed (D4)
+        assert not (REPO / "cache").exists() and not (REPO / "tmp").exists()
+        assert got["APP_DIR"] == str(REPO), "the code did not move"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_paths_portable_marker_env_and_default_home():
+    """A copy WITHOUT .git: not portable by default (data under
+    %LOCALAPPDATA%\\DeskIT), portable with portable.txt beside main.py, and
+    portable with DESKIT_PORTABLE=1; DEVELOPER stays false in all three
+    because there is no .git. LOCALAPPDATA is redirected so the real folder
+    is never touched."""
+    base = Path(tempfile.mkdtemp(prefix="deskit-copy-"))
+    try:
+        code = base / "app"
+        code.mkdir()
+        shutil.copy(REPO / "paths.py", code / "paths.py")
+        (code / "main.py").write_text("", encoding="utf-8")
+        local = base / "localappdata"
+        env = {"LOCALAPPDATA": str(local)}
+        got = _probe_paths(code, env)
+        assert got["PORTABLE"] == "False" and got["DEVELOPER"] == "False", got
+        assert got["DATA_DIR"] == str(local / "DeskIT"), got
+        assert got["RECENT_DIR"] == str(local / "DeskIT" / "audio" / "recent")
+        assert (local / "DeskIT" / "logs").is_dir(), "ensure() made the tree"
+        assert got["APP_ID"] == "DeskIT.App" and got["DEFAULT_PORT"] == "8756"
+        assert got["mutex"] == r"Local\DeskIT.instance", got["mutex"]
+        assert got["pipe"] == r"\\.\pipe\DeskIT.control", got["pipe"]
+
+        (code / "portable.txt").write_text("", encoding="utf-8")
+        got = _probe_paths(code, env)
+        assert got["PORTABLE"] == "True" and got["DEVELOPER"] == "False", got
+        assert got["DATA_DIR"] == str(code.resolve()), got
+        assert got["RECENT_DIR"] == str(code.resolve() / "recent")
+        (code / "portable.txt").unlink()
+
+        got = _probe_paths(code, {**env, "DESKIT_PORTABLE": "1"})
+        assert got["PORTABLE"] == "True" and got["FLAT"] == "True", got
+        assert got["DATA_DIR"] == str(code.resolve()), got
+    finally:
+        shutil.rmtree(base, ignore_errors=True)
+
+
+def test_paths_dev_mark_only_in_a_checkout():
+    """D30: the checkout is DeskIT Dev — its kernel objects, AppUserModelID
+    and default port differ from the release's so both can run on one PC.
+    The test above proved a copy without .git carries none of it."""
+    import paths
+    assert paths.DEV_SUFFIX == ".dev" and paths.DEV_TAG == "Dev"
+    assert paths.APP_ID == "DeskIT.Dev"
+    assert paths.DEFAULT_PORT == 8757
+    assert paths.kernel_name(r"Local\DeskIT.instance") == r"Local\DeskIT.dev.instance"
+    assert paths.kernel_name(r"\\.\pipe\DeskIT.control") == r"\\.\pipe\DeskIT.dev.control"
+    assert paths.kernel_name(r"Local\Other.thing") == r"Local\Other.thing.dev"
+    import singleton as singleton_mod, control
+    # the constants the tests repoint are built from paths.kernel_name, so
+    # they carry the mark here — every test still takes its own per-pid
+    # name and never these.
+    for name in (singleton_mod.MUTEX_NAME, singleton_mod.QUIT_EVENT_NAME,
+                 singleton_mod.DASHBOARD_MUTEX, singleton_mod.DASHBOARD_SHOW,
+                 control.PIPE_NAME):
+        assert "DeskIT.dev." in name, name
+    import main as main_mod, dashboard as dashboard_mod
+    assert main_mod.APP_ID == "DeskIT.Dev"
+    assert dashboard_mod.APP_ID == "DeskIT.Dev.Dashboard"
+
+
+def test_no_store_path_is_built_beside_the_code():
+    """Static: the product tree builds a personal-store path only through
+    paths.py. What is still allowed to hang off APP_DIR is read-only
+    (fonts, skin, icon), owner-only (git, the weekly script, the Android
+    build — chapter 7 moves those to dev\\), the launcher's own files
+    (chapter 10) and the .env reader (chapter 3.6 replaces it with
+    secrets.py). Shrink this list as those commits land; never grow it."""
+    allowed = {
+        "fonts", "skin", "icon.ico", "icon.png",           # read-only assets
+        ".env",                                            # apikey.py, until secrets.py
+        "weekly_review.ps1", "problems",                   # owner-only: the routine, problems\weekly
+        "android",                                         # owner-only: the APK build
+        "Dashboard.vbs", ".venv", "main.py", "dashboard.py",  # launch.py, until chapter 10
+    }
+    owner_only_files = {"nightly.py", "make_icon.py", "install_fonts.py",
+                        "versions.py", "audio_check.py"}
+    pat = re.compile(r'(?:APP_DIR|Path\(__file__\)\.resolve\(\)\.parent)\s*/\s*"([^"]+)"')
+    bad = []
+    for py in sorted(REPO.glob("*.py")) + sorted((REPO / "transcribers").glob("*.py")) \
+            + sorted((REPO / "skin").glob("*.py")):
+        if py.name.startswith("tests") or py.name in owner_only_files \
+                or py.name == "paths.py":     # the one module that may look
+            continue
+        for m in pat.finditer(py.read_text(encoding="utf-8")):
+            if m.group(1) not in allowed:
+                bad.append(f"{py.name}: {m.group(0)}")
+    assert not bad, "\n".join(bad)
+
 
 
 if __name__ == "__main__":

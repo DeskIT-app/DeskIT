@@ -93,6 +93,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+import paths
+
 log = logging.getLogger("app")
 
 ES_CONTINUOUS = 0x80000000
@@ -967,10 +969,12 @@ class Engine:
                  run=None, clock: Callable[[], float] = time.time,
                  vitals_fn: Callable[[], str] | None = None,
                  alarms_fn: Callable[[], list[str]] | None = None,
-                 input_fn: Callable[[], float] | None = None) -> None:
+                 input_fn: Callable[[], float] | None = None,
+                 state_path: Path | None = None,
+                 log_path: Path | None = None) -> None:
         self.app_dir = Path(app_dir)
-        self.state_path = self.app_dir / STATE_NAME
-        self.log_path = self.app_dir / LOG_NAME
+        self.state_path = Path(state_path) if state_path else self.app_dir / STATE_NAME
+        self.log_path = Path(log_path) if log_path else self.app_dir / LOG_NAME
         self.hold_wanted = bool(getattr(cfg, "hold", True))
         self.pin_timeouts = bool(getattr(cfg, "pin_timeouts", False))
         self.again_s = int(getattr(cfg, "screens_off_again_s", 3))
@@ -1301,7 +1305,7 @@ class Engine:
             self._vitals_to_log()
 
 
-def recover(app_dir: Path, run=None) -> str | None:
+def recover(app_dir: Path, run=None, *, log_path: Path | None = None) -> str | None:
     """At start-up: an awake_state.json left by a session that died
     holding. The hold died with it; the pinned timers did not.
     Puts them back, removes the file, and returns one sentence for the
@@ -1329,7 +1333,7 @@ def recover(app_dir: Path, run=None) -> str | None:
     except OSError:
         pass
     try:
-        with (Path(app_dir) / LOG_NAME).open("a", encoding="utf-8") as fh:
+        with (Path(log_path) if log_path else Path(app_dir) / LOG_NAME).open("a", encoding="utf-8") as fh:
             fh.write(f"{_stamp()} | RECOVERED | {message}\n")
     except OSError:
         pass

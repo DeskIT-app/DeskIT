@@ -13,6 +13,8 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as w
 
+import paths
+
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 ERROR_ALREADY_EXISTS = 183
@@ -22,13 +24,13 @@ EVENT_MODIFY_STATE = 0x0002
 INFINITE = 0xFFFFFFFF
 
 # "Local\" = per-login-session, which is what we want: the app is per-user.
-MUTEX_NAME = r"Local\DeskIT.instance"
-QUIT_EVENT_NAME = r"Local\DeskIT.quit"
+MUTEX_NAME = paths.kernel_name(r"Local\DeskIT.instance")
+QUIT_EVENT_NAME = paths.kernel_name(r"Local\DeskIT.quit")
 # The dashboard gets its own pair. It is a .vbs behind a shortcut, so
 # double-clicking it twice used to open two identical windows polling the
 # same app — nothing breaks, it just looks broken.
-DASHBOARD_MUTEX = r"Local\DeskIT.dashboard"
-DASHBOARD_SHOW = r"Local\DeskIT.dashboard.show"
+DASHBOARD_MUTEX = paths.kernel_name(r"Local\DeskIT.dashboard")
+DASHBOARD_SHOW = paths.kernel_name(r"Local\DeskIT.dashboard.show")
 
 kernel32.CreateMutexW.restype = w.HANDLE
 kernel32.CreateEventW.restype = w.HANDLE

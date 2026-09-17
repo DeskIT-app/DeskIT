@@ -92,6 +92,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import paths
+
 log = logging.getLogger("app")
 
 STORE_NAME = "problems.json"
@@ -313,7 +315,8 @@ def _wav_path(raw, app_dir: Path | None) -> Path | None:
     if p.is_absolute():
         return p
     if app_dir is not None:
-        for candidate in (Path(app_dir) / "recent" / p, Path(app_dir) / p):
+        for candidate in (Path(app_dir) / "recent" / p, paths.RECENT_DIR / p,
+                          Path(app_dir) / p):
             if candidate.exists():
                 return candidate
     return p
