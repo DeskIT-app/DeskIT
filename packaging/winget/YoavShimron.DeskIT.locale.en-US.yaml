@@ -1,0 +1,26 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: YoavShimron.DeskIT
+PackageVersion: x.y.z
+PackageLocale: en-US
+Publisher: Yoav Shimron
+PublisherUrl: https://github.com/massifapp/DeskIT
+PublisherSupportUrl: https://github.com/massifapp/DeskIT/issues
+PrivacyUrl: https://massifapp.github.io/DeskIT/privacy
+PackageName: DeskIT
+PackageUrl: https://github.com/massifapp/DeskIT
+License: Apache-2.0
+LicenseUrl: https://github.com/massifapp/DeskIT/blob/main/LICENSE
+Copyright: Copyright 2026 Yoav Shimron
+ShortDescription: Hebrew push-to-talk dictation that types at your cursor, on your own PC.
+Description: |-
+  The Win+H that Hebrew never got. Hold a key, speak Hebrew (with English words in it), let go, and the text lands where your cursor is — in any program. Transcription runs on your PC with the ivrit.ai Whisper model; nothing leaves the machine until you switch a cloud feature on with your own key, and every connection is listed in the app.
+Moniker: deskit
+Tags:
+  - dictation
+  - hebrew
+  - speech-to-text
+  - whisper
+  - push-to-talk
+ReleaseNotesUrl: https://github.com/massifapp/DeskIT/releases/tag/vx.y.z
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

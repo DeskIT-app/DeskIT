@@ -4481,6 +4481,21 @@ the contact address are the owner's). Settings > The app > About has
 a button for each, plus **Copy diagnostics** (`main.py --diagnose`):
 one block for a bug report with no transcripts and no keys in it.
 
+## Releasing
+
+One tag does it all (`DISTRIBUTION_PLAN.md` 10.3, 11.11): edit `VERSION`,
+write the section in `CHANGELOG.md` under `## x.y.z`, push `vx.y.z`.
+The workflow builds the installer from the tag on GitHub's runner
+(hashed wheelhouse, SHA-verified embeddable Python, `git archive`,
+`MANIFEST.sha256`, the notices file), installs and uninstalls it there,
+attests it, sends it to VirusTotal (more than `VT_MAX_DETECTIONS`
+engines fail the run) and opens a **draft** release with the notes,
+the SHA-256, the scan link and the previous version. You read the
+scan and publish; publishing opens the winget PR (`winget.yml`).
+`packaging/winget/` holds the manifests for the first, by-hand
+submission. Three things live outside the repo: the `VT_API_KEY` and
+`WINGET_TOKEN` secrets and the repository being public (attestations).
+
 ## Design notes
 
 Raw Win32 via ctypes (`WH_KEYBOARD_LL` hook + `SendInput`) — the

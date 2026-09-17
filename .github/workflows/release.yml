@@ -1,8 +1,10 @@
-# The build — DISTRIBUTION_PLAN.md 10.3, steps 0 to 7 (PR 10) and 9 to 12
-# (PR 11): the channel word, the Inno installer, its SHA-256 and
-# latest.json, and a silent install + verify + uninstall on the runner.
-# Later PRs add the attestation, VirusTotal and the release itself
-# (steps 8, 13-15). Nothing here runs on the owner's PC:
+# The build — DISTRIBUTION_PLAN.md 10.3, steps 0 to 7 (PR 10), 9 to 12
+# (PR 11), 6b (PR 18) and 8, 13, 14 (PR 19): the channel word, the Inno
+# installer, its SHA-256 and latest.json, a silent install + verify +
+# uninstall on the runner, the build attestation, the VirusTotal scan
+# with its threshold, and the DRAFT release with the notes — the owner
+# publishes it after reading the scan (11.11). Step 15, winget, is
+# winget.yml, on the release being published. Nothing here runs on the owner's PC:
 # every byte of the staged tree traces to the tag, a hashed wheel or a
 # SHA-verified python.org zip (D12 lock 5, D19).
 #
@@ -26,6 +28,11 @@ on:
 env:
   PYTHON_VERSION: "3.11.9"
   EMBED_URL: "https://www.python.org/ftp/python/3.11.9/python-3.11.9-embed-amd64.zip"
+
+permissions:
+  contents: write        # the draft release and its assets (step 14)
+  id-token: write        # the build attestation (step 8)
+  attestations: write
 
 jobs:
   stage:
@@ -143,6 +150,15 @@ jobs:
           python stage/app/manifest.py write stage
           python stage/app/manifest.py verify stage
 
+      # 8a. attest — the manifest's provenance, what the FAQ's "read the
+      #     build attestation" line points to (D12 lock 5). GitHub signs
+      #     attestations for public repositories; a private one skips.
+      - name: Attest MANIFEST.sha256
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: stage/MANIFEST.sha256
+
       - name: The staged tree starts
         run: |
           $out = & stage/python/python.exe -c "import sys, tkinter, numpy, PIL, sounddevice; print(sys.version.split()[0], tkinter.TkVersion, numpy.__version__)"
@@ -207,12 +223,115 @@ jobs:
           Start-Sleep -Seconds 3
           if (Test-Path $app) { Get-ChildItem -Recurse $app | Select-Object -First 20; throw "APP_DIR survived the uninstall" }
 
+      # 8b. attest — the installer itself, after the smoke test passed
+      - name: Attest the installer
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe
+
+      # 13. virustotal — the installer to VirusTotal's free API; more than
+      #     VT_MAX_DETECTIONS engines (a repository variable, default 2)
+      #     fail the run so a bad build never reaches users (D19). Without
+      #     the key the step says so and the release goes on unscanned.
+      - name: VirusTotal
+        id: virustotal
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+          VT_MAX_DETECTIONS: ${{ vars.VT_MAX_DETECTIONS || '2' }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $exe = "dist/DeskIT-Setup-$version.exe"
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          $permalink = "https://www.virustotal.com/gui/file/$sha"
+          if (-not $env:VT_API_KEY) {
+            Write-Warning "VT_API_KEY is not set: the installer was NOT scanned. Add the secret before publishing."
+            Set-Content dist/virustotal.txt "not scanned (no VT_API_KEY)"
+            "permalink=" >> $env:GITHUB_OUTPUT
+            "verdict=not scanned" >> $env:GITHUB_OUTPUT
+            exit 0
+          }
+          $headers = @{ "x-apikey" = $env:VT_API_KEY }
+          # files over 32 MB go through a one-time upload URL
+          $upload = (Invoke-RestMethod -Uri "https://www.virustotal.com/api/v3/files/upload_url" -Headers $headers).data
+          $form = @{ file = Get-Item $exe }
+          $posted = Invoke-RestMethod -Uri $upload -Method Post -Headers $headers -Form $form
+          $analysis = $posted.data.id
+          $status = ""
+          for ($i = 0; $i -lt 60 -and $status -ne "completed"; $i++) {
+            Start-Sleep -Seconds 30
+            $result = Invoke-RestMethod -Uri "https://www.virustotal.com/api/v3/analyses/$analysis" -Headers $headers
+            $status = $result.data.attributes.status
+          }
+          if ($status -ne "completed") { throw "VirusTotal did not finish in 30 minutes: $permalink" }
+          $stats = $result.data.attributes.stats
+          $hits = [int]$stats.malicious + [int]$stats.suspicious
+          $verdict = "$hits engine(s) flagged it (malicious $($stats.malicious), suspicious $($stats.suspicious)) of $([int]$stats.harmless + [int]$stats.undetected + $hits)"
+          "$verdict — $permalink" | Set-Content dist/virustotal.txt
+          "permalink=$permalink" >> $env:GITHUB_OUTPUT
+          "verdict=$verdict" >> $env:GITHUB_OUTPUT
+          Write-Host $verdict
+          if ($hits -gt [int]$env:VT_MAX_DETECTIONS) { throw "VirusTotal: $hits detections, more than VT_MAX_DETECTIONS=$env:VT_MAX_DETECTIONS — not released. $permalink" }
+
       - uses: actions/upload-artifact@v4
         with:
           name: DeskIT-${{ steps.version.outputs.version }}
           path: |
             dist/DeskIT-Setup-*.exe
             dist/DeskIT-Setup-*.exe.sha256
+            dist/latest.json
+            dist/MANIFEST.sha256
+            dist/virustotal.txt
+
+      # 14. release — a DRAFT with the notes from CHANGELOG.md under the
+      #     version's heading, then the fixed block: SHA-256, VirusTotal,
+      #     the attestation, the previous installer for rollback (11.7).
+      #     The owner reads the scan and publishes (11.11 steps 5-7); a
+      #     -beta tag publishes as a pre-release. Only for a real tag.
+      - name: Release notes
+        if: ${{ github.ref_type == 'tag' }}
+        id: notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $repo = "${{ github.repository }}"
+          $log = Get-Content CHANGELOG.md -Raw -Encoding utf8
+          $section = ""
+          if ($log -match "(?ms)^## $([regex]::Escape($version))\b[^\n]*\n(.*?)(?=^## |\z)") { $section = $Matches[1].Trim() }
+          if (-not $section) { throw "CHANGELOG.md has no '## $version' section (11.11 step 2)" }
+          $previous = ""
+          try { $previous = (gh api "repos/$repo/releases/latest" --jq .tag_name 2>$null) } catch {}
+          $sha = (Get-Content "dist/DeskIT-Setup-$version.exe.sha256" -Raw).Split(" ")[0]
+          $vt = "${{ steps.virustotal.outputs.permalink }}"
+          $vtLine = if ($vt) { "VirusTotal: $vt (${{ steps.virustotal.outputs.verdict }})" } else { "VirusTotal: not scanned" }
+          $prevLine = if ($previous) { "Previous version, for rollback: https://github.com/$repo/releases/tag/$previous" } else { "Previous version: none — this is the first release" }
+          $body = @(
+            $section, "",
+            "---", "",
+            "``DeskIT-Setup-$version.exe`` SHA-256: ``$sha``",
+            $vtLine,
+            "Build attestation: https://github.com/$repo/attestations",
+            $prevLine,
+            "Install: download the installer, or ``winget install YoavShimron.DeskIT`` once the manifest is merged."
+          ) -join "`n"
+          [IO.File]::WriteAllText("dist/notes.md", $body, (New-Object Text.UTF8Encoding $false))
+          Get-Content dist/notes.md
+
+      - name: Draft release
+        if: ${{ github.ref_type == 'tag' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          prerelease: ${{ contains(steps.version.outputs.version, '-beta') }}
+          name: DeskIT ${{ steps.version.outputs.version }}
+          body_path: dist/notes.md
+          files: |
+            dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe
+            dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe.sha256
+            dist/latest.json
+            dist/MANIFEST.sha256
+            stage/THIRD-PARTY-NOTICES.txt
             dist/latest.json
             dist/MANIFEST.sha256
           retention-days: 14

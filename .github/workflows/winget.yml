@@ -1,0 +1,43 @@
+# Step 15 of the build (DISTRIBUTION_PLAN.md 10.3, 10.6): the winget
+# manifest PR, opened when the owner PUBLISHES the draft release — not
+# before, because wingetcreate downloads the installer from the asset URL
+# to hash it, and a draft's assets are not public. Pre-releases are never
+# submitted (chapter 11). WINGET_TOKEN is a fine-grained PAT that can fork
+# and open a pull request on microsoft/winget-pkgs; without it the job
+# says so and stops. The first submission is by hand (wingetcreate new,
+# packaging/winget/ holds the manifests to read once); this carries them
+# forward per release.
+name: winget
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  submit:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: The installer's URL
+        id: asset
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.release.tag_name }}".TrimStart("v")
+          $asset = "${{ github.event.release.assets[0].browser_download_url }}"
+          $url = "https://github.com/${{ github.repository }}/releases/download/v$version/DeskIT-Setup-$version.exe"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "url=$url" >> $env:GITHUB_OUTPUT
+          Write-Host "DeskIT $version at $url"
+
+      - name: wingetcreate update
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if (-not $env:WINGET_TOKEN) { Write-Warning "WINGET_TOKEN is not set: no winget PR. Run wingetcreate update by hand (10.6)."; exit 0 }
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          .\wingetcreate.exe update YoavShimron.DeskIT `
+            --urls "${{ steps.asset.outputs.url }}|x64" `
+            --version "${{ steps.asset.outputs.version }}" `
+            --submit --token $env:WINGET_TOKEN

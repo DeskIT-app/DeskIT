@@ -31267,6 +31267,81 @@ def test_diagnose_block_is_safe_to_paste():
         assert board.root.clipboard_get().startswith("DeskIT diagnostics")
 
 
+# ------------------------------------ the release's last steps (PR 19)
+#
+# DISTRIBUTION_PLAN.md 10.3 steps 8, 13, 14, 15 and 10.6: the attestation,
+# the VirusTotal scan with its threshold, the DRAFT release with the notes
+# from CHANGELOG.md, and the winget PR on publish. Static: the workflow
+# files and the manifests are read, never run.
+
+def test_release_workflow_has_every_step():
+    """release.yml: the permissions the attestation and the draft need;
+    the manifest and the installer attested (public repositories only);
+    VirusTotal through the large-file upload URL, polled, failing above
+    VT_MAX_DETECTIONS and saying so without the key; the draft release
+    only on a real tag, pre-release for -beta, with the five files and
+    the notes; winget.yml on publish, never for a pre-release, carrying
+    /CHANNEL=winget forward through wingetcreate update."""
+    yml = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    for must in ("permissions:", "contents: write", "id-token: write", "attestations: write",
+                 "actions/attest-build-provenance@v2", "subject-path: stage/MANIFEST.sha256",
+                 "subject-path: dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe",
+                 "!github.event.repository.private",
+                 "secrets.VT_API_KEY", "vars.VT_MAX_DETECTIONS || '2'",
+                 "api/v3/files/upload_url", "api/v3/analyses/", "VT_API_KEY is not set",
+                 "more than VT_MAX_DETECTIONS", "https://www.virustotal.com/gui/file/",
+                 "softprops/action-gh-release@v2", "draft: true",
+                 "prerelease: ${{ contains(steps.version.outputs.version, '-beta') }}",
+                 "body_path: dist/notes.md", "if: ${{ github.ref_type == 'tag' }}",
+                 "CHANGELOG.md has no", "Previous version", "SHA-256:", "attestations",
+                 "stage/THIRD-PARTY-NOTICES.txt", "dist/latest.json", "dist/MANIFEST.sha256"):
+        assert must in yml, must
+    order = [yml.index(x) for x in ("name: MANIFEST.sha256", "name: Attest MANIFEST.sha256",
+                                    "name: Installer", "name: Silent install, verify, uninstall",
+                                    "name: Attest the installer", "name: VirusTotal",
+                                    "name: Release notes", "name: Draft release")]
+    assert order == sorted(order), "the steps are out of order"
+    winget = (REPO / ".github" / "workflows" / "winget.yml").read_text("utf-8")
+    for must in ("types: [published]", "!github.event.release.prerelease", "secrets.WINGET_TOKEN",
+                 "wingetcreate.exe update YoavShimron.DeskIT", "--submit", "WINGET_TOKEN is not set"):
+        assert must in winget, must
+    import updates
+    assert updates.WINGET_ID == "YoavShimron.DeskIT"
+
+
+def test_winget_manifest_fields():
+    """packaging/winget: the three manifests (and the Hebrew locale) carry
+    10.6's values — the identifier, inno, user scope, the silent switches
+    with /CHANNEL=winget and /NOLAUNCH, the Inno ProductCode, upgrade in
+    place, the licence, the tags — and the release URL shape latest.json
+    uses; CHANGELOG.md has the running version's heading (11.11 step 2)."""
+    import version
+
+    w = REPO / "packaging" / "winget"
+    installer = (w / "YoavShimron.DeskIT.installer.yaml").read_text("utf-8")
+    iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
+    app_id = re.search(r"^AppId=\{(\{[0-9A-F-]+\})", iss, re.M).group(1)
+    for must in ("PackageIdentifier: YoavShimron.DeskIT", "InstallerType: inno", "Scope: user",
+                 "Silent: /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOLAUNCH /CHANNEL=winget",
+                 "SilentWithProgress: /SILENT /SUPPRESSMSGBOXES /NORESTART /NOLAUNCH /CHANNEL=winget",
+                 "UpgradeBehavior: install", f'ProductCode: "{app_id}_is1"', "Architecture: x64",
+                 "releases/download/vx.y.z/DeskIT-Setup-x.y.z.exe", "ManifestVersion: 1.6.0"):
+        assert must in installer, must
+    locale = (w / "YoavShimron.DeskIT.locale.en-US.yaml").read_text("utf-8")
+    for must in ("License: Apache-2.0", "PrivacyUrl: https://massifapp.github.io/DeskIT/privacy",
+                 "Publisher: Yoav Shimron", "PackageName: DeskIT", "- dictation", "- hebrew",
+                 "- speech-to-text", "- whisper", "- push-to-talk", "Win+H"):
+        assert must in locale, must
+    he = (w / "YoavShimron.DeskIT.locale.he-IL.yaml").read_text("utf-8")
+    assert "PackageLocale: he-IL" in he and "ManifestType: locale" in he
+    assert "ManifestType: version" in (w / "YoavShimron.DeskIT.yaml").read_text("utf-8")
+    assert "Yoav.DeskIT" not in installer + locale + he, "the superseded identifier"
+    log = (REPO / "CHANGELOG.md").read_text("utf-8")
+    assert re.search(rf"^## {re.escape(version.VERSION)}\s*$", log, re.M), \
+        f"CHANGELOG.md has no '## {version.VERSION}' heading"
+    assert "SHA-256" not in log.split(f"## {version.VERSION}")[1], "the fixed block is the workflow's"
+
+
 # ------------------------------------------------------ updates (PR 13)
 #
 # DISTRIBUTION_PLAN.md 11.3-11.6, D21: one weekly look at GitHub Releases

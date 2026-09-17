@@ -1,0 +1,15 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.locale.1.6.0.schema.json
+PackageIdentifier: YoavShimron.DeskIT
+PackageVersion: x.y.z
+PackageLocale: he-IL
+Publisher: Yoav Shimron
+PackageName: DeskIT
+ShortDescription: הכתבה בעברית בלחיצה על מקש, ישר לסמן, על המחשב שלך.
+Description: |-
+  מחזיקים מקש, מדברים עברית (גם עם מילים באנגלית), משחררים — והטקסט נכנס במקום שבו הסמן נמצא, בכל תוכנה. התמלול רץ על המחשב עם המודל של ivrit.ai; שום דבר לא יוצא מהמחשב עד שמדליקים תכונת ענן עם מפתח משלכם, וכל חיבור רשום בתוך האפליקציה.
+Tags:
+  - הכתבה
+  - עברית
+  - דיבור-לטקסט
+ManifestType: locale
+ManifestVersion: 1.6.0
