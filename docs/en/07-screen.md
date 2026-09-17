@@ -20,6 +20,11 @@ with your clipboard that DeskIT does not.
 | Ctrl+F6 | a photo from the camera — the light beside the lens goes off at the shutter, and that is a real promise | `captures` |
 | Ctrl+F10 | ask about the screen: select a region, a card opens, ask in Hebrew by voice or by typing | nothing saved; the picture lives in memory while the card is open |
 
+**Screen recording and the camera need the Recording pack**: PyAV with its FFmpeg, 28 MB from
+PyPI, installed from **Settings > Screen** with one button. The installer does not carry it
+because that FFmpeg build is GPL (x264, x265); the card shows the licences before the download,
+and dictation works without it.
+
 **Settings > Screen** changes the folders, the recorder's frame rate, whether recordings
 include computer sound (then the microphone is opened when audio is "mic"), and the
 Snipping-Tool switch: while DeskIT runs and the switch is on, Windows' own Snipping Tool stops

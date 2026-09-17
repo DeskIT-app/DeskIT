@@ -33,7 +33,7 @@ if (Test-Path $Stage) { Remove-Item -Recurse -Force $Stage }
 New-Item -ItemType Directory -Force $Stage, $Wheels | Out-Null
 
 # 1. wheelhouse, by hash, binary only
-& $Python -m pip download -r requirements.lock --require-hashes --only-binary=:all: `
+& $Python -m pip download -r requirements.lock --require-hashes --no-deps --only-binary=:all: `
     --platform win_amd64 --python-version 3.11 --implementation cp --abi cp311 --dest $Wheels
 if ($LASTEXITCODE) { throw "pip download failed" }
 
@@ -58,7 +58,7 @@ foreach ($f in "_tkinter.pyd", "tcl86t.dll", "tk86t.dll", "zlib1.dll") {
 Copy-Item packaging\python311._pth (Join-Path $py "python311._pth") -Force
 
 # 5. install from the wheelhouse only
-& $Python -m pip install --no-index --find-links $Wheels --require-hashes `
+& $Python -m pip install --no-index --find-links $Wheels --require-hashes --no-deps `
     -r requirements.lock --target (Join-Path $py "Lib\site-packages")
 if ($LASTEXITCODE) { throw "pip install failed" }
 Get-ChildItem -Recurse $py -Include __pycache__ -Directory | Remove-Item -Recurse -Force

@@ -116,7 +116,7 @@ CW = W - PAD * 2         # 1112 — the usable width of a screen
 BAR_RUN_W = 104          # Pause / Resume / Start — the key he presses all
                          # day, and the only one that is in every state
 BAR_STOP_W = 84
-BAR_GAP = 12
+BAR_GAP = 8              # was 12 until the seventh place (Network) needed the room
 BAR_KEEP = 24
 # The nightly run's own Stop, which is in the bar only while a nightly
 # test run is going — see _paint_bar_buttons for what pays for it.
@@ -1572,13 +1572,15 @@ class Dashboard:
             tk.Label(bar, image=badge, bg=ui.BG).place(x=PAD, y=15)
 
         self.nav = widgets.Tabs(bar, [name for _key, name in NAV], bg=ui.BG,
-                                selected="Home", command=self._show, gap=12)
+                                selected="Home", command=self._show, gap=10)
         # Seven words now, so the bar is measured rather than guessed:
         # the places start after the mark and have to end before the
-        # state chip. 24 + 26 mark + 10 air = 60; seven words at gap 12
-        # end under 576, the chip's left edge in the state that holds
-        # the most buttons — the clearance a test holds us to.
-        self.nav.place(x=PAD + 36, y=17)
+        # state chip in EVERY state — the fullest is the owner's, with
+        # Stop tests in the bar during a nightly run and "Transcribing"
+        # on the chip, where the chip's left edge is 548 (BAR_GAP 8).
+        # 24 + 26 mark + 6 air = 56; seven words at gap 10 end at 544.
+        # Two tests hold the two states (tests.py, tests_ops.py).
+        self.nav.place(x=PAD + 32, y=17)
 
         # The state chip and the buttons are placed from the RIGHT edge, so
         # a longer word ("Transcribing") grows leftwards into empty bar
@@ -7363,6 +7365,7 @@ class Dashboard:
             elif name == "Privacy":
                 builders.append(lambda: self._keys_block(scroller))
             elif name == "Screen":
+                builders.append(lambda: self._recording_block(scroller))
                 builders.append(lambda: self._snip_block(scroller, sections))
                 if hardware_mod.no_voice():
                     builders.append(lambda: self._voice_block(scroller))
@@ -8343,6 +8346,54 @@ class Dashboard:
                 self._note("Claude Code disconnected — the hook lines are gone")
         except Exception as e:                                # noqa: BLE001
             self._note(f"could not write the hook: {e}")
+
+    def _recording_block(self, scroller) -> None:
+        """The Recording pack on Settings > Screen (13.4, D24): PyAV with
+        its FFmpeg — screen recording, the camera, non-WAV uploads. The
+        installer never carries it (a GPL FFmpeg build); the person's
+        own download from PyPI through the pack's step window, the
+        licence on the card. The checkout has it in its venv."""
+        card = ui.Card(scroller.inner, CW, 96, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="R E C O R D I N G", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        buttons: list = []
+        if paths.PORTABLE:
+            said = "PyAV (FFmpeg) comes with this checkout's venv — recording and the camera work"
+        else:
+            state = packs_mod.state("recording")
+            rp = packs_mod.pack("recording")
+            size = f" ({packs_mod.human(rp.bytes)})" if rp else ""
+            if state == "ok":
+                said = "PyAV (FFmpeg) is installed — screen recording and the camera work"
+                buttons.append(("Remove the Recording pack",
+                                lambda: self._pack_remove("recording")))
+            elif state == "stale":
+                said = "PyAV is installed from an older release — update it"
+                buttons.append((f"Update the Recording pack{size}",
+                                lambda: self._hardware_step("--install-pack", "recording")))
+            else:
+                said = (f"not installed — screen recording, the camera and non-WAV phone "
+                        f"uploads need PyAV's FFmpeg{size}, a GPL build the installer does "
+                        f"not carry; dictation works without it")
+                buttons.append((f"Install the Recording pack{size}",
+                                lambda: self._hardware_step("--install-pack", "recording")))
+        self.parts["recording_line"] = said
+        tk.Label(body, text=said, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
+                 wraplength=CW - 300, justify="left").place(x=0, y=22)
+        x = CW - 36
+        for label, command in buttons:
+            w = widgets.button_width(label)
+            ui.Button(body, label, command, h=30, w=w, quiet=True, bg=ui.CARD
+                      ).place(x=x, y=20, anchor="ne")
+            x -= w + 8
+        scroller.bind_wheel(card)
+
+    def _pack_remove(self, name: str) -> None:
+        packs_mod.remove(name)
+        self._note(f"the {name} pack was removed")
+        self._draw_settings()
 
     SNIP_KEY, PLAIN_SNIP_KEY = "win+shift+s", "ctrl+f11"
 

@@ -6238,6 +6238,10 @@ def main() -> int:
     # Installed, the probe runs again so the tier and its defaults are
     # the card's before any model loads.
     import packs as packs_mod
+    # PyAV, when the Recording pack brought it (13.4): its site goes on
+    # sys.path now, before faster_whisper's `import av` at the model's
+    # construction, so the vendor stub hands over instead of answering.
+    packs_mod.activate("recording")
     if args.install_pack or (not args.fake and not wizard_due
                              and packs_mod.wanted(cfg, facts)):
         outcome = packs_mod.offer(args.install_pack or "gpu")

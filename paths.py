@@ -57,9 +57,15 @@ that is not there.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
+#: The stand-ins for what the installed copy does not ship (vendor/av,
+#: 13.4) — LAST on sys.path, so a real package anywhere wins.
+VENDOR_DIR = APP_DIR / "vendor"
+if str(VENDOR_DIR) not in sys.path:
+    sys.path.append(str(VENDOR_DIR))
 
 #: The checkout. ``.git`` is a folder in a normal clone and a FILE in a git
 #: worktree; ``exists()`` answers both, ``is_dir()`` would not.

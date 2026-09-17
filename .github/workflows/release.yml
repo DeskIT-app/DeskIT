@@ -74,7 +74,7 @@ jobs:
       - name: Wheelhouse
         run: |
           python -m pip install --upgrade pip
-          python -m pip download -r requirements.lock --require-hashes --only-binary=:all: `
+          python -m pip download -r requirements.lock --require-hashes --no-deps --only-binary=:all: `
             --platform win_amd64 --python-version 3.11 --implementation cp --abi cp311 `
             --dest wheels
           Get-ChildItem wheels | Measure-Object -Property Length -Sum | ForEach-Object { "wheels: $($_.Count) files, $([math]::Round($_.Sum / 1MB)) MB" }
@@ -108,7 +108,7 @@ jobs:
       # 5. install — from the wheelhouse only; the network is an error here
       - name: Install the wheelhouse
         run: |
-          python -m pip install --no-index --find-links wheels --require-hashes `
+          python -m pip install --no-index --find-links wheels --require-hashes --no-deps `
             -r requirements.lock --target stage/python/Lib/site-packages
           Get-ChildItem -Recurse stage/python/Lib/site-packages -Include __pycache__ -Directory | Remove-Item -Recurse -Force
 

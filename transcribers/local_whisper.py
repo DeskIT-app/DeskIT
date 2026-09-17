@@ -131,12 +131,25 @@ def _decode_pcm(wav_bytes: bytes):
     except Exception:
         pass                    # not a WAV, or not one `wave` can open
     try:
-        from faster_whisper.audio import decode_audio
-        return decode_audio(BytesIO(wav_bytes), sampling_rate=DETECT_RATE)
+        import pcm
+        return pcm.to_float32(wav_bytes, DETECT_RATE)
     except Exception as e:
         log.warning("cannot read this clip for language detection (%s) — "
                     "it stays in the pinned language", e)
         return None
+
+
+def _pcm(wav_bytes: bytes):
+    """What WhisperModel.transcribe is handed: the samples, decoded by
+    pcm.py, never a BytesIO — a file-like goes through faster-whisper's
+    decode_audio, which is PyAV, and the installed copy ships none
+    (13.4, D24). A clip that is not WAV raises pcm.NotWav with the
+    Recording pack's sentence."""
+    import pcm
+    try:
+        return pcm.to_float32(wav_bytes)
+    except pcm.NotWav as e:
+        raise TranscriptionError(str(e)) from e
 
 
 def _silence_wav(seconds: float = 0.4, rate: int = 16000) -> bytes:
@@ -402,7 +415,7 @@ class LocalWhisperTranscriber:
                 # libraries are missing — the failure only surfaces on the
                 # first real inference. Force that here, so a broken GPU
                 # falls back to CPU now instead of breaking every dictation.
-                list(candidate.transcribe(BytesIO(_silence_wav()),
+                list(candidate.transcribe(_pcm(_silence_wav()),
                                           language=language)[0])
             except Exception as e:                 # no GPU, no kernels, OOM
                 last = e
@@ -530,7 +543,7 @@ class LocalWhisperTranscriber:
         if temperature is not None:
             kwargs["temperature"] = temperature
         try:
-            segments, _info = model.transcribe(BytesIO(wav_bytes), **kwargs)
+            segments, _info = model.transcribe(_pcm(wav_bytes), **kwargs)
             text = " ".join(s.text.strip() for s in segments).strip()
         except Exception as e:
             raise TranscriptionError(f"study decode failed: {e}") from e
@@ -583,7 +596,7 @@ class LocalWhisperTranscriber:
                 **self._guards,
             )
             kwargs.update(over)      # the retry overrides, one dict
-            segments, _info = model.transcribe(BytesIO(wav_bytes),
+            segments, _info = model.transcribe(_pcm(wav_bytes),
                                                **kwargs)
             got = list(segments)
             return got, " ".join(s.text.strip() for s in got).strip()

@@ -191,17 +191,20 @@ def tailscale_name() -> str | None:
 
 
 def to_wav(raw: bytes) -> tuple[bytes, float]:
-    """Whatever the phone recorded (webm/opus, ogg, m4a, wav) -> (16 kHz
-    mono WAV, seconds). That is what the transcriber and its language
-    detector expect. PyAV ships with faster-whisper: no ffmpeg needed."""
+    """Whatever the phone posted -> (16 kHz mono WAV, seconds), what the
+    transcriber and its language detector expect. The keyboard posts
+    16 kHz WAV, which pcm.py reads with the standard library; another
+    container (the retired web page's webm/opus) needs PyAV, which the
+    installed copy has only with the Recording pack — pcm.NotWav then
+    carries the sentence and the route answers 415 (13.4, D24)."""
     import numpy as np
-    from faster_whisper.audio import decode_audio
 
+    import pcm
     from recorder import frames_to_wav
 
-    audio = decode_audio(BytesIO(raw), sampling_rate=16000)
-    pcm = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
-    return frames_to_wav([pcm], 16000), len(pcm) / 16000.0
+    audio = pcm.to_float32(raw, 16000)
+    samples = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+    return frames_to_wav([samples], 16000), len(samples) / 16000.0
 
 
 class _Handler(BaseHTTPRequestHandler):

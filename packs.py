@@ -65,7 +65,7 @@ from steps import human
 log = logging.getLogger("app")
 
 PURPOSE = "pack-install"
-NAMES = ("gpu", "skin")
+NAMES = ("gpu", "skin", "recording")
 RECORD = "packs.lock"
 CREATE_NO_WINDOW = 0x08000000
 #: The distributions each pack holds; the versions come from the
@@ -73,11 +73,18 @@ CREATE_NO_WINDOW = 0x08000000
 PINS: dict[str, tuple[str, ...]] = {
     "gpu": ("nvidia-cublas-cu12", "nvidia-cudnn-cu12", "nvidia-cuda-nvrtc-cu12"),
     "skin": ("skia-python",),
+    # PyAV: screen recording, the camera, non-WAV uploads. Its wheel
+    # bundles an FFmpeg built with x264/x265 — a GPL build — so it is
+    # never in the installer (13.4, D24): the person's own download from
+    # PyPI, the licence on the card, the same road as NVIDIA's libraries.
+    "recording": ("av",),
 }
 LICENSES: dict[str, list[tuple[str, str]]] = {
     "gpu": [("NVIDIA CUDA EULA", "https://docs.nvidia.com/cuda/eula/index.html"),
             ("cuDNN SLA", "https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/eula.html")],
     "skin": [("skia-python licence (BSD-3)", "https://github.com/kyamagu/skia-python/blob/main/LICENSE")],
+    "recording": [("PyAV licence (BSD-3)", "https://github.com/PyAV-Org/PyAV/blob/main/LICENSE.txt"),
+                  ("FFmpeg licence (this build is GPL: x264, x265)", "https://ffmpeg.org/legal.html")],
 }
 #: The wheel tag the product runs: the embeddable 3.11, 64-bit.
 TAGS = ("cp311", "py3")
@@ -398,6 +405,14 @@ TEXT = {
                  "בלי זה הכל עובד, רק במראה הפשוט."),
         "done": "הספרייה הותקנה.",
     },
+    "recording": {
+        "title": "הקלטת מסך ומצלמה",
+        "body": ("הקלטת המסך, המצלמה וקבצי שמע שאינם WAV צריכים את ספריית FFmpeg, "
+                 "שמגיעה עם החבילה PyAV ({size} מהמאגר של פייתון). הבנייה הזאת של FFmpeg "
+                 "היא ברישיון GPL (x264, x265) — לכן היא לא בתוך המתקין, אלא הורדה שלך, "
+                 "לתיקייה של דסק-איט. ההכתבה עובדת גם בלעדיה."),
+        "done": "PyAV הותקן. הקלטת המסך והמצלמה עובדות מעכשיו.",
+    },
 }
 
 
@@ -408,7 +423,7 @@ def step(p: Pack, installer=None) -> steps.Step:
         title=words["title"], body=words["body"].format(size=human(p.bytes)),
         size_line=size_line(p), total=p.bytes, work=lambda **kw: work(p, **kw),
         links=list(p.licenses), button="Install", said={"done": words["done"]},
-        name={"gpu": "NVIDIA libraries"}.get(p.name, p.name),
+        name={"gpu": "NVIDIA libraries", "recording": "PyAV (FFmpeg)"}.get(p.name, p.name),
     )
 
 

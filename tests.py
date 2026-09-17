@@ -69,6 +69,12 @@ from transcribers.fake import FakeTranscriber
 
 FAILURES: list[str] = []
 
+#: A real, tiny 16 kHz WAV (10 ms of silence) for the tests that hand the
+#: transcriber "some audio": since 13.4 the transcriber decodes what it is
+#: given through pcm.py before the model sees it, so four bytes of RIFF
+#: are not audio any more.
+RIFF = frames_to_wav([np.zeros(160, dtype=np.int16)], 16000)
+
 VK_RCTRL = 0xA3
 VK_LCTRL = 0xA2
 VK_C = 0x43
@@ -1714,12 +1720,12 @@ def test_explicit_language_beats_detection() -> None:
     t._guards, t._boilerplate = {}, ()
     t._hotwords = None       # real __init__ sets this; see local_whisper.py
 
-    assert t.transcribe(b"RIFF", language="en") == "hello"
+    assert t.transcribe(RIFF, language="en") == "hello"
     assert calls["model"] == "en" and calls["language"] == "en", calls
     assert "detected" not in calls, "must not detect when told explicitly"
 
     calls.clear()
-    assert t.transcribe(b"RIFF", language="he") == "hello"
+    assert t.transcribe(RIFF, language="he") == "hello"
     assert calls["model"] == "he" and calls["language"] == "he", calls
     assert "detected" not in calls
 
@@ -1947,7 +1953,7 @@ def test_a_latin_decoder_loop_is_cut_and_the_loss_is_reported() -> None:
     t._guards, t._boilerplate = {}, ()
     t._hotwords = None
 
-    out = t.transcribe(b"RIFF", language="he")
+    out = t.transcribe(RIFF, language="he")
     assert "xxx" not in out.lower(), out
     assert "ביטחון" in out and "תודה" in out, "real words were cut too"
     assert t.last_warning and "29 s" in t.last_warning, t.last_warning
@@ -1987,7 +1993,7 @@ def test_a_loop_is_retried_greedily_and_the_words_come_back() -> None:
     t._guards, t._boilerplate = {}, ()
     t._hotwords = None
 
-    out = t.transcribe(b"RIFF", language="he")
+    out = t.transcribe(RIFF, language="he")
     assert "תקן את זה אם אתה יכול" in out, out
     assert "xxx" not in out.lower(), out
     assert t.last_warning is None, \
@@ -2000,7 +2006,7 @@ def test_a_loop_is_retried_greedily_and_the_words_come_back() -> None:
     t._model = type("Clean", (), {
         "transcribe": lambda self, audio, **kw: (
             asked.append(kw.get("temperature")) or [Whole()], None)})()
-    t.transcribe(b"RIFF", language="he")
+    t.transcribe(RIFF, language="he")
     assert len(asked) == 1, asked
 
 
@@ -2122,9 +2128,9 @@ def test_english_model_gets_no_hebrew_prompt() -> None:
     t._guards, t._boilerplate = {}, ()
     t._hotwords = None       # real __init__ sets this; see local_whisper.py
 
-    t.transcribe(b"RIFF", language="he")
+    t.transcribe(RIFF, language="he")
     assert seen["he"] == "שיחה בעברית עם commit", seen
-    t.transcribe(b"RIFF", language="en")
+    t.transcribe(RIFF, language="en")
     assert seen["en"] is None, seen
 
 
@@ -4894,8 +4900,8 @@ def test_hotwords_reach_both_models() -> None:
     t._guards, t._boilerplate = {}, ()
     t._hotwords = lambda: "Expo Go EAS Cowork"
 
-    t.transcribe(b"RIFF", language="he")
-    t.transcribe(b"RIFF", language="en")
+    t.transcribe(RIFF, language="he")
+    t.transcribe(RIFF, language="en")
     assert seen["he"] == "Expo Go EAS Cowork", seen
     assert seen["en"] == "Expo Go EAS Cowork", seen
 
@@ -4926,7 +4932,7 @@ def test_a_broken_vocabulary_does_not_break_transcription() -> None:
         raise RuntimeError("vocab is on fire")
 
     t._hotwords = explode
-    assert t.transcribe(b"RIFF", language="he") == "בסדר"
+    assert t.transcribe(RIFF, language="he") == "בסדר"
     assert seen["hotwords"] is None, seen
 
 
@@ -5016,7 +5022,7 @@ def test_the_phone_gets_the_vocabulary_the_desktop_learned() -> None:
                 return "תריץ את xpogo"
 
         app.transcriber = Recording()
-        text, backend, _warning = app._transcribe_for_phone(b"RIFF")
+        text, backend, _warning = app._transcribe_for_phone(RIFF)
 
         assert "Expo Go" in seen["hotwords"], seen
         assert text == "תריץ את Expo Go", text
@@ -27732,8 +27738,8 @@ def test_transcribe_with_head_decodes_only_the_tail_and_joins_the_windows():
 
     class Model:
         def transcribe(self, audio, **kw):
-            with wave.open(audio, "rb") as w:
-                seconds = w.getnframes() / w.getframerate()
+            # since 13.4 the model is handed 16 kHz float32 samples
+            seconds = len(audio) / 16000
             decoded.append(round(seconds, 2))
             # One word per second of audio, timed where it sits.
             words = [W(f" ת{i}", i + 0.2, i + 0.8)
@@ -30355,7 +30361,7 @@ def test_models_partial_never_loads():
             t = transcribers.get_transcriber(cfg)
             assert t.name == "missing" and isinstance(t, transcribers.Transcriber)
             try:
-                t.transcribe(b"RIFF")
+                t.transcribe(RIFF)
             except ModelMissing as err:
                 assert err.state == "incomplete" and err.retry_after == float("inf")
             else:
@@ -30532,7 +30538,7 @@ def test_packs_lock_is_the_shipped_list():
     import packs
 
     lock = packs.read_lock()
-    assert set(lock) == set(packs.NAMES) == {"gpu", "skin"}, list(lock)
+    assert set(lock) == set(packs.NAMES) == {"gpu", "skin", "recording"}, list(lock)
     gpu, skin = lock["gpu"], lock["skin"]
     assert [w.name for w in gpu.wheels] == list(packs.PINS["gpu"])
     for w in gpu.wheels + skin.wheels:
@@ -30549,9 +30555,11 @@ def test_packs_lock_is_the_shipped_list():
     text = packs.requirements_text(gpu)
     assert text.splitlines()[0] == f"nvidia-cublas-cu12=={gpu.wheels[0].version} --hash=sha256:{gpu.wheels[0].sha256}"
     assert len(text.splitlines()) == 3
-    assert packs.pack("recording") is None, "PyAV ships in the base lock; there is no recording pack"
+    rec = packs.pack("recording")
+    assert rec is not None and [w.name for w in rec.wheels] == ["av"], "PyAV is the Recording pack (13.4)"
+    assert any("GPL" in label for label, _u in rec.licenses), rec.licenses
     base = (REPO / "requirements.lock").read_text("utf-8")
-    assert "av==" in base and "nvidia-" not in base and "skia-python" not in base
+    assert "\nav==" not in base and "nvidia-" not in base and "skia-python" not in base
 
 
 def test_packs_pip_command():
@@ -30904,7 +30912,7 @@ def test_the_stand_in_upgrades_itself_when_the_model_lands():
             assert t.name == "missing" and not hasattr(t, "study_decode")
             for _ in range(2):
                 try:
-                    t.transcribe(b"RIFF", "he")
+                    t.transcribe(RIFF, "he")
                 except ModelMissing as got:
                     assert got.state == "absent" and got.retry_after == float("inf")
                 else:
@@ -30913,8 +30921,8 @@ def test_the_stand_in_upgrades_itself_when_the_model_lands():
             e.folder.mkdir(parents=True)
             (e.folder / "model.bin").write_bytes(b"x" * 10)
             (e.folder / models.COMPLETE).write_text(json.dumps({"revision": e.revision}), "utf-8")
-            assert t.transcribe(b"RIFF", "he") == "real:he" and built == [1]
-            assert t.transcribe(b"RIFF", "en") == "real:en" and built == [1], "built once"
+            assert t.transcribe(RIFF, "he") == "real:he" and built == [1]
+            assert t.transcribe(RIFF, "en") == "real:en" and built == [1], "built once"
             assert t.name == "local" and t.last_words[0][0] == "שלום"
             assert hasattr(t, "study_decode") and t.study_decode() == "studied"
             # without a builder it is only ever the error
@@ -32070,6 +32078,147 @@ def test_the_two_d33_switches_live_on_their_tabs():
         shutil.rmtree(d, ignore_errors=True)
 
 
+# ----------------------- PyAV out of the base: 13.4's outcome B (PR 24)
+#
+# DISTRIBUTION_PLAN.md 13.4, D24: the PyPI `av` wheel bundles an FFmpeg
+# built with x264/x265 (a GPL build) and no LGPL wheel exists — the fork
+# publishes FFmpeg tarballs, not `av` wheels — so the installer ships no
+# PyAV at all. vendor/av answers faster-whisper's import; pcm.py decodes
+# the app's own WAV without a decoder; the Recording pack brings the real
+# wheel as the person's own download.
+
+def test_pcm_reads_the_apps_own_wav_without_pyav():
+    """pcm.wav_to_float32: 16-bit mono 16 kHz (the recorder's) is a
+    straight read; stereo is averaged; 48 kHz is resampled to 16 kHz;
+    8- and 32-bit widths are scaled; a non-RIFF body is NotWav, and
+    with the vendor stub in place to_float32 says the Recording pack's
+    sentence instead of reaching for a decoder."""
+    import io
+    import wave
+
+    import numpy as np
+
+    import pcm
+
+    def wav(rate, channels, width, seconds=0.5, freq=440.0):
+        n = int(rate * seconds)
+        tt = np.arange(n) / rate
+        sig = np.sin(2 * np.pi * freq * tt)
+        if width == 2:
+            data = (sig * 20000).astype("<i2")
+        elif width == 4:
+            data = (sig * 2_000_000_000).astype("<i4")
+        else:
+            data = (sig * 100 + 128).astype(np.uint8)
+        if channels == 2:
+            data = np.column_stack([data, data])
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(channels)
+            w.setsampwidth(width)
+            w.setframerate(rate)
+            w.writeframes(data.tobytes())
+        return buf.getvalue()
+
+    a = pcm.wav_to_float32(wav(16000, 1, 2))
+    assert a.dtype == np.float32 and a.shape == (8000,) and 0.55 < abs(a).max() < 0.65
+    assert pcm.wav_to_float32(wav(16000, 2, 2)).shape == (8000,), "stereo not averaged"
+    b = pcm.wav_to_float32(wav(48000, 1, 2))
+    assert b.shape == (8000,) and 0.5 < abs(b).max() < 0.65, "48 kHz not resampled"
+    assert 0.5 < abs(pcm.wav_to_float32(wav(16000, 1, 4))).max() < 1.0
+    assert 0.6 < abs(pcm.wav_to_float32(wav(16000, 1, 1))).max() < 0.9
+    assert pcm.seconds(a) == 0.5
+    try:
+        pcm.wav_to_float32(b"OggS" + b"\x00" * 100)
+    except pcm.NotWav:
+        pass
+    else:
+        raise AssertionError("a non-WAV body was accepted")
+
+    class Stub:
+        MISSING = "PyAV (av) is not installed: … the Recording pack"
+
+        @staticmethod
+        def is_stub():
+            return True
+    real = sys.modules.get("av")
+    sys.modules["av"] = Stub()
+    try:
+        try:
+            pcm.to_float32(b"OggS" + b"\x00" * 100)
+        except pcm.NotWav as e:
+            assert "Recording pack" in str(e)
+        else:
+            raise AssertionError("the stub did not refuse")
+    finally:
+        if real is not None:
+            sys.modules["av"] = real
+        else:
+            sys.modules.pop("av", None)
+
+
+def test_the_vendor_stub_answers_the_import_and_hands_over():
+    """vendor/av in a bare interpreter (-S, sys.path = the vendor folder):
+    `import av` succeeds, is_stub() is True, any attribute is one
+    ImportError naming the Recording pack; then site-packages appended
+    — the way packs.activate appends the pack's site — and the next
+    attribute access hands over to the real PyAV without a restart."""
+    import subprocess
+    import sysconfig
+
+    site = sysconfig.get_paths()["purelib"]
+    script = f"""
+import sys
+sys.path[:] = [{str(REPO / "vendor")!r}] + [p for p in sys.path if "site-packages" not in p]
+import av
+assert av.is_stub() is True
+try:
+    av.open
+except ImportError as e:
+    assert "Recording pack" in str(e), e
+else:
+    raise SystemExit("no ImportError")
+sys.path.append({site!r})
+assert av.is_stub() is False, "no hand-over"
+assert callable(av.open) and hasattr(av, "AudioFrame"), dir(av)[:5]
+import faster_whisper.audio as fa
+print("ok", av.__version__, sys.modules["av"].__file__)
+"""
+    out = subprocess.run([sys.executable, "-S", "-c", script], capture_output=True,
+                         encoding="utf-8", errors="replace", timeout=120, cwd=str(REPO))
+    assert out.returncode == 0 and out.stdout.startswith("ok"), (out.stdout, out.stderr[-1500:])
+    assert "site-packages" in out.stdout, out.stdout
+
+
+def test_dictation_never_hands_faster_whisper_a_file():
+    """Static: transcribers/local_whisper.py and server.py decode through
+    pcm.py — no transcribe(BytesIO(...)), no decode_audio outside pcm;
+    paths.py puts vendor/ LAST on sys.path; main activates the recording
+    pack before any model loads; the recording pack is in packs.lock
+    with its GPL sentence; both builds install the lock with --no-deps."""
+    lw = (REPO / "transcribers" / "local_whisper.py").read_text("utf-8")
+    code = "\n".join(l for l in lw.splitlines() if not l.lstrip().startswith("#"))
+    assert "transcribe(BytesIO" not in code, "a file handed to faster-whisper"
+    assert "from faster_whisper.audio import" not in code, "a decoder on the dictation path"
+    assert "pcm.to_float32" in lw
+    srv = (REPO / "server.py").read_text("utf-8")
+    assert "decode_audio" not in srv and "pcm.to_float32" in srv
+    pm = (REPO / "pcm.py").read_text("utf-8")
+    assert pm.count("from faster_whisper.audio import decode_audio") == 1,         "pcm.py is the one place PyAV may be asked"
+    pa = (REPO / "paths.py").read_text("utf-8")
+    assert "sys.path.append(str(VENDOR_DIR))" in pa
+    mn = (REPO / "main.py").read_text("utf-8")
+    assert mn.index('packs_mod.activate("recording")') < mn.index("firstrun.run("), "the pack after the model"
+    for name in (".github/workflows/release.yml", "packaging/build_local.ps1"):
+        text = (REPO / name).read_text("utf-8")
+        assert text.count("--no-deps") == 2, f"{name}: the lock is installed with dependencies"
+    lock = (REPO / "requirements.lock").read_text("utf-8")
+    assert "\nav==" not in lock and "taken OUT by hand" in lock
+    assert (REPO / "vendor" / "av" / "__init__.py").exists()
+    attrs = (REPO / ".gitattributes").read_text("utf-8")
+    assert "vendor/" not in attrs, "vendor/ must ship"
+
+
 # ------------------------------------------------------ updates (PR 13)
 #
 # DISTRIBUTION_PLAN.md 11.3-11.6, D21: one weekly look at GitHub Releases
@@ -32714,7 +32863,7 @@ def test_deskit_pyw_is_the_entry_and_the_window_is_relaunched_by_layout():
 # These hold the inputs the build reads from the repo honest; the git
 # half (what the archive contains) is dev/tests_ops.py's.
 
-LOCK_EXCLUDED = ("keyboard", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
+LOCK_EXCLUDED = ("av", "keyboard", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
                  "nvidia-cuda-nvrtc-cu12", "skia-python", "google-genai")
 
 

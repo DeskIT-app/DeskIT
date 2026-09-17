@@ -58,6 +58,29 @@
           "sha256": "e95ab76b3e1859e3dd5402e5ccba1c1a539c5d37a082a3a62e16261a4bebc3f6"
         }
       ]
+    },
+    "recording": {
+      "bytes": 27556236,
+      "licenses": [
+        [
+          "PyAV licence (BSD-3)",
+          "https://github.com/PyAV-Org/PyAV/blob/main/LICENSE.txt"
+        ],
+        [
+          "FFmpeg licence (this build is GPL: x264, x265)",
+          "https://ffmpeg.org/legal.html"
+        ]
+      ],
+      "wheels": [
+        {
+          "name": "av",
+          "version": "18.0.0",
+          "filename": "av-18.0.0-cp311-abi3-win_amd64.whl",
+          "url": "https://files.pythonhosted.org/packages/11/85/0f121ff43dc5a70696676c98a8f1674e2fa787614c2abaacb15fa1a9bc99/av-18.0.0-cp311-abi3-win_amd64.whl",
+          "size": 27556236,
+          "sha256": "aaf4d354d2beaa6651e4f92e54409a578bde64f79c0beef9a30b388d06f7c629"
+        }
+      ]
     }
   }
 }
