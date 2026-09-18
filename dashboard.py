@@ -7876,8 +7876,23 @@ class Dashboard:
         model the app transcribes with, "Built with Llama" while a
         default names one, and a button for every paper."""
         rows = self._about_rows()
-        per_row, row_h = 5, 36
-        height = 92 + ((len(rows) + per_row - 1) // per_row) * row_h
+        # The buttons are laid out FIRST — a row breaks by width, not by
+        # a count — and the card is as tall as the last of them needs.
+        # It used to be 92 + a guessed row count, which put the second
+        # row's lower third behind the card's edge ("swallowed", the
+        # owner, 2026-09-18).
+        per_row, row_h, button_h = 5, 36, 28
+        places: list[tuple[int, int]] = []
+        x = y = 0
+        for index, (label, _command) in enumerate(rows):
+            if index and index % per_row == 0:
+                x, y = 0, y + row_h
+            w = widgets.button_width(label)
+            if x + w > CW - 36:
+                x, y = 0, y + row_h
+            places.append((x, 72 + y))
+            x += w + 8
+        height = 36 + (places[-1][1] + button_h + 8 if places else 72)
         card = ui.Card(scroller.inner, CW, height, bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
@@ -7894,16 +7909,10 @@ class Dashboard:
         model.bind("<Button-1>", lambda _e: self._open_url(self.MODEL_CARD_URL))
         self.parts["about_line"] = line
         self.parts["about_buttons"] = [label for label, _c in rows]
-        x = y = 0
-        for index, (label, command) in enumerate(rows):
-            if index and index % per_row == 0:
-                x, y = 0, y + row_h
-            w = widgets.button_width(label)
-            if x + w > CW - 36:
-                x, y = 0, y + row_h
-            ui.Button(body, label, command, h=28, w=w, quiet=True,
-                      bg=ui.CARD).place(x=x, y=72 + y)
-            x += w + 8
+        for (label, command), (x, y) in zip(rows, places):
+            ui.Button(body, label, command, h=button_h,
+                      w=widgets.button_width(label), quiet=True,
+                      bg=ui.CARD).place(x=x, y=y)
         scroller.bind_wheel(card)
 
     def _files_card(self, scroller) -> None:
@@ -8230,8 +8239,17 @@ class Dashboard:
             present = secretstore.present()
         except Exception:                 # noqa: BLE001
             pass
-        rows = len(self.KEY_PROVIDERS)
-        card = ui.Card(scroller.inner, CW, 40 + rows * 132, bg=ui.BG, pad=18)
+        # Each provider is as tall as its storage sentence wraps to —
+        # two lines of the small face at this width — plus the row above
+        # it; a flat 132 per provider left the last sentence's second
+        # line behind the card's edge ("swallowed", the owner, 2026-09-18).
+        sentences = {name: ui.clamp(secretstore.storage_sentence(name),
+                                    ui.UI, 8, CW - 40, 3)
+                     for name, _l, _u, _w in self.KEY_PROVIDERS}
+        heights = {name: 82 + lines * LINE + 14
+                   for name, (_text, lines) in sentences.items()}
+        card = ui.Card(scroller.inner, CW, 36 + 24 + sum(heights.values()),
+                       bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
         tk.Label(body, text="Y O U R   C L O U D   K E Y S", bg=ui.CARD, fg=ui.FAINT,
@@ -8267,10 +8285,10 @@ class Dashboard:
                             font=(ui.UI, 9), anchor="w")
             line.place(x=0, y=y + 64)
             self.parts["key_lines"][name] = line
-            tk.Label(body, text=secretstore.storage_sentence(name), bg=ui.CARD,
-                     fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 40,
+            tk.Label(body, text=sentences[name][0], bg=ui.CARD,
+                     fg=ui.FAINT, font=(ui.UI, 8),
                      justify="left").place(x=0, y=y + 82)
-            y += 132
+            y += heights[name]
         scroller.bind_wheel(card)
 
     # ------------------------------------------- every connection (D12's window)
@@ -8551,27 +8569,43 @@ class Dashboard:
         switch the wizard's extras page asked once — two hook lines in
         ~/.claude/settings.json, written and removed through notify_hook."""
         import notify_hook
-        card = ui.Card(scroller.inner, CW, 92, bg=ui.BG, pad=18)
-        card.pack(anchor="w", pady=(0, 14))
-        body = card.body
-        tk.Label(body, text="C L A U D E   C O D E", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
         on = False
         try:
             on = notify_hook.hook_installed()
         except Exception:                 # noqa: BLE001
             pass
-        switch = ui.Switch(body, on, lambda v: self._claude_flip(v), bg=ui.CARD)
+        self.parts["claude_switch"] = self._switch_card(
+            scroller, "C L A U D E   C O D E", on, self._claude_flip,
+            "Connect Claude Code",
+            "Two hook lines in ~/.claude/settings.json: when Claude Code "
+            "finishes or asks, DeskIT shows a card and plays a cue. Off "
+            "removes the lines.")
+
+    def _switch_card(self, scroller, title: str, on: bool, command,
+                     label: str, help_text: str):
+        """One switch with its sentence, on a card tall enough for the
+        sentence: the small face is LINE px a line, the sentence starts
+        46 px down the body, and the card used to be 92 px flat — which
+        put the first line's descenders behind the card's edge and the
+        second line nowhere at all (the owner, 2026-09-18, pointing at
+        the Snipping-Tool key and Connect Claude Code: "it is swallowed").
+        The words are wrapped by measuring, the way the settings rows
+        are, so the height and the text agree before either is drawn."""
+        text, lines = ui.clamp(help_text, ui.UI, 8, CW - 100, 3)
+        card = ui.Card(scroller.inner, CW, 36 + 46 + lines * LINE + 6,
+                       bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text=title, bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        switch = ui.Switch(body, on, command, bg=ui.CARD)
         switch.place(x=0, y=26)
-        self.parts["claude_switch"] = switch
-        tk.Label(body, text="Connect Claude Code", bg=ui.CARD, fg=ui.FG,
+        tk.Label(body, text=label, bg=ui.CARD, fg=ui.FG,
                  font=(ui.UI, 10)).place(x=60, y=24)
-        tk.Label(body, text=("Two hook lines in ~/.claude/settings.json: when Claude Code "
-                             "finishes or asks, DeskIT shows a card and plays a cue. Off "
-                             "removes the lines."),
-                 bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 100,
+        tk.Label(body, text=text, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
                  justify="left").place(x=60, y=46)
         scroller.bind_wheel(card)
+        return switch
 
     def _claude_flip(self, on: bool) -> None:
         import launch
@@ -8596,11 +8630,6 @@ class Dashboard:
         installer never carries it (a GPL FFmpeg build); the person's
         own download from PyPI through the pack's step window, the
         licence on the card. The checkout has it in its venv."""
-        card = ui.Card(scroller.inner, CW, 96, bg=ui.BG, pad=18)
-        card.pack(anchor="w", pady=(0, 14))
-        body = card.body
-        tk.Label(body, text="R E C O R D I N G", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
         buttons: list = []
         if paths.PORTABLE:
             said = "PyAV (FFmpeg) comes with this checkout's venv — recording and the camera work"
@@ -8623,8 +8652,20 @@ class Dashboard:
                 buttons.append((f"Install the Recording pack{size}",
                                 lambda: self._hardware_step("--install-pack", "recording")))
         self.parts["recording_line"] = said
-        tk.Label(body, text=said, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
-                 wraplength=CW - 300, justify="left").place(x=0, y=22)
+        # The sentence stops short of the buttons instead of running
+        # under them, and the card is as tall as the sentence wraps to:
+        # on an installed copy without the pack it is two lines beside a
+        # 270 px button, and a 96 px card cut the second line's tail.
+        taken = sum(widgets.button_width(label) + 8 for label, _c in buttons)
+        text, lines = ui.clamp(said, ui.UI, 10, CW - 36 - taken - 12, 3)
+        card = ui.Card(scroller.inner, CW, 36 + 22 + lines * 20 + 8,
+                       bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="R E C O R D I N G", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        tk.Label(body, text=text, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
+                 justify="left").place(x=0, y=22)
         x = CW - 36
         for label, command in buttons:
             w = widgets.button_width(label)
@@ -8650,24 +8691,15 @@ class Dashboard:
         setting = settings_mod.find(sections, "capture.capture_hotkey")
         if setting is None:
             return
-        card = ui.Card(scroller.inner, CW, 92, bg=ui.BG, pad=18)
-        card.pack(anchor="w", pady=(0, 14))
-        body = card.body
-        tk.Label(body, text="T H E   S N I P P I N G - T O O L   K E Y", bg=ui.CARD,
-                 fg=ui.FAINT, font=(ui.MEDIUM, 8)).place(x=0, y=0)
         current = str(self.parts["values"].get(setting.path, setting.value)).strip().lower()
-        switch = ui.Switch(body, current == self.SNIP_KEY,
-                           lambda v, s=setting: self._snip_flip(s, v), bg=ui.CARD)
-        switch.place(x=0, y=26)
-        self.parts["snip_switch"] = switch
-        tk.Label(body, text="Take over Win+Shift+S for DeskIT's screenshot key",
-                 bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10)).place(x=60, y=24)
-        tk.Label(body, text=("Windows' own Snipping Tool stops answering that shortcut "
-                             "while DeskIT runs; off, the screenshot key is Ctrl+F11. "
-                             "Any other key: the Keys place."),
-                 bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8), wraplength=CW - 100,
-                 justify="left").place(x=60, y=46)
-        scroller.bind_wheel(card)
+        self.parts["snip_switch"] = self._switch_card(
+            scroller, "T H E   S N I P P I N G - T O O L   K E Y",
+            current == self.SNIP_KEY,
+            lambda v, s=setting: self._snip_flip(s, v),
+            "Take over Win+Shift+S for DeskIT's screenshot key",
+            "Windows' own Snipping Tool stops answering that shortcut "
+            "while DeskIT runs; off, the screenshot key is Ctrl+F11. "
+            "Any other key: the Keys place.")
 
     def _snip_flip(self, setting, on: bool) -> None:
         """The same road as the Keys place: validated against the other

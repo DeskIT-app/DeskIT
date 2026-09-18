@@ -32440,7 +32440,10 @@ def test_the_keys_block_stores_tests_and_removes_without_showing_the_value():
         assert set(fields) == {"groq", "gemini"}
         assert fields["groq"].entry.cget("show") == "•", "the key would be readable on screen"
         sentence = secretstore.storage_sentence("groq")
-        texts = [w.cget("text") for w in fields["groq"].master.winfo_children()
+        # wrapped by measuring (ui.clamp), so the label holds the sentence
+        # with line breaks where the card's width put them
+        texts = [" ".join(w.cget("text").split())
+                 for w in fields["groq"].master.winfo_children()
                  if w.winfo_class() == "Label"]
         assert sentence in texts, "the storage sentence is not under the field"
         assert board.parts["key_lines"]["groq"].cget("text") == "no key"
