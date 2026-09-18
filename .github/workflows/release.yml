@@ -60,11 +60,6 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      # 0b. the guide's generated pages (chapter 14.6): a release whose
-      # docs/en/settings.md is not what defaults.toml says does not ship.
-      - name: The guide is fresh
-        run: python dev/gen_settings_doc.py --check
-
       - name: The runner's Python is the embeddable's patch version
         run: |
           $got = (python -c "import platform; print(platform.python_version())").Trim()
@@ -78,6 +73,18 @@ jobs:
             --platform win_amd64 --python-version 3.11 --implementation cp --abi cp311 `
             --dest wheels
           Get-ChildItem wheels | Measure-Object -Property Length -Sum | ForEach-Object { "wheels: $($_.Count) files, $([math]::Round($_.Sum / 1MB)) MB" }
+
+      # 0b. the guide's generated pages (chapter 14.6): a release whose
+      #     docs/en/settings.md is not what defaults.toml says does not
+      #     ship. The generator imports the app (dashboard, hardware), so
+      #     the runner's Python gets the base set first — the wheels just
+      #     downloaded, hashed, no second download, no dependency
+      #     resolution, the same install ci.yml runs. (Dry run #1 ran the
+      #     check on a bare Python and stopped at `import PIL`.)
+      - name: The guide is fresh
+        run: |
+          python -m pip install --no-index --find-links wheels --require-hashes --no-deps -r requirements.lock
+          python dev/gen_settings_doc.py --check
 
       # 2. embed — the python.org zip, checked against the committed SHA-256
       - name: Embeddable Python

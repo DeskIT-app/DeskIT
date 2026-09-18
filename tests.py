@@ -32486,9 +32486,12 @@ def test_dictation_never_hands_faster_whisper_a_file():
     assert "sys.path.append(str(VENDOR_DIR))" in pa
     mn = (REPO / "main.py").read_text("utf-8")
     assert mn.index('packs_mod.activate("recording")') < mn.index("firstrun.run("), "the pack after the model"
-    for name in (".github/workflows/release.yml", "packaging/build_local.ps1"):
+    # every pip that reads the lock says --no-deps: the download and the
+    # stage install in both builds, and release.yml's third — the runner's
+    # own Python before the guide check (dry run #1, 2026-09-18)
+    for name, pips in ((".github/workflows/release.yml", 3), ("packaging/build_local.ps1", 2)):
         text = (REPO / name).read_text("utf-8")
-        assert text.count("--no-deps") == 2, f"{name}: the lock is installed with dependencies"
+        assert text.count("--no-deps") == pips, f"{name}: the lock is installed with dependencies"
     # CI proves the lock on every push: the same install as the build,
     # av the way packs.py fetches it, and pip's own word that the set is
     # closed (2026-09-18, after PR 26).
