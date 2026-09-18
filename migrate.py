@@ -57,7 +57,7 @@ STORES = (
     "VOCAB_FILE", "REVIEW_FILE", "PROBLEMS_FILE", "PROBLEMS_DIR",
     "QUESTIONS_FILE", "NOTIFY_FILE", "LOOKUP_CACHE", "AWAKE_STATE",
     "APP_LOG", "TRANSCRIPTS_LOG", "NOTIFY_LOG", "AWAKE_LOG", "NETWORK_LOG",
-    "RECENT_DIR", "PENDING_DIR", "CORPUS_DIR",
+    "RECENT_DIR", "PENDING_DIR", "CORPUS_DIR", "SYNC_DIR",
 )
 
 #: Never touched by a reset: the person's settings and secrets.

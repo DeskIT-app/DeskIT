@@ -1842,7 +1842,20 @@ class App:
                        else {"enabled": False, "unread": 0, "total": 0,
                              "reminding": False, "reminders_left": 0,
                              "card_up": False, "last": None}),
+            # The account (sb.py, chapter 8 / screen 16): who is signed
+            # in, whether a sign-in is waiting on the browser, the last
+            # sync and its error — ids and words, never a token.
+            "account": self._account_status(),
         }
+
+    @staticmethod
+    def _account_status() -> dict:
+        try:
+            import sb
+            return sb.status()
+        except Exception:                                    # noqa: BLE001
+            log.debug("account status tripped", exc_info=True)
+            return {"configured": False, "signed_in": False}
 
     # ---- pause ----
 
@@ -2150,6 +2163,7 @@ class App:
         # line on the card and a row on the dashboard, never a download.
         import updates as updates_mod
         updates_mod.start_worker(say=self._say)
+        self._start_account()
         said = updates_mod.after_update()
         if said:
             self._say(said)
@@ -2471,6 +2485,8 @@ class App:
                     return {"ok": True, "dot": self.dot.state(),
                             "message": "the dot is back in its corner"}
                 return {"ok": False, "error": f"unknown dot action {do!r}"}
+            if command == "account":
+                return self._account_command(str(args.get("do", "status")).strip().lower())
             if command == "tour":
                 # Show the tour again (Settings > The app, D36): the
                 # same four cards the first start showed, from the top.
@@ -2491,6 +2507,100 @@ class App:
         except Exception as e:
             log.exception("control command %r failed", command)
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    def _account_command(self, do: str) -> dict:
+        """Settings > Privacy > Account (screen 16), over the pipe: the
+        dashboard is another process and only THIS one holds the
+        session (8.6). Nothing here waits on the network — a sign-in
+        opens the browser and waits on a thread of its own, a sync is a
+        nudge to the worker — so the poll never sees a frozen app; the
+        outcome lands in status()["account"] (busy / last_error) and
+        in the log. A shut gate opens its card first, like a key press
+        would (D7), and the person presses the button again after
+        [Turn on]."""
+        import sb
+        if do == "status":
+            return {"ok": True, "account": sb.status()}
+        if not sb.configured():
+            return {"ok": False, "error": "the account server is not configured in this build"}
+        if do in ("google", "anonymous"):
+            if not privacy.allowed("account"):
+                asked = privacy.request("account")
+                return {"ok": False, "error": ("the account card is beside the dot — press "
+                                               "Turn on, then Sign in again" if asked else
+                                               "the account consent is off — Settings > "
+                                               "Privacy, or main.py --consent account")}
+            if sb.status().get("busy"):
+                return {"ok": False, "error": "a sign-in is already waiting for the browser"}
+
+            def work() -> None:
+                try:
+                    who = sb.sign_in_google() if do == "google" else sb.sign_in_anonymous()
+                    self._say("signed in" + (f" as {who.get('email')}" if who.get("email")
+                                             else " (anonymous account)"))
+                    sb.nudge()
+                except Exception as e:                       # noqa: BLE001
+                    sb._status["last_error"] = str(e)[:200]
+                    log.info("account: sign-in did not finish (%s)", e)
+
+            threading.Thread(target=work, daemon=True, name="account-signin").start()
+            return {"ok": True, "message": ("the browser opens Google's sign-in; come back "
+                                            "here when it says done" if do == "google"
+                                            else "creating an anonymous account")}
+        if do == "signout":
+            threading.Thread(target=lambda: self._account_try(sb.sign_out, "signed out"),
+                             daemon=True, name="account-signout").start()
+            return {"ok": True, "message": "signing out"}
+        if do == "delete":
+            if not sb.signed_in():
+                return {"ok": False, "error": "no account on this PC"}
+            threading.Thread(target=lambda: self._account_try(
+                sb.delete_account, "the account is deleted — nothing of yours is left on the server"),
+                daemon=True, name="account-delete").start()
+            return {"ok": True, "message": "deleting the account on the server"}
+        if do == "sync":
+            if not sb.signed_in():
+                return {"ok": False, "error": "sign in first"}
+            for kind in ("settings_sync", "history_sync"):
+                if not privacy.allowed(kind):
+                    privacy.request(kind)
+            sb.nudge()
+            return {"ok": True, "message": "syncing"}
+        return {"ok": False, "error": f"unknown account action {do!r}"}
+
+    @staticmethod
+    def _nudge_sync() -> None:
+        """A dictation just landed in transcripts.log: the account worker
+        pushes it soon (sb.nudge is a flag, never a call on this thread)."""
+        try:
+            import sb
+            sb.nudge()
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    def _account_try(self, fn, said: str) -> None:
+        import sb
+        try:
+            fn()
+            self._say(said)
+        except Exception as e:                               # noqa: BLE001
+            sb._status["last_error"] = str(e)[:200]
+            log.info("account: %s", e)
+
+    def _start_account(self) -> None:
+        """The sync worker (sb.start_worker): nothing without a configured
+        project or a session; a consent card opening one of the two
+        syncs nudges it, and so does every dictation (D31: push after
+        each dictation, pull on a timer)."""
+        try:
+            import sb
+            if not sb.configured():
+                return
+            sb.start_worker(vocab=self.vocab)
+            for kind in ("settings_sync", "history_sync"):
+                privacy.on_change(kind, sb.nudge)
+        except Exception:                                    # noqa: BLE001
+            log.warning("the account worker did not start", exc_info=True)
 
     def _transcribe_for_phone(self, wav: bytes) -> tuple[str, str, str | None]:
         """No language is passed: the phone has no per-language key, so it
@@ -5544,6 +5654,7 @@ class App:
         # paste it — this file is the recovery path.
         transcript_log.info("OK | %.1fs | %s | %.1fs latency | %s",
                             seconds, backend, latency, text)
+        self._nudge_sync()
         cleaned = text.strip()
         if not cleaned:
             if shown:

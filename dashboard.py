@@ -7412,6 +7412,7 @@ class Dashboard:
                 builders.append(lambda: self._speed_block(scroller))
             elif name == "Privacy":
                 builders.append(lambda: self._keys_block(scroller))
+                builders.append(lambda: self._account_block(scroller))
             elif name == "Screen":
                 builders.append(lambda: self._recording_block(scroller))
                 builders.append(lambda: self._snip_block(scroller, sections))
@@ -8266,6 +8267,134 @@ class Dashboard:
             y += 132
         scroller.bind_wheel(card)
 
+    # ------------------------------------------------ the account (screen 16)
+
+    def _account_block(self, scroller) -> None:
+        """ACCOUNT on Settings > Privacy (chapter 9 screen 16, D17, D31):
+        who is signed in, when the last sync ran, and the buttons — Sign
+        in with Google, an anonymous account, Sync now, Sign out, Delete
+        my account. Every press is a command to the RUNNING app over the
+        pipe: this window is another process, and only the app holds the
+        session (8.6). The line and the buttons follow status()["account"]
+        on every poll (_paint_account), so a sign-in finishing in the
+        browser shows up here without a click. Delete asks first, the way
+        the Problems ✕ does — the question grows out of the card, and the
+        answer sits at the far end from the button that raised it."""
+        card = ui.Card(scroller.inner, CW, 132, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="A C C O U N T", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        line = tk.Label(body, text="", bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
+                        wraplength=CW - 60, justify="left", anchor="w")
+        line.place(x=0, y=22)
+        sub = tk.Label(body, text="", bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                       wraplength=CW - 60, justify="left", anchor="w")
+        sub.place(x=0, y=48)
+        strip = tk.Frame(body, bg=ui.CARD, height=32, width=CW - 40)
+        strip.place(x=0, y=82)
+        self.parts["account_line"] = line
+        self.parts["account_sub"] = sub
+        self.parts["account_strip"] = strip
+        self._account_seen = None
+        self._account_asking = False
+        self._paint_account(force=True)
+        scroller.bind_wheel(card)
+
+    def _paint_account(self, force: bool = False) -> None:
+        p = self.parts
+        line, sub, strip = (p.get("account_line"), p.get("account_sub"),
+                            p.get("account_strip"))
+        if line is None or not line.winfo_exists():
+            return
+        info = (self.status.get("account") or {}) if self.running else None
+        key = (repr(sorted(info.items())) if info is not None else "off",
+               self._account_asking)
+        if not force and key == getattr(self, "_account_seen", None):
+            return
+        self._account_seen = key
+        buttons: list[tuple[str, object]] = []
+        colour = ui.FG
+        said_sub = ""
+        if info is None:
+            said = "start dictation first — the account lives in the running app"
+            colour = ui.FAINT
+        elif not info.get("configured"):
+            said = "no account server in this build"
+            colour = ui.FAINT
+        elif info.get("busy") == "waiting for the browser":
+            said = "waiting for Google's sign-in page in your browser…"
+            said_sub = "come back here when it says you are signed in"
+        elif info.get("signed_in"):
+            if info.get("email"):
+                said = f"Signed in with Google as {info['email']}"
+            else:
+                ident = str(info.get("user_id") or "")
+                said = f"Anonymous account · id {ident[:8]}…{ident[-4:]}" if ident \
+                    else "Anonymous account"
+            bits = [f"this PC: {info.get('device_name') or '?'}",
+                    str(info.get("region") or "Frankfurt (Supabase)")]
+            if info.get("last_sync"):
+                bits.append(f"last sync {str(info['last_sync'])[11:16]} UTC")
+            if info.get("waiting"):
+                n = int(info["waiting"])
+                bits.append(f"{n} report{'s' if n != 1 else ''} waiting to send")
+            said_sub = " · ".join(bits)
+            if info.get("last_error"):
+                said_sub = f"{info['last_error']}  ·  {said_sub}"
+            if self._account_asking:
+                said = "Delete your account on the server? Your reports, synced words, " \
+                       "settings and history go with it. Your data on this PC stays."
+                colour = ui.AMBER
+                buttons = [("Keep it", self._account_keep),
+                           ("Delete", lambda: self._account_do("delete", "deleting"))]
+            else:
+                buttons = [("Sync now", lambda: self._account_do("sync", "syncing"))]
+                if info.get("anonymous"):
+                    buttons.append(("Sign in with Google",
+                                    lambda: self._account_do("google", "opening the browser")))
+                buttons += [("Sign out", lambda: self._account_do("signout", "signing out")),
+                            ("Delete my account", self._account_ask)]
+        else:
+            said = "none — sign in to keep your learned words, settings and history " \
+                   "on every PC you use"
+            said_sub = (info.get("last_error") or
+                        "Google through Supabase's own sign-in page; nothing about you "
+                        "is stored until you press it. Each sync then asks its own card.")
+            buttons = [("Sign in with Google",
+                        lambda: self._account_do("google", "opening the browser")),
+                       ("Anonymous account",
+                        lambda: self._account_do("anonymous", "creating an anonymous account"))]
+        line.configure(text=said, fg=colour)
+        if sub is not None and sub.winfo_exists():
+            sub.configure(text=said_sub)
+        if strip is None or not strip.winfo_exists():
+            return
+        for child in strip.winfo_children():
+            child.destroy()
+        x = 0
+        for label, command in buttons:
+            w = widgets.button_width(label)
+            ui.Button(strip, label, command, h=30, w=w, quiet=True, bg=ui.CARD
+                      ).place(x=x, y=0)
+            x += w + 8
+
+    def _account_ask(self) -> None:
+        self._account_asking = True
+        self._paint_account(force=True)
+
+    def _account_keep(self) -> None:
+        self._account_asking = False
+        self._paint_account(force=True)
+
+    def _account_do(self, do: str, said: str) -> None:
+        self._account_asking = False
+        if not self.running:
+            self._note("start dictation first — the account lives in the running app")
+            return
+        self._busy_until = time.monotonic() + 1
+        self._ask("account", then=lambda r: self._announce(r, said), do=do)
+
     def _key_say(self, name: str, text: str, colour: str | None = None) -> None:
         line = self.parts.get("key_lines", {}).get(name)
         if line is not None and line.winfo_exists():
@@ -8933,6 +9062,7 @@ class Dashboard:
         """
         p = self.parts
         self._paint_dot()
+        self._paint_account()
         if "rows" not in p or not self.status:
             return
         auto = self.status.get("auto_pause_fullscreen")

@@ -167,6 +167,7 @@ privacy.cloud_screenshots
 privacy.account
 privacy.report_upload
 privacy.settings_sync
+privacy.history_sync
 privacy.update_check
 privacy.offline
 server.enabled

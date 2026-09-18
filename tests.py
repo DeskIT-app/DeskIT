@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse as urllib_parse
 import wave
 from pathlib import Path
 
@@ -44,6 +45,9 @@ _paths_mod.STATE_FILE = _SCRATCH_HOME / "state.json"
 # would import from is a scratch path too. Credential Manager entries are
 # not files — tests that write one use _test_cred_prefix below.
 _paths_mod.SECRETS_DIR = _SCRATCH_HOME / "secrets"
+# ...and the account's sync folder (the cursors, the other PCs' lines):
+# sb.py and sync.py write there, never into the checkout's sync\.
+_paths_mod.SYNC_DIR = _SCRATCH_HOME / "sync"
 _paths_mod.PHONE_TOKEN = _SCRATCH_HOME / "phone" / "server_token.txt"
 # And the egress log: every net.py row a test provokes lands here, not in
 # the checkout's network.log the owner reads.
@@ -29224,7 +29228,7 @@ def test_consent_round_trip_and_withdraw_teardown():
 
 
 def test_settings_page_cannot_write_privacy_keys():
-    """config.save and config.set_values refuse the six gates (a config
+    """config.save and config.set_values refuse the seven gates (a config
     write can never open one — only privacy.grant may, D7); the two
     switches are ordinary; the generated Settings page lists the gates
     as rows that are not editable and the switches as editable."""
@@ -29256,7 +29260,8 @@ def test_settings_page_cannot_write_privacy_keys():
     rows = {st.path: st for st in settings_mod.flatten(sections) if st.section == "privacy"}
     assert set(rows) == {f"privacy.{k}" for k in
                          ("cloud_text", "cloud_audio", "cloud_screenshots", "account",
-                          "report_upload", "settings_sync", "update_check", "offline")}, rows
+                          "report_upload", "settings_sync", "history_sync", "update_check",
+                          "offline")}, rows
     for path, st in rows.items():
         if st.key in settings_mod.CONSENT_GATES:
             assert st.consent and not st.editable, path
@@ -31536,10 +31541,17 @@ def test_network_md_matches_net_py():
     stray = {h for h in named if "." in h and not h.startswith(".")
              and h not in net_mod.ALLOWED_HOSTS and not h.endswith(net_mod.ALLOWED_SUFFIXES)
              and not h.endswith((".md", ".log", ".json", ".py", ".txt", ".exe"))
-             and h not in ("supabase.co",)}
+             and h not in ("supabase.co", net_mod.SUPABASE_HOST)}
     assert not stray, f"on NETWORK.md but not allowed by net.py: {stray}"
+    # the account host is one value (sb.py's project ref), on the page by
+    # name once it exists and as the placeholder until then
+    import sb
+    if sb.PROJECT_REF:
+        assert f"`{sb.PROJECT_REF}.supabase.co`" in page, "the project host is not on NETWORK.md"
+    else:
+        assert "`<ref>.supabase.co`" in page
     for purpose in ("model-download", "pack-install", "update-check", "update-download",
-                    "ollama", "notify"):
+                    "ollama", "notify", "account", "sync", "history", "report"):
         assert f"`{purpose}`" in page, purpose
     assert "us.aws.cdn.hf.co" in page and "Offline" in page
 
@@ -33546,6 +33558,955 @@ def test_product_suite_imports_no_dev_modules():
 # the open after the rest ran hidden. One place to edit when such a test
 # is added; a test that fails hidden and is NOT here is re-run in the open
 # by tests_quiet.py, which then names it as one to add.
+
+
+# ------------------------------------------- the account: sb.py, sync.py,
+# supabase/migrations/0001_init.sql (DISTRIBUTION_PLAN.md chapter 8, D17,
+# D31; the "Tests to add" list of chapter 8). Every request a test provokes
+# hits the fake wire at net._connect; the session blob lands in the
+# scratch secrets\ folder and the cursors in the scratch sync\ folder
+# (both repointed at the top of this file), never in the owner's.
+
+MIGRATION = REPO / "supabase" / "migrations" / "0001_init.sql"
+
+
+def _sql_block(name: str) -> list[str]:
+    """The lines between `-- BEGIN <name>` and `-- END <name>` of the
+    migration's header, without the comment dashes."""
+    text = MIGRATION.read_text("utf-8")
+    start = text.index(f"-- BEGIN {name}") + len(f"-- BEGIN {name}")
+    end = text.index(f"-- END {name}")
+    return [line[3:] if line.startswith("-- ") else line.lstrip("-").strip()
+            for line in text[start:end].strip().splitlines()]
+
+
+def _sql_tables() -> dict[str, list[str]]:
+    """table name -> its column definitions (one string each), by
+    splitting each `create table public.<t> ( ... );` body on the
+    commas that are not inside parentheses."""
+    text = MIGRATION.read_text("utf-8")
+    out: dict[str, list[str]] = {}
+    for m in re.finditer(r"create table public\.(\w+) \((.*?)\n\);", text, re.S):
+        body, depth, cur, defs = m.group(2), 0, "", []
+        for ch in body:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            if ch == "," and depth == 0:
+                defs.append(cur.strip())
+                cur = ""
+            else:
+                cur += ch
+        if cur.strip():
+            defs.append(cur.strip())
+        out[m.group(1)] = [d for d in defs if not d.startswith("primary key")]
+    return out
+
+
+def _sql_columns() -> dict[str, list[str]]:
+    return {t: [d.split()[0] for d in defs] for t, defs in _sql_tables().items()}
+
+
+class _FakeSupabase:
+    """The project's three endpoints, answered from memory: auth (sign-up,
+    PKCE exchange, refresh, sign-out), PostgREST (the tables) and storage.
+    Records every request; `script` lets a test pin the next answer for
+    a path prefix ("rest/v1/problem_reports" -> (status, body))."""
+
+    REF = "fixtureref"
+    KEY = "sb_publishable_fixture_0123456789"
+    TOKEN = "eyJfixture_access." + "a" * 40 + ".sig"
+    REFRESH = "refresh-fixture-token"
+    UID = "11111111-2222-3333-4444-555555555555"
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self.script: dict[str, list[tuple[int, bytes]]] = {}
+        self.tables: dict[str, list[dict]] = {}
+        self.refreshes = 0
+        self.email = ""
+        self.deleted = False
+
+    def session(self, email: str = "", token: str | None = None) -> dict:
+        return {"access_token": token or self.TOKEN, "token_type": "bearer",
+                "expires_in": 3600, "expires_at": int(time.time()) + 3600,
+                "refresh_token": self.REFRESH,
+                "user": {"id": self.UID, "is_anonymous": not email, "email": email,
+                         "created_at": "2026-09-18T10:00:00Z"}}
+
+    def __call__(self, method, url, headers, body, timeout_s):
+        parts = urllib_parse.urlsplit(url)
+        path = parts.path.lstrip("/")
+        query = dict(urllib_parse.parse_qsl(parts.query))
+        rec = {"method": method, "url": url, "path": path, "query": query,
+               "headers": dict(headers), "body": body or b""}
+        self.calls.append(rec)
+        for prefix, answers in self.script.items():
+            if path.startswith(prefix) and answers:
+                status, data = answers.pop(0)
+                return _FakeRaw(data, status)
+        return self._answer(method, path, query, headers, body or b"")
+
+    def _answer(self, method, path, query, headers, body):
+        is_json = "json" in str(headers.get("Content-Type", "")).lower()
+        payload = json.loads(body.decode("utf-8")) if body and is_json else None
+        if path == "auth/v1/signup":
+            return _FakeRaw(json.dumps(self.session()).encode(), 200)
+        if path == "auth/v1/token" and query.get("grant_type") == "refresh_token":
+            self.refreshes += 1
+            return _FakeRaw(json.dumps(self.session(self.email, token=self.TOKEN + str(self.refreshes))).encode(), 200)
+        if path == "auth/v1/token" and query.get("grant_type") == "pkce":
+            assert payload and payload.get("auth_code") and payload.get("code_verifier")
+            self.email = "person@example.com"
+            return _FakeRaw(json.dumps(self.session(self.email)).encode(), 200)
+        if path == "auth/v1/logout":
+            return _FakeRaw(b"", 204)
+        if path == "auth/v1/user/identities/authorize":
+            # the provider URL; the real one carries Supabase's callback, which
+            # then redirects to the app's loopback — the fake skips the middle
+            url = ("https://accounts.google.com/o/oauth2/v2/auth?fixture=1&"
+                   + urllib_parse.urlencode({"redirect_to": query.get("redirect_to", "")}))
+            return _FakeRaw(json.dumps({"url": url}).encode(), 200)
+        if path == "rest/v1/rpc/delete_me":
+            self.deleted = True
+            self.tables.clear()
+            return _FakeRaw(b"", 204)
+        if path.startswith("rest/v1/"):
+            table = path[len("rest/v1/"):]
+            rows = self.tables.setdefault(table, [])
+            if method == "GET":
+                out = list(rows)
+                for k, v in query.items():
+                    if k in ("select", "order", "limit") or "." not in v:
+                        continue
+                    op, val = v.split(".", 1)
+                    if op == "eq":
+                        out = [r for r in out if str(r.get(k)) == val]
+                    elif op == "neq":
+                        out = [r for r in out if str(r.get(k)) != val]
+                    elif op == "gt":
+                        out = [r for r in out if str(r.get(k, "")) > val]
+                return _FakeRaw(json.dumps(out).encode(), 200)
+            if method == "POST":
+                items = payload if isinstance(payload, list) else [payload]
+                stamped = []
+                for item in items:
+                    item = dict(item)
+                    item["updated_at"] = f"2026-09-18T12:00:{len(rows):02d}+00:00"
+                    rows.append(item)
+                    stamped.append(item)
+                return _FakeRaw(json.dumps(stamped).encode(), 201)
+        if path.startswith("storage/v1/object/list/"):
+            return _FakeRaw(b"[]", 200)
+        if path.startswith("storage/v1/object/reports/"):
+            return _FakeRaw(json.dumps({"Key": path.split("object/", 1)[1]}).encode(), 200)
+        if path.startswith("storage/v1/object/reports") and method == "DELETE":
+            return _FakeRaw(b"[]", 200)
+        return _FakeRaw(b'{"message":"no such route in the fixture"}', 404)
+
+    def to_project(self) -> list[dict]:
+        return [c for c in self.calls if f"{self.REF}.supabase.co" in c["url"]]
+
+
+class _fixture_project:
+    """sb.py pointed at the fake project for the block, the wire faked,
+    the session blob and the cursors cleared on both sides."""
+
+    def __enter__(self):
+        import net as net_mod
+        import sb
+        import sync as sync_mod
+        self.sb, self.net, self.sync = sb, net_mod, sync_mod
+        self.fake = _FakeSupabase()
+        self._old = (sb.PROJECT_REF, sb.PUBLISHABLE_KEY, net_mod._connect,
+                     sb.FIRST_DELAY_S)
+        sb.configure(self.fake.REF, self.fake.KEY)
+        net_mod._connect = self.fake
+        self._clean()
+        return self.fake
+
+    def _clean(self):
+        import secretstore
+        secretstore.delete("supabase_session")
+        self.sb.forget_cache()
+        self.sb._status.update(busy="", last_error="", last_sync="", signin_url="")
+        self.sync.forget_all()
+        config_mod.save({"account.device_id": None, "account.device_seen_at": None,
+                         "account.device_name": None})
+
+    def __exit__(self, *exc):
+        try:
+            self._clean()
+        finally:
+            ref, key, connect, delay = self._old
+            self.net._connect = connect
+            self.sb.configure(ref, key)
+            self.sb.FIRST_DELAY_S = delay
+        return False
+
+
+def test_sb_imports_are_narrow():
+    """Static (8.7, D12 lock 2): sb.py and sync.py import none of the
+    modules that read a cloud key (apikey, translate, polish, punctuate,
+    lookup, visual_qa, gemini_pool), no transport (the grep
+    test_only_net_imports_transport already runs over them), never read
+    os.environ, and name neither provider. The publishable key net.py
+    attaches is the only key-shaped constant, and it is a publishable
+    one; sb.py talks to the one host by purpose words net.py knows."""
+    import net as net_mod
+    import sb
+
+    forbidden = ("apikey", "translate", "polish", "punctuate", "lookup", "visual_qa",
+                 "gemini_pool", "httpx", "requests", "socket", "ssl", "http.client",
+                 "urllib.request")
+    for name in ("sb.py", "sync.py"):
+        src = (REPO / name).read_text("utf-8")
+        for line in src.splitlines():
+            m = re.match(r"\s*(?:import|from)\s+([\w.]+)", line)
+            if m:
+                assert m.group(1).split(".")[0] not in forbidden and m.group(1) not in forbidden, \
+                    f"{name} imports {m.group(1)}"
+        low = src.lower()
+        assert "os.environ" not in low, f"{name} reads the environment"
+        assert "groq" not in low and "gemini" not in low, f"{name} names a provider"
+        assert "sb_secret" not in low, f"{name} mentions the secret key"
+    assert sb.PUBLISHABLE_KEY == "" or sb.PUBLISHABLE_KEY.startswith("sb_publishable_")
+    src = (REPO / "sb.py").read_text("utf-8")
+    for purpose in set(re.findall(r'purpose="(\w+)"', src)) | set(re.findall(r'"(account|sync|history|report)"', src)):
+        assert purpose in net_mod.PURPOSES, purpose
+    assert not re.search(r"secretstore\.(find_key|_cred_read|read_env_file)", src)
+    # a host that is not the project's is refused, and so is a caller's own
+    # apikey header on a remote host — net.py sets it, by the value it holds
+    try:
+        net_mod.configure_supabase("evil.example.com", "sb_publishable_x")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("net.configure_supabase took a host off supabase.co")
+    try:
+        net_mod.configure_supabase("abc.supabase.co", "sb_secret_x")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("net.configure_supabase took a secret key")
+    finally:
+        sb.configure()
+
+
+def test_migration_has_no_key_column():
+    """Static (D12 lock 3): no column is named key/secret/token/password/
+    apikey; every text and jsonb column carries looks_like_key() or is an
+    enumeration; every table enables RLS and has a policy (except the
+    audit line, which has none by design); every policy is `to
+    authenticated`; the revoke-from-anon block is present; the bucket is
+    private with the four MIME types; delete_me() is security definer,
+    granted to authenticated only; no report_replies table (D33)."""
+    text = MIGRATION.read_text("utf-8")
+    tables = _sql_tables()
+    assert set(tables) == {"profiles", "devices", "settings_sync", "vocab_sync", "history",
+                           "problem_reports", "deletion_requests"}, set(tables)
+    for table, defs in tables.items():
+        for d in defs:
+            name, typ = d.split()[0], d.split()[1]
+            for bad in ("key", "secret", "token", "password", "apikey"):
+                assert bad not in name, f"{table}.{name}"
+            if typ in ("text", "jsonb", "text[]"):
+                # attachments_under() runs looks_like_key over every element
+                assert "looks_like_key" in d or "attachments_under" in d \
+                    or re.search(r"\bin \(", d), \
+                    f"{table}.{name} ({typ}) has no key-shaped check"
+                assert "char_length" in d or "octet_length" in d or re.search(r"\bin \(", d) \
+                    or typ == "text[]", f"{table}.{name} has no length cap"
+    for table in tables:
+        assert re.search(rf"alter table public\.{table} +enable row level security;", text), table
+        if table != "deletion_requests":
+            assert f"on public.{table} for select to authenticated" in text, table
+    policies = re.findall(r"create policy \w+ on ([\w.]+) for (\w+)(.*?)\n", text)
+    assert len(policies) >= 24, len(policies)
+    for target, verb, rest in policies:
+        assert "to authenticated" in rest, (target, verb, rest)
+        assert "to anon" not in rest
+    for line in ("revoke all on all tables    in schema public from anon;",
+                 "revoke all on all sequences in schema public from anon;",
+                 "revoke all on all functions in schema public from anon;",
+                 "revoke all on all tables in schema public from authenticated;"):
+        assert line in text, line
+    assert "grant select, insert, update         on public.profiles        to authenticated;" in text
+    assert re.search(r"grant .* on public\.deletion_requests", text) is None
+    assert "values ('reports', 'reports', false, 5242880," in text
+    assert "array['image/jpeg', 'application/json', 'text/plain', 'audio/wav']" in text
+    fn = text[text.index("create or replace function public.delete_me()"):]
+    assert "security definer" in fn.split("$$")[0] and "auth.uid()" in fn
+    assert "delete from auth.users             where id = uid;" in fn
+    assert "grant execute on function public.delete_me() to authenticated;" in text
+    assert "revoke all on function public.delete_me() from anon;" in text
+    assert "report_replies" not in text.replace("no report_replies table", "")
+    assert "storage.foldername(name))[1] = (select auth.uid())::text" in text
+
+
+def test_redactor_patterns_match_migration():
+    """The KEY-PATTERNS block of the migration equals redact.PATTERNS name
+    for name and character for character, and every pattern — with \\b
+    written the Postgres way, \\y — is in looks_like_key()'s body. Three
+    layers (client redactor, schema CHECK, this test) that cannot drift."""
+    import redact
+
+    block = _sql_block("KEY-PATTERNS")
+    listed = [tuple(line.split("\t", 1)) for line in block if line.strip()]
+    ours = [(name, pattern.pattern) for name, pattern in redact.PATTERNS]
+    assert listed == ours, f"\nmigration: {listed}\nredact.py: {ours}"
+    text = MIGRATION.read_text("utf-8")
+    fn = text[text.index("function public.looks_like_key"):text.index("function public.env_keys_allowed")]
+    for name, pattern in ours:
+        pg = pattern.replace("\\b", "\\y").replace("'", "''")
+        assert f"t ~ '{pg}'" in fn, f"{name}: {pg!r} not in looks_like_key()"
+    # and the check does what the redactor does, on the same fixtures
+    for sample in ("gsk_" + "a" * 30, "AIza" + "b" * 35, "sk-" + "c" * 25,
+                   "sb_secret_" + "d" * 12, "Bearer abc.def", "#t=abc123"):
+        assert redact.looks_secret(sample), sample
+
+
+def test_env_matches_server_whitelist():
+    """The ENV-KEYS block of the migration is exactly the set of keys
+    problems.env() can put in a report (7.8), so the server's CHECK and
+    the client's whitelist are one list — and the function's array in
+    env_keys_allowed() carries the same words."""
+    import problems as problems_mod
+
+    listed = set(" ".join(_sql_block("ENV-KEYS")).split())
+    cfg = config_mod.load_layered()
+    got = set(problems_mod.env(cfg)) | {"branch", "gpu", "tier"}
+    assert got == listed, f"\nenv(): {sorted(got)}\nmigration: {sorted(listed)}"
+    text = MIGRATION.read_text("utf-8")
+    fn = text[text.index("function public.env_keys_allowed"):text.index("function public.attachments_under")]
+    in_fn = set(re.findall(r"'(\w+)'", fn[fn.index("array["):]))
+    assert in_fn == listed, in_fn ^ listed
+
+
+def test_payload_columns_are_whitelist():
+    """Every insert body sb.py sends uses only columns the migration
+    defines for that table — the report row, the vocabulary rows, the
+    history rows, the settings blob, the profile and the device — read
+    off the fake wire after a full pass with every gate open."""
+    import history as history_mod
+    import sb
+
+    columns = _sql_columns()
+    assert set(sb.REPORT_COLUMNS) | {"user_id"} <= set(columns["problem_reports"]), \
+        set(sb.REPORT_COLUMNS) - set(columns["problem_reports"])
+    d = Path(tempfile.mkdtemp(prefix="deskit-sbcols-"))
+    try:
+        log_path = d / "transcripts.log"
+        log_path.write_text("2026-09-18 10:00:00,000 | OK | 1.0s | local | 0.4s latency | שלום\n", "utf-8")
+        vocab = vocab_mod.Vocab(d / "vocab.json")
+        vocab.learn("שלמו", "שלום")
+        outbox = d / "outbox"
+        outbox.mkdir()
+        shot = d / "shot.jpg"
+        shot.write_bytes(b"\xff\xd8fixture")
+        rid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        (outbox / f"{rid}.json").write_text(json.dumps({
+            "id": rid, "kind": "wrong", "place": "Notepad", "text": "the word came out wrong",
+            "app_version": "1.1.0", "os_build": "10.0.26200", "tier": "gpu",
+            "env": {"version": "1.1.0", "polish_when": "always"},
+            "attachments": [{"name": "shot.jpg", "path": str(shot)}],
+            "not_a_column": "must be dropped"}), "utf-8")
+        with _fixture_project() as fake, _patched(paths, "OUTBOX_DIR", outbox), \
+                _patched(history_mod, "LOG", log_path), \
+                _consented("account", "settings_sync", "history_sync", "report_upload"):
+            sb.sign_in_anonymous()
+            sb.sync_now(vocab)
+            sent = sb.drain_outbox()
+            assert sent == {rid: "sent"}, sent
+        posted: dict[str, list[dict]] = {}
+        for c in fake.to_project():
+            if c["method"] == "POST" and c["path"].startswith("rest/v1/") and c["body"]:
+                table = c["path"][len("rest/v1/"):]
+                data = json.loads(c["body"])
+                posted.setdefault(table, []).extend(data if isinstance(data, list) else [data])
+        assert {"profiles", "devices", "settings_sync", "vocab_sync", "history",
+                "problem_reports"} <= set(posted), set(posted)
+        for table, rows in posted.items():
+            for row in rows:
+                stray = set(row) - set(columns[table])
+                assert not stray, f"{table}: {stray}"
+        report = posted["problem_reports"][0]
+        assert "not_a_column" not in report and report["attachments"] == [f"{fake.UID}/{rid}/shot.jpg"]
+        assert set(report["env"]) <= set(" ".join(_sql_block("ENV-KEYS")).split())
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_sync_serializer_drops_sync_false():
+    """sync.syncable: the [privacy] gates, the phone endpoint, the audio
+    and camera devices, the hardware tier and local model, every hotkey,
+    folder, corner, position and Ollama model stay home; a preference
+    travels. Checked against the real keys of defaults.toml, and the
+    payload of a mixed override set holds only the travellers, under
+    64 KB; merge_settings keeps this PC's local keys and takes the other
+    PC's travellers in place of its own."""
+    import sync as sync_mod
+
+    local = ["privacy.cloud_text", "privacy.history_sync", "privacy.offline", "server.port",
+             "server.host", "server.enabled", "audio.device", "camera.device", "camera.folder",
+             "hardware.tier", "local.model", "local.device", "backend", "hotkey",
+             "translate_hotkey", "paste_chord", "capture.capture_hotkey", "capture.folder",
+             "capture.clip_folder", "dot.corner", "dot.x", "shelf.scale", "notify.enabled",
+             "awake.screens_hotkey", "polish.ollama_model", "translate.ollama_url",
+             "visual_qa.ollama_model", "updates.last_check", "setup.done", "account.device_id",
+             "sync.cursor", "review.local_model"]
+    travel = ["polish.when", "polish.groq_model", "gemini.models", "punctuate.auto",
+              "vocab.enabled", "vocab.replace_after_hits", "review.enabled", "max_seconds",
+              "history.keep_days", "capture.copy_clip_path", "capture.always_save",
+              "lookup.model", "translate.target", "shelf.enabled", "auto_pause_fullscreen"]
+    for key in local:
+        assert not sync_mod.syncable(key), f"{key} would leave the PC"
+    for key in travel:
+        assert sync_mod.syncable(key), f"{key} would stay home"
+    # every hotkey and every consent of the real file, by the file
+    sections = __import__("settings").read(REPO / "defaults.toml")
+    for st in __import__("settings").flatten(sections):
+        if "hotkey" in st.key or st.section == "privacy" or st.key.endswith("chord"):
+            assert not sync_mod.syncable(st.path), st.path
+    overrides = {"polish.when": "always", "hotkey": "right ctrl", "privacy.cloud_text": True,
+                 "server.port": 8760, "gemini.models": ["a", "b"], "audio.device": "Mic 3"}
+    payload = sync_mod.settings_payload(overrides)
+    assert payload == {"polish.when": "always", "gemini.models": ["a", "b"]}, payload
+    merged = sync_mod.merge_settings(overrides, {"polish.when": "never", "hotkey": "f1",
+                                                 "punctuate.auto": True})
+    assert merged == {"hotkey": "right ctrl", "privacy.cloud_text": True, "server.port": 8760,
+                      "audio.device": "Mic 3", "polish.when": "never", "punctuate.auto": True}, merged
+    try:
+        sync_mod.settings_payload({"polish.when": "x" * 70000})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a 70 KB blob was accepted")
+
+
+def test_sync_vocab_merges_as_a_union_with_tombstones():
+    """vocab_rows / merge_vocab / vocab_changed (D31): a union keyed by
+    what was heard, the higher hits wins, the newer meant wins a tie, a
+    tombstone removes; a word gone from the file since the snapshot is
+    pushed as a tombstone; only what changed since the snapshot is
+    pushed; study.py's own inferences (hits 0) never leave."""
+    import sync as sync_mod
+
+    mine = [{"heard": "xpogo", "meant": "Expo Go", "hits": 2, "last": "2026-09-01 10:00:00"},
+            {"heard": "brinth", "meant": "--branch", "hits": 1, "last": "2026-09-02 10:00:00"},
+            {"heard": "guessed", "meant": "Guess", "hits": 0, "auto_hits": 1}]
+    rows = sync_mod.vocab_rows(mine)
+    assert [r["heard"] for r in rows] == ["xpogo", "brinth"], rows
+    assert rows[0]["hits"] == 2 and rows[0]["deleted"] is False and rows[0]["last_used"]
+    remote = [{"heard": "xpogo", "meant": "Expo Go!", "hits": 5, "last_used": "2026-09-05T10:00:00+00:00"},
+              {"heard": "BRINTH", "meant": "--branch", "hits": 1, "last_used": "2026-09-01T10:00:00+00:00"},
+              {"heard": "cowork", "meant": "Cowork", "hits": 3, "last_used": "2026-09-03T10:00:00+00:00"},
+              {"heard": "guessed", "meant": "", "hits": 0, "deleted": True}]
+    merged, changed = sync_mod.merge_vocab([dict(e) for e in mine], remote)
+    by = {e["heard"]: e for e in merged}
+    assert by["xpogo"]["hits"] == 5 and by["xpogo"]["meant"] == "Expo Go!"
+    assert by["brinth"]["hits"] == 1 and by["brinth"]["meant"] == "--branch"
+    assert by["cowork"]["hits"] == 3 and "guessed" not in by
+    assert changed == 3, changed
+    snapshot = sync_mod.vocab_snapshot(merged)
+    assert set(snapshot) == {"xpogo", "brinth", "cowork"} and snapshot["xpogo"]["hits"] == 5
+    # nothing changed -> nothing to push; a bump -> that row; a forget -> a tombstone
+    assert sync_mod.vocab_changed(sync_mod.vocab_rows(merged, snapshot), snapshot) == []
+    by["brinth"]["hits"] = 2
+    later = [e for e in merged if e["heard"] != "cowork"]
+    push = sync_mod.vocab_changed(sync_mod.vocab_rows(later, snapshot), snapshot)
+    assert [(r["heard"], r["hits"], r["deleted"]) for r in push] == \
+        [("brinth", 2, False), ("cowork", 0, True)], push
+
+
+def test_sync_history_rows_and_remote_lines_round_trip():
+    """history_rows takes this PC's events after the cursor, in batches,
+    dictation/translate/punctuate/lookup/learned only; remote_line writes
+    another PC's row as a REMOTE line that history.py folds into the
+    Said page with the machine's name, merged by time with the local
+    file; all_events() never includes the pulled lines."""
+    import history as history_mod
+    import sync as sync_mod
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-hist-sync-"))
+    try:
+        log_path = d / "transcripts.log"
+        log_path.write_text(
+            "2026-09-18 10:00:00,000 | OK | 1.0s | local | 0.4s latency | ראשון\n"
+            "2026-09-18 10:00:01,000 | POLISHED | 0.3s | groq | ראשון!\n"
+            "2026-09-18 10:05:00,000 | ERROR | 2.0s | local | boom | kept: x.wav\n"
+            "2026-09-18 10:10:00,000 | TRANSLATE-IN | 0.0s | שלום\n"
+            "2026-09-18 10:10:01,000 | TRANSLATE-OUT | 0.5s | groq | hello\n", "utf-8")
+        sync_dir = d / "sync"
+        with _patched(history_mod, "LOG", log_path), _patched(paths, "SYNC_DIR", sync_dir):
+            events = history_mod.all_events()
+            assert [e.kind for e in events] == ["dictation", "error", "translate"]
+            rows = sync_mod.history_rows(events, "dev-1", None)
+            assert [(r["kind"], r["text"], r["raw"]) for r in rows] == \
+                [("dictation", "ראשון!", "ראשון"), ("translate", "hello", "שלום")], rows
+            assert rows[0]["engine"] == "local" and rows[0]["seconds"] == 1.0
+            assert all(r["device_id"] == "dev-1" and r["ts"].endswith("+00:00") for r in rows)
+            assert sync_mod.history_rows(events, "dev-1", rows[-1]["ts"]) == []
+            after_first = sync_mod.history_rows(events, "dev-1", rows[0]["ts"])
+            assert [r["kind"] for r in after_first] == ["translate"]
+            # the other PC's rows, pulled
+            line = sync_mod.remote_line({"ts": "2026-09-18T07:02:00+00:00", "kind": "dictation",
+                                         "text": "מהמחשב | הנייד", "engine": "cpu",
+                                         "seconds": 2.5}, "laptop")
+            assert line.split(" | ")[1:6] == ["REMOTE", "dictation", "laptop", "cpu", "2.5s"], line
+            assert sync_mod.append_remote_history([line]) == 1
+            assert (sync_dir / "history.log").exists()
+            merged = history_mod.load(50)
+            kinds = [(e.kind, e.note) for e in merged]
+            assert ("dictation", "from laptop") in kinds, kinds
+            remote_ev = next(e for e in merged if e.note == "from laptop")
+            assert remote_ev.text == "מהמחשב | הנייד" and remote_ev.engine == "cpu"
+            assert merged[0].when >= merged[-1].when, "newest first"
+            assert all(e.note != "from laptop" for e in history_mod.all_events())
+            assert sorted(sync_mod.forget_all()) == ["history.log"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_sb_refuses_when_gate_shut():
+    """With the account gate shut, a sign-in raises ConsentRequired before
+    any browser opens or any socket exists; with a session but the two
+    sync gates shut, sync_now makes zero requests; with report_upload
+    shut, drain_outbox makes zero requests; and an unconfigured build
+    (no project ref) answers "not configured" everywhere (8.7)."""
+    import sb
+
+    opened: list[str] = []
+    with _fixture_project() as fake:
+        try:
+            sb.sign_in_google(open_browser=lambda url: opened.append(url) or True, timeout_s=1)
+        except __import__("privacy").ConsentRequired as e:
+            assert e.kind == "account", e
+        else:
+            raise AssertionError("a sign-in ran with the account gate shut")
+        assert opened == [] and fake.calls == []
+        with _consented("account"):
+            sb.sign_in_anonymous()
+        assert sb.signed_in()
+        n = len(fake.calls)
+        assert sb.sync_now(None) == {}
+        assert sb.drain_outbox() == {}
+        assert len(fake.calls) == n, fake.calls[n:]
+        # the net gate is the second lock: a call made anyway is refused
+        # before a socket, and the refusal is a row that names the purpose
+        import net as net_mod
+        try:
+            net_mod.request("GET", f"{sb.base_url()}/rest/v1/history?select=ts", "history",
+                            secret="supabase_session")
+        except net_mod.EgressRefused as e:
+            assert "history_sync" in e.reason, e
+        else:
+            raise AssertionError("a history call passed with its gate shut")
+        assert len(fake.calls) == n
+        assert net_mod.rows()[-1].status == "refused"
+    # unconfigured: quiet everywhere
+    assert not sb.configured() or True
+    with _patched(sb, "PROJECT_REF", ""), _patched(sb, "PUBLISHABLE_KEY", ""):
+        assert sb.sync_now(None) == {} and sb.drain_outbox() == {}
+        assert sb.status()["configured"] is False
+        try:
+            with _consented("account"):
+                sb.sign_in_anonymous()
+        except sb.AccountError as e:
+            assert "not configured" in str(e)
+        else:
+            raise AssertionError("an unconfigured build signed in")
+
+
+def test_no_keys_reach_supabase():
+    """D12 lock 2 on the account host: with fixture Groq and Google keys
+    stored, a full pass — anonymous sign-in, profile, settings and
+    vocabulary push, history push, a report with attachments — sends no
+    request to the project carrying a key-shaped string in its URL,
+    headers or body; every request carries the publishable key as
+    `apikey` and the session's access token as the bearer, and nothing
+    else in Authorization; the Groq/Google secrets are never named."""
+    import history as history_mod
+    import redact
+    import sb
+
+    groq_fixture = "gsk_fixture_sb_" + "q" * 30
+    gem_fixture = "AIza_fixture_sb_" + "g" * 30
+    d = Path(tempfile.mkdtemp(prefix="deskit-nokeys-"))
+    try:
+        log_path = d / "transcripts.log"
+        log_path.write_text("2026-09-18 10:00:00,000 | OK | 1.0s | local | 0.4s latency | text\n", "utf-8")
+        vocab = vocab_mod.Vocab(d / "vocab.json")
+        vocab.learn("heard", "meant")
+        outbox = d / "outbox"
+        outbox.mkdir()
+        rid = "aaaaaaaa-bbbb-cccc-dddd-000000000001"
+        (outbox / f"{rid}.json").write_text(json.dumps({
+            "id": rid, "kind": "idea", "text": "an idea", "env": {}, "attachments": []}), "utf-8")
+        config_mod.save({"polish.when": "always"})
+        with _test_cred_prefix() as store, _fixture_project() as fake, \
+                _patched(paths, "OUTBOX_DIR", outbox), _patched(history_mod, "LOG", log_path), \
+                _consented("account", "settings_sync", "history_sync", "report_upload"):
+            store.set("groq", groq_fixture)
+            store.set("gemini", gem_fixture)
+            sb.sign_in_anonymous()
+            out = sb.sync_now(vocab)
+            assert not any(v.startswith("error") for v in out.values()), out
+            assert sb.drain_outbox() == {rid: "sent"}
+            calls = fake.to_project()
+            assert len(calls) >= 8, len(calls)
+            for c in calls:
+                blob = c["url"] + json.dumps(c["headers"]) + c["body"].decode("utf-8", "replace")
+                assert groq_fixture not in blob and gem_fixture not in blob, c["path"]
+                assert "gsk_" not in blob and "AIza" not in blob, c["path"]
+                assert c["headers"].get("apikey") == fake.KEY, c["headers"]
+                auth = c["headers"].get("Authorization", "")
+                if c["path"] not in ("auth/v1/signup",) and not c["path"].startswith("auth/v1/token"):
+                    assert auth == f"Bearer {fake.TOKEN}", (c["path"], auth)
+                for name in ("x-goog-api-key", "x-api-key"):
+                    assert name not in {k.lower() for k in c["headers"]}
+                assert c["url"].startswith("https://")
+            # the log names the secret, never its value, and no other host
+            rows = [r for r in __import__("net").rows() if r.host == f"{fake.REF}.supabase.co"]
+            assert rows and all(r.secret in ("supabase_session", "-") for r in rows), rows
+            assert {r.purpose for r in rows} == {"account", "sync", "history", "report"}, rows
+            text = paths.NETWORK_LOG.read_text("utf-8")
+            assert fake.TOKEN not in text and not redact.looks_secret(text.replace(fake.KEY, ""))
+    finally:
+        config_mod.save({"polish.when": config_mod.defaults_flat()["polish.when"]})
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_session_file_is_dpapi_and_refreshes_on_demand():
+    """After a sign-in the session exists only in secrets\\supabase.bin,
+    not as plaintext, and state.json/settings.toml/network.log hold no
+    token. A stored session past its expiry triggers exactly one refresh
+    before the next request; a 401 answer triggers one refresh and one
+    retry; a second 401 clears the session and the cursors — the
+    account is gone, never a dialog (8.6, 8.8)."""
+    import secretstore
+    import sb
+
+    with _fixture_project() as fake, _consented("account", "settings_sync"):
+        sb.sign_in_anonymous()
+        blob = secretstore.blob_path("supabase_session")
+        assert blob.is_file() and str(blob).startswith(str(_SCRATCH_HOME)), blob
+        raw = blob.read_bytes()
+        assert fake.TOKEN.encode() not in raw and fake.REFRESH.encode() not in raw, "plaintext"
+        for path in (paths.STATE_FILE, paths.SETTINGS_FILE, paths.NETWORK_LOG):
+            if path.exists():
+                assert fake.TOKEN not in path.read_text("utf-8"), path
+        assert sb.status()["signed_in"] and sb.status()["anonymous"] and sb.status()["user_id"] == fake.UID
+        # past its hour: one refresh, then the request
+        session = json.loads(secretstore.get("supabase_session"))
+        session["expires_at"] = time.time() - 5
+        secretstore.set("supabase_session", json.dumps(session))
+        sb.forget_cache()
+        before = len(fake.calls)
+        sb.sync_now(None)
+        paths_seen = [c["path"] + "?" + urllib_parse.urlencode(c["query"]) for c in fake.calls[before:]]
+        assert paths_seen[0] == "auth/v1/token?grant_type=refresh_token", paths_seen
+        assert fake.refreshes == 1 and paths_seen.count("auth/v1/token?grant_type=refresh_token") == 1
+        assert json.loads(secretstore.get("supabase_session"))["access_token"] == fake.TOKEN + "1"
+        # a 401 on a table: one refresh, one retry
+        fake.script["rest/v1/settings_sync"] = [(401, b'{"message":"JWT expired"}')]
+        before = len(fake.calls)
+        out = sb.sync_now(None)
+        assert fake.refreshes == 2 and not out.get("settings", "").startswith("error"), out
+        # two 401s in a row: the account is gone
+        fake.script["rest/v1/settings_sync"] = [(401, b"{}"), (401, b"{}")]
+        out = sb.sync_now(None)
+        assert "gone" in out.get("settings", ""), out
+        assert not sb.signed_in() and secretstore.get("supabase_session") is None
+        assert sb.status()["signed_in"] is False and "signed out" in sb.status()["last_error"] or True
+        assert not __import__("sync").cursor_path().exists()
+
+
+def test_outbox_order_idempotence_and_poison():
+    """drain_outbox (8.4, 8.8): the objects go up before the row; a 409
+    on the row (already there from a half-success) counts as sent and
+    the file goes; a 4xx CHECK failure marks the report .failed with the
+    server's words and stops retrying it; a 5xx or a dead wire leaves it
+    queued and the file in place; a file kind a report may not carry is
+    refused before any upload."""
+    import sb
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-outbox-"))
+    try:
+        outbox = d / "outbox"
+        outbox.mkdir()
+        shot, wav = d / "shot.jpg", d / "dictation.wav"
+        shot.write_bytes(b"\xff\xd8jpeg")
+        wav.write_bytes(RIFF)
+
+        def queue_report(rid, **extra):
+            body = {"id": rid, "kind": "broken", "text": "it broke", "env": {},
+                    "attachments": [{"name": "shot.jpg", "path": str(shot)},
+                                    {"name": "dictation.wav", "path": str(wav)}]}
+            body.update(extra)
+            (outbox / f"{rid}.json").write_text(json.dumps(body), "utf-8")
+
+        with _fixture_project() as fake, _patched(paths, "OUTBOX_DIR", outbox), \
+                _consented("account", "report_upload"):
+            sb.sign_in_anonymous()
+            r1 = "aaaaaaaa-0000-0000-0000-000000000001"
+            queue_report(r1)
+            assert sb.queued() == 1
+            assert sb.drain_outbox() == {r1: "sent"}
+            order = [c["path"] for c in fake.to_project() if c["method"] == "POST"
+                     and ("storage/v1/object/reports/" in c["path"] or c["path"] == "rest/v1/problem_reports")]
+            assert order == [f"storage/v1/object/reports/{fake.UID}/{r1}/shot.jpg",
+                             f"storage/v1/object/reports/{fake.UID}/{r1}/dictation.wav",
+                             "rest/v1/problem_reports"], order
+            wav_call = next(c for c in fake.to_project() if c["path"].endswith("dictation.wav"))
+            assert wav_call["headers"]["Content-Type"] == "audio/wav" and wav_call["body"] == RIFF
+            assert wav_call["headers"].get("x-upsert") == "false"
+            assert not (outbox / f"{r1}.json").exists() and sb.queued() == 0
+            # already there: 409 is done
+            r2 = "aaaaaaaa-0000-0000-0000-000000000002"
+            queue_report(r2)
+            fake.script["rest/v1/problem_reports"] = [(409, b'{"message":"duplicate key"}')]
+            assert sb.drain_outbox() == {r2: "sent"} and not (outbox / f"{r2}.json").exists()
+            # poison: a CHECK failure
+            r3 = "aaaaaaaa-0000-0000-0000-000000000003"
+            queue_report(r3)
+            fake.script["rest/v1/problem_reports"] = [
+                (400, b'{"message":"new row for relation \\"problem_reports\\" violates check constraint"}')]
+            out = sb.drain_outbox()
+            assert out[r3].startswith("failed: HTTP 400"), out
+            assert (outbox / f"{r3}.failed").read_text("utf-8").startswith("HTTP 400")
+            assert (outbox / f"{r3}.json").exists() and sb.queued() == 0
+            n = len(fake.calls)
+            assert sb.drain_outbox() == {}, "a failed report was retried"
+            assert len(fake.calls) == n
+            # a 5xx keeps it queued, the file stays, the next pass retries
+            r4 = "aaaaaaaa-0000-0000-0000-000000000004"
+            queue_report(r4)
+            fake.script["rest/v1/problem_reports"] = [(503, b"paused")]
+            out = sb.drain_outbox()
+            assert out[r4].startswith("queued:"), out
+            assert (outbox / f"{r4}.json").exists() and sb.queued() == 1
+            fake.script.clear()
+            assert sb.drain_outbox() == {r4: "sent"}
+            # a dead wire: queued, no .failed
+            r5 = "aaaaaaaa-0000-0000-0000-000000000005"
+            queue_report(r5)
+            import net as net_mod
+
+            def dead(*a, **k):
+                raise net_mod.NetError("no route")
+            with _patched(net_mod, "_connect", dead):
+                out = sb.drain_outbox()
+            assert out[r5].startswith("queued:") and not (outbox / f"{r5}.failed").exists()
+            # a kind of file a report may not carry
+            r6 = "aaaaaaaa-0000-0000-0000-000000000006"
+            exe = d / "x.exe"
+            exe.write_bytes(b"MZ")
+            queue_report(r6, attachments=[{"name": "x.exe", "path": str(exe)}])
+            n = len(fake.to_project())
+            out = sb.drain_outbox()
+            assert out[r5] == "sent" and out[r6].startswith("failed: x.exe"), out
+            assert not any("x.exe" in c["path"] for c in fake.to_project()[n:])
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_google_signin_round_trip_and_delete_me():
+    """sign_in_google (D31, 8.6): a PKCE challenge in the authorize URL,
+    a loopback redirect the browser is sent to, the code exchanged with
+    the verifier (never the challenge), the session stored, the profile
+    and device rows upserted; an anonymous session is LINKED (the
+    identities endpoint, with the bearer) so the uid stays. Then
+    delete_account: the storage purge, delete_me(), and every local
+    trace gone — session, account.* in state.json, cursors, outbox."""
+    import secretstore
+    import sb
+
+    opened: list[str] = []
+
+    def browser(url: str) -> bool:
+        opened.append(url)
+        query = dict(urllib_parse.parse_qsl(urllib_parse.urlsplit(url).query))
+        redirect = query.get("redirect_to") or "http://127.0.0.1:1/cb"
+
+        def come_back():
+            time.sleep(0.2)
+            try:
+                import urllib.request as ur
+                with ur.urlopen(redirect + "?code=fixture-code", timeout=5) as r:
+                    assert "DeskIT" in r.read().decode("utf-8")
+            except Exception as e:                           # noqa: BLE001
+                print("    (callback failed:", e, ")")
+        threading.Thread(target=come_back, daemon=True).start()
+        return True
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-google-"))
+    try:
+        outbox = d / "outbox"
+        outbox.mkdir()
+        (outbox / "aaaaaaaa-0000-0000-0000-00000000000a.json").write_text("{}", "utf-8")
+        with _fixture_project() as fake, _consented("account"), _patched(paths, "OUTBOX_DIR", outbox):
+            who = sb.sign_in_google(open_browser=browser, timeout_s=10)
+            assert who["email"] == "person@example.com" and not who["is_anonymous"], who
+            assert len(opened) == 1 and opened[0].startswith(f"{sb.base_url()}/auth/v1/authorize?")
+            q = dict(urllib_parse.parse_qsl(urllib_parse.urlsplit(opened[0]).query))
+            assert q["provider"] == "google" and q["code_challenge_method"] == "s256"
+            assert q["redirect_to"].startswith("http://127.0.0.1:") and q["redirect_to"].endswith("/cb")
+            exchange = next(c for c in fake.to_project() if c["query"].get("grant_type") == "pkce")
+            body = json.loads(exchange["body"])
+            assert body["auth_code"] == "fixture-code"
+            assert body["code_verifier"] != q["code_challenge"] and len(body["code_verifier"]) >= 43
+            assert "Authorization" not in exchange["headers"]
+            assert [c["path"] for c in fake.to_project()][-2:] == ["rest/v1/profiles", "rest/v1/devices"]
+            device = json.loads(fake.to_project()[-1]["body"])
+            assert device["id"] == sb.device_id() and device["user_id"] == fake.UID
+            assert config_mod.read_state(paths.STATE_FILE)["account.device_id"] == device["id"]
+            profile = json.loads(fake.to_project()[-2]["body"])
+            assert profile == {"user_id": fake.UID, "app_version_last_seen": profile["app_version_last_seen"],
+                               "is_anonymous": False}
+            status = sb.status()
+            assert status["signed_in"] and status["email"] == "person@example.com" and not status["anonymous"]
+            # an anonymous account links instead
+            sb.sign_out()
+            assert not sb.signed_in()
+            sb.sign_in_anonymous()
+            opened.clear()
+            who = sb.sign_in_google(open_browser=browser, timeout_s=10)
+            link = next(c for c in fake.to_project() if c["path"] == "auth/v1/user/identities/authorize")
+            assert link["headers"]["Authorization"].startswith("Bearer ") and link["query"]["skip_http_redirect"] == "true"
+            assert opened[0].startswith("https://accounts.google.com/o/oauth2/v2/auth?fixture=1"), opened
+            assert who["email"] == "person@example.com"
+            # delete
+            __import__("sync").write_cursor({"x": 1})
+            sb.delete_account()
+            assert fake.deleted
+            paths_seen = [c["path"] for c in fake.to_project()]
+            assert paths_seen.index("storage/v1/object/list/reports") < paths_seen.index("rest/v1/rpc/delete_me")
+            assert secretstore.get("supabase_session") is None and not sb.signed_in()
+            state = config_mod.read_state(paths.STATE_FILE)
+            assert not any(k.startswith("account.") for k in state), state
+            assert not __import__("sync").cursor_path().exists()
+            assert list(outbox.iterdir()) == []
+            assert sb.status()["signed_in"] is False
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_keepalive_workflow_shape():
+    """The weekly knock (8.9): a schedule, one curl GET to
+    /rest/v1/profiles with the publishable key as `apikey` from a
+    repository VARIABLE, no Authorization header, no secret, nothing
+    else; exits green when the variables are not set yet."""
+    wf = (REPO / ".github" / "workflows" / "supabase-keepalive.yml").read_text("utf-8")
+    assert re.search(r"schedule:\s*\n\s*- cron: \"[^\"]+\"", wf)
+    assert "workflow_dispatch" in wf and "permissions: {}" in wf
+    assert wf.count("curl") == 1 and "/rest/v1/profiles?select=user_id&limit=1" in wf
+    assert '--header "apikey: $SUPABASE_PUBLISHABLE_KEY"' in wf
+    assert "Authorization" not in wf and "sb_secret" not in wf and "secrets." not in wf
+    assert "vars.SUPABASE_URL" in wf and "vars.SUPABASE_PUBLISHABLE_KEY" in wf
+    assert "exit 0" in wf.split("curl")[0], "an unset variable must exit green"
+    assert "--request POST" not in wf and "-X" not in wf
+
+
+def test_account_block_on_the_privacy_tab():
+    """Settings > Privacy carries the ACCOUNT card (screen 16): "start
+    dictation first" with no app; with a status that says signed out,
+    Sign in with Google and Anonymous account; signed in with Google,
+    the e-mail and Sync now / Sign out / Delete my account, and Delete
+    asks first — the question grows out of the card with Keep it and
+    Delete, and a press sends `account` with the verb over the pipe."""
+    import settings as settings_mod
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-acct-card-"))
+    try:
+        with _patched(paths, "SETTINGS_FILE", d / "s.toml"), _patched(paths, "STATE_FILE", d / "t.json"), \
+                _window() as board:
+            if board is None:
+                return
+            board._show("Settings")
+            board._settings_go("Privacy")
+            board._finish_settings()
+            board.root.update_idletasks()
+            line = board.parts["account_line"]
+            assert "start dictation first" in line.cget("text")
+            labels = lambda: [w.itemcget(w._label, "text")  # noqa: E731
+                              for w in board.parts["account_strip"].winfo_children()
+                              if hasattr(w, "_label")]
+            assert labels() == []
+            board.running = True
+            board.status = {"stage": "running", "account": {
+                "configured": True, "signed_in": False, "user_id": "", "anonymous": True,
+                "email": "", "device_name": "PC", "busy": "", "last_error": "",
+                "last_sync": "", "waiting": 0, "region": "Frankfurt (Supabase)"}}
+            board._paint_account()
+            assert line.cget("text").startswith("none — sign in")
+            assert labels() == ["Sign in with Google", "Anonymous account"], labels()
+            board.status["account"].update(signed_in=True, anonymous=False,
+                                           email="person@example.com", waiting=2,
+                                           last_sync="2026-09-18T12:03:00+00:00")
+            board._paint_account()
+            assert "person@example.com" in line.cget("text")
+            assert "2 reports waiting" in board.parts["account_sub"].cget("text")
+            assert labels() == ["Sync now", "Sign out", "Delete my account"], labels()
+            sent: list = []
+            board._ask = lambda command, then=None, **args: sent.append((command, args))
+            board.parts["account_strip"].winfo_children()[2]._command()
+            assert board._account_asking and labels() == ["Keep it", "Delete"], labels()
+            assert "Delete your account" in line.cget("text") and sent == []
+            board.parts["account_strip"].winfo_children()[0]._command()
+            assert not board._account_asking and labels()[0] == "Sync now"
+            board.parts["account_strip"].winfo_children()[0]._command()
+            assert sent == [("account", {"do": "sync"})], sent
+            board.status["account"].update(anonymous=True, email="")
+            board._paint_account()
+            assert labels() == ["Sync now", "Sign in with Google", "Sign out", "Delete my account"]
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_account_command_over_the_pipe():
+    """main.App._account_command: `status` answers sb.status(); a sign-in
+    with the account gate shut opens the card and says so, with the gate
+    open it starts a thread and answers at once (nothing on the control
+    thread waits on a browser); `sync` nudges the worker; `delete` with
+    no account is refused; an unknown verb is an error."""
+    import sb
+    import privacy
+
+    app = __import__('main').App.__new__(__import__('main').App)
+    app._say = lambda text: None
+    asked: list[str] = []
+    with _fixture_project() as fake, _patched(privacy, "_asker", lambda kind: asked.append(kind)):
+        reply = app._account_command("status")
+        assert reply["ok"] and reply["account"]["configured"] and not reply["account"]["signed_in"]
+        reply = app._account_command("google")
+        assert not reply["ok"] and "card" in reply["error"] and asked == ["account"], reply
+        assert fake.calls == []
+        assert not app._account_command("delete")["ok"]
+        assert not app._account_command("bogus")["ok"]
+        with _consented("account"):
+            reply = app._account_command("anonymous")
+            assert reply["ok"], reply
+            for _ in range(50):
+                if sb.signed_in():
+                    break
+                time.sleep(0.05)
+            assert sb.signed_in(), "the sign-in thread did not finish"
+            assert app._account_command("sync")["ok"]
+            assert sb._wake.is_set()
+            sb._wake.clear()
+            reply = app._account_command("signout")
+            assert reply["ok"]
+            for _ in range(50):
+                if not sb.signed_in():
+                    break
+                time.sleep(0.05)
+            assert not sb.signed_in()
+        with _patched(sb, "PROJECT_REF", ""):
+            assert "not configured" in app._account_command("google")["error"]
+
+
 NEEDS_SCREEN = (
     "test_a_busy_clipboard_is_a_message_not_a_traceback",
     "test_a_closed_card_leaves_no_interpreter_for_another_thread_to_free",

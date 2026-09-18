@@ -136,6 +136,7 @@ _LAYOUTS: dict[str, tuple[str, str]] = {
     "PHONE_DIR":       ("",                   "phone"),
     "PHONE_TOKEN":     ("server_token.txt",   "phone/server_token.txt"),
     "SECRETS_DIR":     ("secrets",            "secrets"),
+    "SYNC_DIR":        ("sync",               "sync"),
     "CACHE_DIR":       ("cache",              "cache"),
     "CUES_DIR":        ("cues",               "cache/cues"),
     "TMP_DIR":         ("tmp",                "tmp"),
@@ -178,6 +179,7 @@ PACKS_DIR = _rel("PACKS_DIR")
 PHONE_DIR = _rel("PHONE_DIR")
 PHONE_TOKEN = _rel("PHONE_TOKEN")
 SECRETS_DIR = _rel("SECRETS_DIR")
+SYNC_DIR = _rel("SYNC_DIR")
 CACHE_DIR = _rel("CACHE_DIR")
 CUES_DIR = _rel("CUES_DIR")
 TMP_DIR = _rel("TMP_DIR")

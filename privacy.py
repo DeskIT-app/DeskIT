@@ -2,8 +2,9 @@
 
 DISTRIBUTION_PLAN.md chapter 5.1-5.3, decisions D7 and D11. Every cloud
 feature — the repair pass, punctuation, translation, lookup, the second
-reading, a cloud transcriber, ask-the-screen — is behind one of six
-KINDS, and a kind is open only when three things are true at once:
+reading, a cloud transcriber, ask-the-screen, the account, its syncs —
+is behind one of seven KINDS, and a kind is open only when three things
+are true at once:
 
 1. ``consent.json`` (``paths.CONSENT_FILE``) holds a row for it whose
    ``text_version`` equals the one compiled into its card here. The
@@ -61,7 +62,8 @@ log = logging.getLogger("app")
 #: The consent gates, in the order the Settings page and the guide list
 #: them. Each has a card (5.3) and a text_version below.
 KINDS: tuple[str, ...] = ("cloud_text", "cloud_audio", "cloud_screenshots",
-                          "account", "report_upload", "settings_sync")
+                          "account", "report_upload", "settings_sync",
+                          "history_sync")
 
 #: Plain switches under [privacy]: no card, no consent row.
 SWITCHES: tuple[str, ...] = ("update_check", "offline")
@@ -69,8 +71,8 @@ SWITCHES: tuple[str, ...] = ("update_check", "offline")
 #: The version of the words on each card — the providers' "last updated"
 #: dates (research/legal; Gemini terms 2026-04-28, Groq Services
 #: Agreement 2026-06-22). A card whose words change bumps its version and
-#: every old row goes stale. The three DeskIT-side kinds carry the
-#: version of the one-page terms of chapter 13, not written yet.
+#: every old row goes stale. The four DeskIT-side kinds carry the
+#: version of the one-page terms of chapter 13 (docs/terms.md).
 TEXT_VERSIONS: dict[str, str] = {
     "cloud_text": "groq-2026-06-22+gemini-2026-04-28",
     "cloud_audio": "groq-2026-06-22+gemini-2026-04-28",
@@ -78,6 +80,7 @@ TEXT_VERSIONS: dict[str, str] = {
     "account": "deskit-terms-0",
     "report_upload": "deskit-terms-0",
     "settings_sync": "deskit-terms-0",
+    "history_sync": "deskit-terms-0",
 }
 
 #: net.py's purpose -> the gate it needs. A purpose absent here (key
@@ -90,6 +93,7 @@ PURPOSE_KINDS: dict[str, str] = {
     "transcribe": "cloud_audio",
     "ask-screen": "cloud_screenshots",
     "account": "account", "report": "report_upload", "sync": "settings_sync",
+    "history": "history_sync",
     "update-check": "update_check",
 }
 

@@ -400,9 +400,10 @@ Six gates that open only through their consent cards, and two switches: the week
 | `privacy.cloud_text` — Text to the cloud | What you dictated or selected may go to Groq or Google under your own key, for the repair pass, punctuation, translation, lookup and the second reading. Opens only through its card, the first time a feature needs it. | off | on / off |
 | `privacy.cloud_audio` — Recordings to the cloud | What you said, as audio, may go to Google or Groq for transcription. Opens only through its card. | off | on / off |
 | `privacy.cloud_screenshots` — Screen pictures to the cloud | The part of the screen you asked about may go to Groq or Google. Opens only through its card. | off | on / off |
-| `privacy.account` — An anonymous account | For problem reports you choose to send. Opens only through its card. | off | on / off |
+| `privacy.account` — An account | Anonymous, or your Google sign-in: for problem reports you choose to send and for the two syncs. Opens only through its card. | off | on / off |
 | `privacy.report_upload` — Sending problem reports | Only what the preview showed. Opens only through its card. | off | on / off |
-| `privacy.settings_sync` — Syncing settings | Not built yet. | off | on / off |
+| `privacy.settings_sync` — Syncing settings and words | Your changed settings and learned words follow you to every PC you sign into; never keys, hotkeys, devices, folders or positions. Opens only through its card. | off | on / off |
+| `privacy.history_sync` — Syncing what you said | The Said page is the same on every PC you sign into. Stored in your account on the developer's server, where he could technically read it. Opens only through its card. | off | on / off |
 
 ### Switches
 

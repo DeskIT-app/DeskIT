@@ -1214,6 +1214,7 @@ class PrivacyConfig:
     account: bool = False
     report_upload: bool = False
     settings_sync: bool = False
+    history_sync: bool = False
     update_check: bool = True
     offline: bool = False
 
@@ -1222,6 +1223,7 @@ class PrivacyConfig:
 CONSENT_KEYS: frozenset[str] = frozenset({
     "privacy.cloud_text", "privacy.cloud_audio", "privacy.cloud_screenshots",
     "privacy.account", "privacy.report_upload", "privacy.settings_sync",
+    "privacy.history_sync",
 })
 
 
@@ -2582,8 +2584,9 @@ STATE_KEYS: frozenset[str] = frozenset({
     "config_version",
     "updates.last_check", "updates.latest_seen", "updates.installed_version",
 })
-#: Whole families that are state: the machine facts hardware.py records.
-STATE_PREFIXES: tuple[str, ...] = ("hardware.",)
+#: Whole families that are state: the machine facts hardware.py records,
+#: the account's ids and the sync cursors sb.py keeps (chapter 8).
+STATE_PREFIXES: tuple[str, ...] = ("hardware.", "account.", "sync.")
 
 
 def is_state_key(name: str) -> bool:

@@ -1321,7 +1321,7 @@ hush_notifications = true      # while the panel is open the notification
                                # marked seen and no reminder is lost
 
 [privacy]
-# WHAT MAY LEAVE THIS PC. Six gates and two switches. A gate is not a
+# WHAT MAY LEAVE THIS PC. Seven gates and two switches. A gate is not a
 # setting: the Settings page shows it but cannot flip it, and neither can
 # editing this file - it opens only when you press "Turn on" on its card,
 # the first time a feature needs the cloud, and closes with "Withdraw"
@@ -1344,13 +1344,22 @@ cloud_screenshots = false      # a picture of the screen region you asked
                                # the model on this computer ever sees your
                                # screen, and the cloud backends are never
                                # even built. Card only.
-account = false                # the app may hold an anonymous account with
-                               # DeskIT's own server, for problem reports
-                               # you choose to send. Card only.
+account = false                # the app may hold an account with DeskIT's
+                               # own server - anonymous, or your Google
+                               # sign-in - for problem reports you choose
+                               # to send and for the syncs below. Card only.
 report_upload = false          # problem reports you queued may upload -
                                # only what the preview showed. Card only.
-settings_sync = false          # your settings and vocabulary may sync
-                               # between your PCs (not yet built). Card only.
+settings_sync = false          # your changed settings and your learned
+                               # words may sync between the PCs you sign
+                               # into - never the keys, hotkeys, devices,
+                               # folders or positions. Card only.
+history_sync = false           # what you dictated, translated, punctuated
+                               # and looked up may sync between your PCs,
+                               # so the Said page is the same on each.
+                               # Stored in your account on DeskIT's server,
+                               # where the developer could technically
+                               # read it. Card only.
 update_check = true            # once a week, one request to GitHub asking
                                # whether a newer version exists. Carries no
                                # identifier. Off = you check by hand.

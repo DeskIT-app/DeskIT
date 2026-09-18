@@ -43,6 +43,10 @@ cues/
 server_token.txt
 /secrets/
 
+# The account's sync folder (sb.py, sync.py): what other PCs of the same
+# account said, pulled here for the Said page, and the sync cursors.
+/sync/
+
 # Android build outputs and local toolchain paths
 android/.gradle/
 android/build/

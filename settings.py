@@ -92,16 +92,16 @@ class Setting:
 
     @property
     def consent(self) -> bool:
-        """One of the six [privacy] gates — drawn read-only with the date
+        """One of the seven [privacy] gates — drawn read-only with the date
         it was granted, never as a switch."""
         return self.section == "privacy" and self.key in CONSENT_GATES
 
 
-#: The six gates of [privacy] (privacy.KINDS, spelled here so this module
+#: The seven gates of [privacy] (privacy.KINDS, spelled here so this module
 #: keeps importing nothing but the standard library).
 CONSENT_GATES: frozenset[str] = frozenset({
     "cloud_text", "cloud_audio", "cloud_screenshots",
-    "account", "report_upload", "settings_sync",
+    "account", "report_upload", "settings_sync", "history_sync",
 })
 
 
@@ -745,14 +745,23 @@ TABS: tuple[Tab, ...] = (
             Friendly("privacy.cloud_screenshots", "Screen pictures to the cloud",
                      "The part of the screen you asked about may go to "
                      "Groq or Google. Opens only through its card."),
-            Friendly("privacy.account", "An anonymous account",
-                     "For problem reports you choose to send. Opens only "
-                     "through its card."),
+            Friendly("privacy.account", "An account",
+                     "Anonymous, or your Google sign-in: for problem "
+                     "reports you choose to send and for the two syncs. "
+                     "Opens only through its card."),
             Friendly("privacy.report_upload", "Sending problem reports",
                      "Only what the preview showed. Opens only through its "
                      "card."),
-            Friendly("privacy.settings_sync", "Syncing settings",
-                     "Not built yet."),
+            Friendly("privacy.settings_sync", "Syncing settings and words",
+                     "Your changed settings and learned words follow you "
+                     "to every PC you sign into; never keys, hotkeys, "
+                     "devices, folders or positions. Opens only through "
+                     "its card."),
+            Friendly("privacy.history_sync", "Syncing what you said",
+                     "The Said page is the same on every PC you sign "
+                     "into. Stored in your account on the developer's "
+                     "server, where he could technically read it. Opens "
+                     "only through its card."),
         )),
         Group("SWITCHES", (
             Friendly("privacy.update_check", "Look for a newer version weekly",
@@ -1489,13 +1498,20 @@ _MORE: tuple[Friendly, ...] = (
     Friendly("privacy.cloud_screenshots", "Screen pictures to the cloud",
              "The part of the screen you asked about may go to Groq or "
              "Google. Opens only through its card."),
-    Friendly("privacy.account", "An anonymous account",
-             "For problem reports you choose to send. Opens only through "
-             "its card."),
+    Friendly("privacy.account", "An account",
+             "Anonymous, or your Google sign-in: for problem reports you "
+             "choose to send and for the two syncs. Opens only through its "
+             "card."),
     Friendly("privacy.report_upload", "Sending problem reports",
              "Only what the preview showed. Opens only through its card."),
-    Friendly("privacy.settings_sync", "Syncing settings",
-             "Not built yet."),
+    Friendly("privacy.settings_sync", "Syncing settings and words",
+             "Your changed settings and learned words follow you to every "
+             "PC you sign into; never keys, hotkeys, devices, folders or "
+             "positions. Opens only through its card."),
+    Friendly("privacy.history_sync", "Syncing what you said",
+             "The Said page is the same on every PC you sign into. Stored "
+             "in your account on the developer's server, where he could "
+             "technically read it. Opens only through its card."),
     Friendly("privacy.update_check", "Look for a newer version weekly",
              "One request to GitHub, carrying no identifier."),
     Friendly("privacy.offline", "Offline mode",

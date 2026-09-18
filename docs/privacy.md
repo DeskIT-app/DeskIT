@@ -70,19 +70,47 @@ Both providers require users to be 18 or over for these features.
 
 ## 4. The optional account
 
-Off by default; not in this release. When it ships: anonymous by
-default; collected are a user id, the app version, the Windows build,
-the hardware tier, the report text you typed, only the attachments you
-ticked (a log excerpt passed through the redactor and previewed before
-Send; audio or a transcript only if ticked), timestamps, and the IP
-address as the processor sees it. Purpose: replying to problem reports
-and, later, syncing settings. Voluntary: no law requires any of it;
-without it there are no reports and no sync, and dictation is
-unaffected. Recipients: Supabase Inc. as processor (region Frankfurt,
-EU); **Anthropic PBC when the owner processes reports with AI tools
-under his own account**. Retention: 12 months, then deleted; "Delete
-my account" in the app deletes at once. Rights: access, rectification
-and deletion through the app and by e-mail.
+Off by default. You create one only by pressing "Sign in with Google"
+or by sending a problem report (an anonymous account, no e-mail).
+Collected on sign-in: a user id; with Google, the e-mail address of the
+Google account you chose (held by the sign-in service, never shown to
+other users); the name of this PC as Windows reports it (or the name
+you typed), the app version, the Windows build, the hardware tier;
+timestamps; and the IP address as the processor sees it, in its logs
+only (kept one day).
+
+**Two syncs, each behind its own consent card, both off until you turn
+them on.** "Settings and words": your changed settings — minus every
+key, hotkey, device, folder, port and position, which never leave the
+PC — and the words the app learned from your corrections. "What you
+said": the text of what you dictated, translated, punctuated and looked
+up, one row per event, so the Said page is the same on every PC you
+sign into. Never audio, screenshots or clips. **Plain statement: the
+rows of the "what you said" sync sit in the developer's database. Its
+security rules separate users from each other; they do not stop the
+project's administrator from reading a row.** If that is not acceptable,
+leave that sync off — dictation and everything else work exactly the
+same.
+
+Problem reports you chose to send: the report text you typed, only the
+attachments you ticked (a screenshot, a recording, the transcript, a
+settings snapshot — each passed through the redactor and previewed
+before Send).
+
+Purpose: keeping your words and settings with you across PCs; reading
+the reports you send. Voluntary: no law requires any of it; without an
+account there are no reports and no sync, and dictation is unaffected.
+Recipients: Supabase Inc. as processor (region Frankfurt, EU); Google
+LLC for the sign-in itself; **Anthropic PBC when the owner processes
+reports with AI tools under his own account**. Retention: reports and
+attachments 12 months; synced words, settings and history for as long
+as the account exists; idle anonymous accounts 12 months; the owner's
+monthly backup 3 months. "Delete my account" in the app deletes
+everything at once — rows, files and the account — and "Sign out"
+revokes the session everywhere. Rights: access, rectification and
+deletion through the app and by e-mail. The whole database schema is
+published at `supabase/migrations/` in the repository; no table in it
+has a column that could hold an API key.
 
 ## 5. The phone companion
 

@@ -86,11 +86,33 @@ ALLOWED_HOSTS: frozenset[str] = frozenset({
 #: two domains is refused exactly as before. Nothing else gets a suffix.
 ALLOWED_SUFFIXES: tuple[str, ...] = (".huggingface.co", ".hf.co")
 
-#: ``<ref>.supabase.co`` — set in phase 3 with the project ref; refused
-#: until then. A suffix rule would admit any project, so it is a value,
-#: and ``SECRET_HOSTS`` names it by this tag so one constant changes.
+#: ``<ref>.supabase.co`` — the one project of the optional account,
+#: set by ``sb.configure`` from sb.py's two constants (chapter 8.7) and
+#: refused until then. A suffix rule would admit any project, so it is a
+#: value, and ``SECRET_HOSTS`` names it by this tag so one constant
+#: changes. ``SUPABASE_KEY`` is the PUBLISHABLE key, public by design
+#: (it is in the repo and in every install): this module attaches it as
+#: the ``apikey`` header on every request to that host, because a caller
+#: may not set that header itself (``_SECRET_HEADERS``) and the key is
+#: not a secret to look up by name.
 SUPABASE_HOST: str | None = None
+SUPABASE_KEY: str | None = None
 _SUPABASE = "<supabase>"
+
+
+def configure_supabase(host: str | None, publishable_key: str | None) -> None:
+    """Admit the project host and remember its publishable key. Only
+    sb.py calls this, with its module constants; a test calls it with a
+    fixture and puts it back."""
+    global SUPABASE_HOST, SUPABASE_KEY
+    host = (host or "").strip().lower() or None
+    if host is not None and not host.endswith(".supabase.co"):
+        raise ValueError(f"{host!r} is not a Supabase project host")
+    key = (publishable_key or "").strip() or None
+    if key is not None and not key.startswith("sb_publishable_"):
+        raise ValueError("the Supabase key net.py attaches must be the "
+                         "publishable one (sb_publishable_...)")
+    SUPABASE_HOST, SUPABASE_KEY = host, key
 
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/"
 
@@ -101,7 +123,7 @@ PURPOSES: frozenset[str] = frozenset({
     "polish", "punctuate", "translate", "lookup", "review", "study",
     "reading", "ask-screen", "transcribe", "key-test", "catalog", "ollama",
     "notify", "model-download", "pack-install", "update-check",
-    "update-download", "account", "report", "sync",
+    "update-download", "account", "report", "sync", "history",
 })
 
 #: secret name -> (the one host it may go to, header, how it is written).
@@ -359,6 +381,16 @@ def _resolve(secret: str) -> str:
             value = secretstore.get(secret)
     except Exception as e:                                   # noqa: BLE001
         raise SecretMissing(secret) from e
+    if secret == "supabase_session" and value:
+        # The blob is the whole session (chapter 8.6: access token,
+        # refresh token, expiry, the user); what rides in the header is
+        # its access token and nothing else.
+        import json
+
+        try:
+            value = str(json.loads(value).get("access_token") or "")
+        except (ValueError, AttributeError):
+            value = ""
     if not value:
         raise SecretMissing(secret)
     return value
@@ -476,6 +508,11 @@ def open(method: str, url: str, purpose: str, *, secret: str | None = None,  # n
     consent = consent or granted
     hdrs = {str(k): str(v) for k, v in (headers or {}).items()}
     hdrs.setdefault("User-Agent", USER_AGENT)
+    if SUPABASE_HOST is not None and host == SUPABASE_HOST and SUPABASE_KEY:
+        # The publishable key, on every request to the one project host
+        # and nowhere else; it names the project, it opens nothing (every
+        # table's anon grant is revoked, supabase/migrations/0001_init.sql).
+        hdrs["apikey"] = SUPABASE_KEY
     if secret is not None:
         _host, header, shape = SECRET_HOSTS[secret]
         hdrs[header] = shape.format(_resolve(secret))

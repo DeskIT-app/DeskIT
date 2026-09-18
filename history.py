@@ -232,6 +232,21 @@ def _events_in(path: Path) -> list[Event]:
                 when, "discarded", note=_tail(parts, 2),
                 seconds=_seconds(parts[1]) if len(parts) > 1 else None))
 
+        elif head == "REMOTE":
+            # REMOTE | kind | device | engine | 3.1s | text — what another
+            # PC of the same account said, pulled by sb.py into
+            # sync\history.log (sync.remote_line, D31). The row shows the
+            # machine's name where a phone row says "from the phone".
+            kind = parts[1].strip().lower() if len(parts) > 1 else ""
+            if kind not in KINDS:
+                continue
+            events.append(Event(
+                when, kind, text=_tail(parts, 5),
+                engine=parts[3].strip() if len(parts) > 3 else "",
+                seconds=_seconds(parts[4]) if len(parts) > 4 else None,
+                note=f"from {parts[2].strip()}" if len(parts) > 2 and parts[2].strip()
+                else "from another PC"))
+
         elif head.endswith("-IN"):
             waiting[head[:-3].lower()] = (when, _tail(parts, 2))
 
@@ -330,6 +345,21 @@ def prune(days: int, now: datetime | None = None) -> tuple[int, int]:
     return dropped, removed
 
 
+def remote_files() -> list[Path]:
+    """What the other PCs of the account said (sync\history.log, written
+    by sb.py) — one file, present only for a signed-in user who turned
+    the history sync on."""
+    path = paths.SYNC_DIR / "history.log"
+    return [path] if path.exists() else []
+
+
+def all_events() -> list[Event]:
+    """Every event of this PC's own log and its rotations, oldest first
+    — what the account sync pushes (sb.py, D31). The other PCs' lines
+    are not in it: they came from the server and do not go back."""
+    return [ev for path in reversed(files()) for ev in _events_in(path)]
+
+
 def load(limit: int = 100) -> list[Event]:
     """The most recent `limit` events, newest first.
 
@@ -337,12 +367,17 @@ def load(limit: int = 100) -> list[Event]:
     so the usual case touches one file. The cost of that: an `-IN` at the
     end of one file whose `-OUT` landed in the next loses the text that
     went in. The alternative is reading four megabytes to show fifty rows.
+    The other PCs' lines are read whole and merged by time: they are the
+    one file whose newest row may be older than this PC's oldest.
     """
     events: list[Event] = []
     for path in files():
         events = _events_in(path) + events
         if len(events) >= limit:
             break
+    remote = [ev for path in remote_files() for ev in _events_in(path)]
+    if remote:
+        events = sorted(events + remote, key=lambda e: e.when)
     events.reverse()
     return events[:limit]
 

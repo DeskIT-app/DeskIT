@@ -1,0 +1,47 @@
+# The account server's weekly knock (DISTRIBUTION_PLAN.md 8.9, D17).
+#
+# A Free Supabase project pauses after seven days without a request. One
+# GET a week to a table whose `anon` grant is revoked answers with an
+# empty result or a permission error — and counts as activity. The
+# PUBLISHABLE key is public by design (it is in sb.py and in every
+# install); the secret key is never in this repo. Delete this workflow
+# once real users make requests every day.
+#
+# Repository variables (Settings > Secrets and variables > Actions >
+# Variables), set by the owner when the project exists (8.11 step 8):
+#   SUPABASE_URL              https://<ref>.supabase.co
+#   SUPABASE_PUBLISHABLE_KEY  sb_publishable_...
+# Until both exist the job says so and exits green.
+
+name: supabase-keepalive
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"          # Mondays 06:17 UTC
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  knock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: One GET to /rest/v1/profiles
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_PUBLISHABLE_KEY" ]; then
+            echo "::notice::SUPABASE_URL / SUPABASE_PUBLISHABLE_KEY are not set — nothing to knock on yet"
+            exit 0
+          fi
+          code=$(curl --silent --show-error --output /dev/null --write-out "%{http_code}" \
+            --max-time 30 \
+            --header "apikey: $SUPABASE_PUBLISHABLE_KEY" \
+            "$SUPABASE_URL/rest/v1/profiles?select=user_id&limit=1")
+          echo "the project answered HTTP $code (an empty 200 or a 401/403 both count as activity)"
+          case "$code" in
+            200|401|403) exit 0 ;;
+            *) echo "::warning::unexpected answer $code — is the project paused? Restore it in Studio"; exit 1 ;;
+          esac
