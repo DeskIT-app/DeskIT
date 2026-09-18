@@ -1,7 +1,6 @@
 ---
 title: DeskIT
 lang: he
-dir: rtl
 ---
 
 <section class="hero" markdown="0">

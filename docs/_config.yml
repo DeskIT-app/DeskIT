@@ -25,9 +25,7 @@ defaults:
       path: "he"
     values:
       lang: he
-      dir: rtl
   - scope:
       path: "en"
     values:
       lang: en
-      dir: ltr

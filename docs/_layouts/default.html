@@ -8,8 +8,9 @@ visitor's browser talks to nobody but GitHub Pages.
 {%- assign home = false -%}
 {%- if page.url == "/" or page.url == "/index.html" -%}{%- assign home = true -%}{%- endif -%}
 {%- assign lang = page.lang | default: site.lang -%}
-{%- assign dir = page.dir | default: "rtl" -%}
-{%- if page.url == "/privacy/" or page.url == "/terms/" -%}{%- assign lang = "en" -%}{%- assign dir = "ltr" -%}{%- endif -%}
+{%- if page.url == "/privacy/" or page.url == "/terms/" -%}{%- assign lang = "en" -%}{%- endif -%}
+{%- comment -%} not page.dir: Jekyll's own page.dir is the page's folder ("/", "/he/") {%- endcomment -%}
+{%- if lang == "he" -%}{%- assign dir = "rtl" -%}{%- else -%}{%- assign dir = "ltr" -%}{%- endif -%}
 {%- assign guide = false -%}
 {%- if page.url contains "/he/" -%}{%- assign guide = true -%}{%- assign prefix = "/he/" -%}{%- assign twin = page.url | replace_first: "/he/", "/en/" -%}{%- endif -%}
 {%- if page.url contains "/en/" -%}{%- assign guide = true -%}{%- assign prefix = "/en/" -%}{%- assign twin = page.url | replace_first: "/en/", "/he/" -%}{%- endif -%}
