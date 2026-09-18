@@ -34,6 +34,14 @@ from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
 
+# The installed interpreter runs under python311._pth, which isolates
+# sys.path to the four lines in that file: the script's own folder is
+# NOT added, so `python\python.exe app\main.py --verify` — the door the
+# guide names (04-privacy check 5) — found no `paths` (v1.1.0 build,
+# run 35400078650). deskit.pyw does the same insert for the launchers.
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+
 import paths
 import config as config_mod
 import control
