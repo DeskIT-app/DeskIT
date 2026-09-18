@@ -519,8 +519,16 @@ class App:
             cancel_guard=self._esc_is_claimed,
             ask_open=self._ask_card_open,
             on_ask_start=self._on_ask_start,
-            on_ask_stop=self._on_ask_stop)
+            on_ask_stop=self._on_ask_stop,
+            on_refused=self._on_dictation_refused)
         self.hook = HookThread(self.machine)
+        # The model's own state: "on", "off", "loading", "unloading".
+        # Stop in the desk unloads the model and the microphone stream
+        # and nothing else (load_model / unload_model); the hook, the
+        # dot, the cards and every feature that needs no model keep
+        # running, and the hold keys are refused with MODEL_OFF_WORDS.
+        self._model_state = "on"
+        self._refused_at = 0.0
         # awake.py: the machine held awake for as long as this runs (the
         # hold goes up in start()), and the screens off on a key. Built
         # whether or not the key is bound — the dashboard's button goes
@@ -1792,6 +1800,7 @@ class App:
             "activity": "paused" if self.machine.paused else self._activity,
             "uptime_s": round(time.monotonic() - self._started_at, 1),
             "backend": self.transcriber.name,
+            "model": self._model_state,
             "mic": self._mic_label,
             "keys": {name: getattr(self.cfg, name)
                      for name, _label in config_mod.HOTKEY_FIELDS},
@@ -2263,12 +2272,22 @@ class App:
                 log.warning("phone endpoint could not start (%s) — the "
                             "hotkey is unaffected", e)
                 self.phone = None
-        # The second learning channel (study.py): revisit recordings the
-        # user already sent, when the machine is idle, and learn from what
-        # the live pass got wrong. Built like skin/: a getattr and a
-        # guarded import, so on a version whose config.py has no [study]
-        # section — classic — this whole block is four cheap no-ops and
-        # main.py stays byte-identical on both branches.
+        self._start_learning()
+
+    def _start_learning(self) -> None:
+        """The second reading and the study pass — the two engines that
+        hold the model besides the dictation itself. One method because
+        load_model builds them again after unload_model tore them down:
+        an engine left alive across an unload keeps its reference to the
+        model, and the memory never comes back.
+
+        The second learning channel (study.py): revisit recordings the
+        user already sent, when the machine is idle, and learn from what
+        the live pass got wrong. Built like skin/: a getattr and a
+        guarded import, so on a version whose config.py has no [study]
+        section — classic — this whole block is four cheap no-ops and
+        main.py stays byte-identical on both branches.
+        """
         self._study = None
         self._review = None
         # The second reading (review.py) comes first and, while it is on,
@@ -2306,6 +2325,111 @@ class App:
             except Exception as e:      # noqa: BLE001 — optional feature
                 log.info("study engine unavailable (%s)", e)
 
+    def _stop_learning(self) -> None:
+        for name in ("_study", "_review"):
+            engine = getattr(self, name, None)
+            if engine is not None:
+                try:
+                    engine.stop()
+                except Exception:                            # noqa: BLE001
+                    log.debug("%s did not stop cleanly", name, exc_info=True)
+                setattr(self, name, None)
+
+    # ---- the model, off and on (the owner's ask of 2026-09-18)
+
+    MODEL_OFF_WORDS = ("the model is off — press Start in the desk to load it "
+                       "(about 25 seconds); every other key works")
+
+    def unload_model(self) -> dict:
+        """Stop, as the desk means it: the speech model and the microphone
+        stream go, the process stays. "Many things don't need the model —
+        screenshot, screen recording and a few more — and they don't work
+        when the model is off; make those that don't need the model work
+        without it." So the hook, the dot, the cards, the phone's other
+        doors, the shelf, translate, lookup and the screen keys all keep
+        running; only the hold keys are refused (hotkey.set_dictation_off)
+        and the phone's /transcribe says why. The work is on a thread —
+        this is a pipe handler, and dropping a model can take a moment."""
+        if self._model_state in ("off", "unloading"):
+            return {"ok": False, "error": "the model is already off"}
+        if self._model_state == "loading":
+            return {"ok": False, "error": "the model is still loading — a moment"}
+        if self.machine.state != hotkey_mod.IDLE:
+            return {"ok": False, "error": "not while the microphone is live — "
+                                          "finish the dictation first"}
+        self._model_state = "unloading"
+        threading.Thread(target=self._unload_work, daemon=True,
+                         name="model-unload").start()
+        return {"ok": True, "message": "unloading the model — every key that needs "
+                                       "no model keeps working"}
+
+    def _unload_work(self) -> None:
+        import gc
+        from transcribers.off import OffTranscriber
+        self.machine.set_dictation_off(True)
+        self._stop_learning()
+        with self._model_lock:
+            old, self.transcriber = self.transcriber, OffTranscriber(self.MODEL_OFF_WORDS)
+            self._local = None
+        try:
+            self.recorder.pause_stream()
+        except Exception:                                    # noqa: BLE001
+            log.debug("the microphone stream did not pause", exc_info=True)
+        del old
+        gc.collect()
+        self._model_state = "off"
+        self._set_state("paused")          # the grey dot: alive, not listening
+        self._say("model off — Start loads it again; every other key works")
+        log.info("model unloaded — the keys that need no model keep working")
+
+    def load_model(self) -> dict:
+        """Start, with the process already up: the model back (about 25 s),
+        the microphone stream, the learning engines, the hold keys."""
+        if self._model_state == "on":
+            return {"ok": False, "error": "the model is loaded"}
+        if self._model_state == "loading":
+            return {"ok": True, "message": "still loading"}
+        if self._model_state == "unloading":
+            return {"ok": False, "error": "the model is still unloading — a moment"}
+        self._model_state = "loading"
+        self._set_state("busy")
+        threading.Thread(target=self._load_work, daemon=True,
+                         name="model-load").start()
+        return {"ok": True, "message": "loading the model — about 25 seconds"}
+
+    def _load_work(self) -> None:
+        self._say("loading the model…")
+        try:
+            fresh = get_transcriber(self.cfg, self._hotwords)
+        except Exception as e:                               # noqa: BLE001
+            self._model_state = "off"
+            self._set_state("paused")
+            self._say(f"the model did not load: {str(e).splitlines()[0][:120]}")
+            log.exception("the model did not load")
+            return
+        with self._model_lock:
+            self.transcriber = fresh
+        try:
+            self.recorder.start_stream()
+        except Exception:                                    # noqa: BLE001
+            log.warning("the microphone stream did not restart", exc_info=True)
+        self._start_learning()
+        self._model_state = "on"
+        self.machine.set_dictation_off(False)
+        self._set_state("ready")
+        self._say("listening again")
+        log.info("model loaded again — hold '%s' and speak", self.cfg.hotkey)
+
+    def _on_dictation_refused(self) -> None:
+        """A hold key while the model is off: the sentence, once per
+        press and not per auto-repeat (the hook fires this on every
+        key-down Windows repeats while the key is held)."""
+        now = time.monotonic()
+        if now - self._refused_at < 2.0:
+            return
+        self._refused_at = now
+        self._say(self.MODEL_OFF_WORDS)
+
     def stop(self) -> None:
         self._stopping.set()      # ends the fullscreen and question waits
         # The hold first: it is the one thing here that changed the
@@ -2313,10 +2437,7 @@ class App:
         # this method cannot fail in a way that should leave that in place.
         if getattr(self, "awake", None) is not None:
             self.awake.release()
-        if getattr(self, "_study", None) is not None:
-            self._study.stop()
-        if getattr(self, "_review", None) is not None:
-            self._review.stop()
+        self._stop_learning()
         self.dot.stop()
         self.hint.stop()
         self.review_card.stop()
@@ -2557,6 +2678,10 @@ class App:
             if command == "quit":
                 singleton.request_quit()
                 return {"ok": True}
+            if command == "unload":
+                return self.unload_model()
+            if command == "load":
+                return self.load_model()
             return {"ok": False, "error": f"unknown command {command!r}"}
         except (ValueError, ConfigError) as e:
             return {"ok": False, "error": str(e)}
@@ -2685,6 +2810,8 @@ class App:
         locked = getattr(self, "locked", None)
         if locked is not None and locked():
             raise RuntimeError(self.LOCK_WORDS)
+        if getattr(self, "_model_state", "on") != "on":
+            raise RuntimeError(self.MODEL_OFF_WORDS)
         started = time.monotonic()
         text, backend = self._transcribe(wav, language=None)
         transcript_log.info("OK | PHONE | %s | %.1fs latency | %s",

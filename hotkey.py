@@ -594,10 +594,22 @@ class PTTStateMachine:
                  cancel_guard: Callable[[], bool] | None = None,
                  ask_open: Callable[[], bool] | None = None,
                  on_ask_start: Callable[[str], None] | None = None,
-                 on_ask_stop: Callable[[str], None] | None = None):
+                 on_ask_stop: Callable[[str], None] | None = None,
+                 on_refused: Callable[[], None] | None = None):
         self._on_start = on_start
         self._on_stop = on_stop
         self._on_abort = on_abort
+        # DICTATION OFF is not PAUSED. Paused makes every key inert —
+        # the taps too — because it means "stop listening to me". The
+        # model being unloaded (main.py, the owner's ask of 2026-09-18:
+        # "many things don't need the model ... make those work without
+        # it") means only that there is nothing to transcribe INTO: the
+        # hold keys are refused, with `on_refused` said instead of a
+        # recording, and every tap — the screenshot, the recording of
+        # the screen, the camera, translate, lookup, the shelf — fires
+        # exactly as it does with the model loaded.
+        self._on_refused = on_refused
+        self._dictation_off = False
         self._on_tap = on_tap
         self._on_latch = on_latch
         self._on_pause = on_pause
@@ -846,6 +858,28 @@ class PTTStateMachine:
         return self._paused
 
     @property
+    def dictation_off(self) -> bool:
+        return self._dictation_off
+
+    def set_dictation_off(self, off: bool) -> bool:
+        """The model came or went (main.load_model / unload_model).
+        Returns True if this changed anything. A recording in progress
+        when the model goes is aborted — there is nothing left to
+        transcribe it — and told so."""
+        off = bool(off)
+        aborted = False
+        with self._lock:
+            if off == self._dictation_off:
+                return False
+            self._dictation_off = off
+            if off and self._state != IDLE:
+                aborted = True
+                self._reset_locked()
+        if aborted:
+            self._on_abort("the model is off")
+        return True
+
+    @property
     def language(self) -> str | None:
         """Language of the recording in progress, if any."""
         vk = self._active_vk
@@ -1036,10 +1070,17 @@ class PTTStateMachine:
                 pass    # every other key is inert, and passes through
             elif self._state == IDLE:
                 if vk in self._hotkeys and event_type == "down":
-                    self._state = RECORDING
-                    self._active_vk = vk
-                    language = self._hotkeys[vk]
-                    fire = lambda: self._on_start(language)
+                    if self._dictation_off:
+                        # the key keeps its ordinary meaning in whatever
+                        # has focus, and the app says why once (main
+                        # throttles the sentence against auto-repeat)
+                        if self._on_refused is not None:
+                            fire = self._on_refused
+                    else:
+                        self._state = RECORDING
+                        self._active_vk = vk
+                        language = self._hotkeys[vk]
+                        fire = lambda: self._on_start(language)
                 elif event_type == "down":
                     took = self._try_tap(vk)
                     if took is not None:

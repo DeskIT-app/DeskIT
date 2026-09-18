@@ -99,6 +99,18 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   away at the far end of the group, and Stop is not drawn at all while
   there is nothing to stop. The shelf's Stop still arms — see
   `main.App._shelf_stop`, and the note there for why.
+  **Since 2026-09-18 Stop unloads the MODEL, not the process**
+  (`main.App.unload_model` over the pipe verb `unload`; Start with the
+  process up sends `load`): the speech model, the microphone stream and
+  the learning engines go, `transcribers/off.py` stands in, and the
+  hook, the dot, the cards and every key that needs no model keep
+  working — `hotkey.set_dictation_off` refuses only the hold keys with
+  `MODEL_OFF_WORDS`. status()["model"] is on/off/loading/unloading; the
+  chip says Model off and the bar reads one button, Start. The whole
+  process quits from Settings > The app > Quit DeskIT, the shelf, or
+  the bar's Stop during a start-up (the pipe refuses everything else
+  then). His words: "many things don't need the model — screenshot,
+  screen recording and a few more — make those work without it."
 
   It went nine rail rows -> four places -> three -> six, every step on
   his word. Do not re-litigate the count without one.

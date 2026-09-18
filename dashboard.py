@@ -134,6 +134,10 @@ LOOKS = {
     "locked":    ("RECORDING", "Locked on"),
     "busy":      ("AMBER", "Transcribing"),
     "paused":    ("DIM", "Paused"),
+    # The process up, the model not (main.py unload_model, 2026-09-18):
+    # every key that needs no model works; the hold keys say so.
+    "off":       ("DIM", "Model off"),
+    "loading":   ("AMBER", "Loading"),
 }
 
 POLL_MS = 800
@@ -1305,7 +1309,7 @@ def _has_halo(activity: str) -> bool:
     Paused has none — that is the whole way "off" is told apart from
     "quiet" at a glance, and it is `skin.palette.NO_HALO`'s rule. Off and
     starting-blind are the same kind of nothing, so they are here too."""
-    if activity in ("paused", "stopped"):
+    if activity in ("paused", "stopped", "off"):
         return False
     try:
         from skin import palette as skin_palette
@@ -2101,7 +2105,9 @@ class Dashboard:
         # ONE BUTTON, THREE WORDS. Start, Resume and Pause are never
         # available at the same moment, so three buttons would be two
         # lies — and it is the same key in the same pixels either way.
-        run.configure_text("Start" if not self.status else
+        model = self.status.get("model") or "on"
+        run.configure_text("Start" if not self.status or model == "off" else
+                           "Loading…" if model in ("loading", "unloading") else
                            "Resume" if self.status.get("paused")
                            else "Pause")
         # `awake` only ever comes back from a running app, so the word is
@@ -2114,7 +2120,11 @@ class Dashboard:
         x = W - PAD
         run.place(x=x, y=12, anchor="ne")
         x -= BAR_RUN_W + BAR_GAP
-        if self.status:
+        # HIS RULE AGAIN with the model off and the process up: one
+        # button, Start. Stop has nothing left to unload, and Screens off
+        # goes with it so the bar reads the same way it does with nothing
+        # running — the key still works, and Settings > The app has it.
+        if self.status and model not in ("off", "unloading"):
             screens.place(x=x, y=12, anchor="ne")
             x -= self._screens_w + BAR_KEEP
             stop.place(x=x, y=12, anchor="ne")
@@ -3720,6 +3730,11 @@ class Dashboard:
             sentence = "The machine stays awake while this runs."
         else:
             sentence = "The machine sleeps on its own timer."
+        model = (self.status or {}).get("model") or "on"
+        if self.running and model != "on":
+            sentence = ("The model is off — every key that needs no model works; "
+                        "Start loads it again." if model == "off" else
+                        "The model is loading — about 25 seconds.")
         p["strip_awake"].config(text=sentence)
         p["strip_awake"].update_idletasks()
 
@@ -8957,8 +8972,8 @@ class Dashboard:
         # out. Stop lived only here for one evening, until he said "I
         # don't have a button to shut down the model, I only have a
         # button to pause it".
-        stop = ui.Button(body, "Stop the app", self._stop, h=32,
-                         w=widgets.button_width("Stop the app", icon=True),
+        stop = ui.Button(body, "Quit DeskIT", self._quit, h=32,
+                         w=widgets.button_width("Quit DeskIT", icon=True),
                          quiet=True, icon=ui.ICON["stop"])
         stop.place(x=CW - 36, y=20, anchor="ne")
         self.parts["stop"] = stop
@@ -8973,8 +8988,8 @@ class Dashboard:
         ui.Button(body, "Show the tour", self._show_tour, h=32, quiet=True,
                   w=widgets.button_width("Show the tour")).place(
             x=CW - 36, y=100, anchor="ne")
-        tk.Label(body, text="stopping unloads the models; starting again "
-                            "takes about 25 seconds",
+        tk.Label(body, text="the whole app, keys included — the bar's Stop "
+                            "only unloads the model",
                  bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8)).place(
             x=CW - 36, y=140, anchor="ne")
 
@@ -9327,22 +9342,42 @@ class Dashboard:
             self._note("could not launch main.py — see app.log")
 
     def _stop(self) -> None:
-        """Quitting, in ONE press — the bar's Stop and Settings › The
-        app's Stop are the same door.
+        """The bar's Stop: the MODEL goes, the app stays (2026-09-18).
 
-        It used to take two from the bar: the first press turned the word
-        into "Stop again" and only the second one quit. That guarded a
-        real cost — the models unload and coming back takes about 25
-        seconds — but he read the word, could not tell what it was for,
-        and said so twice, so what guards the cost now is where the
-        button sits rather than how many times it has to be hit. See
-        _paint_bar_buttons.
+        "I don't have a button to shut down the model, I only have a
+        button to pause it" (2026-09-07) — and, a week on, "many things
+        don't need the model: screenshot, screen recording and a few
+        more, and they don't work when the model is off". So Stop is
+        exactly the first sentence now: the speech model and the
+        microphone stream unload (main.py unload_model), the process,
+        the hook, the dot and every feature that needs no model stay up,
+        and Start loads the model again in ~25 s. Quitting the process
+        is Settings > The app > Quit DeskIT (_quit), or the shelf.
+
+        ONE press, still: it used to take two from the bar, the first
+        turning the word into "Stop again"; he read that word, could not
+        tell what it was for, and said so twice. See _paint_bar_buttons.
+
+        While the app is still starting up the pipe refuses everything
+        but quit, and a Stop pressed in that window means what it always
+        meant there — do not finish loading — so it quits.
         """
         self._busy_until = time.monotonic() + 1.5
-        # The named event, not the pipe: this has to work even if the
-        # control channel never came up.
+        if self.running:
+            self._ask("unload", then=lambda r: self._announce(
+                r, "unloading the model — every key that needs no model keeps "
+                   "working"))
+            return
+        self._quit()
+
+    def _quit(self) -> None:
+        """The whole process, in ONE press: Settings > The app > Quit
+        DeskIT, and the bar's Stop during a start-up. The named event, not
+        the pipe: this has to work even if the control channel never
+        came up."""
+        self._busy_until = time.monotonic() + 1.5
         if singleton.request_quit():
-            self._note("stopping — models unload, so starting again takes "
+            self._note("quitting — the next start loads the model again, "
                        "about 25 seconds")
         else:
             self._note("nothing to stop")
@@ -9394,7 +9429,16 @@ class Dashboard:
         if not self.status:
             self._start()
             return
+        model = self.status.get("model") or "on"
+        if model in ("loading", "unloading"):
+            self._note("the model is on its way — a moment")
+            return
         self._busy_until = time.monotonic() + 1
+        if model == "off":
+            # the process is up with no model: Start loads it, ~25 s
+            self._ask("load", then=lambda r: self._announce(
+                r, "loading the model — about 25 seconds"))
+            return
         self._ask("toggle", then=lambda r: self._announce(
             r, "paused" if (r or {}).get("paused") else "listening again"))
 
@@ -9623,9 +9667,12 @@ class Dashboard:
         stage = status.get("stage", "")
         starting = bool(status) and stage == "starting"
         deaf = starting and status.get("silent_s", 0) > 45
+        model = status.get("model") or "on"
         activity = ("ready" if deaf else
                     "starting" if starting else
                     "stopped" if not status else
+                    "off" if model == "off" else
+                    "loading" if model in ("loading", "unloading") else
                     status.get("activity") or "ready")
         # Remembered for the breathing loop, which runs between polls and
         # has no status of its own to derive it from.

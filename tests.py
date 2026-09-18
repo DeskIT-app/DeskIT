@@ -2160,6 +2160,40 @@ def _tap_machine(spy, hotkey_vk=VK_RCTRL, tap_vk=VK_F9):
         on_tap=lambda action: spy.events.append(f"tap:{action}"))
 
 
+def test_dictation_off_refuses_the_hold_keys_and_leaves_the_taps_alive() -> None:
+    """The model unloaded (main.unload_model) is not a pause: paused makes
+    every key inert, dictation-off refuses only the hold keys — with
+    on_refused said instead of a recording, once per press and not per
+    auto-repeat (main throttles) — and every tap fires as before. A
+    recording in progress when the model goes is aborted and told so."""
+    spy = Spy()
+    m = PTTStateMachine(
+        {VK_RCTRL: "he"},
+        on_start=lambda lang: spy.events.append("start"),
+        on_stop=lambda lang: spy.events.append("stop"),
+        on_abort=lambda why: spy.events.append(f"abort:{why}"),
+        taps={VK_F9: "capture"},
+        on_tap=lambda action: spy.events.append(f"tap:{action}"),
+        on_refused=lambda: spy.events.append("refused"))
+    assert m.set_dictation_off(True) is True
+    assert m.set_dictation_off(True) is False and m.dictation_off
+    assert m.handle("down", VK_RCTRL, injected=False) is False, "the key was swallowed"
+    m.handle("up", VK_RCTRL, injected=False)
+    assert spy.events == ["refused"], spy.events
+    assert m.state == hotkey_mod.IDLE and not m.paused
+    m.handle("down", VK_F9, injected=False)
+    m.handle("up", VK_F9, injected=False)
+    assert spy.events == ["refused", "tap:capture"], spy.events
+    assert m.set_dictation_off(False) is True
+    m.handle("down", VK_RCTRL, injected=False)
+    assert spy.events[-1] == "start"
+    # the model goes mid-recording: aborted, and told which reason
+    assert m.set_dictation_off(True) is True
+    assert spy.events[-1] == "abort:the model is off" and m.state == hotkey_mod.IDLE
+    m.handle("up", VK_RCTRL, injected=False)
+    assert "stop" not in spy.events
+
+
 def test_tap_key_fires_once_per_press() -> None:
     spy = Spy()
     m = _tap_machine(spy)
@@ -27392,6 +27426,10 @@ BAR_ON = {"ok": True, "stage": "running", "activity": "ready"}
 BAR_PAUSED = {"ok": True, "stage": "running", "activity": "paused",
               "paused": True}
 BAR_STARTING = {"ok": True, "stage": "starting", "activity": "starting"}
+BAR_MODEL_OFF = {"ok": True, "stage": "running", "activity": "paused",
+                 "model": "off", "uptime_s": 90.0}
+BAR_LOADING = {"ok": True, "stage": "running", "activity": "busy",
+               "model": "loading", "uptime_s": 120.0}
 
 
 def _bar_buttons(board) -> dict:
@@ -27416,6 +27454,8 @@ def test_the_bar_holds_only_the_buttons_the_state_allows() -> None:
     before — but it now comes and goes on the same question as Stop
     rather than on one of its own, because a button appearing 25 seconds
     after its neighbours is the flicker he was looking at."""
+    import dashboard as dash
+
     with _window() as board:
         if board is None:
             return
@@ -27438,6 +27478,80 @@ def test_the_bar_holds_only_the_buttons_the_state_allows() -> None:
                                             "run"}, _bar_buttons(board)
         board._refresh(BAR_OFF)
         assert _bar_buttons(board) == {"run": "Start"}, _bar_buttons(board)
+        # THE PROCESS UP AND THE MODEL OFF (2026-09-18) reads the same
+        # way as nothing running: one button, Start — which loads the
+        # model rather than the process. Loading is the word while it
+        # comes; the chip says Model off / Loading.
+        board._refresh(BAR_MODEL_OFF)
+        assert _bar_buttons(board) == {"run": "Start"}, _bar_buttons(board)
+        assert board.parts["state"].cget("text") == "Model off"
+        assert board.parts["uptime"].cget("text").startswith("up ")
+        assert not dash._has_halo("off")
+        board._refresh(BAR_LOADING)
+        assert _bar_buttons(board)["run"] == "Loading…", _bar_buttons(board)
+        assert board.parts["state"].cget("text") == "Loading"
+        board._refresh(BAR_ON)
+        assert _bar_buttons(board)["run"] == "Pause"
+
+
+def test_stop_in_the_bar_unloads_the_model_and_start_loads_it() -> None:
+    """The owner's ask of 2026-09-18: "many things don't need the model —
+    screenshot, screen recording and a few more — and they don't work
+    when the model is off; make those that don't need the model work
+    without it." So the bar's Stop no longer quits the process: with a
+    running app it sends `unload` down the pipe and the app drops the
+    model and the microphone stream and keeps everything else; Start
+    with the model off sends `load`; while it is loading the button
+    waits. During a start-up — the pipe refuses everything but quit —
+    Stop still quits, as it always meant there. Quit DeskIT on
+    Settings > The app is the whole process, one press."""
+    import dashboard as dash
+    import control as control_mod
+
+    with _window() as board:
+        if board is None:
+            return
+        sent: list = []
+        quit_asked: list = []
+        saved_send, saved_quit = control_mod.send, singleton.request_quit
+        # the poller's own status asks are not the buttons' doing
+        control_mod.send = lambda command, timeout_ms=0, **args: (
+            (sent.append((command, args)) if command != "status" else None)
+            or {"ok": True, "message": "m"})
+        singleton.request_quit = lambda *a, **k: quit_asked.append(1) or True
+        try:
+            board._refresh(BAR_ON)
+            board.parts["stop_bar"]._command()
+            for _ in range(20):
+                board.root.update()
+                time.sleep(0.02)
+            assert sent == [("unload", {})], sent
+            assert quit_asked == [], "Stop quit the process"
+            board._busy_until = 0
+            board._refresh(BAR_MODEL_OFF)
+            board.parts["run"]._command()
+            for _ in range(20):
+                board.root.update()
+                time.sleep(0.02)
+            assert sent[-1] == ("load", {}), sent
+            board._busy_until = 0
+            board._refresh(BAR_LOADING)
+            n = len(sent)
+            board.parts["run"]._command()
+            assert len(sent) == n and "a moment" in board._toast_text
+            # starting up: Stop is the quit it always was there
+            board._busy_until = 0
+            board._refresh(BAR_STARTING)
+            board.parts["stop_bar"]._command()
+            assert quit_asked == [1], "Stop during a start-up did not quit"
+            # the whole process, from Settings > The app
+            board._busy_until = 0
+            board._quit()
+            assert quit_asked == [1, 1]
+        finally:
+            control_mod.send, singleton.request_quit = saved_send, saved_quit
+    source = inspect.getsource(dash.Dashboard._app_block)
+    assert '"Quit DeskIT"' in source and '"Stop the app"' not in source
 
 
 def test_stop_in_the_bar_quits_on_one_press() -> None:
@@ -27465,7 +27579,8 @@ def test_stop_in_the_bar_quits_on_one_press() -> None:
         saved = singleton.request_quit
         singleton.request_quit = lambda *a, **k: asked.append(1) or True
         try:
-            board._refresh(BAR_ON)
+            # a start-up is where Stop still quits; one press, no arming
+            board._refresh(BAR_STARTING)
             stop = board.parts["stop_bar"]
             stop._command()
             assert asked == [1], "one press of Stop did not quit"
@@ -34642,6 +34757,107 @@ def test_the_wizard_has_no_way_past_the_account_page_without_a_sign_in():
                 except Exception:                            # noqa: BLE001
                     pass
     shutil.rmtree(d, ignore_errors=True)
+
+
+def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
+    """main.unload_model / load_model (2026-09-18): Stop drops the model
+    and the microphone stream — the learning engines with it, since they
+    hold the model — and nothing else; status() says model = off and
+    backend = off; the hold keys are refused with MODEL_OFF_WORDS and the
+    phone's /transcribe raises it; a pipe `unload` while a recording is
+    live is refused; `load` builds the model again, restarts the stream
+    and the engines, and the hold keys are back. Both verbs answer over
+    the pipe."""
+    import main as main_mod
+    from transcribers.off import OffTranscriber
+    from transcribers.base import TranscriptionError
+
+    App = main_mod.App
+    app = App.__new__(App)
+    said: list[str] = []
+    states: list[str] = []
+    calls: list[str] = []
+    app._say = said.append
+    app._set_state = states.append
+    app.cfg = type("C", (), {"hotkey": "right ctrl", "review": None, "study": None})()
+    app.recent = None
+    app.vocab = None
+    app._hotwords = None
+    app._local = None
+    app._model_lock = threading.Lock()
+    app._model_state = "on"
+    app._refused_at = 0.0
+    app._study = type("E", (), {"stop": lambda self: calls.append("study.stop")})()
+    app._review = type("E", (), {"stop": lambda self: calls.append("review.stop")})()
+    app.recorder = type("R", (), {"pause_stream": lambda self: calls.append("pause"),
+                                  "start_stream": lambda self: calls.append("start")})()
+    app.transcriber = type("T", (), {"name": "local"})()
+    app.machine = hotkey_mod.PTTStateMachine(
+        VK_RCTRL, on_start=lambda lang: None, on_stop=lambda lang: None,
+        on_abort=lambda why: calls.append(f"abort:{why}"),
+        on_refused=app._on_dictation_refused)
+    with _patched(main_mod, "get_transcriber",
+                  lambda cfg, hotwords=None: calls.append("build") or
+                  type("T", (), {"name": "local"})()):
+        # a live recording: refused
+        app.machine.handle("down", VK_RCTRL, injected=False)
+        reply = app.control_command("unload", {})
+        assert not reply["ok"] and "microphone" in reply["error"], reply
+        app.machine.handle("up", VK_RCTRL, injected=False)
+        reply = app.control_command("unload", {})
+        assert reply["ok"], reply
+        for _ in range(100):
+            if app._model_state == "off":
+                break
+            time.sleep(0.02)
+        assert app._model_state == "off"
+        assert isinstance(app.transcriber, OffTranscriber) and app.transcriber.name == "off"
+        assert calls == ["study.stop", "review.stop", "pause"], calls
+        assert app._study is None and app._review is None
+        assert states[-1] == "paused" and said[-1].startswith("model off")
+        assert app.machine.dictation_off and not app.machine.paused
+        # the hold key: the sentence, once per press
+        app.machine.handle("down", VK_RCTRL, injected=False)
+        app.machine.handle("down", VK_RCTRL, injected=False)     # auto-repeat
+        app.machine.handle("up", VK_RCTRL, injected=False)
+        assert said.count(App.MODEL_OFF_WORDS) == 1, said
+        # the phone
+        try:
+            app._transcribe_for_phone(RIFF)
+        except RuntimeError as e:
+            assert str(e) == App.MODEL_OFF_WORDS
+        else:
+            raise AssertionError("the phone dictated into an unloaded model")
+        # a dictation that reaches the stub meets a typed error
+        try:
+            app.transcriber.transcribe(RIFF)
+        except TranscriptionError as e:
+            assert str(e) == App.MODEL_OFF_WORDS
+        else:
+            raise AssertionError("the stub transcribed")
+        assert not app.control_command("unload", {})["ok"], "unloaded twice"
+        # and back
+        reply = app.control_command("load", {})
+        assert reply["ok"] and "25" in reply["message"], reply
+        for _ in range(100):
+            if app._model_state == "on":
+                break
+            time.sleep(0.02)
+        assert app._model_state == "on" and app.transcriber.name == "local"
+        assert calls[-2:] == ["build", "start"], calls
+        assert not app.machine.dictation_off and states[-1] == "ready"
+        assert said[-1] == "listening again"
+        assert not app.control_command("load", {})["ok"], "loaded twice"
+    # a build that fails leaves the model off, with the reason said
+    app._model_state = "off"
+    with _patched(main_mod, "get_transcriber",
+                  lambda cfg, hotwords=None: (_ for _ in ()).throw(RuntimeError("no GPU today"))):
+        assert app.control_command("load", {})["ok"]
+        for _ in range(100):
+            if app._model_state == "off" and "did not load" in said[-1]:
+                break
+            time.sleep(0.02)
+        assert app._model_state == "off" and "no GPU today" in said[-1], said[-1]
 
 
 def test_the_dev_copy_says_so_in_the_window():
