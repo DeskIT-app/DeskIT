@@ -136,7 +136,8 @@ telemetry.
 ## 8. Every connection, listed
 
 The full host list is `NETWORK.md`, shipped beside the app. Every
-outbound request is shown in Dashboard > Network and mirrored to
+outbound request is shown on the Network screen (Settings > Privacy >
+EVERY CONNECTION) and mirrored to
 `logs\network.log`. The Offline switch refuses every host but
 `127.0.0.1`.
 

@@ -296,15 +296,25 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
 #   Said         transcripts.log read back, with the search
 #   Keys         every binding, lit on a drawn keyboard
 #   Settings     config.toml, on tabs
+#
+# And one screen that is NOT on the bar:
 #   Network      every request this app made, newest first, from
 #                network.log — the window of the key-privacy proof
-#                (D12): during plain dictation the table stays empty
+#                (D12): during plain dictation the table stays empty.
+#                It was the seventh place from PR 21 to 2026-09-18, when
+#                he said "as a user I don't understand why I need it";
+#                it is reached from Settings > Privacy (EVERY CONNECTION)
+#                now, the bar lights Settings while it is up, and the
+#                proof is where the keys and the account already are.
 #
 # Overview is gone: its state line is in the top bar now, on every place.
 NAV = (("home", "Home"), ("corrections", "Corrections"),
        ("problems", "Problems"), ("said", "Said"),
-       ("keys", "Keys"), ("settings", "Settings"),
-       ("network", "Network"))
+       ("keys", "Keys"), ("settings", "Settings"))
+
+#: Every screen `_show` can draw: the six places and the one behind
+#: Settings > Privacy. What a test that walks every screen walks.
+SCREENS = tuple(name for _key, name in NAV) + ("Network",)
 
 # A place takes its glyph from ui.ICON[key] where there is one. Home,
 # Corrections, Problems and Said are new words for old screens, and
@@ -314,7 +324,7 @@ NAV = (("home", "Home"), ("corrections", "Corrections"),
 # no entry here is still a KeyError the first time the bar is built,
 # which is the point.
 NAV_GLYPH = {"home": "overview", "corrections": "review",
-             "problems": "error", "said": "history", "network": "globe"}
+             "problems": "error", "said": "history"}
 
 # The Awake screen probes the machine (powercfg, PowerShell — a few
 # seconds) the moment it opens. Off for the tests, which open every
@@ -1584,13 +1594,14 @@ class Dashboard:
 
         self.nav = widgets.Tabs(bar, [name for _key, name in NAV], bg=ui.BG,
                                 selected="Home", command=self._show, gap=10)
-        # Seven words now, so the bar is measured rather than guessed:
-        # the places start after the mark and have to end before the
-        # state chip in EVERY state — the fullest is the owner's, with
-        # Stop tests in the bar during a nightly run and "Transcribing"
-        # on the chip, where the chip's left edge is 548 (BAR_GAP 8).
-        # 24 + 26 mark + 6 air = 56; seven words at gap 10 end at 544.
-        # Two tests hold the two states (tests.py, tests_ops.py).
+        # The bar is measured rather than guessed: the places start
+        # after the mark and have to end before the state chip in EVERY
+        # state — the fullest is the owner's, with Stop tests in the bar
+        # during a nightly run and "Transcribing" on the chip, where the
+        # chip's left edge is 548 (BAR_GAP 8). 24 + 26 mark + 6 air = 56;
+        # the seven words of 2026-09-17 ended at 544 at gap 10, and the
+        # six since Network left the bar end sooner. Two tests hold the
+        # two states (tests.py, tests_ops.py).
         self.nav.place(x=PAD + 32, y=17)
 
         # The state chip and the buttons are placed from the RIGHT edge, so
@@ -1648,7 +1659,9 @@ class Dashboard:
         self.nav._hover(name, over)
 
     def _paint_nav(self) -> None:
-        self.nav.select(self.screen)
+        # Network is behind Settings > Privacy, so Settings is the word
+        # that lights while it is up — and the way back.
+        self.nav.select("Settings" if self.screen == "Network" else self.screen)
 
     def _show(self, name: str) -> None:
         """Swap screens. Everything the old one registered goes with it, so
@@ -3429,8 +3442,6 @@ class Dashboard:
             ("Settings", "settings", len(settings_mod.TABS),
              "settings tabs",
              "every setting, in the words the file's own comments use"),
-            ("Network", "globe", self._requests_today(), "requests",
-             "every connection this app made — plain dictation makes none"),
         ]
 
     def _paint_doors(self, items: list[dict]) -> None:
@@ -6729,7 +6740,9 @@ class Dashboard:
             return 0
 
     def _screen_network(self) -> None:
-        """Dashboard > Network (D12's window, chapter 9 screen 6): every
+        """The Network screen (D12's window, chapter 9 screen 6; off the
+        bar since 2026-09-18, opened from EVERY CONNECTION on Settings >
+        Privacy — see NAV): every
         outbound request, newest first, read from network.log — the
         record the app and this window share, since they are two
         processes. A host filter, the loopback toggle (the phone and the
@@ -6766,8 +6779,10 @@ class Dashboard:
         p["net_line"] = tk.Label(foot, text="", bg=ui.BG, fg=ui.FAINT,
                                  font=(ui.UI, 9), anchor="w")
         p["net_line"].pack(side="left")
+        ui.Button(foot, "Back to Privacy", lambda: self._show("Settings"),
+                  bg=ui.BG, quiet=True, w=130).pack(side="left", padx=(16, 0))
         ui.Button(foot, "Open network.log", self._net_open_log, bg=ui.BG,
-                  quiet=True, w=150).pack(side="left", padx=(16, 0))
+                  quiet=True, w=150).pack(side="left", padx=(8, 0))
         loop = ui.Button(foot, "Show loopback (phone)", lambda: self._net_toggle_loopback(),
                          bg=ui.BG, quiet=True, w=196)
         loop.pack(side="left", padx=(8, 0))
@@ -6776,8 +6791,13 @@ class Dashboard:
         self._net_painted = None
         self._paint_network()
 
-    NET_COLS = ((150, "when"), (270, "host"), (120, "purpose"), (110, "bytes"),
-                (60, "result"), (90, "secret"), (200, "consent"))
+    # Pixels, and they add up to CW. The widest values each column has
+    # held (measured 2026-09-18, 9 pt): a Supabase host 215, a consent
+    # "cloud_text@groq-…+gemini-…" 295, a secret "supabase_session"
+    # 108. A value wider than its column is cut with an ellipsis rather
+    # than run into the next one — the Labels used to clip silently.
+    NET_COLS = ((150, "when"), (240, "host"), (110, "purpose"), (110, "bytes"),
+                (60, "result"), (130, "secret"), (312, "consent"))
     NET_W = sum(width for width, _name in NET_COLS)
     #: The newest this many rows are painted; the file keeps the rest.
     NET_ROWS_MAX = 400
@@ -6845,6 +6865,16 @@ class Dashboard:
                                fill=ui.FAINT, font=(ui.UI, 8, "bold"))
             x += width
         y += NET_ROW_H
+        # Fitting measures text through Tcl; the same host, purpose and
+        # consent come up hundreds of times, so each is measured once.
+        fitted: dict[tuple[str, int], str] = {}
+
+        def fit(value: str, width: int) -> str:
+            key = (value, width)
+            if key not in fitted:
+                fitted[key] = widgets.fit(value, ui.UI, 9, width - 10)
+            return fitted[key]
+
         for r in reversed(shown[-self.NET_ROWS_MAX:]):
             values = (r.when, r.host, r.purpose, f"{r.up} ↑ {r.down} ↓",
                       str(r.status), r.secret, r.consent)
@@ -6853,8 +6883,8 @@ class Dashboard:
                 colour = ui.FG
                 if name == "result" and not str(value).startswith("2"):
                     colour = ui.AMBER
-                holder.create_text(x, y, text=value, anchor="nw", fill=colour,
-                                   font=(ui.UI, 9), tags=(name,))
+                holder.create_text(x, y, text=fit(value, width), anchor="nw",
+                                   fill=colour, font=(ui.UI, 9), tags=(name,))
                 x += width
             y += NET_ROW_H
         p["net_loop"].configure_text("Hide loopback" if self._net_loopback
@@ -7462,6 +7492,7 @@ class Dashboard:
             elif name == "Privacy":
                 builders.append(lambda: self._keys_block(scroller))
                 builders.append(lambda: self._account_block(scroller))
+                builders.append(lambda: self._connections_block(scroller))
             elif name == "Screen":
                 builders.append(lambda: self._recording_block(scroller))
                 builders.append(lambda: self._snip_block(scroller, sections))
@@ -8316,6 +8347,53 @@ class Dashboard:
             y += 132
         scroller.bind_wheel(card)
 
+    # ------------------------------------------- every connection (D12's window)
+
+    def _connections_block(self, scroller) -> None:
+        """EVERY CONNECTION on Settings > Privacy: the door to the Network
+        screen since it left the bar (2026-09-18, "as a user I don't
+        understand why I need it"). One line — today's requests, and the
+        sentence that is the proof — and two buttons: the screen, the
+        file. The count follows network.log on every poll
+        (_paint_connections), only re-read when the file moved."""
+        card = ui.Card(scroller.inner, CW, 118, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="E V E R Y   C O N N E C T I O N", bg=ui.CARD,
+                 fg=ui.FAINT, font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        line = tk.Label(body, text="", bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
+                        wraplength=CW - 60, justify="left", anchor="w")
+        line.place(x=0, y=22)
+        x = 0
+        for text, command in (("Open the Network screen",
+                               lambda: self._show("Network")),
+                              ("Open network.log", self._net_open_log)):
+            w = widgets.button_width(text)
+            ui.Button(body, text, command, h=30, w=w, quiet=True,
+                      bg=ui.CARD).place(x=x, y=52)
+            x += w + 8
+        self.parts["connections_line"] = line
+        self._connections_seen = None
+        self._paint_connections()
+        scroller.bind_wheel(card)
+
+    def _paint_connections(self) -> None:
+        line = self.parts.get("connections_line")
+        if line is None or not line.winfo_exists():
+            return
+        try:
+            stamp = paths.NETWORK_LOG.stat().st_mtime_ns
+        except OSError:
+            stamp = None
+        if stamp == getattr(self, "_connections_seen", None):
+            return
+        self._connections_seen = stamp
+        today = self._requests_today()
+        line.configure(text=(
+            f"{today} request{'s' if today != 1 else ''} today, every one "
+            "of them with its host, purpose and consent on the Network "
+            "screen — during plain dictation the table stays empty."))
+
     # ------------------------------------------------ the account (screen 16)
 
     def _account_block(self, scroller) -> None:
@@ -9115,6 +9193,7 @@ class Dashboard:
         p = self.parts
         self._paint_dot()
         self._paint_account()
+        self._paint_connections()
         if "rows" not in p or not self.status:
             return
         auto = self.status.get("auto_pause_fullscreen")

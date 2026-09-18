@@ -1327,7 +1327,8 @@ hush_notifications = true      # while the panel is open the notification
 # the first time a feature needs the cloud, and closes with "Withdraw"
 # there. The card says what leaves, to whom, under whose account, and
 # quotes the provider's own terms. Every connection the app makes is
-# listed under Dashboard > Network and in network.log beside the other
+# listed on the Network screen (Settings > Privacy > EVERY CONNECTION)
+# and in network.log beside the other
 # logs. (DISTRIBUTION_PLAN.md chapter 5; privacy.py holds the rules.)
 cloud_text = false             # the text you dictated or selected may go
                                # to Groq or Google under YOUR key: the

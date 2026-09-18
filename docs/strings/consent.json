@@ -25,7 +25,7 @@
         "הגדרות > פרטיות > ביטול, או הסרת המפתח."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
   },
   "cloud_audio": {
     "kind": "cloud_audio",
@@ -53,7 +53,7 @@
         "הגדרות > פרטיות > ביטול, או הסרת המפתח. המנוע חוזר להיות מקומי."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
   },
   "cloud_screenshots": {
     "kind": "cloud_screenshots",
@@ -81,7 +81,7 @@
         "הגדרות > פרטיות > ביטול, או הסרת המפתח."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
   },
   "account": {
     "kind": "account",
@@ -109,7 +109,7 @@
         "הנתונים שלי > מחיקת החשבון."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
   },
   "report_upload": {
     "kind": "report_upload",
@@ -137,7 +137,7 @@
         "לשמור על המחשב הזה במקום, או הגדרות > פרטיות > ביטול."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
   },
   "settings_sync": {
     "kind": "settings_sync",
@@ -165,7 +165,7 @@
         "הגדרות > פרטיות > ביטול."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
   },
   "history_sync": {
     "kind": "history_sync",
@@ -193,6 +193,6 @@
         "הגדרות > פרטיות > ביטול; \"מחיקת החשבון\" מוחקת גם את מה שכבר סונכרן."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network ובקובץ network.log."
+    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
   }
 }

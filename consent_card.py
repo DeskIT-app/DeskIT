@@ -47,8 +47,8 @@ TURN_ON, NOT_NOW, DRAG = "turn_on", "not_now", "drag"
 BUTTONS = ((TURN_ON, 124), (NOT_NOW, 112))       # name, width at 1.0
 LABELS = {TURN_ON: "הפעל", NOT_NOW: "לא עכשיו"}
 
-FOOTER = ("כל חיבור שהאפליקציה יוצרת רשום תחת Dashboard > Network "
-          "ובקובץ network.log.")
+FOOTER = ("כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > "
+          "EVERY CONNECTION ובקובץ network.log.")
 
 # The five labels, in the order the plan lists them.
 WHAT, WHOM, ACCOUNT, TERMS, OFF = ("מה יוצא", "לאן", "על חשבון מי",

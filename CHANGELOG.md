@@ -24,5 +24,6 @@ GitHub from the tag, a hashed wheelhouse and a SHA-verified embeddable
 Python; the Hebrew model downloaded once at first start, with the size
 on the screen and a pause that resumes; NVIDIA's CUDA libraries as a
 pack on request; keys in Windows Credential Manager; every connection
-through one door and listed on the Network page; the weekly update check
+through one door and listed on the Network screen (Settings > Privacy);
+the weekly update check
 that asks first.

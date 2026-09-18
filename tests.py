@@ -10355,7 +10355,7 @@ def test_the_way_home_lands_the_same_way_on_all_of_the_six_places(
             root.update()
 
         seen = []
-        for _key, name in dash.NAV:
+        for name in dash.SCREENS:
             board._show(name)
             # Both of these draw off a poll rather than off the build.
             board._problems_stamp = board._corr_stamp = None
@@ -10506,7 +10506,7 @@ def test_every_screen_of_the_window_builds() -> None:
     with _window() as board:
         if board is None:
             return
-        for _key, name in dash.NAV:
+        for name in dash.SCREENS:
             board._show(name)
             assert board.screen == name
             assert board.pane.winfo_children(), f"{name} drew nothing"
@@ -10558,7 +10558,7 @@ def test_no_button_draws_its_label_past_its_own_face() -> None:
             return
         board.closing = True
         bad: list = []
-        for _key, name in dash.NAV:
+        for name in dash.SCREENS:
             board._show(name)
             look(board, name, bad)
         board._show("Settings")
@@ -26625,7 +26625,9 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
         band = board.parts["elsewhere"]
         board.root.update_idletasks()
         tiles = sorted(band.winfo_children(), key=lambda w: w.winfo_x())
-        assert len(tiles) == 6, len(tiles)
+        # five again since Network left the bar (2026-09-18): a door to a
+        # place that is not on the bar is a door with no way back
+        assert len(tiles) == 5, len(tiles)
         assert all(t.winfo_manager() for t in tiles)
         # The count and the words it counts are two labels on one line,
         # so the tile is read as the set of things drawn on it.
@@ -26719,7 +26721,7 @@ def test_the_home_fills_its_page_whether_nothing_or_everything_waits():
             # say, so it may never be the thing that is missing.
             tiles = sorted(board.parts["elsewhere"].winfo_children(),
                            key=lambda w: w.winfo_x())
-            assert len(tiles) == 6, (name, len(tiles))
+            assert len(tiles) == 5, (name, len(tiles))
             assert tiles[0].winfo_x() == 0
             assert (tiles[-1].winfo_x() + tiles[-1].winfo_width()
                     == dash.CW), name
@@ -27506,7 +27508,7 @@ def test_the_bar_keeps_stop_away_from_the_key_he_presses_all_day() -> None:
         assert room >= 100, f"Stop is back within a slip of Pause: {room} px"
 
 
-def test_the_window_has_seven_places_and_every_one_of_them_is_registered():
+def test_the_window_has_six_places_and_every_one_of_them_is_registered():
     """A place is five registrations (NAV, ICON, _show, _refresh, and for
     a key KEY_GROUPS + NESTED_HOTKEYS); missing any one of them is a
     KeyError the first time somebody clicks.
@@ -27515,21 +27517,25 @@ def test_the_window_has_seven_places_and_every_one_of_them_is_registered():
     Corrections (the second reading's proposals and the words it has
     learned), Problems (his reports, the routine's questions, what is
     here and not on GitHub), Said (transcripts.log read back), Keys,
-    Settings, and — since PR 21, D12's window — Network, drawn last
-    (chapter 9 screen 6: a seventh entry, not a tab of Settings). It was
-    three for one evening, with the whole desk on the home; he read that
-    home and said "Home should be a summary, and then maybe add more
-    tabs". Home, Corrections, Problems and Said are new words for old
-    screens, so NAV_GLYPH is what says whose glyphs they borrow. Every
-    place has to fit along the 56 px top bar beside the state chip and
-    the three buttons — which is why the wordmark is gone and the tabs
-    sit at a gap of 12 since the seventh word."""
+    Settings. Network — D12's window — was the seventh word from PR 21
+    (chapter 9 screen 6) to 2026-09-18, when he said "as a user I don't
+    understand why I need it": it is a screen still (SCREENS), reached
+    from the EVERY CONNECTION card on Settings > Privacy, and the bar
+    lights Settings while it is up. It was three for one evening, with
+    the whole desk on the home; he read that home and said "Home should
+    be a summary, and then maybe add more tabs". Home, Corrections,
+    Problems and Said are new words for old screens, so NAV_GLYPH is
+    what says whose glyphs they borrow. Every place has to fit along the
+    56 px top bar beside the state chip and the three buttons — which is
+    why the wordmark is gone."""
     import dashboard as dash
     import ui
 
     names = [key for key, _label in dash.NAV]
     assert names == ["home", "corrections", "problems", "said", "keys",
-                     "settings", "network"], names
+                     "settings"], names
+    assert dash.SCREENS == ("Home", "Corrections", "Problems", "Said", "Keys",
+                            "Settings", "Network"), dash.SCREENS
     assert dash.SIDE == 0, "the rail is gone"
     for key, label in dash.NAV:
         glyph = ui.ICON[dash.NAV_GLYPH.get(key, key)]
@@ -27585,6 +27591,8 @@ def test_the_window_has_seven_places_and_every_one_of_them_is_registered():
             assert board.screen == label
             assert board.nav.selected == label
             assert board.pane.winfo_children(), f"{label} drew nothing"
+        board._show("Network")
+        assert board.screen == "Network" and board.nav.selected == "Settings"
 
 
 def test_a_cut_falls_in_the_latest_pause_once_enough_audio_has_settled():
@@ -32244,7 +32252,17 @@ def test_the_network_place_reads_the_log_and_hides_loopback():
         with _patched(paths, "NETWORK_LOG", path), _window() as board:
             if board is None:
                 return
-            assert board._requests_today() == 1, "loopback counted on the door"
+            assert board._requests_today() == 1, "loopback counted on the card"
+            board._show("Home")
+            for _ in range(20):
+                board.root.update()
+            doors = [d[0] for d in board._door_counts([])]
+            assert "Network" not in doors, doors
+            board._show("Settings")
+            board._settings_go("Privacy")
+            board._finish_settings()
+            words = board.parts["connections_line"].cget("text")
+            assert words.startswith("1 request today"), words
             board._show("Network")
             for _ in range(20):
                 board.root.update()

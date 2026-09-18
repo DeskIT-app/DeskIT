@@ -24,7 +24,7 @@ title: 4. פרטיות, ואיך לבדוק בעצמך
 
 הניסוח שליד כל שדה מפתח, כדי שתראה אותו לפני שתדביק מפתח:
 
-> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it only to api.groq.com. It is never written to a file, a log or a report, and never sent to the developer — see Dashboard > Network for every request.
+> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it only to api.groq.com. It is never written to a file, a log or a report, and never sent to the developer — see Settings > Privacy > EVERY CONNECTION for every request.
 
 כלומר: המפתח נשמר במנהל האישורים של חלונות במחשב הזה, נשלח רק לשרת של הספק שלו, אף פעם לא
 נכתב לקובץ, ליומן או לדיווח, ואף פעם לא נשלח למפתח התוכנה — כל בקשה רשומה במקום Network.
@@ -38,7 +38,7 @@ title: 4. פרטיות, ואיך לבדוק בעצמך
    מוכיח: שתוכנה אחרת שרצה בשם המשתמש שלך לא יכולה לקרוא אותו (מנהל האישורים ו־DPAPI הם
    למשתמש, לא לאפליקציה), ולכן הניסוח הוא "לא יוצא מהמחשב שלך אלינו", לא "בלתי קריא במחשב
    שלך".
-2. **תעבורה בהכתבה רגילה (3 דקות).** פותחים Dashboard > Network, מכתיבים שלושה משפטים
+2. **תעבורה בהכתבה רגילה (3 דקות).** פותחים Settings > Privacy > EVERY CONNECTION > Open the Network screen, מכתיבים שלושה משפטים
    כשכל מתגי הענן כבויים. הטבלה לא מראה כלום, או רק שורות `127.0.0.1` אם Ollama מותקן.
    אחר כך מדליקים מצב לא־מקוון ולוחצים על מקש התיקון או התרגום: התכונה אומרת שהיא לא
    מקוונת, ושורה שסורבה מופיעה עם שם השרת שהיא הייתה משתמשת בו.

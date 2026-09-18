@@ -4,7 +4,8 @@ Every HTTP request the app makes leaves through one module, `net.py`.
 Before a socket is opened the host is checked against the list below;
 a host that is not on it is refused and the refusal is itself a row in
 the Network log. After every request — answered, failed or refused —
-one row goes to Dashboard > Network and to `logs\network.log`: time,
+one row goes to the Network screen (Settings > Privacy > EVERY
+CONNECTION) and to `logs\network.log`: time,
 host, purpose, bytes up, bytes down, status, the NAME of the secret
 used (never its value) and the consent that allowed it. Never a body,
 never a header, never a query string.
@@ -45,7 +46,8 @@ key.
 
 ## How to check for yourself
 
-1. Open Dashboard > Network, or read `logs\network.log`.
+1. Open Settings > Privacy > EVERY CONNECTION > Open the Network
+   screen, or read `logs\network.log`.
 2. Dictate, translate, look something up. Every row names its host and
    purpose. With no cloud consent granted, the only rows are
    `127.0.0.1`.

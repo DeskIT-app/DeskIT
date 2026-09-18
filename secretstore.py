@@ -114,7 +114,7 @@ def storage_sentence(name: str) -> str:
             f"(Control Panel > Credential Manager > Windows Credentials > "
             f"{target(name)}). DeskIT sends it only to {KEY_HOSTS[name]}. It is "
             f"never written to a file, a log or a report, and never sent to the "
-            f"developer — see Dashboard > Network for every request.")
+            f"developer — see Settings > Privacy > EVERY CONNECTION for every request.")
 
 
 def _cred_read(name: str) -> str | None:

@@ -46,7 +46,8 @@ update check (Settings > Privacy) is how a fix reaches you.
 ## Where to check for yourself
 
 - `NETWORK.md` — every host the app may talk to, and why.
-- Dashboard > Network — every request this copy made, host, purpose,
+- The Network screen (Settings > Privacy > EVERY CONNECTION) — every
+  request this copy made, host, purpose,
   bytes, status; mirrored in `logs\network.log`.
 - The Offline switch (Settings > Privacy) refuses every host but
   `127.0.0.1`.
