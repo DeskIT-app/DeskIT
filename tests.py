@@ -26481,6 +26481,323 @@ gc.collect()
 os._exit(0)
 ''')
 
+def test_the_report_cards_send_switch_asks_its_card_first_and_answers_with_the_toggles() -> None:
+    """Plan 7.6, screen 7, on the hotkey card: "Send to the developer"
+    with the gate shut opens the consent card (the `consent` callable)
+    and stays OFF; the moment `allowed()` says yes the switch turns on
+    by itself. The strip's toggles flip on a press — except a piece
+    with no bytes behind it, which stays off — and the primary answers
+    with `last` = {"send", "attach"} beside on_done's (text, kind). The
+    same subprocess shape as the two card tests above, for the same
+    Tcl reasons."""
+    _run_window_script('''
+import gc, os, threading, time, tkinter, traceback
+
+import problem_card as pc
+
+STEPS, CARDS, ASKED = [], [], []
+GATE = {"open": False}
+RESULT = {}
+_RealText = tkinter.Text
+
+
+def _next(w):
+    if STEPS:
+        STEPS.pop(0)(w)
+
+
+class SpyText(_RealText):
+    def insert(self, index, chars, *a, **k):
+        out = _RealText.insert(self, index, chars, *a, **k)
+        if STEPS:
+            self.after(250, lambda: _next(self))
+        return out
+
+
+tkinter.Text = SpyText
+
+_real_card_for = pc.card_for
+
+
+def _spy_card_for(*a, **k):
+    card = _real_card_for(*a, **k)
+    CARDS.append(card)
+    return card
+
+
+pc.card_for = _spy_card_for
+
+import overlay
+
+
+def wait(ready, why, seconds=40):
+    end = time.time() + seconds
+    while time.time() < end:
+        if ready():
+            return
+        time.sleep(0.02)
+    raise AssertionError(why)
+
+
+def canvas_of(w):
+    return [c for c in w.master.winfo_children()
+            if isinstance(c, tkinter.Canvas)][0]
+
+
+def click(w, name):
+    box = pc.regions(CARDS[-1], {})[name]
+    canvas_of(w).event_generate("<ButtonPress-1>", x=(box[0] + box[2]) // 2,
+                                y=(box[1] + box[3]) // 2)
+
+
+def gesture(w):
+    try:
+        live = CARDS[-1]
+        # shut gate: the press asks the card and the switch stays off
+        click(w, pc.SEND_TOGGLE)
+        RESULT["asked"] = list(ASKED)
+        RESULT["off_after_ask"] = live["send"]
+        # [Turn on] elsewhere: the pump flips it within a few ticks
+        GATE["open"] = True
+
+        def after_gate():
+            try:
+                RESULT["on_after_gate"] = live["send"]
+                RESULT["strip"] = sorted(n for n in pc.regions(live, {})
+                                         if n.startswith(pc.ATTACH_PREFIX))
+                click(w, pc.ATTACH_PREFIX + "shot")
+                click(w, pc.ATTACH_PREFIX + "recording")   # none: stays off
+                click(w, pc.ATTACH_PREFIX + "transcript")  # on -> off
+                RESULT["attach"] = dict(live["attach"])
+                click(w, pc.SEND)
+            except Exception:
+                RESULT["error"] = traceback.format_exc()
+            RESULT["done"] = True
+
+        w.after(400, after_gate)
+    except Exception:
+        RESULT["error"] = traceback.format_exc()
+        RESULT["done"] = True
+
+
+got, answered = [], threading.Event()
+card = overlay.ProblemCard(allowed=lambda: GATE["open"],
+                           consent=lambda: ASKED.append("report_upload"))
+assert card.ask("dictation", lambda t, k: (got.append((t, k)), answered.set()),
+                shot=None, focus=False,
+                sizes={"shot": 5000, "recording": 0, "transcript": 40,
+                       "settings": 900})
+wait(card.open, "the card never opened")
+wait(lambda: bool(CARDS), "the painter was never asked for a card")
+STEPS[:] = [gesture]
+assert card.fill("the last word vanished") is True
+wait(lambda: RESULT.get("done"), "the gesture never ran")
+assert not RESULT.get("error"), RESULT["error"]
+assert RESULT["asked"] == ["report_upload"], ascii(RESULT["asked"])
+assert RESULT["off_after_ask"] is False, "the switch turned on with the gate shut"
+assert RESULT["on_after_gate"] is True, "the gate opened and the switch stayed off"
+assert RESULT["strip"] == sorted(pc.ATTACH_PREFIX + n for n in pc.ATTACH_ORDER), \\
+    ascii(RESULT["strip"])
+assert RESULT["attach"] == {"shot": True, "recording": False,
+                            "transcript": False, "settings": True}, \\
+    ascii(RESULT["attach"])
+assert answered.wait(30), "the primary never answered"
+assert got == [("the last word vanished", CARDS[0]["kinds"][0])], ascii(got)
+assert card.last == {"send": True, "attach": RESULT["attach"]}, ascii(card.last)
+assert card.open() is False
+gc.collect()
+os._exit(0)
+''')
+
+
+def test_send_to_the_developer_previews_before_anything_leaves() -> None:
+    """Plan 7.6, screen 7, on the desk: the report box carries "Send to
+    the developer", off — [Keep on this PC] files the report here as it
+    always did. On: the strip under it says what would leave with its
+    sizes, the primary reads Preview, and pressing it FILES the report
+    (locally, as always), marks the row PREVIEW with the toggles and
+    opens the Preview — the exact JSON and the ticked files, with [Send]
+    and [Keep on this PC]. Keep leaves nothing in the outbox and clears
+    the mark; Send writes the payload and the copies into the outbox
+    and the row says "waiting to send" with a Send now beside it. A
+    shut gate asks the app for its consent card over the pipe and the
+    switch stays off until the gate opens. The store, the recent folder
+    and the outbox are all under a temp root; the screen grab is a
+    fixture so nothing photographs the desk."""
+    import shutil
+    import tkinter as tk
+
+    import ui as ui_mod
+
+    import dashboard as dash
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="problems-send-"))
+    gate = {"open": False}
+    asked: list = []
+
+    def fake_send(command, timeout_ms=0, **args):
+        asked.append((command, args))
+        if command == "consent":
+            return {"ok": True, "asked": True}
+        return {"ok": True}
+
+    def toplevels(board, title):
+        return [w for w in board.root.winfo_children()
+                if isinstance(w, tk.Toplevel) and w.winfo_exists()
+                and w.title() == title]
+
+    def descendants(widget):
+        out = []
+        for w in widget.winfo_children():
+            out.append(w)
+            out.extend(descendants(w))
+        return out
+
+    def buttons(widget) -> dict:
+        return {w.itemcget(w._label, "text"): w for w in descendants(widget)
+                if isinstance(w, ui_mod.Button)}
+
+    def spin(board, ticks=6):
+        for _ in range(ticks):
+            time.sleep(0.05)
+            board.root.update()
+
+    def first_row(board):
+        return [w for w in board.parts["problems_list"].inner.winfo_children()
+                if isinstance(w, tk.Canvas)][0]
+
+    def words_on(row) -> set:
+        return {str(row.itemcget(i, "text")) for i in row.find_all()
+                if row.type(i) == "text"}
+
+    try:
+        recent = tmp / "recent"
+        recent.mkdir()
+        wav = recent / "20260918-231500.wav"
+        wav.write_bytes(RIFF)
+        wav.with_suffix(".json").write_text(json.dumps(
+            {"seconds": 1.0, "backend": "local", "language": "he"}), "utf-8")
+        jpeg = b"\xff\xd8\xff" + b"j" * 900
+        import control as control_mod
+        with _patched(paths, "DATA_DIR", tmp), _patched(paths, "RECENT_DIR", recent), \
+                _patched(paths, "OUTBOX_DIR", tmp / "problems" / "outbox"), \
+                _patched(dash.Dashboard, "_report_shot", staticmethod(lambda pcfg: jpeg)), \
+                _patched(dash.Dashboard, "_upload_allowed", lambda self: gate["open"]), \
+                _window() as board:
+            if board is None:
+                return
+            control_mod.send = fake_send      # _window's None until now
+            board.closing = True
+            board._scan_weekly = lambda: None
+            board._write_digest = lambda: None
+            board._problems_on = True
+            board._show("Problems")
+            board.root.update()
+            store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+
+            board._report()
+            board.root.update()
+            box = toplevels(board, "Report a problem")[0]
+            field = [w for w in descendants(box) if isinstance(w, tk.Text)][0]
+            switches = [w for w in descendants(box) if isinstance(w, ui_mod.Switch)]
+            assert len(switches) == 1 + len(problems_mod.ATTACH), len(switches)
+            send_switch, strip = switches[0], switches[1:]
+            names = buttons(box)
+            assert dash.REPORT_KEEP in names and dash.REPORT_PREVIEW in names, sorted(names)
+            spin(board, 2)
+            assert names[dash.REPORT_KEEP].winfo_ismapped() and not names[dash.REPORT_PREVIEW].winfo_ismapped()
+            assert not any(s.winfo_ismapped() for s in strip), "the strip shows with the switch off"
+            keys_line = [w for w in descendants(box) if isinstance(w, tk.Label)
+                         and str(w.cget("text")) in (dash.REPORT_KEYS, dash.REPORT_KEYS_SEND)][0]
+            assert str(keys_line.cget("text")) == dash.REPORT_KEYS
+
+            field.insert("1.0", "המילה האחרונה נעלמה")
+            # the gate is shut: the press asks the app, the switch stays off
+            send_switch.toggle()
+            spin(board, 3)
+            assert send_switch.get() is False
+            assert ("consent", {"kind": "report_upload"}) in asked, asked
+            # [Turn on] beside the dot: the poll flips it
+            gate["open"] = True
+            spin(board, 4)
+            assert send_switch.get() is True, "the gate opened and the switch stayed off"
+            assert all(s.winfo_ismapped() for s in strip), "the strip did not appear"
+            assert names[dash.REPORT_PREVIEW].winfo_ismapped() and not names[dash.REPORT_KEEP].winfo_ismapped()
+            assert str(keys_line.cget("text")) == dash.REPORT_KEYS_SEND
+            labels = [str(w.cget("text")) for w in descendants(box) if isinstance(w, tk.Label)]
+            assert any(t.startswith("Screenshot  ·  ") and "KB" in t for t in labels), labels
+            assert any(t.startswith("Recording  ·  ") for t in labels), labels
+            # wrong is the kind: transcript and settings on, the two files off
+            assert [s.get() for s in strip] == [False, False, True, True], [s.get() for s in strip]
+            strip[0].toggle()                                  # the screenshot travels
+            assert strip[0].get() is True
+
+            names[dash.REPORT_PREVIEW]._released(None)
+            spin(board, 4)
+            assert not toplevels(board, "Report a problem"), "the box stayed up"
+            rows = store.items()
+            assert len(rows) == 1 and rows[0]["text"] == "המילה האחרונה נעלמה", rows
+            ident = rows[0]["id"]
+            assert rows[0]["sent"] == problems_mod.PREVIEW
+            assert rows[0]["attach"] == {"shot": True, "recording": False,
+                                         "transcript": True, "settings": True}, rows[0]["attach"]
+            assert rows[0]["shot"] and rows[0]["dictation"].get("wav"), "the local copy lost a piece"
+            preview = toplevels(board, "Preview — what leaves this PC")
+            assert preview, "no Preview opened"
+            texts = [str(w.cget("text")) for w in descendants(preview[0]) if isinstance(w, tk.Label)]
+            assert "This is everything that leaves your PC. Nothing else." in texts, texts
+            assert any(t.startswith("shot.jpg  ·  ") for t in texts), texts
+            assert not any(t.startswith("dictation.wav") for t in texts), "an unticked file is shown"
+            assert any(t.startswith("sidecar.json  ·  ") for t in texts), texts
+            pictures = [w for w in descendants(preview[0]) if isinstance(w, tk.Label)
+                        and str(w.cget("image"))]
+            assert len(pictures) >= 8, "the JSON lines are not drawn"
+            # keep on this PC: no outbox, the mark cleared
+            buttons(preview[0])[dash.REPORT_KEEP]._released(None)
+            spin(board, 3)
+            assert not toplevels(board, "Preview — what leaves this PC")
+            assert store.get(ident)["sent"] == "" and not (tmp / "problems" / "outbox").exists()
+            # the row offers nothing about sending now
+            board._fill_problems()
+            board.root.update()
+            assert "Preview & send" not in buttons(first_row(board)), sorted(buttons(first_row(board)))
+            # marked again from the row's side (the hotkey path): [Preview & send]
+            problems_mod.mark_preview(store, ident, {"shot": True, "transcript": True})
+            board._fill_problems()
+            board.root.update()
+            row = first_row(board)
+            assert "Preview & send" in buttons(row), sorted(buttons(row))
+            buttons(row)["Preview & send"]._released(None)
+            spin(board, 3)
+            preview = toplevels(board, "Preview — what leaves this PC")
+            assert preview
+            buttons(preview[0])["Send"]._released(None)
+            spin(board, 3)
+            queued = store.get(ident)
+            assert queued["sent"] == problems_mod.QUEUED and queued["sent_id"], queued
+            payload = tmp / "problems" / "outbox" / f"{queued['sent_id']}.json"
+            assert payload.is_file()
+            body = json.loads(payload.read_text("utf-8"))
+            assert body["text"] == "המילה האחרונה נעלמה" and body["kind"] == "wrong"
+            assert [a["name"] for a in body["attachments"]] == ["shot.jpg", "sidecar.json"]
+            assert ("account", {"do": "nudge"}) in asked, asked
+            board._fill_problems()
+            board.root.update()
+            row = first_row(board)
+            assert "waiting to send" in words_on(row), sorted(words_on(row))
+            assert "Send now" in buttons(row), sorted(buttons(row))
+            # the app's verdict, read back on the next draw
+            payload.unlink()
+            board._fill_problems()
+            board.root.update()
+            row = first_row(board)
+            assert "sent to the developer" in words_on(row), sorted(words_on(row))
+            assert "Send now" not in buttons(row)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_the_problem_report_path_never_damages_a_dictation() -> None:
     """The report card borrows the dictation key, so the one thing it
     may NOT do is spend a sentence. With to_prompt on, the transcript

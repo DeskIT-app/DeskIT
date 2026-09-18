@@ -7,9 +7,10 @@ title: 9. Reporting a problem
 # 9. Reporting a problem
 
 **The two-sentence version.** Tap **Ctrl+Alt+R**, write one line, press Enter: the report is
-kept on this PC with the screen, the last dictation and your settings attached. Sending
-reports to the developer is a later version; today a report reaches us through a GitHub
-issue, with a diagnostics block that you can read before pasting.
+kept on this PC with the screen, the last dictation and your settings attached. Turn on
+**Send to the developer** and you see, before anything goes, exactly what would leave —
+each file with its size and the one row the server gets — and only your press on **Send**
+sends it.
 
 ## The report key
 
@@ -25,8 +26,21 @@ The dashboard's **Problems** place lists your reports, opens each one's folder
 (`%LOCALAPPDATA%\DeskIT\problems\<id>\`), and has the same box for a report written at the
 desk.
 
-Nothing leaves this PC. The **Send to the developer** checkbox with a preview of the exact
-data is a later version; until then the folder is yours to attach to an issue if you want to.
+Nothing leaves this PC unless you turn on **Send to the developer** on the box. The first
+time, the consent card beside the dot asks (Settings > Privacy withdraws it later). With the
+switch on, a strip under it lists what would travel, each piece with its size and its own
+switch: **Screenshot** (off unless you turn it on — a picture of the screen may hold someone
+else's words), **Recording** (off), **Transcript text** (on for a "wrong"), **Settings
+snapshot** (on: model names and switches, never a key). The button then reads **Preview**
+instead of **Keep on this PC**: the report is filed here as always, and a window opens with
+the files and the exact row — "This is everything that leaves your PC. Nothing else." —
+and two buttons, **Send** and **Keep on this PC**. Closing the window is keeping.
+
+From the hotkey box the same Preview opens on the desk's **Problems** place; a report you
+did not answer there keeps a **Preview & send** button on its row. A sent report's row says
+"waiting to send" until it went (the app sends when it is online; **Send now** hurries it),
+then "sent to the developer"; one the server refused says why. Every copy is idempotent:
+sending the same report twice cannot make two.
 
 ## Telling us
 
@@ -53,6 +67,8 @@ has the address and a 90-day disclosure window.
 
 ## What the developer sees
 
-Today: only what you paste into an issue. When the in-app sending arrives it will be behind a
-consent card, with a preview of the exact JSON and each attachment, an anonymous account (no
-e-mail), and a **Delete my account** button that removes everything on the developer's side.
+What the Preview showed and nothing else: the row (kind, place, your line, version, Windows
+build, tier, the settings snapshot if you left it on, the transcript if you left it on) and
+the files you ticked, under your account (anonymous or Google — no e-mail is ever in the
+report). **Delete my account** on the Home account card removes every report and file on
+the developer's side.

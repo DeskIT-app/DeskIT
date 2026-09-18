@@ -742,6 +742,23 @@ REPORT_HINT = getattr(_pc, "HINT",
                       "settings behind it are attached for you.")
 REPORT_KEYS = getattr(_pc, "KEYS", "Enter sends  ·  Shift+Enter for a "
                                    "new line  ·  Esc cancels")
+# The copy that travels (plan 7.6, screen 7): the checkbox, the strip's
+# words and the two labels the primary button switches between, all
+# problem_card's, for the reason the block above gives.
+REPORT_KEYS_SEND = getattr(_pc, "KEYS_SEND", "Enter continues  ·  Shift+Enter "
+                                             "for a new line  ·  Esc cancels")
+REPORT_KEEP = getattr(_pc, "SEND_LABEL", "Keep on this PC")
+REPORT_PREVIEW = getattr(_pc, "PREVIEW_LABEL", "Preview")
+REPORT_SEND_TOGGLE = getattr(_pc, "SEND_TOGGLE_LABEL", "Send to the developer")
+REPORT_STRIP = getattr(_pc, "STRIP_EYEBROW", "WHAT LEAVES THIS PC")
+REPORT_ATTACH = tuple(getattr(_pc, "ATTACH_ORDER",
+                              ("shot", "recording", "transcript", "settings")))
+REPORT_ATTACH_WORDS = dict(getattr(_pc, "ATTACH_WORDS", {}))
+REPORT_NONE = getattr(_pc, "NONE_WORD", "none")
+
+
+def _size_word(n) -> str:
+    return _pc.size_word(n) if _pc is not None else str(n)
 
 # The question row's words, numbers and one RULE, and answer_card owns
 # every one of them. The card the app pops up and the row on this screen
@@ -1456,6 +1473,10 @@ class Dashboard:
         # this window closes: remembering across restarts is a line in
         # config.toml, which is another file.
         self._report_at = None
+        # The Preview (plan 7.6): which report's is open, and which rows
+        # already had theirs opened by this window — once each.
+        self._preview_open = ""
+        self._previewed: set[str] = set()
         # ANSWERING A QUESTION, held on the window and not in the widgets.
         # The Problems list is rebuilt from scratch whenever either store
         # moves — and it moves BECAUSE he answered, or because the routine
@@ -1543,6 +1564,35 @@ class Dashboard:
             self.root.focus_force()
         except Exception:
             pass
+        self._preview_if_waiting()
+
+    def _preview_if_waiting(self) -> None:
+        """A report the hotkey card marked for its Preview (plan 7.6,
+        screen 7: "from the hotkey card it opens the dashboard on
+        Problems with the preview"): the app is another process, so the
+        row is the message — this window looks for one when it comes up
+        and whenever the show signal brings it forward, and opens
+        Problems with the Preview on the newest such row. Once per row:
+        a preview he closed without answering stays a row with [Preview
+        & send] on it, not a window that keeps coming back."""
+        module, store = self._problems(), self._problems_store()
+        if module is None or store is None or not hasattr(module, "awaiting_preview"):
+            return
+        if self._landing_up:
+            return
+        try:
+            item = module.awaiting_preview(store)
+        except Exception:                 # noqa: BLE001
+            return
+        if not item:
+            return
+        ident = str(item.get("id", ""))
+        if not ident or ident in self._previewed:
+            return
+        self._previewed.add(ident)
+        if self.screen != "Problems":
+            self._show("Problems")
+        self.root.after(150, lambda: self._report_preview(ident))
 
     # ------------------------------------------------------------- chrome
 
@@ -1563,6 +1613,9 @@ class Dashboard:
         # from the app's own word the moment it answers.
         if self._locked_now(None):
             self._landing(True)
+        # A report the hotkey card left waiting for its Preview opens
+        # Problems over Home, once the first frame is up.
+        self.root.after(600, self._preview_if_waiting)
 
     def _topbar(self) -> None:
         """The mark, the six places, the state, and whichever buttons the
@@ -4352,6 +4405,11 @@ class Dashboard:
         waiting, done, summary = [], [], {}
         if module is not None and store is not None:
             try:
+                # sb.py's verdicts on the copies that travelled — a
+                # payload gone is sent, a .failed beside it failed —
+                # read back into the rows before they are drawn (7.6)
+                if hasattr(module, "sync_outbox"):
+                    module.sync_outbox(store, app_dir=paths.DATA_DIR)
                 waiting = store.items(module.OPEN)
                 done = [i for i in store.items()
                         if i.get("status") in module.RESOLVED][:30]
@@ -4705,6 +4763,36 @@ class Dashboard:
                              w=58, h=26, quiet=True, fg=ui.FAINT)
             row.create_window(14, height - 38, window=fixed, anchor="nw")
             row.create_window(76, height - 38, window=shut, anchor="nw")
+            # THE COPY THAT TRAVELS, on the same strip (plan 7.6): a row
+            # waiting for its Preview carries the button that opens it;
+            # a queued one says "waiting to send" and offers Send now; a
+            # sent one says so; a failed one says why. Nothing for a
+            # report that stays here, which is most of them.
+            sent = str(item.get("sent") or "")
+            words = module.sent_line(item) if hasattr(module, "sent_line") else ""
+            x = 142
+            if sent == getattr(module, "PREVIEW", "preview"):
+                wide = widgets.button_width("Preview & send", least=62)
+                look = ui.Button(row, "Preview & send",
+                                 lambda i=ident: self._report_preview(i),
+                                 w=wide, h=26, quiet=True, fg=ui.ACCENT_TEXT)
+                row.create_window(x, height - 38, window=look, anchor="nw")
+                x += wide + 8
+            elif sent == getattr(module, "QUEUED", "queued"):
+                wide = widgets.button_width("Send now", least=62)
+                now = ui.Button(row, "Send now",
+                                lambda: self._ask("account", then=lambda r:
+                                                  self._announce(r, "sending"),
+                                                  do="nudge"),
+                                w=wide, h=26, quiet=True, fg=ui.FAINT)
+                row.create_window(x, height - 38, window=now, anchor="nw")
+                x += wide + 8
+            if words:
+                colour = (ui.GREEN if sent == getattr(module, "SENT", "sent")
+                          else ui.AMBER if sent == getattr(module, "FAILED", "failed")
+                          else ui.FAINT)
+                row.create_text(x, height - 25, anchor="w", font=(ui.UI, 8),
+                                fill=colour, text=words[:90])
         else:
             status = str(item.get("status") or "")
             by = str(item.get("by") or "")
@@ -5868,9 +5956,10 @@ class Dashboard:
         # order and same reason as main._problem_ask: a report about what
         # is on the screen wants the screen, not the question.
         try:
-            pcfg = getattr(config_mod.load_layered(), "problems", None)
+            cfg = config_mod.load_layered()
+            pcfg = getattr(cfg, "problems", None)
         except Exception:                 # noqa: BLE001 — a picture is a bonus
-            pcfg = None
+            cfg = pcfg = None
         jpeg = self._report_shot(pcfg) if getattr(pcfg, "shot", True) else None
         shot = self._shot_photo(module, jpeg)
 
@@ -5941,9 +6030,10 @@ class Dashboard:
                  font=(ui.UI, 8), justify="left",
                  wraplength=inner).place(x=0, y=44)
         y_keys = 44 + hint_h + 7
-        tk.Label(body, text=REPORT_KEYS, bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 8), justify="left",
-                 wraplength=inner).place(x=0, y=y_keys)
+        keys_line = tk.Label(body, text=REPORT_KEYS, bg=ui.CARD, fg=ui.FAINT,
+                             font=(ui.UI, 8), justify="left",
+                             wraplength=inner)
+        keys_line.place(x=0, y=y_keys)
         y_field = y_keys + keys_h + 12
 
         # A tk.Text, not a tk.Entry. The owner's words for the Entry were
@@ -6008,6 +6098,10 @@ class Dashboard:
             picked["kind"] = name
             for key, chip in chips.items():
                 chip.set(key == name)
+            # the strip's sizes follow the kind (the recording rides only
+            # with wrong and slow); the switches stay as he left them
+            sending["sizes"] = sizes_for(name)
+            paint_strip()
 
         for name in kinds:
             chips[name] = ui.Chip(body, name, lambda n=name: pick(n),
@@ -6031,6 +6125,97 @@ class Dashboard:
                                bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
                                justify="left", anchor="nw",
                                wraplength=max(80, inner - shot.width() - 26))
+
+        # THE COPY THAT TRAVELS (plan 7.6, screen 7; problem_card paints
+        # the same rows on the hotkey card). One switch — "Send to the
+        # developer", off — and, only while it is on, the strip under
+        # it: what would leave this PC, each piece with its size and
+        # its own switch. The switch asks the report_upload consent card
+        # first when the gate is shut; that card is beside the dot, in
+        # the app's process, so it is asked over the pipe and the poll
+        # below flips the switch when [Turn on] has been pressed.
+        sending = {"on": False, "await": False,
+                   "attach": (module.attach_defaults(kinds[0])
+                              if hasattr(module, "attach_defaults") else {}),
+                   "sizes": {}}
+
+        def sizes_for(kind: str) -> dict:
+            """What each toggle weighs for this kind — the recording only
+            rides with "wrong" and "slow" (_last_dictation), so the strip
+            says "none" for an idea."""
+            try:
+                return module.sizes_before_filing(
+                    jpeg=jpeg, last=self._last_dictation(kind), cfg=cfg,
+                    app_dir=paths.DATA_DIR)
+            except Exception:             # noqa: BLE001 — a size is a bonus
+                return {}
+
+        sending["sizes"] = sizes_for(kinds[0])
+        send_switch = ui.Switch(body, False, command=lambda v: toggle_send(v),
+                                bg=ui.CARD)
+        send_label = tk.Label(body, text=REPORT_SEND_TOGGLE, bg=ui.CARD,
+                              fg=ui.DIM, font=(ui.UI, 10), cursor="hand2")
+        send_label.bind("<Button-1>", lambda _e: send_switch.toggle())
+        strip_head = tk.Label(body, text=REPORT_STRIP, bg=ui.CARD,
+                              fg=ui.FAINT, font=(ui.MEDIUM, 8))
+        strip: dict[str, tuple] = {}
+        for name in REPORT_ATTACH:
+            switch = ui.Switch(body, False,
+                               command=lambda v, n=name: toggle_attach(n, v),
+                               bg=ui.CARD)
+            label = tk.Label(body, text="", bg=ui.CARD, fg=ui.DIM,
+                             font=(ui.UI, 9), cursor="hand2")
+            label.bind("<Button-1>", lambda _e, s=switch: s.toggle())
+            strip[name] = (switch, label)
+
+        def paint_strip() -> None:
+            sizes = sending["sizes"]
+            for name, (switch, label) in strip.items():
+                have = int(sizes.get(name) or 0) > 0
+                on = have and bool(sending["attach"].get(name))
+                switch.set(on)
+                label.configure(
+                    text=f"{REPORT_ATTACH_WORDS.get(name, name)}  ·  "
+                         f"{_size_word(sizes.get(name)) if have else REPORT_NONE}",
+                    fg=ui.FAINT if not have else ui.FG if on else ui.DIM)
+            send_label.configure(fg=ui.FG if sending["on"] else ui.DIM)
+            keys_line.configure(text=REPORT_KEYS_SEND if sending["on"]
+                                else REPORT_KEYS)
+
+        def toggle_attach(name: str, value: bool) -> None:
+            if int(sending["sizes"].get(name) or 0) <= 0:
+                strip[name][0].set(False)
+                return
+            sending["attach"][name] = bool(value)
+            paint_strip()
+
+        def toggle_send(value: bool) -> None:
+            if value and not self._upload_allowed():
+                send_switch.set(False)
+                sending["await"] = True
+                self._ask("consent", then=consent_asked, kind="report_upload")
+                return
+            sending["on"] = bool(value)
+            paint_strip()
+            relayout()
+
+        def consent_asked(reply: dict | None) -> None:
+            if done["value"]:
+                return
+            if reply is None:
+                self._note("start the app first — the consent card is "
+                           "beside the dot")
+                sending["await"] = False
+            elif reply.get("asked"):
+                self._note("the consent card is beside the dot — press "
+                           "Turn on, and the switch here turns on with it")
+            elif reply.get("allowed"):
+                sending["await"] = False
+                send_switch.set(True)
+                toggle_send(True)
+            else:
+                self._note(reply.get("error") or "the upload consent is off")
+                sending["await"] = False
 
         actions = tk.Frame(body, bg=ui.CARD)
         done = {"value": False}
@@ -6064,12 +6249,24 @@ class Dashboard:
             except Exception:
                 pass
             if text is not None:
-                self._file_report(module, where, picked["kind"], text, jpeg)
+                self._file_report(module, where, picked["kind"], text, jpeg,
+                                  send=sending["on"],
+                                  attach=dict(sending["attach"]))
 
-        send_button = ui.Button(actions, "Send",
+        # Two primaries, one shown: the word follows the switch (Keep on
+        # this PC / Preview) and ui.Button is as wide as it was built,
+        # so each is built for its own word.
+        keep_button = ui.Button(actions, REPORT_KEEP,
                                 lambda: finish(field.get("1.0", "end-1c")),
-                                w=104, primary=True, icon=ui.ICON["error"])
-        send_button.pack(side="left", padx=(0, 8))
+                                w=widgets.button_width(REPORT_KEEP, icon=True,
+                                                       least=104),
+                                primary=True, icon=ui.ICON["error"])
+        preview_button = ui.Button(actions, REPORT_PREVIEW,
+                                   lambda: finish(field.get("1.0", "end-1c")),
+                                   w=widgets.button_width(REPORT_PREVIEW,
+                                                          icon=True, least=104),
+                                   primary=True, icon=ui.ICON["error"])
+        keep_button.pack(side="left", padx=(0, 8))
         cancel_button = ui.Button(actions, "Cancel", lambda: finish(None),
                                   w=96, quiet=True)
         cancel_button.pack(side="left")
@@ -6082,8 +6279,11 @@ class Dashboard:
         # rather than with the chrome — it is the 3 px ring around the
         # text, and a press one pixel wide of the sentence he is aiming at
         # should not move the card out from under him.
-        controls = {field, well, send_button, cancel_button}
+        controls = {field, well, keep_button, preview_button, cancel_button,
+                    send_switch, send_label}
         controls.update(chips.values())
+        for switch, label in strip.values():
+            controls.update((switch, label))
         # The cursor says which is which before he presses anything: the
         # move cross over everything that drags, and each control keeps
         # the cursor it sets for itself (hand2 on the chips and the
@@ -6137,6 +6337,35 @@ class Dashboard:
                 picture.place(x=0, y=y)
                 caption.place(x=shot.width() + 16, y=y + 2)
                 y += shot.height() + 2
+            # The switch, then the strip under its label while it is on
+            # — problem_card's CHECK_GAP / ROW_H / STRIP_INDENT, so the
+            # two surfaces measure the same.
+            y += 14
+            send_switch.place(x=0, y=y + 2)
+            send_label.place(x=56, y=y + 4)
+            y += 30
+            if sending["on"]:
+                y += 8
+                strip_head.place(x=56, y=y)
+                y += 18
+                for name in REPORT_ATTACH:
+                    switch, label = strip[name]
+                    switch.place(x=56, y=y + 2)
+                    label.place(x=112, y=y + 5)
+                    y += 30
+                if not preview_button.winfo_ismapped():
+                    keep_button.pack_forget()
+                    preview_button.pack(side="left", padx=(0, 8),
+                                        before=cancel_button)
+            else:
+                strip_head.place_forget()
+                for switch, label in strip.values():
+                    switch.place_forget()
+                    label.place_forget()
+                if not keep_button.winfo_ismapped():
+                    preview_button.pack_forget()
+                    keep_button.pack(side="left", padx=(0, 8),
+                                     before=cancel_button)
             y += 16
             actions.place(x=inner, y=y, anchor="ne")
             height = y + 36 + 44
@@ -6161,6 +6390,12 @@ class Dashboard:
             if done["value"]:
                 return
             try:
+                if sending["await"] and self._upload_allowed():
+                    # [Turn on] was pressed on the card beside the dot:
+                    # the switch he flipped flips, nothing else to press.
+                    sending["await"] = False
+                    send_switch.set(True)
+                    toggle_send(True)
                 typed = field.get("1.0", "end-1c")
                 if len(typed) > limit:
                     # problems.clean would cut it silently on the way to
@@ -6408,6 +6643,7 @@ class Dashboard:
         top.protocol("WM_DELETE_WINDOW", lambda: finish(None))
         top.bind("<Destroy>", gone)
 
+        paint_strip()
         relayout()
         top.update_idletasks()
         # After the geometry and after update_idletasks: the attribute
@@ -6435,13 +6671,18 @@ class Dashboard:
         pump()
 
     def _file_report(self, module, where: str, kind: str, text: str,
-                     jpeg: bytes | None = None) -> None:
+                     jpeg: bytes | None = None, *, send: bool = False,
+                     attach: dict | None = None) -> None:
         """Hand the line to problems.record, which collects the rest.
 
         clean()'s ValueError is the one exception that module raises on
         purpose — an empty line — and it is a sentence to say back, not
         something to log. Everything else in there is already swallowed,
         so filing a report can cost him the report and never the window.
+
+        `send` (plan 7.6): the report is filed here exactly as without
+        it; the tick marks the row PREVIEW with the four toggles and
+        opens the Preview, where Send is what makes the copy.
         """
         try:
             cfg = config_mod.load_layered()
@@ -6459,11 +6700,206 @@ class Dashboard:
         except Exception as e:            # noqa: BLE001
             self._note(f"could not file that: {e}")
             return
+        if send and hasattr(module, "mark_preview"):
+            module.mark_preview(self._problems_store(), item.get("id", ""),
+                                attach)
         self._note(f"filed as {item.get('id', '')} — it is on the Problems "
                    f"screen until you answer it")
         self._write_digest()
         if self.screen == "Problems":
             self._fill_problems()
+        if send:
+            self._report_preview(str(item.get("id", "")))
+
+    def _upload_allowed(self) -> bool:
+        """Is the report_upload gate open, as this process sees it — the
+        [privacy] section from the layered config once, then the consent
+        file on every ask (privacy.rows re-reads it when it changed, so
+        [Turn on] beside the dot is seen here without a restart)."""
+        try:
+            import privacy
+            if not getattr(self, "_privacy_configured", False):
+                privacy.configure(config_mod.load_layered())
+                self._privacy_configured = True
+            return bool(privacy.allowed("report_upload"))
+        except Exception:                 # noqa: BLE001
+            return False
+
+    def _report_preview(self, ident: str) -> None:
+        """Screen 7's Preview: each ticked file, then the exact row that
+        would be posted, then [Send] and [Keep on this PC] — the whole
+        of what leaves, and nothing leaves before it was shown.
+
+        The row is the message: the card (this window's box or the
+        hotkey's, another process) marked the report PREVIEW with the
+        toggles as he left them, and this window builds the payload from
+        the stored row (problems.payload), so what is shown is what the
+        outbox gets. Read-only by design — changing it means going back
+        to the card and filing again.
+
+        The JSON is drawn through DrawTextW line by line (visual_qa
+        .text_pil, single-line, no whitespace folding) and not typed
+        into a tk.Text: a mixed Hebrew/English line in a Text draws its
+        runs in the wrong order (measured 2026-09-04), and a preview
+        that scrambles the sentence he is about to send is not a
+        preview.
+        """
+        module = self._problems()
+        store = self._problems_store()
+        if module is None or store is None:
+            return
+        item = store.get(ident)
+        if not item:
+            self._note("that report is not on the list any more")
+            return
+        attach = item.get("attach") if isinstance(item.get("attach"), dict) \
+            else module.attach_defaults(str(item.get("kind") or ""))
+        try:
+            row, files = module.payload(item, attach, app_dir=paths.DATA_DIR)
+        except Exception as e:            # noqa: BLE001
+            self._note(f"could not build the preview: {e}")
+            return
+        text = module.preview_text(row)
+
+        top = tk.Toplevel(self.root)
+        top.title("Preview — what leaves this PC")
+        top.configure(bg=ui.BG)
+        top.resizable(False, False)
+        top.transient(self.root)
+        _dark_caption(top)
+        card_w, pad = 560, 22
+        inner = card_w - 2 * pad
+        done = {"value": False}
+        keep: list = []
+
+        def finish(sent: bool | None) -> None:
+            """Send, keep here, or close (Esc, the X): closing is keeping,
+            because the report is already on this PC and a preview he
+            walked away from must not turn into an upload."""
+            if done["value"]:
+                return
+            done["value"] = True
+            keep.clear()
+            try:
+                top.grab_release()
+                top.destroy()
+            except Exception:
+                pass
+            if sent:
+                target = module.queue(store, store.get(ident) or item, attach,
+                                      app_dir=paths.DATA_DIR)
+                if target is None:
+                    self._note("could not queue the report — it stays on "
+                               "this PC; try Preview & send again")
+                else:
+                    self._note(f"{ident}: queued — it goes up when the app "
+                               "is next online, and the row says when it did")
+                    self._ask("account", do="nudge")
+            else:
+                module.keep_local(store, ident)
+                self._note(f"{ident} stays on this PC")
+            if self.screen == "Problems":
+                self._fill_problems()
+
+        body = tk.Frame(top, bg=ui.BG)
+        body.pack(fill="both", expand=True, padx=20, pady=(18, 20))
+        tk.Label(body, text="WHAT LEAVES THIS PC", bg=ui.BG, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).pack(anchor="w", padx=2)
+        tk.Label(body, text="This is everything that leaves your PC. "
+                            "Nothing else.", bg=ui.BG, fg=ui.FG,
+                 font=(ui.DISPLAY, 14, "bold")).pack(anchor="w", pady=(2, 10))
+
+        # The files first — they are what a person worries about — then
+        # the row. Each ticked attachment: the picture small, the
+        # recording as a name, its size and Play, the sidecar as a name
+        # and size. Then the JSON, one image per line so indentation
+        # survives, all in a scroller sized to the screen and never
+        # taller than 420.
+        scroller = ui.Scroller(body, card_w + 16, 160, bg=ui.BG)
+        from PIL import Image, ImageTk
+        import visual_qa as visual_qa_mod
+        tk.Label(scroller.inner, text="FILES" if files else "NO FILES — THE ROW BELOW IS ALL",
+                 bg=ui.BG, fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(anchor="w", padx=2,
+                                                                  pady=(0, 4))
+        for entry in files:
+            name, path = str(entry.get("name")), str(entry.get("path"))
+            size = _size_word(entry.get("bytes"))
+            if name.endswith(".jpg"):
+                photo = self._shot_photo(module, Path(path).read_bytes()
+                                         if Path(path).is_file() else None)
+                if photo is not None:
+                    keep.append(photo)
+                    tk.Label(scroller.inner, image=photo, bg=ui.BG, bd=0,
+                             highlightthickness=1,
+                             highlightbackground=ui.STROKE).pack(anchor="w",
+                                                                 pady=(0, 4))
+            line = tk.Frame(scroller.inner, bg=ui.BG)
+            line.pack(anchor="w", fill="x", pady=(0, 4))
+            tk.Label(line, text=f"{name}  ·  {size}", bg=ui.BG, fg=ui.DIM,
+                     font=(ui.UI, 9)).pack(side="left")
+            if name.endswith(".wav"):
+                ui.Button(line, "Play", lambda p=path: self._play_wav(p),
+                          w=widgets.button_width("Play", least=58), h=24,
+                          quiet=True).pack(side="left", padx=(10, 0))
+        tk.Label(scroller.inner, text="THE ROW", bg=ui.BG, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).pack(anchor="w", padx=2, pady=(10, 4))
+        lines = text.splitlines() or [" "]
+        json_card = ui.Card(scroller.inner, card_w, 2 * pad + 2, bg=ui.BG,
+                            pad=pad)
+        y = 0
+        ground = tuple(int(ui.CARD.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        ink = tuple(int(ui.FG.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+        # Courier New, not Consolas: a monospace face that carries
+        # Hebrew glyphs itself, so the sentence in "text" is not drawn
+        # by a fallback face at another size.
+        for line in lines:
+            glyphs = visual_qa_mod.text_pil(line or " ", inner, pt=9.5,
+                                            face="Courier New", colour=ink,
+                                            rtl=False, single=True)
+            flat = Image.new("RGB", glyphs.size, ground)
+            flat.paste(glyphs, (0, 0), glyphs)
+            photo = ImageTk.PhotoImage(flat, master=top)
+            keep.append(photo)
+            tk.Label(json_card.body, image=photo, bg=ui.CARD, bd=0).place(x=0, y=y)
+            y += glyphs.height
+        json_card.resize(y + 2 * pad)
+        json_card.pack(anchor="w")
+        scroller.inner.update_idletasks()
+        need = scroller.inner.winfo_reqheight()
+        room = max(160, min(420, top.winfo_screenheight() - 360))
+        scroller.resize(min(need, room))
+        scroller.pack(anchor="w")
+
+        actions = tk.Frame(body, bg=ui.BG)
+        actions.pack(anchor="e", pady=(14, 0))
+        send_w = widgets.button_width("Send", icon=True, least=104)
+        ui.Button(actions, "Send", lambda: finish(True), w=send_w,
+                  primary=True, icon=ui.ICON["error"]).pack(side="left",
+                                                            padx=(0, 8))
+        ui.Button(actions, REPORT_KEEP, lambda: finish(False),
+                  w=widgets.button_width(REPORT_KEEP, least=96),
+                  quiet=True).pack(side="left")
+        top.bind("<Escape>", lambda _e: finish(None))
+        top.protocol("WM_DELETE_WINDOW", lambda: finish(None))
+        top.update_idletasks()
+        x = self.root.winfo_rootx() + (self.root.winfo_width()
+                                       - top.winfo_width()) // 2
+        yy = self.root.winfo_rooty() + 120
+        top.geometry(f"+{max(0, x)}+{max(0, yy)}")
+        top.lift()
+        top.grab_set()
+        top.focus_force()
+        self._preview_open = ident
+
+    @staticmethod
+    def _play_wav(path: str) -> None:
+        """The recording behind a report, once, through winsound — the
+        one thing on the Preview that is not a picture of bytes."""
+        try:
+            import winsound
+            winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+        except Exception:                 # noqa: BLE001
+            pass
 
     # --------------------------------------------------------------- keys
 
