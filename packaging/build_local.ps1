@@ -79,7 +79,7 @@ foreach ($f in "LICENSE", "NOTICE", "OFL.txt", "NETWORK.md", "SECURITY.md") {
 if ($LASTEXITCODE) { throw "the manifest does not verify" }
 
 # and the tree starts on its own interpreter
-& (Join-Path $py "python.exe") -c "import sys, tkinter, numpy, PIL, sounddevice; print('staged python', sys.version.split()[0], 'tk', tkinter.TkVersion, 'numpy', numpy.__version__)"
+& (Join-Path $py "python.exe") -B -c "import sys, tkinter, numpy, PIL, sounddevice; print('staged python', sys.version.split()[0], 'tk', tkinter.TkVersion, 'numpy', numpy.__version__)"
 if ($LASTEXITCODE) { throw "the staged python cannot import the base set" }
 $size = (Get-ChildItem -Recurse $Stage -File | Measure-Object -Property Length -Sum).Sum
 Write-Host ("stage: {0:N0} MB on disk" -f ($size / 1MB))

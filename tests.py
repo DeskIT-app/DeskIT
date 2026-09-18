@@ -33380,6 +33380,15 @@ def test_manifest_roundtrip():
                                          "missing: python/Lib/site.py"]
         text = out.read_text("utf-8")
         assert "MANIFEST.sha256" not in text and "CHANNEL" not in text
+        # the interpreter's caches, written by any import after the
+        # manifest, are neither listed nor extra (dry run #6: 89 of them)
+        (tree / "app" / "extra.py").unlink()
+        (tree / "python" / "Lib" / "site.py").write_bytes(b"x = 1\n")
+        for folder in (tree / "app" / "__pycache__", tree / "python" / "Lib" / "__pycache__"):
+            folder.mkdir()
+            (folder / "main.cpython-311.pyc").write_bytes(b"\xa7\r\r\n" + b"\0" * 12)
+        assert manifest.verify(tree) == []
+        assert "__pycache__" not in manifest.format_rows(manifest.build(tree))
         assert "\\" not in text, "a backslash in a manifest path"
     # the CLI is what the workflow calls
     proc = subprocess.run([sys.executable, str(REPO / "manifest.py"), "--help"],

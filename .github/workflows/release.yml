@@ -180,7 +180,7 @@ jobs:
 
       - name: The staged tree starts
         run: |
-          $out = & stage/python/python.exe -c "import sys, tkinter, numpy, PIL, sounddevice; print(sys.version.split()[0], tkinter.TkVersion, numpy.__version__)"
+          $out = & stage/python/python.exe -B -c "import sys, tkinter, numpy, PIL, sounddevice; print(sys.version.split()[0], tkinter.TkVersion, numpy.__version__)"
           Write-Host $out
           Get-ChildItem -Recurse stage -File | Measure-Object -Property Length -Sum | ForEach-Object { "stage: $($_.Count) files, $([math]::Round($_.Sum / 1MB)) MB" }
 

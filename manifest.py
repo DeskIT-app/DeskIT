@@ -28,6 +28,12 @@ NAME = "MANIFEST.sha256"
 #: The folders a manifest covers (10.2); anything else beside them
 #: (CHANNEL, the uninstaller, the manifest itself) is not listed.
 COVERED = ("python", "app")
+#: The interpreter's bytecode caches are not files of the build: Python
+#: writes them beside every module it imports, on the runner's smoke
+#: import and on the person's first start alike, and validates each one
+#: against its source's size and mtime before trusting it. Listed, every
+#: installed copy would fail its own verify after one run (dry run #6).
+SKIPPED_DIRS = ("__pycache__",)
 _CHUNK = 1 << 20
 
 
@@ -49,7 +55,7 @@ def build(tree: Path, covered=COVERED) -> list[tuple[str, int, str]]:
         if not base.is_dir():
             continue
         for path in base.rglob("*"):
-            if path.is_file():
+            if path.is_file() and not any(part in SKIPPED_DIRS for part in path.relative_to(base).parts):
                 rel = path.relative_to(tree).as_posix()
                 rows.append((sha256_of(path), path.stat().st_size, rel))
     rows.sort(key=lambda r: r[2])
