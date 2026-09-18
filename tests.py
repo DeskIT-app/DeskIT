@@ -4014,7 +4014,7 @@ def test_the_ready_cue_lands_with_the_light_and_not_before_it() -> None:
     Three assertions, because this can come back three ways: the wrong
     instant, the wrong number of times, or main() playing it again itself.
     """
-    import re
+    import ast
     import overlay as overlay_mod
     import skin.boot as boot_mod
     import skin.burst as burst_mod
@@ -4098,11 +4098,25 @@ def test_the_ready_cue_lands_with_the_light_and_not_before_it() -> None:
     overlay_mod.Splash().finish("ready", on_land=boom)   # must not raise
 
     # NOT IN MAIN ANY MORE. The regression is one line moving back up.
-    source = (Path(__file__).resolve().parent / "main.py").read_text("utf-8")
-    code = "\n".join(line.split("#", 1)[0] for line in source.splitlines())
-    stray = [line.strip() for line in code.splitlines()
-             if re.search(r"""beep\(\s*["']ready["']\s*\)""", line)
-             and "on_land" not in line]
+    # Read with ast, not line by line: a line scan saw `on_land=` and
+    # `beep("ready")` on two lines of ONE call when the call was wrapped
+    # (cfd3ee1, 2026-09-18) and failed the runner with the code right.
+    def _ready_beep(node) -> bool:
+        return (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name) and node.func.id == "beep"
+                and len(node.args) == 1
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == "ready")
+
+    tree = ast.parse(
+        (Path(__file__).resolve().parent / "main.py").read_text("utf-8"))
+    beeps = {id(n): n for n in ast.walk(tree) if _ready_beep(n)}
+    assert beeps, "main.py no longer plays the ready cue at all"
+    handed = {id(n) for kw in ast.walk(tree)
+              if isinstance(kw, ast.keyword) and kw.arg == "on_land"
+              for n in ast.walk(kw.value) if _ready_beep(n)}
+    stray = [f"main.py:{n.lineno}" for i, n in beeps.items()
+             if i not in handed]
     assert not stray, (
         f"main.py plays the ready cue itself again: {stray}. It belongs to "
         f"the landing frame — pass it to splash.finish(on_land=...) so the "
@@ -22615,7 +22629,14 @@ def test_the_screens_stay_off_after_input_lights_them() -> None:
         _awake_until(lambda: len(sent) >= 2)
         assert [s for s, _t in sent] == [awake_mod.MONITOR_OFF] * 2, sent
         assert sent[1][1] - touched[0] >= 0.2, "put out before it was still"
-        record = (Path(d) / awake_mod.LOG_NAME).read_text("utf-8")
+        # The worker broadcasts first and writes the line after
+        # (_keep_off_worker), so the broadcast is not the moment to read
+        # the log: a hosted runner (2026-09-18) got here between the two
+        # and found the record one line short. Wait for the line itself.
+        log_path = Path(d) / awake_mod.LOG_NAME
+        _awake_until(lambda: "screens lit by input, put out again"
+                     in log_path.read_text("utf-8"))
+        record = log_path.read_text("utf-8")
         assert "screens lit by input, put out again" in record, record
         eng.lighten(by="test")
         touched[0] = time.monotonic()     # the key that brought them back
