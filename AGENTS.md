@@ -106,7 +106,12 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   hook, the dot, the cards and every key that needs no model keep
   working — `hotkey.set_dictation_off` refuses only the hold keys with
   `MODEL_OFF_WORDS`. status()["model"] is on/off/loading/unloading; the
-  chip says Model off and the bar reads one button, Start. The whole
+  chip says Model off and the bar reads one button, Start. **Opening
+  the desk with nothing running starts the app WITHOUT the model**
+  (`dashboard.bring_up_the_keys` → `launch.start_app(model=False)` →
+  `main.py --no-model` → `App(cfg, model=False)`: 0.7 s to a live hook,
+  grey dot, every tap key working; the model download offer is skipped).
+  The whole
   process quits from Settings > The app > Quit DeskIT or the shelf —
   never from the bar's Stop, a start-up included: the first version
   quit there, he pressed Stop at "Starting" to try the unload and the

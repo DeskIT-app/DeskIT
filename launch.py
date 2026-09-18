@@ -64,10 +64,16 @@ def spawn(args: list[str]) -> bool:
         return False
 
 
-def start_app(config_path: str | None = None) -> bool:
+def start_app(config_path: str | None = None, model: bool = True) -> bool:
+    """The app as its own process. model=False starts it without the
+    speech model (main.py --no-model): the desk does that when it opens
+    and nothing is running, so every key that needs no model works at
+    once; Start in the desk then loads the model."""
     args = [str(APP_DIR / "main.py")]
     if config_path:
         args += ["--config", config_path]
+    if not model:
+        args.append("--no-model")
     return spawn(args)
 
 

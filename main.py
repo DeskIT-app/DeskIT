@@ -356,8 +356,15 @@ class App:
         return config_mod.load(self.config_path)
 
     def __init__(self, cfg: config_mod.Config,
-                 config_path: Path | None = None):
+                 config_path: Path | None = None, model: bool = True):
         self.cfg = cfg
+        # model=False: the process without the speech model — what the
+        # desk starts when it opens and nothing is running (2026-09-18,
+        # his rule: "even if I did not start the model but only opened
+        # the desk, every feature that does not need the model works").
+        # The hook, the dot, the cards and every tap key come up in a
+        # couple of seconds; Start loads the model (load_model).
+        self._model_wanted = bool(model)
         # Where a key change is written back to: the one file --config
         # named, or None for the three layers (see _save). Carried rather
         # than recomputed so --config keeps pointing at the file it was
@@ -381,7 +388,11 @@ class App:
             replace_after_hits=cfg.vocab.replace_after_hits,
             hebrew_after_hits=getattr(cfg.vocab, "hebrew_after_hits", 3))
         hotwords = self.vocab.hotwords if cfg.vocab.enabled else None
-        self.transcriber = get_transcriber(cfg, hotwords)  # fail fast: no key
+        if self._model_wanted:
+            self.transcriber = get_transcriber(cfg, hotwords)  # fail fast: no key
+        else:
+            from transcribers.off import OffTranscriber
+            self.transcriber = OffTranscriber(self.MODEL_OFF_WORDS)
         self._hotwords = hotwords
         self._polisher = None        # built on first use (see _polish)
         # The last thing pasted, and what the backend actually returned.
@@ -527,8 +538,10 @@ class App:
         # and nothing else (load_model / unload_model); the hook, the
         # dot, the cards and every feature that needs no model keep
         # running, and the hold keys are refused with MODEL_OFF_WORDS.
-        self._model_state = "on"
+        self._model_state = "on" if self._model_wanted else "off"
         self._refused_at = 0.0
+        if not self._model_wanted:
+            self.machine.set_dictation_off(True)
         # awake.py: the machine held awake for as long as this runs (the
         # hold goes up in start()), and the screens off on a key. Built
         # whether or not the key is bound — the dashboard's button goes
@@ -2172,7 +2185,8 @@ class App:
         return message
 
     def start(self) -> None:
-        self.recorder.start_stream()
+        if self._model_state == "on":
+            self.recorder.start_stream()
         # The hold first: [awake] hold = true means the machine never
         # sleeps while this app runs, whatever the screens are doing. A
         # refusal is logged and shown on the Awake screen, never fatal.
@@ -2232,6 +2246,11 @@ class App:
         self._start_account()
         if self.locked():
             self._lock()
+        elif self._model_state == "off":
+            # the grey dot from the first frame: alive, not listening
+            self._set_state("paused")
+            log.info("up without the model — every key that needs no model "
+                     "works; Start loads it")
         said = updates_mod.after_update()
         if said:
             self._say(said)
@@ -6379,6 +6398,9 @@ def main() -> int:
                         help="list audio input devices, then exit")
     parser.add_argument("--stop", action="store_true",
                         help="ask a running instance to quit, then exit")
+    parser.add_argument("--no-model", action="store_true",
+                        help="start without the speech model (the desk does this "
+                             "when it opens); Start in the desk loads it")
     parser.add_argument("--test-sound", action="store_true",
                         help="play every audio cue once, then exit")
     parser.add_argument("--translate", metavar="TEXT",
@@ -6590,6 +6612,7 @@ def main() -> int:
     # standalone windows are for a set-up copy whose model went missing.
     wizard_due = args.setup or (firstrun.needed(cfg) and not args.fake)
     if args.download_model or (not args.fake and not wizard_due
+                               and not args.no_model
                                and models_mod.wanted(cfg)):
         outcome = models_mod.offer(cfg.local.model)
         log.info("model download step: %s", outcome)
@@ -6852,8 +6875,10 @@ def main() -> int:
     if leftover:
         log.warning("%s", leftover)
     try:
-        splash.status("loading the transcription model…")
-        app = App(cfg, config_path=Path(args.config) if args.config else None)
+        splash.status("starting…" if args.no_model else
+                      "loading the transcription model…")
+        app = App(cfg, config_path=Path(args.config) if args.config else None,
+                  model=not args.no_model)
     except TranscriptionError as e:   # missing key, stub backend, ...
         return fail(str(e))
     except (ValueError, ConfigError) as e:   # unknown hotkey/chord name

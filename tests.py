@@ -34883,6 +34883,39 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
     assert real._activity == "ready" and calls[-1] == "dot:ready"
 
 
+def test_the_desk_brings_the_keys_up_without_the_model():
+    """His rule (2026-09-18, after the first live try): "even if I did not
+    start the model but only opened the desk, every feature that does
+    not need the model works." So the desk's entry point starts the app
+    WITHOUT the model when nothing is running — main.py --no-model, the
+    hook and every tap key up in under a second (a real App built that
+    way on the hidden desktop: 0.02 s to build, 0.7 s to start, status
+    model=off, the phone refused, load → fake backend on, unload → off)
+    — and does nothing when it is. Start in the bar still launches the
+    whole app with the model when nothing runs. In the entry point and
+    not in Dashboard.__init__: a window built for a test or a picture
+    must never spawn a process."""
+    import dashboard as dash
+    import launch
+
+    started: list = []
+    with _patched(singleton, "is_running", lambda *a, **k: False),             _patched(launch, "spawn", lambda args: started.append(list(args)) or True):
+        assert dash.bring_up_the_keys() is True
+        assert launch.start_app() is True
+    assert len(started) == 2, started
+    assert started[0][0].endswith("main.py") and started[0][-1] == "--no-model", started[0]
+    assert started[1][0].endswith("main.py") and "--no-model" not in started[1], started[1]
+    with _patched(singleton, "is_running", lambda *a, **k: True),             _patched(launch, "spawn", lambda args: started.append(list(args)) or True):
+        assert dash.bring_up_the_keys() is False
+    assert len(started) == 2, "the desk started a second copy"
+    assert "bring_up_the_keys()" in inspect.getsource(dash.main)
+    assert "bring_up_the_keys" not in inspect.getsource(dash.Dashboard.__init__)
+    main_src = (REPO / "main.py").read_text("utf-8")
+    assert 'parser.add_argument("--no-model"' in main_src
+    assert "model=not args.no_model" in main_src
+    assert "and not args.no_model" in main_src, "the download offer runs for a --no-model start"
+
+
 def test_the_dev_copy_says_so_in_the_window():
     """D30, the owner's ask of 2026-09-18: the checkout's dashboard is
     titled "DeskIT Dev", carries a DEV mark under the logo and stamps

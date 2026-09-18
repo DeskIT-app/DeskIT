@@ -20,7 +20,9 @@ Never keys, hotkeys, devices, folders or positions; never audio. The
 server's whole schema is published in the repository and no table in
 it has a column that could hold a key.
 
-Stop in the desk unloads the model and nothing else: the screenshot,
+Opening the desk brings the app up without the model — every key
+that needs no model works at once — and Start loads the model when you
+want to dictate. Stop in the desk unloads the model and nothing else: the screenshot,
 the screen recording, the camera, translate, look up, the shelf and
 every other key that needs no model keep working while it is off, and
 Start loads it again in about 25 seconds. Quit DeskIT, on Settings >

@@ -9334,10 +9334,8 @@ class Dashboard:
         if singleton.is_running():
             self._note("it is already running")
             return
-        self._note("starting — the models take about 25 seconds to load")
+        self._note("starting — the model takes about 25 seconds to load")
         self._busy_until = time.monotonic() + 2
-        if "hero_state" in self.parts:
-            self.parts["hero_state"].config(text="STARTING")
         if not launch.start_app():
             self._note("could not launch main.py — see app.log")
 
@@ -10048,6 +10046,24 @@ class Dashboard:
         return bool(self.__dict__.get("_relaunch"))
 
 
+def bring_up_the_keys() -> bool:
+    """Nothing running when the desk opens: the app comes up WITHOUT the
+    model (launch.start_app(model=False) → main.py --no-model), so the
+    screenshot, the recording, the camera, translate, lookup, the shelf
+    and every other key that needs no model work from the moment the
+    window is on screen. His rule, 2026-09-18: "even if I did not start
+    the model but only opened the desk, every feature that does not need
+    the model works." Start in the bar then loads the model. Here, in
+    the entry point, and not in Dashboard.__init__: a window built for a
+    test or a picture must never spawn a process."""
+    try:
+        if singleton.is_running():
+            return False
+        return bool(launch.start_app(model=False))
+    except Exception:                                    # noqa: BLE001
+        return False
+
+
 def main() -> int:
     """One window, however many times the shortcut is clicked.
 
@@ -10072,6 +10088,7 @@ def main() -> int:
         singleton.signal(singleton.DASHBOARD_SHOW)
         return 0
     try:
+        bring_up_the_keys()
         again = Dashboard().run()
     finally:
         lock.release()
