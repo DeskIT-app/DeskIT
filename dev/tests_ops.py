@@ -74,6 +74,20 @@ def _with_fake_git(answers: dict):
     return fake, restore
 
 
+def test_real_key_is_discoverable() -> None:
+    """The owner's own cloud key is where the app looks for it. This left
+    tests.py on 2026-09-18, the day the product CI first ran: a hosted
+    runner holds no key, and neither does a stranger's copy that dictates
+    locally — the product suite must not demand one. The lookup itself
+    is tested with fixture keys in tests.py; this is the one place that
+    asks about the REAL key, and it runs in this checkout alone."""
+    import apikey
+
+    key, source = apikey.find_api_key()
+    assert key, f"no API key found (source={source})"
+    assert len(key) > 20, "key looks truncated"
+
+
 def test_the_changes_card_lists_what_is_ahead_newest_first_and_hides_when_nothing_is(
 ) -> None:
     """What replaced the weekly branches on 2026-09-12: every change is

@@ -43,7 +43,7 @@ jobs:
         shell: pwsh
     steps:
       # 0. checkout — the tag and VERSION must agree
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: VERSION matches the tag
         run: |
@@ -56,7 +56,7 @@ jobs:
           Write-Host "building DeskIT $version"
         id: version
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 

@@ -164,7 +164,10 @@ SKIPPED, BUSY, OFF = "skipped", "busy", "off"
 # machine, so a process that starts or exits between the two readings
 # moves the number. Baseline 2026-09-08 on this machine, one
 # `tests_quiet.py --no-screen` run of 711 tests: it is the only failure,
-# "per-process sum 235564 vs machine total 244414".
+# "per-process sum 235564 vs machine total 244414". Since 2026-09-18 the
+# test allows ten per cent of drift (that baseline was 3.6 %, the hosted
+# CI runner's first run 5.2 %), so it should now pass every night; the
+# entry stays until a month of nights says so.
 KNOWN_FLAKES = {
     "test_the_process_list_sees_the_processes_it_cannot_open":
         "the per-process memory sum is read a moment after the machine "
