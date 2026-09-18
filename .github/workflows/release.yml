@@ -284,8 +284,11 @@ jobs:
           $headers = @{ "x-apikey" = $env:VT_API_KEY }
           # files over 32 MB go through a one-time upload URL
           $upload = (Invoke-RestMethod -Uri "https://www.virustotal.com/api/v3/files/upload_url" -Headers $headers).data
-          $form = @{ file = Get-Item $exe }
-          $posted = Invoke-RestMethod -Uri $upload -Method Post -Headers $headers -Form $form
+          # curl.exe, not Invoke-RestMethod -Form: pwsh quotes the multipart
+          # boundary and VirusTotal answers "Malformed multipart body"
+          # (v1.1.0 build, run 35400575456 — the first run that had a key)
+          $posted = & curl.exe -sS -X POST $upload -H "x-apikey: $env:VT_API_KEY" -F "file=@$exe" | ConvertFrom-Json
+          if (-not $posted.data.id) { throw "VirusTotal upload failed: $($posted | ConvertTo-Json -Compress)" }
           $analysis = $posted.data.id
           $status = ""
           for ($i = 0; $i -lt 60 -and $status -ne "completed"; $i++) {
