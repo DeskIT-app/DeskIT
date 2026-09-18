@@ -27502,9 +27502,11 @@ def test_stop_in_the_bar_unloads_the_model_and_start_loads_it() -> None:
     running app it sends `unload` down the pipe and the app drops the
     model and the microphone stream and keeps everything else; Start
     with the model off sends `load`; while it is loading the button
-    waits. During a start-up — the pipe refuses everything but quit —
-    Stop still quits, as it always meant there. Quit DeskIT on
-    Settings > The app is the whole process, one press."""
+    waits. During a start-up it STILL sends `unload` — the app answers
+    "still starting up" — and never quits: the first version quit there,
+    he pressed Stop at "Starting" to try the unload, and the app died
+    under him (2026-09-18 22:19). Quit DeskIT on Settings > The app is
+    the whole process, one press."""
     import dashboard as dash
     import control as control_mod
 
@@ -27539,15 +27541,20 @@ def test_stop_in_the_bar_unloads_the_model_and_start_loads_it() -> None:
             n = len(sent)
             board.parts["run"]._command()
             assert len(sent) == n and "a moment" in board._toast_text
-            # starting up: Stop is the quit it always was there
+            # starting up: the same ask, never a quit
             board._busy_until = 0
             board._refresh(BAR_STARTING)
+            n = len(sent)
             board.parts["stop_bar"]._command()
-            assert quit_asked == [1], "Stop during a start-up did not quit"
+            for _ in range(20):
+                board.root.update()
+                time.sleep(0.02)
+            assert sent[n:] == [("unload", {})], sent[n:]
+            assert quit_asked == [], "Stop during a start-up quit the process"
             # the whole process, from Settings > The app
             board._busy_until = 0
             board._quit()
-            assert quit_asked == [1, 1]
+            assert quit_asked == [1]
         finally:
             control_mod.send, singleton.request_quit = saved_send, saved_quit
     source = inspect.getsource(dash.Dashboard._app_block)
@@ -27563,7 +27570,10 @@ def test_stop_in_the_bar_quits_on_one_press() -> None:
 
     The 25 seconds of model loading that the arming was paying for are
     real, so what guards them now is where the button sits — see
-    test_the_bar_keeps_stop_away_from_the_key_he_presses_all_day."""
+    test_the_bar_keeps_stop_away_from_the_key_he_presses_all_day. Since
+    2026-09-18 the bar's Stop unloads the model and the one-press quit is
+    Quit DeskIT (_quit) on Settings > The app; the rule — one press, no
+    arming, no "Stop again" — holds for both."""
     import dashboard as dash
 
     source = inspect.getsource(dash.Dashboard)
@@ -27579,13 +27589,12 @@ def test_stop_in_the_bar_quits_on_one_press() -> None:
         saved = singleton.request_quit
         singleton.request_quit = lambda *a, **k: asked.append(1) or True
         try:
-            # a start-up is where Stop still quits; one press, no arming
-            board._refresh(BAR_STARTING)
+            board._refresh(BAR_ON)
             stop = board.parts["stop_bar"]
-            stop._command()
-            assert asked == [1], "one press of Stop did not quit"
+            board._quit()
+            assert asked == [1], "one press of Quit DeskIT did not quit"
             assert str(stop.itemcget(stop._label, "text")) == "Stop", \
-                "the word on Stop changed instead of quitting"
+                "the word on Stop changed"
             assert "Stop again" not in board._toast_text, board._toast_text
         finally:
             singleton.request_quit = saved

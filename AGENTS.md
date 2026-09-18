@@ -107,9 +107,10 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   working — `hotkey.set_dictation_off` refuses only the hold keys with
   `MODEL_OFF_WORDS`. status()["model"] is on/off/loading/unloading; the
   chip says Model off and the bar reads one button, Start. The whole
-  process quits from Settings > The app > Quit DeskIT, the shelf, or
-  the bar's Stop during a start-up (the pipe refuses everything else
-  then). His words: "many things don't need the model — screenshot,
+  process quits from Settings > The app > Quit DeskIT or the shelf —
+  never from the bar's Stop, a start-up included: the first version
+  quit there, he pressed Stop at "Starting" to try the unload and the
+  app died under him (22:19). His words: "many things don't need the model — screenshot,
   screen recording and a few more — make those work without it."
 
   It went nine rail rows -> four places -> three -> six, every step on

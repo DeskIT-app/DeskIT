@@ -9358,23 +9358,26 @@ class Dashboard:
         turning the word into "Stop again"; he read that word, could not
         tell what it was for, and said so twice. See _paint_bar_buttons.
 
-        While the app is still starting up the pipe refuses everything
-        but quit, and a Stop pressed in that window means what it always
-        meant there — do not finish loading — so it quits.
+        NEVER THE PROCESS, a start-up included. The first version quit
+        during a start-up (the pipe refuses everything but quit then,
+        and that used to be what Stop meant there) — and the first thing
+        he did with it was press Stop at "Starting" to try the new
+        unload, which killed the app, so no key worked and he reported
+        Win+Shift+S dead (2026-09-18 22:19). Now the ask goes down the
+        pipe whatever the stage: the app answers "still starting up —
+        try again in a moment" until it is listening, and the note says
+        so. A start he did not mean is Quit DeskIT's job.
         """
         self._busy_until = time.monotonic() + 1.5
-        if self.running:
-            self._ask("unload", then=lambda r: self._announce(
-                r, "unloading the model — every key that needs no model keeps "
-                   "working"))
-            return
-        self._quit()
+        self._ask("unload", then=lambda r: self._announce(
+            r, "unloading the model — every key that needs no model keeps "
+               "working"))
 
     def _quit(self) -> None:
         """The whole process, in ONE press: Settings > The app > Quit
-        DeskIT, and the bar's Stop during a start-up. The named event, not
-        the pipe: this has to work even if the control channel never
-        came up."""
+        DeskIT. The named event, not the pipe: this has to work even if
+        the control channel never came up, and during a start-up — the
+        one place a quit is wanted before the models finish loading."""
         self._busy_until = time.monotonic() + 1.5
         if singleton.request_quit():
             self._note("quitting — the next start loads the model again, "
