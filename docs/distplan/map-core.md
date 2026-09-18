@@ -113,7 +113,7 @@ Kernel-object names (not files): `Local\DeskIT.instance`, `Local\DeskIT.quit`, `
 - `DeskIT.vbs:8`, `Stop DeskIT.vbs:6`, `Dashboard.vbs:7`, `launch.py:37` — `<folder>\.venv\Scripts\pythonw.exe`: a source checkout with an in-folder venv is the only supported layout. `.venv/pyvenv.cfg` pins CPython 3.11.9 at `C:\Users\shimr\AppData\Local\Programs\Python\Python311`.
 - `local_whisper.py:64-66` — CUDA DLLs are looked for under `site-packages/nvidia/*/bin` of the running interpreter (pip-wheel layout); a frozen build must reproduce that layout or call `add_dll_directory` itself.
 - `rolling.py:16`, `local_whisper.py:213-224`, `requirements.txt:11-13` — window size, LAG, timeouts and the "8.2 s vs 0.20 s" numbers were measured on an RTX 5060 Ti 16 GB; `Roller.finish(timeout=10)` (`rolling.py:229`) is a GPU-speed assumption.
-- `server.py:122-123` — Tailscale install paths; `app.log:445` shows `https://yoav.example.ts.net/#t=…` (tailnet name + token in a log).
+- `server.py:122-123` — Tailscale install paths; `app.log:445` shows `https://your-pc.your-tailnet.ts.net/#t=…` (tailnet name + token in a log).
 - `main.py:5846-5850`, README:4146-4149 — non-elevated process; elevated target windows never receive the paste (UIPI).
 - `cues.py:3-9` — `winsound.Beep` inaudible "on this machine"; the WAV path is used everywhere, fine.
 - `config.toml:5-60` and `hotkey.py` docstrings — default keys were chosen against the owner's Chrome/Google-apps/NVIDIA-overlay bindings; still sensible defaults, but `insert` as pause and `left` arrow as latch are opinionated.

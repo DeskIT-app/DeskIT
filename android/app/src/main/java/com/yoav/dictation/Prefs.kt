@@ -22,7 +22,13 @@ object Prefs {
     /** How many of the phone's own dictations the home screen keeps. */
     const val SAID_KEEP = 30
 
-    const val DEFAULT_URL = "https://yoav.example.ts.net"
+    /**
+     * Shown as the URL field's hint on a fresh install and used until a
+     * real address is typed: a placeholder that resolves nowhere, not
+     * the owner's own machine (it was, until the repository went public;
+     * D22's QR pairing replaces this field altogether).
+     */
+    const val DEFAULT_URL = "https://your-pc.your-tailnet.ts.net"
 
     /**
      * The eight small keys, in the order they were designed: positions

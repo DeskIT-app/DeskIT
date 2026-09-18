@@ -62,7 +62,7 @@ Two clients exist:
 | `res/values/strings.xml` | All UI strings, English. Several mention Tailscale by name: `unreachable` (83), `unreachable_line` (99), `setup_intro` (115). |
 | `res/values/styles.xml`, `colors.xml`, `Skin.kt`, `LampView.kt` | LAMPLIGHT theme; palette copied from `skin/palette.py`; Rubik font bundled (SIL OFL, `Skin.kt:29-33`). |
 | `res/font/rubik*.ttf`, `mipmap-*` | Bundled font and adaptive icon. |
-| `Prefs.kt` | SharedPreferences store (details below). **`DEFAULT_URL = "https://yoav.example.ts.net"` at line 25** — the owner's MagicDNS name baked in as the default server address, with a docstring (8-11) saying the defaults are "this user's own machine". `parsePasted()` splits a pasted `https://host/#t=token` line (130-136). |
+| `Prefs.kt` | SharedPreferences store (details below). **`DEFAULT_URL = "https://your-pc.your-tailnet.ts.net"` at line 25** — the owner's MagicDNS name baked in as the default server address, with a docstring (8-11) saying the defaults are "this user's own machine". `parsePasted()` splits a pasted `https://host/#t=token` line (130-136). |
 | `Transcriber.kt` | All HTTP via `HttpURLConnection`, no third-party libs (10-13). Routes: `/transcribe` (32-33, 120 s read timeout), `/punctuate` (48-53, 180 s), `/translate` (69-74, 180 s), `/health` (84-98, unauthenticated), `/review` GET (142-159), `/review/decide` (162-168), `/lookup` (176-181). Error text on IOException: "can't reach the PC — is Tailscale on?" (219). |
 | `Recorder.kt` | `AudioRecord` 16 kHz mono PCM in memory, `MAX_SECONDS = 300` (about 9.6 MB WAV), silence detection. |
 | `DictationIme.kt` (1295 lines) | The keyboard: hold/lock/discard gestures, action key from `EditorInfo`, refuses password / `NO_PERSONALIZED_LEARNING` fields (`isPrivate`, 638-655), health preflight throttled to once a minute (`checkHealth`, 725-745, `HEALTH_TTL_MS`, 1293), sends WAV (`send`, 880-890), places text or keeps it pending, `Prefs.addSaid` on success (904), schedules three review polls at 20/60/150 s (916-930), translate/punctuate on the field (1015-1075), `MAX_FIELD = 4000` (1288). No `Log.` calls anywhere in the Kotlin sources (grep returned nothing). |
@@ -118,7 +118,7 @@ Note: the phone app itself keeps no audio on disk — recordings live in memory 
 
 ## Machine-specific assumptions
 
-- `android/app/src/main/java/com/yoav/dictation/Prefs.kt:25` — `DEFAULT_URL = "https://yoav.example.ts.net"`: the owner's MagicDNS host is the default server for every install of the APK. Docstring 8-11 explicitly assumes "this user's own machine".
+- `android/app/src/main/java/com/yoav/dictation/Prefs.kt:25` — `DEFAULT_URL = "https://your-pc.your-tailnet.ts.net"`: the owner's MagicDNS host is the default server for every install of the APK. Docstring 8-11 explicitly assumes "this user's own machine".
 - `android/app/build.gradle.kts:7, 11` — `com.yoav.dictation` as namespace and applicationId (owner's name in the package id); also in `AndroidManifest`-referenced class names, `method.xml:3`, `Notify.kt:34` (`com.yoav.dictation.DECIDE`), `tools/emu.py:30`.
 - `android/local.properties:6` — `sdk.dir=C:/Users/shimr/dev-tools/android-sdk` (gitignored, but required to build).
 - `android/tools/emu.py:19-24` — absolute `C:\Users\shimr\dev-tools\{android-sdk,jdk}` and the absolute APK path; `tools/fake_pc.py:13, 22` — absolute repo path for `sys.path` and `config.toml`.
