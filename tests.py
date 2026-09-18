@@ -34858,6 +34858,20 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
                 break
             time.sleep(0.02)
         assert app._model_state == "off" and "no GPU today" in said[-1], said[-1]
+    # the dot stays grey while the model is off, whatever asks for "ready"
+    # (a pause ending, a worker finishing); blue again once it is on
+    real = App.__new__(App)
+    real.machine = app.machine
+    real._model_state = "off"
+    real.dot = type("D", (), {"set_state": lambda self, st: calls.append(f"dot:{st}")})()
+    real.shelf = None
+    real.hint = type("H", (), {"show": lambda self, card: None})()
+    real._hint_card = lambda state: None
+    App._set_state(real, "ready")
+    assert real._activity == "paused" and calls[-1] == "dot:paused"
+    real._model_state = "on"
+    App._set_state(real, "ready")
+    assert real._activity == "ready" and calls[-1] == "dot:ready"
 
 
 def test_the_dev_copy_says_so_in_the_window():

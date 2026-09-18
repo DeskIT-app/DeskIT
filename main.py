@@ -1444,6 +1444,11 @@ class App:
         if state in ("ready", "busy") \
                 and self.machine.state != hotkey_mod.IDLE:
             return
+        # With the model off the dot is grey however a pause ends or a
+        # worker finishes: "ready" would be the blue of a listening app,
+        # and nothing is listening until Start (unload_model).
+        if state == "ready" and getattr(self, "_model_state", "on") == "off":
+            state = "paused"
         self._activity = state
         self.dot.set_state(state)
         # ONE PANEL OWNS THE DOT'S CORNER. Both cards default to it
