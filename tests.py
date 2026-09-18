@@ -22634,9 +22634,17 @@ def test_the_screens_stay_off_after_input_lights_them() -> None:
         # the log: a hosted runner (2026-09-18) got here between the two
         # and found the record one line short. Wait for the line itself.
         log_path = Path(d) / awake_mod.LOG_NAME
-        _awake_until(lambda: "screens lit by input, put out again"
-                     in log_path.read_text("utf-8"))
-        record = log_path.read_text("utf-8")
+
+        def _record() -> str:
+            # Polled while the worker writes: a hosted runner (run
+            # 35400575383) hit WinError 32 on the read mid-write. Nothing
+            # yet, then, and the next poll reads the finished line.
+            try:
+                return log_path.read_text("utf-8")
+            except (PermissionError, FileNotFoundError):
+                return ""
+        _awake_until(lambda: "screens lit by input, put out again" in _record())
+        record = _record()
         assert "screens lit by input, put out again" in record, record
         eng.lighten(by="test")
         touched[0] = time.monotonic()     # the key that brought them back

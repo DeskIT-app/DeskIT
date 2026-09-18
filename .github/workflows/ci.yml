@@ -18,6 +18,7 @@ name: tests
 
 on:
   push:
+    branches: ["**"]      # not tags: a v* tag is a commit main already tested
   pull_request:
   workflow_dispatch:
 

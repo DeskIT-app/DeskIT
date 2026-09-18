@@ -333,8 +333,14 @@ jobs:
           $section = ""
           if ($log -match "(?ms)^## $([regex]::Escape($version))\b[^\n]*\n(.*?)(?=^## |\z)") { $section = $Matches[1].Trim() }
           if (-not $section) { throw "CHANGELOG.md has no '## $version' section (11.11 step 2)" }
+          # The first release has no previous one: gh api answers 404 on
+          # stdout and exits 1, and the runner turns the step's last
+          # native exit code into the step's verdict (v1.1.0 build, run
+          # 35401156499 — the notes were fine, the step still failed).
           $previous = ""
-          try { $previous = (gh api "repos/$repo/releases/latest" --jq .tag_name 2>$null) } catch {}
+          $found = & gh api "repos/$repo/releases/latest" 2>$null | ConvertFrom-Json -ErrorAction SilentlyContinue
+          if ($LASTEXITCODE -eq 0 -and $found.tag_name) { $previous = $found.tag_name }
+          $global:LASTEXITCODE = 0
           $sha = (Get-Content "dist/DeskIT-Setup-$version.exe.sha256" -Raw).Split(" ")[0]
           $vt = "${{ steps.virustotal.outputs.permalink }}"
           $vtLine = if ($vt) { "VirusTotal: $vt (${{ steps.virustotal.outputs.verdict }})" } else { "VirusTotal: not scanned" }
