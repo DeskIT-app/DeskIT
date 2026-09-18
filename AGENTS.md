@@ -80,13 +80,16 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   SAID_PAGE rows at a time behind a Show more.
 - **Keys** — the bindings lit on a drawn keyboard (keycaps.py); click a
   cap, or press a real key, to see what it does and rebind it.
-- **Settings** — General, Dictation, Text, Screen, Cards, Phone, The app
-  (settings.py: TABS names lines by hand, TAB_SECTIONS gives each tab the
-  rest of its sections, WORDS says every line plainly; every line drawn
-  exactly once, a test holds it). The app carries the three blocks that
-  used to be rail rows: Awake, Stop, Send a test,
-  the cue sounds, the files. No sentences, no "Everything" — both
-  removed on the owner's word the day after they were built.
+- **Settings** — General, Screen, Phone, Privacy, The app (settings.py:
+  TABS names the forty-odd lines the screen draws, with their plain
+  words; every other line of defaults.toml is a measurement the
+  developer edits in the file and the screen never shows — the owner,
+  2026-09-18: "I am the user; you are the developer". A path is named
+  by exactly one tab, a test holds it). The app carries This PC (the
+  model, the GPU pack) and the blocks that used to be rail rows: Awake,
+  Stop, Send a test, the cue sounds, the files. No sentences, no
+  "Everything", no fold, no Dictation/Text/Cards/Speed tabs — each
+  removed on the owner's word.
 - **The bar's buttons follow the state and nothing else**
   (`_paint_bar_buttons`). Model off: ONE button, Start. Model on or
   paused: Pause (Resume) and Stop, with Screens off between them. His
@@ -169,13 +172,14 @@ exactly what classic did.
 6. **`config.toml` comments are load-bearing.** Most lines carry
    measurements. Edit it programmatically ONLY through
    `config.set_values()` (line-wise editor that preserves comments); a
-   TOML round-trip would delete hours of work. Since 2026-09-01 they are
-   also USER-FACING: the dashboard's Settings place is generated from
-   the file (`settings.py`), each key's comment is the help under its
-   row, and a `gemini | local | fake` at the front of a comment is read
-   as that key's menu. Write a new key's comment as a sentence someone
-   will read on screen, keep the menu form for enumerations, and never
-   add a settings row by hand — the file is the list.
+   TOML round-trip would delete hours of work. `settings.py` reads the
+   file for the Settings place: a `gemini | local` at the front of a
+   comment is that key's menu, and the comment is what the search box
+   finds a line by. Since 2026-09-18 the place draws ONLY the lines
+   `settings.TABS` names, in the plain words written there; a new key
+   is the developer's unless a person has a reason to change it, and
+   then it gets a `Friendly` row on the tab it belongs to — never a
+   section of the file drawn whole.
 7. **Do not end a turn mid-task to report progress — every turn end
    rings the owner's desk.** Claude Code fires its Stop hook at the end
    of EVERY assistant turn, and that hook is the notify door
@@ -1213,7 +1217,7 @@ ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedg
 | `widgets.py` | the pieces the window needs that `ui.py` does not have: the tab strip, a hairline, the state chip, an icon-in-a-label, a row whose text stops where its buttons start, `rtl_run()` for a pill inside a Hebrew sentence, and a toned Button. Every colour is read as `ui.NAME` INSIDE the call, so a repainted palette lands on the next screen drawn |
 | `keycaps.py` | the Keys place's board (keyboard.py until PR 10 — the PyPI package of that name shadowed it): 87 caps, one Pillow image and one hit table, everything measured from a single cap unit; the bindings are read from `config.HOTKEY_FIELDS` + `hotkey.parse_binding` and lit on it |
 | `prose.py` | the settings said as sentences with the controls inside the words — a hand-flowed Canvas at a fixed 34 px line. Every `Bit` names a real path in `config.toml` and a test walks them |
-| `settings.py` | config.toml as data: every key, its comment as help, `a \| b \| c` as choices — what the Settings place draws |
+| `settings.py` | defaults.toml as data: every key, its comment as help, `a \| b \| c` as choices — and `TABS`, the short list of lines the Settings place draws, with their plain words (everything else is the developer's, 2026-09-18) |
 | `fonts.py` | hands this process its own copy of Rubik (`AddFontResourceExW`, `FR_PRIVATE`) at the import of `ui.py` and `visual_qa.py`, before anything asks for a face |
 | `shelf.py` + `shelf_card.py` + `skin\shelf.py` | the panel beside the dot: the window/thread/queue class (modelled on `overlay.HintCard`), the pure painter (words, geometry, hit test, `INK`) and the glass. Every answer it offers calls the same `App` method the matching card does; nothing goes through `control.py` |
 | `skin/` | the whole look — delete the folder to revert it (`SKIN.md`) |
@@ -1235,7 +1239,7 @@ ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedg
 | `release.yml` steps 8/13/14, `winget.yml`, `packaging/winget/`, `CHANGELOG.md` | the build's last steps (10.3, 10.6, 11.11): the manifest and the installer attested (`actions/attest-build-provenance`, public repositories only); VirusTotal through the large-file upload URL, polled, the run failing above `VT_MAX_DETECTIONS` (a repository variable, default 2) and saying so without `VT_API_KEY`; the DRAFT release on a real tag with the notes from `CHANGELOG.md`'s `## x.y.z` section + the fixed block (SHA-256, VirusTotal, attestation, the previous version), pre-release for `-beta`, the installer + .sha256 + latest.json + MANIFEST.sha256 + THIRD-PARTY-NOTICES.txt attached — the owner reads the scan and publishes; `winget.yml` on `release: published` runs `wingetcreate update YoavShimron.DeskIT --submit` with `WINGET_TOKEN` (never a pre-release); `packaging/winget/` holds the four manifests for the one hand submission (`wingetcreate new`) with `/CHANNEL=winget` in the silent switches and Inno's ProductCode |
 | `transcribers/missing.py` | the stand-in `get_transcriber` returns on an installed copy whose model is not on disk: the app starts, every key that needs no model works, a dictation meets `ModelMissing` (main keeps the recording in `pending\`, gives up at once, says why) — and the first dictation after `.complete` appears builds the real backend through the `build` it was handed and forwards everything to it (no restart) |
 | `transcribers/off.py` | the stand-in `main.App.unload_model` puts in the transcriber's place while the model is unloaded (Stop in the desk, 2026-09-18): `name` = "off" so status(), the phone's /health and the log lines keep working; `transcribe` raises a typed `TranscriptionError` with `MODEL_OFF_WORDS` for the one recording that could reach it. `load_model` replaces it with the real backend |
-| Settings > Speed, the Home rows | `settings.TABS` "Speed" (the four `[local]` knobs the probe writes + `setup.offer_gpu_pack`); `dashboard._speed_block` = `hardware.summary()`, the model's standing and the GPU pack's with the buttons each state earns (download / continue / delete and re-download / delete; turn on / update / retry / reinstall / remove — each step in a process of its own through `launch.run_step`); `dashboard._waiting_hardware` = the Home pile rows for a model not there, a pack that will not run (`failed:`), a tier that changed (`hardware.tier_changed`, cleared by OK); `_voice_block` on Screen when the probe found no he-IL voice (`hardware.no_voice`, `apply_voice` puts `visual_qa.speak = "off"` in the machine layer); provider menus drop "On this computer" when `hardware.ollama_absent()` unless it is the held value |
+| This PC on Settings > The app, the Home rows | the four `[local]` knobs the probe writes and `setup.offer_gpu_pack` are the file's, not the screen's (the Speed tab went 2026-09-18); `dashboard._speed_block` = `hardware.summary()`, the model's standing and the GPU pack's with the buttons each state earns (download / continue / delete and re-download / delete; turn on / update / retry / reinstall / remove — each step in a process of its own through `launch.run_step`); `dashboard._waiting_hardware` = the Home pile rows for a model not there, a pack that will not run (`failed:`), a tier that changed (`hardware.tier_changed`, cleared by OK); `_voice_block` on Screen when the probe found no he-IL voice (`hardware.no_voice`, `apply_voice` puts `visual_qa.speak = "off"` in the machine layer); provider menus drop "On this computer" when `hardware.ollama_absent()` unless it is the held value |
 | `updates.py` | the weekly look at GitHub Releases (`latest.json` behind the latest release, through `net.py`, no identifier), the verified download into `tmp\`, the installer run again with 11.6's switches after `settings.toml.bak`; `[updates] channel/skipped` are settings, `last_check/latest_seen/installed_version` state; the checkout looks but never installs; a newer release is also a row on Home's pile (screen 11) with the same three buttons, or the 'install the intermediate version first' sentence when the release's `min_config_version` is above this copy's files |
 | `manifest.py` | `MANIFEST.sha256`: the build writes one line per file under `python\` and `app\` (`write`), `--verify` reads it back (`verify`); stdlib only |
 | `packaging\` | the build's inputs that are not code: `python311._pth`, `python-embed.sha256`, `build_local.ps1` (steps 1-7 on this PC into `dist\`); never in the archive |

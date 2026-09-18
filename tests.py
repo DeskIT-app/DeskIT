@@ -10596,8 +10596,7 @@ def test_no_button_draws_its_label_past_its_own_face() -> None:
             board._show(name)
             look(board, name, bad)
         board._show("Settings")
-        for tab in settings_mod.tab_names(board.parts["sections"],
-                                          dash._keys_screen_paths()):
+        for tab in settings_mod.tab_names():
             board._settings_go(tab)
             board._finish_settings()
             look(board, tab, bad)
@@ -19431,7 +19430,7 @@ def test_the_help_on_a_setting_is_the_comment_in_the_file() -> None:
             ("hint.corner", ("dot", "top-right", "top-left", "bottom-right",
                              "bottom-left")),
             ("dot.corner", ("bottom-right", "top-right")),
-            ("backend", ("gemini", "local", "fake")),
+            ("backend", ("gemini", "local")),
             ("polish.when", ("never", "known", "always")),
             ("local.device", ("auto", "cuda", "cpu"))):
         setting = find(path)
@@ -19453,12 +19452,11 @@ def test_the_help_on_a_setting_is_the_comment_in_the_file() -> None:
 
 
 def test_the_plain_words_name_lines_the_file_has() -> None:
-    """settings.TABS and TAB_SECTIONS are the two hand-written things on
-    the screen, so they are the two things that can go stale: every path
-    a tab names must be in the file, every menu name must be a value the
-    file allows, no path may be named twice ACROSS the tabs (one line,
-    one place — the owner's rule of 2026-09-07), General comes first and
-    The app last, and every section a tab owns must exist, once."""
+    """settings.TABS is the one hand-written thing on the screen, so it
+    is the one thing that can go stale: every path a tab names must be
+    in the file, every menu name must be a value the file allows, no
+    path may be named twice ACROSS the tabs (one line, one place — the
+    owner's rule of 2026-09-07), General comes first and The app last."""
     import settings as settings_mod
 
     sections = settings_mod.read(
@@ -19466,9 +19464,10 @@ def test_the_plain_words_name_lines_the_file_has() -> None:
     paths = _config_paths()
     assert settings_mod.TABS[0].name == settings_mod.GENERAL
     assert settings_mod.TABS[-1].name == settings_mod.APP
-    assert settings_mod.tab_named(settings_mod.ADVANCED) is None
+    assert settings_mod.tab_names() == [t.name for t in settings_mod.TABS]
     seen: list = []
     for tab in settings_mod.TABS:
+        assert settings_mod.groups_for(tab.name) == tab.groups
         for group in tab.groups:
             for row in group.rows:
                 assert row.path in paths, (tab.name, row.path)
@@ -19482,58 +19481,115 @@ def test_the_plain_words_name_lines_the_file_has() -> None:
                         assert ({v for v, _ in row.names}
                                 == set(setting.choices)), \
                             (row.path, row.names, setting.choices)
-    names = {sec.name for sec in sections}
-    owned: list = []
-    for tab_name, its_sections in settings_mod.TAB_SECTIONS.items():
-        assert settings_mod.tab_named(tab_name) is not None, tab_name
-        for name in its_sections:
-            assert name in names, (tab_name, name)
-            assert name not in owned, (tab_name, name)
-            owned.append(name)
+    assert seen == settings_mod.friendly_paths()
+    assert settings_mod.groups_for("Everything") == ()
 
 
-def test_every_line_and_every_section_has_plain_words() -> None:
-    """settings.WORDS is what the Everything view SAYS, and the owner
-    reads it: "it is impossible to understand what each setting is". So
-    the table has to name every key and every section the file has —
-    words_for falls back to the key with its underscores opened out, and
-    this test is what keeps that fallback unreachable. A line added to
-    config.toml without words is a red test, not a row nobody can read.
-    """
+def test_the_screen_draws_the_short_list_and_the_file_keeps_the_rest() -> None:
+    """The owner, 2026-09-18, on a Settings place of two hundred lines:
+    "a huge number of settings a simple user never needs; 90% were never
+    used. Things like 'how many corrections before a word fixes itself'
+    are things I change in development, not decisions a user should
+    make." And, asked whether his own copy should keep them: "I am the
+    user; you are the developer."
+
+    So the tabs name the forty-odd lines a person changes and nothing
+    else; every other line of defaults.toml is a measurement the
+    developer edits in the file. This holds the split from both sides:
+    the list stays short, the measurements stay off it, and what IS on
+    it is the kind of thing a person answers — a switch, a menu, a
+    folder, a language, a number of days."""
     import settings as settings_mod
 
     sections = settings_mod.read(
         Path(__file__).resolve().parent / "defaults.toml")
-    assert set(settings_mod.WORDS) == _config_paths(), \
-        sorted(_config_paths() ^ set(settings_mod.WORDS))
-    assert set(settings_mod.SECTION_WORDS) == {s.name for s in sections}
-    for section in sections:
-        words = settings_mod.section_words(section.name, section.help)
-        assert words.label and words.help, section.title
-        for setting in section.settings:
-            row = settings_mod.words_for(setting)
-            assert row.label and row.help, setting.path
-            assert row.label != setting.key, setting.path
-            if row.names:
-                assert setting.kind == "str", setting.path
-                assert str(setting.value) in {v for v, _ in row.names}, \
-                    (setting.path, setting.value, row.names)
+    drawn = set(settings_mod.friendly_paths())
+    assert len(drawn) < 60, len(drawn)
+    assert len(drawn) * 3 < len(_config_paths()), \
+        "the screen draws more than a third of the file again"
+    # the person's decisions, as examples of the kind that is drawn
+    for path in ("backend", "audio.device", "auto_language",
+                 "punctuate.auto", "vocab.enabled", "capture.folder",
+                 "capture.enabled", "camera.enabled", "server.enabled",
+                 "privacy.offline", "setup.autostart", "awake.hold",
+                 "history.keep_days", "translate.target"):
+        assert path in drawn, path
+    # the developer's measurements, as examples of the kind that is not:
+    # thresholds, lengths of time, model names, counts, the probe's
+    # numbers, a release channel, the app's own bookkeeping
+    for path in ("min_seconds", "restore_delay_ms", "paste_chord",
+                 "hint.after_ms", "hint.corner", "hint.scale",
+                 "local.beam_size", "local.device", "local.compute_type",
+                 "local.cpu_threads", "setup.offer_gpu_pack",
+                 "vocab.max_terms", "vocab.replace_after_hits", "polish.groq_model",
+                 "polish.max_wait_s", "polish.prefer", "punctuate.prefer",
+                 "study.idle_minutes", "updates.channel", "updates.skipped",
+                 "setup.done", "setup.tour", "splash", "gemini.timeout_s",
+                 "notify.stack_max", "notify.corner", "review.corner",
+                 "review.scale", "camera.timer", "capture.fps",
+                 "awake.pin_timeouts", "awake.vitals_minutes",
+                 "dot.x", "dot.y", "lookup.dwell_ms"):
+        assert path in _config_paths(), path        # the file keeps it
+        assert path not in drawn, path              # the screen does not
+    # and the owner's own machinery, which used to hide behind a
+    # developer flag, is simply not on the list
+    for setting in settings_mod.flatten(sections):
+        if setting.path.startswith(("tests.", "study.read_")):
+            assert setting.path not in drawn, setting.path
+    # what is drawn is answerable: a switch, a menu, or a short field
+    for setting in settings_mod.flatten(sections):
+        if setting.path not in drawn:
+            continue
+        row = settings_mod.words_for(setting)
+        answerable = (setting.kind == "bool" or bool(setting.choices)
+                      or bool(row.names) or setting.consent
+                      or setting.path in ("audio.device", "camera.device",
+                                          "capture.folder",
+                                          "capture.clip_folder",
+                                          "translate.target",
+                                          "history.keep_days"))
+        assert answerable, (setting.path, setting.kind)
+
+
+def test_every_drawn_line_has_plain_words() -> None:
+    """settings.WORDS is what the screen SAYS, and the owner reads it:
+    "it is impossible to understand what each setting is". So every
+    line a tab names has a plain title and one plain sentence — the
+    fallback in words_for (the key with its underscores opened out) is
+    for the search box and the write confirmation, never for a row."""
+    import settings as settings_mod
+
+    sections = settings_mod.read(
+        Path(__file__).resolve().parent / "defaults.toml")
+    assert set(settings_mod.WORDS) == set(settings_mod.friendly_paths())
+    for path in settings_mod.friendly_paths():
+        setting = settings_mod.find(sections, path)
+        row = settings_mod.words_for(setting)
+        assert row is settings_mod.WORDS[path]
+        assert row.label and row.help, path
+        assert row.label != setting.key, path
+        if row.names:
+            assert setting.kind == "str", path
+            assert str(setting.value) in {v for v, _ in row.names}, \
+                (path, setting.value, row.names)
+    # a line the tabs do not name still gets words, legible if not plain
+    spare = settings_mod.find(sections, "restore_delay_ms")
+    fallback = settings_mod.words_for(spare)
+    assert fallback.label == "Restore delay ms" and fallback.help
+    assert settings_mod.words_for("hint.after_ms").label == "After ms"
 
 
 def test_the_plain_words_say_nothing_only_a_programmer_would_say() -> None:
     """The complaint, verbatim: "there are underscores that mean nothing
     and lots of unclear words". So: no underscore in anything the screen
     says, and none of the short forms this file's own comments are
-    written in. The comments keep them — they are behind the switch."""
+    written in. The comments keep them — they are in the file."""
     import re
 
     import settings as settings_mod
 
     jargon = ("WER", "VRAM", "CT2", "RTL", "DPI", "COLORREF", "CRLF", "HWND")
-    said = [(path, row) for path, row in settings_mod.WORDS.items()]
-    said += [(f"[{name}]", row)
-             for name, row in settings_mod.SECTION_WORDS.items()]
-    for where, row in said:
+    for where, row in settings_mod.WORDS.items():
         text = " ".join([row.label, row.help]
                         + [name for _value, name in row.names])
         assert "_" not in text, (where, text)
@@ -19543,21 +19599,14 @@ def test_the_plain_words_say_nothing_only_a_programmer_would_say() -> None:
         assert not row.label.endswith("."), where
 
 
-def test_the_two_screens_cover_the_whole_file_between_them() -> None:
-    """Keys on the Keys screen, every other line REACHABLE on exactly ONE
-    settings tab, nothing in neither and nothing twice — and each tab
-    reaches exactly the lines groups_for says it does. A new line in
-    config.toml is on the tab that owns its section the moment the file
-    is saved; a new section lands on Advanced; a new hotkey field has to
-    be registered in HOTKEY_FIELDS, which the Keys screen tests already
-    hold it to.
-
-    REACHABLE, not drawn: since 2026-09-07 a card shows its common lines
-    and keeps the rest behind one line that opens them in place, so the
-    screen is walked with every fold opened. That is the whole of what
-    the fold is allowed to change — nothing may become unreachable, and
-    nothing may appear twice because a card was drawn again when it
-    opened."""
+def test_the_two_screens_draw_the_short_list_between_them() -> None:
+    """Keys on the Keys screen, every line a tab names drawn on exactly
+    ONE settings tab, nothing twice, nothing that is not on the list —
+    and each tab draws exactly the lines groups_for says it does, on
+    its first screenful, with no fold and nothing behind a line. A new
+    hotkey field has to be registered in HOTKEY_FIELDS, which the Keys
+    screen tests already hold it to; a new line for the screen has to
+    be named by a tab, or it is the developer's."""
     import settings as settings_mod
 
     import dashboard as dash
@@ -19566,127 +19615,38 @@ def test_the_two_screens_cover_the_whole_file_between_them() -> None:
         if board is None:
             return
         board._show("Settings")
-        sections = board.parts["sections"]
         keys = dash._keys_screen_paths()
         drawn: dict = {}
-        on_top = 0                     # rows before any fold is opened
-        for name in settings_mod.tab_names(sections, keys):
+        for name in settings_mod.tab_names():
             board._settings_go(name)
             board._finish_settings()
-            on_top += len(board.parts["rows"])
-            board._settings_unfold_all()
             rows = set(board.parts["rows"])
-            said = {row.path for group in
-                    settings_mod.groups_for(name, sections, keys)
+            said = {row.path for group in settings_mod.groups_for(name)
                     for row in group.rows}
             assert rows == said, (name, rows ^ said)
             assert all(len(v) == 1 for v in board.parts["rows"].values())
+            assert "more in this section" not in _settings_words(board)
             for path in rows:
                 assert path not in drawn, (path, drawn.get(path), name)
                 drawn[path] = name
         assert not set(drawn) & keys, set(drawn) & keys
-        assert set(drawn) | keys == _config_paths(), \
-            sorted(_config_paths() - set(drawn) - keys)
+        assert set(drawn) == set(settings_mod.friendly_paths()), \
+            sorted(set(drawn) ^ set(settings_mod.friendly_paths()))
+        assert set(drawn) | keys < _config_paths()
         assert drawn["backend"] == settings_mod.GENERAL
+        assert drawn["dot.corner"] == settings_mod.GENERAL
+        assert drawn["capture.folder"] == "Screen"
+        assert drawn["server.enabled"] == "Phone"
+        assert drawn["privacy.offline"] == "Privacy"
         assert drawn["awake.hold"] == settings_mod.APP
-        # And the fold is doing something: the tabs together show about
-        # half of what they hold. 184 lines became 94 when this was
-        # written (2026-09-07).
-        assert on_top < len(drawn) * 0.7, (on_top, len(drawn))
-
-
-def test_the_settings_show_the_choices_and_fold_the_measurements() -> None:
-    """The rule settings.common writes down, held against the file and
-    against the screen.
-
-    A line a tab names by hand is common — TABS is the owner's own
-    shortlist and General is nothing else. A CHOICE is common: a switch,
-    or a menu. Everything else is a MEASUREMENT — a number, a length of
-    time, a threshold, a model name, a folder, a list — and waits behind
-    one quiet line saying how many there are.
-
-    The owner asked for this on 2026-09-07 ("there are things there that
-    I just don't need"), against his own rule of 2026-09-01 ("show all of
-    them"), so the two things this holds are that the first screenful is
-    short AND that nothing was dropped to make it so."""
-    import settings as settings_mod
-
-    import dashboard as dash
-
-    sections = settings_mod.read(
-        Path(__file__).resolve().parent / "defaults.toml")
-    named = settings_mod.named_by_hand()
-    for setting in settings_mod.flatten(sections):
-        want = (setting.path in named or setting.kind == "bool"
-                or bool(setting.choices)
-                or bool((settings_mod.WORDS.get(setting.path)
-                         or settings_mod.Friendly(setting.path, "")).names))
-        assert settings_mod.common(setting) is want, setting.path
-    # The shape of the rule, said again as examples, so a change to it
-    # has to be a deliberate one.
-    by_path = {s.path: s for s in settings_mod.flatten(sections)}
-    for path in ("backend", "punctuate.auto", "min_seconds"):
-        assert settings_mod.common(by_path[path]), path       # named
-    for path in ("notify.cue", "shelf.enabled"):
-        assert settings_mod.common(by_path[path]), path       # a switch
-    for path in ("notify.corner", "lookup.prefer"):
-        assert settings_mod.common(by_path[path]), path       # a menu
-    for path in ("local.english_threshold", "notify.stack_max", "vocab.max_terms",
-                 "polish.groq_model", "gemini.timeout_s"):
-        assert not settings_mod.common(by_path[path]), path   # a number
-    # local.beam_size is a number the Speed tab names by hand (the probe
-    # writes it, the person may overrule it), so since 2026-09-17 it is
-    # on the face of that card: the first rule wins over the third.
-    assert settings_mod.common(by_path["local.beam_size"])
-    # A fold that would hide ONE line is not worth a line of its own: it
-    # costs the room it saves. So a card like that shows everything.
-    def pair(*paths):
-        return [(settings_mod.words_for(by_path[p]), by_path[p])
-                for p in paths]
-
-    shown, rest = settings_mod.fold(pair("notify.enabled",
-                                         "notify.stack_max"))
-    assert not rest and len(shown) == 2, (shown, rest)
-    shown, rest = settings_mod.fold(pair("notify.enabled",
-                                         "notify.stack_max",
-                                         "notify.remind_every_s"))
-    assert len(shown) == 1 and len(rest) == 2, (shown, rest)
-
-    with _window() as board:
-        if board is None:
-            return
-        board._show("Settings")
-        sections = board.parts["sections"]
-        keys = dash._keys_screen_paths()
-        for name in settings_mod.tab_names(sections, keys):
-            board._settings_go(name)
-            board._finish_settings()
-            said = _settings_words(board)
-            first = set(board.parts["rows"])
-            want, hidden = set(), 0
-            for group in settings_mod.groups_for(name, sections, keys):
-                pairs = [(row, s) for row in group.rows
-                         if (s := settings_mod.find(sections, row.path))
-                         is not None]
-                shown, rest = settings_mod.fold(pairs)
-                want |= {s.path for _row, s in shown}
-                if rest:
-                    hidden += len(rest)
-                    assert f"{len(rest)} more in this section" in said, \
-                        (name, group.title, len(rest))
-            assert first == want, (name, first ^ want)
-            assert board._settings_unfold_all() >= bool(hidden)
-            after = set(board.parts["rows"])
-            assert len(after) == len(first) + hidden, (name, len(after))
-            assert first <= after, (name, first - after)
-            assert all(len(v) == 1 for v in board.parts["rows"].values())
-            assert "Fewer" in _settings_words(board) or not hidden
-        # A search answers with everything it found: no fold line at all.
-        board._settings_open_search()
-        board._settings_search("model")
+        # the blocks that used to be tabs of their own still stand: This
+        # PC on The app, the phone's link on Phone
+        board._settings_go(settings_mod.APP)
         board._finish_settings()
-        assert "more in this section" not in _settings_words(board)
-        assert board._settings_unfold_all() == 0
+        assert board.parts.get("speed_lines"), "This PC is not on The app"
+        assert "Dictation" not in settings_mod.tab_names()
+        assert "Speed" not in settings_mod.tab_names()
+        assert "Cards" not in settings_mod.tab_names()
 
 
 def test_no_field_on_the_settings_place_is_a_square_one() -> None:
@@ -19720,13 +19680,10 @@ def test_no_field_on_the_settings_place_is_a_square_one() -> None:
         if board is None:
             return
         board._show("Settings")
-        sections = board.parts["sections"]
-        keys = dash._keys_screen_paths()
         fields = 0
-        for name in settings_mod.tab_names(sections, keys):
+        for name in settings_mod.tab_names():
             board._settings_go(name)
             board._finish_settings()
-            board._settings_unfold_all()
             for path, controls in board.parts["rows"].items():
                 for kind, widget in controls:
                     if kind != "entry":
@@ -19742,7 +19699,7 @@ def test_no_field_on_the_settings_place_is_a_square_one() -> None:
                 assert str(entry.cget("disabledbackground")) == ui.EDGE
                 assert str(entry.cget("readonlybackground")) == ui.EDGE
                 assert str(entry.cget("bg")) == ui.EDGE
-        assert fields > 30, fields
+        assert fields >= 4, fields         # the folders, a language, days
         # And the search field, which is the first box the eye lands on.
         board._settings_open_search()
         box = board.parts["settings_search"]
@@ -19784,27 +19741,29 @@ def test_every_tab_says_it_in_plain_words() -> None:
         if board is None:
             return
         board._show("Settings")
-        sections = board.parts["sections"]
-        keys = dash._keys_screen_paths()
-        for name in settings_mod.tab_names(sections, keys):
+        for name in settings_mod.tab_names():
             board._settings_go(name)
             board._finish_settings()
             plain = _settings_words(board)
             for jargon in ("latch_max_seconds", "auto_language",
                            "restore_delay_ms", "[polish]", "WER", "_hotkey",
-                           "Show the file's own words"):
+                           "Show the file's own words", "local.cleanup"):
                 assert jargon not in plain, (name, jargon)
-        board._settings_go("Dictation")
+        board._settings_go(settings_mod.GENERAL)
         board._finish_settings()
         plain = _settings_words(board)
-        assert "Longest recording once it is locked on" in plain
-        assert "FIXING MISHEARD WORDS" in plain, "the section's plain title"
-        assert "THE SPEECH MODEL ON THIS COMPUTER" in plain
+        assert "Take out the ums and the false starts" in plain
+        assert "ON THE SCREEN" in plain, "the group's plain title"
+        assert "MESSAGES FROM OTHER PROGRAMS" in plain
+        # the search reads the file's own words as well as the plain
+        # ones: "restarted phrases" is the comment on local.cleanup
         board._settings_open_search()
-        board._settings_search("latch_max")
+        board._settings_search("restarted phrases")
         board._finish_settings()
-        assert "latch_max_seconds" in board.parts["rows"], \
+        assert set(board.parts["rows"]) == {"local.cleanup"}, \
             "the search no longer reads the file's own words"
+        assert "GENERAL" in _settings_words(board), \
+            "a search says which tab a line lives on"
 
 
 def test_the_general_page_holds_the_two_corners_and_the_button_together(
@@ -19843,11 +19802,10 @@ def test_the_general_page_holds_the_two_corners_and_the_button_together(
         if board is None:
             return
         board._show("Settings")
-        board._settings_go("Cards")
+        board._settings_go("Screen")
         board._finish_settings()
-        board._settings_unfold_all()
         left = [p for p in board.parts["rows"] if p.startswith("dot.")]
-        assert not left, ("the dot is still on Cards — it is meant to be "
+        assert not left, ("the dot is on Screen — it is meant to be "
                           "in ONE place", left)
         # `parts` outlives a tab (the values cache is the point of it), so
         # the question is whether the WIDGET is on this page, not whether
@@ -19855,7 +19813,7 @@ def test_the_general_page_holds_the_two_corners_and_the_button_together(
         # one, and switching tabs destroyed it.
         gone = board.parts.get("dot_move")
         assert gone is None or not gone.winfo_exists(), \
-            "the Move the dot button was drawn on Cards"
+            "the Move the dot button was drawn on Screen"
 
         board._settings_go(settings_mod.GENERAL)
         board._finish_settings()
@@ -19880,12 +19838,10 @@ def test_the_general_page_holds_the_two_corners_and_the_button_together(
             "the corner and the button are not side by side"
         assert menu.winfo_x() < button.winfo_x(), \
             "he said the corners first, then the button"
-        # and the lines the button writes are on this page too, folded
-        # behind one quiet line. Opening a fold redraws only the card the
-        # fold was on, so the block above it — and `button` and `menu` —
-        # are the same widgets afterwards.
-        board._settings_unfold_all()
-        assert {"dot.x", "dot.y"} <= set(board.parts["rows"]), \
+        # and the lines the button writes are nobody's to type: the
+        # button is the only way to set them (2026-09-18, with every
+        # other measurement in the file)
+        assert not {"dot.x", "dot.y"} & set(board.parts["rows"]), \
             sorted(board.parts["rows"])
         assert board.parts["dot_move"] is button and button.winfo_exists()
         # A ui.Card's body is `h - 2 * pad`, and a widget placed past
@@ -19982,13 +19938,9 @@ def test_the_settings_screen_can_reach_its_last_row() -> None:
     try:
         board.closing = True
         board._show("Settings")
-        sections = board.parts["sections"]
-        keys = dash._keys_screen_paths()
-        last = settings_mod.flatten(sections)[-1]
-        owner = next(name for name in settings_mod.tab_names(sections, keys)
-                     if any(row.path == last.path for group in
-                            settings_mod.groups_for(name, sections, keys)
-                            for row in group.rows))
+        owner = settings_mod.tab_names()[-1]
+        last = settings_mod.find(board.parts["sections"],
+                                 settings_mod.groups_for(owner)[-1].rows[-1].path)
         board._settings_go(owner)
         board._finish_settings()
         board.root.update()
@@ -20399,7 +20351,7 @@ def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
                 board._toast_text
             # Drawn again after a visit to another tab, the line shows
             # the new value: the values cache outlives the widgets.
-            board._settings_go("Text")
+            board._settings_go("Screen")
             board._finish_settings()
             assert "punctuate.auto" not in board.parts["rows"], \
                 "one line, one place"
@@ -20430,7 +20382,6 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
         if board is None:
             return
         board._show("Settings")
-        board._settings_go("Text")
         board._finish_settings()
         board.running = True
         asked: list = []
@@ -20448,47 +20399,47 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
         config_mod.set_values = never
         try:
             sections = board.parts["sections"]
-            prefer = settings_mod.find(sections, "punctuate.prefer")
-            [(kind, menu)] = board.parts["rows"]["punctuate.prefer"]
-            assert kind == "dropdown" and menu.get() == "groq", \
+            when = settings_mod.find(sections, "polish.when")
+            [(kind, menu)] = board.parts["rows"]["polish.when"]
+            assert kind == "dropdown" and menu.get() == "always", \
                 (kind, menu.get())
-            assert menu.label_for("groq").startswith("Groq"), \
+            assert menu.label_for("known").startswith("Only taught"), \
                 "the menu shows the value, not its name"
-            board._apply_setting(prefer, "ollama")
-            assert asked == [("option", {"name": "punctuate.prefer",
-                                         "value": "ollama"})], asked
-            assert menu.get() == "ollama"
-            assert board.parts["values"]["punctuate.prefer"] == "ollama"
-            assert "punctuate.prefer saved" in board._toast_text
+            board._apply_setting(when, "never")
+            assert asked == [("option", {"name": "polish.when",
+                                         "value": "never"})], asked
+            assert menu.get() == "never"
+            assert board.parts["values"]["polish.when"] == "never"
+            assert "polish.when saved" in board._toast_text
 
             def refuse(command, then=None, **args):
-                then({"ok": False, "error": "punctuate.prefer must be one "
-                                            "of groq, gemini, ollama"})
+                then({"ok": False, "error": "polish.when must be one "
+                                            "of always, known, never"})
             board._ask = refuse
-            board._apply_setting(prefer, "gemini")
-            assert menu.get() == "ollama", "a refused pick stayed picked"
+            board._apply_setting(when, "known")
+            assert menu.get() == "never", "a refused pick stayed picked"
             assert "must be one of" in board._toast_text
 
             # A field: what was typed has to parse as what the file holds.
             # `field.set` is the typing — a field is a ui.Field, a rounded
             # face with the Entry inside it, and a Canvas's own delete and
             # insert are about canvas ITEMS.
-            board._settings_go("Cards")
+            board._settings_go("Privacy")
             board._finish_settings()
-            after = settings_mod.find(sections, "hint.after_ms")
-            [(kind, entry)] = board.parts["rows"]["hint.after_ms"]
+            days = settings_mod.find(sections, "history.keep_days")
+            [(kind, entry)] = board.parts["rows"]["history.keep_days"]
             assert kind == "entry"
             entry.set("abc")
-            board._entry_done(after, entry)
-            assert entry.get() == "400", entry.get()
+            board._entry_done(days, entry)
+            assert entry.get() == "30", entry.get()
             assert "not an int" in board._toast_text, board._toast_text
             board._ask = ask
             asked.clear()
-            entry.set("650")
-            board._entry_done(after, entry)
-            assert asked == [("option", {"name": "hint.after_ms",
-                                         "value": 650})], asked
-            board._entry_done(after, entry)
+            entry.set("45")
+            board._entry_done(days, entry)
+            assert asked == [("option", {"name": "history.keep_days",
+                                         "value": 45})], asked
+            board._entry_done(days, entry)
             assert len(asked) == 1, "an unchanged field was written again"
         finally:
             config_mod.set_values = real
@@ -20543,9 +20494,8 @@ def test_a_cut_label_always_shows_an_ellipsis_and_fits_its_box() -> None:
         board.closing = True
         board._show("Settings")
         sections = board.parts["sections"]
-        keys = dash._keys_screen_paths()
         seen = 0
-        for name in settings_mod.tab_names(sections, keys):
+        for name in settings_mod.tab_names():
             board._settings_go(name)
             board._finish_settings()
             board.root.update()
@@ -20588,29 +20538,24 @@ def test_a_search_narrows_the_settings_to_the_lines_that_match() -> None:
         drawn = set(board.parts["rows"])
         expected = {s.path
                     for s in settings_mod.flatten(board.parts["sections"])
-                    if settings_mod.matches(s, "punctuat")}
-        expected -= dash._keys_screen_paths()
+                    if s.path in settings_mod.WORDS
+                    and settings_mod.matches(s, "punctuat")}
         assert drawn == expected, drawn ^ expected
-        assert "punctuate.auto" in drawn and "hint.after_ms" not in drawn
+        assert {"punctuate.auto", "punctuate.nikud"} <= drawn
+        assert "hint.after_ms" not in drawn
+        assert "punctuate.prefer" not in drawn, "a measurement came back"
         assert all(len(v) == 1 for v in board.parts["rows"].values())
         board._settings_search("no such setting anywhere")
         board._finish_settings()
         assert board.parts["rows"] == {}
         # The cross: the tabs come back, on the tab that was up — which
         # is the first one, General, since that is where Settings opens.
-        # Unfolded, because General has owned the [dot] section since
-        # 2026-09-08 and `dot.x` / `dot.y` are measurements: they wait
-        # behind the card's one quiet line, like every other measurement
-        # on every other tab. Reachable is the promise, not drawn.
         board._settings_close_search()
         board._finish_settings()
         assert not board._settings_searching and not board._settings_query
         assert board._settings_tab == settings_mod.GENERAL
-        board._settings_unfold_all()
         assert set(board.parts["rows"]) == {
-            row.path for group in settings_mod.groups_for(
-                settings_mod.GENERAL, board.parts["sections"],
-                dash._keys_screen_paths())
+            row.path for group in settings_mod.groups_for(settings_mod.GENERAL)
             for row in group.rows}
 
 
@@ -27813,8 +27758,10 @@ def test_the_two_reading_knobs_are_in_the_config_and_the_settings() -> None:
 
     cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
     assert cfg.study.read_sentences == 20 and cfg.study.read_goal_hours == 3
-    assert {"study.read_sentences", "study.read_goal_hours"} <= set(
-        settings_mod.WORDS), "every line in the file has words"
+    sections = settings_mod.read(Path(__file__).resolve().parent / "defaults.toml")
+    assert settings_mod.find(sections, "study.read_sentences") is not None
+    assert not {"study.read_sentences", "study.read_goal_hours"} & set(
+        settings_mod.WORDS), "the owner's knobs are the file's, not the screen's"
 
 
 def test_said_opens_on_a_page_of_rows_and_show_more_adds_another() -> None:
@@ -29842,7 +29789,7 @@ def test_settings_page_cannot_write_privacy_keys():
             assert st.consent and not st.editable, path
         else:
             assert not st.consent and st.editable, path
-    assert "Privacy" in settings_mod.tab_names(sections)
+    assert "Privacy" in settings_mod.tab_names()
 
 
 def test_warmups_never_open_a_card():
@@ -30253,7 +30200,8 @@ def test_main_shows_the_tour_once_and_again_on_request():
     assert reply["ok"] is True and app.tour_card.current() == 0, reply
     assert app.tour_card._q.get_nowait()["index"] == 0 and said
     import settings as settings_mod
-    assert "setup.tour" in settings_mod.friendly_paths()
+    assert "setup.tour" not in settings_mod.friendly_paths(), \
+        "the tour is shown again from a button, not a switch"
 
 
 # ------------------------------------- support-safe logs, the redactor, history
@@ -30543,23 +30491,18 @@ def test_a_strangers_copy_shows_no_owner_surface():
     import settings as settings_mod
 
     defaults = Path(__file__).resolve().parent / "defaults.toml"
-    mine = settings_mod.read(defaults)
-    theirs = settings_mod.read(defaults, developer=False)
-    mine_paths = {s.path for s in settings_mod.flatten(mine)}
-    their_paths = {s.path for s in settings_mod.flatten(theirs)}
-    hidden = mine_paths - their_paths
-    assert "tests" in {s.name for s in mine} and "tests" not in {s.name for s in theirs}
-    assert {"awake.vitals_minutes", "notify.watch", "tests.nightly",
-            "tests.wait_seconds"} <= hidden, hidden
-    assert all(p.startswith("study.read_") for p in hidden
-               if p.startswith("study.")), hidden
-    assert any(p.startswith("study.read_") for p in hidden), "study.read_* stayed"
-    assert all(settings_mod.developer_only(p) for p in hidden), hidden
-    assert not any(settings_mod.developer_only(p) for p in their_paths)
-    # the same page, with nothing else missing: every product line is
-    # still drawn, and the Privacy tab is one of theirs
-    assert their_paths == {p for p in mine_paths if not settings_mod.developer_only(p)}
-    assert "Privacy" in settings_mod.tab_names(theirs)
+    everyone = {s.path for s in settings_mod.flatten(settings_mod.read(defaults))}
+    drawn = set(settings_mod.friendly_paths())
+    # the owner's machinery is in the file and on nobody's screen — his
+    # own included, since 2026-09-18 ("I am the user; you are the
+    # developer"); there is no developer flag on the Settings place
+    owners = {"awake.vitals_minutes", "notify.watch", "tests.nightly",
+              "tests.wait_seconds", "study.read_sentences",
+              "study.read_goal_hours"}
+    assert owners <= everyone, owners - everyone
+    assert not owners & drawn, owners & drawn
+    assert not hasattr(settings_mod, "developer_only")
+    assert "Privacy" in settings_mod.tab_names()
 
     with _patched(paths, "DEVELOPER", False):
         assert [k for k, _n in dash.corr_tabs()] == ["waiting"]
@@ -31861,20 +31804,19 @@ def test_hardware_change_note_and_summary():
 
 
 def test_the_speed_page_and_the_home_rows():
-    """Settings > Speed: the summary line, the model's standing, the
-    pack's, and the buttons each state earns — none in the checkout,
-    where both are the venv's; Home: a missing model, a failed pack and
-    a changed tier are rows on the pile with the button that fixes each,
-    and Retry / OK act at once. The Speed tab names the four knobs and
-    the switch, once each (the drawn-once test holds the rest)."""
+    """This PC, on Settings > The app: the summary line, the model's
+    standing, the pack's, and the buttons each state earns — none in
+    the checkout, where both are the venv's; Home: a missing model, a
+    failed pack and a changed tier are rows on the pile with the button
+    that fixes each, and Retry / OK act at once. The four [local] knobs
+    the probe writes are the file's, not the screen's (2026-09-18), and
+    the Speed tab that carried them went with them."""
     import settings as settings_mod
 
-    speed = settings_mod.tab_named("Speed")
-    assert speed is not None and [r.path for g in speed.groups for r in g.rows] == [
-        "local.device", "local.compute_type", "local.cpu_threads", "local.beam_size",
-        "setup.offer_gpu_pack"]
-    assert settings_mod.TAB_SECTIONS["Speed"] == ()
-    assert [t.name for t in settings_mod.TABS][1:3] == ["Dictation", "Speed"]
+    assert settings_mod.tab_named("Speed") is None
+    for path in ("local.device", "local.compute_type", "local.cpu_threads",
+                 "local.beam_size", "setup.offer_gpu_pack"):
+        assert path not in settings_mod.friendly_paths(), path
 
     import dashboard as dash
 
@@ -31884,7 +31826,7 @@ def test_the_speed_page_and_the_home_rows():
 
         def drawn():
             board._show("Settings")
-            board._settings_go("Speed")
+            board._settings_go(settings_mod.APP)
             board._finish_settings()
             board.root.update_idletasks()
             return list(board.parts["speed_lines"]), list(board.parts["speed_buttons"])
@@ -32024,8 +31966,11 @@ def test_ollama_absent_hides_local_entries():
         def __init__(self, path, value, choices=()):
             self.path, self.value, self.choices = path, value, choices
 
-    row = settings_mod.WORDS["lookup.prefer"]
-    assert any(v == "ollama" for v, _n in row.names), row.names
+    # a provider menu the way the tabs used to word one; the provider
+    # rows are the file's since 2026-09-18, so the test brings its own
+    row = settings_mod.Friendly("lookup.prefer", "Which looks it up first", "",
+                                (("ollama", "On this computer"),
+                                 ("gemini", "Google's model")))
     with _window() as board:
         if board is None:
             return
@@ -32932,7 +32877,10 @@ def test_the_keys_block_stores_tests_and_removes_without_showing_the_value():
         assert set(fields) == {"groq", "gemini"}
         assert fields["groq"].entry.cget("show") == "•", "the key would be readable on screen"
         sentence = secretstore.storage_sentence("groq")
-        texts = [w.cget("text") for w in fields["groq"].master.winfo_children()
+        # wrapped by measuring (ui.clamp), so the label holds the sentence
+        # with line breaks where the card's width put them
+        texts = [" ".join(w.cget("text").split())
+                 for w in fields["groq"].master.winfo_children()
                  if w.winfo_class() == "Label"]
         assert sentence in texts, "the storage sentence is not under the field"
         assert board.parts["key_lines"]["groq"].cget("text") == "no key"
