@@ -43,8 +43,9 @@ Store build (later) is the way, or Windows lets you turn Smart App Control off o
 ## What the installer does
 
 - Installs for your user only: no UAC prompt, no administrator password.
-- Asks for the installer's language (Hebrew or English); the app itself is English chrome with
-  Hebrew text.
+- Speaks Hebrew or English by your Windows display language, with no question; only a
+  Windows in a third language is asked which of the two to use. Two pages: **Install**, then
+  **Finish** with "Start DeskIT now" ticked. The app itself is English chrome with Hebrew text.
 - Puts the program in `%LOCALAPPDATA%\Programs\DeskIT` and a shortcut in the Start menu.
 - Starts DeskIT at the end; the first run opens the wizard ([chapter 2](02-first-run)).
 - Never installs a speech model: that is 1.62 GB, downloaded on the first run with your

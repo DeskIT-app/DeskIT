@@ -163,9 +163,14 @@ jobs:
         env:
           DESKIT_VERSION: ${{ steps.version.outputs.version }}
 
-      # 7. manifest — one line per file under python\ and app\
+      # 7. manifest — one line per file under python\ and app\. The
+      #    bytecode caches go first: step 6b ran the stage's own Python
+      #    (pip-licenses --python), whose .pth imports wrote two .pyc
+      #    files after step 5's sweep, and they rode into the installer
+      #    outside the manifest (dry runs #7 and #8 both carried them).
       - name: MANIFEST.sha256
         run: |
+          Get-ChildItem -Recurse stage -Include __pycache__ -Directory | Remove-Item -Recurse -Force
           python stage/app/manifest.py write stage
           python stage/app/manifest.py verify stage
 

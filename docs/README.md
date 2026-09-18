@@ -41,7 +41,13 @@ console: `01-smartscreen-more-info`, `01-smartscreen-run-anyway`,
 `04-network-tab-loopback`, `05-groq-console-create-key`,
 `05-aistudio-create-key`, `06-ime-enable`, `08-folder-explorer`,
 `08-uninstall-question`. Name them so and link them from the chapter that
-owns the screen; the test then requires them.
+owns the screen; the test then requires them. Two of them have
+conditions: SmartScreen shows only for a file that carries the Mark of
+the Web (a browser download, or a zip Explorer extracted — never a file
+`gh` or a USB stick brought), and the language dialog only on a Windows
+whose display language is neither Hebrew nor English
+(`ShowLanguageDialog=auto`); a Hebrew or English Windows goes straight to
+the Install page.
 
 ## The Hebrew pages
 
