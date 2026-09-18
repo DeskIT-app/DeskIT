@@ -344,7 +344,7 @@ TEXT = {
 }
 
 #: The English detector (6.6): the same step with its own words — the
-#: wizard offers it on the gpu tier, Settings > Speed afterwards.
+#: wizard offers it on the gpu tier, Settings > The app afterwards.
 DETECTOR_TEXT = {
     "title": "זיהוי אנגלית אוטומטי",
     "body": ("מודל שני, כללי, שמזהה כשדיברת אנגלית ומתמלל אותה כמו שהיא. "

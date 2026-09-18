@@ -389,7 +389,7 @@ ENTRY_W = 150
 # menu above it reads as a mistake. The owner, 2026-09-07: "the boxes are
 # square in everything that is not in General, and it is not pretty."
 ENTRY_H = 30
-# The quiet line at the foot of a folded card: "7 more in this section".
+# One quiet line under a block: the Overview's "nothing ahead" note.
 FOLD_H = 26
 # What a line of text really occupies on a settings card. Rubik's 8 pt
 # linespace is 17 and its 10 pt is 20 — measured on the hidden desktop
@@ -2996,7 +2996,7 @@ class Dashboard:
 
     def _hardware_remove(self) -> None:
         packs_mod.remove("gpu")
-        self._note("the GPU pack was removed — Settings > Speed offers it again")
+        self._note("the GPU pack was removed — Settings > The app offers it again")
         self._fill_waiting()
 
     def _hardware_seen(self) -> None:
@@ -3925,8 +3925,8 @@ class Dashboard:
             except Exception:
                 off = False
             self.parts["empty"].config(
-                text="History is off (Settings > Dictation > What you said, "
-                     "kept)." if off and not self.log
+                text="History is off (Settings > Privacy > Kept on this "
+                     "PC)." if off and not self.log
                 else "Nothing here yet." if not self.log
                 else "Nothing matches that.")
             self.parts["empty"].pack(anchor="w", padx=8, pady=(24, 24))
@@ -7331,22 +7331,18 @@ class Dashboard:
     # ----------------------------------------------------------- settings
 
     def _screen_settings(self) -> None:
-        """Every line of config.toml, drawn from the file itself, on
-        tabs a person can find things on.
+        """The forty-odd lines of defaults.toml a person changes, on
+        five tabs, each said in plain words.
 
-        Nothing here is typed by hand except the words: settings.py reads
-        the file, settings.TABS says which lines get a plain label, a
-        short sentence and a menu with names on it, and TAB_SECTIONS
-        says which tab draws the rest of each section — with the plain
-        words of settings.WORDS as title and help, never the file's own
-        names. General is the dozen things he actually changes; The app
-        holds the blocks that used to be screens. A test holds the tabs
-        and the Keys screen to drawing every line of the file exactly
-        once, so a setting cannot drop off and cannot be said twice.
-        That is the owner's rule from both directions: "show all of
-        them" (2026-09-01), then "normal settings, no need to be clever
-        — if there is Everything, it is already somewhere else"
-        (2026-09-07).
+        settings.py reads the file for the values, the choices and the
+        help; settings.TABS says which lines are drawn at all, with what
+        label, what sentence and what names on the menu — and every
+        other line of the file is a measurement the developer edits in
+        the file (the owner, 2026-09-18: "I am the user; you are the
+        developer"). General is dictation and the screen; Screen is the
+        pictures; Phone, Privacy and The app carry the blocks that used
+        to be screens of their own above their few rows. A test holds
+        every drawn line to being named by exactly one tab.
 
         Writes go through config.set_values, the line editor that keeps
         the comments, and through the running app when there is one, so
@@ -7428,8 +7424,7 @@ class Dashboard:
             box.take_focus()
             return
         p["settings_tabs"] = {}
-        names = settings_mod.tab_names(p["sections"], _keys_screen_paths())
-        for name in names:
+        for name in settings_mod.tab_names():
             chip = ui.Chip(bar, name, lambda n=name: self._settings_go(n),
                            active=(name == self._settings_tab), bg=ui.BG)
             chip.pack(side="left", padx=(0, 6), pady=3)
@@ -7464,7 +7459,7 @@ class Dashboard:
 
     def _fill_settings(self) -> None:
         """The cards for the tab that is up — or, while searching, every
-        line of the file that matches, section by section.
+        drawn line that matches, tab by tab.
 
         The first card is built here and the rest one per tick, the way
         the History screen draws its rows: seventeen cards of real
@@ -7485,31 +7480,33 @@ class Dashboard:
         scroller.clear()
         p["rows"] = {}
         sections = p["sections"]
-        elsewhere = _keys_screen_paths()
         builders: list = []
         if self._settings_searching:
+            # What it finds is what the tabs draw, one card per tab,
+            # titled with the tab's name so the answer says where the
+            # line lives. The dot's corner is drawn by its block on
+            # General, so a search draws it as a plain row.
             query = self._settings_query
-            for section in sections:
-                rows = [s for s in section.settings
-                        if s.path not in elsewhere
-                        and settings_mod.matches(s, query)]
-                if not rows:
-                    continue
-                title = settings_mod.section_words(
-                    section.name, section.help).label.upper()
-                pairs = [(settings_mod.words_for(s), s) for s in rows]
-                # A SEARCH NEVER FOLDS. What it found is the answer to
-                # a question that was typed; half of it behind a line
-                # saying "7 more in this section" is not an answer.
-                builders.append(lambda t=title, pr=pairs:
-                                self._friendly_card(scroller, t, pr,
-                                                    fold=False))
+            for name in settings_mod.tab_names():
+                pairs = [(row, s) for group in settings_mod.groups_for(name)
+                         for row in group.rows
+                         if (s := settings_mod.find(sections, row.path))
+                         is not None
+                         and settings_mod.matches(s, query)]
+                if pairs:
+                    builders.append(lambda t=name.upper(), pr=pairs:
+                                    self._friendly_card(scroller, t, pr))
         else:
             name = self._settings_tab
             # The blocks that used to be screens sit above the rows of
             # the tab they belong to: the phone's link on Phone; awake,
             # the version, the sounds and the files on The app.
             if name == settings_mod.APP:
+                # This PC — the model and the GPU pack — sits with the
+                # rest of what the app does to the machine; the Speed
+                # tab that held it alone went on 2026-09-18 with its
+                # four knobs (the probe's numbers are the file's).
+                builders.append(lambda: self._speed_block(scroller))
                 builders.append(lambda: self._awake_block(scroller))
                 builders.append(lambda: self._claude_block(scroller))
                 builders.append(lambda: self._app_block(scroller))
@@ -7517,8 +7514,6 @@ class Dashboard:
                 builders.append(lambda: self._files_card(scroller))
             elif name == "Phone":
                 builders.append(lambda: self._phone_block(scroller))
-            elif name == "Speed":
-                builders.append(lambda: self._speed_block(scroller))
             elif name == "Privacy":
                 builders.append(lambda: self._keys_block(scroller))
                 builders.append(lambda: self._account_block(scroller))
@@ -7535,9 +7530,9 @@ class Dashboard:
                 # please solve the problem that I cannot move the dot"
                 # (2026-09-08). The corner menu and the button are one
                 # card now, side by side, and Cards has no dot on it at
-                # all — see settings.TAB_SECTIONS.
+                # all — see settings.TABS.
                 builders.append(lambda: self._dot_block(scroller))
-            for group in settings_mod.groups_for(name, sections, elsewhere):
+            for group in settings_mod.groups_for(name):
                 pairs = [(row, s) for row in group.rows
                          if (s := settings_mod.find(sections, row.path))
                          is not None
@@ -7627,34 +7622,20 @@ class Dashboard:
         return ui.clamp(row.help, ui.UI, 8, CW - 36 - CONTROL_W - 12, 2)
 
     def _friendly_card(self, scroller, title: str, pairs, *,
-                       fold: bool = True, open_: bool = False,
                        before=None) -> None:
-        """One section's card: the lines worth a first look, and — under
-        them, on one quiet line — how many more the section has.
-
-        The split is settings.fold, and the rule it uses is settings.
-        common: a line a tab names by hand, a switch or a menu is on the
-        face; a number, a length of time, a model name or a folder waits
-        behind the line. NOTHING IS DROPPED — the owner's two rules are
-        "show all of them" (2026-09-01) and "I do not need to know all of
-        this" (2026-09-07), and a fold is the only thing that is both. A
-        test holds every line of config.toml to being reachable exactly
-        once, folded or not.
-        """
-        shown, rest = (settings_mod.fold(pairs) if fold
-                       else (list(pairs), []))
-        drawn = shown + rest if open_ else shown
+        """One group's card: a plain title, and under it every row the
+        tab names — a label, one sentence, and its control."""
+        pairs = list(pairs)
         heights = [22 + self._friendly_help(row)[1] * 15 + 8
-                   for row, _setting in drawn]
+                   for row, _setting in pairs]
         y = 18 if title else 8
         card = self._new_card(scroller, y + 18 * bool(title) + sum(heights)
-                              + (FOLD_H if rest else 0)
                               + (6 if title else 10), before=before)
         if title:
             card.create_text(18, y, text=title, anchor="nw", fill=ui.FAINT,
                              font=(ui.UI, 8))
             y += 18
-        for (row, setting), height in zip(drawn, heights):
+        for (row, setting), height in zip(pairs, heights):
             card.create_text(18, y, text=row.label, anchor="nw", fill=ui.FG,
                              font=(ui.UI, 10))
             text, lines = self._friendly_help(row)
@@ -7663,93 +7644,8 @@ class Dashboard:
                                  fill=ui.FAINT, font=(ui.UI, 8))
             self._control(card, y, setting, self._menu_for(row, setting))
             y += height
-        if rest:
-            self._fold_line(scroller, card, title, pairs, y, len(rest),
-                            open_)
         scroller.bind_wheel(card)
 
-    def _fold_line(self, scroller, card, title: str, pairs, y: int,
-                   hidden: int, open_: bool) -> None:
-        """The quiet line at the foot of a folded card.
-
-        The rectangle under the words is what makes it a ROW to click on
-        rather than a run of glyphs: a canvas text item is only hit where
-        its ink is, and "7 more in this section" is 130 px of target in a
-        1112 px card. It is painted in the card's own colour, so it is a
-        hit area and nothing else.
-        """
-        card.create_rectangle(12, y - 3, CW - 12, y + FOLD_H - 7,
-                              fill=ui.CARD, outline="", tags="fold")
-        said = "Fewer" if open_ else f"{hidden} more in this section"
-        card.create_text(18, y + 2, text=said, anchor="nw",
-                         fill=ui.ACCENT_TEXT, font=(ui.UI, 9), tags="fold")
-        # The caret is drawn at PT_LABEL, not at the size of the words
-        # beside it: the ▾ Rubik gives back at 8 pt is three pixels of ink
-        # and reads as a full stop (photographed on the hidden desktop,
-        # 2026-09-07). It is the same glyph ui.Dropdown wears.
-        card.create_text(21 + ui.text_width(said, ui.UI, 9), y + 1,
-                         text="▴" if open_ else "▾", anchor="nw",
-                         fill=ui.ACCENT_TEXT, font=(ui.UI, ui.PT_LABEL),
-                         tags="fold")
-        card.tag_bind("fold", "<Button-1>", lambda _e:
-                      self._settings_fold(scroller, card, title, pairs,
-                                          not open_))
-        card.tag_bind("fold", "<Enter>",
-                      lambda _e: card.configure(cursor="hand2"))
-        card.tag_bind("fold", "<Leave>",
-                      lambda _e: card.configure(cursor=""))
-        # What _settings_unfold_first looks for. Only a CLOSED fold
-        # carries it, so "is anything still folded" is one attribute.
-        if not open_:
-            card.folded_rows = lambda: self._settings_fold(
-                scroller, card, title, pairs, True)
-
-    def _settings_fold(self, scroller, card, title: str, pairs,
-                       open_: bool) -> None:
-        """Open, or close, one card's fold — in place.
-
-        A card is a Canvas of a fixed height with its rows already drawn
-        on it (see _new_card for why it is not widgets), so there is no
-        growing it: it is drawn again at the new height and packed where
-        the old one was. The rows it registered are dropped first, or the
-        same path would sit in parts["rows"] twice and every repaint
-        would paint it twice — which the "exactly once" test would see.
-        """
-        if scroller is None or not scroller.winfo_exists():
-            return
-        kids = list(scroller.inner.pack_slaves())
-        try:
-            after = kids[kids.index(card) + 1]
-        except (ValueError, IndexError):
-            after = None
-        for _row, setting in pairs:
-            self.parts.get("rows", {}).pop(setting.path, None)
-        card.destroy()
-        self._friendly_card(scroller, title, pairs, open_=open_,
-                            before=after)
-
-    def _settings_unfold_first(self) -> bool:
-        """Open the first card on this tab that still has a fold. True if
-        there was one."""
-        scroller = self.parts.get("settings_list")
-        if scroller is None or not scroller.winfo_exists():
-            return False
-        for card in scroller.inner.pack_slaves():
-            opener = getattr(card, "folded_rows", None)
-            if opener is not None:
-                opener()
-                return True
-        return False
-
-    def _settings_unfold_all(self) -> int:
-        """Open every fold on the tab that is up; how many were opened.
-        What the "reachable exactly once" test walks the screen with."""
-        opened = 0
-        while self._settings_unfold_first():
-            opened += 1
-            if opened > 500:              # a fold that will not open
-                break
-        return opened
 
     def _microphones(self) -> list:
         """(what the file writes, a name) for every input device, the way

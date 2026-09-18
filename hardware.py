@@ -205,7 +205,7 @@ def tier_for(facts: dict) -> str:
     if (pack in ("missing", "unknown") or pack.startswith("failed:")) and not paths.DEVELOPER:
         # the wheels are not there yet, or are there and do not run: the
         # card exists, the tier does not — the pack step (packs.py) or
-        # Settings > Speed is where it becomes gpu
+        # Settings > The app is where it becomes gpu
         return "cpu"
     vram = int(facts.get("vram_mb") or 0)
     if vram and vram < GPU_SMALL_MB:

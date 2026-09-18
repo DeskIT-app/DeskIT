@@ -196,8 +196,9 @@ pause_hotkey = "insert"
 auto_pause_fullscreen = false
 # local = unlimited, offline, ~0.3 s. Measured 2026-08-12 on 8 real Hebrew
 # clips: local 10.8% WER / 0.38 s vs gemini 15.9% WER / 2.71 s. Switch to
-# "gemini" if you ever want its stronger cleanup instead.
-backend = "local"             # gemini | local | fake
+# "gemini" if you ever want its stronger cleanup instead. ("fake" is the
+# test double transcribers/__init__.py answers to; the menu never offers it.)
+backend = "local"             # gemini | local
 paste_chord = "ctrl+v"        # try "shift+insert" for terminals that reject ctrl+v
 restore_delay_ms = 300        # wait after pasting before restoring the old clipboard
 min_seconds = 0.3             # shorter holds are treated as accidental taps and discarded
@@ -302,7 +303,7 @@ autostart = false
 # On a PC with an NVIDIA card, the start offers NVIDIA's CUDA libraries
 # once (the GPU pack, 1.37 GB from PyPI — packs.py): with them the
 # transcription runs on the card, without them on the processor. "Not
-# now" writes false here and the start stops asking; Settings > Speed
+# now" writes false here and the start stops asking; Settings > The app
 # keeps offering it in one line. Nothing to offer in a checkout.
 offer_gpu_pack = true
 

@@ -113,24 +113,28 @@ def test_key_field_sentence_quoted():
 def test_settings_doc_fresh():
     """dev/gen_settings_doc.py --check: the committed docs/en/settings.md,
     docs/he/settings.md and docs/strings/* are what the generator writes
-    for this defaults.toml; every key of the file appears once on the
-    English page, no state key and no DEVELOPER section appears."""
+    for this defaults.toml; every line the Settings place draws and every
+    key the Keys place owns appears once on the English page, no state
+    key appears, and nothing else from the file does — the measurements
+    are the developer's (2026-09-18)."""
     out = subprocess.run([sys.executable, str(REPO / "dev" / "gen_settings_doc.py"), "--check"],
                          capture_output=True, encoding="utf-8", errors="replace", cwd=str(REPO))
     assert out.returncode == 0, f"stale generated pages:\n{out.stdout}{out.stderr}"
     import config as config_mod
+    import dashboard
     import settings as settings_mod
     page = (DOCS / "en" / "settings.md").read_text("utf-8")
-    sections = settings_mod.read(REPO / "defaults.toml", developer=False)
+    sections = settings_mod.read(REPO / "defaults.toml")
+    drawn = set(settings_mod.friendly_paths()) | dashboard._keys_screen_paths()
     for section in sections:
         for s in section.settings:
             n = page.count(f"| `{s.path}` —")
             if config_mod.is_state_key(s.path):
                 assert n == 0, f"state key {s.path} on the settings page"
-            else:
+            elif s.path in drawn:
                 assert n == 1, f"{s.path} appears {n} times"
-    for name in settings_mod.DEVELOPER_SECTIONS:
-        assert f"`{name}." not in page, f"developer section {name} on the page"
+            else:
+                assert n == 0, f"{s.path} is not drawn, but is on the page"
 
 
 def test_settings_doc_hebrew_gaps_listed():
@@ -185,7 +189,7 @@ def test_guide_uses_screen_names():
     src = (REPO / "dashboard.py").read_text("utf-8")
     nav = re.findall(r'\("([a-z]+)", "([A-Za-z]+)"\)', src.split("NAV = (")[1].split(")\n")[0])
     places = {label for _key, label in nav}
-    tabs = {tab.name for tab in settings_mod.TABS} | {settings_mod.ADVANCED}
+    tabs = {tab.name for tab in settings_mod.TABS}
     blocks = {"YOUR CLOUD KEYS", "WHAT MAY LEAVE THIS PC", "SWITCHES"}
     for lang in ("he", "en"):
         for name, text in _pages(lang).items():

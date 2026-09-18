@@ -44,7 +44,7 @@ on the Settings page, and `history.keep_days = 0` turns the history off.
 
 - **One thing:** open the folder from **Settings > The app** and delete the file — DeskIT
   makes a new, empty one. The model: delete `models\` while DeskIT is closed, or use
-  **Delete the model** on **Settings > Speed**.
+  **Delete the model** on **Settings > The app**.
 - **Everything:** close DeskIT and run, from the install folder
   (`%LOCALAPPDATA%\Programs\DeskIT`):
 

@@ -11,12 +11,13 @@ retyping them.
                                               files differ (release.yml)
 
 The English page is generated in the Settings place's own order:
-settings.TABS / TAB_SECTIONS / groups_for(), the way dashboard.py walks
-them — so the document's order is the screen's order. Keys the Keys
-place owns (the hotkeys) are listed on their own table, state keys
-(positions, devices, the port — D2) do not appear because they are not
-settings, and DEVELOPER-only sections do not appear because
-settings.read() drops them for a stranger. The Hebrew page comes from
+settings.TABS / groups_for(), the way dashboard.py walks them — so the
+document's order is the screen's order, and the document holds exactly
+what the screen draws: the lines of defaults.toml the tabs name, and
+nothing else (the rest are the developer's measurements, 2026-09-18).
+Keys the Keys place owns (the hotkeys) are listed on their own table,
+and state keys (positions, devices, the port — D2) do not appear
+because they are not settings. The Hebrew page comes from
 docs/strings/settings.he.json (key -> Hebrew sentence, the owner's, D34
 chapter 16); a key without a Hebrew sentence falls back to English and
 is listed at the end of the run so the gap is visible.
@@ -107,10 +108,10 @@ def _hotkey_paths() -> set[str]:
     return dashboard._keys_screen_paths()
 
 
-def _rows_for_tab(name: str, sections, skip) -> list[tuple[str, list[tuple]]]:
+def _rows_for_tab(name: str, sections) -> list[tuple[str, list[tuple]]]:
     """[(group title, [(setting, friendly), ...])] the way the tab draws."""
     out = []
-    for group in settings_mod.groups_for(name, sections, skip):
+    for group in settings_mod.groups_for(name):
         pairs = []
         for row in group.rows:
             s = settings_mod.find(sections, row.path)
@@ -151,21 +152,18 @@ def settings_page(hebrew: bool, he: dict | None = None,
                   gaps: list[str] | None = None) -> str:
     """The whole page. `gaps` collects the keys the Hebrew map lacks."""
     gaps = [] if gaps is None else gaps
-    sections = settings_mod.read(DEFAULTS, developer=False)
+    sections = settings_mod.read(DEFAULTS)
     skip = _hotkey_paths()
     notes = _tier_notes()
     parts = [HEADER_HE if hebrew else HEADER_EN]
-    for tab in settings_mod.tab_names(sections, skip):
+    for tab in settings_mod.tab_names():
+        rows = _rows_for_tab(tab, sections)
+        if not rows:
+            continue
         parts.append(f"## {tab}\n")
-        for title, pairs in _rows_for_tab(tab, sections, skip):
-            sentence = ""
-            plain = settings_mod.section_words(pairs[0][0].section, "")
-            if plain.label.upper() == title:
-                sentence = plain.help
+        for title, pairs in rows:
             if title:
                 parts.append(f"### {title.title() if title.isupper() else title}\n")
-            if sentence:
-                parts.append(sentence + "\n")
             parts.extend(_table(pairs, he, gaps, notes, hebrew))
             parts.append("")
     # the hotkeys, which the Keys place draws

@@ -45,7 +45,7 @@ title: 8. הנתונים שלך
 
 - **דבר אחד:** פותחים את התיקייה מ־**Settings > The app** ומוחקים את הקובץ — דסק-איט יוצר
   חדש וריק. המודל: מוחקים את `models\` כשדסק-איט סגור, או **Delete the model** ב־
-  **Settings > Speed**.
+  **Settings > The app**.
 - **הכול:** סוגרים את דסק-איט ומריצים, מתיקיית ההתקנה (`%LOCALAPPDATA%\Programs\DeskIT`):
 
   ```
