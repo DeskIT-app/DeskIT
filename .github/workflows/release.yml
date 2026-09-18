@@ -96,7 +96,11 @@ jobs:
           New-Item -ItemType Directory -Force stage/python | Out-Null
           Expand-Archive python-embed.zip -DestinationPath stage/python
 
-      # 3. tk — the tree the embeddable zip lacks, from the runner's full install
+      # 3. tk — the tree the embeddable zip lacks, from the runner's full
+      #    install. zlib1.dll is on the plan's list (10.3) but no 3.11.9 —
+      #    python.org's or the runner's — ships one: Tcl links zlib in.
+      #    Copied when present, like build_local.ps1; step 7 imports
+      #    tkinter from the stage and would say if Tk lacked it.
       - name: Tcl/Tk
         run: |
           $py = $env:pythonLocation
@@ -104,7 +108,10 @@ jobs:
           New-Item -ItemType Directory -Force stage/python/Lib | Out-Null
           Copy-Item -Recurse "$py/Lib/tkinter" stage/python/Lib/tkinter
           foreach ($f in "_tkinter.pyd", "tcl86t.dll", "tk86t.dll", "zlib1.dll") {
-            Copy-Item "$py/DLLs/$f" stage/python/$f
+            if (Test-Path "$py/DLLs/$f") { Copy-Item "$py/DLLs/$f" stage/python/$f }
+          }
+          foreach ($f in "_tkinter.pyd", "tcl86t.dll", "tk86t.dll") {
+            if (-not (Test-Path "stage/python/$f")) { throw "$f missing from the runner's Python" }
           }
           Get-ChildItem -Recurse stage/python -Include __pycache__ -Directory | Remove-Item -Recurse -Force
 
