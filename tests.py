@@ -25678,6 +25678,126 @@ def test_a_problem_report_survives_losing_its_screenshot() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_the_copy_that_travels_is_the_toggles_and_nothing_else() -> None:
+    """7.6, 8.4, 8.8: a report is filed here as always; "Send" builds a
+    SECOND thing from the stored row and four toggles — the exact row
+    the server takes and the files 8.4 names — and the Preview and the
+    outbox come from the same call. Off toggles leave nothing behind
+    (no screenshot path, no transcript column, the env cut to the
+    machine facts); the outbox holds COPIES, so deleting the local
+    evidence cannot pull a queued upload apart; the row remembers its
+    state and sb.py's verdicts flow back into it."""
+    import shutil
+
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="problems-travel-"))
+    try:
+        recent = tmp / "recent"
+        recent.mkdir()
+        wav = recent / "20260918-231500.wav"
+        wav.write_bytes(RIFF)
+        wav.with_suffix(".json").write_text(json.dumps(
+            {"seconds": 2.1, "backend": "local", "language": "he",
+             "words": [{"w": "שלום", "p": 0.91}]}), "utf-8")
+        last = {"raw": "שלום עולם gsk_abcdefghijklmnopqrstuvwxyz0123456789ABCDEF",
+                "final": "שלום, עולם.", "when": "2026-09-18 23:15:00",
+                "wav": str(wav)}
+        item = problems_mod.record(
+            tmp, {"text": "המילה האחרונה נעלמה", "where": "dictation",
+                  "kind": "wrong"}, last=last, jpeg=b"\xff\xd8\xff" + b"j" * 500)
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        # the local copy is untouched by any of this
+        assert item["shot"] and item["dictation"]["wav"] and item["env"]
+        assert "sent" not in item
+
+        defaults = problems_mod.attach_defaults("wrong")
+        assert defaults == {"shot": False, "recording": False,
+                            "transcript": True, "settings": True}
+        assert problems_mod.attach_defaults("idea")["transcript"] is False
+        sizes = problems_mod.evidence(item, tmp)
+        assert sizes["shot"] == 503 and sizes["recording"] == len(RIFF), sizes
+        assert sizes["transcript"] > 0 and sizes["settings"] >= 2, sizes
+        before = problems_mod.sizes_before_filing(
+            jpeg=b"\xff" * 77, last=last, app_dir=tmp)
+        assert before["shot"] == 77 and before["recording"] == len(RIFF)
+
+        # everything off: the row and nothing else
+        row, files = problems_mod.payload(
+            item, {n: False for n in problems_mod.ATTACH}, app_dir=tmp)
+        assert files == [] and row["attachments"] == []
+        assert "dictation_raw" not in row and "dictation_final" not in row
+        assert set(row["env"]) <= set(problems_mod.ENV_ALWAYS), row["env"]
+        assert row["kind"] == "wrong" and row["place"] == "dictation"
+        assert row["text"] == "המילה האחרונה נעלמה"
+        assert set(row) <= {"id", "kind", "place", "text", "app_version",
+                            "os_build", "tier", "env", "attachments"}
+        # everything on: the three files 8.4 names, the two columns, the
+        # whitelist env — and the key in the raw text is the placeholder
+        row, files = problems_mod.payload(
+            item, {n: True for n in problems_mod.ATTACH}, app_dir=tmp)
+        assert [f["name"] for f in files] == ["shot.jpg", "dictation.wav",
+                                              "sidecar.json"], files
+        assert row["attachments"] == ["shot.jpg", "dictation.wav", "sidecar.json"]
+        assert all(Path(f["path"]).is_file() and f["bytes"] > 0 for f in files)
+        assert "gsk_" not in row["dictation_raw"] and "[redacted" in row["dictation_raw"], row["dictation_raw"]
+        assert row["dictation_final"] == "שלום, עולם."
+        assert "consents" in row["env"] and "version" in row["env"]
+        text = problems_mod.preview_text(row)
+        assert '"text": "המילה האחרונה נעלמה"' in text and "\\u05" not in text
+
+        # preview, then keep here: nothing written, the row forgets
+        assert problems_mod.mark_preview(store, item["id"], {"shot": True})
+        waiting = problems_mod.awaiting_preview(store)
+        assert waiting and waiting["id"] == item["id"]
+        assert waiting["sent"] == problems_mod.PREVIEW and waiting["attach"] == {
+            "shot": True, "recording": False, "transcript": False, "settings": False}
+        assert problems_mod.sent_line(waiting) == "not sent yet — preview it"
+        assert problems_mod.keep_local(store, item["id"])
+        assert problems_mod.awaiting_preview(store) is None
+        assert problems_mod.sent_line(store.get(item["id"])) == ""
+        assert not problems_mod.outbox_dir(tmp).exists()
+
+        # send: the payload and copies in the outbox, the row queued
+        target = problems_mod.queue(store, store.get(item["id"]),
+                                    {"shot": True, "transcript": True}, app_dir=tmp)
+        assert target and target.parent == problems_mod.outbox_dir(tmp)
+        body = json.loads(target.read_text("utf-8"))
+        rid = body["id"]
+        assert target.stem == rid and len(rid) == 36
+        assert [a["name"] for a in body["attachments"]] == ["shot.jpg", "sidecar.json"]
+        copies = problems_mod.outbox_dir(tmp) / rid
+        assert all(Path(a["path"]).parent == copies and Path(a["path"]).is_file()
+                   for a in body["attachments"])
+        assert body["dictation_final"] == "שלום, עולם." and "gsk_" not in json.dumps(body)
+        queued = store.get(item["id"])
+        assert queued["sent"] == problems_mod.QUEUED and queued["sent_id"] == rid
+        assert problems_mod.sent_line(queued) == "waiting to send"
+        # the local evidence goes; the copies stay whole
+        problems_mod.shot_path(tmp, queued).unlink()
+        assert (copies / "shot.jpg").stat().st_size == 503
+        # the verdicts, read back the way the dashboard reads them
+        assert problems_mod.sync_outbox(store, app_dir=tmp) == 0
+        (problems_mod.outbox_dir(tmp) / f"{rid}.failed").write_text(
+            "HTTP 400: violates check constraint", "utf-8")
+        assert problems_mod.sync_outbox(store, app_dir=tmp) == 1
+        failed = store.get(item["id"])
+        assert failed["sent"] == problems_mod.FAILED
+        assert problems_mod.sent_line(failed) == "could not be sent: HTTP 400: violates check constraint"
+        (problems_mod.outbox_dir(tmp) / f"{rid}.failed").unlink()
+        assert store._edit(item["id"], sent=problems_mod.QUEUED)
+        target.unlink()                                  # sb.py sent it
+        assert problems_mod.sync_outbox(store, app_dir=tmp) == 1
+        assert problems_mod.sent_line(store.get(item["id"])) == "sent to the developer"
+        assert problems_mod.mark_sent(store, "no-such-uuid") is False
+        # the second send of the same report keeps the server id, so the
+        # insert is idempotent (8.8)
+        again = problems_mod.queue(store, store.get(item["id"]), {}, app_dir=tmp)
+        assert again is not None and again.stem == rid
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_the_problems_list_draws_a_report_with_and_without_a_picture(
         ) -> None:
     """The list is the file: two open reports and one answered draw three

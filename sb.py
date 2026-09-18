@@ -53,6 +53,7 @@ import json
 import logging
 import os
 import platform
+import shutil
 import threading
 import time
 import urllib.parse
@@ -661,10 +662,19 @@ def _purge_storage(uid: str) -> int:
 def _clear_outbox() -> None:
     try:
         for entry in paths.OUTBOX_DIR.iterdir():
-            try:
-                entry.unlink()
-            except OSError:
-                pass
+            _drop(entry)
+    except OSError:
+        pass
+
+
+def _drop(entry) -> None:
+    """One outbox entry gone: the payload, its .failed, or the folder of
+    copies problems.queue() put beside it."""
+    try:
+        if entry.is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
+        else:
+            entry.unlink()
     except OSError:
         pass
 
@@ -949,6 +959,7 @@ def drain_outbox(on_sent=None) -> dict:
                 path.unlink()
             except OSError:
                 pass
+            _drop(path.with_suffix(""))           # the copies beside it
             if on_sent is not None:
                 try:
                     on_sent(rid)
