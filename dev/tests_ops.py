@@ -24,6 +24,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "dev"))
 
 import paths  # noqa: E402
 
@@ -1220,6 +1221,177 @@ def test_export_ignore_covers_forbidden():
                          capture_output=True, encoding="utf-8", check=True).stdout
     unset = [ln for ln in out.splitlines() if not ln.endswith(": export-ignore: set")]
     assert not unset, unset
+
+
+
+def test_the_inbox_pulls_only_what_was_ticked_and_forgets_what_was_deleted():
+    """dev/inbox.py (plan 7.7, D33): the consented columns and nothing
+    else are selected; an object comes down only when the row's
+    attachments names it, and only from the row's own folder; each
+    report lands as a problems.json-shaped row under
+    inbox\\<user_id>\\ with the files beside it and the shot resolvable
+    by problems.shot_path; a second pull fetches nothing twice; a row
+    gone server-side takes its files with it, a user gone takes the
+    folder; index.md never names a removed report; fetch.log names
+    every fetch; the secret is read from the environment only and is
+    nowhere on the disk afterwards; nothing is ever POSTed."""
+    import io
+    import json
+    import shutil
+    import tempfile
+    import urllib.parse
+
+    import inbox as inbox_mod
+    import problems as problems_mod
+
+    U1 = "11111111-1111-4111-8111-111111111111"
+    U2 = "22222222-2222-4222-8222-222222222222"
+    R1 = "aaaaaaaa-0000-4000-8000-000000000001"
+    R2 = "aaaaaaaa-0000-4000-8000-000000000002"
+    R3 = "aaaaaaaa-0000-4000-8000-000000000003"
+    SECRET = "sb_secret_fixture_key_0123456789"
+    rows = {
+        R1: {"id": R1, "user_id": U1, "created_at": "2026-09-18T20:00:00+00:00",
+             "updated_at": "2026-09-18T20:00:00+00:00", "app_version": "1.1.0",
+             "os_build": "10.0.26200", "tier": "cpu", "kind": "wrong",
+             "place": "dictation", "text": "המילה האחרונה נעלמה",
+             "env": {"version": "1.1.0", "backend": "local"}, "status": "open",
+             "attachments": [f"{U1}/{R1}/shot.jpg", f"{U1}/{R1}/sidecar.json",
+                             f"{U1}/{R2}/shot.jpg"],       # another row's — refused
+             "dictation_raw": "המילה האחרונה", "dictation_final": "המילה האחרונה נעלמה",
+             "email": "nobody@example.com"},                # never asked for; ignored
+        R2: {"id": R2, "user_id": U1, "created_at": "2026-09-18T21:00:00+00:00",
+             "updated_at": "2026-09-18T21:00:00+00:00", "app_version": "1.1.0",
+             "os_build": "10.0.26200", "tier": "gpu", "kind": "idea",
+             "place": "settings", "text": "a switch for the dot", "env": {},
+             "status": "open", "attachments": [], "dictation_raw": None,
+             "dictation_final": None},
+        R3: {"id": R3, "user_id": U2, "created_at": "2026-09-18T22:00:00+00:00",
+             "updated_at": "2026-09-18T22:00:00+00:00", "app_version": "1.1.0",
+             "os_build": "10.0.22631", "tier": "cpu", "kind": "broken",
+             "place": "anywhere", "text": "the dot vanished", "env": {},
+             "status": "open", "attachments": [f"{U2}/{R3}/dictation.wav"],
+             "dictation_raw": None, "dictation_final": None},
+    }
+    objects = {f"{U1}/{R1}/shot.jpg": b"\xff\xd8\xff" + b"j" * 300,
+               f"{U1}/{R1}/sidecar.json": json.dumps({"seconds": 2.5, "backend": "local",
+                                                      "language": "he",
+                                                      "words": [{"w": "x", "p": 0.9}]}).encode(),
+               f"{U1}/{R2}/shot.jpg": b"\xff\xd8not-yours",
+               f"{U2}/{R3}/dictation.wav": _tests.RIFF}
+    calls: list[tuple[str, str, dict]] = []
+
+    class _Reply(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def opener(req, timeout=0):
+        url = req.full_url
+        calls.append((req.get_method(), url, dict(req.header_items())))
+        assert req.get_method() == "GET", "the inbox wrote to the project"
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.path == "/rest/v1/problem_reports":
+            query = dict(urllib.parse.parse_qsl(parsed.query))
+            assert query["select"].split(",") == list(inbox_mod.COLUMNS), query["select"]
+            page = [dict(r) for r in rows.values()]
+            if query.get("status", "").startswith("eq."):
+                page = [r for r in page if r["status"] == query["status"][3:]]
+            return _Reply(json.dumps(page).encode("utf-8"))
+        if parsed.path.startswith("/storage/v1/object/reports/"):
+            key = urllib.parse.unquote(parsed.path[len("/storage/v1/object/reports/"):])
+            assert key in objects, key
+            return _Reply(objects[key])
+        raise AssertionError(url)
+
+    tmp = Path(tempfile.mkdtemp(prefix="inbox-"))
+    try:
+        root = tmp / "problems"
+        project = inbox_mod.Project("https://fixture.supabase.co", SECRET, opener=opener)
+        dry = inbox_mod.pull(project, root=root, dry_run=True)
+        assert dry == {"rows": 3, "new": 0, "files": 0, "removed": 0,
+                       "folders_removed": 0, "users": 2}, dry
+        assert not (root / "inbox").exists(), "a dry run wrote"
+        counts = inbox_mod.pull(project, root=root)
+        assert (counts["rows"], counts["new"], counts["files"], counts["users"]) == (3, 3, 3, 2), counts
+        box = root / "inbox"
+        one = json.loads((box / U1 / f"{R1}.json").read_text("utf-8"))
+        assert one["id"] == R1 and one["user_id"] == U1 and one["kind"] == "wrong"
+        assert one["where"] == "dictation" and one["text"] == "המילה האחרונה נעלמה"
+        assert one["status"] == "open" and one["resolved"] is None and one["by"] == ""
+        assert one["dictation"]["raw"] == "המילה האחרונה" and one["dictation"]["seconds"] == 2.5
+        assert one["dictation"]["words"] and "wav" not in one["dictation"]
+        assert "email" not in one and "email" not in one["server"], "an unconsented column landed"
+        assert (box / U1 / f"{R1}.shot.jpg").read_bytes() == objects[f"{U1}/{R1}/shot.jpg"]
+        assert (box / U1 / f"{R1}.sidecar.json").is_file()
+        assert not (box / U1 / f"{R2}.shot.jpg").exists(), "another row's object came down"
+        assert not any(c[1].endswith(f"{R2}/shot.jpg") for c in calls), "fetched outside the row's folder"
+        # the shot resolves the way a local report's does
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        assert problems_mod.shot_path(store, one) == box / U1 / f"{R1}.shot.jpg"
+        two = json.loads((box / U1 / f"{R2}.json").read_text("utf-8"))
+        assert two["dictation"] == {} and two["shot"] == ""
+        three = json.loads((box / U2 / f"{R3}.json").read_text("utf-8"))
+        assert three["dictation"]["wav"] == str(box / U2 / f"{R3}.dictation.wav")
+        log_text = (box / "fetch.log").read_text("utf-8")
+        assert log_text.count("fetched row") == 3 and log_text.count("fetched object") == 3, log_text
+        assert "outside the row's own folder" in log_text
+        index = (box / "index.md").read_text("utf-8")
+        assert R1 in index and R2 in index and R3 in index and "3 report(s)" in index
+        assert SECRET not in log_text and SECRET not in index
+        for path in box.rglob("*"):
+            if path.is_file():
+                assert SECRET.encode() not in path.read_bytes(), path
+        # the secret went out as the two headers, on every call
+        assert all(h["Apikey"] == SECRET and h["Authorization"] == f"Bearer {SECRET}"
+                   for _m, _u, h in calls), calls[0]
+        # a second pull: nothing fetched twice
+        before = len(calls)
+        again = inbox_mod.pull(project, root=root)
+        assert again["new"] == 0 and again["files"] == 0, again
+        assert len(calls) == before + 1, "objects were fetched again"
+        # the person deleted R1, and U2 ran Delete my account
+        del rows[R1]
+        del rows[R3]
+        gone = inbox_mod.pull(project, root=root)
+        assert gone["removed"] == 1 and gone["folders_removed"] == 1, gone
+        assert not (box / U1 / f"{R1}.json").exists() and not (box / U1 / f"{R1}.shot.jpg").exists()
+        assert (box / U1 / f"{R2}.json").exists() and not (box / U2).exists()
+        index = (box / "index.md").read_text("utf-8")
+        assert R1 not in index and R3 not in index and R2 in index
+        assert inbox_mod.status(root) == {"reports": 1, "users": 1, "open": 1,
+                                          "inbox": str(box)}
+        assert [i["id"] for i in inbox_mod.rows_on_disk(root)] == [R2]
+        # only open rows, when asked
+        rows[R2]["status"] = "fixed"
+        assert inbox_mod.pull(project, root=root, status="open")["rows"] == 0
+        # the secret: environment only, and shaped like the project's
+        import os
+        saved = os.environ.pop(inbox_mod.SECRET_VAR, None)
+        try:
+            try:
+                inbox_mod.secret()
+                raise AssertionError("no secret and no error")
+            except inbox_mod.InboxError as e:
+                assert "user variables" in str(e)
+            os.environ[inbox_mod.SECRET_VAR] = "sb_publishable_not_the_secret"
+            try:
+                inbox_mod.secret()
+                raise AssertionError("the publishable key passed as the secret")
+            except inbox_mod.InboxError:
+                pass
+        finally:
+            if saved is None:
+                os.environ.pop(inbox_mod.SECRET_VAR, None)
+            else:
+                os.environ[inbox_mod.SECRET_VAR] = saved
+        # never in the product tree: dev/ is export-ignored whole
+        # (test_export_ignore_covers_forbidden archives and checks)
+        assert (REPO / "dev" / "inbox.py").is_file()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

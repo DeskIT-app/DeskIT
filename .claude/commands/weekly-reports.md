@@ -345,6 +345,68 @@ option governs what you *ask*, not what you *quote*.
 
 ---
 
+### 0e. Strangers' reports: the inbox (DISTRIBUTION_PLAN.md 7.7, D33)
+
+Since the app became installable, reports also arrive from people who are
+not the owner. They never touch `problems.json`. `dev\inbox.py` pulls them
+from the project into `problems\inbox\<user_id>\<report_id>.json`, in the
+SAME shape as a `problems.json` row (`id, at, where, kind, text, status,
+resolved, by, dictation{}, shot, env{}`, plus `user_id` and `server{}`), with
+the files beside each row under `<report_id>.shot.jpg`, `.dictation.wav`,
+`.sidecar.json`. Pull first, then read both stores — the owner's rows and
+the inbox — with the same eyes:
+
+```
+.venv\Scripts\python.exe dev\inbox.py pull
+.venv\Scripts\python.exe -c "import sys,json;sys.path.insert(0,'dev');import inbox;print(json.dumps([r for r in inbox.rows_on_disk() if r['status']=='open'],ensure_ascii=False,indent=2))"
+```
+
+`pull` needs `DESKIT_SUPABASE_SECRET` in the owner's user environment. If it
+prints `inbox: DESKIT_SUPABASE_SECRET is not set`, say so in the run's final
+message and go on with the owner's own reports; do not look for the key
+anywhere else, and never write it anywhere.
+
+**A missing field means "not consented — do not infer it."** Each person
+ticked, on their report card, exactly what travels: the screenshot, the
+recording, the transcript text, the settings snapshot. A row with no `shot`
+has no picture because the person said no, not because the fetch failed;
+`dictation` without `raw`/`final` means the transcript was not shared; an
+`env` with only version/os_build/consents/gpu/tier means the settings were
+not shared. Rule on what is there. Never guess at what was withheld, never
+write "probably the mic setting" about a person who kept their settings.
+
+**Opening a screenshot with the Read tool uploads it to Anthropic under the
+owner's account.** That is disclosed to users in the privacy policy ("when
+the developer processes reports with AI tools under his own account", D25),
+and it is why only pictures the person ticked are on this disk at all. Open
+the ones that are here; do not go looking for more.
+
+**There is no reply channel (D33(b)).** Nothing you write reaches the person
+who sent the report: no `report_replies`, no status pushed back, no
+`developer_status`, and `dev\inbox.py` has no `reply` command on purpose. A
+person learns a report was fixed by using the app after an update. So for a
+stranger's report the mandate is D33(c): what you can check, check against
+the current tree (fixed / still broken / false alarm); a still-broken one you
+try to fix yourself; what you cannot check, summarise. Your written output to
+the owner holds ONLY what is still open — a bug verified still present that
+you could not fix or whose fix needs his approval, or a report you could not
+check. Fixed ones and false alarms do not appear. For every fix you made: one
+short line saying what, one saying how to check it by hand.
+
+**`questions.ask` is for the owner's own reports only.** There is no question
+surface for strangers; a stranger's report that raises a question is one you
+cannot check, and it goes into the summary as such.
+
+**Tombstones.** A report the person deleted, or an account they deleted, is
+gone from `problems\inbox\` on the next pull, and `problems\inbox\index.md`
+is rewritten from what is on disk. Do not quote a report from an earlier
+week's archive if it is not in the inbox now; the person took it back.
+
+**Versions, not branches.** A stranger's row carries `env.version` (the
+installed build) and `server.app_version`; there is no branch stamp on it and
+you must not write one. What "the current tree" means for such a report is
+`main` at the version the person ran or later.
+
 ## 1. Gather the evidence, then rule on each report
 
 For each open report, collect what actually exists:
