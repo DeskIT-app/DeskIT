@@ -2,6 +2,13 @@
 .venv/
 __pycache__/
 
+# The account project's SECRET key never lives in a file here at all:
+# dev/inbox.py reads it as DESKIT_SUPABASE_SECRET from the owner's own
+# Windows user environment (plan 8.10), the product ships only the
+# publishable key (sb.py), and nothing under this folder — not .env, not
+# a settings file — is where it goes. The name is reserved here so it
+# is never mistaken for one of the .env keys above.
+
 # Everything below is a record of what you actually dictated — keep it off
 # any remote. app.log holds the pasted text, pending\ holds raw audio,
 # vocab.json holds words you said paired with what you meant, and
