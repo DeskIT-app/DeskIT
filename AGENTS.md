@@ -1206,4 +1206,4 @@ ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedg
 | `tests.py` | the product suite — hundreds of plain-assert test functions, `NEEDS_SCREEN`, `--no-screen`. Not the file you run |
 | `dev\tests_ops.py` | the owner's suite: the nightly run, the git card, the routine's docs — imports `tests.py`'s fixtures, runs only in this checkout |
 | `tests_quiet.py` | how both are run: on a hidden Windows desktop, `--no-screen` while he is at the machine (house rule 8). `run_hidden()` is importable, for anything else that must not be seen |
-| `.github/workflows/ci.yml` | the product suite on `windows-latest`, `tests.py --no-screen`, on every push |
+| `.github/workflows/ci.yml` | the product suite on `windows-latest`, `tests.py --no-screen`, on every push; installs `requirements.lock` exactly as the build does (`--require-hashes --no-deps`), `av` from `packs.lock`, `requests` for the phone tests, then `pip check` |

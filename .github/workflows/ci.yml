@@ -39,20 +39,30 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: requirements.txt
+          cache-dependency-path: |
+            requirements.lock
+            packs.lock
 
-      # requirements.txt minus the two CUDA runtimes (a gigabyte the
-      # runner's CPU never loads), plus what the modules import without
-      # naming in requirements.txt yet — PR 10's requirements.lock takes
-      # over from this list.
+      # The base set exactly as the installer lays it down (10.3 steps 1
+      # and 5, packaging/build_local.ps1): requirements.lock, every wheel
+      # hashed, no dependency resolution, wheels only. A lock that drifts
+      # from requirements.txt, or a module that imports something the
+      # lock never carried, fails here before it fails on a stranger's
+      # machine. The lock pins pip itself (10.2), so the runner's pip is
+      # replaced by the product's.
+      #
+      # Then the Recording pack the way packs.py fetches it — av pinned
+      # and hashed from packs.lock (13.4, D24; faster-whisper imports it,
+      # and the suite records) — and requests, the suite's own HTTP
+      # client for the phone routes: a test dependency, not a product one.
       - name: Install
         shell: pwsh
         run: |
-          $reqs = Get-Content requirements.txt | Where-Object { $_ -notmatch '^nvidia-' }
-          $ci = Join-Path $env:RUNNER_TEMP requirements-ci.txt
-          Set-Content -Path $ci -Value $reqs -Encoding utf8
-          python -m pip install --upgrade pip
-          python -m pip install -r $ci pillow comtypes httpx requests av
+          python -m pip install --require-hashes --no-deps --only-binary=:all: -r requirements.lock
+          python -c "import packs, sys; sys.stdout.write(packs.requirements_text(packs.pack('recording')))" | Set-Content -Path (Join-Path $env:RUNNER_TEMP recording.txt) -Encoding utf8
+          python -m pip install --require-hashes --no-deps --only-binary=:all: -r (Join-Path $env:RUNNER_TEMP recording.txt)
+          python -m pip install requests
+          python -m pip check
 
       - name: Product suite
         shell: pwsh

@@ -32489,6 +32489,13 @@ def test_dictation_never_hands_faster_whisper_a_file():
     for name in (".github/workflows/release.yml", "packaging/build_local.ps1"):
         text = (REPO / name).read_text("utf-8")
         assert text.count("--no-deps") == 2, f"{name}: the lock is installed with dependencies"
+    # CI proves the lock on every push: the same install as the build,
+    # av the way packs.py fetches it, and pip's own word that the set is
+    # closed (2026-09-18, after PR 26).
+    ci = (REPO / ".github" / "workflows" / "ci.yml").read_text("utf-8")
+    assert "--require-hashes --no-deps --only-binary=:all: -r requirements.lock" in ci
+    assert "packs.requirements_text(packs.pack('recording'))" in ci and "pip check" in ci
+    assert "requirements.txt" not in ci.split("- name: Install")[1], "CI still resolves requirements.txt"
     lock = (REPO / "requirements.lock").read_text("utf-8")
     assert "\nav==" not in lock and "taken OUT by hand" in lock
     assert (REPO / "vendor" / "av" / "__init__.py").exists()
