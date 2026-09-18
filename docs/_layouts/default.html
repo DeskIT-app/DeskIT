@@ -8,12 +8,12 @@ visitor's browser talks to nobody but GitHub Pages.
 {%- assign home = false -%}
 {%- if page.url == "/" or page.url == "/index.html" -%}{%- assign home = true -%}{%- endif -%}
 {%- assign lang = page.lang | default: site.lang -%}
-{%- if page.url == "/privacy/" or page.url == "/terms/" -%}{%- assign lang = "en" -%}{%- endif -%}
+{%- if page.url == "/privacy.html" or page.url == "/terms.html" -%}{%- assign lang = "en" -%}{%- endif -%}
 {%- comment -%} not page.dir: Jekyll's own page.dir is the page's folder ("/", "/he/") {%- endcomment -%}
 {%- if lang == "he" -%}{%- assign dir = "rtl" -%}{%- else -%}{%- assign dir = "ltr" -%}{%- endif -%}
 {%- assign guide = false -%}
-{%- if page.url contains "/he/" -%}{%- assign guide = true -%}{%- assign prefix = "/he/" -%}{%- assign twin = page.url | replace_first: "/he/", "/en/" -%}{%- endif -%}
-{%- if page.url contains "/en/" -%}{%- assign guide = true -%}{%- assign prefix = "/en/" -%}{%- assign twin = page.url | replace_first: "/en/", "/he/" -%}{%- endif -%}
+{%- if page.url contains "/he/" -%}{%- assign guide = true -%}{%- assign prefix = "/he/" -%}{%- assign twin = page.url | replace_first: "/he/", "/en/" | remove: ".html" -%}{%- endif -%}
+{%- if page.url contains "/en/" -%}{%- assign guide = true -%}{%- assign prefix = "/en/" -%}{%- assign twin = page.url | replace_first: "/en/", "/he/" | remove: ".html" -%}{%- endif -%}
 <!DOCTYPE html>
 <html lang="{{ lang }}" dir="{{ dir }}">
 <head>
@@ -31,15 +31,15 @@ visitor's browser talks to nobody but GitHub Pages.
     <a class="brand" href="{{ '/' | relative_url }}"><img src="{{ '/assets/icon.png' | relative_url }}" alt="" width="28" height="28"><span>DeskIT</span></a>
     <nav>
       {%- if lang == "he" %}
-      <a href="{{ '/he/quickstart/' | relative_url }}">המדריך</a>
+      <a href="{{ '/he/quickstart' | relative_url }}">המדריך</a>
       <a href="https://github.com/DeskIT-app/DeskIT/releases/latest">להוריד</a>
       <a href="https://github.com/DeskIT-app/DeskIT">הקוד</a>
-      <a href="{{ '/privacy/' | relative_url }}">פרטיות</a>
+      <a href="{{ '/privacy' | relative_url }}">פרטיות</a>
       {%- else %}
-      <a href="{{ '/en/quickstart/' | relative_url }}">Guide</a>
+      <a href="{{ '/en/quickstart' | relative_url }}">Guide</a>
       <a href="https://github.com/DeskIT-app/DeskIT/releases/latest">Download</a>
       <a href="https://github.com/DeskIT-app/DeskIT">Source</a>
-      <a href="{{ '/privacy/' | relative_url }}">Privacy</a>
+      <a href="{{ '/privacy' | relative_url }}">Privacy</a>
       {%- endif %}
       {%- if guide %}
       {%- if lang == "he" %}<a class="lang" lang="en" dir="ltr" href="{{ twin | relative_url }}">English</a>
@@ -53,7 +53,7 @@ visitor's browser talks to nobody but GitHub Pages.
 
 {%- if guide %}
 {%- assign chapters = site.pages | where_exp: "p", "p.url contains prefix" | sort: "url" -%}
-{%- assign quick_url = prefix | append: "quickstart/" -%}
+{%- assign quick_url = prefix | append: "quickstart.html" -%}
 {%- assign quick = chapters | where: "url", quick_url | first -%}
 {%- assign i = -1 -%}
 {%- for p in chapters %}{% if p.url == page.url %}{% assign i = forloop.index0 %}{% endif %}{% endfor -%}
@@ -62,10 +62,10 @@ visitor's browser talks to nobody but GitHub Pages.
     <p class="side-head">{% if lang == "he" %}המדריך{% else %}The guide{% endif %}</p>
     <ul>
       {%- if quick %}
-      <li{% if quick.url == page.url %} class="here"{% endif %}><a href="{{ quick.url | relative_url }}">{{ quick.title }}</a></li>
+      <li{% if quick.url == page.url %} class="here"{% endif %}><a href="{{ quick.url | remove: ".html" | relative_url }}">{{ quick.title }}</a></li>
       {%- endif %}
       {%- for p in chapters %}{% if p.url != quick_url %}
-      <li{% if p.url == page.url %} class="here"{% endif %}><a href="{{ p.url | relative_url }}">{{ p.title }}</a></li>
+      <li{% if p.url == page.url %} class="here"{% endif %}><a href="{{ p.url | remove: ".html" | relative_url }}">{{ p.title }}</a></li>
       {%- endif %}{% endfor %}
     </ul>
   </aside>
@@ -74,8 +74,8 @@ visitor's browser talks to nobody but GitHub Pages.
     {%- if i >= 0 %}
     {%- assign pi = i | minus: 1 -%}{%- assign ni = i | plus: 1 -%}
     <nav class="pager">
-      {%- if pi >= 0 %}{% assign pp = chapters[pi] %}<a class="prev" href="{{ pp.url | relative_url }}"><small>{% if lang == "he" %}הקודם{% else %}Previous{% endif %}</small>{{ pp.title }}</a>{% else %}<span></span>{% endif %}
-      {%- if ni < chapters.size %}{% assign np = chapters[ni] %}<a class="next" href="{{ np.url | relative_url }}"><small>{% if lang == "he" %}הבא{% else %}Next{% endif %}</small>{{ np.title }}</a>{% endif %}
+      {%- if pi >= 0 %}{% assign pp = chapters[pi] %}<a class="prev" href="{{ pp.url | remove: ".html" | relative_url }}"><small>{% if lang == "he" %}הקודם{% else %}Previous{% endif %}</small>{{ pp.title }}</a>{% else %}<span></span>{% endif %}
+      {%- if ni < chapters.size %}{% assign np = chapters[ni] %}<a class="next" href="{{ np.url | remove: ".html" | relative_url }}"><small>{% if lang == "he" %}הבא{% else %}Next{% endif %}</small>{{ np.title }}</a>{% endif %}
     </nav>
     {%- endif %}
   </main>
@@ -89,8 +89,8 @@ visitor's browser talks to nobody but GitHub Pages.
 <footer class="foot">
   <div class="wrap">
     <span>DeskIT · Apache-2.0</span>
-    <a href="{{ '/privacy/' | relative_url }}">{% if lang == "he" %}מדיניות פרטיות{% else %}Privacy policy{% endif %}</a>
-    <a href="{{ '/terms/' | relative_url }}">{% if lang == "he" %}תנאי החשבון{% else %}Account terms{% endif %}</a>
+    <a href="{{ '/privacy' | relative_url }}">{% if lang == "he" %}מדיניות פרטיות{% else %}Privacy policy{% endif %}</a>
+    <a href="{{ '/terms' | relative_url }}">{% if lang == "he" %}תנאי החשבון{% else %}Account terms{% endif %}</a>
     <a href="https://github.com/DeskIT-app/DeskIT">GitHub</a>
     <a href="https://github.com/DeskIT-app/DeskIT/edit/main/docs/{{ page.path }}">{% if lang == "he" %}לשפר את הדף הזה{% else %}Improve this page{% endif %}</a>
   </div>

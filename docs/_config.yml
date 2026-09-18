@@ -11,7 +11,8 @@ lang: he
 markdown: kramdown
 kramdown:
   input: GFM
-permalink: pretty
+# No pretty permalinks: a page's URL is its file path, so the guide's relative links
+# (`02-first-run`, `../he/01-install`) resolve on the site exactly as they do on GitHub.
 exclude:
   - distplan
   - strings
