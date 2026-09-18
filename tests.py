@@ -29642,10 +29642,21 @@ def test_main_shows_the_tour_once_and_again_on_request():
     app.cfg = config_mod.load(Path(sys.path[0]) / "defaults.toml")
     assert app.cfg.setup.tour is False and "setup.tour" in config_mod.STATE_KEYS
     assert app.tour_due() is False, "the wizard has not run"
-    app.cfg = dataclasses.replace(app.cfg, setup=dataclasses.replace(app.cfg.setup, done=True))
-    assert app.tour_due() is True
-    app.cfg = dataclasses.replace(app.cfg, setup=dataclasses.replace(app.cfg.setup, tour=True))
-    assert app.tour_due() is False, "seen once is seen"
+    # through the REAL layers, not dataclasses.replace: the owner saw the
+    # tour on every start (2026-09-18, twice) because build() read
+    # setup.done from state.json and never setup.tour
+    defaults = Path(sys.path[0]) / "defaults.toml"
+    with tempfile.TemporaryDirectory() as d:
+        state = Path(d) / "state.json"
+        settings = Path(d) / "settings.toml"
+        config_mod.write_state(state, {"setup.done": True})
+        app.cfg = config_mod.load_layered(defaults, settings, state)
+        assert app.cfg.setup.done is True and app.cfg.setup.tour is False
+        assert app.tour_due() is True
+        config_mod.write_state(state, {"setup.done": True, "setup.tour": True})
+        app.cfg = config_mod.load_layered(defaults, settings, state)
+        assert app.cfg.setup.tour is True, "state.json's setup.tour never reached the config"
+        assert app.tour_due() is False, "seen once is seen"
     app.cfg = dataclasses.replace(app.cfg, setup=dataclasses.replace(app.cfg.setup, tour=False), indicator=False)
     assert app.tour_due() is False, "no dot, nothing to point at"
     saved: list = []

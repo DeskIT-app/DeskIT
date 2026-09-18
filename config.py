@@ -1717,6 +1717,7 @@ def build(data: dict) -> Config:
         ),
         setup=SetupConfig(
             done=bool(setup.get("done", SetupConfig.done)),
+            tour=bool(setup.get("tour", SetupConfig.tour)),
             autostart=bool(setup.get("autostart", SetupConfig.autostart)),
             offer_gpu_pack=bool(setup.get("offer_gpu_pack", SetupConfig.offer_gpu_pack)),
         ),
