@@ -20,6 +20,8 @@ with your clipboard that DeskIT does not.
 | Ctrl+F6 | a photo from the camera — the light beside the lens goes off at the shutter, and that is a real promise | `captures` |
 | Ctrl+F10 | ask about the screen: select a region, a card opens, ask in Hebrew by voice or by typing | nothing saved; the picture lives in memory while the card is open |
 
+![The picker](../img/07-picker.png)
+
 **Screen recording and the camera need the Recording pack**: PyAV with its FFmpeg, 28 MB from
 PyPI, installed from **Settings > Screen** with one button. The installer does not carry it
 because that FFmpeg build is GPL (x264, x265); the card shows the licences before the download,
@@ -29,6 +31,8 @@ and dictation works without it.
 include computer sound (then the microphone is opened when audio is "mic"), and the
 Snipping-Tool switch: while DeskIT runs and the switch is on, Windows' own Snipping Tool stops
 answering Win+Shift+S.
+
+![Settings > Screen](../img/07-settings-screen.png)
 
 ## Ask the screen
 
@@ -45,6 +49,8 @@ The card needs a model that can see. Three ways, and the card offers them when n
 
 Every answer says which backend answered and how long it took ("answered in 2.1 s via
 ollama").
+
+![The ask card](../img/07-ask-card.png)
 
 ![The card without a model](../img/07-ollama-three-buttons.png)
 

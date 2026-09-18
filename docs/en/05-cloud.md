@@ -27,6 +27,8 @@ only through its consent card — never from the settings file — and closes at
 same tab. The card carries the provider's own sentence about your data and the version of
 those terms; when the provider changes its terms, the card comes back.
 
+![The consent card for text](../img/05-consent-cloud-text.png)
+
 ## Getting a free key
 
 **Groq first.** One Groq key unlocks the repair pass, punctuation, lookup and, on a PC without
@@ -43,6 +45,8 @@ error — and the key is stored. **Remove** deletes it. The sentence under each 
 > This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it only to api.groq.com. It is never written to a file, a log or a report, and never sent to the developer — see Dashboard > Network for every request.
 
 [Chapter 4](04-privacy) shows how to check that sentence yourself in two minutes.
+
+![The YOUR CLOUD KEYS block](../img/05-your-cloud-keys.png)
 
 ## The providers' own words
 

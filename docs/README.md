@@ -27,16 +27,21 @@ sentence is the app's, no owner words, every screen name is real).
 ## Pictures still to take (chapter 14.2)
 
 Taken on the hidden desktop, 2026-09-18: the seven wizard pages
-(`02-*.png`) and the ask card's three-button state
-(`07-ollama-three-buttons.png`). Not yet — they need a real screen, an
-installer or a phone: `01-smartscreen-more-info`, `01-smartscreen-run-anyway`,
-`01-installer-language`, `01-installer-finish`, `03-dot-states`, `03-hint`,
-`03-shelf`, `03-corrections`, `04-credential-manager`, `04-network-tab-loopback`,
-`04-offline-refused-row`, `05-groq-console-create-key`, `05-aistudio-create-key`,
-`05-your-cloud-keys`, `05-consent-cloud-text`, `06-settings-phone`, `06-ime-enable`,
-`07-picker`, `07-ask-card`, `07-settings-screen`, `08-folder-explorer`,
-`08-uninstall-question`, `09-report-card`. Name them so and link them
-from the chapter that owns the screen; the test then requires them.
+(`02-*.png`), the ask card's three-button state
+(`07-ollama-three-buttons.png`), and the twelve screens of the app itself
+— the dot's colours, the hint card, the shelf, Corrections, the offline
+switch with its refused row, YOUR CLOUD KEYS, the consent card, Settings >
+Phone / Screen, the picker, the ask card, the report box (`03-*`, `04-offline-
+refused-row`, `05-*`, `06-settings-phone`, `07-*`, `09-report-card`) — every
+one from a temporary `DESKIT_HOME` with invented content: no transcript,
+no vocabulary and no key of anyone's. Not yet — they need a real screen,
+an installer, a phone, Explorer, Credential Manager or a provider's
+console: `01-smartscreen-more-info`, `01-smartscreen-run-anyway`,
+`01-installer-language`, `01-installer-finish`, `04-credential-manager`,
+`04-network-tab-loopback`, `05-groq-console-create-key`,
+`05-aistudio-create-key`, `06-ime-enable`, `08-folder-explorer`,
+`08-uninstall-question`. Name them so and link them from the chapter that
+owns the screen; the test then requires them.
 
 ## The Hebrew pages
 

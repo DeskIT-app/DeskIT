@@ -26,6 +26,8 @@ relay, no server of ours in between.
 1. Install Tailscale on both devices; confirm the PC has an address with `tailscale ip -4`.
 2. Turn **Dictate from your phone** on. **Settings > Phone** shows the address the PC listens
    on and a **Copy link** button.
+
+   ![Settings > Phone](../img/06-settings-phone.png)
 3. Give the address HTTPS, once, in a terminal on the PC:
 
    ```

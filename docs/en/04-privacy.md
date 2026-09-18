@@ -39,6 +39,8 @@ Where the Keys page is: **Settings > Privacy**, the block **YOUR CLOUD KEYS**. O
 on the same tab. Check 4 applies once the optional account exists (a later version); until
 then the migration in the repository is the promise, checkable in advance.
 
+![Offline mode on, and the refused row on the Network place](../img/04-offline-refused-row.png)
+
 ### The two commands for check 5 and 6
 
 Check 5, from the install folder (`%LOCALAPPDATA%\Programs\DeskIT`):

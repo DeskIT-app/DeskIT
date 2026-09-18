@@ -20,6 +20,8 @@ that one movement.
   installed ([chapter 2](02-first-run), NVIDIA cards only) and transcribes it as English.
   There is also a separate "Dictate English" key you can bind on the **Keys** place.
 
+![The hint card, while the key is held](../img/03-hint.png)
+
 ## The dot
 
 A small dot sits in a corner of your main screen (**Settings > General** chooses the corner,
@@ -33,8 +35,12 @@ or press **Move the dot**). Its colour is the state:
 | amber | transcribing, or busy with a cloud pass |
 | grey, no glow | paused (the pause key, or a full-screen game) |
 
+![The dot's colours](../img/03-dot-states.png)
+
 Click the dot and a panel (the shelf) opens beside it: what the app is doing, what is waiting
 for you, and the last things you said.
+
+![The shelf](../img/03-shelf.png)
 
 ## Where the text goes
 
@@ -58,6 +64,8 @@ dictations; the **Corrections** place lists every pair it knows and lets you for
 DeskIT also reads each dictation a second time on its own (the second reading) and proposes a
 correction when two readings disagree; the proposal is a card with **Yes** and **No**. On a
 PC without an NVIDIA card the second reading is off.
+
+![The Corrections place](../img/03-corrections.png)
 
 ## The other keys
 

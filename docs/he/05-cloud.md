@@ -25,6 +25,8 @@ title: 5. תכונות ענן
 כרטיס ההסכמה שלו — אף פעם לא מקובץ ההגדרות — ונסגר מיד מאותה לשונית. הכרטיס נושא את המשפט
 של הספק עצמו על הנתונים שלך ואת גרסת התנאים; כשהספק משנה את התנאים, הכרטיס חוזר.
 
+![כרטיס ההסכמה לטקסט](../img/05-consent-cloud-text.png)
+
 ## להשיג מפתח חינמי
 
 **Groq קודם.** מפתח Groq אחד פותח את מעבר התיקון, הפיסוק, החיפוש, ובמחשב בלי כרטיס אנבידיה
@@ -40,6 +42,8 @@ title: 5. תכונות ענן
 > This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it only to api.groq.com. It is never written to a file, a log or a report, and never sent to the developer — see Dashboard > Network for every request.
 
 [פרק 4](04-privacy) מראה איך לבדוק את המשפט הזה בעצמך בשתי דקות.
+
+![הבלוק YOUR CLOUD KEYS](../img/05-your-cloud-keys.png)
 
 ## המילים של הספקים עצמם
 

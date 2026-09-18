@@ -24,6 +24,8 @@ title: 6. מקלדת הטלפון
 1. מתקינים Tailscale בשני המכשירים; מוודאים שלמחשב יש כתובת עם `tailscale ip -4`.
 2. מדליקים **Dictate from your phone**. **Settings > Phone** מציג את הכתובת שהמחשב מאזין
    בה וכפתור **Copy link**.
+
+   ![Settings > Phone](../img/06-settings-phone.png)
 3. נותנים לכתובת HTTPS, פעם אחת, בטרמינל במחשב:
 
    ```

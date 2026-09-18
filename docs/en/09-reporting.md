@@ -19,6 +19,8 @@ other. The box attaches, for you: a screenshot of the monitor under the mouse, t
 dictation's text and recording, and a snapshot of your settings (keys never; the snapshot
 goes through the same redactor as the log). Enter keeps it; Esc cancels.
 
+![The report box](../img/09-report-card.png)
+
 The dashboard's **Problems** place lists your reports, opens each one's folder
 (`%LOCALAPPDATA%\DeskIT\problems\<id>\`), and has the same box for a report written at the
 desk.
