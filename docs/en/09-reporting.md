@@ -28,7 +28,7 @@ data is a later version; until then the folder is yours to attach to an issue if
 
 ## Telling us
 
-**GitHub Issues** — [the bug template](https://github.com/massifapp/DeskIT/issues/new/choose)
+**GitHub Issues** — [the bug template](https://github.com/DeskIT-app/DeskIT/issues/new/choose)
 asks what you did, what happened, what you expected, how you installed, and the diagnostics
 block. Get the block with **Settings > The app > Copy diagnostics**, or from the install
 folder:

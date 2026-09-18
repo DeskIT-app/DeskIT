@@ -31408,7 +31408,7 @@ def test_winget_manifest_fields():
                  "releases/download/vx.y.z/DeskIT-Setup-x.y.z.exe", "ManifestVersion: 1.6.0"):
         assert must in installer, must
     locale = (w / "YoavShimron.DeskIT.locale.en-US.yaml").read_text("utf-8")
-    for must in ("License: Apache-2.0", "PrivacyUrl: https://massifapp.github.io/DeskIT/privacy",
+    for must in ("License: Apache-2.0", "PrivacyUrl: https://deskit-app.github.io/DeskIT/privacy",
                  "Publisher: Yoav Shimron", "PackageName: DeskIT", "- dictation", "- hebrew",
                  "- speech-to-text", "- whisper", "- push-to-talk", "Win+H"):
         assert must in locale, must
@@ -32395,9 +32395,9 @@ def test_migrations_bring_the_files_forward_and_never_half_way():
 # gets its name, started detached with 11.6's switches, and the checkout
 # never installing anything.
 
-_FEED = {"version": "9.9.9", "url": "https://github.com/massifapp/DeskIT/releases/download/v9.9.9/DeskIT-Setup-9.9.9.exe",
+_FEED = {"version": "9.9.9", "url": "https://github.com/DeskIT-app/DeskIT/releases/download/v9.9.9/DeskIT-Setup-9.9.9.exe",
          "sha256": "", "size": 0, "min_config_version": 1,
-         "notes_url": "https://github.com/massifapp/DeskIT/releases/tag/v9.9.9",
+         "notes_url": "https://github.com/DeskIT-app/DeskIT/releases/tag/v9.9.9",
          "published": "2026-10-01T00:00:00Z"}
 
 
@@ -32411,8 +32411,8 @@ def _feed_for(payload: bytes, **over) -> dict:
 def _github(feed: dict, installer: bytes = b"MZ-not-really"):
     """A fake wire: the API's latest release, the feed behind one redirect,
     the installer behind one redirect — every request written down."""
-    api = "https://api.github.com/repos/massifapp/DeskIT/releases/latest"
-    feed_url = "https://github.com/massifapp/DeskIT/releases/download/v9.9.9/latest.json"
+    api = "https://api.github.com/repos/DeskIT-app/DeskIT/releases/latest"
+    feed_url = "https://github.com/DeskIT-app/DeskIT/releases/download/v9.9.9/latest.json"
     feed_cdn = "https://objects.githubusercontent.com/x/latest.json"
     exe_cdn = "https://objects.githubusercontent.com/x/DeskIT-Setup-9.9.9.exe"
     seen: list[tuple[str, str, dict]] = []
@@ -32529,8 +32529,8 @@ def test_update_check_request_shape():
         rel = updates.check(force=True)
         assert rel is not None and rel.version == "9.9.9", rel
         urls = [u for _m, u, _h in seen]
-        assert urls == ["https://api.github.com/repos/massifapp/DeskIT/releases/latest",
-                        "https://github.com/massifapp/DeskIT/releases/download/v9.9.9/latest.json",
+        assert urls == ["https://api.github.com/repos/DeskIT-app/DeskIT/releases/latest",
+                        "https://github.com/DeskIT-app/DeskIT/releases/download/v9.9.9/latest.json",
                         "https://objects.githubusercontent.com/x/latest.json"], urls
         assert seen[0][2].get("Accept") == "application/vnd.github+json"
         assert all("?" not in u for u in urls)

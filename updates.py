@@ -46,7 +46,7 @@ import version
 log = logging.getLogger("app")
 
 #: The repository the feed lives in — the public one of D28.
-REPO = "massifapp/DeskIT"
+REPO = "DeskIT-app/DeskIT"
 API = f"https://api.github.com/repos/{REPO}/releases"
 WINGET_ID = "YoavShimron.DeskIT"
 WINGET_COMMAND = f"winget upgrade {WINGET_ID}"

@@ -19,7 +19,7 @@ AppsAndFeaturesEntries:
     ProductCode: "{9DE44D29-7270-4406-B00A-E6517B5629CE}_is1"
 Installers:
   - Architecture: x64
-    InstallerUrl: https://github.com/massifapp/DeskIT/releases/download/vx.y.z/DeskIT-Setup-x.y.z.exe
+    InstallerUrl: https://github.com/DeskIT-app/DeskIT/releases/download/vx.y.z/DeskIT-Setup-x.y.z.exe
     InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
 ManifestType: installer
 ManifestVersion: 1.6.0

@@ -18,7 +18,7 @@ relay, no server of ours in between.
 - **Tailscale** on the PC and on the phone, signed into the same account — this version
   reaches the PC over your Tailscale network only. Pairing over home Wi-Fi without Tailscale
   is planned for a later version.
-- The keyboard APK from the [latest release](https://github.com/massifapp/DeskIT/releases/latest)
+- The keyboard APK from the [latest release](https://github.com/DeskIT-app/DeskIT/releases/latest)
   (`DeskIT-keyboard-x.y.z.apk`); a Play listing comes later.
 
 ## Setting it up

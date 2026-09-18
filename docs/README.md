@@ -1,6 +1,6 @@
 # docs/ — the site (DISTRIBUTION_PLAN.md chapter 14, D26)
 
-GitHub Pages serves this folder at `https://massifapp.github.io/DeskIT/`
+GitHub Pages serves this folder at `https://deskit-app.github.io/DeskIT/`
 (`.github/workflows/pages.yml`, Jekyll, `_config.yml`). Export-ignored:
 none of it reaches an installed copy; the app links to it (the wizard's
 Welcome page, About, the Update card, the winget manifest).

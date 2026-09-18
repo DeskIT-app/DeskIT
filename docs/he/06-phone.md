@@ -16,7 +16,7 @@ title: 6. מקלדת הטלפון
   **Settings > Phone**).
 - **Tailscale** על המחשב ועל הטלפון, מחוברים לאותו חשבון — הגרסה הזאת מגיעה למחשב רק דרך
   רשת ה־Tailscale שלך. צימוד ברשת הביתית בלי Tailscale מתוכנן לגרסה מאוחרת יותר.
-- קובץ ה־APK של המקלדת מ[הגרסה האחרונה](https://github.com/massifapp/DeskIT/releases/latest)
+- קובץ ה־APK של המקלדת מ[הגרסה האחרונה](https://github.com/DeskIT-app/DeskIT/releases/latest)
   (`DeskIT-keyboard-x.y.z.apk`); רישום ב־Play יגיע בהמשך.
 
 ## הגדרה

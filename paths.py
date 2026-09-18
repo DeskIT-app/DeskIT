@@ -249,7 +249,7 @@ CHANNEL, CHANNEL_NOTE = read_channel()
 #: The public site (GitHub Pages of the repository, D26): the guide,
 #: the privacy policy and the terms live under it — one prefix for
 #: the wizard's links, About, the winget manifest and the listings.
-PAGES_URL = "https://massifapp.github.io/DeskIT"
+PAGES_URL = "https://deskit-app.github.io/DeskIT"
 
 
 def short(path) -> str:

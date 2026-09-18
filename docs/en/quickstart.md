@@ -11,7 +11,7 @@ screen exactly as DeskIT draws it.
 
 1. **Get it.** With winget: open a terminal and run `winget install YoavShimron.DeskIT`.
    Without it: download `DeskIT-Setup-x.y.z.exe` from the
-   [latest release](https://github.com/massifapp/DeskIT/releases/latest). If Windows says
+   [latest release](https://github.com/DeskIT-app/DeskIT/releases/latest). If Windows says
    "Windows protected your PC", press **More info**, then **Run anyway** — [chapter 1](01-install)
    says why.
 2. **Install.** No administrator password is asked. Pick Hebrew or English for the installer

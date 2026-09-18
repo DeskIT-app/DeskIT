@@ -2,7 +2,7 @@
 
 Subsystem map for the distribution plan. Read-only survey of
 `C:\Users\shimr\Desktop\Organized\Projects\DeskIT` on 2026-09-15 (repo at
-commit `1159b16`, branch `main`, remote `https://github.com/massifapp/DeskIT.git`,
+commit `1159b16`, branch `main`, remote `https://github.com/DeskIT-app/DeskIT.git`,
 132 tracked files). Every claim cites `file:line`. Nothing was run, modified
 or created inside the repo; machine-side facts (shortcuts, scheduled tasks,
 caches, PATH) were read with query-only commands.
@@ -161,7 +161,7 @@ Daily LLM quota counters for study/review are **in memory only** (`study.py:561,
 | Ollama | `http://127.0.0.1:11434` (`config.py:326`; `lookup.py:703,746`) | Text and screenshots, **local only** | none | yes, but most local-LLM features need it (`gemma3:12b`, `llama3.1:8b`) |
 | Hugging Face Hub | via `faster_whisper`/`huggingface_hub` (`local_whisper.py:28-29,243-244`) | Nothing personal; downloads ~1.5 GB × 2 on first use | none | required for local backend |
 | Tailscale | `tailscale.exe status/serve` (`server.py:116-160`) | Nothing leaves; the **phone sends audio in** to `127.0.0.1:8756` fronted by `tailscale serve` with TLS (`server.py:11-21`) | Tailscale account | yes — `[server] enabled` |
-| GitHub | `git fetch/push origin main`, `git reset --keep origin/main` (`dashboard.py:1031,1039,1104`; remote `massifapp/DeskIT`) | The **code** (and any untracked-but-not-ignored file such as `questions.json` if ever added) | owner's git credentials | owner-only |
+| GitHub | `git fetch/push origin main`, `git reset --keep origin/main` (`dashboard.py:1031,1039,1104`; remote `DeskIT-app/DeskIT`) | The **code** (and any untracked-but-not-ignored file such as `questions.json` if ever added) | owner's git credentials | owner-only |
 | Anthropic (Claude Code CLI) | `claude.exe … --model claude-opus-5` headless (`weekly_review.ps1:269-279`) | The contents of `problems.json` — the owner's dictated text, report lines, screenshot paths — plus the repo | owner's Claude subscription | owner-only |
 | Windows | `ms-settings:privacy-microphone` (`firstrun.py:197`), `explorer /select` (`capture.py:1724`), WinRT `SpeechSynthesizer` via PowerShell (`visual_qa.py:1080,1172`) | local | — | — |
 

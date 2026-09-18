@@ -9,7 +9,7 @@ title: התחלה מהירה
 כל המדריך למי שלא גולל. כל צעד קורא למסך בשם שדסק-איט מצייר עליו.
 
 1. **להשיג.** עם winget: פותחים טרמינל ומריצים `winget install YoavShimron.DeskIT`.
-   בלי: מורידים את `DeskIT-Setup-x.y.z.exe` מ[הגרסה האחרונה](https://github.com/massifapp/DeskIT/releases/latest).
+   בלי: מורידים את `DeskIT-Setup-x.y.z.exe` מ[הגרסה האחרונה](https://github.com/DeskIT-app/DeskIT/releases/latest).
    אם חלונות אומר "Windows protected your PC", לוחצים **More info** ואז **Run anyway** —
    [פרק 1](01-install) מסביר למה.
 2. **להתקין.** לא מבקשים סיסמת מנהל. בוחרים עברית או אנגלית למתקין ולוחצים הלאה. דסק-איט

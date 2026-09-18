@@ -21,7 +21,7 @@ installer is not signed with a paid certificate; the code is open and every buil
 
    winget downloads the same installer and skips the SmartScreen download dialog.
 3. **GitHub Releases.** Download `DeskIT-Setup-x.y.z.exe` from the
-   [latest release](https://github.com/massifapp/DeskIT/releases/latest). Beside it on the
+   [latest release](https://github.com/DeskIT-app/DeskIT/releases/latest). Beside it on the
    release page: the file's SHA-256, a VirusTotal link and the build attestation.
 
 ## "Windows protected your PC"

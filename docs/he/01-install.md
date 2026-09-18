@@ -21,7 +21,7 @@ title: 1. התקנה
 
    winget מוריד את אותו מתקין ומדלג על תיבת ההורדה של SmartScreen.
 3. **GitHub Releases.** מורידים את `DeskIT-Setup-x.y.z.exe` מ[הגרסה
-   האחרונה](https://github.com/massifapp/DeskIT/releases/latest). לידו בדף הגרסה: ה־SHA-256 של
+   האחרונה](https://github.com/DeskIT-app/DeskIT/releases/latest). לידו בדף הגרסה: ה־SHA-256 של
    הקובץ, קישור ל־VirusTotal ואישור הבנייה.
 
 ## "Windows protected your PC"

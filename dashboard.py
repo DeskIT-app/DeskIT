@@ -7808,7 +7808,7 @@ class Dashboard:
     # ------------------------------------------------------------- about
 
     PAGES_URL = paths.PAGES_URL
-    ISSUES_URL = "https://github.com/massifapp/DeskIT/issues/new/choose"
+    ISSUES_URL = "https://github.com/DeskIT-app/DeskIT/issues/new/choose"
     MODEL_CARD_URL = "https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2"
 
     @staticmethod
@@ -8747,7 +8747,7 @@ class Dashboard:
 
     def _open_url(self, url: str) -> None:
         import webbrowser
-        if url.startswith(("https://github.com/", "https://massifapp.github.io/",
+        if url.startswith(("https://github.com/", "https://deskit-app.github.io/",
                            "https://huggingface.co/")):
             webbrowser.open(url)
 

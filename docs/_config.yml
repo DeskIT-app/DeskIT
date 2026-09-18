@@ -5,7 +5,7 @@
 title: DeskIT
 description: Hebrew dictation for Windows that stays on your PC — the Win+H that Hebrew never got.
 baseurl: "/DeskIT"
-url: "https://massifapp.github.io"
+url: "https://deskit-app.github.io"
 lang: he
 theme: jekyll-theme-primer
 markdown: kramdown

@@ -25,7 +25,7 @@ title: 9. דיווח על בעיה
 
 ## לספר לנו
 
-**GitHub Issues** — [תבנית הבאג](https://github.com/massifapp/DeskIT/issues/new/choose) שואלת
+**GitHub Issues** — [תבנית הבאג](https://github.com/DeskIT-app/DeskIT/issues/new/choose) שואלת
 מה עשית, מה קרה, למה ציפית, איך התקנת, ובלוק האבחון. מקבלים את הבלוק ב־**Settings > The app > Copy diagnostics**, או מתיקיית ההתקנה:
 
 ```

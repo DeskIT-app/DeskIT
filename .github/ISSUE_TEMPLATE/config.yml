@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: A question
-    url: https://github.com/massifapp/DeskIT/discussions
+    url: https://github.com/DeskIT-app/DeskIT/discussions
     about: Questions go to Discussions.
   - name: A security issue
-    url: https://github.com/massifapp/DeskIT/blob/main/SECURITY.md
+    url: https://github.com/DeskIT-app/DeskIT/blob/main/SECURITY.md
     about: Please do not open a public issue; SECURITY.md says where to write.

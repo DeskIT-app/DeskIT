@@ -3,13 +3,13 @@ PackageIdentifier: YoavShimron.DeskIT
 PackageVersion: x.y.z
 PackageLocale: en-US
 Publisher: Yoav Shimron
-PublisherUrl: https://github.com/massifapp/DeskIT
-PublisherSupportUrl: https://github.com/massifapp/DeskIT/issues
-PrivacyUrl: https://massifapp.github.io/DeskIT/privacy
+PublisherUrl: https://github.com/DeskIT-app/DeskIT
+PublisherSupportUrl: https://github.com/DeskIT-app/DeskIT/issues
+PrivacyUrl: https://deskit-app.github.io/DeskIT/privacy
 PackageName: DeskIT
-PackageUrl: https://github.com/massifapp/DeskIT
+PackageUrl: https://github.com/DeskIT-app/DeskIT
 License: Apache-2.0
-LicenseUrl: https://github.com/massifapp/DeskIT/blob/main/LICENSE
+LicenseUrl: https://github.com/DeskIT-app/DeskIT/blob/main/LICENSE
 Copyright: Copyright 2026 Yoav Shimron
 ShortDescription: Hebrew push-to-talk dictation that types at your cursor, on your own PC.
 Description: |-
@@ -21,6 +21,6 @@ Tags:
   - speech-to-text
   - whisper
   - push-to-talk
-ReleaseNotesUrl: https://github.com/massifapp/DeskIT/releases/tag/vx.y.z
+ReleaseNotesUrl: https://github.com/DeskIT-app/DeskIT/releases/tag/vx.y.z
 ManifestType: defaultLocale
 ManifestVersion: 1.6.0
