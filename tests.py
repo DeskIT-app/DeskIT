@@ -22111,7 +22111,13 @@ def test_the_screens_go_off_and_come_back_without_touching_the_hold() -> None:
         assert "| SCREENS OFF by test" in record, record
         assert "| SCREENS ON by key" in record, record
         assert eng.holding, "still held"
-        # The delayed repeat, and the race it must lose.
+        # The delayed repeat, and the race it must lose. Every broadcast
+        # is a thread of its own, so the five above are waited for before
+        # the list is cleared: on a hosted runner (2026-09-18) the last
+        # two landed after the clear and were counted as the repeat.
+        _awake_until(lambda: len(sent) == 5)
+        assert (sent.count(awake_mod.MONITOR_OFF) == 3
+                and sent.count(awake_mod.MONITOR_ON) == 2), sent
         sent.clear()
         eng.again_s = 1
         eng.darken(by="test")
