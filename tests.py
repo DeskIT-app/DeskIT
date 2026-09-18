@@ -4726,6 +4726,33 @@ def test_reply_caps_are_sized_from_the_text() -> None:
     assert 96 < _token_cap(" ".join(["word"] * 100)) < 1024
 
 
+def test_groq_adds_room_for_its_reasoning_on_top_of_the_cap() -> None:
+    """gpt-oss-120b thinks out of the same max_tokens as its answer, and
+    the cap is sized for the answer alone: measured 2026-09-18, 77-147
+    hidden tokens a call on the app's own polish prompt, which left a
+    47-word text with 16 tokens of headroom at the 256 floor and every
+    polish since 2026-09-17 cut off (finish_reason=length). The room is
+    ADDED, not floored, so long texts keep their answer budget; Cerebras
+    (no reasoning) sends the caller's number."""
+    import apikey as apikey_mod
+    import translate as translate_mod
+
+    original = apikey_mod.find_key
+    apikey_mod.find_key = lambda names: ("k", "test")
+    try:
+        with _consented("cloud_text"):
+            g = translate_mod.GroqTranslator("openai/gpt-oss-120b", 20, max_tokens=252)
+            assert g._max_tokens == 256 + 512, g._max_tokens
+            g = translate_mod.GroqTranslator("openai/gpt-oss-120b", 20, max_tokens=344)
+            assert g._max_tokens == 344 + 512, g._max_tokens
+            g = translate_mod.GroqTranslator("openai/gpt-oss-120b", 20)
+            assert g._max_tokens is None
+            c = translate_mod.CerebrasTranslator("gpt-oss-120b", 20, max_tokens=252)
+            assert c._max_tokens == 252, c._max_tokens
+    finally:
+        apikey_mod.find_key = original
+
+
 def test_a_missing_cerebras_key_names_the_fix() -> None:
     """The message must say what happened to the key and where to go — a
     bare 'no key' sends someone hunting through three providers. Since

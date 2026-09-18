@@ -480,9 +480,14 @@ exactly what classic did.
   Pure-Hebrew strings LOOK fine in Labels and mixed strings silently
   scramble — don't "fix" the working path.
 - **Groq's model is a reasoning model.** `gpt-oss-120b` spends hidden
-  tokens before answering: without `reasoning_effort=low` plus a
-  max_tokens floor (256), the answer arrives EMPTY. Handled inside
-  `translate.py::GroqTranslator`; don't pass tighter caps around it.
+  tokens before answering, out of the same `max_tokens` as the answer:
+  without `reasoning_effort=low` the answer arrives EMPTY, and with the
+  cap sized for the answer alone it arrives CUT (measured 2026-09-18:
+  77-147 hidden tokens a call on the polish prompt; 21 of 21 polishes
+  truncated at the 256 floor, each paste then waiting on Ollama). Handled
+  inside `translate.py::GroqTranslator` — a 256 floor plus 512 tokens of
+  room for the thought (`reasoning_tokens`); don't pass tighter caps
+  around it and don't fold the two numbers together.
 - **Model catalogs drift.** `llama-3.3-70b-versatile` vanished from Groq;
   Cerebras' free tier vanished entirely. Before trusting a model id or a
   pricing page, list `/v1/models` and make one real call.

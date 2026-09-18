@@ -429,6 +429,11 @@ class CerebrasTranslator:
     # thought and the content arrives EMPTY — measured live. Non-reasoning
     # providers keep the caller's number untouched.
     min_max_tokens = 1
+    # ...and the thought's own budget, ADDED to the caller's cap rather
+    # than folded into it: the cap is sized for the visible answer alone
+    # (polish._token_cap), and a reasoning model's hidden tokens come out
+    # of the same max_tokens. Zero for providers that do not think.
+    reasoning_tokens = 0
 
     @staticmethod
     def _missing_key_message() -> str:
@@ -461,7 +466,8 @@ class CerebrasTranslator:
         # reasoning model spends the whole budget thinking and the answer
         # arrives empty (measured: cap 96 → zero visible tokens).
         if max_tokens is not None:
-            self._max_tokens = max(max_tokens, type(self).min_max_tokens)
+            self._max_tokens = (max(max_tokens, type(self).min_max_tokens)
+                                + type(self).reasoning_tokens)
         else:
             self._max_tokens = None
 
@@ -566,6 +572,15 @@ class GroqTranslator(CerebrasTranslator):
     extra_body = {"reasoning_effort": "low"}
     # Hidden reasoning tokens come out of the same budget as the answer.
     min_max_tokens = 256
+    # Measured 2026-09-18 with the app's own polish prompt (glossary of
+    # five pairs, 47-word text): 77-147 reasoning tokens a call, 170-240
+    # completion tokens in all — against a cap of 256. Since 2026-09-17
+    # every polish (21 of 21) came back finish_reason=length, the pass
+    # fell to Ollama and twelve pastes waited its full 10 s. The floor
+    # alone was never the fix: 402 reasoning tokens were seen on one fixed
+    # prompt in August. So the thought gets its own room on top of the
+    # answer's cap; a 47-word text now sends 768, a 70-word one 856.
+    reasoning_tokens = 512
 
 
 class Translator:
