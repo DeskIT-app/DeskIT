@@ -224,7 +224,9 @@ jobs:
           Get-Content "$exe.sha256", dist/latest.json
 
       # 12. smoke — the installer, silent, on the runner itself; the tree
-      #     verifies against its manifest; the uninstaller leaves nothing
+      #     verifies against its manifest through the door the guide
+      #     names (`main.py --verify`, 04-privacy check 5); the
+      #     uninstaller leaves nothing
       - name: Silent install, verify, uninstall
         run: |
           $version = "${{ steps.version.outputs.version }}"
@@ -233,8 +235,12 @@ jobs:
           if ($p.ExitCode) { Get-Content $log; throw "the installer exited $($p.ExitCode)" }
           $app = "$env:LOCALAPPDATA\Programs\DeskIT"
           if ((Get-Content "$app\CHANNEL" -Raw) -ne 'github') { throw "CHANNEL is not github" }
-          & "$app\python\python.exe" "$app\app\manifest.py" verify $app
+          $env:DESKIT_HOME = "$env:RUNNER_TEMP\deskit-smoke-home"
+          $verdict = & "$app\python\python.exe" "$app\app\main.py" --verify
+          Remove-Item Env:DESKIT_HOME
+          $verdict
           if ($LASTEXITCODE) { throw "the installed tree does not verify" }
+          if (@($verdict)[-1] -notmatch '^All [\d,]+ files match the manifest$') { throw "--verify did not end with the guide's sentence" }
           & "$app\python\python.exe" -c "import sys; sys.path.insert(0, r'$app\app'); import paths, version; print('installed', version.VERSION, 'channel', paths.CHANNEL, 'data', paths.DATA_DIR)"
           if ($LASTEXITCODE) { throw "the installed app does not import" }
           $u = Start-Process -FilePath "$app\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru

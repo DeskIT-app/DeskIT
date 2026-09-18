@@ -33617,6 +33617,46 @@ def test_manifest_roundtrip():
     assert proc.returncode == 0 and "write" in proc.stdout and "verify" in proc.stdout
 
 
+def test_verify_flag_reports_the_installed_tree():
+    """`deskit --verify` (D12 lock 5; the guide's check 5): on an install
+    root it prints the sentence the guide promises and exits 0, names
+    each changed file and exits 1, and on a checkout — no manifest beside
+    app\\ — says so and exits NOT_A_BUILD instead of failing the tree.
+    The flag runs before any log or data folder is opened."""
+    import manifest
+
+    with tempfile.TemporaryDirectory() as d:
+        tree = Path(d)
+        (tree / "python").mkdir()
+        (tree / "app").mkdir()
+        (tree / "python" / "python.exe").write_bytes(b"MZ" * 40)
+        (tree / "app" / "main.py").write_bytes(b"print(1)\n")
+        code, text = manifest.report(tree)
+        assert code == manifest.NOT_A_BUILD and "not an installed build" in text
+        manifest.write(tree)
+        code, text = manifest.report(tree)
+        assert (code, text) == (0, "All 2 files match the manifest"), (code, text)
+        (tree / "app" / "main.py").write_bytes(b"print(2)\n")
+        code, text = manifest.report(tree)
+        assert code == 1 and text.splitlines() == ["changed: app/main.py",
+                                                    "1 difference(s) in 2 files"]
+    # the flag itself, on this checkout: no manifest, no data folder touched
+    with tempfile.TemporaryDirectory() as home:
+        env = {**os.environ, "DESKIT_HOME": home}
+        proc = subprocess.run([sys.executable, str(REPO / "main.py"), "--verify"],
+                              capture_output=True, encoding="utf-8", errors="replace",
+                              env=env, timeout=120)
+        assert proc.returncode == manifest.NOT_A_BUILD, (proc.returncode, proc.stdout, proc.stderr)
+        assert "not an installed build" in proc.stdout
+        assert not (Path(home) / "logs").exists() and not list(Path(home).iterdir()), \
+            "--verify opened the data folder"
+    # the release smoke (10.3 step 12) verifies the installed tree through
+    # this door, not through manifest.py directly, so the door is built
+    yml = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    assert '"$app\\app\\main.py" --verify' in yml, "the smoke step bypasses --verify"
+    assert "files match the manifest" in yml, "the smoke step does not read the verdict"
+
+
 # ------------------------------------------------ the split suite (PR 8)
 #
 # DISTRIBUTION_PLAN.md 7.5 and chapter 15: this file is the product suite

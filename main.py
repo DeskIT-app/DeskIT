@@ -6476,6 +6476,11 @@ def main() -> int:
                              "the last 50 lines of app.log through the "
                              "redactor; no transcripts, no keys — and put "
                              "it on the clipboard")
+    parser.add_argument("--verify", action="store_true",
+                        help="recompute MANIFEST.sha256 over the installed "
+                             "python\\ and app\\ and print every file that "
+                             "differs from the build's (D12 lock 5); exit "
+                             "1 on any difference")
     parser.add_argument("--install-pack", metavar="NAME",
                         help="show a pack's install step on its own (gpu "
                              "or skin; an installed copy with an NVIDIA "
@@ -6512,6 +6517,15 @@ def main() -> int:
     if args.reset_data:
         import migrate as migrate_mod
         return migrate_mod.reset_data(yes=args.yes)
+    if args.verify:
+        # The tree's own check, before any config or data folder is
+        # touched: the build wrote MANIFEST.sha256 beside python\ and
+        # app\, so the install root is APP_DIR's parent. A checkout has
+        # no manifest and says so — it is not a build.
+        import manifest
+        code, text = manifest.report(paths.APP_DIR.parent)
+        print(text)
+        return code
     if args.keys or args.set_key or args.delete_key:
         import secretstore
         if args.set_key:
