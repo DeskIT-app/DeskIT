@@ -72,7 +72,8 @@ Both providers require users to be 18 or over for these features.
 
 DeskIT works with an account: the first-run wizard asks you to sign in
 with Google before the keys work, once — this PC remembers you until
-you sign out. (An anonymous account, with no e-mail, exists for people
+you sign out. Signed out, the app's window is a single landing card
+with the sign-in button and nothing else, until you sign in again. (An anonymous account, with no e-mail, exists for people
 who only want to send problem reports; the app offers it on the
 Account block.) Collected on sign-in: a user id; with Google, the e-mail address of the
 Google account you chose (held by the sign-in service, never shown to

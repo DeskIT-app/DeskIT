@@ -12,7 +12,8 @@ paragraph first (the owner's), English second (DISTRIBUTION_PLAN.md
 
 An account — required: the first-run wizard asks for a Google sign-in
 before the keys work, once, and this PC remembers you until you sign
-out (an anonymous account exists for report-only use, on Settings >
+out; signed out, the window is one landing card with the sign-in
+button until you sign in again (an anonymous account exists for report-only use, on Settings >
 Privacy). Two syncs behind their own consent cards — your learned words and changed settings, and what
 you said, so the Said page is the same on every PC you sign into.
 Never keys, hotkeys, devices, folders or positions; never audio. The

@@ -1907,8 +1907,8 @@ class App:
 
     # ---- the account lock (the owner's rule: no account, no dictation)
 
-    LOCK_WORDS = ("sign in to use DeskIT — open the desk: Settings > Privacy > "
-                  "Account, Sign in with Google")
+    LOCK_WORDS = ("sign in to use DeskIT — open the desk and press "
+                  "Sign in with Google")
 
     def locked(self) -> bool:
         """No account on this PC while one is required (sb.REQUIRED and a

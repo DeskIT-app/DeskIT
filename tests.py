@@ -34667,6 +34667,78 @@ def test_the_dev_copy_says_so_in_the_window():
     assert 'self.root.title(f"DeskIT {paths.DEV_TAG}".strip())' in src
 
 
+def test_the_desk_is_a_landing_until_a_sign_in():
+    """Q1, the owner's rule of 2026-09-18 after the first live sign-out:
+    "a page that shows nothing — not Home, Corrections, Problems, Said,
+    Keys, Settings — just a landing screen with a sentence about the
+    app and a sign-in button, and only that until I sign in."
+
+    With a configured project, REQUIRED on and no session the window
+    opens ON the landing: the places are off the bar, the sheet is one
+    card with the sentence and [Sign in with Google], and every _show is
+    refused. The app's own status saying locked does the same and its
+    browser wait shows under the button; a session arriving — in this
+    process when the app is not running, in the app's word when it is
+    — takes the landing down onto Home with the places back. With
+    REQUIRED off (this file's default) none of it happens."""
+    import sb
+    import dashboard as dash
+
+    with _fixture_project(), _patched(sb, "REQUIRED", True), _consented("account"), \
+            _window() as board:
+        if board is None:
+            return
+        # from the first frame, before any poll
+        assert board._landing_up and board.screen == "Landing"
+        assert not board.nav.winfo_manager(), "the places are still on the bar"
+        words = " ".join(_texts(board.sheet))
+        assert "Hebrew dictation" in words and "Sign in once" in words, words
+        assert "landing_button" in board.parts and "landing_line" in board.parts
+        assert board.parts["landing_line"].cget("text") == ""
+        for name in ("Home", "Settings", "Network"):
+            board._show(name)
+            assert board.screen == "Landing", name
+        board._refresh(None)
+        assert board._landing_up
+        # the app answers, locked, waiting on the browser
+        board._refresh({"ok": True, "stage": "running", "locked": True,
+                        "account": {"configured": True, "signed_in": False,
+                                    "busy": "waiting for the browser"}})
+        assert board._landing_up and board.screen == "Landing"
+        assert board.parts["landing_line"].cget("text").startswith("Waiting for Google")
+        board._refresh({"ok": True, "stage": "running", "locked": True,
+                        "account": {"configured": True, "signed_in": False,
+                                    "busy": "", "last_error": "the browser never came back"}})
+        assert "never came back" in board.parts["landing_line"].cget("text")
+        # the app's word: signed in — down onto Home, the places back
+        board._refresh({"ok": True, "stage": "running", "locked": False,
+                        "account": {"configured": True, "signed_in": True}})
+        assert not board._landing_up and board.screen == "Home"
+        assert board.nav.winfo_manager() == "place"
+        assert board.nav.selected == "Home"
+        board._show("Settings")
+        assert board.screen == "Settings"
+        # the app stops answering and there is still no session here: up
+        board._refresh(None)
+        assert board._landing_up and board.screen == "Landing"
+        # a session in THIS process (the window's own sign-in when the
+        # app is not running lands one): down
+        sb.sign_in_anonymous()
+        board._refresh(None)
+        assert not board._landing_up and board.screen == "Home"
+        # ...and Sign out from Privacy locks the desk again
+        sb.sign_out()
+        board._refresh(None)
+        assert board._landing_up and board.screen == "Landing"
+    with _fixture_project(), _window() as board:
+        if board is None:
+            return
+        assert not board._landing_up and board.screen == "Home"
+        board._refresh(None)
+        assert board.screen == "Home" and board.nav.winfo_manager() == "place"
+    assert "Landing" not in dash.SCREENS, "the landing is not a place to walk to"
+
+
 def test_keepalive_workflow_shape():
     """The weekly knock (8.9): a schedule, one curl GET to
     /rest/v1/profiles with the publishable key as `apikey` from a

@@ -1424,6 +1424,9 @@ class Dashboard:
         # ANOTHER PROCESS: if the app stops answering mid-drag there has
         # to be something that still puts this window back.
         self._dot_waiting = 0.0
+        # Q1 (2026-09-18): the signed-out landing is up — the places are
+        # off the bar and the sheet holds one card. See _landing.
+        self._landing_up = False
         self._rows_after = None
         self._rows_left: list = []
         # How wide a drawn row is on the place that is up. The Said list
@@ -1551,6 +1554,11 @@ class Dashboard:
         self.sheet.place(x=0, y=0)
         self.sheet.pack_propagate(False)
         self._show("Home")
+        # No account on this PC: the landing from the first frame, not
+        # after the first poll's flash of Home (Q1). The poll re-decides
+        # from the app's own word the moment it answers.
+        if self._locked_now(None):
+            self._landing(True)
 
     def _topbar(self) -> None:
         """The mark, the six places, the state, and whichever buttons the
@@ -1660,12 +1668,18 @@ class Dashboard:
 
     def _paint_nav(self) -> None:
         # Network is behind Settings > Privacy, so Settings is the word
-        # that lights while it is up — and the way back.
-        self.nav.select("Settings" if self.screen == "Network" else self.screen)
+        # that lights while it is up — and the way back. The landing has
+        # no word: the places are off the bar while it is up.
+        self.nav.select("Settings" if self.screen == "Network"
+                        else None if self.screen == "Landing" else self.screen)
 
     def _show(self, name: str) -> None:
         """Swap screens. Everything the old one registered goes with it, so
         _refresh has to ask for a widget rather than assume one."""
+        if self._landing_up and name != "Landing":
+            # Nothing but the landing until a sign-in: not a door on
+            # Home, not a link in a note, not a stale `after`.
+            return
         if (self.screen == "Corrections" and name != "Corrections"
                 and self._corr_tab == "read"):
             self._read_leave()
@@ -1692,7 +1706,8 @@ class Dashboard:
          "Said": self._screen_said,
          "Keys": self._screen_keys,
          "Settings": self._screen_settings,
-         "Network": self._screen_network}[name]()
+         "Network": self._screen_network,
+         "Landing": self._screen_landing}[name]()
         self._refresh(self.status or None)
         self._slide_in()
 
@@ -9710,6 +9725,14 @@ class Dashboard:
         # whether to come back is the first thing a fresh status is for.
         if self._dot_waiting:
             self._dot_returns()
+        # And whether there is a desk to draw at all (Q1): no account on
+        # this PC while one is required is the landing, whatever screen
+        # was up; a session arriving — through the app, or through this
+        # window's own sign-in when the app is not running — takes it
+        # down again and opens on Home.
+        locked = self._locked_now(reply)
+        if locked != self._landing_up:
+            self._landing(locked)
 
         colour, word = self._look()
         self.parts["state"].config(text=word)
@@ -9743,7 +9766,151 @@ class Dashboard:
          "Said": lambda: None,
          "Keys": self._paint_keys,
          "Settings": self._paint_settings,
-         "Network": self._paint_network}[self.screen]()
+         "Network": self._paint_network,
+         "Landing": self._paint_landing}[self.screen]()
+
+    # --------------------------------------------- the signed-out landing (Q1)
+
+    LANDING_SENTENCE = ("Hebrew dictation for Windows that stays on your PC. Hold a "
+                        "key, speak, let go — the Hebrew lands at the cursor, in any "
+                        "window.")
+    LANDING_STORED = ("What is stored: an account id and the e-mail of the Google "
+                      "account you choose; this PC's name, the app's version and "
+                      "Windows'. The server is DeskIT's own (Supabase, Frankfurt). "
+                      "Your keys never travel there. Every sync stays off until you "
+                      "turn it on yourself, on its own card.")
+
+    def _locked_now(self, reply: dict | None) -> bool:
+        """Is there an account on this PC? The app's word when it
+        answers (status()["locked"] — it holds the session); sb.py's own
+        when it does not, since the session blob is this user's, not
+        the app's, and the landing must not depend on the model being
+        loaded to know whether anyone is signed in."""
+        if reply:
+            return bool(reply.get("locked"))
+        try:
+            import sb
+            return bool(sb.REQUIRED and sb.configured() and not sb.signed_in())
+        except Exception:                                    # noqa: BLE001
+            return False
+
+    def _landing(self, up: bool) -> None:
+        """The owner's rule (2026-09-18, after the first live sign-out):
+        "when I sign out I want to drop to a page that shows nothing —
+        not Home, Corrections, Problems, Said, Keys, Settings — just a
+        landing screen with a sentence about the app and a sign-in
+        button, and only that until I sign in." So the places leave the
+        bar, the sheet is one card, and the way in is the one button the
+        wizard's own page has. The state chip and the run buttons stay:
+        they are the app's, not the desk's, and Stop still has to work."""
+        self._landing_up = up
+        if up:
+            self.nav.place_forget()
+            self._show("Landing")
+        else:
+            self.nav.place(x=PAD + 32, y=17)
+            self._show("Home")
+
+    def _screen_landing(self) -> None:
+        p = self.parts
+        card_w, card_h = 640, 372
+        card = ui.Card(self.sheet, card_w, card_h, bg=ui.BG, pad=36, radius=18)
+        card.place(x=(W - card_w) // 2, y=(H - TOP - card_h) // 2 - 20)
+        body = card.body
+        inner = card_w - 72
+        mark = ui.icon_bitmap(ICON_PNG, 56, ui.CARD)
+        if mark is not None:
+            self._keep.append(mark)
+            tk.Label(body, image=mark, bg=ui.CARD).place(x=0, y=0)
+        tk.Label(body, text=f"DeskIT {paths.DEV_TAG}".strip(), bg=ui.CARD, fg=ui.FG,
+                 font=(ui.DISPLAY, 22, "bold")).place(x=70, y=8)
+        tk.Label(body, text=self.LANDING_SENTENCE, bg=ui.CARD, fg=ui.FG,
+                 font=(ui.UI, 11), wraplength=inner, justify="left",
+                 anchor="w").place(x=0, y=76)
+        tk.Label(body, text="Sign in once; this PC remembers you until you sign out.",
+                 bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 10), wraplength=inner,
+                 justify="left", anchor="w").place(x=0, y=134)
+        button = ui.Button(body, "Sign in with Google", self._landing_sign_in,
+                           bg=ui.CARD, primary=True, w=210, h=38)
+        button.place(x=0, y=170)
+        p["landing_button"] = button
+        p["landing_line"] = tk.Label(body, text="", bg=ui.CARD, fg=ui.DIM,
+                                     font=(ui.UI, 10), wraplength=inner,
+                                     justify="left", anchor="w")
+        p["landing_line"].place(x=0, y=220)
+        tk.Label(body, text=self.LANDING_STORED, bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 8), wraplength=inner, justify="left",
+                 anchor="w").place(x=0, y=250)
+        self._landing_seen = None
+        self._paint_landing()
+
+    def _paint_landing(self) -> None:
+        """Every poll: the line under the button follows the app's
+        account status — the browser wait, the last error — and says
+        nothing when the app is not running, since then the sign-in is
+        this window's own (_landing_sign_in) and it writes the line."""
+        line = self.parts.get("landing_line")
+        if line is None or not line.winfo_exists():
+            return
+        info = self.status.get("account") if self.status else None
+        if info is None:
+            return                          # the window's own words stand
+        if info.get("busy") == "waiting for the browser":
+            said, colour = ("Waiting for Google's sign-in page in your browser…",
+                            ui.DIM)
+        elif info.get("last_error"):
+            said, colour = f"Not signed in: {info['last_error']}"[:200], ui.AMBER
+        else:
+            said, colour = "", ui.DIM
+        if (said, colour) != getattr(self, "_landing_seen", None):
+            self._landing_seen = (said, colour)
+            line.configure(text=said, fg=colour)
+
+    def _landing_sign_in(self) -> None:
+        """[Sign in with Google] on the landing. Through the running app
+        when there is one (it holds the session and unlocks itself); in
+        this process when there is none — the wizard's own way: the
+        consent row first, this card being the card, then the browser
+        and the loopback listener (sb.sign_in_google). Either way the
+        next poll sees the session and takes the landing down."""
+        line = self.parts.get("landing_line")
+        if self.status:
+            self._busy_until = time.monotonic() + 1
+            self._ask("account", then=lambda r: self._announce(r, "opening the browser"),
+                      do="google")
+            return
+        if getattr(self, "_landing_signing", False):
+            return
+        self._landing_signing = True
+        if line is not None:
+            line.configure(text="Waiting for Google's sign-in page in your browser…",
+                           fg=ui.DIM)
+
+        def work() -> None:
+            try:
+                import privacy
+                import sb
+                if not privacy.allowed("account"):
+                    privacy.grant("account")
+                who = sb.sign_in_google()
+                self._events.put(lambda: self._landing_done(who, None))
+            except Exception as e:                             # noqa: BLE001
+                self._events.put(lambda e=e: self._landing_done(None, str(e)))
+
+        threading.Thread(target=work, daemon=True, name="landing-signin").start()
+
+    def _landing_done(self, who: dict | None, error: str | None) -> None:
+        self._landing_signing = False
+        line = self.parts.get("landing_line")
+        if line is None or not line.winfo_exists():
+            return
+        if error:
+            line.configure(text=f"Not signed in: {error}"[:200], fg=ui.AMBER)
+        else:
+            line.configure(text=(f"Signed in as {who.get('email')}" if who and who.get("email")
+                                 else "Signed in"), fg=ui.GREEN)
+        # the poll takes the landing down on its next tick; no waiting
+        self._refresh(None if not self.status else self.status)
 
     # ------------------------------------------------------------ shutdown
 
