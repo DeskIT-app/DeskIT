@@ -380,6 +380,10 @@ class Glass:
     def show(self) -> None:
         _user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
 
+    def hide(self) -> None:
+        """Off the screen and kept: the dot while the model is off."""
+        _user32.ShowWindow(self.hwnd, 0)                # SW_HIDE
+
     def raise_(self) -> None:
         """Back to the top of the z-order without taking focus. Another
         app going topmost mid-animation would otherwise cover us."""

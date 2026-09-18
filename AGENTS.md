@@ -223,6 +223,21 @@ exactly what classic did.
    `tests.py --no-screen` is the same minus the sixteen, and is what
    the product CI runs (`.github/workflows/ci.yml`).
 
+   **And the user, simulated — `dev\user_sim.py` (2026-09-18, his ask:
+   "you test through the code, not through use; build a tool that
+   behaves like a user — Start and then Stop right after is not
+   if/else").** A REAL `main.App` (fake speech backend, a second of
+   pretend load, the paste and the clipboard stubbed, no singleton, no
+   pipe, silent) driven at a person's pace: the desk's buttons through
+   the pipe verbs the desk sends, the keys through `machine.handle`,
+   eight scenarios in the order a person meets them, one table at the
+   end. Its first run caught a `--no-model` start dying in `__init__`
+   (a line that read `self.dot` before the dot existed) that no unit
+   test saw. Run it hidden after any change to start/stop/load/unload,
+   the dot, the hook or the bar: `.venv\Scripts\python.exe -c "import
+   tests_quiet as q, pathlib; q.run_hidden(r'.venv\Scripts\python.exe
+   dev\user_sim.py', pathlib.Path('.'))"`.
+
    The rule is not only about the suite: `tests_quiet.run_hidden(command,
    cwd, desktop=...)` is importable, and any probe, screenshot or
    throwaway script that would put a window on his screen goes through

@@ -392,10 +392,14 @@ def run(status_dot) -> None:
                       moved=dropped)
     else:
         glass = Glass(*dot.placement())
-    glass.show()
+    hidden = bool(getattr(status_dot, "hidden", False))
+    if hidden:                          # a start without the model
+        status_dot.rect = None
+    else:
+        glass.show()
+        status_dot.rect = (glass.x, glass.y,
+                           glass.x + glass.width, glass.y + glass.height)
     placed_at[0], placed_at[1] = glass.x, glass.y
-    status_dot.rect = (glass.x, glass.y,
-                       glass.x + glass.width, glass.y + glass.height)
     status_dot._alive.set()
     start = time.perf_counter()
     try:
@@ -406,11 +410,29 @@ def run(status_dot) -> None:
                     if item is overlay._DONE:
                         status_dot._closing.set()
                         break
+                    if item is overlay._HIDE:
+                        hidden = True
+                        glass.hide()
+                        status_dot.rect = None
+                        continue
+                    if item is overlay._SHOW:
+                        hidden = False
+                        at_x, at_y, _w, _h = dot.placement()
+                        glass.move(at_x, at_y)
+                        placed_at[0], placed_at[1] = at_x, at_y
+                        glass.show()
+                        status_dot.rect = (at_x, at_y, at_x + BOX, at_y + BOX)
+                        continue
                     dot.set(item)
             except queue.Empty:
                 pass
             if status_dot._closing.is_set():
                 break
+            if hidden:
+                # nothing to draw; the window's messages still turn over
+                glass.pump()
+                time.sleep(FRAME_S)
+                continue
             # Move mode is a DEADLINE the StatusDot keeps, so this only
             # reads it — which is what makes it expire on its own if he
             # presses the button and then walks away.

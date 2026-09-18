@@ -34800,6 +34800,9 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
     app._study = type("E", (), {"stop": lambda self: calls.append("study.stop")})()
     app._review = type("E", (), {"stop": lambda self: calls.append("review.stop")})()
     app.recorder = type("R", (), {"start_stream": lambda self: calls.append("start")})()
+    app.dot = type("D", (), {"hide": lambda self: calls.append("dot:hide"),
+                             "show": lambda self: calls.append("dot:show"),
+                             "set_state": lambda self, st: None})()
     app.cfg.splash = False
     app.transcriber = type("T", (), {"name": "local"})()
     app.machine = hotkey_mod.PTTStateMachine(
@@ -34856,7 +34859,7 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
                 break
             time.sleep(0.02)
         assert app._model_state == "on" and app.transcriber.name == "local"
-        assert calls[-1] == "build" and "start" not in calls, calls
+        assert calls[-2:] == ["build", "dot:show"] and "start" not in calls, calls
         assert not app.machine.dictation_off and states[-1] == "ready"
         assert said[-1] == "listening again"
         assert not app.control_command("load", {})["ok"], "loaded twice"
@@ -34870,17 +34873,20 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
                 break
             time.sleep(0.02)
         assert app._model_state == "off" and "no GPU today" in said[-1], said[-1]
-    # the dot stays grey while the model is off, whatever asks for "ready"
-    # (a pause ending, a worker finishing); blue again once it is on
+    # NO dot while the model is off, whatever asks for "ready" (a pause
+    # ending, a worker finishing) — his rule: "no dot in the corner if
+    # the model is not working"; blue again once it is on
     real = App.__new__(App)
     real.machine = app.machine
     real._model_state = "off"
-    real.dot = type("D", (), {"set_state": lambda self, st: calls.append(f"dot:{st}")})()
+    real.dot = type("D", (), {"set_state": lambda self, st: calls.append(f"dot:{st}"),
+                              "hide": lambda self: calls.append("dot:hide"),
+                              "show": lambda self: calls.append("dot:show")})()
     real.shelf = None
     real.hint = type("H", (), {"show": lambda self, card: None})()
     real._hint_card = lambda state: None
     App._set_state(real, "ready")
-    assert real._activity == "paused" and calls[-1] == "dot:paused"
+    assert real._activity == "paused" and calls[-1] == "dot:hide", calls[-1]
     real._model_state = "on"
     App._set_state(real, "ready")
     assert real._activity == "ready" and calls[-1] == "dot:ready"

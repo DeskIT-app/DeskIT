@@ -83,6 +83,8 @@ ACCENT = "#e3a63c"
 TROUGH = "#3a342a"      # the splash bar's channel — LINE, one step over BG
 
 _DONE = object()   # sentinel: close the window
+_HIDE = object()   # sentinel: the window off the screen, the thread kept
+_SHOW = object()   # sentinel: back on the screen where it rests
 
 # How often an overlay's own event loop turns over. It replaces mainloop()
 # (see the module docstring); 15 ms is well under the 28 ms animation tick,
@@ -865,6 +867,13 @@ class StatusDot:
         # The window's screen rect, (left, top, right, bottom), or None
         # when there is no window. Set by the painter, read by the shelf.
         self.rect = None
+        # Off the screen while the model is off (main.unload_model, the
+        # owner's rule of 2026-09-18: "no dot in the corner if the model
+        # is not working"). Read by both painters at their first frame,
+        # so a start without the model never flashes one; flipped by
+        # hide()/show() through the queue afterwards. The thread stays —
+        # a hidden dot is a window withdrawn, not a window destroyed.
+        self.hidden = False
         # Move mode's deadline on the monotonic clock. 0.0 is "not
         # moving", which is also what it reads as before the app starts.
         self._move_until = 0.0
@@ -1026,6 +1035,19 @@ class StatusDot:
         """Safe to call from the keyboard hook — it only enqueues."""
         if self._thread is not None and state in STATES:
             self._q.put(state)
+
+    def hide(self) -> None:
+        """Off the screen, the thread and the state kept (the model is
+        off). Safe from any thread — a flag and a queue item."""
+        self.hidden = True
+        if self._thread is not None:
+            self._q.put(_HIDE)
+
+    def show(self) -> None:
+        """Back on the screen where it rests (the model is back)."""
+        self.hidden = False
+        if self._thread is not None:
+            self._q.put(_SHOW)
 
     def stop(self) -> None:
         if self._thread is not None:
@@ -1208,6 +1230,16 @@ class StatusDot:
                     if item is _DONE:
                         self._closing.set()   # ours alone — never root.quit()
                         return
+                    if item is _HIDE:
+                        root.withdraw()
+                        self.rect = None      # nothing on screen to click
+                        continue
+                    if item is _SHOW:
+                        at = where()
+                        root.geometry(f"+{at[0]}+{at[1]}")
+                        root.deiconify()
+                        self.rect = (at[0], at[1], at[0] + box, at[1] + box)
+                        continue
                     state["name"] = item
                     state["phase"] = 0.0
             except queue.Empty:
@@ -1221,6 +1253,9 @@ class StatusDot:
                 self.rect = (at[0], at[1], at[0] + box, at[1] + box)
             root.after(60, pump)
 
+        if self.hidden:                   # a start without the model
+            root.withdraw()
+            self.rect = None
         paint()
         pump()
         try:

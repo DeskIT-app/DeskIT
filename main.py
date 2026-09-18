@@ -686,6 +686,12 @@ class App:
             y=getattr(dcfg, "y", overlay_mod.HINT_UNSET),
             on_change=self._save_dot)
             if cfg.indicator else overlay_mod.StatusDot.off())
+        # No dot at all while there is no model (a start without one:
+        # the flag is read at the painter's first frame, so nothing
+        # flashes). dev/user_sim.py caught this line sitting 140 lines
+        # too early, before the dot existed — every --no-model start
+        # would have died in __init__.
+        self.dot.hidden = not self._model_wanted
         # THE DISC IS A BUTTON. A click on it does exactly what ctrl+alt+d
         # does — _tap_shelf reads one flag and starts a thread, which is
         # the whole reason it may be called from the dot's own thread.
@@ -1457,11 +1463,15 @@ class App:
         if state in ("ready", "busy") \
                 and self.machine.state != hotkey_mod.IDLE:
             return
-        # With the model off the dot is grey however a pause ends or a
-        # worker finishes: "ready" would be the blue of a listening app,
-        # and nothing is listening until Start (unload_model).
-        if state == "ready" and getattr(self, "_model_state", "on") == "off":
-            state = "paused"
+        # With the model off there is NO dot — his rule (2026-09-18): "no
+        # dot in the corner if the model is not working" — however a
+        # pause ends or a worker finishes. The word stays "paused" for
+        # the dashboard's sake; the window is withdrawn (StatusDot.hide),
+        # not grey.
+        if getattr(self, "_model_state", "on") == "off":
+            self._activity = "paused"
+            self.dot.hide()
+            return
         self._activity = state
         self.dot.set_state(state)
         # ONE PANEL OWNS THE DOT'S CORNER. Both cards default to it
@@ -2251,7 +2261,7 @@ class App:
         if self.locked():
             self._lock()
         elif self._model_state == "off":
-            # the grey dot from the first frame: alive, not listening
+            # no dot from the first frame: alive, not listening
             self._set_state("paused")
             log.info("up without the model — every key that needs no model "
                      "works; Start loads it")
@@ -2402,7 +2412,7 @@ class App:
         del old
         gc.collect()
         self._model_state = "off"
-        self._set_state("paused")          # the grey dot: alive, not listening
+        self._set_state("paused")          # no dot: alive, not listening
         self._say("model off — Start loads it again; every other key works")
         log.info("model unloaded — the keys that need no model keep working")
 
@@ -2458,12 +2468,12 @@ class App:
         self._start_learning()
         self._model_state = "on"
         self.machine.set_dictation_off(False)
+        self.dot.show()                   # before the splash lands in it
         self._set_state("ready")
         self._say("listening again")
         log.info("model loaded again — hold '%s' and speak", self.cfg.hotkey)
-        self._splash_done(splash, splash_log,
-                          f"ready — hold {str(self.cfg.hotkey).title()} and speak",
-                          lambda: beep("ready"))
+        ready = f"ready — hold {str(self.cfg.hotkey).title()} and speak"
+        self._splash_done(splash, splash_log, ready, on_land=lambda: beep("ready"))
 
     @staticmethod
     def _splash_done(splash, splash_log, text: str, on_land) -> None:
