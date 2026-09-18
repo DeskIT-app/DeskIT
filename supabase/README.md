@@ -57,11 +57,12 @@ not mention.
 
 - Studio → Database → Schema Visualizer shows the tables; Table Editor
   shows the columns; Authentication → Policies lists every policy.
-- Without a login: `GET https://<ref>.supabase.co/rest/v1/` with the
-  publishable key in the `apikey` header returns the PostgREST OpenAPI
-  description — the columns of every table, and no rows. Any table
-  request with that key alone returns an empty result or a permission
-  error.
+- Without a login: any request with the publishable key alone —
+  `GET https://eogvmcbwfthxedcltyrs.supabase.co/rest/v1/profiles?select=user_id`,
+  or any other table, or the RPC — answers `401 permission denied`
+  (measured 2026-09-18 right after the migration ran: profiles,
+  history and `delete_me()` all refused; even the OpenAPI description
+  at `/rest/v1/` is refused, because the `anon` role holds nothing).
 - In the app: Dashboard → Network lists every request to the project
   with its purpose (`account`, `sync`, `history`, `report`); the Offline
   switch refuses them all.

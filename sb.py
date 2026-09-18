@@ -69,15 +69,16 @@ log = logging.getLogger("app")
 
 # ---------------------------------------------------------- the constants
 
-#: The project ref — the owner's Supabase project ``deskit`` (8.11 step
-#: 1). Empty until it exists: every function then answers "not
+#: The project ref — the owner's Supabase project ``DeskIT``, created
+#: 2026-09-18 in eu-central-1 (Frankfurt) on the Free plan (8.11 step 1).
+#: Empty in a build without a project: every function then answers "not
 #: configured" without touching the network.
-PROJECT_REF: str = ""
+PROJECT_REF: str = "eogvmcbwfthxedcltyrs"
 
 #: The PUBLISHABLE key of that project (8.11 step 2). Public by design:
 #: it is in this file, in every install and in the keep-alive workflow.
 #: The secret key never appears anywhere in this repo.
-PUBLISHABLE_KEY: str = ""
+PUBLISHABLE_KEY: str = "sb_publishable_p3pBXir64azVPAS1wtQoVg_mgi5ZOCt"
 
 SESSION_NAME = "supabase_session"
 
