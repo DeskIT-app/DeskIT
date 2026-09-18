@@ -56,4 +56,4 @@ itself keeps running.
 
 ## Contact
 
-**<contact e-mail>** — the same address as in the privacy policy.
+**shimronyoav@gmail.com** — the same address as in the privacy policy.

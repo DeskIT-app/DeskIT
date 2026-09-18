@@ -21,7 +21,7 @@ Ordinary bugs go to the issue tracker or the in-app "Report a problem".
 
 ## How to report
 
-E-mail **<contact e-mail — the same as in the privacy policy>** with
+E-mail **shimronyoav@gmail.com** (the same address as in the privacy policy) with
 the steps to reproduce, the version (Settings > The app) and, if you
 have it, the `--diagnose` block (`deskit --diagnose`; it contains no
 transcripts and no keys, and you can read it before sending).

@@ -21,7 +21,7 @@ and ask again when the section they quote changes.
 
 The controller is **Yoav Shimron**, a private individual in Israel.
 There is no company and no data protection officer (chapter 13.8:
-none is required at this scale). Contact: **<contact e-mail>** — the
+none is required at this scale). Contact: **shimronyoav@gmail.com** — the
 same address as in `TRADEMARK.md` and `SECURITY.md`.
 
 ## 2. Local by default
@@ -126,4 +126,4 @@ dictation has no age gate.
 
 This page carries a version and a date. Changes are announced in the
 release notes; a consent card asks again when the section it quotes
-changes. Contact: **<contact e-mail>**.
+changes. Contact: **shimronyoav@gmail.com**.
