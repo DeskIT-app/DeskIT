@@ -3000,6 +3000,101 @@ def test_phone_endpoint_round_trip_and_auth() -> None:
         srv.stop()
 
 
+def test_phone_server_binds_its_port_exclusively() -> None:
+    """SO_EXCLUSIVEADDRUSE, not SO_REUSEADDR. On Windows the old
+    allow_reuse_address let a DIFFERENT process — a different user's — bind
+    the same 127.0.0.1 port and read the phone token straight off the
+    Authorization header the notify hook posts there. The port is ours
+    alone now: a second listener on it is refused, a plain SO_REUSEADDR
+    squatter cannot steal it, and if something already holds the port the
+    listener refuses to start (main.py catches that as a busy port, never a
+    crash)."""
+    import socket as socket_mod
+
+    import server as server_mod
+
+    assert server_mod._Server.allow_reuse_address is False
+    port = 8791
+
+    def fake(wav):
+        return "", "fake"
+
+    first = server_mod._Server(("127.0.0.1", port), "tok", fake, lambda: "fake")
+    try:
+        raised = False
+        try:
+            server_mod._Server(("127.0.0.1", port), "tok", fake, lambda: "fake")
+        except OSError:
+            raised = True
+        assert raised, "a second listener bound a port the first already held"
+        squatter = socket_mod.socket()
+        squatter.setsockopt(socket_mod.SOL_SOCKET, socket_mod.SO_REUSEADDR, 1)
+        try:
+            stole = False
+            try:
+                squatter.bind(("127.0.0.1", port))
+            except OSError:
+                stole = True
+            assert stole, "an SO_REUSEADDR squatter took the port"
+        finally:
+            squatter.close()
+    finally:
+        first.server_close()
+
+
+def test_phone_host_setting_cannot_open_the_lan() -> None:
+    """server.host is loopback only, whatever the setting says. A value
+    that would bind a non-loopback interface (0.0.0.0, a LAN address, ::)
+    is refused and the listener falls back to 127.0.0.1, so a well-meaning
+    'let my other PC reach it' can never put the token-guarded, un-throttled
+    socket in front of the house network. Tailscale is the one exposure
+    path."""
+    import dataclasses
+
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    for host in ("0.0.0.0", "192.168.1.50", "::"):
+        c = dataclasses.replace(cfg, server=config_mod.ServerConfig(
+            enabled=True, host=host, port=8793))
+        srv = server_mod.PhoneServer(c, lambda wav: ("", "fake"), lambda: "fake")
+        srv.start()
+        try:
+            assert srv._srv.server_address[0] == "127.0.0.1", \
+                (host, srv._srv.server_address)
+        finally:
+            srv.stop()
+
+
+def test_phone_auth_survives_a_non_ascii_bearer() -> None:
+    """A wrong token is a 401, even when the Authorization header carries a
+    byte >= 0x80. secrets.compare_digest raises TypeError on a str with a
+    non-ASCII code point, so such a header used to crash the handler — a
+    traceback and no answer — instead of failing the check. Comparing bytes
+    keeps it constant-time and makes it an ordinary wrong token."""
+    import dataclasses
+    import http.client
+
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    cfg = dataclasses.replace(cfg, server=config_mod.ServerConfig(
+        enabled=True, host="127.0.0.1", port=8795))
+    srv = server_mod.PhoneServer(cfg, lambda wav: ("", "fake"), lambda: "fake")
+    srv.start()
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", 8795, timeout=5)
+        conn.request("POST", "/notify", body=b"{}",
+                     headers={"Authorization": "Bearer éÿ",
+                              "Content-Type": "application/json"})
+        resp = conn.getresponse()
+        assert resp.status == 401, resp.status
+        resp.read()
+        conn.close()
+    finally:
+        srv.stop()
+
+
 def test_phone_punctuate_route_and_the_guards_around_it() -> None:
     """The phone's F2 key, and the two refusals that cost nothing.
 
@@ -28855,18 +28950,34 @@ _TRANSPORT_IMPORT = re.compile(
     r"|http\.client\b|httpx\b|requests\b|socket\b|ssl\b)")
 
 
+#: The one allowance beside net.py: server.py is the INBOUND phone
+#: listener, not an egress path, and it touches the `socket` module only
+#: for the listener's own option — SO_EXCLUSIVEADDRUSE, which stops another
+#: local user squatting its 127.0.0.1 port and reading the token off the
+#: wire. That is the whole allowance; every other module and every other
+#: transport (urllib.request, http.client, httpx, requests, ssl) stays
+#: banned outside net.py, and no other module may import socket.
+_TRANSPORT_ALLOW: dict[str, tuple[str, ...]] = {"server.py": ("socket",)}
+
+
 def test_only_net_imports_transport():
     """Static: urllib.request, http.client, httpx, requests, socket and
     ssl are imported by net.py and by nothing else in the product tree.
     server.py's http.server is the INBOUND listener, not a transport, and
-    urllib.parse is string work. The same grep a sceptic runs (5.10)."""
+    urllib.parse is string work; server.py's one `import socket` is for
+    the listener's exclusive-bind option (see _TRANSPORT_ALLOW). The same
+    grep a sceptic runs (5.10)."""
     bad = []
     for py in sorted(REPO.glob("*.py")) + sorted((REPO / "transcribers").glob("*.py")):
         if py.name == "net.py" or py.name.startswith("tests"):
             continue
+        allowed = _TRANSPORT_ALLOW.get(py.name, ())
         for i, line in enumerate(py.read_text(encoding="utf-8").splitlines(), 1):
-            if _TRANSPORT_IMPORT.match(line):
-                bad.append(f"{py.name}:{i}: {line.strip()}")
+            if not _TRANSPORT_IMPORT.match(line):
+                continue
+            if any(re.match(rf"^\s*import\s+{mod}\b", line) for mod in allowed):
+                continue
+            bad.append(f"{py.name}:{i}: {line.strip()}")
     assert not bad, "\n".join(bad)
     # And the allowlist is what the plan froze: Cerebras is out (D6),
     # Anthropic was never in, loopback is the one host offline mode keeps.
@@ -28933,6 +29044,40 @@ def test_net_refuses_unlisted_host():
     assert "example.com | polish | 0 | 0 | refused | - | -" in text, text
     assert "/x" not in text and "/openai" not in text and "/api/ps" not in text, \
         "a URL path reached the log"
+
+
+def test_net_refuses_a_non_http_scheme_even_on_loopback():
+    """Only http(s) may ever leave through the one door. The loopback
+    exemption that lets Ollama speak plain http used to skip the scheme
+    check entirely for 127.0.0.1, so `file://127.0.0.1/C:/...` passed
+    admission and urllib's own FileHandler read a local file through the
+    chokepoint. Now file:, ftp:, data: and anything but http(s) is refused
+    on every host — loopback included — before a socket (or a file) opens,
+    and the refusal is a row. http stays allowed to loopback; https stays
+    allowed anywhere."""
+    import net as net_mod
+
+    connects: list[str] = []
+
+    def fake_connect(method, url, headers, body, timeout_s):
+        connects.append(url)
+        return _FakeRaw(b"{}")
+
+    with _patched(net_mod, "_connect", fake_connect):
+        for bad_url in ("file://127.0.0.1/C:/Windows/win.ini",
+                        "file:///C:/Windows/win.ini",
+                        "ftp://127.0.0.1/x",
+                        "data:text/plain,hi"):
+            try:
+                net_mod.request("GET", bad_url, "ollama")
+            except net_mod.EgressRefused as e:
+                assert "scheme" in e.reason or "host" in e.reason, (bad_url, e)
+            else:
+                raise AssertionError(f"a non-http scheme was admitted: {bad_url}")
+        assert connects == [], connects
+        # the legitimate loopback http and remote https still pass
+        net_mod.request("GET", "http://127.0.0.1:11434/api/ps", "ollama")
+        assert connects == ["http://127.0.0.1:11434/api/ps"], connects
 
 
 def test_net_never_puts_key_in_url():

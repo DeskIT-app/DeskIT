@@ -334,6 +334,14 @@ def _admit(url: str, purpose: str, secret: str | None,
         refuse("host is not in net.ALLOWED_HOSTS")
     if offline and host != LOOPBACK:
         refuse("offline mode is on")
+    # The scheme is admitted, not merely compared to https: the loopback
+    # exemption below (Ollama speaks plain http) skipped the check entirely
+    # for 127.0.0.1, so a `file://127.0.0.1/C:/...` URL passed admission and
+    # urllib's own FileHandler read a local file through the one door meant
+    # only for the network. Only http(s) may ever be opened here — file:,
+    # ftp:, data: and the rest are refused on every host, loopback included.
+    if parts.scheme not in ("https", "http"):
+        refuse(f"{parts.scheme or 'no'} scheme is not http(s)")
     if parts.scheme != "https" and host != LOOPBACK:
         refuse(f"{parts.scheme or 'no'} scheme; only https leaves this PC")
     # The gate for the purpose (5.1): asked here for EVERY remote call,
