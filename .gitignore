@@ -122,3 +122,12 @@ network.log*
 # packaginguild_local.ps1's output: the wheelhouse, the python.org zip,
 # the staged tree (~250 MB) and, with Inno Setup here, the installer
 /dist/
+
+# The Saturday routine's questions to the owner (questions.py) and the
+# lock the app and the dashboard take turns holding — his answers, on
+# his disk only, like problems.json above. .agents\ is the machine's
+# own agent skills (not the app's; .gitattributes keeps it out of the
+# build too). Chapter 16's row 0.4.
+questions.json
+questions.lock
+.agents/
