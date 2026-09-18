@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import secrets
+import socket
 import subprocess
 import sys
 import threading
@@ -209,6 +210,10 @@ def to_wav(raw: bytes) -> tuple[bytes, float]:
 
 class _Handler(BaseHTTPRequestHandler):
     server_version = "DeskIT"
+    # A peer that opens a socket and then sends nothing must not hold a
+    # handler thread forever (a slowloris on the loopback/tailnet). With a
+    # timeout the request socket gives up and the thread is freed.
+    timeout = 30
 
     # -- plumbing --
 
@@ -235,7 +240,13 @@ class _Handler(BaseHTTPRequestHandler):
         got = self.headers.get("Authorization", "")
         if got.startswith("Bearer "):
             got = got[7:]
-        return secrets.compare_digest(got, want)
+        # Compare as bytes, not str: secrets.compare_digest raises
+        # TypeError on a str carrying any code point >= 0x80, so a header
+        # with one non-ASCII byte used to crash the handler (a traceback,
+        # no 401) instead of simply failing the check. UTF-8 bytes keep it
+        # constant-time and make a bad header an ordinary "wrong token".
+        return secrets.compare_digest(got.encode("utf-8", "ignore"),
+                                      want.encode("utf-8"))
 
     # -- routes --
 
@@ -622,7 +633,21 @@ def _review_item(item: dict) -> dict:
 
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = True
+    # NOT allow_reuse_address. On Windows SO_REUSEADDR lets a DIFFERENT
+    # process — a different user's — bind this very 127.0.0.1:port and take
+    # over the socket, and the token the notify hook (and the phone) send
+    # here is a Bearer header that the squatter would then read straight off
+    # the wire. SO_EXCLUSIVEADDRUSE is Microsoft's answer to exactly that:
+    # the port is ours alone while we hold it, and if something already
+    # holds it we refuse to start rather than share it. server_bind sets it
+    # before binding; on a platform without the flag this is a plain bind.
+    allow_reuse_address = False
+
+    def server_bind(self):
+        flag = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+        if flag is not None:
+            self.socket.setsockopt(socket.SOL_SOCKET, flag, 1)
+        super().server_bind()
 
     def __init__(self, addr, token, transcribe, backend_name, translate=None,
                  max_chars=5000, punctuate=None, notify=None,
@@ -666,6 +691,19 @@ class PhoneServer:
     def start(self) -> None:
         port = self.cfg.server.port
         host = self.cfg.server.host.strip() or "127.0.0.1"
+        # Loopback only, whatever the setting says. The endpoint is reached
+        # through `tailscale serve` proxying to localhost, never by binding
+        # the LAN — and binding a non-loopback interface (0.0.0.0, a LAN
+        # address) would put a token-guarded, un-throttled socket in front
+        # of the whole house network. An unexpected host is refused and we
+        # fall back to loopback with a line in the log, rather than silently
+        # exposing the surface. `server.host`'s help text already says empty
+        # is the private choice; this makes the code enforce it.
+        if host.lower() not in ("127.0.0.1", "localhost", "::1"):
+            log.warning("server.host=%r would bind a non-loopback interface; "
+                        "the phone is reached over Tailscale, not by opening "
+                        "the LAN. Binding 127.0.0.1 instead.", host)
+            host = "127.0.0.1"
         token = load_token()
         self._srv = _Server((host, port), token, self._transcribe,
                             self._backend_name, self._translate,
