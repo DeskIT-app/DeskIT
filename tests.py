@@ -33110,6 +33110,11 @@ def test_iss_settings():
     no Run value of its own, /CHANNEL and /NOLAUNCH handled in [Code],
     the data question on uninstall with Keep as the default."""
     iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
+    # ISCC reads any line whose first character after the indent is "[" as
+    # a section tag, [Code] included — dry run #3 died on a wrapped array.
+    for n, line in enumerate(iss.splitlines(), 1):
+        if line.strip().startswith("[") and line != line.lstrip():
+            raise AssertionError(f"DeskIT.iss:{n} begins with '[' inside a section")
     for line in ("PrivilegesRequired=lowest", "CloseApplications=yes",
                  "RestartApplications=yes", "MinVersion=10.0.17763",
                  "DisableDirPage=yes", "UsePreviousAppDir=yes",

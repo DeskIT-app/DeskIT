@@ -196,8 +196,10 @@ begin
   if CurUninstallStep <> usUninstall then
     Exit;
   RegDeleteValue(HKCU, RunKey, RunValue);
-  Answer := SuppressibleTaskDialogMsgBox('', CustomMessage('DeleteDataQuestion'), mbConfirmation, MB_YESNO,
-    [CustomMessage('DeleteData'), CustomMessage('KeepData')], IDNO, IDNO);
+  { the button labels stay on the call's line: a line that begins with
+    "[" is a section tag to the compiler, even inside [Code] (dry run #3) }
+  Answer := SuppressibleTaskDialogMsgBox('', CustomMessage('DeleteDataQuestion'), mbConfirmation, MB_YESNO, [
+    CustomMessage('DeleteData'), CustomMessage('KeepData')], IDNO, IDNO);
   if Answer = IDYES then
   begin
     Py := ExpandConstant('{app}\python\pythonw.exe');
