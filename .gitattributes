@@ -72,3 +72,10 @@ captures/               export-ignore
 cues/                   export-ignore
 models/                 export-ignore
 packs/                  export-ignore
+
+# the Android project's Gradle wrapper (plan 12.6): the shell script must
+# stay LF on every checkout (a CRLF gradlew is "$'\r': command not found"
+# on a Linux runner), the batch file CRLF, and the jar is a jar
+android/gradlew                 text eol=lf
+android/gradlew.bat             text eol=crlf
+android/gradle/wrapper/*.jar    binary

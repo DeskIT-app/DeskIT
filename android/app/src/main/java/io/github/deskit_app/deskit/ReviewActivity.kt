@@ -1,4 +1,4 @@
-package com.yoav.dictation
+package io.github.deskit_app.deskit
 
 import android.app.Activity
 import android.graphics.Typeface

@@ -1,4 +1,4 @@
-package com.yoav.dictation
+package io.github.deskit_app.deskit
 
 import android.content.ClipData
 import android.content.Intent
@@ -734,13 +734,15 @@ class DictationIme : InputMethodService() {
         lastHealth = now
         val url = Prefs.url(this)
         thread {
-            val backend = Transcriber.health(url)
+            // /health says {ok, version} and nothing else (12.3): the
+            // engine's name arrives with each transcript instead, and the
+            // ready line names the one that answered last.
+            val pcVersion = Transcriber.health(url)
             ui.post {
-                backendName = backend.orEmpty()
-                reachable = backend != null
+                reachable = pcVersion != null
                 if (busy || holding || locked) return@post
                 tint(idleColor)
-                if (backend == null) {
+                if (pcVersion == null) {
                     sayError(getString(R.string.unreachable)) { openSetup() }
                 } else if (!sticky) {
                     sayReady()
@@ -901,6 +903,7 @@ class DictationIme : InputMethodService() {
                 // The PC answered, so the link is up whatever /health last
                 // said — and the sentence goes on the phone's own Said.
                 reachable = true
+                if (result.backend.isNotEmpty()) backendName = result.backend
                 Prefs.addSaid(this, text)
                 scheduleReviewPolls()
                 if (!place(text, mine)) return

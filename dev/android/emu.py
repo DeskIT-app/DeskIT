@@ -27,7 +27,7 @@ IMAGE = "system-images;android-34;google_apis;x86_64"
 ADB = SDK / "platform-tools" / "adb.exe"
 EMU = SDK / "emulator" / "emulator.exe"
 AVDMGR = SDK / "cmdline-tools" / "latest" / "bin" / "avdmanager.bat"
-PKG = "com.yoav.dictation"
+PKG = "io.github.deskit_app.deskit"
 IME = f"{PKG}/.DictationIme"
 
 ENV = dict(os.environ, JAVA_HOME=str(JDK), ANDROID_HOME=str(SDK),

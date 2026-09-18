@@ -1,4 +1,4 @@
-package com.yoav.dictation
+package io.github.deskit_app.deskit
 
 import android.app.Activity
 import android.content.ClipData
@@ -47,12 +47,34 @@ class HomeActivity : Activity() {
     private lateinit var stepsCard: LinearLayout
     private lateinit var reviewCard: LinearLayout
     private lateinit var saidCard: LinearLayout
-    private var remoteApk: String? = null
+    /** Where the pill or the blocking card sends the person (12.9). */
+    private var updateUrl: String = ""
+    /** The newest keyboard versionCode the PC last named. */
+    private var latestSeen = 0
+    /** True while this build is below the PC's ime_min: the card blocks. */
+    private var mustUpdate = false
 
     private val version: String
         get() = try {
             packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
         } catch (e: Exception) { "?" }
+
+    /** This build's versionCode — MAJOR*10000 + MINOR*100 + PATCH. */
+    private val versionCode: Int
+        get() = try {
+            val info = packageManager.getPackageInfo(packageName, 0)
+            if (Build.VERSION.SDK_INT >= 28) info.longVersionCode.toInt()
+            else @Suppress("DEPRECATION") info.versionCode
+        } catch (e: Exception) { 0 }
+
+    /** Installed from Play, so Play is where an update comes from. */
+    private val fromPlay: Boolean
+        get() = try {
+            val installer = if (Build.VERSION.SDK_INT >= 30)
+                packageManager.getInstallSourceInfo(packageName).installingPackageName
+            else @Suppress("DEPRECATION") packageManager.getInstallerPackageName(packageName)
+            installer == "com.android.vending"
+        } catch (e: Exception) { false }
 
     override fun onCreate(saved: Bundle?) {
         super.onCreate(saved)
@@ -92,7 +114,11 @@ class HomeActivity : Activity() {
         })
         col.addView(head)
 
-        // A newer build on the PC.
+        // A newer keyboard build, as the PC's /api/version names it (12.9):
+        // one dismissible pill per version between ime_min and ime_latest,
+        // a card that stays while this build is below ime_min. A tap opens
+        // the store page or the release APK — the PC's URL, never a file
+        // served by the PC itself.
         updateCard = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -106,8 +132,18 @@ class HomeActivity : Activity() {
             ).apply { bottomMargin = Skin.dp(this@HomeActivity, 14) }
             isClickable = true
             setOnClickListener {
-                startActivity(Intent(Intent.ACTION_VIEW,
-                    Uri.parse("${Prefs.url(this@HomeActivity)}/app.apk")))
+                if (updateUrl.isNotEmpty()) {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(updateUrl)))
+                }
+            }
+            setOnLongClickListener {
+                // A long press dismisses the pill for this version; the
+                // blocking card cannot be dismissed, only acted on.
+                if (!mustUpdate) {
+                    Prefs.markUpdateSeen(this@HomeActivity, latestSeen)
+                    visibility = View.GONE
+                }
+                true
             }
         }
         updateLine = Skin.text(this, "", 15f, Skin.ACCENT_TEXT, heavy = true).apply {
@@ -186,26 +222,58 @@ class HomeActivity : Activity() {
         }
         stateTitle.text = getString(R.string.checking)
         thread {
-            val health = Transcriber.healthJson(url)
-            val pending = if (health != null) Notify.poll(this) else null
+            val pcVersion = Transcriber.health(url)
+            val versions = if (pcVersion != null) Transcriber.versions(url, token) else null
+            val pending = if (pcVersion != null) Notify.poll(this) else null
             runOnUiThread {
-                if (health == null) {
+                if (pcVersion == null) {
                     state(Skin.PAUSED, false, getString(R.string.unreachable_title),
                           getString(R.string.unreachable_line))
                 } else {
-                    val backend = health.optString("backend", "")
                     state(Skin.LISTENING, true, getString(R.string.connected_title),
-                          getString(R.string.connected_line,
-                              if (backend.isEmpty()) "?" else backend))
-                    remoteApk = health.optString("apk", "").ifEmpty { null }
-                    val newer = remoteApk != null && remoteApk != version
-                    updateCard.visibility = if (newer) View.VISIBLE else View.GONE
-                    if (newer) updateLine.text = getString(R.string.update_on_pc, remoteApk)
+                          getString(R.string.connected_line, pcVersion))
+                    showUpdate(versions)
                 }
                 buildReview(pending)
             }
         }
     }
+
+    /**
+     * 12.9's three rows, against this build's own versionCode: below
+     * `ime_min` the card blocks — "update the keyboard to keep dictating"
+     * — and cannot be dismissed; between `ime_min` and `ime_latest` one
+     * pill, shown until a long press dismisses it for that version;
+     * at `ime_latest` (or with no answer) nothing at all.
+     */
+    private fun showUpdate(v: Transcriber.Versions?) {
+        val mine = versionCode
+        if (v == null || v.imeLatest <= 0 || mine <= 0) {
+            updateCard.visibility = View.GONE
+            mustUpdate = false
+            return
+        }
+        latestSeen = v.imeLatest
+        updateUrl = if (fromPlay && v.playUrl.isNotEmpty()) v.playUrl else v.apkUrl
+        mustUpdate = mine < v.imeMin
+        val newer = mine < v.imeLatest
+        val dismissed = !mustUpdate && Prefs.updateSeen(this) >= v.imeLatest
+        when {
+            mustUpdate -> {
+                updateLine.text = getString(R.string.update_required)
+                updateCard.visibility = View.VISIBLE
+            }
+            newer && !dismissed -> {
+                updateLine.text = getString(R.string.update_on_pc, versionName(v.imeLatest))
+                updateCard.visibility = View.VISIBLE
+            }
+            else -> updateCard.visibility = View.GONE
+        }
+    }
+
+    /** 10102 -> "1.1.2": the versionCode formula, read backwards. */
+    private fun versionName(code: Int): String =
+        "${code / 10000}.${code / 100 % 100}.${code % 100}"
 
     private fun state(colour: Int, halo: Boolean, title: String, line: String) {
         lamp.colour = colour

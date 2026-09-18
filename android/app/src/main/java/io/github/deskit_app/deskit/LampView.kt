@@ -1,4 +1,4 @@
-package com.yoav.dictation
+package io.github.deskit_app.deskit
 
 import android.animation.ValueAnimator
 import android.content.Context

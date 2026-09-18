@@ -1,4 +1,4 @@
-package com.yoav.dictation
+package io.github.deskit_app.deskit
 
 import android.media.AudioFormat
 import android.media.AudioRecord

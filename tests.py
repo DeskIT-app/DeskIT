@@ -4195,6 +4195,159 @@ def test_phone_endpoint_never_binds_anything_but_loopback() -> None:
     assert "tailscale_ip" not in dir(server_mod)
 
 
+def _phone_server(port: int):
+    """A PhoneServer on loopback with a fake transcriber, started, for a
+    `with` block; the token it answers to is on the object."""
+    import dataclasses
+
+    import server as server_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    cfg = dataclasses.replace(
+        cfg, server=config_mod.ServerConfig(enabled=True, host="127.0.0.1", port=port))
+    srv = server_mod.PhoneServer(cfg, lambda wav: ("שלום", "fake"), lambda: "fake")
+    srv.start()
+    srv.token = server_mod.load_token()
+    return srv
+
+
+def test_phone_routes_no_apk_no_web_page() -> None:
+    """12.11: the Hebrew web page at `/` and the `/app.apk` route are gone
+    — both 404, the same 404 as any unknown path — and `/health` says
+    `{ok, version}` and nothing else (12.3): not the engine, not an APK
+    version, to whoever can reach the port. The source carries no page
+    and no APK path any more, so nothing can serve them back by accident,
+    and the keyboard no longer asks for either."""
+    import requests
+
+    import server as server_mod
+
+    src = (REPO / "server.py").read_text("utf-8")
+    assert "PAGE = " not in src and "<!doctype" not in src.lower(), \
+        "the web page is still in server.py"
+    for gone in ("APK_GRADLE", "app-debug.apk", "def apk_version", '"/app.apk"'):
+        assert gone not in src, gone
+    assert not hasattr(server_mod, "PAGE") and not hasattr(server_mod, "APK")
+    kt = REPO / "android" / "app" / "src" / "main" / "java" / "io" / "github" / "deskit_app" / "deskit"
+    for name in ("HomeActivity.kt", "SettingsActivity.kt", "Transcriber.kt"):
+        assert "app.apk" not in (kt / name).read_text("utf-8"), f"{name} still asks for /app.apk"
+
+    srv = _phone_server(8792)
+    base = "http://127.0.0.1:8792"
+    try:
+        for path in ("/", "/app.apk", "/index.html", "/nope"):
+            r = requests.get(f"{base}{path}", timeout=5)
+            assert r.status_code == 404, (path, r.status_code)
+            assert r.headers.get("Content-Type", "").startswith("application/json"), path
+            assert r.json() == {"error": "not found"}, (path, r.text[:80])
+        health = requests.get(f"{base}/health", timeout=5)
+        assert health.status_code == 200, health.status_code
+        body = health.json()
+        assert set(body) == {"ok", "version"}, body
+        assert body["ok"] is True and body["version"] == server_mod.pc_version()
+        import version as version_mod
+        assert body["version"] == version_mod.VERSION
+    finally:
+        srv.stop()
+
+
+def test_phone_api_version_fields() -> None:
+    """12.9: `/api/version` wants the bearer (a GET without one is 401
+    and says nothing) and answers the six fields — pc, ime_min,
+    ime_latest, apk_url, apk_sha256, play_url. ime_min ≤ ime_latest;
+    the versionCode mapping of VERSION is MAJOR*10000 + MINOR*100 +
+    PATCH, the same line build.gradle.kts computes, and ime_latest is
+    that of the running VERSION; apk_url is the release asset 12.8
+    names, on GitHub, never a path on this PC."""
+    import requests
+
+    import server as server_mod
+    import version as version_mod
+
+    major, minor, patch, _beta = version_mod.PARTS
+    assert server_mod.ime_code(version_mod.VERSION) == major * 10000 + minor * 100 + patch
+    assert server_mod.ime_code("1.1.0") == 10100 and server_mod.ime_code("2.10.7") == 21007
+    gradle = (REPO / "android" / "app" / "build.gradle.kts").read_text("utf-8")
+    assert "deskitNumbers[0] * 10000 + deskitNumbers[1] * 100 + deskitNumbers[2]" in gradle
+    assert 'applicationId = "io.github.deskit_app.deskit"' in gradle
+    assert 'namespace = "io.github.deskit_app.deskit"' in gradle
+    assert "com.yoav" not in gradle
+
+    payload = server_mod.api_version()
+    assert set(payload) == {"pc", "ime_min", "ime_latest", "apk_url", "apk_sha256",
+                            "play_url"}, payload
+    assert payload["pc"] == version_mod.VERSION
+    assert isinstance(payload["ime_min"], int) and isinstance(payload["ime_latest"], int)
+    assert 0 < payload["ime_min"] <= payload["ime_latest"], payload
+    assert payload["ime_latest"] == server_mod.ime_code(version_mod.VERSION)
+    assert payload["ime_min"] == min(server_mod.ime_code(server_mod.IME_MIN), payload["ime_latest"])
+    assert payload["apk_url"].startswith("https://github.com/") and \
+        payload["apk_url"].endswith(f"/v{version_mod.VERSION}/DeskIT-{version_mod.VERSION}.apk"), \
+        payload["apk_url"]
+    assert payload["apk_sha256"] == "" and payload["play_url"] == ""
+
+    srv = _phone_server(8792)
+    base = "http://127.0.0.1:8792"
+    try:
+        bare = requests.get(f"{base}/api/version", timeout=5)
+        assert bare.status_code == 401 and bare.json() == {"error": "bad token"}, bare.text
+        wrong = requests.get(f"{base}/api/version", timeout=5,
+                             headers={"Authorization": "Bearer nope"})
+        assert wrong.status_code == 401, wrong.status_code
+        ok = requests.get(f"{base}/api/version", timeout=5,
+                          headers={"Authorization": f"Bearer {srv.token}"})
+        assert ok.status_code == 200, ok.status_code
+        assert ok.json() == payload, ok.json()
+    finally:
+        srv.stop()
+
+
+def test_the_keyboard_has_its_own_identity_and_no_default_pc() -> None:
+    """12.6: the package is io.github.deskit_app.deskit everywhere —
+    every Kotlin file, the manifest's settings activity, the DECIDE
+    action, the emulator tool — and com.yoav.dictation is gone from the
+    tree; Prefs has no DEFAULT_URL (a fresh keyboard knows no PC; the
+    owner's tailnet name is not baked into anyone's phone); the strings
+    no longer tell a stranger to turn Tailscale on; the release build
+    signs from a gitignored keystore.properties and is never debuggable."""
+    android = REPO / "android"
+    src = android / "app" / "src" / "main"
+    kt_dir = src / "java" / "io" / "github" / "deskit_app" / "deskit"
+    kts = sorted(kt_dir.glob("*.kt"))
+    assert len(kts) >= 11, [k.name for k in kts]
+    for kt in kts:
+        first = kt.read_text("utf-8").splitlines()[0]
+        assert first == "package io.github.deskit_app.deskit", (kt.name, first)
+    assert not (src / "java" / "com").exists(), "the old package folder is still there"
+    method = (src / "res" / "xml" / "method.xml").read_text("utf-8")
+    assert 'android:settingsActivity="io.github.deskit_app.deskit.SettingsActivity"' in method
+    notify = (kt_dir / "Notify.kt").read_text("utf-8")
+    assert 'ACTION_DECIDE = "io.github.deskit_app.deskit.DECIDE"' in notify
+    emu = (REPO / "dev" / "android" / "emu.py").read_text("utf-8")
+    assert 'PKG = "io.github.deskit_app.deskit"' in emu
+    assert not (android / "tools").exists(), "android/tools moved to dev/android (12.11)"
+    everything = [p for p in android.rglob("*")
+                  if p.is_file() and ".gradle" not in p.parts and "build" not in p.parts]
+    for p in everything:
+        try:
+            text = p.read_text("utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        assert "com.yoav" not in text, f"{p.relative_to(REPO)} still names com.yoav"
+        assert "ts.net" not in text, f"{p.relative_to(REPO)} names a tailnet"
+    prefs = (kt_dir / "Prefs.kt").read_text("utf-8")
+    assert "DEFAULT_URL" not in prefs and 'getString(KEY_URL, "")' in prefs
+    strings = (src / "res" / "values" / "strings.xml").read_text("utf-8")
+    assert "Tailscale on" not in strings and "url_hint" in strings
+    assert "update_required" in strings
+    gradle = (android / "app" / "build.gradle.kts").read_text("utf-8")
+    assert "keystore.properties" in gradle and "isDebuggable = false" in gradle
+    ignore = (REPO / ".gitignore").read_text("utf-8")
+    assert "android/keystore.properties" in ignore and "android/*.jks" in ignore
+    manifest = (src / "AndroidManifest.xml").read_text("utf-8")
+    assert 'android:allowBackup="false"' in manifest
+
+
 def test_needs_translation_skips_text_with_no_hebrew() -> None:
     """Every skipped call is one saved from a 20-per-day bucket."""
     import translate as translate_mod

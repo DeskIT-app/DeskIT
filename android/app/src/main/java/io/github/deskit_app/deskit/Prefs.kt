@@ -1,14 +1,17 @@
-package com.yoav.dictation
+package io.github.deskit_app.deskit
 
 import android.content.Context
 
 /**
  * Where the PC is and how to prove we are allowed to talk to it.
  *
- * The defaults are this user's own machine, baked in so the keyboard works
- * the moment it is enabled — the APK is served over their private Tailscale
- * link and installed on their own phone, so there is no one else to leak a
- * token to. Both remain editable in the setup screen.
+ * Nothing is baked in: a fresh install knows no PC at all — the address
+ * and the token are empty until the person pastes the line their own PC
+ * shows, and Home says "Not set up yet" until then. There used to be a
+ * default address here (the owner's own machine, from the days the APK
+ * only ever reached his own phone); it went with the package rename of
+ * 2026-09-19 (DISTRIBUTION_PLAN.md 12.6), and D22's QR pairing replaces
+ * the pasted line altogether.
  */
 object Prefs {
     private const val FILE = "dictation"
@@ -18,17 +21,10 @@ object Prefs {
     private const val KEY_ORDER = "key_order"
     private const val KEY_SAID = "said"
     private const val KEY_NOTIFIED = "notified"
+    private const val KEY_UPDATE_SEEN = "update_seen"
 
     /** How many of the phone's own dictations the home screen keeps. */
     const val SAID_KEEP = 30
-
-    /**
-     * Shown as the URL field's hint on a fresh install and used until a
-     * real address is typed: a placeholder that resolves nowhere, not
-     * the owner's own machine (it was, until the repository went public;
-     * D22's QR pairing replaces this field altogether).
-     */
-    const val DEFAULT_URL = "https://your-pc.your-tailnet.ts.net"
 
     /**
      * The eight small keys, in the order they were designed: positions
@@ -58,10 +54,22 @@ object Prefs {
 
     private fun sp(c: Context) = c.getSharedPreferences(FILE, Context.MODE_PRIVATE)
 
+    /** The PC's address, or "" on a phone that has not been pointed at one. */
     fun url(c: Context): String =
-        sp(c).getString(KEY_URL, DEFAULT_URL)!!.trimEnd('/')
+        (sp(c).getString(KEY_URL, "") ?: "").trimEnd('/')
 
     fun token(c: Context): String = sp(c).getString(KEY_TOKEN, "") ?: ""
+
+    /**
+     * The newest keyboard build the update pill has already shown, as its
+     * versionCode: the pill (12.9) is shown once per version and then
+     * dismissed for good, remembered here.
+     */
+    fun updateSeen(c: Context): Int = sp(c).getInt(KEY_UPDATE_SEEN, 0)
+
+    fun markUpdateSeen(c: Context, code: Int) {
+        sp(c).edit().putInt(KEY_UPDATE_SEEN, code).apply()
+    }
 
     /**
      * After the text lands, hop straight back to the everyday keyboard.

@@ -3393,17 +3393,20 @@ not even the home LAN. A bearer token is required on top of that.
 
 ### There is an Android keyboard, and it is the way to use this
 
-The web page below came first and still works. The **keyboard** is what you
-actually want: a page can only leave the transcript on the clipboard, while
-a keyboard commits it straight into whatever field has the cursor, in any
-app, with nothing pasted.
+A web page at `/` came first; it was retired on 2026-09-19 (plan 12.11),
+together with the `/app.apk` route that served the debug build out of this
+tree. The **keyboard** is the client: a page could only leave the transcript
+on the clipboard, while a keyboard commits it straight into whatever field
+has the cursor, in any app, with nothing pasted.
 
-It installs from this machine over the same private link — open
-`https://<machine>.<tailnet>.ts.net/app.apk` on the phone — and it is built
-by Gradle from `android/`. The app's one screen takes the URL and the token
-(paste the whole `.../#t=...` line and both fields fill), grants the
-microphone, opens the keyboard settings, and checks `/health` for a newer
-APK than the installed one.
+It is built by Gradle from `android/` (`gradlew assembleDebug` for the
+emulator, `assembleRelease` signed from a gitignored `keystore.properties`
+for anyone else; package `io.github.deskit_app.deskit`) and reaches a phone
+as a release asset on GitHub, later Play — never from this PC. Its Settings
+screen takes the URL and the token (paste the whole `.../#t=...` line from
+the dashboard's Phone page and both fields fill), grants the microphone,
+opens the keyboard settings, and asks the PC's `/api/version` (bearer
+required) whether a newer keyboard build is out.
 
 What the keyboard does, and what each part of it is for:
 
@@ -3486,19 +3489,18 @@ the home's one button. Three things came over from the desk with it:
 
    That fronts it with a real certificate at
    `https://<machine>.<tailnet>.ts.net/`.
-4. The log prints the URL **including the token** (`.../#t=...`). Open that
-   once on the phone; the token moves into localStorage and the address bar
-   is cleaned, so the page can be bookmarked or added to the home screen.
-5. **For the keyboard**, open `/app.apk` from that same page, install it,
-   then paste the whole `.../#t=...` line into the app's first field — it
-   splits the URL and the token for you — grant the microphone, and turn
-   the keyboard on in Android's settings. "Save and test" sends one second
-   of silence, which proves DNS, Tailscale, TLS, the token and the model in
-   a single round trip without you having to say anything.
+4. The dashboard's Phone page shows the line **including the token**
+   (`.../#t=...`); the log prints the host only.
+5. **Install the keyboard** (the release APK, or `dev/android/emu.py
+   install` on the emulator), then paste the whole `.../#t=...` line into
+   the app's first field — it splits the URL and the token for you — grant
+   the microphone, and turn the keyboard on in Android's settings. "Save
+   and test" sends one second of silence, which proves DNS, Tailscale, TLS,
+   the token and the model in a single round trip without you having to say
+   anything.
 
-On the page: hold the button, talk, release. The text appears and is copied
-to the clipboard automatically. In the keyboard it goes straight into the
-field instead, which is the entire reason the keyboard exists.
+Hold the lamp key, talk, release: the text goes straight into the field,
+which is the entire reason the keyboard exists.
 
 **Everything you teach it with `F8` on the desktop applies here too**, and
 there is nothing on the phone that implements it: the phone only records,
@@ -3527,8 +3529,8 @@ Three things that cost real time the first time round:
   Measured here: 26.7 s for the first request, 0.65 s for the next. The token lives in `server_token.txt`
 (gitignored); delete it to roll a new one.
 
-If the PC is asleep the page simply cannot reach it — set Windows to never
-sleep if you want this available while you are out.
+If the PC is asleep the keyboard simply cannot reach it — set Windows to
+never sleep if you want this available while you are out.
 
 ## Words you never said
 

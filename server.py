@@ -1,4 +1,4 @@
-"""Phone -> this PC transcription endpoint, plus a mobile page to drive it.
+"""Phone -> this PC transcription endpoint: what the DeskIT keyboard talks to.
 
 The point is to dictate from the phone WITHOUT giving up the thing that
 makes the desktop app good: the ivrit-ai fine-tune on the GPU (10.8% WER,
@@ -11,24 +11,29 @@ again — about 3.2 GB of VRAM and ~25 s of startup for no benefit.
 Reachability is Tailscale's job, not ours. The socket binds to LOOPBACK
 and `tailscale serve` fronts it: no port forwarding, no public IP, and
 nothing listening on any interface a stranger could reach — not even the
-home LAN. Tailscale terminates TLS with a real certificate, which is not a
-nicety: phone browsers refuse the microphone without one (see below). A
-bearer token sits behind all that, because a private network is a wall,
-not a lock.
+home LAN. Tailscale terminates TLS with a real certificate. A bearer
+token sits behind all that, because a private network is a wall, not a
+lock. (DISTRIBUTION_PLAN.md chapter 12 moves the transport to the
+person's own Wi-Fi with a PC-generated certificate the keyboard pins,
+and per-phone tokens; this file is the PC side that work lands on.)
 
 Binding loopback rather than the Tailscale address is load-bearing:
 `tailscale serve` proxies to localhost, so a server bound only to
 100.x.y.z is invisible to it.
 
-Two things about browsers on phones that shape the page below:
+The client is the Android keyboard (android/), and only that. There used
+to be a Hebrew web page at `/` that drove the same routes from a phone
+browser, and an `/app.apk` route that served the debug build out of the
+source tree; both retired on 2026-09-19 (12.11): the page was the reason
+Tailscale's certificate was mandatory (getUserMedia wants a secure
+context), and an end user has no Gradle to build an APK from — the
+keyboard is a release asset on GitHub, later Play. Anything asking for
+either is a 404 now.
 
-- getUserMedia (microphone) and navigator.clipboard BOTH require a secure
-  context. Plain http://100.x.y.z is not one, so the page is useless over
-  bare HTTP no matter how well it works on a laptop. `tailscale serve`
-  fronts it with a real certificate; see the README.
-- A long press on a button raises the text-selection/callout UI, which
-  fights a hold-to-talk control. Hence touch-action/user-select are off
-  and pointer events (not touch events) drive it.
+One GET is open without the token — `/health`, which says `{ok,
+version}` and nothing else (which engine is loaded is not for whoever can
+reach the port). `/api/version` (12.9), the keyboard-build facts, wants
+the bearer like every other route, and `/review` always did.
 """
 from __future__ import annotations
 
@@ -73,26 +78,58 @@ APP_DIR = Path(__file__).resolve().parent
 #: code. load_token() carries one it finds there into the secret store
 #: once and deletes it; nothing writes it any more (D3).
 TOKEN_FILE = paths.PHONE_TOKEN
-APK = (APP_DIR / "android" / "app" / "build" / "outputs" / "apk"
-       / "debug" / "app-debug.apk")
-APK_GRADLE = APP_DIR / "android" / "app" / "build.gradle.kts"
+
+#: The oldest keyboard build this PC still speaks with, as a version
+#: (12.9): raised when a route the phone uses changes shape, so an old
+#: keyboard is told to update instead of failing in the middle of a
+#: sentence. 1.1.0 is the first build that reads /health as {ok, version}
+#: and asks /api/version at all — everything before it was the owner's
+#: own com.yoav.dictation, which never left his phone.
+IME_MIN = "1.1.0"
 
 
-def apk_version() -> str:
-    """The version in the APK's download filename.
-
-    Serving every build as "DeskIT.apk" means the new one lands
-    next to the old one in Downloads under the same name — and tapping the
-    stale copy reinstalls the previous version, which looks exactly like an
-    update that refused to apply. A version in the name makes the two
-    impossible to confuse. Since PR 9 the phone's versionName IS the
-    VERSION file (build.gradle.kts reads it), so this is version.VERSION.
-    """
+def pc_version() -> str:
+    """The VERSION file's line, or "0" when it cannot be read — the
+    phone's `/health` and `/api/version` must answer either way."""
     try:
         import version
         return version.VERSION
     except Exception:                          # noqa: BLE001
         return "0"
+
+
+def ime_code(text: str) -> int:
+    """A version as the keyboard's versionCode: MAJOR*10000 + MINOR*100
+    + PATCH, the one line android/app/build.gradle.kts computes from the
+    same VERSION file (12.9) — kept here in the same words so the PC and
+    the build cannot disagree about what 1.1.0 is."""
+    import version
+    major, minor, patch, _beta = version.parse(text)
+    return major * 10000 + minor * 100 + patch
+
+
+def api_version() -> dict:
+    """What `GET /api/version` answers (12.9): the PC's version, the
+    oldest keyboard build it accepts and the newest it knows of (as
+    versionCodes), and where to get the newest. This build's own values:
+    the newest keyboard is the one built from the same VERSION and lives
+    at the release's asset (12.8's name), the Play page is "" until Play
+    is live, and the APK's digest is "" until the update feed carries it
+    (11.3 gains apk_url / apk_sha256 / ime_version_code / play_url with
+    the release that ships a keyboard; the last successful check will
+    overlay these then)."""
+    import updates
+    v = pc_version()
+    try:
+        latest = ime_code(v)
+    except ValueError:                         # an unreadable VERSION
+        latest = 0
+    least = ime_code(IME_MIN)
+    if latest and least > latest:              # never ask for more than exists
+        least = latest
+    return {"pc": v, "ime_min": least, "ime_latest": latest,
+            "apk_url": f"https://github.com/{updates.REPO}/releases/download/v{v}/DeskIT-{v}.apk",
+            "apk_sha256": "", "play_url": ""}
 
 # Bodies are speech, not uploads. A minute of Opus is ~100 KB; this is a
 # sanity bound so a stray POST cannot buffer a gigabyte into memory.
@@ -252,41 +289,21 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
-        if path == "/":
-            self._send(200, PAGE.encode("utf-8"),
-                       "text/html; charset=utf-8")
-        elif path == "/app.apk":
-            # Sideloading over the same private link the app will use:
-            # no cable, no USB debugging, no third-party file transfer.
-            # Unauthenticated on purpose — it is reachable only from the
-            # tailnet, and the APK deliberately ships no token.
-            if not APK.exists():
-                self._json(404, {"error": "no APK built yet"})
+        if path == "/health":
+            # Up, and which DeskIT — nothing more to whoever can reach
+            # the port (12.3): the engine's name rides on each transcript.
+            self._json(200, {"ok": True, "version": pc_version()})
+        elif path == "/api/version":
+            # The keyboard-build facts (12.9), behind the bearer so the
+            # network learns nothing from a GET.
+            if not self._authorised():
+                self._json(401, {"error": "bad token"})
                 return
-            self.send_response(200)
-            self.send_header("Content-Type",
-                             "application/vnd.android.package-archive")
-            self.send_header("Content-Length", str(APK.stat().st_size))
-            self.send_header(
-                "Content-Disposition",
-                f'attachment; filename="DeskIT-{apk_version()}.apk"')
-            # Without this the browser happily re-serves the previous
-            # build from cache, and a rebuilt app looks like one that
-            # silently refused to update.
-            self.send_header("Cache-Control", "no-store, must-revalidate")
-            self.send_header("ETag", f'"{APK.stat().st_mtime_ns}"')
-            self.end_headers()
-            try:
-                self.wfile.write(APK.read_bytes())
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-        elif path == "/health":
-            self._json(200, {"ok": True,
-                             "backend": self.server.backend_name(),
-                             "apk": apk_version() if APK.exists() else None})
+            self._json(200, api_version())
         elif path == "/review":
             self._do_review_pending()
         else:
+            # `/` (the retired web page) and `/app.apk` land here too.
             self._json(404, {"error": "not found"})
 
     def handle_one_request(self) -> None:
@@ -718,18 +735,22 @@ class PhoneServer:
         log.info("phone endpoint on %s:%d", host, port)
         name = tailscale_name()
         if name:
+            # The line the keyboard's Settings accepts whole (address and
+            # token, Prefs.parsePasted); the web page it once opened is
+            # gone (12.11), the shape stays until QR pairing (12.2).
             self.url = f"https://{name}/#t={token}"
             # The host only (D8): the link with the token is on the
             # dashboard's Phone page, never in app.log.
-            log.info("phone page: https://%s/ — the link with the token "
-                     "is on the dashboard's Phone page", name)
+            log.info("phone address: https://%s/ — the line with the token "
+                     "for the keyboard's Settings is on the dashboard's "
+                     "Phone page", name)
             log.info("(needs `tailscale serve --bg %d` once — without it "
-                     "there is no certificate, and the phone browser will "
-                     "refuse the microphone)", port)
+                     "there is no certificate, and the keyboard refuses "
+                     "plain http)", port)
         else:
             self.url = f"http://{host}:{port}/#t={token}"
             log.warning("tailscale is not up — the phone cannot reach this. "
-                        "Log in to Tailscale, then restart. Local page: "
+                        "Log in to Tailscale, then restart. Local address: "
                         "http://%s:%d/", host, port)
 
     def stop(self) -> None:
@@ -738,167 +759,3 @@ class PhoneServer:
             self._srv.server_close()
         if self._thread is not None:
             self._thread.join(timeout=2)
-
-
-PAGE = r"""<!doctype html>
-<html lang="he" dir="rtl">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,
-      maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<title>הכתבה</title>
-<style>
-  :root { color-scheme: dark; }
-  * { box-sizing: border-box; }
-  body { margin: 0; min-height: 100dvh; display: flex; flex-direction: column;
-         align-items: center; justify-content: center; gap: 22px;
-         background: #14110c; color: #f1ece2; font: 17px/1.5 system-ui,
-         -apple-system, "Segoe UI", Roboto, sans-serif;
-         padding: 24px calc(24px + env(safe-area-inset-right))
-                  calc(24px + env(safe-area-inset-bottom))
-                  calc(24px + env(safe-area-inset-left)); }
-  #mic { width: 190px; height: 190px; border-radius: 50%; border: none;
-         background: #e3a63c; color: #1a1409; font-size: 20px;
-         font-weight: 600;
-         box-shadow: 0 10px 34px rgba(227,166,60,.34);
-         transition: transform .12s, background .12s, box-shadow .12s;
-         /* a long press must not raise selection or the callout menu */
-         touch-action: none; user-select: none; -webkit-user-select: none;
-         -webkit-touch-callout: none; }
-  #mic:disabled { background: #332d24; color: #7e7564; box-shadow: none; }
-  #mic.rec { background: #ff5b4e; color: #1a1409; transform: scale(1.07);
-             box-shadow: 0 0 0 14px rgba(255,91,78,.20); }
-  #status { min-height: 1.5em; color: #b2a896; text-align: center; }
-  #out { width: min(560px, 100%); min-height: 8.5em; padding: 14px 16px;
-         border-radius: 14px; border: 1px solid #3a342a; background: #1c1813;
-         color: #f1ece2; font: inherit; resize: vertical; }
-  #out:focus { outline: 2px solid #e3a63c; outline-offset: 1px; }
-  #copy { padding: 12px 22px; border-radius: 11px;
-          border: 1px solid #4e473780;
-          background: #24201a; color: #f1ece2; font: inherit; }
-  .hint { color: #7e7564; font-size: 14px; text-align: center; }
-</style>
-
-<button id="mic">החזק ודבר</button>
-<div id="status">מוכן</div>
-<textarea id="out" placeholder="הטקסט יופיע כאן" dir="auto"></textarea>
-<button id="copy">העתק</button>
-<div class="hint">מחזיקים, מדברים, משחררים. הטקסט מועתק אוטומטית.</div>
-<a class="hint" href="app.apk" style="color:#8fc0f0" id="apk">התקן את אפליקציית המקלדת (APK)</a>
-
-<script>
-const mic = document.getElementById('mic');
-const out = document.getElementById('out');
-const statusEl = document.getElementById('status');
-
-// The token arrives once in the URL hash, then lives in localStorage so
-// the page can be bookmarked without the secret sitting in the address bar.
-let token = localStorage.getItem('dictationToken') || '';
-const fromHash = new URLSearchParams(location.hash.slice(1)).get('t');
-if (fromHash) {
-  token = fromHash;
-  localStorage.setItem('dictationToken', token);
-  history.replaceState(null, '', location.pathname);
-}
-if (!token) say('חסר טוקן — פתח את הכתובת המלאה מהלוג של המחשב', true);
-
-function say(msg, bad) {
-  statusEl.textContent = msg;
-  statusEl.style.color = bad ? '#f1867a' : '#b2a896';
-}
-
-let recorder = null, chunks = [], stream = null, startedAt = 0;
-
-async function getStream() {
-  if (stream && stream.active) return stream;
-  // Not a secure context => getUserMedia is undefined, and the failure is
-  // otherwise a silent no-op that looks like a broken microphone.
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-    throw new Error('הדפדפן חוסם מיקרופון בעמוד שאינו https');
-  }
-  stream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true }
-  });
-  return stream;
-}
-
-async function start() {
-  if (recorder || !token) return;
-  try {
-    const s = await getStream();
-    chunks = [];
-    recorder = new MediaRecorder(s);
-    recorder.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
-    recorder.start();
-    startedAt = Date.now();
-    mic.classList.add('rec');
-    mic.textContent = 'מקליט…';
-    say('מדבר…');
-  } catch (e) {
-    recorder = null;
-    say(e.message || String(e), true);
-  }
-}
-
-async function stop() {
-  if (!recorder) return;
-  const r = recorder, held = Date.now() - startedAt;
-  recorder = null;
-  mic.classList.remove('rec');
-  mic.textContent = 'החזק ודבר';
-  const done = new Promise(res => { r.onstop = res; });
-  r.stop();
-  await done;
-  if (held < 300) { say('קצר מדי'); return; }   // matches min_seconds
-  const blob = new Blob(chunks, { type: r.mimeType || 'audio/webm' });
-  say('מתמלל…');
-  mic.disabled = true;
-  try {
-    const res = await fetch('transcribe', {
-      method: 'POST',
-      headers: { 'Authorization': 'Bearer ' + token,
-                 'Content-Type': blob.type || 'application/octet-stream' },
-      body: blob
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || ('שגיאה ' + res.status));
-    const text = (data.text || '').trim();
-    if (!text) { say('לא נשמע דיבור'); return; }
-    out.value = out.value ? out.value + ' ' + text : text;
-    say(`${data.seconds}s · ${data.backend}`);
-    copy(true);
-  } catch (e) {
-    say(e.message || String(e), true);
-  } finally {
-    mic.disabled = false;
-  }
-}
-
-async function copy(quiet) {
-  if (!out.value) return;
-  try {
-    await navigator.clipboard.writeText(out.value);
-    if (!quiet) say('הועתק');
-  } catch {
-    // Clipboard API needs a secure context too; select the text so a
-    // long-press copy still works instead of failing silently.
-    out.select();
-    if (!quiet) say('בחר והעתק ידנית', true);
-  }
-}
-
-mic.addEventListener('pointerdown', e => { e.preventDefault(); start(); });
-for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) {
-  mic.addEventListener(ev, e => { e.preventDefault(); stop(); });
-}
-mic.addEventListener('contextmenu', e => e.preventDefault());
-document.getElementById('copy').addEventListener('click', () => copy(false));
-
-// Name the version on the link, so you can see what you are about to
-// install without installing it first.
-fetch('health').then(r => r.json()).then(d => {
-  if (d.apk) document.getElementById('apk').textContent =
-    `התקן את אפליקציית המקלדת · v${d.apk}`;
-}).catch(() => {});
-</script>
-</html>
-"""

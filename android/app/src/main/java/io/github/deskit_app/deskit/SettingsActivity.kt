@@ -1,9 +1,10 @@
-package com.yoav.dictation
+package io.github.deskit_app.deskit
 
 import android.app.Activity
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -74,7 +75,7 @@ class SettingsActivity : Activity() {
         pc.addView(Skin.eyebrow(this, getString(R.string.the_pc)))
         pc.addView(Skin.gap(this, 12))
         pc.addView(label(getString(R.string.paste_url_label)))
-        urlField = field(Prefs.url(this), Prefs.DEFAULT_URL)
+        urlField = field(Prefs.url(this), getString(R.string.url_hint))
         pc.addView(urlField)
         pc.addView(Skin.gap(this, 12))
         pc.addView(label(getString(R.string.token_label)))
@@ -214,26 +215,44 @@ class SettingsActivity : Activity() {
     }
 
     /**
-     * Compare the version the PC serves against the one installed, and
-     * only open the browser when they differ — straight at the APK, so
-     * the download starts immediately. When they match there is nothing
-     * to fetch and nothing opens.
+     * Ask the PC's /api/version (12.9) for the newest keyboard build it
+     * knows of and compare it with this one's versionCode; only when the
+     * PC names a newer one does the browser open — at the release
+     * download, or the store page when this copy came from Play. At the
+     * latest there is nothing to fetch and nothing opens.
      */
     private fun checkForUpdate() {
         val url = Prefs.url(this)
+        val token = Prefs.token(this)
         say(getString(R.string.checking), Skin.DIM, updateResult)
         thread {
-            val remote = Transcriber.serverApkVersion(url)
-            val mine = try {
-                packageManager.getPackageInfo(packageName, 0).versionName
-            } catch (e: Exception) { "?" }
+            val remote = Transcriber.versions(url, token)
+            val info = try { packageManager.getPackageInfo(packageName, 0) } catch (e: Exception) { null }
+            val mine = info?.versionName ?: "?"
+            val myCode = when {
+                info == null -> 0
+                Build.VERSION.SDK_INT >= 28 -> info.longVersionCode.toInt()
+                else -> @Suppress("DEPRECATION") info.versionCode
+            }
+            val fromPlay = try {
+                val installer = if (Build.VERSION.SDK_INT >= 30)
+                    packageManager.getInstallSourceInfo(packageName).installingPackageName
+                else @Suppress("DEPRECATION") packageManager.getInstallerPackageName(packageName)
+                installer == "com.android.vending"
+            } catch (e: Exception) { false }
             runOnUiThread {
-                when (remote) {
-                    null -> say(getString(R.string.update_check_failed), Skin.RED, updateResult)
-                    mine -> say(getString(R.string.up_to_date, mine), Skin.GREEN, updateResult)
+                when {
+                    remote == null -> say(getString(R.string.update_check_failed), Skin.RED, updateResult)
+                    myCode >= remote.imeLatest ->
+                        say(getString(R.string.up_to_date, mine), Skin.GREEN, updateResult)
                     else -> {
-                        say(getString(R.string.update_available, remote), Skin.GREEN, updateResult)
-                        startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$url/app.apk")))
+                        val name = "${remote.imeLatest / 10000}.${remote.imeLatest / 100 % 100}.${remote.imeLatest % 100}"
+                        say(getString(R.string.update_available, name), Skin.GREEN, updateResult)
+                        val where = if (fromPlay && remote.playUrl.isNotEmpty()) remote.playUrl
+                                    else remote.apkUrl
+                        if (where.isNotEmpty()) {
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(where)))
+                        }
                     }
                 }
             }

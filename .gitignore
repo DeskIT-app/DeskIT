@@ -59,6 +59,12 @@ android/.gradle/
 android/build/
 android/app/build/
 android/local.properties
+# The release keystore and the file that names it (plan 12.7): generated
+# once, backed up twice, never committed — losing it is a new package
+# identity for every user, leaking it is someone else signing as DeskIT.
+android/keystore.properties
+android/*.jks
+android/*.keystore
 
 # The first-run wizard has run on this copy (firstrun.py).
 .setup-done

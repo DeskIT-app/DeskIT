@@ -1,4 +1,4 @@
-package com.yoav.dictation
+package io.github.deskit_app.deskit
 
 import android.app.Notification
 import android.app.NotificationChannel
@@ -31,7 +31,7 @@ import kotlin.concurrent.thread
  */
 object Notify {
     const val CHANNEL = "second_reading"
-    const val ACTION_DECIDE = "com.yoav.dictation.DECIDE"
+    const val ACTION_DECIDE = "io.github.deskit_app.deskit.DECIDE"
     const val EXTRA_ID = "id"
     const val EXTRA_VERDICT = "verdict"
     const val EXTRA_NOTIFICATION = "notification"

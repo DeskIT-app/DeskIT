@@ -80,7 +80,7 @@
 
     <string name="needs_permission">No mic permission — tap here</string>
     <string name="needs_setup">No token — tap here to set up</string>
-    <string name="unreachable">Can\'t reach the PC — is Tailscale on?</string>
+    <string name="unreachable">Can\'t reach the PC — is it on, and the link up?</string>
     <!-- %1$s is the backend the PC answered with: "local" or "gemini". -->
     <string name="ready_on">Slide up to lock ↑ · %1$s</string>
 
@@ -92,11 +92,16 @@
     <string name="settings">Settings</string>
     <string name="back">Back</string>
     <string name="install">Install</string>
-    <string name="update_on_pc">Version %1$s is on the PC</string>
+    <!-- The update pill and the blocking card (12.9): %1$s is the newest
+         keyboard version the PC knows of; a tap opens the store page or
+         the release download, a long press dismisses the pill. -->
+    <string name="update_on_pc">Keyboard %1$s is out</string>
+    <string name="update_required">Update the keyboard to keep dictating</string>
     <string name="connected_title">Connected</string>
-    <string name="connected_line">The PC answers · %1$s model</string>
+    <!-- %1$s is the version of DeskIT the PC answered with. -->
+    <string name="connected_line">The PC answers · DeskIT %1$s</string>
     <string name="unreachable_title">Can\'t reach the PC</string>
-    <string name="unreachable_line">Is Tailscale on at both ends? Tap to try again.</string>
+    <string name="unreachable_line">Is the PC on, and the link up at both ends? Tap to try again.</string>
     <string name="no_token_title">Not set up yet</string>
     <string name="no_token_line">Point it at the PC in Settings.</string>
     <string name="steps_title">Set up</string>
@@ -112,7 +117,8 @@
     <string name="copied">Copied</string>
 
     <!-- Settings. -->
-    <string name="setup_intro">The phone records; the PC at home transcribes. Tailscale has to be on at both ends.</string>
+    <string name="setup_intro">The phone records; your own PC transcribes. The two must be able to reach each other — over Tailscale today, over home Wi-Fi once pairing lands.</string>
+    <string name="url_hint">https://…</string>
     <string name="the_pc">The PC</string>
     <string name="the_keyboard">The keyboard</string>
     <string name="the_app">The app</string>
@@ -129,8 +135,8 @@
     <string name="version_line">DeskIT %1$s on this phone</string>
     <string name="check_update">Check for an update</string>
     <string name="up_to_date">Up to date — v%1$s is the latest</string>
-    <string name="update_available">Version %1$s is available — downloading…</string>
-    <string name="update_check_failed">Can\'t check — the PC is not reachable</string>
+    <string name="update_available">Keyboard %1$s is out — opening the download…</string>
+    <string name="update_check_failed">Can\'t check — the PC is not reachable, or the token is wrong</string>
 
     <!-- The second reading. -->
     <string name="channel_review">Second reading</string>

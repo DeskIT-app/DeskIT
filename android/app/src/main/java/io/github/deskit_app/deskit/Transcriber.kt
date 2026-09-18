@@ -1,4 +1,4 @@
-package com.yoav.dictation
+package io.github.deskit_app.deskit
 
 import org.json.JSONObject
 import java.io.IOException
@@ -53,12 +53,18 @@ object Transcriber {
     }
 
     /**
-     * Which engine the PC is serving, from /health — null when it cannot be
-     * reached at all. This is what lets the keyboard say "the PC is asleep"
-     * BEFORE a paragraph is spoken into it, instead of after a 15 s connect
-     * timeout with the audio already gone.
+     * The version of DeskIT the PC is running, from /health — null when it
+     * cannot be reached at all. This is what lets the keyboard say "the PC
+     * is asleep" BEFORE a paragraph is spoken into it, instead of after a
+     * 15 s connect timeout with the audio already gone. /health says
+     * {ok, version} and nothing else since 12.3: the engine's name is not
+     * for whoever can reach the port, it comes back with each transcript.
      */
-    fun health(baseUrl: String): String? = healthField(baseUrl, "backend")
+    fun health(baseUrl: String): String? {
+        val h = healthJson(baseUrl) ?: return null
+        if (!h.optBoolean("ok", false)) return null
+        return h.optString("version", "").ifEmpty { "?" }
+    }
 
     /**
      * Translate text already in the field. The far end reuses the same
@@ -73,21 +79,44 @@ object Transcriber {
             "application/json; charset=utf-8", body, 180000)
     }
 
-    /**
-     * The version the PC is currently serving, from /health — the one
-     * unauthenticated route, which is fine: it exposes nothing but "up"
-     * and a version string. null when the PC is unreachable.
-     */
-    fun serverApkVersion(baseUrl: String): String? = healthField(baseUrl, "apk")
-
     /** The whole of /health as JSON, or null if the PC did not answer. */
-    fun healthJson(baseUrl: String): JSONObject? {
+    fun healthJson(baseUrl: String): JSONObject? = getJson("$baseUrl/health", null)
+
+    /**
+     * What the PC knows about keyboard builds (DISTRIBUTION_PLAN.md 12.9),
+     * behind the token so the LAN learns nothing: the PC's own version,
+     * the oldest keyboard it still speaks with (`ime_min`), the newest it
+     * knows of (`ime_latest`) and where to get it (`apk_url`, `play_url`,
+     * `apk_sha256`). The 12.9 rule the callers apply to their own
+     * versionCode: below ime_min the keyboard must update to keep
+     * dictating; between, one dismissible pill; at latest, nothing.
+     */
+    class Versions(
+        val pc: String, val imeMin: Int, val imeLatest: Int,
+        val apkUrl: String, val apkSha256: String, val playUrl: String,
+    ) {
+        companion object {
+            fun from(o: JSONObject) = Versions(
+                o.optString("pc", ""), o.optInt("ime_min", 0), o.optInt("ime_latest", 0),
+                o.optString("apk_url", ""), o.optString("apk_sha256", ""),
+                o.optString("play_url", ""))
+        }
+    }
+
+    /** /api/version, or null when the PC did not answer or refused the token. */
+    fun versions(baseUrl: String, token: String): Versions? =
+        getJson("$baseUrl/api/version", token)?.let { Versions.from(it) }
+
+    /** One GET as JSON — with the bearer when one is given — or null. */
+    private fun getJson(url: String, token: String?): JSONObject? {
         var conn: HttpURLConnection? = null
         return try {
-            conn = (URL("$baseUrl/health").openConnection() as HttpURLConnection).apply {
+            conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 10000
                 readTimeout = 15000
+                if (token != null) setRequestProperty("Authorization", "Bearer $token")
             }
+            if (conn.responseCode !in 200..299) return null
             val body = conn.inputStream.bufferedReader().use { it.readText() }
             JSONObject(body)
         } catch (e: Exception) {
@@ -96,10 +125,6 @@ object Transcriber {
             conn?.disconnect()
         }
     }
-
-    /** One field out of /health, or null if the PC did not answer. */
-    private fun healthField(baseUrl: String, field: String): String? =
-        healthJson(baseUrl)?.optString(field, "")?.ifEmpty { null }
 
     // ---- the second reading, and the lookup ----
 
@@ -216,7 +241,7 @@ object Transcriber {
         } catch (e: IOException) {
             // By far the most likely failure in real use, and the least
             // obvious from a raw exception string.
-            Result.Err("can't reach the PC — is Tailscale on?")
+            Result.Err("can't reach the PC — is it on, and the link up?")
         } catch (e: Exception) {
             Result.Err(e.message ?: "failed")
         } finally {
