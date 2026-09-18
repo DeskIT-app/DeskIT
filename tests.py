@@ -34492,6 +34492,12 @@ def test_account_block_on_the_privacy_tab():
                 "last_sync": "", "waiting": 0, "region": "Frankfurt (Supabase)"}}
             board._paint_account()
             assert line.cget("text").startswith("none — sign in")
+            # the buttons sit inside the card: strip bottom under the body
+            board.root.update_idletasks()
+            strip = board.parts["account_strip"]
+            body = strip.master
+            bottom, room = strip.winfo_y() + strip.winfo_reqheight(), body.winfo_height()
+            assert bottom <= room, (bottom, room)
             assert labels() == ["Sign in with Google", "Anonymous account"], labels()
             board.status["account"].update(signed_in=True, anonymous=False,
                                            email="person@example.com", waiting=2,

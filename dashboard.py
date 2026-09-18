@@ -8280,7 +8280,10 @@ class Dashboard:
         browser shows up here without a click. Delete asks first, the way
         the Problems ✕ does — the question grows out of the card, and the
         answer sits at the far end from the button that raised it."""
-        card = ui.Card(scroller.inner, CW, 132, bg=ui.BG, pad=18)
+        # 36 above the strip for the two text lines, 30 for the buttons,
+        # 18 of pad each side: the first build was 132 and cut the buttons
+        # in half (his screenshot, 2026-09-18).
+        card = ui.Card(scroller.inner, CW, 168, bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
         tk.Label(body, text="A C C O U N T", bg=ui.CARD, fg=ui.FAINT,
@@ -8292,7 +8295,7 @@ class Dashboard:
                        wraplength=CW - 60, justify="left", anchor="w")
         sub.place(x=0, y=48)
         strip = tk.Frame(body, bg=ui.CARD, height=32, width=CW - 40)
-        strip.place(x=0, y=82)
+        strip.place(x=0, y=96)
         self.parts["account_line"] = line
         self.parts["account_sub"] = sub
         self.parts["account_strip"] = strip
