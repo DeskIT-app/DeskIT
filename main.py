@@ -2185,8 +2185,12 @@ class App:
         return message
 
     def start(self) -> None:
-        if self._model_state == "on":
-            self.recorder.start_stream()
+        # The stream runs from here to stop() whatever the model does: a
+        # stopped WASAPI stream refused to start again on his headset
+        # (AUDCLNT_E_UNSUPPORTED_FORMAT, 2026-09-18 22:36, after the
+        # first live unload → load), and a running one costs nothing
+        # while nobody records.
+        self.recorder.start_stream()
         # The hold first: [awake] hold = true means the machine never
         # sleeps while this app runs, whatever the screens are doing. A
         # refusal is logged and shown on the Awake screen, never fatal.
@@ -2365,8 +2369,8 @@ class App:
                        "(about 25 seconds); every other key works")
 
     def unload_model(self) -> dict:
-        """Stop, as the desk means it: the speech model and the microphone
-        stream go, the process stays. "Many things don't need the model —
+        """Stop, as the desk means it: the speech model goes, the process
+        stays (the microphone stream too — see start()). "Many things don't need the model —
         screenshot, screen recording and a few more — and they don't work
         when the model is off; make those that don't need the model work
         without it." So the hook, the dot, the cards, the phone's other
@@ -2395,10 +2399,6 @@ class App:
         with self._model_lock:
             old, self.transcriber = self.transcriber, OffTranscriber(self.MODEL_OFF_WORDS)
             self._local = None
-        try:
-            self.recorder.pause_stream()
-        except Exception:                                    # noqa: BLE001
-            log.debug("the microphone stream did not pause", exc_info=True)
         del old
         gc.collect()
         self._model_state = "off"
@@ -2407,8 +2407,9 @@ class App:
         log.info("model unloaded — the keys that need no model keep working")
 
     def load_model(self) -> dict:
-        """Start, with the process already up: the model back (about 25 s),
-        the microphone stream, the learning engines, the hold keys."""
+        """Start, with the process already up: the model back (about 25 s,
+        narrated by the same splash a process start shows), the learning
+        engines, the hold keys."""
         if self._model_state == "on":
             return {"ok": False, "error": "the model is loaded"}
         if self._model_state == "loading":
@@ -2422,6 +2423,26 @@ class App:
         return {"ok": True, "message": "loading the model — about 25 seconds"}
 
     def _load_work(self) -> None:
+        # The splash a process start shows — "the animation that the
+        # model is loading", his words when Start in the desk loaded it
+        # in silence (22:37) — narrating the same log lines, landing in
+        # the dot with the ready cue. Never in the way of the load: a
+        # splash that cannot be built is skipped, not a failed load.
+        splash, splash_log = None, None
+        try:
+            if getattr(self.cfg, "splash", True):
+                splash = overlay_mod.Splash()
+                _dot = getattr(self.cfg, "dot", None)
+                splash.dot_corner = str(getattr(_dot, "corner", "bottom-right"))
+                splash.dot_x = int(getattr(_dot, "x", overlay_mod.HINT_UNSET))
+                splash.dot_y = int(getattr(_dot, "y", overlay_mod.HINT_UNSET))
+                splash.start()
+                splash_log = SplashLog(splash)
+                log.addHandler(splash_log)
+                splash.status("loading the transcription model…")
+        except Exception:                                    # noqa: BLE001
+            log.debug("no splash for this load", exc_info=True)
+            splash = None
         self._say("loading the model…")
         try:
             fresh = get_transcriber(self.cfg, self._hotwords)
@@ -2430,19 +2451,30 @@ class App:
             self._set_state("paused")
             self._say(f"the model did not load: {str(e).splitlines()[0][:120]}")
             log.exception("the model did not load")
+            self._splash_done(splash, splash_log, "the model did not load", None)
             return
         with self._model_lock:
             self.transcriber = fresh
-        try:
-            self.recorder.start_stream()
-        except Exception:                                    # noqa: BLE001
-            log.warning("the microphone stream did not restart", exc_info=True)
         self._start_learning()
         self._model_state = "on"
         self.machine.set_dictation_off(False)
         self._set_state("ready")
         self._say("listening again")
         log.info("model loaded again — hold '%s' and speak", self.cfg.hotkey)
+        self._splash_done(splash, splash_log,
+                          f"ready — hold {str(self.cfg.hotkey).title()} and speak",
+                          lambda: beep("ready"))
+
+    @staticmethod
+    def _splash_done(splash, splash_log, text: str, on_land) -> None:
+        if splash_log is not None:
+            log.removeHandler(splash_log)
+        if splash is None:
+            return
+        try:
+            splash.finish(text, on_land=on_land)
+        except Exception:                                    # noqa: BLE001
+            log.debug("the splash did not finish cleanly", exc_info=True)
 
     def _on_dictation_refused(self) -> None:
         """A hold key while the model is off: the sentence, once per

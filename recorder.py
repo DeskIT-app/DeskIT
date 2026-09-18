@@ -178,13 +178,6 @@ class Recorder:
     def start_stream(self) -> None:
         self._stream.start()
 
-    def pause_stream(self) -> None:
-        """The stream stopped and kept — a closed sounddevice stream
-        cannot be started again, and the model going away (main.py
-        unload_model) is not the end of the process: start_stream()
-        brings the same stream back when the model does."""
-        self._stream.stop()
-
     def close(self) -> None:
         try:
             self._stream.stop()

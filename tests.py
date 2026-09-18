@@ -34770,8 +34770,9 @@ def test_the_wizard_has_no_way_past_the_account_page_without_a_sign_in():
 
 def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
     """main.unload_model / load_model (2026-09-18): Stop drops the model
-    and the microphone stream — the learning engines with it, since they
-    hold the model — and nothing else; status() says model = off and
+    — the learning engines with it, since they hold the model — and
+    nothing else, the microphone stream included (a stopped WASAPI
+    stream refused to start again on his headset, 22:36); status() says model = off and
     backend = off; the hold keys are refused with MODEL_OFF_WORDS and the
     phone's /transcribe raises it; a pipe `unload` while a recording is
     live is refused; `load` builds the model again, restarts the stream
@@ -34798,8 +34799,8 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
     app._refused_at = 0.0
     app._study = type("E", (), {"stop": lambda self: calls.append("study.stop")})()
     app._review = type("E", (), {"stop": lambda self: calls.append("review.stop")})()
-    app.recorder = type("R", (), {"pause_stream": lambda self: calls.append("pause"),
-                                  "start_stream": lambda self: calls.append("start")})()
+    app.recorder = type("R", (), {"start_stream": lambda self: calls.append("start")})()
+    app.cfg.splash = False
     app.transcriber = type("T", (), {"name": "local"})()
     app.machine = hotkey_mod.PTTStateMachine(
         VK_RCTRL, on_start=lambda lang: None, on_stop=lambda lang: None,
@@ -34821,7 +34822,9 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
             time.sleep(0.02)
         assert app._model_state == "off"
         assert isinstance(app.transcriber, OffTranscriber) and app.transcriber.name == "off"
-        assert calls == ["study.stop", "review.stop", "pause"], calls
+        assert calls == ["study.stop", "review.stop"], calls
+        assert not hasattr(app.recorder, "pause_stream"), \
+            "the stream must never be stopped — WASAPI would not start it again"
         assert app._study is None and app._review is None
         assert states[-1] == "paused" and said[-1].startswith("model off")
         assert app.machine.dictation_off and not app.machine.paused
@@ -34853,7 +34856,7 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
                 break
             time.sleep(0.02)
         assert app._model_state == "on" and app.transcriber.name == "local"
-        assert calls[-2:] == ["build", "start"], calls
+        assert calls[-1] == "build" and "start" not in calls, calls
         assert not app.machine.dictation_off and states[-1] == "ready"
         assert said[-1] == "listening again"
         assert not app.control_command("load", {})["ok"], "loaded twice"
