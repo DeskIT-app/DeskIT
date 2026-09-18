@@ -585,6 +585,10 @@ TABS: tuple[Tab, ...] = (
             Friendly("setup.done", "Skip the first-run walkthrough",
                      "The walkthrough runs once per copy of the app; this "
                      "is the switch that turns it off by hand."),
+            Friendly("setup.tour", "Skip the tour",
+                     "Four cards beside the dot, right after the "
+                     "walkthrough, once. Show the tour on this page "
+                     "puts them up again."),
             Friendly("setup.autostart", "Start with Windows",
                      "Windows starts DeskIT when you sign in. Off, you "
                      "open it from the Start menu."),

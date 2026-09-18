@@ -288,6 +288,11 @@ scale = 0.8                   # how big you last made it (0.6 .. 1.4). The − a
 # ships with every copy: `true` here would mean nobody ever sees the
 # wizard. To see it again: run  main.py --setup
 done = false
+# The tour (D36): four small cards beside the dot, right after the
+# wizard, that say what the dot, the key and the shelf are — the guide
+# itself. Shown once: [סיימתי] or [דלג] writes true here, in state.json
+# like `done`. Settings > The app > Show the tour puts it up again.
+tour = false
 # Start with Windows: true writes the HKCU Run value that starts the
 # installed copy at logon, false removes it (autostart.py; the app
 # re-checks it at every start, so a moved install never leaves a stale

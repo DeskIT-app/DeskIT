@@ -29440,6 +29440,204 @@ def test_the_consent_card_stands_up_on_the_hidden_desktop():
         card._thread.join(timeout=3)
 
 
+# ------------------------------------------------------------ the tour (D36)
+#
+# The owner, 2026-09-18: the guide is "a square with an arrow" on the
+# first start, with a skip — not a text. tour_card.py holds the words and
+# the picture, overlay.TourCard the thread and the placement beside the
+# dot, main.py shows it once after the wizard and again on request.
+
+def test_tour_card_words_and_layout():
+    """Four stops, Hebrew, one sentence each; the last has one button and
+    the others two; the beak's frame adds room on the side it is on and
+    nowhere else; the buttons are hit where they are drawn on every
+    side; the beak stays off the rounded corners; the picture is the
+    frame's size with the chroma colour in the corner the card does
+    not reach; the key stop grows with a long key name."""
+    import tour_card as tc
+
+    assert len(tc.STOPS) == 4
+    assert [s["kind"] for s in tc.STOPS] == ["dot", "key", "shelf", "done"]
+    assert [s["tail"] for s in tc.STOPS] == [True, False, True, False]
+    for stop in tc.STOPS:
+        assert stop["title"] and stop["body"]
+        assert any("א" <= ch <= "ת" for ch in stop["body"]), stop
+    for label in tc.LABELS.values():
+        assert any("א" <= ch <= "ת" for ch in label), label
+    cache: dict = {}
+    for i in range(len(tc.STOPS)):
+        card = tc.card_for(i, key="Right Ctrl")
+        assert card["index"] == i and card["count"] == 4
+        assert card["buttons"] == ((tc.DONE,) if i == 3 else (tc.NEXT, tc.SKIP))
+        w, h = tc.measure(card, 1.0, cache)
+        assert w == tc.CARD_W and 90 < h < 260, (i, w, h)
+        assert tc.frame(card, 1.0, None, cache) == (w, h, 0, 0)
+        for side in (None,) + tc.SIDES:
+            fw, fh, cx, cy = tc.frame(card, 1.0, side, cache)
+            if side is None or not card["tail"]:
+                assert (fw, fh, cx, cy) == (w, h, 0, 0), (i, side)
+            elif side in ("top", "bottom"):
+                assert (fw, fh) == (w, h + tc.TAIL) and cx == 0, (i, side)
+                assert cy == (tc.TAIL if side == "top" else 0)
+            else:
+                assert (fw, fh) == (w + tc.TAIL, h) and cy == 0, (i, side)
+                assert cx == (tc.TAIL if side == "left" else 0)
+            boxes = tc.regions(card, 1.0, cache, side)
+            for name in card["buttons"]:
+                x0, y0, x1, y1 = boxes[name]
+                assert tc.hit_test(card, 1.0, (x0 + x1) / 2, (y0 + y1) / 2,
+                                   cache, side) == (tc.HTCLIENT, name), (i, side, name)
+                assert cx <= x0 < x1 <= cx + w and y1 <= cy + h, (i, side, name)
+            assert tc.hit_test(card, 1.0, cx + 8, cy + 8, cache, side) == (tc.HTCAPTION, tc.DRAG)
+            assert tc.hit_test(card, 1.0, fw - 1, fh - 1, cache, side)[0] in (tc.HTTRANSPARENT, tc.HTCAPTION)
+            at = tc.clamp_tail(card, 1.0, side or "bottom", -50, cache)
+            assert at >= tc.RADIUS + tc.TAIL_W / 2, at
+            span = h if side in ("left", "right") else w
+            far = tc.clamp_tail(card, 1.0, side or "bottom", span + 50, cache)
+            assert far <= span - tc.RADIUS - tc.TAIL_W / 2, far
+            img = tc.flat(card, 1.0, tc.NEXT, cache, side=side, at=at,
+                          chroma=(1, 2, 3))
+            assert img.size == (fw, fh) and img.mode == "RGB", (i, side)
+            assert img.getpixel((0, 0)) == (1, 2, 3), "the corner is not keyed out"
+            # and the card's own face is where the frame says it is
+            assert img.getpixel((cx + w // 2, cy + h // 2)) != (1, 2, 3)
+    short = tc.measure(tc.card_for(1, key="F9"), 1.0, cache)
+    long = tc.measure(tc.card_for(1, key="Ctrl+Shift+Space"), 1.0, cache)
+    assert long[0] == short[0], "the card is one width"
+    small = tc.measure(tc.card_for(0, key="F9"), 0.7, cache)
+    assert small[0] < tc.CARD_W
+
+
+def test_the_tour_walks_its_stops_and_ends_once():
+    """[הבא] walks the four stops in order and the last [הבא] or [סיימתי]
+    ends it as "done"; [דלג] ends it as "skip" from anywhere; the end
+    takes the card down; a press with nothing up is nothing. And the
+    placement: beside the dot with the beak on the edge that faces it —
+    below a dot at the top of the screen, above one at the bottom — no
+    beak on the stops that do not point, and the corner rule with no
+    dot at all. Driven through the card object with its thread stubbed
+    out; the painter is the flat image the layout test checks."""
+    import tour_card as tc
+
+    ends: list[str] = []
+    card = overlay_mod.TourCard(dot_at=lambda: (2500, 1380, 2538, 1418),
+                                key="Right Ctrl", on_end=ends.append)
+    card._thread = object()           # "started": show() enqueues
+    card.pressed(tc.NEXT)
+    assert ends == [] and card._q.empty(), "a press with nothing up did something"
+    card.show(0)
+    assert card.visible() and card.current() == 0
+    assert card._q.get_nowait()["index"] == 0
+    for expect in (1, 2, 3):
+        card.pressed(tc.NEXT)
+        assert card.current() == expect
+        queued = card._q.get_nowait()
+        assert queued["index"] == expect and queued["key"] == "Right Ctrl"
+    card.pressed(tc.NEXT)
+    assert ends == ["done"] and card.current() is None
+    assert card._q.get_nowait() is None and card._q.empty()
+    card.show(1)
+    card._q.get_nowait()
+    card.pressed(tc.SKIP)
+    assert ends == ["done", "skip"] and not card.visible()
+    assert card._q.get_nowait() is None
+    card.show(3)
+    card._q.get_nowait()
+    card.pressed(tc.DONE)
+    assert ends == ["done", "skip", "done"]
+    assert card._q.get_nowait() is None
+    card.show(9)
+    assert card._q.empty(), "a stop that does not exist"
+
+    # placement
+    screen, field, desk = (2560, 1440), (0, 0, 2560, 1392), (0, 0, 2560, 1440)
+    size = (340, 130)
+    dot = (2514, 1350, 2552, 1388)                       # bottom-right
+    x, y, side, at = card.place(tc.card_for(0), size, screen, dot, field, desk)
+    assert side == "bottom" and y + size[1] + overlay_mod.DOT_GAP == dot[1], (x, y)
+    assert x + size[0] <= field[2] and at == tc.clamp_tail(tc.card_for(0), 1.0, "bottom", (dot[0] + dot[2]) // 2 - x)
+    dot_top = (1200, 8, 1238, 46)
+    x, y, side, at = card.place(tc.card_for(2), size, screen, dot_top, field, desk)
+    assert side == "top" and y == dot_top[3] + overlay_mod.DOT_GAP, (x, y)
+    assert x == 1219 - size[0] // 2, x
+    assert card.place(tc.card_for(1), size, screen, dot, field, desk)[2:] == (None, None), "the key stop does not point"
+    assert card.place(tc.card_for(3), size, screen, dot, field, desk)[2:] == (None, None)
+    x, y, side, at = card.place(tc.card_for(0), size, screen, None, None, desk)
+    assert (side, at) == (None, None)
+    assert (x, y) == overlay_mod.HintCard.origin(card, size[0], size[1], screen, 0, desk)
+
+
+def test_the_tour_card_stands_up_on_the_hidden_desktop():
+    """The overlay thread builds its window, maps stop 1 beside a dot it
+    is told about, walks to stop 2 on [הבא], takes itself down on
+    [דלג], and buries its interpreter. Skipped where Tk cannot open a
+    window."""
+    import tour_card as tc
+
+    ends: list[str] = []
+    card = overlay_mod.TourCard(dot_at=lambda: (600, 500, 638, 538),
+                                key="Right Ctrl", on_end=ends.append)
+    card.start()
+    if card._thread is None or not card._alive.is_set():
+        return
+    try:
+        card.show(0)
+        deadline = time.monotonic() + 3
+        while card.rect is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert card.rect is not None, "the card never mapped"
+        x0, y0, x1, y1 = card.rect
+        assert x1 - x0 == tc.CARD_W and 90 < y1 - y0 < 260, card.rect
+        assert y1 + overlay_mod.DOT_GAP <= 500, "not above the dot"
+        card.pressed(tc.NEXT)
+        time.sleep(0.3)
+        assert card.current() == 1 and card.rect is not None
+        card.pressed(tc.SKIP)
+        deadline = time.monotonic() + 3
+        while card.rect is not None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert card.rect is None, "the card stayed up after [דלג]"
+        assert ends == ["skip"]
+    finally:
+        card.stop()
+        card._thread.join(timeout=3)
+
+
+def test_main_shows_the_tour_once_and_again_on_request():
+    """tour_due() is true exactly once: after the wizard (setup.done),
+    before the tour was seen (setup.tour), with a dot to point at; the
+    end of the tour writes setup.tour into the state layer through
+    _save; and the control command "tour" puts the cards up from the
+    top for the dashboard's button, or says why not."""
+    import main as main_mod
+
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg = config_mod.load(Path(sys.path[0]) / "defaults.toml")
+    assert app.cfg.setup.tour is False and "setup.tour" in config_mod.STATE_KEYS
+    assert app.tour_due() is False, "the wizard has not run"
+    app.cfg = dataclasses.replace(app.cfg, setup=dataclasses.replace(app.cfg.setup, done=True))
+    assert app.tour_due() is True
+    app.cfg = dataclasses.replace(app.cfg, setup=dataclasses.replace(app.cfg.setup, tour=True))
+    assert app.tour_due() is False, "seen once is seen"
+    app.cfg = dataclasses.replace(app.cfg, setup=dataclasses.replace(app.cfg.setup, tour=False), indicator=False)
+    assert app.tour_due() is False, "no dot, nothing to point at"
+    saved: list = []
+    app._save = saved.append
+    app._tour_ended("skip")
+    assert saved == [{"setup.tour": True}], saved
+    said: list = []
+    app._say = said.append
+    app.tour_card = overlay_mod.TourCard(key="F9")
+    reply = app.control_command("tour", {})
+    assert reply["ok"] is False and "no tour card" in reply["error"], reply
+    app.tour_card._thread = object()
+    reply = app.control_command("tour", {})
+    assert reply["ok"] is True and app.tour_card.current() == 0, reply
+    assert app.tour_card._q.get_nowait()["index"] == 0 and said
+    import settings as settings_mod
+    assert "setup.tour" in settings_mod.friendly_paths()
+
+
 # ------------------------------------- support-safe logs, the redactor, history
 #
 # DISTRIBUTION_PLAN.md 4.2, 4.4, 4.5; D8. app.log never quotes what was

@@ -6,6 +6,13 @@ title: 2. First run
 
 # 2. First run
 
+**The tour.** When the wizard closes, a small card appears beside the dot in the corner
+of the screen, with a beak pointing at it. Four cards, one sentence each: the dot and its
+colours, the key (drawn, with the binding you chose), what a click on the dot opens, and
+done. **הבא** (next) moves on, **דלג** (skip) closes it — and a skipped tour does not come
+back by itself. To see it again: Settings > The app > **Show the tour**. This page is the
+long version of those four cards.
+
 **The two-sentence version.** The first start opens a seven-page wizard; only three pages ask
 you anything (which microphone, whether to download now, and the optional extras) and every
 other page is **Next**. It runs once; `main.py --setup` from the install folder runs it again.

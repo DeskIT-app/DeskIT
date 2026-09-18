@@ -3858,6 +3858,322 @@ class ConsentCard(HintCard):
             gc.collect()
 
 
+class TourCard(HintCard):
+    """The first-run tour: four callouts beside the status dot, each with
+    one sentence, [הבא] and [דלג] (tour_card.py holds the words; D36).
+
+    The owner, 2026-09-18: the user's guide is not a text to read but "a
+    square with an arrow" on the first start, with a skip. So this is
+    the guide. The consent card's contract, inherited — its own thread,
+    callers only ever enqueue, a flat Tk face painted as one image —
+    with what a card that POINTS needs:
+
+    - IT SITS BESIDE THE DOT, wherever the dot is — `beside_dot`, the
+      same rule the shelf uses — and a stop that names the dot grows a
+      beak on the edge facing it. The window is chroma-keyed around the
+      card so the beak stands out of the rectangle; those pixels are
+      click-through of their own, like the dot's glow.
+    - IT TAKES CLICKS on its buttons and nowhere else; the rest of the
+      face is the handle you drag it by, and a drag is forgotten at the
+      next stop — the card belongs beside the dot, not where a hand
+      left it.
+    - IT KEEPS NO CLOCK. A tour that walks off by itself teaches
+      nothing; the card stays until [הבא], [דלג] or [סיימתי].
+
+    The end goes out through `on_end(reason)` on the painter's thread —
+    "done" or "skip" — so that callback must only enqueue or do the
+    small thing main.py does with it (one line into state.json).
+    """
+
+    def __init__(self, dot_at=None, key: str = "", on_end=None,
+                 scale: float = 1.0) -> None:
+        super().__init__(after_ms=0, corner="bottom-right", scale=scale,
+                         dot_at=dot_at)
+        self._key = str(key or "")
+        self._on_end = on_end
+        self.rect = None
+        self._index: int | None = None
+        self._state_lock = threading.Lock()
+
+    def start(self) -> None:
+        if not self._enabled:
+            return
+        try:
+            import tkinter  # noqa: F401
+        except Exception:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="tour-card")
+        self._thread.start()
+        self._alive.wait(timeout=3)
+
+    # -- caller's threads --
+
+    def show(self, index: int = 0) -> None:
+        """Put stop `index` up. Only enqueues, so safe from any thread."""
+        if self._thread is None or not self._enabled:
+            return
+        import tour_card as tc
+        index = int(index)
+        if not 0 <= index < len(tc.STOPS):
+            return
+        with self._state_lock:
+            self._index = index
+        self._q.put(tc.card_for(index, self._key))
+
+    def hide(self) -> None:
+        with self._state_lock:
+            self._index = None
+        if self._thread is not None:
+            self._q.put(None)
+
+    def visible(self) -> bool:
+        return self._index is not None
+
+    def current(self):
+        return self._index
+
+    def pressed(self, name: str) -> None:
+        """A button: the next stop, or the end of the tour."""
+        import tour_card as tc
+        with self._state_lock:
+            index = self._index
+        if index is None:
+            return
+        if name == tc.NEXT:
+            if index + 1 < len(tc.STOPS):
+                self.show(index + 1)
+            else:
+                self._end("done")
+        elif name == tc.DONE:
+            self._end("done")
+        elif name == tc.SKIP:
+            self._end("skip")
+
+    def _end(self, reason: str) -> None:
+        self.hide()
+        if self._on_end is None:
+            return
+        try:
+            self._on_end(reason)
+        except Exception:
+            _log.info("tour card: could not report the end", exc_info=True)
+
+    # -- placement --
+
+    def place(self, card: dict, size: tuple, screen: tuple,
+              dot=None, field=None, bounds=None):
+        """Where the CARD goes and which edge its beak is on: (x, y,
+        side, at). Beside the dot when there is one — above it, centred,
+        slid inside the field — with the beak on the edge that faces the
+        dot; the corner rule with no beak when there is not. Pure
+        arithmetic, so a test can ask it about any dot."""
+        import tour_card as tc
+        w, h = int(size[0]), int(size[1])
+        if dot is None:
+            x, y = HintCard.origin(self, w, h, screen, 0, bounds)
+            return int(x), int(y), None, None
+        field = field or (0, 0, screen[0], screen[1])
+        x, y = beside_dot(dot, (w, h), field, DOT_GAP, bounds)
+        if not card.get("tail"):
+            return x, y, None, None
+        dl, dt, dr, db = (int(v) for v in dot)
+        cx, cy = (dl + dr) // 2, (dt + db) // 2
+        if y + h <= dt:
+            side, at = "bottom", cx - x
+        elif y >= db:
+            side, at = "top", cx - x
+        elif x + w <= dl:
+            side, at = "right", cy - y
+        else:
+            side, at = "left", cy - y
+        return x, y, side, tc.clamp_tail(card, self.scale, side, at)
+
+    # -- overlay thread --
+
+    def _run(self) -> None:
+        try:
+            self._build_and_loop()
+        except Exception as e:
+            _log.info("tour card unavailable: %r", e)
+        finally:
+            self._alive.set()
+
+    def _build_and_loop(self) -> None:
+        """The card on a flat face, in Tk — tour_card.flat paints the
+        whole thing, beak included, on the chroma colour the window keys
+        out; this window only shows it, moves it, and turns a click into
+        `pressed`. Same teardown as the consent card's."""
+        import tkinter as tk
+        import tour_card as tc
+        from PIL import ImageTk
+
+        chroma = tuple(int(_CHROMA[i:i + 2], 16) for i in (1, 3, 5))
+        root = tk.Tk()
+        root.withdraw()
+        root.overrideredirect(True)
+        root.attributes("-topmost", True)
+        root.configure(bg=_CHROMA)
+        root.attributes("-transparentcolor", _CHROMA)
+        canvas = tk.Canvas(root, bg=_CHROMA, highlightthickness=0, bd=0)
+        canvas.pack()
+        self._alive.set()
+
+        st = {"card": None, "up": False, "hover": None, "drag": None,
+              "photo": None, "hushed": False, "side": None, "at": None}
+        cache: dict = {}
+
+        def hide() -> None:
+            st["card"], st["hover"] = None, None
+            st["side"] = st["at"] = None
+            self.rect = None
+            cache.clear()
+            if st["up"]:
+                root.withdraw()
+                st["up"] = False
+
+        def paint() -> None:
+            if st["card"] is None:
+                return
+            img = tc.flat(st["card"], self.scale, st["hover"], cache,
+                          side=st["side"], at=st["at"], chroma=chroma)
+            photo = ImageTk.PhotoImage(img, master=root)
+            canvas.delete("all")
+            canvas.configure(width=img.width, height=img.height)
+            canvas.create_image(0, 0, anchor="nw", image=photo)
+            st["photo"] = photo
+
+        def map_card() -> None:
+            card = st["card"]
+            if card is None:
+                return
+            w, h = tc.measure(card, self.scale, cache)
+            screen = (root.winfo_screenwidth(), root.winfo_screenheight())
+            dot = None
+            if self._dot_at is not None:
+                try:
+                    dot = self._dot_at()
+                except Exception:                    # noqa: BLE001
+                    dot = None
+                if dot is not None and not (dot[2] > dot[0] and dot[3] > dot[1]):
+                    dot = None
+            field = bounds = None
+            if dot is not None:
+                field = (_monitor_work((dot[0] + dot[2]) // 2,
+                                       (dot[1] + dot[3]) // 2)
+                         or _work_area())
+                bounds = _virtual_screen()
+            x, y, side, at = self.place(card, (w, h), screen, dot, field,
+                                        bounds)
+            st["side"], st["at"] = side, at
+            fw, fh, cx, cy = tc.frame(card, self.scale, side, cache)
+            paint()
+            root.geometry(f"{fw}x{fh}+{x - cx}+{y - cy}")
+            self.rect = (x, y, x + w, y + h)
+            root.deiconify()
+            root.update_idletasks()
+            if not st["up"]:
+                _no_activate(root)
+            st["up"] = True
+
+        def put_up(card: dict) -> None:
+            st["card"], st["hover"] = card, None
+            cache.clear()
+            if not st["hushed"]:
+                map_card()
+
+        def set_hushed(on: bool) -> None:
+            if on == st["hushed"]:
+                return
+            st["hushed"] = on
+            if on:
+                if st["up"]:
+                    root.withdraw()
+                    st["up"] = False
+                self.rect = None
+            else:
+                map_card()
+
+        def hit(event):
+            if st["card"] is None:
+                return None, None
+            return tc.hit_test(st["card"], self.scale, event.x, event.y,
+                               cache, side=st["side"])
+
+        def on_press(event) -> None:
+            code, what = hit(event)
+            if code == tc.HTCLIENT and what:
+                self.pressed(what)
+            elif code == tc.HTCAPTION:
+                st["drag"] = (event.x_root - root.winfo_x(),
+                              event.y_root - root.winfo_y())
+
+        def on_motion(event) -> None:
+            if st["drag"] is not None:
+                dx, dy = st["drag"]
+                root.geometry(f"+{event.x_root - dx}+{event.y_root - dy}")
+                return
+            code, what = hit(event)
+            want = what if code == tc.HTCLIENT else None
+            if want != st["hover"]:
+                st["hover"] = want
+                paint()
+
+        def on_leave(_event) -> None:
+            if st["hover"] is not None:
+                st["hover"] = None
+                paint()
+
+        def on_release(_event) -> None:
+            if st["drag"] is None:
+                return
+            st["drag"] = None
+            if st["card"] is not None:
+                w, h = tc.measure(st["card"], self.scale, cache)
+                _fw, _fh, cx, cy = tc.frame(st["card"], self.scale,
+                                            st["side"], cache)
+                x, y = root.winfo_x() + cx, root.winfo_y() + cy
+                self.rect = (x, y, x + w, y + h)
+
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_motion)
+        canvas.bind("<Motion>", on_motion)
+        canvas.bind("<Leave>", on_leave)
+        canvas.bind("<ButtonRelease-1>", on_release)
+
+        def pump() -> None:
+            try:
+                while True:
+                    item = self._q.get_nowait()
+                    if item is _DONE:
+                        self._closing.set()
+                        return
+                    if item is None:
+                        hide()
+                    else:
+                        put_up(item)
+            except queue.Empty:
+                pass
+            set_hushed(self._hushed.is_set())
+            root.after(30, pump)
+
+        pump()
+        try:
+            _pump_until(root, self._closing)
+        finally:
+            import gc                       # see Splash: same Tcl teardown
+            try:
+                _forget_window(root)
+                root.destroy()
+            except Exception:
+                pass
+            st.clear()
+            cache.clear()
+            paint = pump = hide = put_up = None          # noqa: F841
+            canvas = root = None                          # noqa: F841
+            gc.collect()
+
+
 class NotifyCard(HintCard):
     """The card that says something ARRIVED: Claude finished, Claude is
     waiting, a program on this machine has news (notify.py).

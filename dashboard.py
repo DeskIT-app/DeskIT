@@ -8143,6 +8143,16 @@ class Dashboard:
         self._ask("dot", then=lambda r: self._announce(
             r, "the dot is back in its corner"), do="corner")
 
+    def _show_tour(self) -> None:
+        """Ask the running app for the tour (D36). It lives beside the
+        dot, which belongs to the app — nothing to show while it is off."""
+        if not self.running:
+            self._note("start dictation first — the tour is shown beside "
+                       "the running app's dot")
+            return
+        self._ask("tour", then=lambda r: self._announce(
+            r, "the tour is beside the dot"))
+
     def _dot_returns(self) -> None:
         """Put this window back when the drag is over — or when the wait
         has been going on longer than anyone meant it to.
@@ -8683,6 +8693,12 @@ class Dashboard:
                   w=widgets.button_width("Send a test notification",
                                          icon=True),
                   icon=ui.ICON["notify"]).place(x=CW - 36, y=60, anchor="ne")
+        # The tour again (D36): the four cards beside the dot that the
+        # first start showed. Down the control pipe — the dot and the
+        # card live in the running app.
+        ui.Button(body, "Show the tour", self._show_tour, h=32, quiet=True,
+                  w=widgets.button_width("Show the tour")).place(
+            x=CW - 36, y=100, anchor="ne")
         tk.Label(body, text="stopping unloads the models; starting again "
                             "takes about 25 seconds",
                  bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8)).place(

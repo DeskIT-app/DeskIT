@@ -703,6 +703,14 @@ class App:
         self.consent_card = overlay_mod.ConsentCard(
             on_answer=self._consent_answered)
         privacy.set_asker(self.consent_card.show)
+        # The tour (tour_card.py, D36): the guide itself — four callouts
+        # beside the dot after the wizard, once, and again from Settings
+        # > The app. Handed the dot's rect whether or not it was dragged:
+        # this card points AT the dot, so the corner rule would put it
+        # beside nothing. The key's name is the picture on stop 2.
+        self.tour_card = overlay_mod.TourCard(
+            dot_at=lambda: getattr(self.dot, "rect", None),
+            key=hint_mod.pretty(cfg.hotkey), on_end=self._tour_ended)
         # The notification card and its engine (notify.py). The card class
         # is looked up rather than named: it lands with the card package,
         # and until then — or on a branch without it — the engine gets the
@@ -896,7 +904,7 @@ class App:
         day every time it is broken. Cheap enough for the keyboard hook.
         """
         for name in ("notify_card", "review_card", "consent_card", "hint",
-                     "shelf"):
+                     "shelf", "tour_card"):
             card = getattr(self, name, None)
             if card is None:
                 continue
@@ -2029,6 +2037,26 @@ class App:
         log.info("%s", message)
         return message
 
+    def _tour_ended(self, reason: str) -> None:
+        """[סיימתי] or [דלג] on the tour card, on the card's thread: one
+        line into state.json so the next start does not show it again.
+        A skip counts — a tour that comes back after being waved away is
+        the nag the owner's "with a skip" rules out."""
+        try:
+            self._save({"setup.tour": True})
+        except Exception as e:                               # noqa: BLE001
+            log.warning("could not record the tour as seen: %s", e)
+        log.info("the tour: %s", reason)
+
+    def tour_due(self) -> bool:
+        """Show the tour at this start? Once per copy, and only after the
+        wizard has run — a copy started with --fake or with the wizard
+        skipped by hand has no dot to point at, and no setting to read."""
+        setup = getattr(self.cfg, "setup", None)
+        return bool(setup is not None and getattr(setup, "done", False)
+                    and not getattr(setup, "tour", False)
+                    and getattr(self.cfg, "indicator", True))
+
     def _consent_answered(self, kind: str, answer: str) -> None:
         """A button on the consent card, on the card's thread. [Turn on]
         writes the row (privacy.grant: two small files) and the next
@@ -2081,6 +2109,7 @@ class App:
         self.hint.start()
         self.review_card.start()
         self.consent_card.start()
+        self.tour_card.start()
         self.notify_card.start()
         # backend = "gemini" with the cloud_audio gate shut fell to the
         # local model at start (transcribers.get_transcriber): that is a
@@ -2224,6 +2253,8 @@ class App:
         self.review_card.stop()
         if getattr(self, "consent_card", None) is not None:
             self.consent_card.stop()
+        if getattr(self, "tour_card", None) is not None:
+            self.tour_card.stop()
         if getattr(self, "shelf", None) is not None:
             self.shelf.stop()
         # The watcher first — it feeds the engine, and an arrival during
@@ -2439,6 +2470,17 @@ class App:
                     return {"ok": True, "dot": self.dot.state(),
                             "message": "the dot is back in its corner"}
                 return {"ok": False, "error": f"unknown dot action {do!r}"}
+            if command == "tour":
+                # Show the tour again (Settings > The app, D36): the
+                # same four cards the first start showed, from the top.
+                # Enqueued only; the card's thread paints it.
+                card = getattr(self, "tour_card", None)
+                if card is None or card._thread is None:
+                    return {"ok": False, "error": "there is no tour card "
+                                                  "on this copy"}
+                card.show(0)
+                self._say("the tour, from the top")
+                return {"ok": True, "message": "the tour is beside the dot"}
             if command == "quit":
                 singleton.request_quit()
                 return {"ok": True}
@@ -6536,6 +6578,12 @@ def main() -> int:
         # [Open the desk] on the wizard's last page: the dashboard, now
         # that there is an app for it to talk to.
         open_dashboard()
+    if not args.fake and app.tour_due():
+        # The tour (D36): the guide itself, four cards beside the dot,
+        # on the first start after the wizard. The dot is up (app.start
+        # mapped it) and the card only enqueues.
+        log.info("the tour: first start, showing it beside the dot")
+        app.tour_card.show(0)
     log.info("ready — hold '%s' for %s%s, release to paste. %s",
              cfg.hotkey,
              "Hebrew or English" if cfg.auto_language else "Hebrew",

@@ -260,6 +260,9 @@ class SetupConfig:
     start stops asking; Settings > Speed keeps a one-line offer.
     """
     done: bool = False
+    # The tour after the wizard (D36; overlay.TourCard): a STATE key,
+    # true once its last card or [דלג] was pressed on this copy.
+    tour: bool = False
     autostart: bool = False
     offer_gpu_pack: bool = True
 
@@ -2574,7 +2577,8 @@ STATE_KEYS: frozenset[str] = frozenset({
     "shelf.x", "shelf.y", "shelf.scale",
     "review.x", "review.y", "review.scale",
     "audio.device", "camera.device", "visual_qa.voice",
-    "server.port", "setup.done", "setup.autostart", "config_version",
+    "server.port", "setup.done", "setup.tour", "setup.autostart",
+    "config_version",
     "updates.last_check", "updates.latest_seen", "updates.installed_version",
 })
 #: Whole families that are state: the machine facts hardware.py records.
