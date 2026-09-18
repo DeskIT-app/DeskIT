@@ -33570,6 +33570,13 @@ def test_product_suite_imports_no_dev_modules():
 MIGRATION = REPO / "supabase" / "migrations" / "0001_init.sql"
 
 
+def _migrations_text() -> str:
+    """Every migration in order, as one text — what the live project ran."""
+    files = sorted((REPO / "supabase" / "migrations").glob("*.sql"))
+    assert files and files[0].name == "0001_init.sql", files
+    return "\n".join(f.read_text("utf-8") for f in files)
+
+
 def _sql_block(name: str) -> list[str]:
     """The lines between `-- BEGIN <name>` and `-- END <name>` of the
     migration's header, without the comment dashes."""
@@ -33836,12 +33843,17 @@ def test_migration_has_no_key_column():
     assert re.search(r"grant .* on public\.deletion_requests", text) is None
     assert "values ('reports', 'reports', false, 5242880," in text
     assert "array['image/jpeg', 'application/json', 'text/plain', 'audio/wav']" in text
-    fn = text[text.index("create or replace function public.delete_me()"):]
+    # the RPC as the project holds it: its LAST definition across the
+    # migrations (0002 took the storage delete out — Supabase refuses SQL
+    # deletes on storage.objects, measured live 2026-09-18)
+    whole = _migrations_text()
+    fn = whole[whole.rindex("create or replace function public.delete_me()"):]
     assert "security definer" in fn.split("$$")[0] and "auth.uid()" in fn
     assert "delete from auth.users             where id = uid;" in fn
-    assert "grant execute on function public.delete_me() to authenticated;" in text
-    assert "revoke all on function public.delete_me() from anon;" in text
-    assert "report_replies" not in text.replace("no report_replies table", "")
+    assert "delete from storage.objects" not in fn.split("$$;")[0],         "delete_me() deletes storage rows in SQL — the Storage API is the only way"
+    assert fn.count("grant execute on function public.delete_me() to authenticated;") == 1
+    assert fn.count("revoke all on function public.delete_me() from anon;") == 1
+    assert "report_replies" not in whole.replace("no report_replies table", "")
     assert "storage.foldername(name))[1] = (select auth.uid())::text" in text
 
 
@@ -34391,6 +34403,45 @@ def test_google_signin_round_trip_and_delete_me():
             assert sb.status()["signed_in"] is False
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_first_sync_on_a_fresh_pc_pulls_and_does_not_echo():
+    """A second PC signing into an account that already holds a settings
+    blob and words takes them (its own untouched file is not "newer"),
+    and what it just pulled is not pushed straight back. Measured live
+    2026-09-18 before the fix: the second PC's empty blob overwrote the
+    first PC's settings on its first pass, and the two pulled words went
+    up again."""
+    import sb
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-fresh-pc-"))
+    try:
+        vocab = vocab_mod.Vocab(d / "vocab.json")
+        with _fixture_project() as fake, _consented("account", "settings_sync"):
+            fake.tables["settings_sync"] = [{"user_id": fake.UID, "json": {"polish.when": "never"},
+                                            "updated_at": "2026-09-18T10:00:00+00:00"}]
+            fake.tables["vocab_sync"] = [{"user_id": fake.UID, "heard": "xpogo", "meant": "Expo Go",
+                                          "hits": 3, "last_used": None, "deleted": False,
+                                          "updated_at": "2026-09-18T10:00:01+00:00"}]
+            sb.sign_in_anonymous()
+            config_mod.save({"punctuate.auto": True})          # this PC touched its file just now
+            out = sb.sync_now(vocab)
+            assert out["settings"] == "pulled" and out["vocab"] == "pulled 1, pushed 0", out
+            assert config_mod.read_settings(paths.SETTINGS_FILE).get("polish.when") == "never"
+            assert "punctuate.auto" not in config_mod.read_settings(paths.SETTINGS_FILE),                 "last writer wins on the whole blob: the account's set replaced this PC's"
+            assert [(c["heard"], c["hits"]) for c in vocab.corrections] == [("xpogo", 3)]
+            posts = [c for c in fake.to_project() if c["method"] == "POST"
+                     and c["path"] in ("rest/v1/settings_sync", "rest/v1/vocab_sync")]
+            assert posts == [], [c["path"] for c in posts]
+            # the next pass: a local change goes up, nothing comes back down
+            vocab.learn("brinth", "--branch")
+            out = sb.sync_now(vocab)
+            assert out["vocab"] == "pulled 0, pushed 1", out
+            assert out["settings"] == "same", out
+    finally:
+        config_mod.save({"punctuate.auto": config_mod.defaults_flat()["punctuate.auto"]})
+        shutil.rmtree(d, ignore_errors=True)
+
 
 
 def test_keepalive_workflow_shape():

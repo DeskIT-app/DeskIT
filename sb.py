@@ -665,9 +665,14 @@ def _sync_settings(cursor: dict) -> str:
         raise AccountError(f"settings: {_server_said(status, data)}")
     remote = (data or [None])[0] if isinstance(data, list) else None
     remote_at = str(remote.get("updated_at") or "") if remote else ""
+    first = "settings_hash" not in cursor
     local_changed = local_hash != cursor.get("settings_hash")
     remote_changed = bool(remote) and remote_at != cursor.get("settings_updated_at")
-    if remote_changed and (not local_changed or _remote_is_newer(remote_at)):
+    # A PC syncing for the first time takes what the account holds: its
+    # own file is not "newer", it is merely untouched by the account yet
+    # (measured 2026-09-18: the second PC's empty blob overwrote the
+    # first's on its first pass when mtime decided).
+    if remote_changed and (first or not local_changed or _remote_is_newer(remote_at)):
         merged = sync.merge_settings(overrides, remote.get("json") or {})
         # Validated as one whole before the real file is touched, the
         # way config.save does: a blob another PC wrote must not be
@@ -722,14 +727,20 @@ def _sync_vocab(cursor: dict, vocab) -> str:
     if status != 200 or not isinstance(rows, list):
         raise AccountError(f"vocabulary: {_server_said(status, rows)}")
     pulled = 0
+    snapshot = dict(cursor.get("vocab_snapshot") or {})
     if rows:
         with vocab._write_lock:
             merged, pulled = sync.merge_vocab(vocab.corrections, rows)
             if pulled:
                 vocab.corrections[:] = merged
                 vocab.save()
+            # what just came down counts as seen: it is not pushed back
+            for entry in vocab.corrections:
+                heard = str(entry.get("heard") or "").strip()
+                if any(str(r.get("heard") or "").strip().lower() == heard.lower() for r in rows):
+                    snapshot[heard] = {"hits": int(entry.get("hits", 1) or 0),
+                                       "meant": str(entry.get("meant") or "").strip()}
         cursor["vocab_pulled_at"] = str(rows[-1].get("updated_at") or since)
-    snapshot = cursor.get("vocab_snapshot") or {}
     with vocab._write_lock:
         corrections = [dict(c) for c in vocab.corrections]
     to_push = sync.vocab_changed(sync.vocab_rows(corrections, snapshot), snapshot)

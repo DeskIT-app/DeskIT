@@ -17,6 +17,11 @@ not mention.
   policy, grant, the storage bucket and the one RPC (`delete_me()`). It
   was pasted into the project's SQL editor once; every later change is a
   new file beside it, never a click in the dashboard.
+- `migrations/0002_delete_me_leaves_storage_to_the_api.sql` — the RPC
+  without the SQL delete on `storage.objects`, which Supabase refuses
+  (measured on the first live "Delete my account"): the app removes its
+  own files through the Storage API first, the RPC removes the rows and
+  the account.
 
 ## How to read it in ten minutes
 
@@ -47,10 +52,11 @@ not mention.
    sync on, and its comment says plainly that the developer can
    technically read it: RLS separates users from each other, not from
    the project admin. Audio, screenshots and clips have no table.
-5. **Delete means delete.** `delete_me()` removes your objects, your
-   rows and your `auth.users` row — which invalidates every refresh
-   token — and leaves one line in `deletion_requests` with your id and
-   the time. The Free plan has no backups; the owner's monthly dump and
+5. **Delete means delete.** The app removes your files from the bucket
+   (it holds the delete policy), then `delete_me()` removes your rows
+   and your `auth.users` row — which invalidates every refresh token —
+   and leaves one line in `deletion_requests` with your id and the
+   time. The Free plan has no backups; the owner's monthly dump and
    its retention are stated in the privacy policy.
 
 ## How to confirm the live project matches
