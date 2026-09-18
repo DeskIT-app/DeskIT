@@ -158,6 +158,9 @@ SAID_PAGE = 25           # rows a press of Show more adds on the Said
                          # place. A hundred at once was, in his words,
                          # "a lot to scroll and it is a nightmare"
 PILE_ROW_H = 72
+NET_ROW_H = 22           # one line of the Network table: a 9 pt
+                         # Rubik box is 25 px in a Label, 22 as a
+                         # canvas text item with no padding
 PILE_Y = 100             # where the page starts, under the title
 PAGE_H = H - TOP - PILE_Y - 62      # down to the footer rule
 
@@ -6745,7 +6748,17 @@ class Dashboard:
         page = ui.Scroller(self.sheet, CW + 10, 470, bg=ui.BG)
         page.place(x=PAD, y=126)
         p["net_page"] = page
-        p["net_rows"] = tk.Frame(page.inner, bg=ui.BG)
+        # ONE canvas, not a Label per cell. The table was a Frame of
+        # Labels, seven a row, four hundred rows: 2,800 widgets, measured
+        # at 3 s to build and 5 s to rebuild on the hidden desktop
+        # (2026-09-18, the owner's 493-row log) — and it rebuilt on EVERY
+        # write to network.log, which during dictation is every few
+        # seconds (polish, review, the phone's knock). The window sat
+        # "Not responding" more than it answered, which he reported as
+        # a crash. Text items on a canvas draw the same rows in tens of
+        # milliseconds.
+        p["net_rows"] = tk.Canvas(page.inner, bg=ui.BG, highlightthickness=0,
+                                  bd=0, width=self.NET_W, height=NET_ROW_H)
         p["net_rows"].pack(anchor="w")
         page.bind_wheel(page.inner)
         foot = tk.Frame(self.sheet, bg=ui.BG)
@@ -6760,10 +6773,14 @@ class Dashboard:
         loop.pack(side="left", padx=(8, 0))
         p["net_loop"] = loop
         self._net_stamp = None
+        self._net_painted = None
         self._paint_network()
 
     NET_COLS = ((150, "when"), (270, "host"), (120, "purpose"), (110, "bytes"),
                 (60, "result"), (90, "secret"), (200, "consent"))
+    NET_W = sum(width for width, _name in NET_COLS)
+    #: The newest this many rows are painted; the file keeps the rest.
+    NET_ROWS_MAX = 400
 
     def _net_filtered(self, rows: list) -> list:
         out = []
@@ -6809,34 +6826,58 @@ class Dashboard:
         p["net_banner"].configure(
             text="Offline mode: every host but 127.0.0.1 is refused." if offline else "")
         shown = self._net_filtered(rows)
-        for child in holder.winfo_children():
-            child.destroy()
-        head = tk.Frame(holder, bg=ui.BG)
-        head.pack(anchor="w", pady=(0, 4))
+        line = f"{len(shown)} of {len(rows)} rows" if rows else "no request yet"
+        if len(shown) > self.NET_ROWS_MAX:
+            line += f", the newest {self.NET_ROWS_MAX} painted"
+        p["net_line"].configure(text=line)
+        # A write the filter hides — the phone's knock on 127.0.0.1 while
+        # loopback is off, which is most writes — changes the file and
+        # not the table. The count line above moved; the rows need not.
+        painted = (len(shown), shown[-1] if shown else None,
+                   self._net_host, self._net_loopback)
+        if painted == getattr(self, "_net_painted", None):
+            return
+        self._net_painted = painted
+        holder.delete("all")
+        x, y = 0, 0
         for width, name in self.NET_COLS:
-            # a text Label's width is in characters; ~7 px each at 9 pt
-            tk.Label(head, text=name.upper(), bg=ui.BG, fg=ui.FAINT,
-                     font=(ui.UI, 8, "bold"), anchor="w", width=int(width / 7)
-                     ).pack(side="left")
-        for r in reversed(shown[-400:]):
-            line = tk.Frame(holder, bg=ui.BG)
-            line.pack(anchor="w", pady=1)
+            holder.create_text(x, y, text=name.upper(), anchor="nw",
+                               fill=ui.FAINT, font=(ui.UI, 8, "bold"))
+            x += width
+        y += NET_ROW_H
+        for r in reversed(shown[-self.NET_ROWS_MAX:]):
             values = (r.when, r.host, r.purpose, f"{r.up} ↑ {r.down} ↓",
                       str(r.status), r.secret, r.consent)
-            for (width, _name), value in zip(self.NET_COLS, values):
+            x = 0
+            for (width, name), value in zip(self.NET_COLS, values):
                 colour = ui.FG
-                if _name == "result" and not str(value).startswith("2"):
+                if name == "result" and not str(value).startswith("2"):
                     colour = ui.AMBER
-                tk.Label(line, text=value, bg=ui.BG, fg=colour, font=(ui.UI, 9),
-                         anchor="w", width=int(width / 7)).pack(side="left")
+                holder.create_text(x, y, text=value, anchor="nw", fill=colour,
+                                   font=(ui.UI, 9), tags=(name,))
+                x += width
+            y += NET_ROW_H
         p["net_loop"].configure_text("Hide loopback" if self._net_loopback
                                      else "Show loopback (phone)")
         if not shown:
-            tk.Label(holder, text="During plain dictation this table stays "
-                                  "empty — that is the proof.",
-                     bg=ui.BG, fg=ui.DIM, font=(ui.UI, 10)).pack(anchor="w", pady=(12, 0))
-        p["net_line"].configure(
-            text=f"{len(shown)} of {len(rows)} rows" if rows else "no request yet")
+            holder.create_text(0, y + 12, anchor="nw", fill=ui.DIM,
+                               font=(ui.UI, 10), tags=("empty",),
+                               text="During plain dictation this table stays "
+                                    "empty — that is the proof.")
+            y += NET_ROW_H + 24
+        # The canvas is the page's only child, so its height is the
+        # page's scroll range.
+        holder.configure(height=max(y, NET_ROW_H))
+
+    def _net_cells(self, column: str | None = None) -> list[str]:
+        """The texts in the table, top to bottom — one column of it, or
+        every cell in reading order. What a test reads instead of a
+        widget tree."""
+        holder = self.parts.get("net_rows")
+        if holder is None:
+            return []
+        items = holder.find_withtag(column) if column else holder.find_all()
+        return [holder.itemcget(i, "text") for i in items]
 
     def _net_pick(self, host: str) -> None:
         self._net_host = host

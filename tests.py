@@ -32217,7 +32217,14 @@ def test_the_network_place_reads_the_log_and_hides_loopback():
     newest first from the file — not from this process's own table —
     loopback rows stay out until the toggle, the host chips are the
     hosts seen, the door on Home counts today's requests, and an empty
-    table says the sentence that is the point."""
+    table says the sentence that is the point.
+
+    AND THE TABLE IS ONE WIDGET. It was a Label per cell — 2,800 of
+    them for a 400-row log, 5 s to rebuild, and it rebuilt on every
+    write to network.log, so the window sat "Not responding" through a
+    dictation session (his 493-row log, 2026-09-18: reported as a
+    crash). Five hundred rows on the canvas paint in well under a
+    second here, and the canvas has no children to count."""
     import net
     import dashboard as dash
 
@@ -32241,8 +32248,7 @@ def test_the_network_place_reads_the_log_and_hides_loopback():
             board._show("Network")
             for _ in range(20):
                 board.root.update()
-            labels = [w.cget("text") for line in board.parts["net_rows"].winfo_children()
-                      for w in line.winfo_children() if w.winfo_class() == "Label"]
+            labels = board._net_cells()
             assert "api.groq.com" in labels and "huggingface.co" in labels, labels
             assert "127.0.0.1" not in labels, "loopback shown without the toggle"
             assert labels.index("api.groq.com") < labels.index("huggingface.co"), "not newest first"
@@ -32251,19 +32257,33 @@ def test_the_network_place_reads_the_log_and_hides_loopback():
             board._net_toggle_loopback()
             for _ in range(5):
                 board.root.update()
-            labels = [w.cget("text") for line in board.parts["net_rows"].winfo_children()
-                      for w in line.winfo_children() if w.winfo_class() == "Label"]
+            labels = board._net_cells("host")
             assert "127.0.0.1" in labels
             board._net_pick("huggingface.co")
-            labels = [w.cget("text") for line in board.parts["net_rows"].winfo_children()
-                      for w in line.winfo_children() if w.winfo_class() == "Label"]
+            labels = board._net_cells("host")
             assert "api.groq.com" not in labels and "huggingface.co" in labels
             assert "1 of 3 rows" == board.parts["net_line"].cget("text"), board.parts["net_line"].cget("text")
             path.write_text("", "utf-8")
             board._net_pick("All")
-            texts = [w.cget("text") for w in board.parts["net_rows"].winfo_children()
-                     if w.winfo_class() == "Label"]
+            texts = board._net_cells("empty")
             assert any("stays empty" in s for s in texts), texts
+            # five hundred rows: one canvas, no widget per cell, and a
+            # rebuild that does not freeze the window
+            many = [net.Row(f"{today} 11:{i // 60:02d}:{i % 60:02d}", "api.groq.com", "polish",
+                            900, 300, "200" if i % 7 else "429", "groq", "cloud_text@v1")
+                    for i in range(500)]
+            path.write_text("".join(net.format_row(r) + "\n" for r in many), "utf-8")
+            started = time.perf_counter()
+            board._net_pick("All")
+            board.root.update()
+            took = time.perf_counter() - started
+            holder = board.parts["net_rows"]
+            assert holder.winfo_class() == "Canvas" and not holder.winfo_children()
+            assert len(board._net_cells("host")) == dash.Dashboard.NET_ROWS_MAX
+            assert board._net_cells("result")[0] == "200", board._net_cells("result")[:3]
+            assert took < 2.0, f"{took:.2f}s to paint 500 rows"
+            line = board.parts["net_line"].cget("text")
+            assert line == "500 of 500 rows, the newest 400 painted", line
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
