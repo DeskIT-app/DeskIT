@@ -1,0 +1,149 @@
+/* The site's one stylesheet. The palette is the wizard's (firstrun.py):
+   warm graphite under gold. Rubik is the app's own face (fonts/, OFL),
+   subset to Latin + Hebrew and self-hosted, so the page loads from
+   GitHub Pages alone. */
+
+@font-face { font-family: "Rubik"; font-weight: 400; font-display: swap; src: url("fonts/Rubik.woff2") format("woff2"); }
+@font-face { font-family: "Rubik"; font-weight: 500; font-display: swap; src: url("fonts/RubikMedium.woff2") format("woff2"); }
+@font-face { font-family: "Rubik"; font-weight: 700; font-display: swap; src: url("fonts/RubikBold.woff2") format("woff2"); }
+
+:root {
+  --bg: #14110c;
+  --pane: #1a1610;
+  --card: #1f1a13;
+  --line: #2e2819;
+  --fg: #ece5d8;
+  --dim: #a89e8c;
+  --faint: #6f6657;
+  --gold: #e3a63c;
+  --gold-text: #f0bd62;
+  --gold-soft: #2b2212;
+  --ink-on-gold: #1a1408;
+  --code: #24201a;
+  --shadow: 0 24px 60px rgba(0, 0, 0, .45);
+  --radius: 14px;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #faf6ee;
+    --pane: #f3ede1;
+    --card: #ffffff;
+    --line: #e4dccb;
+    --fg: #1f1a12;
+    --dim: #6b6252;
+    --faint: #9a9081;
+    --gold: #c98a1e;
+    --gold-text: #9a6a12;
+    --gold-soft: #fbefd6;
+    --ink-on-gold: #1a1408;
+    --code: #f1ebdf;
+    --shadow: 0 18px 44px rgba(60, 40, 0, .12);
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 400 17px/1.65 "Rubik", "Segoe UI", system-ui, sans-serif;
+}
+.wrap { max-width: 1040px; margin: 0 auto; padding: 0 20px; }
+a { color: var(--gold-text); text-decoration: none; }
+a:hover { text-decoration: underline; text-underline-offset: 3px; }
+img { max-width: 100%; height: auto; }
+
+/* ---- header ---- */
+.top { border-bottom: 1px solid var(--line); background: var(--bg); position: sticky; top: 0; z-index: 5; }
+.top .wrap { display: flex; align-items: center; justify-content: space-between; height: 60px; gap: 16px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; color: var(--fg); font-weight: 500; font-size: 19px; letter-spacing: .01em; }
+.brand:hover { text-decoration: none; }
+.brand img { border-radius: 7px; }
+.top nav { display: flex; gap: 22px; align-items: center; flex-wrap: wrap; }
+.top nav a { color: var(--dim); font-size: 15px; }
+.top nav a:hover { color: var(--fg); text-decoration: none; }
+.top nav .lang { padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px; color: var(--fg); }
+.top nav .lang:hover { border-color: var(--gold); }
+
+/* ---- content typography ---- */
+.content { padding: 28px 20px 64px; }
+.content h1 { font-size: 34px; line-height: 1.2; font-weight: 700; margin: 8px 0 18px; letter-spacing: -.01em; }
+.content h2 { font-size: 23px; font-weight: 500; margin: 40px 0 10px; padding-top: 14px; border-top: 1px solid var(--line); }
+.content h3 { font-size: 18px; font-weight: 500; margin: 26px 0 6px; }
+.content p, .content li { color: var(--fg); }
+.content li { margin: 4px 0; }
+.content strong { font-weight: 500; color: var(--fg); }
+.content hr { border: 0; border-top: 1px solid var(--line); margin: 32px 0; }
+.content blockquote { margin: 18px 0; padding: 10px 18px; border-inline-start: 3px solid var(--gold); background: var(--pane); color: var(--dim); border-radius: 0 8px 8px 0; }
+.content code { font: 500 .9em/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace; background: var(--code); padding: 2px 6px; border-radius: 6px; direction: ltr; unicode-bidi: embed; }
+.content pre { background: var(--code); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; overflow-x: auto; direction: ltr; text-align: left; }
+.content pre code { background: none; padding: 0; font-weight: 400; }
+.content table { border-collapse: collapse; width: 100%; margin: 18px 0; font-size: 15.5px; }
+.content th, .content td { border: 1px solid var(--line); padding: 8px 12px; vertical-align: top; text-align: start; }
+.content th { background: var(--pane); font-weight: 500; }
+.content img { border: 1px solid var(--line); border-radius: 10px; margin: 10px 0; }
+.content kbd { font: 500 .85em "Rubik", sans-serif; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 1px 7px; background: var(--pane); }
+
+/* ---- guide pages: sidebar + text ---- */
+.guide-grid { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 40px; align-items: start; }
+.side { position: sticky; top: 76px; padding-top: 30px; }
+.side-head { margin: 0 0 8px; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); }
+.side ul { list-style: none; margin: 0; padding: 0; }
+.side li a { display: block; padding: 6px 10px; border-radius: 8px; color: var(--dim); font-size: 15px; }
+.side li a:hover { color: var(--fg); background: var(--pane); text-decoration: none; }
+.side li.here a { color: var(--gold-text); background: var(--gold-soft); font-weight: 500; }
+.guide .content { padding-top: 28px; }
+.guide .content > p:first-child { color: var(--faint); font-size: 14px; }
+.pager { display: flex; justify-content: space-between; gap: 16px; margin-top: 48px; padding-top: 22px; border-top: 1px solid var(--line); }
+.pager a { display: flex; flex-direction: column; gap: 2px; padding: 12px 16px; border: 1px solid var(--line); border-radius: 10px; color: var(--fg); min-width: 40%; }
+.pager a:hover { border-color: var(--gold); text-decoration: none; }
+.pager a small { color: var(--faint); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; }
+.pager .next { text-align: end; margin-inline-start: auto; }
+
+/* ---- home ---- */
+.home-content { padding-top: 0; }
+.hero { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr); gap: 48px; align-items: center; padding: 64px 0 40px; }
+.hero .eyebrow { margin: 0 0 14px; color: var(--gold-text); font-size: 13px; letter-spacing: .14em; text-transform: uppercase; font-weight: 500; }
+.hero h1 { font-size: 44px; line-height: 1.15; font-weight: 700; margin: 0 0 18px; letter-spacing: -.015em; }
+.hero .lead { font-size: 19px; color: var(--dim); margin: 0 0 28px; max-width: 34em; }
+.hero .shot { margin: 0; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); background: var(--card); }
+.hero .shot img { display: block; border: 0; border-radius: 0; margin: 0; }
+.buttons { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 10px; font-weight: 500; font-size: 16px; border: 1px solid transparent; }
+.btn:hover { text-decoration: none; }
+.btn.gold { background: var(--gold); color: var(--ink-on-gold); }
+.btn.gold:hover { filter: brightness(1.08); }
+.btn.ghost { border-color: var(--line); color: var(--fg); }
+.btn.ghost:hover { border-color: var(--gold); }
+.buttons .note { color: var(--faint); font-size: 14px; }
+.cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 24px 0 8px; }
+.cards > div { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 20px 18px; }
+.cards h3 { margin: 0 0 6px; font-size: 17px; font-weight: 500; }
+.cards p { margin: 0; color: var(--dim); font-size: 15.5px; }
+.home-content h2 { border-top: 0; margin-top: 44px; font-size: 20px; }
+.home-content .chapters { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 24px; }
+.home-content .chapters a { color: var(--fg); }
+.home-content .chapters a:hover { color: var(--gold-text); }
+.home-content .chapters li::before { content: "·"; color: var(--gold); margin-inline-end: 8px; }
+.guide-note { color: var(--dim); }
+.lang-split { margin: 56px 0 0; padding-top: 40px; border-top: 1px solid var(--line); }
+.lang-split .hero { padding-top: 8px; }
+
+@media (max-width: 860px) {
+  .hero { grid-template-columns: 1fr; gap: 28px; padding-top: 36px; }
+  .hero h1 { font-size: 34px; }
+  .cards { grid-template-columns: 1fr; }
+  .guide-grid { grid-template-columns: 1fr; gap: 8px; }
+  .side { position: static; padding-top: 20px; }
+  .side ul { display: flex; flex-wrap: wrap; gap: 4px; }
+  .home-content .chapters { grid-template-columns: 1fr; }
+  .top nav { gap: 14px; }
+}
+@media (max-width: 520px) {
+  body { font-size: 16px; }
+  .top .wrap { height: auto; padding: 10px 16px; flex-wrap: wrap; }
+  .content { padding-inline: 16px; }
+  .hero h1 { font-size: 29px; }
+  .pager a { min-width: 0; }
+}

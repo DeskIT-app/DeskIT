@@ -7,7 +7,7 @@ description: Hebrew dictation for Windows that stays on your PC — the Win+H th
 baseurl: "/DeskIT"
 url: "https://deskit-app.github.io"
 lang: he
-theme: jekyll-theme-primer
+# No theme: docs/_layouts/default.html and docs/assets/site.css are the whole look.
 markdown: kramdown
 kramdown:
   input: GFM
@@ -17,6 +17,10 @@ exclude:
   - strings
   - README.md
 defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
   - scope:
       path: "he"
     values:

@@ -1,0 +1,98 @@
+{%- comment -%}
+The one layout of the site (DISTRIBUTION_PLAN.md 14.1). Hebrew pages live
+under he/ and English under en/, each with its twin at the same name; the
+home page carries both languages, Hebrew first. The palette is the wizard's:
+warm graphite and gold. Fonts are the app's own Rubik, self-hosted, so a
+visitor's browser talks to nobody but GitHub Pages.
+{%- endcomment -%}
+{%- assign home = false -%}
+{%- if page.url == "/" or page.url == "/index.html" -%}{%- assign home = true -%}{%- endif -%}
+{%- assign lang = page.lang | default: site.lang -%}
+{%- assign dir = page.dir | default: "rtl" -%}
+{%- if page.url == "/privacy/" or page.url == "/terms/" -%}{%- assign lang = "en" -%}{%- assign dir = "ltr" -%}{%- endif -%}
+{%- assign guide = false -%}
+{%- if page.url contains "/he/" -%}{%- assign guide = true -%}{%- assign prefix = "/he/" -%}{%- assign twin = page.url | replace_first: "/he/", "/en/" -%}{%- endif -%}
+{%- if page.url contains "/en/" -%}{%- assign guide = true -%}{%- assign prefix = "/en/" -%}{%- assign twin = page.url | replace_first: "/en/", "/he/" -%}{%- endif -%}
+<!DOCTYPE html>
+<html lang="{{ lang }}" dir="{{ dir }}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>{% if home %}{{ site.title }} — {{ site.description }}{% else %}{{ page.title }} · {{ site.title }}{% endif %}</title>
+<meta name="description" content="{{ page.description | default: site.description }}">
+<link rel="icon" href="{{ '/assets/icon.png' | relative_url }}">
+<link rel="stylesheet" href="{{ '/assets/site.css' | relative_url }}">
+</head>
+<body class="{% if home %}home{% elsif guide %}guide{% else %}plain{% endif %}">
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="{{ '/' | relative_url }}"><img src="{{ '/assets/icon.png' | relative_url }}" alt="" width="28" height="28"><span>DeskIT</span></a>
+    <nav>
+      {%- if lang == "he" %}
+      <a href="{{ '/he/quickstart/' | relative_url }}">המדריך</a>
+      <a href="https://github.com/DeskIT-app/DeskIT/releases/latest">להוריד</a>
+      <a href="https://github.com/DeskIT-app/DeskIT">הקוד</a>
+      <a href="{{ '/privacy/' | relative_url }}">פרטיות</a>
+      {%- else %}
+      <a href="{{ '/en/quickstart/' | relative_url }}">Guide</a>
+      <a href="https://github.com/DeskIT-app/DeskIT/releases/latest">Download</a>
+      <a href="https://github.com/DeskIT-app/DeskIT">Source</a>
+      <a href="{{ '/privacy/' | relative_url }}">Privacy</a>
+      {%- endif %}
+      {%- if guide %}
+      {%- if lang == "he" %}<a class="lang" lang="en" dir="ltr" href="{{ twin | relative_url }}">English</a>
+      {%- else %}<a class="lang" lang="he" dir="rtl" href="{{ twin | relative_url }}">עברית</a>{% endif %}
+      {%- elsif home %}
+      <a class="lang" lang="en" dir="ltr" href="#english">English</a>
+      {%- endif %}
+    </nav>
+  </div>
+</header>
+
+{%- if guide %}
+{%- assign chapters = site.pages | where_exp: "p", "p.url contains prefix" | sort: "url" -%}
+{%- assign quick_url = prefix | append: "quickstart/" -%}
+{%- assign quick = chapters | where: "url", quick_url | first -%}
+{%- assign i = -1 -%}
+{%- for p in chapters %}{% if p.url == page.url %}{% assign i = forloop.index0 %}{% endif %}{% endfor -%}
+<div class="wrap guide-grid">
+  <aside class="side">
+    <p class="side-head">{% if lang == "he" %}המדריך{% else %}The guide{% endif %}</p>
+    <ul>
+      {%- if quick %}
+      <li{% if quick.url == page.url %} class="here"{% endif %}><a href="{{ quick.url | relative_url }}">{{ quick.title }}</a></li>
+      {%- endif %}
+      {%- for p in chapters %}{% if p.url != quick_url %}
+      <li{% if p.url == page.url %} class="here"{% endif %}><a href="{{ p.url | relative_url }}">{{ p.title }}</a></li>
+      {%- endif %}{% endfor %}
+    </ul>
+  </aside>
+  <main class="content">
+    {{ content }}
+    {%- if i >= 0 %}
+    {%- assign pi = i | minus: 1 -%}{%- assign ni = i | plus: 1 -%}
+    <nav class="pager">
+      {%- if pi >= 0 %}{% assign pp = chapters[pi] %}<a class="prev" href="{{ pp.url | relative_url }}"><small>{% if lang == "he" %}הקודם{% else %}Previous{% endif %}</small>{{ pp.title }}</a>{% else %}<span></span>{% endif %}
+      {%- if ni < chapters.size %}{% assign np = chapters[ni] %}<a class="next" href="{{ np.url | relative_url }}"><small>{% if lang == "he" %}הבא{% else %}Next{% endif %}</small>{{ np.title }}</a>{% endif %}
+    </nav>
+    {%- endif %}
+  </main>
+</div>
+{%- else %}
+<main class="wrap content{% if home %} home-content{% endif %}">
+  {{ content }}
+</main>
+{%- endif %}
+
+<footer class="foot">
+  <div class="wrap">
+    <span>DeskIT · Apache-2.0</span>
+    <a href="{{ '/privacy/' | relative_url }}">{% if lang == "he" %}מדיניות פרטיות{% else %}Privacy policy{% endif %}</a>
+    <a href="{{ '/terms/' | relative_url }}">{% if lang == "he" %}תנאי החשבון{% else %}Account terms{% endif %}</a>
+    <a href="https://github.com/DeskIT-app/DeskIT">GitHub</a>
+    <a href="https://github.com/DeskIT-app/DeskIT/edit/main/docs/{{ page.path }}">{% if lang == "he" %}לשפר את הדף הזה{% else %}Improve this page{% endif %}</a>
+  </div>
+</footer>
+</body>
+</html>
