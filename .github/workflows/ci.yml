@@ -29,6 +29,14 @@ jobs:
   product:
     runs-on: windows-latest
     timeout-minutes: 45
+    # The same commit arrives twice: once on the lane's branch and, a
+    # minute later, as main (12 of 37 commits on 2026-09-18). The group
+    # above is per ref, so both ran and a red one wrote two e-mails. This
+    # group is per commit: the second start cancels the first, a
+    # cancelled run sends nothing, and the result is the same either way.
+    concurrency:
+      group: tests-sha-${{ github.sha }}
+      cancel-in-progress: true
     env:
       DESKIT_PORTABLE: "1"
       PYTHONUTF8: "1"
