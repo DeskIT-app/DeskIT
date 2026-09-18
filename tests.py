@@ -33120,7 +33120,8 @@ def test_iss_settings():
                  "DisableDirPage=yes", "UsePreviousAppDir=yes",
                  "ArchitecturesAllowed=x64compatible", "SetupLogging=yes",
                  "Compression=lzma2/ultra64", "SolidCompression=yes",
-                 "ShowLanguageDialog=auto", "AppId={{9DE44D29-7270-4406-B00A-E6517B5629CE}",
+                 "ShowLanguageDialog=auto", "SourceDir=..",
+                 "AppId={{9DE44D29-7270-4406-B00A-E6517B5629CE}",
                  "DefaultDirName={localappdata}\\Programs\\DeskIT",
                  "OutputBaseFilename=DeskIT-Setup-{#Version}"):
         assert line in iss, line

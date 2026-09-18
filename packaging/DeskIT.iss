@@ -51,6 +51,11 @@ SetupLogging=yes
 Compression=lzma2/ultra64
 SolidCompression=yes
 ShowLanguageDialog=auto
+; Every relative path here — the stage, the icon, the output folder —
+; is read from the repository root, where both builds run and where
+; /DStage and /DOutDir point; the compiler's own base is the script's
+; folder (dry run #4 looked for packaging\stage).
+SourceDir=..
 OutputDir={#OutDir}
 OutputBaseFilename=DeskIT-Setup-{#Version}
 SetupIconFile={#Stage}\app\icon.ico
