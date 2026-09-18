@@ -506,7 +506,7 @@ def test_the_readme_and_agents_document_notify():
     """The README section sits between Awake and the phone, every [notify]
     key has a Config reference row, and AGENTS.md's map names the three
     new files plus the two doors it never listed."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    readme = (REPO / "dev" / "README-dev.md").read_text(encoding="utf-8")
     heading = "## Notify — when Claude (or anything) finishes (`ctrl+alt+m`)"
     assert heading in readme
     i = readme.index(heading)
@@ -536,7 +536,7 @@ def test_the_readme_and_agents_document_problems() -> None:
     a section of its own for the bug list, every [problems] key has a
     Config reference row, and AGENTS.md names problems.py on its map and
     the feature in what this program is."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    readme = (REPO / "dev" / "README-dev.md").read_text(encoding="utf-8")
     heads = [ln for ln in readme.splitlines() if ln.startswith("## ")]
     assert any("problem" in h.lower() for h in heads), \
         "no README section for reporting a problem"
@@ -1151,7 +1151,7 @@ def test_the_readme_and_agents_document_the_nightly_tests() -> None:
     """A routine nobody can find is a routine nobody trusts: the README
     has a section for it with every [tests] key in the Config reference,
     and AGENTS.md names nightly.py on its map."""
-    readme = (REPO / "README.md").read_text(encoding="utf-8")
+    readme = (REPO / "dev" / "README-dev.md").read_text(encoding="utf-8")
     heads = [ln for ln in readme.splitlines() if ln.startswith("## ")]
     assert any("night" in h.lower() for h in heads), \
         "no README section for the nightly test run"

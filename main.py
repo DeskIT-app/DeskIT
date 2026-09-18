@@ -1,7 +1,8 @@
 """Hebrew push-to-talk dictation for Windows.
 
 Hold the hotkey (default: Right Ctrl), speak Hebrew, release — the cleaned
-transcript is pasted into whatever window has focus. See README.md.
+transcript is pasted into whatever window has focus. See README.md and
+dev/README-dev.md.
 
 Normally launched by double-clicking "DeskIT.vbs", which runs it
 windowless via pythonw.exe. With no console there is no Ctrl+C, so a second

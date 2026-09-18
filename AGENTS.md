@@ -103,8 +103,9 @@ places along a 56 px top bar — no rail, since 2026-09-07:
   It went nine rail rows -> four places -> three -> six, every step on
   his word. Do not re-litigate the count without one.
 
-Everything is documented, with measurements, in `README.md` and
-`config.toml`.
+Everything is documented, with measurements, in `dev/README-dev.md`
+(the owner's working notes — the root `README.md` is the public front
+page since 2026-09-18 and ships in `app\`) and `config.toml`.
 
 **There is ONE version of the app.** There were two — `classic` (local
 gemma3:12b repair, ~5 s) and `fast` (repair sent to Groq's free API first,
