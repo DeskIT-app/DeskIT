@@ -33115,6 +33115,22 @@ def test_iss_settings():
     for n, line in enumerate(iss.splitlines(), 1):
         if line.strip().startswith("[") and line != line.lstrip():
             raise AssertionError(f"DeskIT.iss:{n} begins with '[' inside a section")
+    # ...and a brace comment in [Code] ends at the first "}", so a constant
+    # like {app} inside one turns the rest into code — dry run #5.
+    code = iss[iss.index("[Code]"):]
+    in_str = in_comment = False
+    for n, ch in enumerate(code):
+        if in_str:
+            in_str = ch != "'"
+        elif in_comment:
+            if ch == "}":
+                in_comment = False
+            elif ch == "{":
+                raise AssertionError(f"DeskIT.iss [Code]: a brace inside a brace comment near offset {n}")
+        elif ch == "'":
+            in_str = True
+        elif ch == "{" and code[n + 1] != "#":
+            in_comment = True
     for line in ("PrivilegesRequired=lowest", "CloseApplications=yes",
                  "RestartApplications=yes", "MinVersion=10.0.17763",
                  "DisableDirPage=yes", "UsePreviousAppDir=yes",

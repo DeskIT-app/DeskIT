@@ -120,7 +120,9 @@ end;
 
 { The channel this copy came through: github (default), winget (the manifest
   passes /CHANNEL=winget), store (the MSIX build writes its own). The app
-  reads {app}\CHANNEL at start; a missing or unknown word reads as github. }
+  reads CHANNEL beside its tree at start; a missing or unknown word reads
+  as github. (No brace inside a brace comment: the first close brace ends
+  it — dry run #5.) }
 function ChannelWord: String;
 begin
   Result := Lowercase(ExpandConstant('{param:CHANNEL|github}'));
