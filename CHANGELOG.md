@@ -10,9 +10,10 @@ paragraph first (the owner's), English second (DISTRIBUTION_PLAN.md
 
 <Hebrew paragraph — the owner writes it before the tag.>
 
-An account, for people with two PCs: Sign in with Google (or an
-anonymous account) on Settings > Privacy, and two syncs behind their
-own consent cards — your learned words and changed settings, and what
+An account — required: the first-run wizard asks for a Google sign-in
+before the keys work, once, and this PC remembers you until you sign
+out (an anonymous account exists for report-only use, on Settings >
+Privacy). Two syncs behind their own consent cards — your learned words and changed settings, and what
 you said, so the Said page is the same on every PC you sign into.
 Never keys, hotkeys, devices, folders or positions; never audio. The
 server's whole schema is published in the repository and no table in

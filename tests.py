@@ -48,6 +48,12 @@ _paths_mod.SECRETS_DIR = _SCRATCH_HOME / "secrets"
 # ...and the account's sync folder (the cursors, the other PCs' lines):
 # sb.py and sync.py write there, never into the checkout's sync\.
 _paths_mod.SYNC_DIR = _SCRATCH_HOME / "sync"
+# And the account lock: sb.py names the owner's real project now, so a
+# process with no session is "locked" by the owner's rule — every
+# half-built App in this file would refuse to resume. Off here; the
+# lock's own tests set it back for their block.
+import sb as _sb_mod  # noqa: E402
+_sb_mod.REQUIRED = False
 _paths_mod.PHONE_TOKEN = _SCRATCH_HOME / "phone" / "server_token.txt"
 # And the egress log: every net.py row a test provokes lands here, not in
 # the checkout's network.log the owner reads.
@@ -31871,6 +31877,8 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
         try:
             assert w.name == "welcome"
             w._next()
+            assert w.name == "account"
+            w._next()                     # REQUIRED is off in this file
             assert w.name == "mic"
             w._next()
             assert w.name == "computer" and w.pane is not None
@@ -32028,7 +32036,8 @@ def test_main_hosts_the_steps_in_the_wizard_when_it_is_due():
     wiz = (REPO / "firstrun.py").read_text("utf-8")
     assert "import main" not in wiz, "the wizard must not import main.py"
     assert 'config_mod.save({"setup.done": True})' in wiz
-    assert firstrun.PAGES == ("welcome", "mic", "computer", "say", "keys", "extras", "done")
+    assert firstrun.PAGES == ("welcome", "account", "mic", "computer", "say", "keys",
+                              "extras", "done")
     assert firstrun.GUIDE_PRIVACY_CHECK.startswith(paths.PAGES_URL)
     assert firstrun.PRIVACY_URL == f"{paths.PAGES_URL}/privacy"
 
@@ -34442,6 +34451,182 @@ def test_first_sync_on_a_fresh_pc_pulls_and_does_not_echo():
         config_mod.save({"punctuate.auto": config_mod.defaults_flat()["punctuate.auto"]})
         shutil.rmtree(d, ignore_errors=True)
 
+
+
+def test_no_account_no_dictation_until_a_sign_in():
+    """The owner's rule (2026-09-18): with a configured project and no
+    session the app locks — the state machine is held paused with the
+    sign-in sentence and no pause cue; the pause key and the dashboard's
+    Resume put it straight back; the phone is refused with the same
+    sentence; status() says locked. A sign-in over the pipe unlocks it,
+    and the session going away (Sign out) locks it again through
+    sb.SIGNED_OUT_HOOKS. With REQUIRED off — this file's default, and
+    a build with no project — nothing of this happens."""
+    import sb
+
+    App = __import__("main").App
+    app = App.__new__(App)
+    said: list[str] = []
+    states: list[str] = []
+    app._say = said.append
+    app._set_state = states.append
+    app.popup = type("P", (), {"hide": lambda self: None})()
+    app._auto_paused = False
+    app.cfg = type("C", (), {"hotkey": "right ctrl", "pause_hotkey": ""})()
+    app.vocab = None
+    app.machine = hotkey_mod.PTTStateMachine(
+        VK_RCTRL, on_start=lambda lang: None, on_stop=lambda lang: None,
+        on_abort=lambda why: None, on_pause=app._on_pause)
+    main_mod = __import__("main")
+    with _fixture_project() as fake, _patched(sb, "REQUIRED", True), \
+            _patched(sb, "SIGNED_OUT_HOOKS", []), _consented("account"), \
+            _patched(main_mod, "beep", lambda kind: None), \
+            _patched(sb, "start_worker", lambda **kw: None):
+        assert app.locked() and app._account_status()["required"]
+        app._lock()
+        assert app.machine.paused and states[-1] == "paused"
+        assert said == [App.LOCK_WORDS], said
+        # the pause key: back to locked, the sentence again, no "resumed"
+        app.machine.set_paused(False)
+        assert app.machine.paused and said[-1] == App.LOCK_WORDS
+        assert not any("listening again" in s for s in said)
+        # the dashboard's Resume: refused with the sentence
+        reply = app.control_command("resume", {})
+        assert not reply["ok"] and reply["error"] == App.LOCK_WORDS and app.machine.paused
+        # the phone
+        try:
+            app._transcribe_for_phone(RIFF)
+        except RuntimeError as e:
+            assert str(e) == App.LOCK_WORDS
+        else:
+            raise AssertionError("the phone dictated into a locked app")
+        # a sign-in over the pipe unlocks; sign-out locks again
+        app._start_account()
+        assert app._lock in sb.SIGNED_OUT_HOOKS
+        n = len(said)
+        assert app._account_command("anonymous")["ok"]
+        for _ in range(60):
+            if not app.machine.paused:
+                break
+            time.sleep(0.05)
+        assert not app.machine.paused and not app.locked()
+        assert any(s.startswith("signed in") for s in said[n:]) and "listening again" in said
+        sb.sign_out()
+        assert app.machine.paused and app.locked() and said[-1] == App.LOCK_WORDS
+        # a stopped worker thread must not outlive the block
+        sb.SIGNED_OUT_HOOKS.clear()
+    # REQUIRED off: a fresh process is simply not locked
+    with _fixture_project(), _patched(main_mod, "beep", lambda kind: None):
+        assert not app.locked()
+        app._on_pause(False)
+        assert said[-1] == "listening again"
+
+
+def test_the_wizard_has_no_way_past_the_account_page_without_a_sign_in():
+    """The account page (chapter 9 screen 16, the owner's rule): on a
+    copy with a project, Next is off until the sign-in thread comes back
+    with a user; [Sign in with Google] records the account consent (the
+    page is the card), opens the browser, and the outcome — polled on the
+    Tk thread — enables Next and says who. A copy with no project says
+    so and lets Next through; a copy already signed in shows the e-mail
+    at once."""
+    import firstrun
+    import sb
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    opened: list[str] = []
+
+    def browser(url: str) -> bool:
+        opened.append(url)
+        redirect = dict(urllib_parse.parse_qsl(urllib_parse.urlsplit(url).query))["redirect_to"]
+
+        def come_back():
+            time.sleep(0.2)
+            import urllib.request as ur
+            try:
+                ur.urlopen(redirect + "?code=fixture-code", timeout=5).read()
+            except Exception as e:                           # noqa: BLE001
+                print("    (callback failed:", e, ")")
+        threading.Thread(target=come_back, daemon=True).start()
+        return True
+
+    real_signin = sb.sign_in_google
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _fixture_project() as fake, _patched(sb, "REQUIRED", True), \
+            _patched(sb, "sign_in_google",
+                     lambda **kw: real_signin(open_browser=browser, timeout_s=10)):
+        try:
+            w = firstrun.Wizard(cfg, facts={}, offers={"portable": True})
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            w._next()
+            assert w.name == "account" and not w.next._enabled, "Next was open with no session"
+            assert not __import__("privacy").allowed("account")
+            w._sign_in()
+            assert w._account_state == "waiting" and not w.signin._enabled
+            assert __import__("privacy").allowed("account"), "the press is the consent"
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not w.next._enabled:
+                w.root.update()
+                time.sleep(0.03)
+            assert w.next._enabled, "Next never opened after the sign-in"
+            assert w.account_line.cget("text") == "Signed in as person@example.com"
+            assert w.result.signed_in and sb.signed_in() and opened
+            w._next()
+            assert w.name == "mic"
+            # back to the page: signed in already, Next open at once
+            w._back()
+            assert w.name == "account" and w.next._enabled
+            assert "person@example.com" in w.account_line.cget("text")
+        finally:
+            try:
+                w.root.destroy()
+            except Exception:                                # noqa: BLE001
+                pass
+        # no project: the page says so and Next is open
+        with _patched(sb, "PROJECT_REF", ""):
+            try:
+                w = firstrun.Wizard(cfg, facts={}, offers={"portable": True})
+            except Exception as err:                         # noqa: BLE001
+                print(f"    (skipped: no Tk window — {err})")
+                return
+            try:
+                w._next()
+                assert w.name == "account" and w.next._enabled
+                assert not hasattr(w, "signin")
+            finally:
+                try:
+                    w.root.destroy()
+                except Exception:                            # noqa: BLE001
+                    pass
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_dev_copy_says_so_in_the_window():
+    """D30, the owner's ask of 2026-09-18: the checkout's dashboard is
+    titled "DeskIT Dev", carries a DEV mark under the logo and stamps
+    "DeskIT Dev <version>" on the footer; an installed copy (DEV_TAG
+    empty) shows none of it."""
+    import dashboard as dash
+
+    assert paths.DEV_TAG == "Dev", "this is the checkout"
+    with _window() as board:
+        if board is None:
+            return
+        assert board.root.title() == "DeskIT Dev"
+        marks = [w for w in board.bar.winfo_children()
+                 if w.winfo_class() == "Label" and str(w.cget("text")) == "DEV"]
+        assert len(marks) == 1, marks
+        board._show("Home")
+        board._paint_strip()
+        facts = board.parts["strip_facts"].cget("text")
+        assert "DeskIT Dev 1." in facts, facts
+    src = (REPO / "dashboard.py").read_text("utf-8")
+    assert 'self.root.title(f"DeskIT {paths.DEV_TAG}".strip())' in src
 
 
 def test_keepalive_workflow_shape():

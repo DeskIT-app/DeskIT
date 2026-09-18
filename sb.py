@@ -82,6 +82,27 @@ PUBLISHABLE_KEY: str = "sb_publishable_p3pBXir64azVPAS1wtQoVg_mgi5ZOCt"
 
 SESSION_NAME = "supabase_session"
 
+#: The owner's rule of 2026-09-18 evening, in his words: the app is not
+#: used without an account — one sign-in, remembered until Sign out.
+#: main.App.locked() reads it: with a configured project and no session
+#: the keys stay inert and the wizard's account page has no way past.
+#: tests.py sets it False at import so half-built Apps are not locked;
+#: the lock's own tests set it back.
+REQUIRED: bool = True
+
+#: Called (no arguments) when the session goes away under the app — a
+#: second 401, a dead refresh token, Sign out, Delete my account — so the
+#: app can lock again. main.App registers its lock here.
+SIGNED_OUT_HOOKS: list = []
+
+
+def _signed_out() -> None:
+    for hook in list(SIGNED_OUT_HOOKS):
+        try:
+            hook()
+        except Exception:                                    # noqa: BLE001
+            log.debug("a signed-out hook tripped", exc_info=True)
+
 #: Refresh when this little of the access token's hour is left (8.6).
 REFRESH_MARGIN_S = 10
 #: How long the browser may take to come back with a code.
@@ -287,6 +308,7 @@ def _account_gone(why: str) -> None:
     _clear_session()
     sync.forget_all()
     _status["last_error"] = why
+    _signed_out()
 
 
 def _rest(method: str, table: str, *, purpose: str, query: str = "",
@@ -586,6 +608,7 @@ def sign_out() -> None:
     sync.forget_all()
     _status["last_error"] = ""
     log.info("account: signed out")
+    _signed_out()
 
 
 def delete_account() -> None:
@@ -610,6 +633,7 @@ def delete_account() -> None:
     _clear_outbox()
     _status["last_error"] = ""
     log.info("account: deleted on the server and forgotten here")
+    _signed_out()
 
 
 def _list_objects(prefix: str) -> list[str]:
@@ -1048,6 +1072,7 @@ def status() -> dict:
         "last_sync": _status.get("last_sync", ""),
         "waiting": queued(),
         "region": "Frankfurt (Supabase)",
+        "required": bool(REQUIRED and configured()),
     }
     return out
 
@@ -1060,4 +1085,5 @@ __all__ = [
     "device_name", "ensure_profile", "sign_in_google", "sign_in_anonymous",
     "sign_out", "delete_account", "sync_now", "drain_outbox", "queued",
     "start_worker", "nudge", "status", "forget_cache", "REPORT_COLUMNS",
+    "REQUIRED", "SIGNED_OUT_HOOKS",
 ]

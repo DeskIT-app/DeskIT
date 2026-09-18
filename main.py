@@ -1846,6 +1846,7 @@ class App:
             # in, whether a sign-in is waiting on the browser, the last
             # sync and its error — ids and words, never a token.
             "account": self._account_status(),
+            "locked": self.locked(),
         }
 
     @staticmethod
@@ -1863,6 +1864,16 @@ class App:
         """Runs on the hook thread (pause key) or the control thread (the
         dashboard). Cheap on purpose: nothing is loaded or unloaded, which
         is the entire point of pausing rather than quitting."""
+        if getattr(self, "_locking", False):
+            # the lock taking hold: the box goes, the dot shows paused,
+            # and the sign-in sentence is said by _lock, not this
+            self.popup.hide()
+            self._set_state("paused")
+            return
+        if not paused and self.locked():
+            # the pause key, while locked: back to locked, and say why
+            self._lock()
+            return
         if not paused:
             self._auto_paused = False
         if paused:
@@ -1885,10 +1896,51 @@ class App:
             log.info("resumed — hold '%s' and speak", self.cfg.hotkey)
 
     def set_paused(self, paused: bool, auto: bool = False) -> bool:
+        if not paused and self.locked():
+            # the lock is not a pause: nothing resumes it but a sign-in
+            self._say(self.LOCK_WORDS)
+            return False
         changed = self.machine.set_paused(paused)
         if paused and changed:
             self._auto_paused = auto
         return changed
+
+    # ---- the account lock (the owner's rule: no account, no dictation)
+
+    LOCK_WORDS = ("sign in to use DeskIT — open the desk: Settings > Privacy > "
+                  "Account, Sign in with Google")
+
+    def locked(self) -> bool:
+        """No account on this PC while one is required (sb.REQUIRED and a
+        configured project): every key stays inert and the phone is
+        refused until a sign-in. One sign-in is remembered — the session
+        blob — until Sign out, so the lock is met once per PC."""
+        try:
+            import sb
+            return bool(sb.REQUIRED and sb.configured() and not sb.signed_in())
+        except Exception:                                    # noqa: BLE001
+            return False
+
+    def _lock(self) -> None:
+        """Hold the state machine paused, silently: no pause cue, no
+        "paused" sentence — the sentence is the sign-in one. Re-asserted
+        whenever something tries to resume (the pause key, the
+        dashboard) and when the session goes away under the app."""
+        self._locking = True
+        try:
+            self.machine.set_paused(True)
+        finally:
+            self._locking = False
+        self._lock_held = True
+        self._set_state("paused")
+        self._say(self.LOCK_WORDS)
+        log.info("locked: no account on this PC — %s", self.LOCK_WORDS)
+
+    def _unlock(self) -> None:
+        """A sign-in landed: the keys come back, with the resume words."""
+        if getattr(self, "_lock_held", False) and not self.locked():
+            self._lock_held = False
+            self.machine.set_paused(False)
 
     def _watch_fullscreen(self) -> None:
         """Pause while a game owns the screen; resume when it lets go.
@@ -2164,6 +2216,8 @@ class App:
         import updates as updates_mod
         updates_mod.start_worker(say=self._say)
         self._start_account()
+        if self.locked():
+            self._lock()
         said = updates_mod.after_update()
         if said:
             self._say(said)
@@ -2312,6 +2366,8 @@ class App:
             if command in ("pause", "resume", "toggle"):
                 want = (command == "pause" if command != "toggle"
                         else not self.machine.paused)
+                if not want and self.locked():
+                    return {"ok": False, "paused": True, "error": self.LOCK_WORDS}
                 self.set_paused(want)
                 return {"ok": True, "paused": self.machine.paused}
             if command == "rebind":
@@ -2538,6 +2594,7 @@ class App:
                     who = sb.sign_in_google() if do == "google" else sb.sign_in_anonymous()
                     self._say("signed in" + (f" as {who.get('email')}" if who.get("email")
                                              else " (anonymous account)"))
+                    self._unlock()
                     sb.nudge()
                 except Exception as e:                       # noqa: BLE001
                     sb._status["last_error"] = str(e)[:200]
@@ -2599,6 +2656,10 @@ class App:
             sb.start_worker(vocab=self.vocab)
             for kind in ("settings_sync", "history_sync"):
                 privacy.on_change(kind, sb.nudge)
+            # the session going away — a second 401, Sign out, Delete my
+            # account — locks the keys again, from whichever thread saw it
+            if self._lock not in sb.SIGNED_OUT_HOOKS:
+                sb.SIGNED_OUT_HOOKS.append(self._lock)
         except Exception:                                    # noqa: BLE001
             log.warning("the account worker did not start", exc_info=True)
 
@@ -2620,6 +2681,10 @@ class App:
         two paths cannot drift into giving different answers for the same
         audio.
         """
+        # getattr: a test hands this method a bare namespace as self
+        locked = getattr(self, "locked", None)
+        if locked is not None and locked():
+            raise RuntimeError(self.LOCK_WORDS)
         started = time.monotonic()
         text, backend = self._transcribe(wav, language=None)
         transcript_log.info("OK | PHONE | %s | %.1fs latency | %s",

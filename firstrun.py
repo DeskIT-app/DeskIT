@@ -1,4 +1,4 @@
-"""The first-run wizard: seven pages, one window, and a Back that goes back.
+"""The first-run wizard: eight pages, one window, and a Back that goes back.
 
 Runs ONCE, on a copy nobody has set up (`setup.done` in state.json, D2;
 `main.py --setup` runs it again on demand). DISTRIBUTION_PLAN.md 9.2,
@@ -26,21 +26,24 @@ the user has formed the opinion that the thing is broken.
 The pages, and the ORDER is the point:
 
   0. Welcome — three sentences about where the voice goes, and one link
-  1. Microphone — the live meter, the trap named, the fix one click away
-  2. This computer — what the probe found, and the downloads this PC
+  1. Account — Sign in with Google (the owner's rule of 2026-09-18: no
+     account, no dictation); the one page Next cannot pass until a
+     session exists. Remembered until Sign out.
+  2. Microphone — the live meter, the trap named, the fix one click away
+  3. This computer — what the probe found, and the downloads this PC
      needs, asked before a byte moves: the Hebrew model (models.py),
      NVIDIA's libraries on a card that has one (packs.py), the English
      detector where there is room for it. The download keeps running
      while the wizard moves on.
-  3. Say one sentence — recorded and read back through the real backend
-  4. Keys — the bindings, on one screen you can leave open
-  5. Optional extras — the five switches of D33, each one thing that
+  4. Say one sentence — recorded and read back through the real backend
+  5. Keys — the bindings, on one screen you can leave open
+  6. Optional extras — the five switches of D33, each one thing that
      leaves this PC or changes Windows: the cloud repair (its consent
      card first — privacy.py, consent_card.py), keep-awake, the weekly
      update check, the Claude Code door, the Snipping-Tool key. Drawn as
      they stand (D34: the defaults are what the owner runs) and written
      only when moved.
-  6. Ready — the hotkey named, Start-with-Windows and the phone asked
+  7. Ready — the hotkey named, Start-with-Windows and the phone asked
      once, the desk one button away
 
 At most four real decisions (arch-A §1 P2): the microphone (only when
@@ -91,7 +94,7 @@ QUIET_S = 6.0
 SPEECH = 0.045
 TEST_S = 3.0                        # how long the sample recording runs
 
-PAGES = ("welcome", "mic", "computer", "say", "keys", "extras", "done")
+PAGES = ("welcome", "account", "mic", "computer", "say", "keys", "extras", "done")
 #: The screenshot key when the Snipping-Tool switch is on / off (screen 13).
 SNIP_KEY, PLAIN_SNIP_KEY = "win+shift+s", "ctrl+f11"
 
@@ -106,6 +109,22 @@ WORDS = {
     "welcome.defaults.he": "ברירות המחדל טובות; כל דבר אפשר לשנות אחר כך בהגדרות.",
     "welcome.link": "How to check this yourself",
     "welcome.privacy": "Privacy policy",
+    "account.title": "החשבון שלך",
+    "account.he": ("דסק-איט עובד עם חשבון: המילים שלמדת, ההגדרות ומה שאמרת "
+                   "יכולים ללכת איתך לכל מחשב שתיכנס אליו. נכנסים פעם אחת "
+                   "עם חשבון גוגל — המחשב הזה יזכור אותך עד שתצא."),
+    "account.what.he": ("מה נשמר: מזהה חשבון וכתובת הדוא\"ל של חשבון גוגל "
+                        "שבחרת; שם המחשב הזה, גרסת האפליקציה וגרסת Windows. "
+                        "השרת: של דסק-איט (Supabase, פרנקפורט). המפתחות שלך "
+                        "לעולם לא נוסעים לשם. כל סנכרון נשאר כבוי עד שתפעיל "
+                        "אותו בעצמו, בכרטיס משלו."),
+    "account.none.he": "בעותק הזה אין שרת חשבון — אפשר להמשיך.",
+    "account.button": "Sign in with Google",
+    "account.waiting": "Waiting for Google's sign-in page in your browser…",
+    "account.signed": "Signed in as {email}",
+    "account.anonymous": "Signed in (anonymous account)",
+    "account.failed": "Not signed in: {why}",
+    "account.terms": "Terms",
     "mic.title": "איזה מיקרופון?",
     "mic.he": ("דבר עכשיו. הפס למטה צריך לזוז. אם הוא לא זז — "
                "המיקרופון לא מגיע לאפליקציה, וזאת כמעט תמיד הגדרה "
@@ -535,10 +554,11 @@ class Result:
     wrote `setup.done`; the two side facts main.py acts on."""
 
     def __init__(self, saved: bool = False, open_desk: bool = False,
-                 installed_pack: bool = False):
+                 installed_pack: bool = False, signed_in: bool = False):
         self.saved = saved
         self.open_desk = open_desk
         self.installed_pack = installed_pack
+        self.signed_in = signed_in
 
     def __bool__(self) -> bool:
         return self.saved
@@ -752,6 +772,94 @@ class Wizard:
         else:
             self.skip.pack_forget()
         self.note.configure(text="", fg=ui.FAINT)
+
+    def _page_account(self) -> None:
+        """Sign in (chapter 9 screen 16, the owner's rule of 2026-09-18):
+        the one page with no way past — Next stays off until a session
+        exists — on a copy whose sb.py names a project. The page carries
+        the account card's own words (what is stored, where), so the
+        press is the consent (privacy.grant) and the sign-in in one; the
+        browser does Google's part and comes back on the app's loopback
+        listener (sb.sign_in_google). A copy without a project says so
+        and lets Next through."""
+        self._title(WORDS["account.title"], WORDS["account.he"], lines=4)
+        self._account_state = "idle"
+        try:
+            import sb
+            configured = sb.configured()
+            signed = sb.user() if configured else None
+        except Exception:                                  # noqa: BLE001
+            configured, signed = False, None
+        if not configured:
+            self._para(WORDS["account.none.he"], pt=10, colour=ui.DIM, lines=2)
+            self.next.enable(True)
+            return
+        self._para(WORDS["account.what.he"], pt=10, colour=ui.DIM, lines=5,
+                   pady=(0, 14))
+        row = tk.Frame(self.body, bg=ui.BG)
+        row.pack(fill="x")
+        self.signin = ui.Button(row, WORDS["account.button"], self._sign_in,
+                                bg=ui.BG, primary=True, w=190)
+        self.signin.pack(side="right")
+        self._link(WORDS["welcome.privacy"], PRIVACY_URL, parent=row
+                   ).pack(side="right", padx=(0, 14))
+        self._link(WORDS["account.terms"], f"{paths.PAGES_URL}/terms", parent=row
+                   ).pack(side="right", padx=(0, 14))
+        self.account_line = self._line("", pady=(12, 0), size=10)
+        if signed:
+            self._account_said(signed)
+        else:
+            self.next.enable(False)
+
+    def _account_said(self, who: dict) -> None:
+        self.account_line.configure(
+            text=(WORDS["account.signed"].format(email=who["email"]) if who.get("email")
+                  else WORDS["account.anonymous"]), fg=ui.GREEN)
+        self.signin.enable(False)
+        self.next.enable(True)
+
+    def _sign_in(self) -> None:
+        """[Sign in with Google]: the consent row first (this page IS the
+        card), then the browser; the outcome is polled by _tick on the
+        Tk thread. Idempotent while one is waiting."""
+        if self._account_state == "waiting":
+            return
+        import privacy
+        import sb
+        try:
+            if not privacy.allowed("account"):
+                privacy.grant("account")
+        except Exception as e:                             # noqa: BLE001
+            self.account_line.configure(text=WORDS["account.failed"].format(why=e), fg=ui.RED)
+            return
+        self._account_state = "waiting"
+        self._account_result: dict | None = None
+        self.account_line.configure(text=WORDS["account.waiting"], fg=ui.DIM)
+        self.signin.enable(False)
+
+        def work() -> None:
+            try:
+                self._account_result = {"who": sb.sign_in_google()}
+            except Exception as e:                         # noqa: BLE001
+                self._account_result = {"error": str(e)}
+        threading.Thread(target=work, daemon=True, name="wizard-signin").start()
+
+    def _account_poll(self) -> None:
+        """Called from _tick while the account page is up."""
+        if getattr(self, "_account_state", "idle") != "waiting":
+            return
+        result = getattr(self, "_account_result", None)
+        if result is None:
+            return
+        self._account_state = "idle"
+        if result.get("who"):
+            self.result.signed_in = True
+            self._account_said(result["who"])
+        else:
+            self.account_line.configure(
+                text=WORDS["account.failed"].format(why=result.get("error", "?"))[:160],
+                fg=ui.RED)
+            self.signin.enable(True)
 
     def _page_welcome(self) -> None:
         self._para(WORDS["welcome.title"], pt=17, colour=ui.FG, lines=1,
@@ -1190,10 +1298,12 @@ class Wizard:
 
     # ------------------------------------------------------------- the loop
     def _tick(self) -> None:
-        """The meter, the downloads, and the one sentence the microphone
-        page exists for."""
+        """The meter, the downloads, the one sentence the microphone
+        page exists for — and the sign-in's outcome on the account page."""
         if self._closing:
             return
+        if self.name == "account":
+            self._account_poll()
         try:
             if self.name == "mic" and self.meter is not None:
                 level = self.listener.level()

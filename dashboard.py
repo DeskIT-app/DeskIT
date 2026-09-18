@@ -1342,7 +1342,9 @@ class Dashboard:
         # test suite builds more than one Dashboard in a process.
         ui.forget_images()
         self.root = tk.Tk()
-        self.root.title("DeskIT")
+        # The checkout says so in its title (D30, the owner's ask of
+        # 2026-09-18: the dev copy is marked, the installed one is not).
+        self.root.title(f"DeskIT {paths.DEV_TAG}".strip())
         # `default=` so the key-capture dialog inherits it too, rather than
         # opening with the plain Tk feather next to a branded parent. It is
         # not enough on its own — see _set_window_icon below, called once
@@ -1570,6 +1572,12 @@ class Dashboard:
         if badge is not None:
             self._keep.append(badge)
             tk.Label(bar, image=badge, bg=ui.BG).place(x=PAD, y=15)
+        if paths.DEV_TAG:
+            # "DEV" under the mark, inside the mark's own 32 px — the
+            # places start at PAD + 32 and the bar is measured to the
+            # pixel (the comment below), so the tag takes no width.
+            tk.Label(bar, text="DEV", bg=ui.BG, fg=ui.AMBER,
+                     font=(ui.MEDIUM, 6)).place(x=PAD + 13, y=43, anchor="n")
 
         self.nav = widgets.Tabs(bar, [name for _key, name in NAV], bg=ui.BG,
                                 selected="Home", command=self._show, gap=10)
@@ -3689,7 +3697,7 @@ class Dashboard:
         bits = []
         phone = (self.status or {}).get("phone")
         bits.append("phone live" if phone else "phone off")
-        bits.append(f"DeskIT {version.VERSION}")
+        bits.append(f"DeskIT {paths.DEV_TAG} {version.VERSION}".replace("  ", " "))
         if getattr(self, "branch", ""):
             bits.append(f"running {self.branch}")
         learned = _words_learned()
