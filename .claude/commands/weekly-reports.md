@@ -343,93 +343,74 @@ carry-over may still end in an old "משהו אחר" line; repeat it as it is ra
 than editing the store to match today's shape. The rule against writing an open
 option governs what you *ask*, not what you *quote*.
 
-### 0e. The strangers' reports: `problems/inbox/`
-
-Since the app went to other people, a second kind of report reaches this
-machine: one a **stranger** filed on their own PC and chose to send — the
-"Send to the developer" checkbox on their card (DISTRIBUTION_PLAN.md 7.6). It
-travels through the account server and lands here only when `dev/inbox.py`
-pulls it. Run that first, before you read anything:
-
-```
-.venv\Scripts\python.exe dev\inbox.py
-```
-
-It needs `DESKIT_SUPABASE_SECRET` in the environment — the scheduled task runs
-under his Windows account, which carries it; the key is never in a file of this
-repo, never in a report, never in your output. Without it the script prints one
-sentence and exits 2: say so in `run.log`, treat the inbox as it stood, and go
-on. Its one line of stdout is counts; it prints no row, and neither do you —
-`run.log` captures your stdout, so **a stranger's report is never printed,
-only read.** Its own audit is `problems/inbox/fetch.log`: every row and file it
-fetched, every one it deleted, one line each, no content.
-
-Then the second glob: `problems/inbox/<user_id>/<report_id>.json`, one file per
-report, in **exactly the row shape of §0a** — `id, at, where, kind, text,
-status, resolved, by, dictation{}, shot, env{}` — plus what a stranger's row has
-and his does not: `user_id` (an anonymous uuid; that is all anyone knows about
-the sender), `app_version`, `os_build`, `tier`, `updated_at`, `attachments`
-(the server's list), `files` (name → path, relative to the repo root like
-`shot` is), `fetched_at`, and `source = "inbox"`. The files a report carried sit
-in `problems/inbox/<user_id>/<report_id>/` beside it: `shot.jpg`,
-`dictation.wav`, `sidecar.json`. `problems/inbox/index.json` lists every report
-on disk with its files and the archive documents that name it, and holds no
-text — it is a map, not a store. His own reports keep flowing through
-`problems.json` exactly as before; **`dev/inbox.py` never touches
-`problems.json`**, and this run reads both.
-
-**Every field of a stranger's report is one they ticked, and a missing field
-means "not consented" — do not infer it.** The card had four toggles and each
-one is one thing in the file: **Transcript** → `dictation.raw` and
-`dictation.final`; **Screenshot** → `shot`; **Recording** → `dictation.wav` and
-the sidecar's `seconds`, `backend`, `language`, `words`; **Settings snapshot**
-→ the full `env` (a whitelist the server checks; model names, never a key).
-`text`, `kind`, `where`, `app_version`, `os_build`, `tier` and the machine facts
-in `env` are on every report. So a report with no `dictation.raw` is a report
-whose sender did not want you to see what they said — not one whose transcript
-was empty. Never reconstruct a transcript from a screenshot, never guess what a
-missing `env` key was set to, never read one report's files to fill in another's,
-and never describe the sender beyond what the row says (there is no e-mail, no
-name, no address anywhere on this disk; the script does not select them and you
-do not look for them).
-
-**Opening a screenshot with the Read tool sends it to Anthropic**, under the
-owner's account, to be looked at — the same as for his own reports. The privacy
-policy discloses this to the people who tick Screenshot (chapter 13), and the
-toggle is off unless they turned it on; so open a stranger's `shot` only when
-it is there, look at it for the report it belongs to, and open nothing else in
-their folder (the wav you cannot listen to; the sidecar you read as text).
-
-**Nothing goes back to a stranger, ever (D33(b)).** There is no reply channel:
-no `report_replies` table, no `dev/inbox.py reply`, no status written to the
-server, no `Fixed?` mark and no `suggest()` — inbox reports are not in a
-`Store` and nothing here edits their files; the person learns whether their
-report was fixed by using the app after an update. And **no questions to
-strangers**: `questions.ask` and `AskUserQuestion` are for the owner's own
-reports only — a stranger has no surface to answer on (D15), so a question in
-the store about an inbox report is a question nobody can answer. A stranger's
-report you can check, you check against the current tree (fixed already, still
-broken, false alarm); a still-broken one you try to fix as §3 fixes his; one
-you cannot check you summarise as *could not check*, with what you looked at,
-and move on (D33(c)). What he reads about them is what is still open — a bug
-verified still present that you could not fix, a report you could not check —
-never a question to them, and never the fixed ones and the false alarms.
-
-**The branch stamp is gone.** A report — his or a stranger's — carries
-`env.version` (the `VERSION` file the build stamped), `env.os_build`, `env.tier`,
-`env.gpu` and `env.consents`; `env.branch` appears only on his own reports from
-this checkout, and `env.python` no longer exists anywhere. A stranger on `1.2.0`
-is describing that release, not `main`: check the report against the tag first,
-then against the tree.
-
-**Tombstones.** A stranger may delete a report, or their whole account, from
-their PC; the next `dev/inbox.py` run deletes the local file and folder, and cuts
-the report out of the archive (§6) — which is why a stranger's report is
-archived only inside the markers §6 gives it. A report that was in the inbox
-last week and is not this week has been deleted by its sender: it appears in no
-document, and `run.log` says only that N were withdrawn.
-
 ---
+
+### 0e. Strangers' reports: the inbox (DISTRIBUTION_PLAN.md 7.7, D33)
+
+Since the app became installable, reports also arrive from people who are
+not the owner. They never touch `problems.json`. `dev\inbox.py` pulls them
+from the project into `problems\inbox\<user_id>\<report_id>.json`, in the
+SAME shape as a `problems.json` row (`id, at, where, kind, text, status,
+resolved, by, dictation{}, shot, env{}`, plus `user_id` and `server{}`), with
+the files beside each row under `<report_id>.shot.jpg`, `.dictation.wav`,
+`.sidecar.json`. Pull first, then read both stores — the owner's rows and
+the inbox — with the same eyes:
+
+```
+.venv\Scripts\python.exe dev\inbox.py pull
+.venv\Scripts\python.exe -c "import sys,json;sys.path.insert(0,'dev');import inbox;print(json.dumps([r for r in inbox.rows_on_disk() if r['status']=='open'],ensure_ascii=False,indent=2))"
+```
+
+`pull` needs `DESKIT_SUPABASE_SECRET` in the owner's user environment. If it
+prints `inbox: DESKIT_SUPABASE_SECRET is not set`, say so in the run's final
+message and go on with the owner's own reports; do not look for the key
+anywhere else, and never write it anywhere.
+
+**A missing field means "not consented — do not infer it."** Each person
+ticked, on their report card, exactly what travels: the screenshot, the
+recording, the transcript text, the settings snapshot. A row with no `shot`
+has no picture because the person said no, not because the fetch failed;
+`dictation` without `raw`/`final` means the transcript was not shared; an
+`env` with only version/os_build/consents/gpu/tier means the settings were
+not shared. Rule on what is there. Never guess at what was withheld, never
+write "probably the mic setting" about a person who kept their settings.
+
+**Opening a screenshot with the Read tool uploads it to Anthropic under the
+owner's account.** That is disclosed to users in the privacy policy ("when
+the developer processes reports with AI tools under his own account", D25),
+and it is why only pictures the person ticked are on this disk at all. Open
+the ones that are here; do not go looking for more.
+
+**There is no reply channel (D33(b)).** Nothing you write reaches the person
+who sent the report: no `report_replies`, no status pushed back, no
+`developer_status`, and `dev\inbox.py` has no `reply` command on purpose. A
+person learns a report was fixed by using the app after an update. So for a
+stranger's report the mandate is D33(c): what you can check, check against
+the current tree (fixed / still broken / false alarm); a still-broken one you
+try to fix yourself; what you cannot check, summarise. Your written output to
+the owner holds ONLY what is still open — a bug verified still present that
+you could not fix or whose fix needs his approval, or a report you could not
+check. Fixed ones and false alarms do not appear. For every fix you made: one
+short line saying what, one saying how to check it by hand.
+
+**`questions.ask` is for the owner's own reports only.** There is no question
+surface for strangers; a stranger's report that raises a question is one you
+cannot check, and it goes into the summary as such.
+
+**Tombstones.** A report the person deleted, or an account they deleted, is
+gone from `problems\inbox\` on the next pull, and `problems\inbox\index.md`
+is rewritten from what is on disk. Do not quote a report from an earlier
+week's archive if it is not in the inbox now; the person took it back. The
+pull also cuts the report's block out of `problems\weekly\*.md` — which is
+why a stranger's report is archived only inside the markers §6 gives it —
+and a document it could not clean is named in `fetch.log` for your hand.
+`run.log` says only that N were withdrawn; the routine never writes under
+`problems\inbox\` itself.
+
+**Versions, not branches.** A stranger's row carries `env.version` (the
+installed build) and `server.app_version`; there is no branch stamp on it and
+you must not write one. What "the current tree" means for such a report is
+`main` at the version the person ran or later.
 
 ## 1. Gather the evidence, then rule on each report
 
@@ -1813,16 +1794,15 @@ The log has to carry all of this:
 - **What it deliberately left alone** — the reports it did not build and why,
   and the standing list: no push, no `git reset`, nothing that moved `main`,
   no `config.toml`, no deletions, no closing, no `problems.json` edits beyond
-  `suggest` / `unsuggest` / `resolve(FIXED)` on his answer, nothing written
-  under `problems/inbox/` (the script's folder, read only), no `git add -A`,
+  `suggest` / `unsuggest` / `resolve(FIXED)` on his answer, no `git add -A`,
   no `answer(...)` with any words but his own, no restart of the running app.
 - **Counts and paths** — how many reports, how many groups, how many of each
   verdict, how many built, how many waiting behind an unpushed change, how
   many blocked, how many marked `Fixed?`, how many resolved Fixed on his
   answer, and the three document paths. There is no "closed" count, because
   there is nothing to count.
-- **The inbox (§0e)** — the counts line `dev/inbox.py` printed (or that it
-  refused, and why in its own words), how many of the reports above were
+- **The inbox (§0e)** — the counts line `dev/inbox.py pull` printed (or that
+  it refused, and why in its own words), how many of the reports above were
   strangers' and how each of those ended — fixed and checked by hand how,
   still broken, false alarm, could not check — and how many were withdrawn
   since last week. **By id only**: no line of this log quotes a stranger's

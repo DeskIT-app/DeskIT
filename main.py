@@ -806,7 +806,11 @@ class App:
         self._problem_card = None if card_cls is None else card_cls(
             x=int(getattr(pcfg, "x", unset) if pcfg is not None else unset),
             y=int(getattr(pcfg, "y", unset) if pcfg is not None else unset),
-            on_change=self._save_problem_card)
+            on_change=self._save_problem_card,
+            # "Send to the developer" is behind the report_upload gate
+            # (D7, plan 7.6): the box asks its consent card first.
+            allowed=lambda: privacy.allowed("report_upload"),
+            consent=lambda: privacy.request("report_upload"))
         # THE SHELF (shelf.py + shelf_card.py + skin\shelf.py): the panel
         # beside the dot that one key opens, listing everything waiting
         # for an answer with its own two answers on every row.
@@ -2741,6 +2745,22 @@ class App:
                 card.show(0)
                 self._say("the tour, from the top")
                 return {"ok": True, "message": "the tour is beside the dot"}
+            if command == "consent":
+                # The desk asks for a gate it cannot open itself — the
+                # consent card lives beside the dot, in this process.
+                # "Send to the developer" on the desk's report box is
+                # the caller (plan 7.6); privacy.request opens the card
+                # inside a press or not and says whether it did.
+                kind = str(args.get("kind", "")).strip()
+                try:
+                    asked = privacy.request(kind)
+                except ValueError as e:
+                    return {"ok": False, "error": str(e)}
+                if asked:
+                    return {"ok": True, "asked": True,
+                            "message": "the consent card is beside the dot"}
+                return {"ok": True, "asked": False,
+                        "allowed": privacy.allowed(kind)}
             if command == "quit":
                 singleton.request_quit()
                 return {"ok": True}
@@ -2814,7 +2834,24 @@ class App:
                     privacy.request(kind)
             sb.nudge()
             return {"ok": True, "message": "syncing"}
+        if do == "nudge":
+            # The desk queued a report (or pressed Send now): the worker
+            # drains the outbox soon; no card, no consent asked here —
+            # a shut report_upload gate simply leaves it queued (8.8).
+            sb.nudge()
+            return {"ok": True, "message": "sending soon",
+                    "signed_in": sb.signed_in()}
         return {"ok": False, "error": f"unknown account action {do!r}"}
+
+    @staticmethod
+    def _report_sent(rid: str) -> None:
+        """sb.py's on_sent, on the worker's thread: the Problems row whose
+        copy just went up says "sent" (problems.mark_sent)."""
+        try:
+            problems_mod.mark_sent(problems_mod.Store(paths.PROBLEMS_FILE), rid)
+        except Exception:                                    # noqa: BLE001
+            log.info("problems: report %s was sent but its row could not "
+                     "be marked", rid, exc_info=True)
 
     @staticmethod
     def _nudge_sync() -> None:
@@ -2844,8 +2881,8 @@ class App:
             import sb
             if not sb.configured():
                 return
-            sb.start_worker(vocab=self.vocab)
-            for kind in ("settings_sync", "history_sync"):
+            sb.start_worker(vocab=self.vocab, on_sent=self._report_sent)
+            for kind in ("settings_sync", "history_sync", "report_upload"):
                 privacy.on_change(kind, sb.nudge)
             # the session going away — a second 401, Sign out, Delete my
             # account — locks the keys again, from whichever thread saw it
@@ -4261,12 +4298,23 @@ class App:
             # of record()'s ValueError, and it should not depend on which
             # window called it.
             if (text or "").strip():
-                self._problem_file(text, where, last, jpeg, kind)
+                sending = getattr(self._problem_card, "last", None) or {}
+                self._problem_file(text, where, last, jpeg, kind,
+                                   send=bool(sending.get("send")),
+                                   attach=sending.get("attach"))
+
+        # The strip's sizes: what the JPEG, the last recording and the
+        # settings weigh, before any of it is filed.
+        try:
+            sizes = problems_mod.sizes_before_filing(
+                jpeg=jpeg, last=last, cfg=self.cfg, app_dir=paths.DATA_DIR)
+        except Exception:                 # noqa: BLE001 — a size is a bonus
+            sizes = None
 
         # `kinds` deliberately not passed: problem_card.card_for reads
         # problems.KINDS itself when it is not told, so the chips on this
         # card and the ones the dashboard offers cannot drift apart.
-        if not self._problem_card.ask(where, done, shot=jpeg):
+        if not self._problem_card.ask(where, done, shot=jpeg, sizes=sizes):
             log.info("problems: the card was taken between the press and "
                      "the grab — nothing filed")
 
@@ -4355,7 +4403,8 @@ class App:
             return False
 
     def _problem_file(self, text: str, where: str, last, jpeg,
-                      kind: str = "") -> None:
+                      kind: str = "", *, send: bool = False,
+                      attach: dict | None = None) -> None:
         """Write the report. From the card's own thread, after it is gone.
 
         No success cue: the card disappearing is the confirmation, and
@@ -4368,6 +4417,14 @@ class App:
         falls back to the first one, so an empty string from a card that
         never offered chips still files as the default and a fifth kind
         added to problems.KINDS needs no change on this side.
+
+        `send` is "Send to the developer" (plan 7.6, screen 7). The
+        report is filed here exactly as without it; what the tick adds
+        is a mark on the row — PREVIEW, with the four toggles — and the
+        dashboard opened on Problems, where the Preview shows the whole
+        of what would leave and Send there is what makes the copy. The
+        dashboard is another process, so the row is the message: it
+        looks for a report awaiting its preview when it comes up.
 
         record() only raises ValueError, and only for an empty line that
         `done` has already refused; the broad except is here because this
@@ -4384,10 +4441,26 @@ class App:
             self._say(f"could not file that problem: {e}")
             log.exception("problems: could not file the report")
             return
-        self._say(f"problem {item['id']} noted — {item['text'][:60]}")
-        log.info("problems: %s filed from the key, %s%s", item["id"],
+        if send:
+            try:
+                store = problems_mod.Store(paths.PROBLEMS_FILE)
+                problems_mod.mark_preview(store, item["id"], attach)
+                # A second launch of the desk signals the first and
+                # exits (dashboard.main), so this is right either way.
+                open_dashboard()
+                self._say(f"problem {item['id']} noted — the preview of "
+                          "what would be sent is on the Problems screen")
+            except Exception:                 # noqa: BLE001
+                log.info("problems: %s is filed; the preview could not be "
+                         "opened", item["id"], exc_info=True)
+                self._say(f"problem {item['id']} noted — open Problems on "
+                          "the desk to preview and send it")
+        else:
+            self._say(f"problem {item['id']} noted — {item['text'][:60]}")
+        log.info("problems: %s filed from the key, %s%s%s", item["id"],
                  "with the last dictation" if last else "with no dictation",
-                 ", with a screenshot" if item.get("shot") else "")
+                 ", with a screenshot" if item.get("shot") else "",
+                 ", awaiting its preview" if send else "")
 
     # ---- the weekly routine's question (questions.py) ----
     #
@@ -6476,6 +6549,11 @@ def main() -> int:
                              "the last 50 lines of app.log through the "
                              "redactor; no transcripts, no keys — and put "
                              "it on the clipboard")
+    parser.add_argument("--verify", action="store_true",
+                        help="recompute MANIFEST.sha256 over the installed "
+                             "python\\ and app\\ and print every file that "
+                             "differs from the build's (D12 lock 5); exit "
+                             "1 on any difference")
     parser.add_argument("--install-pack", metavar="NAME",
                         help="show a pack's install step on its own (gpu "
                              "or skin; an installed copy with an NVIDIA "
@@ -6512,6 +6590,15 @@ def main() -> int:
     if args.reset_data:
         import migrate as migrate_mod
         return migrate_mod.reset_data(yes=args.yes)
+    if args.verify:
+        # The tree's own check, before any config or data folder is
+        # touched: the build wrote MANIFEST.sha256 beside python\ and
+        # app\, so the install root is APP_DIR's parent. A checkout has
+        # no manifest and says so — it is not a build.
+        import manifest
+        code, text = manifest.report(paths.APP_DIR.parent)
+        print(text)
+        return code
     if args.keys or args.set_key or args.delete_key:
         import secretstore
         if args.set_key:

@@ -24,6 +24,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO))
+sys.path.insert(0, str(REPO / "dev"))
 
 import paths  # noqa: E402
 
@@ -1223,379 +1224,258 @@ def test_export_ignore_covers_forbidden():
 
 
 
-
-# ---------------------------------------------------------------------------
-# the owner's inbox (dev/inbox.py — DISTRIBUTION_PLAN.md 7.7, 8.10, D33(b))
-# ---------------------------------------------------------------------------
-
-def _inbox_mod():
-    """dev/inbox.py imported by path — it is not on the product's import
-    path, and tests.DEV_MODULES lists `inbox` so no product module may
-    reach it at the top."""
-    import importlib.util
-
-    spec = importlib.util.spec_from_file_location("inbox", REPO / "dev" / "inbox.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-class _FakeInboxProject:
-    """The two doors dev/inbox.py may knock on — PostgREST on
-    problem_reports and the reports bucket — answered from memory with
-    the secret key checked on every call, and every call written down.
-    Any other path is a 404, so a test sees at once if the script ever
-    strays towards auth, profiles or a table it has no business in."""
-
-    SECRET = "sb_secret_fixture_0123456789abcdef"
-    REF = "fixtureref"
-
-    def __init__(self, rows: list[dict], objects: dict[str, bytes]) -> None:
-        self.rows = rows
-        self.objects = objects
-        self.calls: list[dict] = []
-
-    def __call__(self, method, url, headers, body, timeout_s):
-        import json
-        import urllib.parse as up
-
-        parts = up.urlsplit(url)
-        path = parts.path.lstrip("/")
-        query = dict(up.parse_qsl(parts.query))
-        self.calls.append({"method": method, "url": url, "path": path, "query": query,
-                           "headers": dict(headers), "body": body})
-        if headers.get("apikey") != self.SECRET or \
-                headers.get("Authorization") != f"Bearer {self.SECRET}":
-            return 401, b'{"message":"bad key"}'
-        if method != "GET":
-            return 405, b'{"message":"the fixture answers GET only"}'
-        if path == "rest/v1/problem_reports":
-            cols = query.get("select", "*").split(",")
-            rows = sorted(self.rows, key=lambda r: (r["created_at"], r["id"]))
-            offset, limit = int(query.get("offset", 0)), int(query.get("limit", 1000))
-            page = [{c: r.get(c) for c in cols} for r in rows[offset:offset + limit]]
-            return 200, json.dumps(page).encode("utf-8")
-        if path.startswith("storage/v1/object/reports/"):
-            key = up.unquote(path[len("storage/v1/object/reports/"):])
-            if key in self.objects:
-                return 200, self.objects[key]
-            return 404, b'{"message":"Object not found"}'
-        return 404, b'{"message":"no such route in the fixture"}'
-
-    def storage_calls(self) -> list[str]:
-        return [c["path"] for c in self.calls if c["path"].startswith("storage/")]
-
-
-_UID_A = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"
-_UID_B = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb"
-_RID_1 = "11111111-aaaa-4aaa-8aaa-111111111111"
-_RID_2 = "22222222-aaaa-4aaa-8aaa-222222222222"
-_RID_3 = "33333333-bbbb-4bbb-8bbb-333333333333"
-
-
-def _inbox_rows() -> tuple[list[dict], dict[str, bytes]]:
-    """Three reports of two strangers: one with every toggle on, one
-    bare, one with a transcript and two attachments the database would
-    never have admitted (listed here to prove the script refuses them)."""
+def test_the_inbox_pulls_only_what_was_ticked_and_forgets_what_was_deleted():
+    """dev/inbox.py (plan 7.7, D33): the consented columns and nothing
+    else are selected; an object comes down only when the row's
+    attachments names it, and only from the row's own folder; each
+    report lands as a problems.json-shaped row under
+    inbox\\<user_id>\\ with the files beside it and the shot resolvable
+    by problems.shot_path; a second pull fetches nothing twice; a row
+    gone server-side takes its files with it, a user gone takes the
+    folder; index.md never names a removed report; fetch.log names
+    every fetch; the secret is read from the environment only and is
+    nowhere on the disk afterwards; nothing is ever POSTed."""
+    import io
     import json
+    import shutil
+    import tempfile
+    import urllib.parse
 
-    wav = b"RIFF" + b"\x00" * 60
-    side = {"seconds": 2.4, "backend": "local", "language": "he",
-            "words": [["שלום", 0.0, 0.5, 0.91]], "attempts": 1, "path": "bookkeeping"}
-    rows = [
-        {"id": _RID_1, "user_id": _UID_A, "created_at": "2026-09-18T10:00:00+00:00",
-         "updated_at": "2026-09-18T10:00:00+00:00", "app_version": "1.1.0",
-         "os_build": "10.0.26200", "tier": "gpu", "kind": "wrong",
-         "place": "Said", "text": "המילה יצאה לא נכון",
-         "env": {"version": "1.1.0", "os_build": "10.0.26200", "backend": "local"},
-         "status": "open", "dictation_raw": None, "dictation_final": None,
-         "attachments": [f"{_UID_A}/{_RID_1}/shot.jpg", f"{_UID_A}/{_RID_1}/dictation.wav",
-                         f"{_UID_A}/{_RID_1}/sidecar.json"]},
-        {"id": _RID_2, "user_id": _UID_A, "created_at": "2026-09-18T11:00:00+00:00",
-         "updated_at": "2026-09-18T11:00:00+00:00", "app_version": "1.1.0",
-         "os_build": "10.0.26200", "tier": "cpu", "kind": "idea",
-         "place": "", "text": "an idea, nothing attached", "env": {"version": "1.1.0"},
-         "status": "open", "dictation_raw": None, "dictation_final": None,
-         "attachments": []},
-        {"id": _RID_3, "user_id": _UID_B, "created_at": "2026-09-18T12:00:00+00:00",
-         "updated_at": "2026-09-18T12:30:00+00:00", "app_version": "1.1.0",
-         "os_build": "10.0.22631", "tier": "cloud", "kind": "wrong",
-         "place": "WhatsApp", "text": "second stranger",
-         "env": {"version": "1.1.0", "tier": "cloud"}, "status": "open",
-         "dictation_raw": "מה שהמודל שמע", "dictation_final": "מה שיצא",
-         "attachments": [f"{_UID_A}/{_RID_1}/shot.jpg",       # another user's folder
-                         f"{_UID_B}/{_RID_3}/../shot.jpg",    # a climb
-                         f"{_UID_B}/{_RID_3}/notes.exe"]},    # not one of the five
-    ]
-    objects = {f"{_UID_A}/{_RID_1}/shot.jpg": b"\xff\xd8fixture-jpeg\xff\xd9",
-               f"{_UID_A}/{_RID_1}/dictation.wav": wav,
-               f"{_UID_A}/{_RID_1}/sidecar.json": json.dumps(side).encode("utf-8"),
-               f"{_UID_B}/{_RID_3}/notes.exe": b"never fetched"}
-    return rows, objects
+    import inbox as inbox_mod
+    import problems as problems_mod
 
+    U1 = "11111111-1111-4111-8111-111111111111"
+    U2 = "22222222-2222-4222-8222-222222222222"
+    R1 = "aaaaaaaa-0000-4000-8000-000000000001"
+    R2 = "aaaaaaaa-0000-4000-8000-000000000002"
+    R3 = "aaaaaaaa-0000-4000-8000-000000000003"
+    SECRET = "sb_secret_fixture_key_0123456789"
+    rows = {
+        R1: {"id": R1, "user_id": U1, "created_at": "2026-09-18T20:00:00+00:00",
+             "updated_at": "2026-09-18T20:00:00+00:00", "app_version": "1.1.0",
+             "os_build": "10.0.26200", "tier": "cpu", "kind": "wrong",
+             "place": "dictation", "text": "המילה האחרונה נעלמה",
+             "env": {"version": "1.1.0", "backend": "local"}, "status": "open",
+             "attachments": [f"{U1}/{R1}/shot.jpg", f"{U1}/{R1}/sidecar.json",
+                             f"{U1}/{R2}/shot.jpg"],       # another row's — refused
+             "dictation_raw": "המילה האחרונה", "dictation_final": "המילה האחרונה נעלמה",
+             "email": "nobody@example.com"},                # never asked for; ignored
+        R2: {"id": R2, "user_id": U1, "created_at": "2026-09-18T21:00:00+00:00",
+             "updated_at": "2026-09-18T21:00:00+00:00", "app_version": "1.1.0",
+             "os_build": "10.0.26200", "tier": "gpu", "kind": "idea",
+             "place": "settings", "text": "a switch for the dot", "env": {},
+             "status": "open", "attachments": [], "dictation_raw": None,
+             "dictation_final": None},
+        R3: {"id": R3, "user_id": U2, "created_at": "2026-09-18T22:00:00+00:00",
+             "updated_at": "2026-09-18T22:00:00+00:00", "app_version": "1.1.0",
+             "os_build": "10.0.22631", "tier": "cpu", "kind": "broken",
+             "place": "anywhere", "text": "the dot vanished", "env": {},
+             "status": "open", "attachments": [f"{U2}/{R3}/dictation.wav"],
+             "dictation_raw": None, "dictation_final": None},
+    }
+    objects = {f"{U1}/{R1}/shot.jpg": b"\xff\xd8\xff" + b"j" * 300,
+               f"{U1}/{R1}/sidecar.json": json.dumps({"seconds": 2.5, "backend": "local",
+                                                      "language": "he",
+                                                      "words": [{"w": "x", "p": 0.9}]}).encode(),
+               f"{U1}/{R2}/shot.jpg": b"\xff\xd8not-yours",
+               f"{U2}/{R3}/dictation.wav": _tests.RIFF}
+    calls: list[tuple[str, str, dict]] = []
 
-class _inbox_home:
-    """dev/inbox.py pointed at a scratch DATA_DIR (problems\\inbox and
-    problems\\weekly under it) and at the fake project, for the block."""
+    class _Reply(io.BytesIO):
+        def __enter__(self):
+            return self
 
-    def __init__(self, fake: _FakeInboxProject) -> None:
-        self.fake = fake
+        def __exit__(self, *a):
+            return False
 
-    def __enter__(self):
-        import paths as paths_mod
+    def opener(req, timeout=0):
+        url = req.full_url
+        calls.append((req.get_method(), url, dict(req.header_items())))
+        assert req.get_method() == "GET", "the inbox wrote to the project"
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.path == "/rest/v1/problem_reports":
+            query = dict(urllib.parse.parse_qsl(parsed.query))
+            assert query["select"].split(",") == list(inbox_mod.COLUMNS), query["select"]
+            page = [dict(r) for r in rows.values()]
+            if query.get("status", "").startswith("eq."):
+                page = [r for r in page if r["status"] == query["status"][3:]]
+            return _Reply(json.dumps(page).encode("utf-8"))
+        if parsed.path.startswith("/storage/v1/object/reports/"):
+            key = urllib.parse.unquote(parsed.path[len("/storage/v1/object/reports/"):])
+            assert key in objects, key
+            return _Reply(objects[key])
+        raise AssertionError(url)
 
-        self.mod = _inbox_mod()
-        self.home = Path(tempfile.mkdtemp(prefix="deskit-inbox-"))
-        self._old = (paths_mod.DATA_DIR, self.mod._connect, self.mod.project_ref)
-        paths_mod.DATA_DIR = self.home
-        self.mod.INBOX_DIR = self.home / "problems" / "inbox"
-        self.mod.WEEKLY_DIR = self.home / "problems" / "weekly"
-        self.mod._connect = self.fake
-        self.mod.project_ref = lambda: self.fake.REF
-        return self
-
-    def __exit__(self, *exc):
-        import shutil
-
-        import paths as paths_mod
-
-        paths_mod.DATA_DIR, self.mod._connect, self.mod.project_ref = self._old
-        shutil.rmtree(self.home, ignore_errors=True)
-        return False
-
-    def item(self, uid: str, rid: str) -> dict:
-        import json
-
-        return json.loads((self.mod.INBOX_DIR / uid / f"{rid}.json").read_text("utf-8"))
-
-    def log(self) -> str:
+    tmp = Path(tempfile.mkdtemp(prefix="inbox-"))
+    try:
+        root = tmp / "problems"
+        project = inbox_mod.Project("https://fixture.supabase.co", SECRET, opener=opener)
+        dry = inbox_mod.pull(project, root=root, dry_run=True)
+        assert dry == {"rows": 3, "new": 0, "files": 0, "removed": 0,
+                       "folders_removed": 0, "users": 2}, dry
+        assert not (root / "inbox").exists(), "a dry run wrote"
+        counts = inbox_mod.pull(project, root=root)
+        assert (counts["rows"], counts["new"], counts["files"], counts["users"]) == (3, 3, 3, 2), counts
+        box = root / "inbox"
+        one = json.loads((box / U1 / f"{R1}.json").read_text("utf-8"))
+        assert one["id"] == R1 and one["user_id"] == U1 and one["kind"] == "wrong"
+        assert one["where"] == "dictation" and one["text"] == "המילה האחרונה נעלמה"
+        assert one["status"] == "open" and one["resolved"] is None and one["by"] == ""
+        assert one["dictation"]["raw"] == "המילה האחרונה" and one["dictation"]["seconds"] == 2.5
+        assert one["dictation"]["words"] and "wav" not in one["dictation"]
+        assert "email" not in one and "email" not in one["server"], "an unconsented column landed"
+        assert (box / U1 / f"{R1}.shot.jpg").read_bytes() == objects[f"{U1}/{R1}/shot.jpg"]
+        assert (box / U1 / f"{R1}.sidecar.json").is_file()
+        assert not (box / U1 / f"{R2}.shot.jpg").exists(), "another row's object came down"
+        assert not any(c[1].endswith(f"{R2}/shot.jpg") for c in calls), "fetched outside the row's folder"
+        # the shot resolves the way a local report's does
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        assert problems_mod.shot_path(store, one) == box / U1 / f"{R1}.shot.jpg"
+        two = json.loads((box / U1 / f"{R2}.json").read_text("utf-8"))
+        assert two["dictation"] == {} and two["shot"] == ""
+        three = json.loads((box / U2 / f"{R3}.json").read_text("utf-8"))
+        assert three["dictation"]["wav"] == str(box / U2 / f"{R3}.dictation.wav")
+        log_text = (box / "fetch.log").read_text("utf-8")
+        assert log_text.count("fetched row") == 3 and log_text.count("fetched object") == 3, log_text
+        assert "outside the row's own folder" in log_text
+        index = (box / "index.md").read_text("utf-8")
+        assert R1 in index and R2 in index and R3 in index and "3 report(s)" in index
+        assert SECRET not in log_text and SECRET not in index
+        for path in box.rglob("*"):
+            if path.is_file():
+                assert SECRET.encode() not in path.read_bytes(), path
+        # the secret went out as the two headers, on every call
+        assert all(h["Apikey"] == SECRET and h["Authorization"] == f"Bearer {SECRET}"
+                   for _m, _u, h in calls), calls[0]
+        # a second pull: nothing fetched twice
+        before = len(calls)
+        again = inbox_mod.pull(project, root=root)
+        assert again["new"] == 0 and again["files"] == 0, again
+        assert len(calls) == before + 1, "objects were fetched again"
+        # the person deleted R1, and U2 ran Delete my account
+        del rows[R1]
+        del rows[R3]
+        gone = inbox_mod.pull(project, root=root)
+        assert gone["removed"] == 1 and gone["folders_removed"] == 1, gone
+        assert not (box / U1 / f"{R1}.json").exists() and not (box / U1 / f"{R1}.shot.jpg").exists()
+        assert (box / U1 / f"{R2}.json").exists() and not (box / U2).exists()
+        index = (box / "index.md").read_text("utf-8")
+        assert R1 not in index and R3 not in index and R2 in index
+        assert inbox_mod.status(root) == {"reports": 1, "users": 1, "open": 1,
+                                          "inbox": str(box)}
+        assert [i["id"] for i in inbox_mod.rows_on_disk(root)] == [R2]
+        # only open rows, when asked
+        rows[R2]["status"] = "fixed"
+        assert inbox_mod.pull(project, root=root, status="open")["rows"] == 0
+        # the secret: environment only, and shaped like the project's
+        import os
+        saved = os.environ.pop(inbox_mod.SECRET_VAR, None)
         try:
-            return (self.mod.INBOX_DIR / "fetch.log").read_text("utf-8")
-        except OSError:
-            return ""
+            try:
+                inbox_mod.secret()
+                raise AssertionError("no secret and no error")
+            except inbox_mod.InboxError as e:
+                assert "user variables" in str(e)
+            os.environ[inbox_mod.SECRET_VAR] = "sb_publishable_not_the_secret"
+            try:
+                inbox_mod.secret()
+                raise AssertionError("the publishable key passed as the secret")
+            except inbox_mod.InboxError:
+                pass
+        finally:
+            if saved is None:
+                os.environ.pop(inbox_mod.SECRET_VAR, None)
+            else:
+                os.environ[inbox_mod.SECRET_VAR] = saved
+        # never in the product tree: dev/ is export-ignored whole
+        # (test_export_ignore_covers_forbidden archives and checks)
+        assert (REPO / "dev" / "inbox.py").is_file()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_the_inbox_pulls_consented_columns_and_ticked_files_only() -> None:
-    """dev/inbox.py (7.7): with the secret key it selects exactly the
-    consented columns of problem_reports — no e-mail, no other table —
-    writes each row as problems\\inbox\\<user_id>\\<report_id>.json in
-    the shape problems.json rows have, fetches only the objects the row
-    lists under its own folder, and writes a transcript column the
-    server returned NULL as ABSENT. A second run with nothing changed
-    touches no object; a status change is picked up; fetch.log holds a
-    line per row and object and never a word of a report or the key."""
+def test_a_deleted_report_leaves_the_archive_too() -> None:
+    """7.7 tombstones, the archive's half: the routine wraps a stranger's
+    report in <!-- inbox <id> --> markers when it archives one
+    (weekly-reports.md §6); when the report is gone server-side the pull
+    cuts that block down to one comment that quotes nothing — in every
+    document under problems\\weekly\\, for a deleted report and for every
+    report of a deleted account alike; a document that names the id
+    OUTSIDE a marked block is named in fetch.log and left alone; a
+    report still on the server keeps its block."""
+    import io
     import json
+    import shutil
+    import tempfile
+    import urllib.parse
 
-    import problems
+    import inbox as inbox_mod
 
-    rows, objects = _inbox_rows()
-    fake = _FakeInboxProject(rows, objects)
-    with _inbox_home(fake) as box:
-        inbox = box.mod
-        counts = inbox.pull(fake.SECRET)
-        assert counts["rows"] == 3 and counts["new"] == 3 and counts["gone"] == 0, counts
-        assert counts["objects"] == 3 and counts["skipped"] == 3, counts
+    U1 = "11111111-1111-4111-8111-111111111111"
+    U2 = "22222222-2222-4222-8222-222222222222"
+    R1 = "aaaaaaaa-0000-4000-8000-000000000001"
+    R2 = "aaaaaaaa-0000-4000-8000-000000000002"
+    R3 = "aaaaaaaa-0000-4000-8000-000000000003"
+    SECRET = "sb_secret_fixture_key_0123456789"
 
-        # The wire: one table, its consented columns, the two headers,
-        # the bucket for the three ticked objects — and nothing else.
-        rest = [c for c in fake.calls if c["path"].startswith("rest/")]
-        assert [c["path"] for c in rest] == ["rest/v1/problem_reports"], rest
-        assert rest[0]["query"]["select"] == ",".join(inbox.COLUMNS)
-        assert "email" not in rest[0]["query"]["select"]
-        for c in fake.calls:
-            assert c["method"] == "GET", c
-            assert c["headers"]["apikey"] == fake.SECRET
-            assert c["path"].startswith(("rest/v1/problem_reports", "storage/v1/object/reports/")), c["path"]
-        assert sorted(fake.storage_calls()) == sorted(
-            f"storage/v1/object/reports/{_UID_A}/{_RID_1}/{n}"
-            for n in ("shot.jpg", "dictation.wav", "sidecar.json")), fake.storage_calls()
+    def row(rid, uid, text):
+        return {"id": rid, "user_id": uid, "created_at": "2026-09-18T20:00:00+00:00",
+                "updated_at": "2026-09-18T20:00:00+00:00", "app_version": "1.1.0",
+                "os_build": "10.0.26200", "tier": "cpu", "kind": "wrong", "place": "x",
+                "text": text, "env": {}, "status": "open", "attachments": [],
+                "dictation_raw": None, "dictation_final": None}
+    rows = {R1: row(R1, U1, "המילה האחרונה נעלמה"), R2: row(R2, U1, "an idea"),
+            R3: row(R3, U2, "second stranger")}
 
-        # The layout and the shape.
-        a1 = box.item(_UID_A, _RID_1)
-        for key in ("id", "at", "where", "kind", "text", "status", "resolved", "by",
-                    "dictation", "shot", "env"):
-            assert key in a1, key
-        assert a1["id"] == _RID_1 and a1["user_id"] == _UID_A and a1["source"] == "inbox"
-        assert a1["where"] == "Said" and a1["kind"] == "wrong" and a1["status"] == "open"
-        assert a1["resolved"] is None and a1["text"] == "המילה יצאה לא נכון"
-        assert a1["env"] == rows[0]["env"] and a1["tier"] == "gpu"
-        assert a1["shot"] == f"problems/inbox/{_UID_A}/{_RID_1}/shot.jpg", a1["shot"]
-        shot = problems.shot_path(box.home, a1)
-        assert shot is not None and shot.read_bytes() == objects[f"{_UID_A}/{_RID_1}/shot.jpg"]
-        assert (box.home / a1["dictation"]["wav"]).read_bytes() == objects[f"{_UID_A}/{_RID_1}/dictation.wav"]
-        # the sidecar's fields join `dictation` as problems.dictation() joins them
-        assert a1["dictation"]["seconds"] == 2.4 and a1["dictation"]["backend"] == "local"
-        assert a1["dictation"]["words"] == [["שלום", 0.0, 0.5, 0.91]]
-        assert "path" not in a1["dictation"], "a bookkeeping key of the sidecar leaked in"
-        # NULL transcript columns are absent — not consented, not "empty"
-        assert "raw" not in a1["dictation"] and "final" not in a1["dictation"], a1["dictation"]
-        a2 = box.item(_UID_A, _RID_2)
-        assert a2["shot"] == "" and a2["dictation"] == {} and a2["files"] == {}
-        assert not (inbox.INBOX_DIR / _UID_A / _RID_2).exists(), "an empty folder for a bare report"
-        b3 = box.item(_UID_B, _RID_3)
-        assert b3["dictation"] == {"raw": "מה שהמודל שמע", "final": "מה שיצא"}, b3["dictation"]
-        assert b3["files"] == {} and not (inbox.INBOX_DIR / _UID_B / _RID_3).exists()
-        assert b3["attachments"] == rows[2]["attachments"], "the server's list is kept as it was"
+    class _Reply(io.BytesIO):
+        def __enter__(self):
+            return self
 
-        # fetch.log: the audit, without the content.
-        log = box.log()
-        assert f"row {_UID_A}/{_RID_1} status=open" in log and f"row {_UID_B}/{_RID_3}" in log
-        assert f"object {_UID_A}/{_RID_1}/shot.jpg {len(objects[f'{_UID_A}/{_RID_1}/shot.jpg'])} B" in log
-        assert log.count("skipped an attachment") == 3, log
-        assert "run start" in log and "run done rows=3" in log
-        for word in ("המילה", "second stranger", "מה שהמודל", fake.SECRET, "Bearer"):
-            assert word not in log, word
+        def __exit__(self, *a):
+            return False
 
-        # index.json: every report, its files, no text.
-        index = json.loads((inbox.INBOX_DIR / "index.json").read_text("utf-8"))
-        assert [e["id"] for e in index["reports"]] == sorted([_RID_1, _RID_2, _RID_3])
-        one = next(e for e in index["reports"] if e["id"] == _RID_1)
-        assert one["path"] == f"problems/inbox/{_UID_A}/{_RID_1}.json" and len(one["files"]) == 3
-        assert "text" not in one and "המילה" not in json.dumps(index, ensure_ascii=False)
+    def opener(req, timeout=0):
+        parsed = urllib.parse.urlsplit(req.full_url)
+        assert parsed.path == "/rest/v1/problem_reports", req.full_url
+        return _Reply(json.dumps(list(rows.values())).encode("utf-8"))
 
-        # Nothing changed: no object is fetched twice, every row unchanged.
-        before = len(fake.storage_calls())
-        counts = inbox.pull(fake.SECRET)
-        assert counts["unchanged"] == 3 and counts["new"] == 0 and counts["objects"] == 0, counts
-        assert len(fake.storage_calls()) == before
-
-        # The person pressed Fixed: the row changed, the local copy follows.
-        rows[1]["status"] = "fixed"
-        rows[1]["updated_at"] = "2026-09-19T08:00:00+00:00"
-        counts = inbox.pull(fake.SECRET)
-        assert counts["changed"] == 1 and counts["unchanged"] == 2, counts
-        a2 = box.item(_UID_A, _RID_2)
-        assert a2["status"] == "fixed" and a2["resolved"] == "2026-09-19T08:00:00+00:00"
-
-
-def test_the_inbox_honours_tombstones_and_scrubs_the_archive() -> None:
-    """7.7 tombstones: a row gone server-side takes its json and its
-    folder with it on the next run; an account gone takes the whole
-    folder; the archive's marked block for that report is cut down to
-    one comment that quotes nothing; a document that names the deleted
-    id OUTSIDE a marked block is reported and left alone; index.json is
-    rewritten without them. A dry run changes nothing on disk."""
-    import json
-
-    rows, objects = _inbox_rows()
-    fake = _FakeInboxProject(rows, objects)
-    with _inbox_home(fake) as box:
-        inbox = box.mod
-        inbox.pull(fake.SECRET)
-        weekly = inbox.WEEKLY_DIR
-        weekly.mkdir(parents=True)
+    tmp = Path(tempfile.mkdtemp(prefix="inbox-archive-"))
+    try:
+        root = tmp / "problems"
+        project = inbox_mod.Project("https://fixture.supabase.co", SECRET, opener=opener)
+        inbox_mod.pull(project, root=root)
+        weekly = root / "weekly"
+        weekly.mkdir()
         archive = weekly / "2026-09-19-reports.md"
         archive.write_text(
             "# WEEKLY 2026-09-19 — archive\n\n"
-            f"<!-- inbox {_RID_1} -->\n### {_RID_1}\n"
-            "> המילה יצאה לא נכון\n\nenv: local\n"
-            f"<!-- /inbox {_RID_1} -->\n\n"
-            f"<!-- inbox {_RID_2} -->\n### {_RID_2}\n> an idea, nothing attached\n"
-            f"<!-- /inbox {_RID_2} -->\n", "utf-8")
-        loose = weekly / "2026-09-19-plan.md"
-        loose.write_text(f"## 3. The work\n- {_RID_3}: second stranger, still open\n", "utf-8")
-        index = inbox.write_index()
-        assert next(e for e in index["reports"] if e["id"] == _RID_1)["archived_in"] == \
-            ["problems/weekly/2026-09-19-reports.md"]
-        assert next(e for e in index["reports"] if e["id"] == _RID_3)["archived_in"] == \
-            ["problems/weekly/2026-09-19-plan.md"]
-
-        # Report 1 deleted by its sender; stranger B ran delete_me().
-        del rows[0]
-        del rows[-1]
-        dry = inbox.pull(fake.SECRET, dry=True)
-        assert dry["gone"] == 2 and dry["unchanged"] == 1, dry
-        assert (inbox.INBOX_DIR / _UID_A / f"{_RID_1}.json").exists(), "a dry run deleted"
-        assert _RID_1 in archive.read_text("utf-8") and "המילה" in archive.read_text("utf-8")
-
-        counts = inbox.pull(fake.SECRET)
-        assert counts["gone"] == 2 and counts["rows"] == 1, counts
-        assert not (inbox.INBOX_DIR / _UID_A / f"{_RID_1}.json").exists()
-        assert not (inbox.INBOX_DIR / _UID_A / _RID_1).exists(), "the files stayed"
-        assert (inbox.INBOX_DIR / _UID_A / f"{_RID_2}.json").exists()
-        assert not (inbox.INBOX_DIR / _UID_B).exists(), "an account with no rows kept its folder"
+            f"<!-- inbox {R1} -->\n### {R1}\n> המילה האחרונה נעלמה\n\nenv: local\n"
+            f"<!-- /inbox {R1} -->\n\n"
+            f"<!-- inbox {R2} -->\n### {R2}\n> an idea\n<!-- /inbox {R2} -->\n\n"
+            f"<!-- inbox {R3} -->\n### {R3}\n> second stranger\n<!-- /inbox {R3} -->\n",
+            "utf-8")
+        plan = weekly / "2026-09-19-plan.md"
+        plan.write_text(f"## 3. The work\n- {R3}: second stranger, still open\n", "utf-8")
+        # R1 deleted by its sender; U2 ran Delete my account
+        del rows[R1]
+        del rows[R3]
+        counts = inbox_mod.pull(project, root=root)
+        assert counts["removed"] == 1 and counts["folders_removed"] == 1, counts
         text = archive.read_text("utf-8")
-        assert "המילה" not in text and "env: local" not in text, text
-        assert f"<!-- inbox {_RID_1}: deleted by its sender on " in text, text
-        assert f"<!-- inbox {_RID_2} -->" in text and "an idea, nothing attached" in text
-        assert loose.read_text("utf-8").count(_RID_3) == 1, "a loose mention was edited"
-        log = box.log()
-        assert f"gone {_UID_A}/{_RID_1}" in log and f"gone {_UID_B}/{_RID_3}" in log
-        assert "warning problems/weekly/2026-09-19-plan.md still names" in log, log
-        index = json.loads((inbox.INBOX_DIR / "index.json").read_text("utf-8"))
-        assert [e["id"] for e in index["reports"]] == [_RID_2]
-
-
-def test_the_inbox_refuses_the_wrong_key_and_writes_nothing_back() -> None:
-    """The guards: no key, a publishable key and a copy outside the
-    checkout each stop before the wire; the script never sends anything
-    but GET, has no reply command (D33(b)) and no table but the one
-    (8.10 "Never"); and its one line of stdout is counts, never a row."""
-    import contextlib
-    import io
-    import os
-
-    rows, objects = _inbox_rows()
-    fake = _FakeInboxProject(rows, objects)
-    with _inbox_home(fake) as box:
-        inbox = box.mod
-        for bad in ("", "   ", "sb_publishable_p3pBXir64azVPAS1wtQoVg_mgi5ZOCt", "eyJnope.x.y"):
-            try:
-                inbox.pull(bad)
-            except inbox.InboxError as e:
-                assert "DESKIT_SUPABASE_SECRET" in str(e) and bad.strip() not in str(e) or not bad.strip(), e
-            else:
-                raise AssertionError(f"pulled with {bad!r}")
-        assert fake.calls == [], "a refused key reached the wire"
-
-        src = (REPO / "dev" / "inbox.py").read_text("utf-8")
-        assert not [n for n in dir(inbox) if "reply" in n.lower()], "a reply surface"
-        assert src.count('_connect("') == src.count('_connect("GET"'), "a verb other than GET"
-        assert "rpc/" not in src and "Prefer" not in src, "a write to the project"
-        for table in ("profiles", "devices", "settings_sync", "vocab_sync", "history",
-                      "auth/v1", "auth.users"):
-            assert f'"{table}"' not in src and f"/{table}?" not in src, table
-        assert inbox.TABLE == "problem_reports" and inbox.BUCKET == "reports"
-        assert set(inbox.COLUMNS) <= {
-            "id", "user_id", "created_at", "updated_at", "app_version", "os_build",
-            "tier", "kind", "place", "text", "env", "status", "dictation_raw",
-            "dictation_final", "attachments"}, inbox.COLUMNS
-        assert "os.environ" in src and "SECRET_ENV" in src
-        assert "urllib.request" in src and "import net" not in src, \
-            "the owner's script must not sit in the app's egress window"
-
-        # The CLI, with the key in the environment and the wire faked:
-        # the counts line, no row, exit 0; without the key: the sentence
-        # and exit 2, no request.
-        out = io.StringIO()
-        old = os.environ.get(inbox.SECRET_ENV)
-        os.environ[inbox.SECRET_ENV] = fake.SECRET
-        try:
-            with contextlib.redirect_stdout(out):
-                code = inbox.main([])
-        finally:
-            if old is None:
-                os.environ.pop(inbox.SECRET_ENV, None)
-            else:
-                os.environ[inbox.SECRET_ENV] = old
-        assert code == 0, (code, out.getvalue())
-        printed = out.getvalue()
-        assert "3 reports on the server" in printed and "3 new" in printed, printed
-        for word in ("המילה", "second stranger", fake.SECRET, _RID_1):
-            assert word not in printed, printed
-        for c in fake.calls:
-            assert c["method"] == "GET"
-        n = len(fake.calls)
-        out = io.StringIO()
-        os.environ.pop(inbox.SECRET_ENV, None)
-        try:
-            with contextlib.redirect_stdout(out):
-                code = inbox.main(["pull"])
-        finally:
-            if old is not None:
-                os.environ[inbox.SECRET_ENV] = old
-        assert code == 2 and "not set" in out.getvalue(), (code, out.getvalue())
-        assert len(fake.calls) == n, "a run without the key reached the wire"
+        for quoted in ("המילה האחרונה נעלמה", "env: local", "second stranger"):
+            assert quoted not in text, text
+        assert f"<!-- inbox {R1}: deleted by its sender on " in text
+        assert f"<!-- inbox {R3}: deleted by its sender on " in text
+        assert f"<!-- inbox {R2} -->" in text and "> an idea" in text, "a living report was cut"
+        assert plan.read_text("utf-8").count(R3) == 1, "a loose mention was edited"
+        log_text = (root / "inbox" / "fetch.log").read_text("utf-8")
+        assert f"warning weekly/2026-09-19-plan.md still names {U2}/{R3}" in log_text, log_text
+        assert not any("still names" in ln and R1 in ln for ln in log_text.splitlines()), \
+            "R1 was cut cleanly and still reported"
+        # nothing in the archive ever held the key
+        assert SECRET not in text and SECRET not in log_text
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_the_routine_is_told_about_the_strangers_reports() -> None:
@@ -1604,29 +1484,23 @@ def test_the_routine_is_told_about_the_strangers_reports() -> None:
     one means not consented; that opening a screenshot with the Read
     tool sends it to Anthropic under the owner's account and that this
     is disclosed; that nothing is written back to a stranger (D33(b):
-    no reply, no question — questions.ask and AskUserQuestion are for
-    the owner's own reports); that reports carry `version`, not the
-    branch stamp; and how a stranger's report is archived so a tombstone
-    can cut it out again."""
+    no reply, no question — questions.ask is for the owner's own
+    reports); that reports carry `version`, not the branch stamp; and
+    how a stranger's report is archived so a tombstone can cut it out."""
     text = (REPO / ".claude" / "commands" / "weekly-reports.md").read_text("utf-8")
-    for must in ("dev/inbox.py", "problems/inbox/", "<!-- inbox ", "<!-- /inbox ",
-                 "not consented", "Anthropic", "questions.ask", "AskUserQuestion",
-                 "fetch.log", "DESKIT_SUPABASE_SECRET", "D33"):
+    for must in ("dev\\inbox.py", "problems\\inbox\\", "<!-- inbox ", "<!-- /inbox ",
+                 "not consented", "Anthropic", "questions.ask", "fetch.log",
+                 "DESKIT_SUPABASE_SECRET", "D33"):
         assert must in text, f"weekly-reports.md never says {must!r}"
     low = " ".join(text.lower().split())            # the file wraps at 80
-    assert "do not infer" in low or "never infer" in low, "a missing field's meaning"
-    assert "no reply channel" in low and "nothing goes back to a stranger" in low
-    assert "no questions to strangers" in low
-    # the dropped command is named only as something that does not exist
-    at = 0
-    while (hit := text.find("inbox.py reply", at)) >= 0:
-        assert "no `" in text[max(0, hit - 40):hit].lower(), text[hit - 60:hit + 20]
-        at = hit + 1
-    assert "`version`" in text and "`python`" in text and "branch" in low
+    assert "do not infer" in low, "a missing field's meaning"
+    assert "no reply channel" in low and "no `reply` command" in low
+    assert "`version`" in text and "`python`" in text and "branch stamp" in low
+    assert "report_replies" in low and "no `report_replies`" in low
 
 
 def test_the_inbox_is_not_in_the_product_and_its_secret_name_is_reserved() -> None:
-    """The name lives in dev/ (the archive of the product tree has no
+    """The module lives in dev/ (the archive of the product tree has no
     dev/ — test_export_ignore_covers_forbidden), `inbox` is in
     tests.DEV_MODULES so no product module imports it at the top, and
     .gitignore's comment reserves the environment name so nobody writes

@@ -1979,7 +1979,15 @@ class ProblemCard(WordPrompt):
 
     The answer goes out through `on_done(text, kind)` on this thread,
     after the window is down — text None for Escape or Cancel, and the
-    chip he picked either way.
+    chip he picked either way. The rest of the answer — "Send to the
+    developer" and the four toggles under it (problem_card, plan 7.6) —
+    is on `self.last` when on_done runs: {"send": bool, "attach":
+    {...}}, read by main._problem_file, which files the report here as
+    always and, with send on, marks it for the Preview. The checkbox
+    asks its consent card first when the gate is shut: `consent` is
+    main's `privacy.request("report_upload")` and `allowed` its
+    `privacy.allowed`, handed in rather than imported so this window
+    stays what it is — a window.
 
     IT IS DRAGGED LIKE ITS SIBLINGS, and by the same rule: the whole face
     is the handle except the parts that do something. `x`, `y` and
@@ -1991,7 +1999,7 @@ class ProblemCard(WordPrompt):
     UNSET = HINT_UNSET
 
     def __init__(self, x: int = HINT_UNSET, y: int = HINT_UNSET,
-                 on_change=None) -> None:
+                 on_change=None, allowed=None, consent=None) -> None:
         super().__init__()
         # Where the owner dragged it to. HINT_UNSET — not -1 — means
         # "never moved", for the reason spelled out where that constant is
@@ -2001,6 +2009,15 @@ class ProblemCard(WordPrompt):
         # hotkey press to the next even before it survives a restart.
         self.x, self.y = int(x), int(y)
         self._on_change = on_change
+        # The report_upload gate, as two callables (None: no gate, the
+        # checkbox simply ticks — the headless tests). `allowed()` is
+        # asked on every tick; `consent()` opens the card and answers
+        # True when it did.
+        self._allowed = allowed
+        self._consent = consent
+        #: The last answer's other half: {"send", "attach"}, set before
+        #: on_done runs.
+        self.last: dict = {"send": False, "attach": {}}
 
     def moved(self) -> bool:
         return self.x > self.UNSET and self.y > self.UNSET
@@ -2035,8 +2052,12 @@ class ProblemCard(WordPrompt):
                       exc_info=True)
 
     def ask(self, where: str, on_done, *, shot=None, kinds=None, near=None,
-            focus: bool = True) -> bool:
+            focus: bool = True, sizes: dict | None = None) -> bool:
         """Open the card. One at a time, like the base's.
+
+        `sizes` is the bytes behind each of the four toggles
+        (problems.sizes_before_filing), so the strip can say "Screenshot
+        · 213 KB" and grey out a piece the report does not have.
 
         `shot` is the screen that goes with the report and takes JPEG
         BYTES, which is the shape main.py has it in: the grab happens
@@ -2055,17 +2076,18 @@ class ProblemCard(WordPrompt):
         """
         if self._thread is not None and self._thread.is_alive():
             return False
-        self._result = {"text": None, "kind": ""}
+        self._result = {"text": None, "kind": "", "send": False, "attach": {}}
         self._closing = threading.Event()
         self._q = queue.Queue()
         self._thread = threading.Thread(
-            target=self._run, args=(where, on_done, shot, kinds, near, focus),
+            target=self._run, args=(where, on_done, shot, kinds, near, focus,
+                                    sizes),
             daemon=True, name="problem-card")
         self._thread.start()
         return True
 
     def _run(self, where, on_done, shot=None, kinds=None, near=None,
-             focus=True) -> None:
+             focus=True, sizes=None) -> None:
         """The card, on its own thread and its own Tk interpreter.
 
         Overriding `_run` rather than adding a second thread body: `ask`
@@ -2089,8 +2111,9 @@ class ProblemCard(WordPrompt):
         st: dict = {}
         cache: dict = {}
         try:
-            card = pc.card_for(where, kinds=kinds, shot=shot)
+            card = pc.card_for(where, kinds=kinds, shot=shot, sizes=sizes)
             result["kind"] = card["kind"]
+            result["attach"] = dict(card["attach"])
             root = tk.Tk()
             root.withdraw()
             root.overrideredirect(True)
@@ -2270,6 +2293,8 @@ class ProblemCard(WordPrompt):
             def send(_event=None) -> str:
                 result["text"] = field.get("1.0", "end-1c").strip()
                 result["kind"] = card["kind"]
+                result["send"] = bool(card["send"])
+                result["attach"] = dict(card["attach"])
                 closing.set()
                 return "break"
 
@@ -2277,6 +2302,35 @@ class ProblemCard(WordPrompt):
                 result["text"] = None
                 closing.set()
                 return "break"
+
+            def toggle_send() -> None:
+                """The checkbox. Ticking it with the gate shut opens the
+                consent card instead (D7, screen 7) and leaves the box
+                clear; the pump ticks it the moment the gate opens, so
+                [Turn on] on the other card is all he has to press."""
+                if card["send"]:
+                    card["send"] = False
+                    paint()
+                    return
+                if self._allowed is not None and not self._allowed():
+                    if self._consent is not None:
+                        try:
+                            self._consent()
+                        except Exception:             # noqa: BLE001
+                            _log.info("the report card could not ask for "
+                                      "the upload consent", exc_info=True)
+                    st["await_gate"] = True
+                    return
+                card["send"] = True
+                paint()
+
+            def toggle_attach(name: str) -> None:
+                """One of the four: a piece the report does not have
+                (size 0) stays unticked, whatever is pressed."""
+                if int((card.get("sizes") or {}).get(name) or 0) <= 0:
+                    return
+                card["attach"][name] = not card["attach"].get(name)
+                paint()
 
             def newline(_event=None) -> str:
                 """Shift+Enter is the new line, Enter is Send.
@@ -2348,6 +2402,10 @@ class ProblemCard(WordPrompt):
                     send()
                 elif name == pc.CANCEL:
                     cancel()
+                elif name == pc.SEND_TOGGLE:
+                    toggle_send()
+                elif name and name.startswith(pc.ATTACH_PREFIX):
+                    toggle_attach(name[len(pc.ATTACH_PREFIX):])
                 elif name and name.startswith(pc.KIND_PREFIX):
                     pick(name[len(pc.KIND_PREFIX):])
                 elif name is None:
@@ -2474,6 +2532,13 @@ class ProblemCard(WordPrompt):
                 except Exception:
                     return          # card gone underneath us: nothing to do
                 try:
+                    if st.get("await_gate") and (self._allowed is None
+                                                 or self._allowed()):
+                        # [Turn on] was pressed on the consent card: the
+                        # box he ticked ticks, with nothing else to press.
+                        st["await_gate"] = False
+                        card["send"] = True
+                        paint()
                     refresh()
                     root.after(60, pump)
                 except Exception:
@@ -2520,6 +2585,8 @@ class ProblemCard(WordPrompt):
             on_press = on_motion = on_release = None      # noqa: F841
             canvas = field = root = None                  # noqa: F841
             gc.collect()
+        self.last = {"send": bool(result.get("send")),
+                     "attach": dict(result.get("attach") or {})}
         try:
             on_done(result["text"], result["kind"])
         except Exception:

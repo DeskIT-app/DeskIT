@@ -25871,6 +25871,126 @@ def test_a_problem_report_survives_losing_its_screenshot() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_the_copy_that_travels_is_the_toggles_and_nothing_else() -> None:
+    """7.6, 8.4, 8.8: a report is filed here as always; "Send" builds a
+    SECOND thing from the stored row and four toggles — the exact row
+    the server takes and the files 8.4 names — and the Preview and the
+    outbox come from the same call. Off toggles leave nothing behind
+    (no screenshot path, no transcript column, the env cut to the
+    machine facts); the outbox holds COPIES, so deleting the local
+    evidence cannot pull a queued upload apart; the row remembers its
+    state and sb.py's verdicts flow back into it."""
+    import shutil
+
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="problems-travel-"))
+    try:
+        recent = tmp / "recent"
+        recent.mkdir()
+        wav = recent / "20260918-231500.wav"
+        wav.write_bytes(RIFF)
+        wav.with_suffix(".json").write_text(json.dumps(
+            {"seconds": 2.1, "backend": "local", "language": "he",
+             "words": [{"w": "שלום", "p": 0.91}]}), "utf-8")
+        last = {"raw": "שלום עולם gsk_abcdefghijklmnopqrstuvwxyz0123456789ABCDEF",
+                "final": "שלום, עולם.", "when": "2026-09-18 23:15:00",
+                "wav": str(wav)}
+        item = problems_mod.record(
+            tmp, {"text": "המילה האחרונה נעלמה", "where": "dictation",
+                  "kind": "wrong"}, last=last, jpeg=b"\xff\xd8\xff" + b"j" * 500)
+        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+        # the local copy is untouched by any of this
+        assert item["shot"] and item["dictation"]["wav"] and item["env"]
+        assert "sent" not in item
+
+        defaults = problems_mod.attach_defaults("wrong")
+        assert defaults == {"shot": False, "recording": False,
+                            "transcript": True, "settings": True}
+        assert problems_mod.attach_defaults("idea")["transcript"] is False
+        sizes = problems_mod.evidence(item, tmp)
+        assert sizes["shot"] == 503 and sizes["recording"] == len(RIFF), sizes
+        assert sizes["transcript"] > 0 and sizes["settings"] >= 2, sizes
+        before = problems_mod.sizes_before_filing(
+            jpeg=b"\xff" * 77, last=last, app_dir=tmp)
+        assert before["shot"] == 77 and before["recording"] == len(RIFF)
+
+        # everything off: the row and nothing else
+        row, files = problems_mod.payload(
+            item, {n: False for n in problems_mod.ATTACH}, app_dir=tmp)
+        assert files == [] and row["attachments"] == []
+        assert "dictation_raw" not in row and "dictation_final" not in row
+        assert set(row["env"]) <= set(problems_mod.ENV_ALWAYS), row["env"]
+        assert row["kind"] == "wrong" and row["place"] == "dictation"
+        assert row["text"] == "המילה האחרונה נעלמה"
+        assert set(row) <= {"id", "kind", "place", "text", "app_version",
+                            "os_build", "tier", "env", "attachments"}
+        # everything on: the three files 8.4 names, the two columns, the
+        # whitelist env — and the key in the raw text is the placeholder
+        row, files = problems_mod.payload(
+            item, {n: True for n in problems_mod.ATTACH}, app_dir=tmp)
+        assert [f["name"] for f in files] == ["shot.jpg", "dictation.wav",
+                                              "sidecar.json"], files
+        assert row["attachments"] == ["shot.jpg", "dictation.wav", "sidecar.json"]
+        assert all(Path(f["path"]).is_file() and f["bytes"] > 0 for f in files)
+        assert "gsk_" not in row["dictation_raw"] and "[redacted" in row["dictation_raw"], row["dictation_raw"]
+        assert row["dictation_final"] == "שלום, עולם."
+        assert "consents" in row["env"] and "version" in row["env"]
+        text = problems_mod.preview_text(row)
+        assert '"text": "המילה האחרונה נעלמה"' in text and "\\u05" not in text
+
+        # preview, then keep here: nothing written, the row forgets
+        assert problems_mod.mark_preview(store, item["id"], {"shot": True})
+        waiting = problems_mod.awaiting_preview(store)
+        assert waiting and waiting["id"] == item["id"]
+        assert waiting["sent"] == problems_mod.PREVIEW and waiting["attach"] == {
+            "shot": True, "recording": False, "transcript": False, "settings": False}
+        assert problems_mod.sent_line(waiting) == "not sent yet — preview it"
+        assert problems_mod.keep_local(store, item["id"])
+        assert problems_mod.awaiting_preview(store) is None
+        assert problems_mod.sent_line(store.get(item["id"])) == ""
+        assert not problems_mod.outbox_dir(tmp).exists()
+
+        # send: the payload and copies in the outbox, the row queued
+        target = problems_mod.queue(store, store.get(item["id"]),
+                                    {"shot": True, "transcript": True}, app_dir=tmp)
+        assert target and target.parent == problems_mod.outbox_dir(tmp)
+        body = json.loads(target.read_text("utf-8"))
+        rid = body["id"]
+        assert target.stem == rid and len(rid) == 36
+        assert [a["name"] for a in body["attachments"]] == ["shot.jpg", "sidecar.json"]
+        copies = problems_mod.outbox_dir(tmp) / rid
+        assert all(Path(a["path"]).parent == copies and Path(a["path"]).is_file()
+                   for a in body["attachments"])
+        assert body["dictation_final"] == "שלום, עולם." and "gsk_" not in json.dumps(body)
+        queued = store.get(item["id"])
+        assert queued["sent"] == problems_mod.QUEUED and queued["sent_id"] == rid
+        assert problems_mod.sent_line(queued) == "waiting to send"
+        # the local evidence goes; the copies stay whole
+        problems_mod.shot_path(tmp, queued).unlink()
+        assert (copies / "shot.jpg").stat().st_size == 503
+        # the verdicts, read back the way the dashboard reads them
+        assert problems_mod.sync_outbox(store, app_dir=tmp) == 0
+        (problems_mod.outbox_dir(tmp) / f"{rid}.failed").write_text(
+            "HTTP 400: violates check constraint", "utf-8")
+        assert problems_mod.sync_outbox(store, app_dir=tmp) == 1
+        failed = store.get(item["id"])
+        assert failed["sent"] == problems_mod.FAILED
+        assert problems_mod.sent_line(failed) == "could not be sent: HTTP 400: violates check constraint"
+        (problems_mod.outbox_dir(tmp) / f"{rid}.failed").unlink()
+        assert store._edit(item["id"], sent=problems_mod.QUEUED)
+        target.unlink()                                  # sb.py sent it
+        assert problems_mod.sync_outbox(store, app_dir=tmp) == 1
+        assert problems_mod.sent_line(store.get(item["id"])) == "sent to the developer"
+        assert problems_mod.mark_sent(store, "no-such-uuid") is False
+        # the second send of the same report keeps the server id, so the
+        # insert is idempotent (8.8)
+        again = problems_mod.queue(store, store.get(item["id"]), {}, app_dir=tmp)
+        assert again is not None and again.stem == rid
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_the_problems_list_draws_a_report_with_and_without_a_picture(
         ) -> None:
     """The list is the file: two open reports and one answered draw three
@@ -26553,6 +26673,323 @@ wait(lambda: not card.open(), "the card never closed")
 gc.collect()
 os._exit(0)
 ''')
+
+def test_the_report_cards_send_switch_asks_its_card_first_and_answers_with_the_toggles() -> None:
+    """Plan 7.6, screen 7, on the hotkey card: "Send to the developer"
+    with the gate shut opens the consent card (the `consent` callable)
+    and stays OFF; the moment `allowed()` says yes the switch turns on
+    by itself. The strip's toggles flip on a press — except a piece
+    with no bytes behind it, which stays off — and the primary answers
+    with `last` = {"send", "attach"} beside on_done's (text, kind). The
+    same subprocess shape as the two card tests above, for the same
+    Tcl reasons."""
+    _run_window_script('''
+import gc, os, threading, time, tkinter, traceback
+
+import problem_card as pc
+
+STEPS, CARDS, ASKED = [], [], []
+GATE = {"open": False}
+RESULT = {}
+_RealText = tkinter.Text
+
+
+def _next(w):
+    if STEPS:
+        STEPS.pop(0)(w)
+
+
+class SpyText(_RealText):
+    def insert(self, index, chars, *a, **k):
+        out = _RealText.insert(self, index, chars, *a, **k)
+        if STEPS:
+            self.after(250, lambda: _next(self))
+        return out
+
+
+tkinter.Text = SpyText
+
+_real_card_for = pc.card_for
+
+
+def _spy_card_for(*a, **k):
+    card = _real_card_for(*a, **k)
+    CARDS.append(card)
+    return card
+
+
+pc.card_for = _spy_card_for
+
+import overlay
+
+
+def wait(ready, why, seconds=40):
+    end = time.time() + seconds
+    while time.time() < end:
+        if ready():
+            return
+        time.sleep(0.02)
+    raise AssertionError(why)
+
+
+def canvas_of(w):
+    return [c for c in w.master.winfo_children()
+            if isinstance(c, tkinter.Canvas)][0]
+
+
+def click(w, name):
+    box = pc.regions(CARDS[-1], {})[name]
+    canvas_of(w).event_generate("<ButtonPress-1>", x=(box[0] + box[2]) // 2,
+                                y=(box[1] + box[3]) // 2)
+
+
+def gesture(w):
+    try:
+        live = CARDS[-1]
+        # shut gate: the press asks the card and the switch stays off
+        click(w, pc.SEND_TOGGLE)
+        RESULT["asked"] = list(ASKED)
+        RESULT["off_after_ask"] = live["send"]
+        # [Turn on] elsewhere: the pump flips it within a few ticks
+        GATE["open"] = True
+
+        def after_gate():
+            try:
+                RESULT["on_after_gate"] = live["send"]
+                RESULT["strip"] = sorted(n for n in pc.regions(live, {})
+                                         if n.startswith(pc.ATTACH_PREFIX))
+                click(w, pc.ATTACH_PREFIX + "shot")
+                click(w, pc.ATTACH_PREFIX + "recording")   # none: stays off
+                click(w, pc.ATTACH_PREFIX + "transcript")  # on -> off
+                RESULT["attach"] = dict(live["attach"])
+                click(w, pc.SEND)
+            except Exception:
+                RESULT["error"] = traceback.format_exc()
+            RESULT["done"] = True
+
+        w.after(400, after_gate)
+    except Exception:
+        RESULT["error"] = traceback.format_exc()
+        RESULT["done"] = True
+
+
+got, answered = [], threading.Event()
+card = overlay.ProblemCard(allowed=lambda: GATE["open"],
+                           consent=lambda: ASKED.append("report_upload"))
+assert card.ask("dictation", lambda t, k: (got.append((t, k)), answered.set()),
+                shot=None, focus=False,
+                sizes={"shot": 5000, "recording": 0, "transcript": 40,
+                       "settings": 900})
+wait(card.open, "the card never opened")
+wait(lambda: bool(CARDS), "the painter was never asked for a card")
+STEPS[:] = [gesture]
+assert card.fill("the last word vanished") is True
+wait(lambda: RESULT.get("done"), "the gesture never ran")
+assert not RESULT.get("error"), RESULT["error"]
+assert RESULT["asked"] == ["report_upload"], ascii(RESULT["asked"])
+assert RESULT["off_after_ask"] is False, "the switch turned on with the gate shut"
+assert RESULT["on_after_gate"] is True, "the gate opened and the switch stayed off"
+assert RESULT["strip"] == sorted(pc.ATTACH_PREFIX + n for n in pc.ATTACH_ORDER), \\
+    ascii(RESULT["strip"])
+assert RESULT["attach"] == {"shot": True, "recording": False,
+                            "transcript": False, "settings": True}, \\
+    ascii(RESULT["attach"])
+assert answered.wait(30), "the primary never answered"
+assert got == [("the last word vanished", CARDS[0]["kinds"][0])], ascii(got)
+assert card.last == {"send": True, "attach": RESULT["attach"]}, ascii(card.last)
+assert card.open() is False
+gc.collect()
+os._exit(0)
+''')
+
+
+def test_send_to_the_developer_previews_before_anything_leaves() -> None:
+    """Plan 7.6, screen 7, on the desk: the report box carries "Send to
+    the developer", off — [Keep on this PC] files the report here as it
+    always did. On: the strip under it says what would leave with its
+    sizes, the primary reads Preview, and pressing it FILES the report
+    (locally, as always), marks the row PREVIEW with the toggles and
+    opens the Preview — the exact JSON and the ticked files, with [Send]
+    and [Keep on this PC]. Keep leaves nothing in the outbox and clears
+    the mark; Send writes the payload and the copies into the outbox
+    and the row says "waiting to send" with a Send now beside it. A
+    shut gate asks the app for its consent card over the pipe and the
+    switch stays off until the gate opens. The store, the recent folder
+    and the outbox are all under a temp root; the screen grab is a
+    fixture so nothing photographs the desk."""
+    import shutil
+    import tkinter as tk
+
+    import ui as ui_mod
+
+    import dashboard as dash
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="problems-send-"))
+    gate = {"open": False}
+    asked: list = []
+
+    def fake_send(command, timeout_ms=0, **args):
+        asked.append((command, args))
+        if command == "consent":
+            return {"ok": True, "asked": True}
+        return {"ok": True}
+
+    def toplevels(board, title):
+        return [w for w in board.root.winfo_children()
+                if isinstance(w, tk.Toplevel) and w.winfo_exists()
+                and w.title() == title]
+
+    def descendants(widget):
+        out = []
+        for w in widget.winfo_children():
+            out.append(w)
+            out.extend(descendants(w))
+        return out
+
+    def buttons(widget) -> dict:
+        return {w.itemcget(w._label, "text"): w for w in descendants(widget)
+                if isinstance(w, ui_mod.Button)}
+
+    def spin(board, ticks=6):
+        for _ in range(ticks):
+            time.sleep(0.05)
+            board.root.update()
+
+    def first_row(board):
+        return [w for w in board.parts["problems_list"].inner.winfo_children()
+                if isinstance(w, tk.Canvas)][0]
+
+    def words_on(row) -> set:
+        return {str(row.itemcget(i, "text")) for i in row.find_all()
+                if row.type(i) == "text"}
+
+    try:
+        recent = tmp / "recent"
+        recent.mkdir()
+        wav = recent / "20260918-231500.wav"
+        wav.write_bytes(RIFF)
+        wav.with_suffix(".json").write_text(json.dumps(
+            {"seconds": 1.0, "backend": "local", "language": "he"}), "utf-8")
+        jpeg = b"\xff\xd8\xff" + b"j" * 900
+        import control as control_mod
+        with _patched(paths, "DATA_DIR", tmp), _patched(paths, "RECENT_DIR", recent), \
+                _patched(paths, "OUTBOX_DIR", tmp / "problems" / "outbox"), \
+                _patched(dash.Dashboard, "_report_shot", staticmethod(lambda pcfg: jpeg)), \
+                _patched(dash.Dashboard, "_upload_allowed", lambda self: gate["open"]), \
+                _window() as board:
+            if board is None:
+                return
+            control_mod.send = fake_send      # _window's None until now
+            board.closing = True
+            board._scan_weekly = lambda: None
+            board._write_digest = lambda: None
+            board._problems_on = True
+            board._show("Problems")
+            board.root.update()
+            store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
+
+            board._report()
+            board.root.update()
+            box = toplevels(board, "Report a problem")[0]
+            field = [w for w in descendants(box) if isinstance(w, tk.Text)][0]
+            switches = [w for w in descendants(box) if isinstance(w, ui_mod.Switch)]
+            assert len(switches) == 1 + len(problems_mod.ATTACH), len(switches)
+            send_switch, strip = switches[0], switches[1:]
+            names = buttons(box)
+            assert dash.REPORT_KEEP in names and dash.REPORT_PREVIEW in names, sorted(names)
+            spin(board, 2)
+            assert names[dash.REPORT_KEEP].winfo_ismapped() and not names[dash.REPORT_PREVIEW].winfo_ismapped()
+            assert not any(s.winfo_ismapped() for s in strip), "the strip shows with the switch off"
+            keys_line = [w for w in descendants(box) if isinstance(w, tk.Label)
+                         and str(w.cget("text")) in (dash.REPORT_KEYS, dash.REPORT_KEYS_SEND)][0]
+            assert str(keys_line.cget("text")) == dash.REPORT_KEYS
+
+            field.insert("1.0", "המילה האחרונה נעלמה")
+            # the gate is shut: the press asks the app, the switch stays off
+            send_switch.toggle()
+            spin(board, 3)
+            assert send_switch.get() is False
+            assert ("consent", {"kind": "report_upload"}) in asked, asked
+            # [Turn on] beside the dot: the poll flips it
+            gate["open"] = True
+            spin(board, 4)
+            assert send_switch.get() is True, "the gate opened and the switch stayed off"
+            assert all(s.winfo_ismapped() for s in strip), "the strip did not appear"
+            assert names[dash.REPORT_PREVIEW].winfo_ismapped() and not names[dash.REPORT_KEEP].winfo_ismapped()
+            assert str(keys_line.cget("text")) == dash.REPORT_KEYS_SEND
+            labels = [str(w.cget("text")) for w in descendants(box) if isinstance(w, tk.Label)]
+            assert any(t.startswith("Screenshot  ·  ") and "KB" in t for t in labels), labels
+            assert any(t.startswith("Recording  ·  ") for t in labels), labels
+            # wrong is the kind: transcript and settings on, the two files off
+            assert [s.get() for s in strip] == [False, False, True, True], [s.get() for s in strip]
+            strip[0].toggle()                                  # the screenshot travels
+            assert strip[0].get() is True
+
+            names[dash.REPORT_PREVIEW]._released(None)
+            spin(board, 4)
+            assert not toplevels(board, "Report a problem"), "the box stayed up"
+            rows = store.items()
+            assert len(rows) == 1 and rows[0]["text"] == "המילה האחרונה נעלמה", rows
+            ident = rows[0]["id"]
+            assert rows[0]["sent"] == problems_mod.PREVIEW
+            assert rows[0]["attach"] == {"shot": True, "recording": False,
+                                         "transcript": True, "settings": True}, rows[0]["attach"]
+            assert rows[0]["shot"] and rows[0]["dictation"].get("wav"), "the local copy lost a piece"
+            preview = toplevels(board, "Preview — what leaves this PC")
+            assert preview, "no Preview opened"
+            texts = [str(w.cget("text")) for w in descendants(preview[0]) if isinstance(w, tk.Label)]
+            assert "This is everything that leaves your PC. Nothing else." in texts, texts
+            assert any(t.startswith("shot.jpg  ·  ") for t in texts), texts
+            assert not any(t.startswith("dictation.wav") for t in texts), "an unticked file is shown"
+            assert any(t.startswith("sidecar.json  ·  ") for t in texts), texts
+            pictures = [w for w in descendants(preview[0]) if isinstance(w, tk.Label)
+                        and str(w.cget("image"))]
+            assert len(pictures) >= 8, "the JSON lines are not drawn"
+            # keep on this PC: no outbox, the mark cleared
+            buttons(preview[0])[dash.REPORT_KEEP]._released(None)
+            spin(board, 3)
+            assert not toplevels(board, "Preview — what leaves this PC")
+            assert store.get(ident)["sent"] == "" and not (tmp / "problems" / "outbox").exists()
+            # the row offers nothing about sending now
+            board._fill_problems()
+            board.root.update()
+            assert "Preview & send" not in buttons(first_row(board)), sorted(buttons(first_row(board)))
+            # marked again from the row's side (the hotkey path): [Preview & send]
+            problems_mod.mark_preview(store, ident, {"shot": True, "transcript": True})
+            board._fill_problems()
+            board.root.update()
+            row = first_row(board)
+            assert "Preview & send" in buttons(row), sorted(buttons(row))
+            buttons(row)["Preview & send"]._released(None)
+            spin(board, 3)
+            preview = toplevels(board, "Preview — what leaves this PC")
+            assert preview
+            buttons(preview[0])["Send"]._released(None)
+            spin(board, 3)
+            queued = store.get(ident)
+            assert queued["sent"] == problems_mod.QUEUED and queued["sent_id"], queued
+            payload = tmp / "problems" / "outbox" / f"{queued['sent_id']}.json"
+            assert payload.is_file()
+            body = json.loads(payload.read_text("utf-8"))
+            assert body["text"] == "המילה האחרונה נעלמה" and body["kind"] == "wrong"
+            assert [a["name"] for a in body["attachments"]] == ["shot.jpg", "sidecar.json"]
+            assert ("account", {"do": "nudge"}) in asked, asked
+            board._fill_problems()
+            board.root.update()
+            row = first_row(board)
+            assert "waiting to send" in words_on(row), sorted(words_on(row))
+            assert "Send now" in buttons(row), sorted(buttons(row))
+            # the app's verdict, read back on the next draw
+            payload.unlink()
+            board._fill_problems()
+            board.root.update()
+            row = first_row(board)
+            assert "sent to the developer" in words_on(row), sorted(words_on(row))
+            assert "Send now" not in buttons(row)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
 
 def test_the_problem_report_path_never_damages_a_dictation() -> None:
     """The report card borrows the dictation key, so the one thing it
@@ -33861,6 +34298,46 @@ def test_manifest_roundtrip():
     proc = subprocess.run([sys.executable, str(REPO / "manifest.py"), "--help"],
                           capture_output=True, encoding="utf-8", errors="replace")
     assert proc.returncode == 0 and "write" in proc.stdout and "verify" in proc.stdout
+
+
+def test_verify_flag_reports_the_installed_tree():
+    """`deskit --verify` (D12 lock 5; the guide's check 5): on an install
+    root it prints the sentence the guide promises and exits 0, names
+    each changed file and exits 1, and on a checkout — no manifest beside
+    app\\ — says so and exits NOT_A_BUILD instead of failing the tree.
+    The flag runs before any log or data folder is opened."""
+    import manifest
+
+    with tempfile.TemporaryDirectory() as d:
+        tree = Path(d)
+        (tree / "python").mkdir()
+        (tree / "app").mkdir()
+        (tree / "python" / "python.exe").write_bytes(b"MZ" * 40)
+        (tree / "app" / "main.py").write_bytes(b"print(1)\n")
+        code, text = manifest.report(tree)
+        assert code == manifest.NOT_A_BUILD and "not an installed build" in text
+        manifest.write(tree)
+        code, text = manifest.report(tree)
+        assert (code, text) == (0, "All 2 files match the manifest"), (code, text)
+        (tree / "app" / "main.py").write_bytes(b"print(2)\n")
+        code, text = manifest.report(tree)
+        assert code == 1 and text.splitlines() == ["changed: app/main.py",
+                                                    "1 difference(s) in 2 files"]
+    # the flag itself, on this checkout: no manifest, no data folder touched
+    with tempfile.TemporaryDirectory() as home:
+        env = {**os.environ, "DESKIT_HOME": home}
+        proc = subprocess.run([sys.executable, str(REPO / "main.py"), "--verify"],
+                              capture_output=True, encoding="utf-8", errors="replace",
+                              env=env, timeout=120)
+        assert proc.returncode == manifest.NOT_A_BUILD, (proc.returncode, proc.stdout, proc.stderr)
+        assert "not an installed build" in proc.stdout
+        assert not (Path(home) / "logs").exists() and not list(Path(home).iterdir()), \
+            "--verify opened the data folder"
+    # the release smoke (10.3 step 12) verifies the installed tree through
+    # this door, not through manifest.py directly, so the door is built
+    yml = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
+    assert '"$app\\app\\main.py" --verify' in yml, "the smoke step bypasses --verify"
+    assert "files match the manifest" in yml, "the smoke step does not read the verdict"
 
 
 # ------------------------------------------------ the split suite (PR 8)

@@ -1016,6 +1016,314 @@ def record(app_dir: Path, report: dict, *, cfg=None, last: dict | None = None,
 
 
 # ---------------------------------------------------------------------------
+# the copy that travels (DISTRIBUTION_PLAN.md 7.6, 8.4, 8.8; D16, D33)
+# ---------------------------------------------------------------------------
+#
+# A report is filed on this PC exactly as above, always — that copy is
+# his, and nothing here touches what it holds. "Send to the developer"
+# makes a SECOND thing: the payload, which is the one row problem_reports
+# takes and the files the `reports` bucket takes and nothing else, built
+# from the stored item and four toggles, shown to him whole before it goes
+# (the Preview — "this is everything that leaves your PC"), and then
+# written into problems\outbox\ for sb.py to carry. The stored item
+# remembers where that copy is: `sent` is one of SENT_STATES, `sent_id`
+# the uuid the server row has, `attach` the toggles as he left them, so
+# the Problems row can say "waiting to send", "sent" or "failed: <why>"
+# and the Preview can be opened again from the row.
+#
+# The four toggles are ABOUT THE COPY THAT TRAVELS, not about the local
+# report: the screenshot OFF by default (a picture of the screen is the
+# one piece that may hold somebody else's words), the recording OFF, the
+# transcript ON only for a `wrong` (it is what such a report is about),
+# the settings ON (model names and switches, never a key — env() is a
+# whitelist and the server CHECKs the same list, 7.8). With the settings
+# toggle off the row still carries the machine facts every row has
+# (ENV_ALWAYS), because "which version, which tier" is what makes a
+# report answerable at all.
+
+ATTACH = ("shot", "recording", "transcript", "settings")
+ATTACH_WORDS = {"shot": "Screenshot", "recording": "Recording",
+                "transcript": "Transcript text",
+                "settings": "Settings snapshot"}
+PREVIEW, QUEUED, SENT, FAILED = "preview", "queued", "sent", "failed"
+SENT_STATES = ("", PREVIEW, QUEUED, SENT, FAILED)
+ENV_ALWAYS = ("version", "os_build", "consents", "gpu", "tier", "branch")
+#: The files the bucket takes, by toggle (8.4's path convention names).
+_FILE_NAMES = {"shot": "shot.jpg", "recording": "dictation.wav",
+               "transcript": "sidecar.json"}
+OUTBOX_NAME = "outbox"
+#: How a Problems row words the copy's state — one place, both surfaces.
+SENT_WORDS = {PREVIEW: "not sent yet — preview it", QUEUED: "waiting to send",
+              SENT: "sent to the developer", FAILED: "could not be sent"}
+
+
+def attach_defaults(kind: str) -> dict:
+    """7.6's defaults for the copy that travels, by kind."""
+    return {"shot": False, "recording": False,
+            "transcript": kind == "wrong", "settings": True}
+
+
+def _clean_attach(attach) -> dict:
+    """Four booleans, whatever was handed in."""
+    got = attach if isinstance(attach, dict) else {}
+    return {name: bool(got.get(name)) for name in ATTACH}
+
+
+def _wav_of(item: dict, app_dir) -> Path | None:
+    """The pinned recording behind a stored report, if it is on disk."""
+    got = item.get("dictation") if isinstance(item.get("dictation"), dict) else {}
+    wav = _text(got.get("wav")).strip().replace("\\", "/")
+    if not wav:
+        return None
+    try:
+        path = Path(wav)
+        if not path.is_absolute():
+            base = _base(app_dir)
+            path = path if base is None else base / path
+        return path if path.is_file() else None
+    except (OSError, TypeError, ValueError):
+        return None
+
+
+def _transcript_of(item: dict) -> tuple[str | None, str | None]:
+    """dictation_raw and dictation_final as the row carries them: the
+    stored strings, cut to the column's length, None when absent."""
+    got = item.get("dictation") if isinstance(item.get("dictation"), dict) else {}
+    raw = _body(got.get("raw"), 4000) or None
+    final = _body(got.get("final") or got.get("text"), 4000) or None
+    return raw, final
+
+
+def evidence(item: dict, app_dir) -> dict:
+    """What a stored report could send, with a byte size for each toggle
+    — the strip's four rows. A piece that is not there is 0 bytes, and
+    the surface draws its toggle greyed. Never raises."""
+    out = {name: 0 for name in ATTACH}
+    try:
+        shot = shot_path(app_dir, item)
+        if shot is not None and shot.is_file():
+            out["shot"] = shot.stat().st_size
+    except OSError:
+        pass
+    try:
+        wav = _wav_of(item, app_dir)
+        if wav is not None:
+            out["recording"] = wav.stat().st_size
+    except OSError:
+        pass
+    raw, final = _transcript_of(item)
+    out["transcript"] = len((raw or "").encode("utf-8")) + len((final or "").encode("utf-8"))
+    try:
+        wav = _wav_of(item, app_dir)
+        side = wav.with_suffix(".json") if wav is not None else None
+        if side is not None and side.is_file():
+            out["transcript"] += side.stat().st_size
+    except OSError:
+        pass
+    env = item.get("env") if isinstance(item.get("env"), dict) else {}
+    settings = {k: v for k, v in env.items() if k not in ENV_ALWAYS}
+    out["settings"] = len(json.dumps(settings, ensure_ascii=False).encode("utf-8"))
+    return out
+
+
+def sizes_before_filing(*, jpeg: bytes | None = None, last: dict | None = None,
+                        cfg=None, app_dir=None) -> dict:
+    """The same four sizes for a report that is still being typed — the
+    hotkey card has the JPEG bytes, `last` and cfg in its hand and no
+    stored item yet. Never raises."""
+    item = {"shot": "", "dictation": {}, "env": {}}
+    try:
+        item["dictation"] = dictation(last, app_dir)
+        item["env"] = env(cfg)
+    except Exception:                     # noqa: BLE001
+        pass
+    out = evidence(item, app_dir)
+    out["shot"] = len(jpeg) if jpeg else 0
+    return out
+
+
+def payload(item: dict, attach, *, app_dir) -> tuple[dict, list[dict]]:
+    """The exact row the server takes and the files that go with it, for
+    one stored report and the toggles as ticked — what the Preview shows
+    and what the outbox carries, from the same call so the two cannot
+    differ. Every string has been through the redactor once at add() and
+    goes through it again here (a key-shaped string shows as its
+    placeholder, so he can see the filter exists). Files are named as
+    8.4 names them; each entry is {"name", "path", "bytes"}."""
+    import redact
+    import uuid as uuid_mod
+
+    attach = _clean_attach(attach)
+    env_all = item.get("env") if isinstance(item.get("env"), dict) else {}
+    env_row = dict(env_all) if attach["settings"] else {
+        k: v for k, v in env_all.items() if k in ENV_ALWAYS}
+    row = {
+        "id": str(item.get("sent_id") or uuid_mod.uuid4()),
+        "kind": (str(item.get("kind")) if item.get("kind") in KINDS
+                 else KINDS[0]),
+        "place": _line(item.get("where"), 120),
+        "text": _body(item.get("text"), TEXT_MAX),
+        "app_version": _line(env_all.get("version"), 32),
+        "os_build": _line(env_all.get("os_build"), 32),
+        "tier": (str(env_all.get("tier")) if env_all.get("tier")
+                 in ("gpu", "gpu_small", "cpu", "cloud") else ""),
+        "env": env_row,
+    }
+    if attach["transcript"]:
+        raw, final = _transcript_of(item)
+        if raw is not None:
+            row["dictation_raw"] = raw
+        if final is not None:
+            row["dictation_final"] = final
+    files: list[dict] = []
+    if attach["shot"]:
+        shot = shot_path(app_dir, item)
+        if shot is not None and shot.is_file():
+            files.append({"name": _FILE_NAMES["shot"], "path": str(shot),
+                          "bytes": shot.stat().st_size})
+    wav = _wav_of(item, app_dir)
+    if attach["recording"] and wav is not None:
+        files.append({"name": _FILE_NAMES["recording"], "path": str(wav),
+                      "bytes": wav.stat().st_size})
+    if attach["transcript"] and wav is not None:
+        side = wav.with_suffix(".json")
+        if side.is_file():
+            files.append({"name": _FILE_NAMES["transcript"], "path": str(side),
+                          "bytes": side.stat().st_size})
+    row["attachments"] = [f["name"] for f in files]
+    return redact.walk(row), files
+
+
+def preview_text(row: dict) -> str:
+    """The row as the Preview prints it: pretty JSON, keys in the order
+    the server's columns have, Hebrew kept as Hebrew."""
+    return json.dumps(row, ensure_ascii=False, indent=2)
+
+
+def outbox_dir(app_dir) -> Path:
+    """problems\\outbox\\ under the app directory: paths.OUTBOX_DIR's own
+    shape (the same in both layouts), so a test's scratch root gets the
+    same folder the product's DATA_DIR does. sb.py reads paths.OUTBOX_DIR
+    and the two meet there."""
+    base = _base(app_dir)
+    return (Path(base) if base is not None else paths.DATA_DIR) / FOLDER_NAME / OUTBOX_NAME
+
+
+def queue(store, item: dict, attach, *, app_dir) -> Path | None:
+    """Send: write the payload into the outbox and mark the stored report
+    QUEUED. The files are COPIED beside the payload (outbox\\<uuid>\\),
+    not linked, so a report he deletes from the list a minute later — or
+    a purge of its evidence — cannot pull a half-sent upload out from
+    under sb.py; the copies go when the report is sent. Returns the
+    payload's path, or None when nothing could be written (the report
+    stays as it was, and the row says so)."""
+    attach = _clean_attach(attach)
+    row, files = payload(item, attach, app_dir=app_dir)
+    box = outbox_dir(app_dir)
+    rid = row["id"]
+    try:
+        folder = box / rid
+        folder.mkdir(parents=True, exist_ok=True)
+        carried = []
+        for f in files:
+            dst = folder / f["name"]
+            shutil.copy2(f["path"], dst)
+            carried.append({"name": f["name"], "path": str(dst)})
+        body = dict(row)
+        body["attachments"] = carried
+        target = box / f"{rid}.json"
+        tmp = target.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(body, ensure_ascii=False, indent=2), "utf-8")
+        os.replace(tmp, target)
+    except OSError as e:
+        log.warning("problems: could not queue %s for upload (%s)",
+                    item.get("id"), e)
+        return None
+    if not store._edit(str(item.get("id")), sent=QUEUED, sent_id=rid,
+                       sent_why="", attach=attach):
+        log.warning("problems: %s queued but the row could not be marked",
+                    item.get("id"))
+    log.info("problems: %s queued for upload as %s (%s)", item.get("id"), rid,
+             ", ".join(row["attachments"]) or "no files")
+    return target
+
+
+def mark_preview(store, ident: str, attach) -> bool:
+    """Send ticked on the card: the report is filed here as always and
+    waits for his look at the Preview before any copy is made. The
+    toggles ride on the row, so the dashboard — another process, when
+    the card was the hotkey's — opens the Preview with them as he left
+    them."""
+    return store._edit(ident, sent=PREVIEW, sent_id="", sent_why="",
+                       attach=_clean_attach(attach))
+
+
+def keep_local(store, ident: str) -> bool:
+    """Keep on this PC, after a preview: the copy is not made and the
+    row forgets it was ever going to be."""
+    return store._edit(ident, sent="", sent_id="", sent_why="")
+
+
+def awaiting_preview(store) -> dict | None:
+    """The newest report waiting for its Preview, or None — what the
+    dashboard looks for when it comes up after the hotkey card."""
+    rows = [i for i in store.items() if i.get("sent") == PREVIEW]
+    return rows[0] if rows else None
+
+
+def mark_sent(store, rid: str) -> bool:
+    """sb.py's on_sent: the row whose copy just went up."""
+    return _mark_by_uuid(store, rid, sent=SENT, sent_why="")
+
+
+def mark_failed(store, rid: str, why: str) -> bool:
+    """A poison report (8.8): the server's reason, kept short."""
+    return _mark_by_uuid(store, rid, sent=FAILED, sent_why=_line(why, 200))
+
+
+def _mark_by_uuid(store, rid: str, **fields) -> bool:
+    found = next((i for i in store.items() if str(i.get("sent_id")) == rid), None)
+    return bool(found) and store._edit(str(found.get("id")), **fields)
+
+
+def sync_outbox(store, *, app_dir) -> int:
+    """Read the outbox's verdicts back into the rows: a QUEUED report
+    whose payload is gone was sent (sb.py unlinks it, and the app's
+    process may have done that while this one was not looking); one
+    with a .failed beside it failed, with the reason the file holds.
+    Returns how many rows changed. Never raises."""
+    changed = 0
+    box = outbox_dir(app_dir)
+    for item in store.items():
+        if item.get("sent") != QUEUED or not item.get("sent_id"):
+            continue
+        rid = str(item["sent_id"])
+        try:
+            failed = box / f"{rid}.failed"
+            if failed.is_file():
+                why = failed.read_text("utf-8", errors="replace").strip()
+                if mark_failed(store, rid, why):
+                    changed += 1
+            elif not (box / f"{rid}.json").exists():
+                if mark_sent(store, rid):
+                    changed += 1
+        except OSError:
+            continue
+    return changed
+
+
+def sent_line(item: dict) -> str:
+    """One line for the Problems row about the copy that travels, or ""
+    for a report that stays here."""
+    state = str(item.get("sent") or "")
+    if state not in SENT_WORDS:
+        return ""
+    line = SENT_WORDS[state]
+    why = _line(item.get("sent_why"), 120)
+    return f"{line}: {why}" if state == FAILED and why else line
+
+
+# ---------------------------------------------------------------------------
 # the weekly read
 # ---------------------------------------------------------------------------
 

@@ -4,9 +4,9 @@ D12 lock 5).
 
 The build (`.github/workflows/release.yml`) writes it over the staged
 tree with `python manifest.py write stage`; it ships beside `python\`
-and `app\`, and `deskit --verify` (chapter 5 §5.9, a later PR) reads it
-back with `verify()` and names every file that changed, went missing or
-appeared. One line per file:
+and `app\`, and `deskit --verify` (chapter 5 §5.9; `main.py`) reads it
+back through `report()` and names every file that changed, went missing
+or appeared. One line per file:
 
     <sha256>  <size>  <path>
 
@@ -102,6 +102,28 @@ def verify(tree: Path, manifest: Path | None = None, covered=COVERED) -> list[st
         elif expected[rel] != actual[rel]:
             problems.append(f"changed: {rel}")
     return problems
+
+
+#: `deskit --verify` on a checkout: there is no manifest, and saying so
+#: is not a failure of the tree.
+NOT_A_BUILD = 2
+
+
+def report(root: Path) -> tuple[int, str]:
+    """What `deskit --verify` prints and exits with, for an install root
+    (the folder that holds `python\\`, `app\\` and the manifest): the
+    differences one per line, then the sentence the guide promises —
+    "All N files match the manifest" — or the count of differences.
+    Exit 0 clean, 1 on any difference, NOT_A_BUILD without a manifest."""
+    root = Path(root)
+    if not (root / NAME).exists():
+        return NOT_A_BUILD, (f"no {NAME} in {root} — this copy is not an "
+                             "installed build")
+    differences = verify(root)
+    listed = len(read(root / NAME))
+    tail = (f"All {listed:,} files match the manifest" if not differences
+            else f"{len(differences)} difference(s) in {listed:,} files")
+    return (1 if differences else 0), "\n".join([*differences, tail])
 
 
 def main(argv=None) -> int:

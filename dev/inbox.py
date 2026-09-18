@@ -1,363 +1,222 @@
-"""The owner's inbox: the problem reports strangers chose to send, pulled
-from the account server into ``problems\\inbox\\`` for the Saturday routine.
+"""The owner's inbox: strangers' problem reports, pulled from the project
+into `problems\\inbox\\<user_id>\\`, in the shape `problems.json` rows have
+(DISTRIBUTION_PLAN.md 7.7, 8.10; D15, D16, D33).
 
-DISTRIBUTION_PLAN.md 7.7 (the contract), 8.10 (the console workflow),
-D15 and D33(b). A person who ticked "Send to the developer" on a report
-put one row into ``problem_reports`` and, per toggle, up to three
-objects into the ``reports`` bucket (7.6, 8.4). This script is the ONLY
-thing that reads them back on the owner's side, and it runs in the
-checkout alone: with ``DESKIT_SUPABASE_SECRET`` from his environment —
-never from a file in the repo, never in the product build — it talks
-REST to the project with the secret key, which bypasses row-level
-security, and writes what it fetched under ``DATA_DIR\\problems\\inbox\\``
-in the shape ``problems.json`` rows have, so the routine's readers need
-one more glob and nothing else.
+This runs on the owner's machine and nowhere else. It is in `dev/`, so
+the build manifest keeps it out of every installed copy, and it takes the
+project's SECRET key from one place — the `DESKIT_SUPABASE_SECRET`
+variable in the owner's own user environment (hand-work 1.2). Never from
+a file, never from the repo, never printed. The publishable key the app
+ships cannot read another person's rows (RLS, 8.3); this key can, which
+is exactly why it lives here and not in the product.
 
-What it reads, and what it never reads:
+WHAT IT READS, AND ONLY THAT. The columns 7.7 lists: id, user_id,
+created_at, updated_at, app_version, os_build, tier, kind, place, text,
+env, status, attachments, and dictation_raw / dictation_final — which
+are non-null only when the person ticked "Transcript text" on the card.
+A storage object is downloaded only when the row's `attachments` names
+it, which is the list of what the person ticked; nothing else in the
+bucket is listed or touched. No e-mail: anonymous accounts have none
+and linked ones live in `auth.users`, which this script never selects.
+Nothing is ever written to the project. (D33(b): there is no reply
+channel — a person learns a report was fixed by using the app after an
+update — so there is no `reply` command here.)
 
-- ``problem_reports``, the columns in ``COLUMNS`` and no other: the
-  identifiers, the timestamps, the machine facts every row carries
-  (version, build, tier), the kind, the place, the text, the settings
-  snapshot (a whitelist the server CHECKs, 7.8), the status, the two
-  transcript columns — which are NULL unless the person ticked
-  Transcript — and the list of objects the person ticked. A field the
-  server hands back empty is written as ABSENT, not as "", so a reader
-  sees "not consented" and cannot mistake it for "was empty".
-- A storage object only when the row's ``attachments`` lists it, and
-  only under the row's own ``<user_id>/<report_id>/`` prefix (the same
-  rule the database enforces on insert). Audio comes down only when the
-  row lists a ``.wav``.
-- Never ``auth.users`` (where a linked e-mail would live), never
-  ``profiles``, ``devices``, ``settings_sync``, ``vocab_sync`` or
-  ``history``; the only thing known about the sender is the uuid that
-  names their folder.
+THE LAYOUT IS THE ROUTINE'S. Each report becomes
+`problems\\inbox\\<user_id>\\<report_id>.json` with the keys a local
+report has — id, at, where, kind, text, status, resolved, by,
+dictation{}, shot, env{} — plus `user_id` and `server{}` (the columns as
+they came), and its files beside it under the bucket's own names
+(shot.jpg, dictation.wav, sidecar.json), so the Saturday routine
+(`.claude/commands/weekly-reports.md`) reads the inbox with the same
+eyes it reads `problems.json`, one more glob. `fetch.log` in
+`problems\\inbox\\` records every row and every object fetched and
+every local file a tombstone removed, so the owner's own egress is
+auditable line by line.
 
-What it never does (D33(b)): it writes nothing back. There is no reply
-command, no ``report_replies`` table, no status change from this side —
-a person learns whether their report was fixed by using the app after
-an update, and the owner's rule is that nothing from his side lands in
-a user's account.
+TOMBSTONES. A report that is gone server-side — the person deleted it,
+or ran Delete my account — is gone here on the next pull: the json and
+the files beside it. A `<user_id>` folder with no rows left server-side
+goes whole. `index.md` beside `fetch.log` is rewritten from what is on
+disk after every pull, so nothing the routine reads can quote a report
+that no longer exists — and the routine's own archive
+(`problems\\weekly\\*.md`) is cut too: it wraps every stranger's report
+it quotes in `<!-- inbox <report_id> -->` … `<!-- /inbox <report_id> -->`
+(weekly-reports.md §6), and the tombstone replaces that block with one
+comment line. A document that names the id outside such a block is
+reported in fetch.log for the owner's hand, never edited blind.
 
-Tombstones (7.7): a row that is gone server-side — the person deleted
-the report, or the account through ``delete_me()`` — takes the local
-``<user_id>\\<report_id>.json`` and its files with it on the next run,
-and a folder whose account has no rows left goes whole. The routine's
-archive (``problems\\weekly\\*.md``) must not quote a deleted report
-after that run: it wraps every stranger's report it archives in
-``<!-- inbox <report_id> -->`` … ``<!-- /inbox <report_id> -->``
-(the command file says so), and the tombstone cuts that block down to
-one comment line. A file that still names the id outside such a block
-is reported, not edited.
-
-Every row and object fetched, every tombstone and every run is one line
-in ``problems\\inbox\\fetch.log`` — what left the project and when, so
-the owner's own egress is auditable (arch-B §7). No line quotes a
-report, and nothing ever prints the key. ``index.json`` beside it is
-rewritten every run: one entry per report with its path, its files and
-the archive files that quote it, and no text.
-
-Run it:
-
-    .venv\\Scripts\\python.exe dev\\inbox.py            pull
-    .venv\\Scripts\\python.exe dev\\inbox.py --dry-run  say what would change, write nothing
-
-It refuses outside the checkout, without the secret in the environment,
-or with a key that is not a secret key (the publishable one sees
-nothing through RLS and would only look like an empty inbox).
+    .venv\\Scripts\\python.exe dev\\inbox.py pull [--dry-run] [--status open]
+    .venv\\Scripts\\python.exe dev\\inbox.py status
 """
 from __future__ import annotations
 
+import argparse
 import json
+import logging
 import os
-import re
 import shutil
 import sys
-import time
+
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
 
 import paths  # noqa: E402
 
-#: The environment variable the secret key is read from. The name is
-#: reserved in .gitignore's comment and never appears with a value in
-#: the repo, a log or a report.
-SECRET_ENV = "DESKIT_SUPABASE_SECRET"
-#: Every secret API key of the project starts with this; the publishable
-#: one starts with sb_publishable_ and is refused here on purpose.
-SECRET_PREFIX = "sb_secret_"
+log = logging.getLogger("inbox")
 
-TABLE = "problem_reports"
-BUCKET = "reports"
-#: The columns this script selects — 7.7's consented list, plus the two
-#: it needs to do its job: ``attachments`` (what the person ticked; the
-#: download decision, 7.7 "Attachments") and ``updated_at`` (which rows
-#: changed since the last run). Nothing joins another table.
-COLUMNS: tuple[str, ...] = (
-    "id", "user_id", "created_at", "updated_at",
-    "app_version", "os_build", "tier", "kind", "place", "text", "env",
-    "status", "dictation_raw", "dictation_final", "attachments",
-)
-#: The objects a report may carry (8.4's names) and the field of the
-#: local item each one lands in. Anything else listed is skipped and
-#: logged, never fetched.
-OBJECT_NAMES: frozenset = frozenset({"shot.jpg", "dictation.wav", "sidecar.json",
-                                     "transcript.txt", "settings.json"})
-#: A row's ``dictation`` carries these sidecar fields, like
-#: problems.dictation() — bookkeeping keys stay in the file.
-SIDECAR_KEYS = ("seconds", "backend", "language", "raw", "text", "words",
-                "attempts", "last_error")
-#: Rows per request; PostgREST's own ceiling is 1000.
+SECRET_VAR = "DESKIT_SUPABASE_SECRET"
+URL_VAR = "DESKIT_SUPABASE_URL"
+#: The consented columns (7.7). Nothing else is ever selected.
+COLUMNS = ("id", "user_id", "created_at", "updated_at", "app_version",
+           "os_build", "tier", "kind", "place", "text", "env", "status",
+           "attachments", "dictation_raw", "dictation_final")
+#: The bucket's file names (8.4) and where each lands on the local row.
+FILES = {"shot.jpg": "shot", "dictation.wav": "wav", "sidecar.json": "sidecar"}
+INBOX_NAME = "inbox"
+FETCH_LOG = "fetch.log"
+INDEX = "index.md"
 PAGE = 500
 TIMEOUT_S = 30.0
-#: A uuid as the server writes it — the only thing that becomes a path.
-_UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
-_BLOCK = "<!-- inbox {rid} -->"
-_BLOCK_END = "<!-- /inbox {rid} -->"
-_BLOCK_GONE = "<!-- inbox {rid}: deleted by its sender on {day} -->"
-
-INBOX_DIR: Path = paths.PROBLEMS_DIR / "inbox"
-WEEKLY_DIR: Path = paths.PROBLEMS_DIR / "weekly"
-
-
-def project_ref() -> str:
-    """The project the app itself talks to (sb.PROJECT_REF): one project,
-    one place its ref is written."""
-    import sb
-    return sb.PROJECT_REF
+#: The routine's archive folder beside the inbox (problems\weekly\), and
+#: the two comment lines it wraps a stranger's report in when it archives
+#: one (weekly-reports.md §6) — so a tombstone can cut the quoted report
+#: out again (7.7: "the archive documents must not quote deleted reports
+#: after that run"). The block becomes one line that quotes nothing.
+WEEKLY_NAME = "weekly"
+BLOCK_START = "<!-- inbox {rid} -->"
+BLOCK_END = "<!-- /inbox {rid} -->"
+BLOCK_GONE = "<!-- inbox {rid}: deleted by its sender on {day} -->"
 
 
 class InboxError(Exception):
-    """A refusal or a failed request, with a sentence and never the key."""
+    pass
 
 
-# ------------------------------------------------------------- the wire
+# ------------------------------------------------------------ the project
 
-def _connect(method: str, url: str, headers: dict, body: bytes | None,
-             timeout_s: float) -> tuple[int, bytes]:
-    """One HTTPS request; (status, body). The one function a test swaps
-    for a fake. The product's chokepoint (net.py) is not used on purpose:
-    this is the owner's script with the owner's key, outside the app,
-    and it must not be in the window the app shows its users."""
-    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+def project_url() -> str:
+    """The project's URL: DESKIT_SUPABASE_URL when set, else the ref the
+    app ships (sb.PROJECT_REF) — one project, one place it is named."""
+    url = os.environ.get(URL_VAR, "").strip().rstrip("/")
+    if url:
+        return url
     try:
-        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-            return resp.status, resp.read()
-    except urllib.error.HTTPError as e:
-        return e.code, e.read()
+        import sb
+        ref = str(getattr(sb, "PROJECT_REF", "") or "").strip()
+    except Exception:                                        # noqa: BLE001
+        ref = ""
+    if not ref:
+        raise InboxError(f"no project: set {URL_VAR} or sb.PROJECT_REF")
+    return f"https://{ref}.supabase.co"
 
 
-def _headers(secret: str, accept: str = "application/json") -> dict:
-    return {"apikey": secret, "Authorization": f"Bearer {secret}", "Accept": accept}
+def secret() -> str:
+    """The secret key, from the owner's environment and nowhere else."""
+    value = os.environ.get(SECRET_VAR, "").strip()
+    if not value:
+        raise InboxError(f"{SECRET_VAR} is not set in this environment — "
+                         "it lives in the owner's user variables, never in "
+                         "a file (hand-work 1.2)")
+    if not value.startswith("sb_secret_"):
+        raise InboxError(f"{SECRET_VAR} does not look like the project's "
+                         "secret key (sb_secret_...)")
+    return value
 
 
-def _said(status: int, body: bytes) -> str:
-    """The server's one-line reason, for a message that never quotes a row."""
+class Project:
+    """The two calls this script makes: rows out of a table, an object
+    out of the bucket. urllib, not net.py — net.py is the PRODUCT's one
+    door and admits only the app's own purposes and keys; this is the
+    owner's tool, and its audit trail is fetch.log."""
+
+    def __init__(self, url: str, key: str, opener=None) -> None:
+        self.url = url.rstrip("/")
+        self._key = key
+        self._open = opener or urllib.request.urlopen
+
+    def _headers(self) -> dict:
+        return {"apikey": self._key, "Authorization": f"Bearer {self._key}",
+                "User-Agent": "DeskIT-inbox/1"}
+
+    def rows(self, status: str | None = None) -> list[dict]:
+        """Every report row (or those of one status), oldest first,
+        paged so a busy month does not come back in one body."""
+        out: list[dict] = []
+        start = 0
+        while True:
+            query = {"select": ",".join(COLUMNS), "order": "created_at.asc",
+                     "limit": str(PAGE), "offset": str(start)}
+            if status:
+                query["status"] = f"eq.{status}"
+            url = f"{self.url}/rest/v1/problem_reports?{urllib.parse.urlencode(query)}"
+            req = urllib.request.Request(url, headers=self._headers())
+            with self._open(req, timeout=TIMEOUT_S) as r:
+                page = json.loads(r.read().decode("utf-8") or "[]")
+            if not isinstance(page, list):
+                raise InboxError(f"the project answered with {type(page).__name__}")
+            out.extend(x for x in page if isinstance(x, dict))
+            if len(page) < PAGE:
+                return out
+            start += PAGE
+
+    def object(self, path: str) -> bytes:
+        """One object out of the private bucket, by its full path."""
+        quoted = "/".join(urllib.parse.quote(p) for p in path.split("/"))
+        url = f"{self.url}/storage/v1/object/reports/{quoted}"
+        req = urllib.request.Request(url, headers=self._headers())
+        with self._open(req, timeout=TIMEOUT_S) as r:
+            return r.read()
+
+
+# ------------------------------------------------------------- the inbox
+
+def inbox_dir(root: Path | None = None) -> Path:
+    return (Path(root) if root is not None else paths.PROBLEMS_DIR) / INBOX_NAME
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _log_line(box: Path, text: str) -> None:
     try:
-        data = json.loads(body.decode("utf-8"))
-        if isinstance(data, dict):
-            for key in ("message", "error", "msg"):
-                if data.get(key):
-                    return f"HTTP {status}: {str(data[key])[:160]}"
-    except (ValueError, UnicodeDecodeError):
-        pass
-    return f"HTTP {status}"
-
-
-def _rest_rows(secret: str, base: str) -> list[dict]:
-    """Every row of the table, the consented columns only, oldest first,
-    a page at a time. Every status: the routine wants what was fixed too,
-    and a tombstone is decided against the whole server set."""
-    rows: list[dict] = []
-    offset = 0
-    while True:
-        query = urllib.parse.urlencode({
-            "select": ",".join(COLUMNS),
-            "order": "created_at.asc,id.asc",
-            "limit": str(PAGE), "offset": str(offset)})
-        url = f"{base}/rest/v1/{TABLE}?{query}"
-        status, body = _connect("GET", url, _headers(secret), None, TIMEOUT_S)
-        if status != 200:
-            raise InboxError(f"reading {TABLE} failed ({_said(status, body)})")
-        try:
-            page = json.loads(body.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError) as e:
-            raise InboxError(f"reading {TABLE}: the answer was not JSON ({e})")
-        if not isinstance(page, list):
-            raise InboxError(f"reading {TABLE}: the answer was not a list")
-        rows.extend(r for r in page if isinstance(r, dict))
-        if len(page) < PAGE:
-            return rows
-        offset += PAGE
-
-
-def _object(secret: str, base: str, path: str) -> bytes:
-    url = f"{base}/storage/v1/object/{BUCKET}/{urllib.parse.quote(path)}"
-    status, body = _connect("GET", url, _headers(secret, "*/*"), None, 120.0)
-    if status != 200:
-        raise InboxError(f"fetching {path} failed ({_said(status, body)})")
-    return body
-
-
-# ------------------------------------------------------------ the shape
-
-def _iso() -> str:
-    return time.strftime("%Y-%m-%dT%H:%M:%S")
-
-
-def _uuid(value) -> str | None:
-    text = str(value or "").strip().lower()
-    return text if _UUID.match(text) else None
-
-
-def wanted_objects(row: dict, uid: str, rid: str) -> tuple[list[str], list[str]]:
-    """(the object names this row may fetch, the entries it refuses):
-    each listed path must be ``<uid>/<rid>/<name>`` with a name from
-    OBJECT_NAMES — the database's own rule on insert, checked again here
-    because a name becomes a path on this disk."""
-    good: list[str] = []
-    bad: list[str] = []
-    listed = row.get("attachments")
-    for entry in (listed if isinstance(listed, list) else []):
-        text = str(entry or "")
-        prefix = f"{uid}/{rid}/"
-        name = text[len(prefix):] if text.startswith(prefix) else ""
-        if name in OBJECT_NAMES and name not in good:
-            good.append(name)
-        else:
-            bad.append(text[:120])
-    return good, bad
-
-
-def item_of(row: dict, uid: str, rid: str, files: dict, fetched_at: str) -> dict:
-    """One inbox item in problems.json's row shape (``id, at, where,
-    kind, text, status, resolved, by, dictation, shot, env``) plus what
-    an inbox row has and a local one does not: ``user_id``, the machine
-    facts as columns, ``updated_at``, the server's ``attachments`` list,
-    ``files`` (name -> local path, relative to DATA_DIR like ``shot``
-    is), ``fetched_at`` and ``source = "inbox"``. A transcript column
-    the server returned NULL is absent from ``dictation``; a missing
-    ``shot`` is ""; both mean "not consented", never "was empty"."""
-    import redact
-
-    status = str(row.get("status") or "open")
-    item: dict = {
-        "id": rid,
-        "at": str(row.get("created_at") or ""),
-        "where": str(row.get("place") or ""),
-        "kind": str(row.get("kind") or "other"),
-        "text": str(row.get("text") or ""),
-        "status": status,
-        "resolved": str(row.get("updated_at") or "") if status != "open" else None,
-        "by": "",
-        "dictation": {},
-        "shot": files.get("shot.jpg", ""),
-        "env": row.get("env") if isinstance(row.get("env"), dict) else {},
-        "user_id": uid,
-        "app_version": str(row.get("app_version") or ""),
-        "os_build": str(row.get("os_build") or ""),
-        "tier": str(row.get("tier") or ""),
-        "updated_at": str(row.get("updated_at") or ""),
-        "attachments": [str(a) for a in (row.get("attachments") or [])
-                        if isinstance(a, str)],
-        "files": dict(files),
-        "fetched_at": fetched_at,
-        "source": "inbox",
-    }
-    got: dict = {}
-    if row.get("dictation_raw") is not None:
-        got["raw"] = str(row["dictation_raw"])
-    if row.get("dictation_final") is not None:
-        got["final"] = str(row["dictation_final"])
-    if "dictation.wav" in files:
-        got["wav"] = files["dictation.wav"]
-    if "sidecar.json" in files:
-        for key, value in _sidecar(paths.DATA_DIR / files["sidecar.json"]).items():
-            if key in SIDECAR_KEYS and key not in got:
-                got[key] = value
-    item["dictation"] = got
-    # The redactor ran on the sender's PC and the server CHECKed the
-    # columns; a third pass costs nothing and keeps the inbox clean even
-    # if either ever slips.
-    return redact.walk(item)
-
-
-def _sidecar(path: Path) -> dict:
-    try:
-        data = json.loads(path.read_text("utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _rel(path: Path) -> str:
-    """A local file written down the way problems.py writes ``shot``:
-    relative to DATA_DIR, forward slashes."""
-    try:
-        return path.relative_to(paths.DATA_DIR).as_posix()
-    except ValueError:
-        return path.as_posix()
-
-
-# --------------------------------------------------------------- the log
-
-def _log(line: str, *, dry: bool = False) -> None:
-    if dry:
-        return
-    try:
-        INBOX_DIR.mkdir(parents=True, exist_ok=True)
-        with open(INBOX_DIR / "fetch.log", "a", encoding="utf-8") as fh:
-            fh.write(f"{_iso()} {line}\n")
+        box.mkdir(parents=True, exist_ok=True)
+        with (box / FETCH_LOG).open("a", encoding="utf-8") as fh:
+            fh.write(f"{_now()}  {text}\n")
     except OSError:
         pass
 
 
-# ------------------------------------------------------------ the local set
-
-def local_reports() -> dict[tuple[str, str], Path]:
-    """(user_id, report_id) -> the json of every report on this disk.
-    Only ``<uuid>\\<uuid>.json`` counts; index.json, fetch.log and a
-    report's own folder are not reports."""
-    out: dict[tuple[str, str], Path] = {}
-    try:
-        folders = [p for p in INBOX_DIR.iterdir() if p.is_dir() and _uuid(p.name)]
-    except OSError:
-        return out
-    for folder in folders:
-        for path in folder.glob("*.json"):
-            rid = _uuid(path.stem)
-            if rid:
-                out[(folder.name.lower(), rid)] = path
-    return out
+def _safe(name: str) -> str:
+    """A uuid as a folder or file name: the characters a uuid has and
+    nothing that walks out of the inbox."""
+    keep = "".join(c for c in str(name) if c.isalnum() or c == "-")
+    if not keep or keep != str(name):
+        raise InboxError(f"refusing an id that is not a plain uuid: {name!r}")
+    return keep
 
 
-def _read_item(path: Path) -> dict:
-    try:
-        data = json.loads(path.read_text("utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-# ------------------------------------------------------------ tombstones
-
-def _scrub_archive(rid: str, *, dry: bool = False) -> list[str]:
-    """Cut the marked block of a deleted report out of every archive
-    document; return the files that still name the id outside a block
-    (the owner scrubs those by hand — this script edits nothing it
-    cannot recognise)."""
+def scrub_archive(rid: str, root: Path | None = None) -> list[str]:
+    """Cut the marked block of a deleted report out of every document in
+    problems\\weekly\\ (the block becomes one comment line that quotes
+    nothing) and return the documents that STILL name the id outside a
+    marked block — those the owner scrubs by hand; this script edits
+    nothing it cannot recognise."""
+    weekly = (Path(root) if root is not None else paths.PROBLEMS_DIR) / WEEKLY_NAME
     left: list[str] = []
     try:
-        docs = sorted(WEEKLY_DIR.glob("*.md"))
+        docs = sorted(weekly.glob("*.md"))
     except OSError:
         return left
-    start, end = _BLOCK.format(rid=rid), _BLOCK_END.format(rid=rid)
-    gone = _BLOCK_GONE.format(rid=rid, day=time.strftime("%Y-%m-%d"))
+    start, end = BLOCK_START.format(rid=rid), BLOCK_END.format(rid=rid)
+    gone = BLOCK_GONE.format(rid=rid, day=_now()[:10])
     for doc in docs:
         try:
             text = doc.read_text("utf-8")
@@ -372,181 +231,227 @@ def _scrub_archive(rid: str, *, dry: bool = False) -> list[str]:
             if a < 0 or b < 0:
                 break
             out = out[:a] + gone + out[b + len(end):]
-        if out != text and not dry:
+        if out != text:
             try:
                 doc.write_bytes(out.encode("utf-8"))
             except OSError:
-                left.append(_rel(doc))
+                left.append(doc.name)
                 continue
         if rid in out.replace(gone, ""):
-            left.append(_rel(doc))
+            left.append(doc.name)
     return left
 
 
-def _tombstone(uid: str, rid: str, path: Path, *, dry: bool = False) -> None:
-    folder = path.parent / rid
-    if not dry:
-        try:
-            path.unlink()
-        except OSError:
-            pass
-        shutil.rmtree(folder, ignore_errors=True)
-    _log(f"gone {uid}/{rid}", dry=dry)
-    for doc in _scrub_archive(rid, dry=dry):
-        _log(f"warning {doc} still names {rid} outside a marked block - scrub it by hand",
-             dry=dry)
-        print(f"  {doc} still names the deleted report {rid} - scrub it by hand")
+def _forget(box: Path, uid: str, rid: str, root: Path | None) -> None:
+    """The archive's half of a tombstone, logged; a document the cut could
+    not clean is named for the owner's hand."""
+    for doc in scrub_archive(rid, root):
+        _log_line(box, f"warning {WEEKLY_NAME}/{doc} still names {uid}/{rid} outside a "
+                       f"marked block - scrub it by hand")
 
 
-# ----------------------------------------------------------------- index
-
-def write_index(*, dry: bool = False) -> dict:
-    """index.json: one entry per report on this disk — its path, its
-    files, and the archive documents that quote it (found by id) — and
-    no text. Rewritten whole every run."""
-    entries = []
-    docs: dict[str, str] = {}
-    try:
-        for doc in sorted(WEEKLY_DIR.glob("*.md")):
-            try:
-                docs[_rel(doc)] = doc.read_text("utf-8")
-            except OSError:
-                pass
-    except OSError:
-        pass
-    for (uid, rid), path in sorted(local_reports().items()):
-        item = _read_item(path)
-        entries.append({
-            "user_id": uid, "id": rid,
-            "at": str(item.get("at") or ""), "kind": str(item.get("kind") or ""),
-            "status": str(item.get("status") or ""),
-            "path": _rel(path),
-            "files": sorted((item.get("files") or {}).values())
-                     if isinstance(item.get("files"), dict) else [],
-            "archived_in": [name for name, text in docs.items() if rid in text],
-        })
-    index = {"written": _iso(), "reports": entries}
-    if not dry:
-        try:
-            INBOX_DIR.mkdir(parents=True, exist_ok=True)
-            (INBOX_DIR / "index.json").write_bytes(
-                json.dumps(index, ensure_ascii=False, indent=2).encode("utf-8"))
-        except OSError:
-            pass
-    return index
+def local_row(row: dict) -> dict:
+    """A server row in the shape problems.json rows have, so the routine
+    reads both with one pair of eyes. `dictation` carries raw/final only
+    when the person ticked Transcript (the columns are null otherwise);
+    `shot` and `dictation.wav` are filled in by the pull once the files
+    are down."""
+    dictation: dict = {}
+    if row.get("dictation_raw"):
+        dictation["raw"] = str(row["dictation_raw"])
+    if row.get("dictation_final"):
+        dictation["final"] = str(row["dictation_final"])
+    server = {k: row.get(k) for k in COLUMNS if k in row
+              and k not in ("dictation_raw", "dictation_final")}
+    return {
+        "id": str(row.get("id", "")),
+        "at": str(row.get("created_at", "")),
+        "where": str(row.get("place") or ""),
+        "kind": str(row.get("kind") or "other"),
+        "text": str(row.get("text") or ""),
+        "status": str(row.get("status") or "open"),
+        "resolved": None,
+        "by": "",
+        "dictation": dictation,
+        "shot": "",
+        "env": row.get("env") if isinstance(row.get("env"), dict) else {},
+        "user_id": str(row.get("user_id", "")),
+        "server": server,
+    }
 
 
-# ------------------------------------------------------------------ pull
-
-def pull(secret: str, *, dry: bool = False) -> dict:
-    """One run: read the table, fetch what is new or changed with the
-    objects each row lists, drop what the server no longer has, rewrite
-    the index. Returns the counts the CLI prints. Raises InboxError on a
-    refusal or a failed request — never half-writes a report: the json
-    is written after its objects are on disk."""
-    secret = (secret or "").strip()
-    if not secret:
-        raise InboxError(f"{SECRET_ENV} is not set in this environment - nothing fetched")
-    if not secret.startswith(SECRET_PREFIX):
-        raise InboxError(f"{SECRET_ENV} is not a secret key (it does not start with "
-                         f"{SECRET_PREFIX}); the publishable key sees nothing here")
-    ref = project_ref()
-    if not ref:
-        raise InboxError("sb.PROJECT_REF is empty - no project to read from")
-    base = f"https://{ref}.supabase.co"
-    counts = {"rows": 0, "new": 0, "changed": 0, "unchanged": 0, "objects": 0,
-              "skipped": 0, "gone": 0}
-    _log("run start" + (" (dry run)" if dry else ""), dry=dry)
-    rows = _rest_rows(secret, base)
-    have = local_reports()
-    seen: set[tuple[str, str]] = set()
+def pull(project: Project, *, root: Path | None = None, status: str | None = None,
+         dry_run: bool = False) -> dict:
+    """The pull: rows in, ticked files beside them, tombstones out, the
+    index rewritten. Returns counts. Never prints a row."""
+    box = inbox_dir(root)
+    rows = project.rows(status)
+    counts = {"rows": len(rows), "new": 0, "files": 0, "removed": 0,
+              "folders_removed": 0}
+    seen: dict[str, set[str]] = {}
+    if dry_run:
+        for row in rows:
+            seen.setdefault(str(row.get("user_id")), set()).add(str(row.get("id")))
+        counts["users"] = len(seen)
+        return counts
     for row in rows:
-        uid, rid = _uuid(row.get("user_id")), _uuid(row.get("id"))
-        if not uid or not rid:
-            counts["skipped"] += 1
-            _log("skipped a row whose ids are not uuids", dry=dry)
-            continue
-        counts["rows"] += 1
-        seen.add((uid, rid))
-        path = INBOX_DIR / uid / f"{rid}.json"
-        old = _read_item(have[(uid, rid)]) if (uid, rid) in have else {}
-        names, refused = wanted_objects(row, uid, rid)
-        for entry in refused:
-            counts["skipped"] += 1
-            _log(f"skipped an attachment of {uid}/{rid} outside its own folder or "
-                 f"not one of the five names", dry=dry)
-        files: dict = {}
-        folder = path.parent / rid
-        for name in names:
-            local = folder / name
-            files[name] = _rel(local)
-            if local.is_file():
-                continue
-            if dry:
-                counts["objects"] += 1
-                continue
-            data = _object(secret, base, f"{uid}/{rid}/{name}")
-            folder.mkdir(parents=True, exist_ok=True)
-            local.write_bytes(data)
-            counts["objects"] += 1
-            _log(f"object {uid}/{rid}/{name} {len(data)} B", dry=dry)
-        same = (old and old.get("updated_at") == str(row.get("updated_at") or "")
-                and old.get("files") == files)
-        if same:
-            counts["unchanged"] += 1
-            continue
-        counts["changed" if old else "new"] += 1
-        if dry:
-            continue
-        item = item_of(row, uid, rid, files, _iso())
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(json.dumps(item, ensure_ascii=False, indent=2).encode("utf-8"))
-        _log(f"row {uid}/{rid} status={item['status']} updated={item['updated_at']} "
-             f"files={','.join(sorted(files)) or '-'}", dry=dry)
-    for (uid, rid), path in sorted(have.items()):
-        if (uid, rid) in seen:
-            continue
-        counts["gone"] += 1
-        _tombstone(uid, rid, path, dry=dry)
-    if not dry:
-        for (uid, _rid), path in have.items():
-            folder = path.parent
+        uid, rid = _safe(row.get("user_id", "")), _safe(row.get("id", ""))
+        seen.setdefault(uid, set()).add(rid)
+        folder = box / uid
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{rid}.json"
+        item = local_row(row)
+        fresh = not target.exists()
+        if not fresh:
             try:
-                if folder.is_dir() and not any(folder.iterdir()):
-                    folder.rmdir()
-            except OSError:
+                old = json.loads(target.read_text("utf-8"))
+                if old.get("server", {}).get("updated_at") == item["server"].get("updated_at"):
+                    item = old                    # nothing moved server-side
+            except (OSError, ValueError):
                 pass
-    write_index(dry=dry)
-    _log("run done " + " ".join(f"{k}={v}" for k, v in counts.items()), dry=dry)
+        wanted = [str(a) for a in (row.get("attachments") or []) if isinstance(a, str)]
+        for path in wanted:
+            name = path.rsplit("/", 1)[-1]
+            if name not in FILES or not path.startswith(f"{uid}/{rid}/"):
+                _log_line(box, f"skipped {uid}/{rid} object outside the row's own folder: {path}")
+                continue
+            dst = folder / f"{rid}.{name}"
+            if dst.exists():
+                continue
+            try:
+                data = project.object(path)
+            except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+                _log_line(box, f"could not fetch {path}: {e}")
+                continue
+            dst.write_bytes(data)
+            counts["files"] += 1
+            _log_line(box, f"fetched object {path} -> {dst.name} ({len(data)} bytes)")
+            slot = FILES[name]
+            if slot == "shot":
+                # relative to DATA_DIR, the way a local row's shot is, so
+                # problems.shot_path(store, item) resolves it unchanged
+                item["shot"] = f"{paths.PROBLEMS_DIR.name}/{INBOX_NAME}/{uid}/{dst.name}"
+            elif slot == "wav":
+                item.setdefault("dictation", {})["wav"] = str(dst)
+            elif slot == "sidecar":
+                try:
+                    side = json.loads(data.decode("utf-8"))
+                    if isinstance(side, dict):
+                        for key in ("seconds", "backend", "language", "words"):
+                            if key in side:
+                                item.setdefault("dictation", {})[key] = side[key]
+                except ValueError:
+                    pass
+        target.write_text(json.dumps(item, ensure_ascii=False, indent=2), "utf-8")
+        if fresh:
+            counts["new"] += 1
+            _log_line(box, f"fetched row {uid}/{rid} ({item['kind']}, {len(wanted)} object(s) listed)")
+    # tombstones: what is here and not there — the files, and the block
+    # the routine's archive quoted the report in (scrub_archive)
+    if box.exists():
+        for folder in sorted(p for p in box.iterdir() if p.is_dir()):
+            uid = folder.name
+            if uid not in seen:
+                rids = sorted({e.name.split(".", 1)[0] for e in folder.glob("*.json")
+                               if not e.name.endswith(".sidecar.json")})
+                shutil.rmtree(folder, ignore_errors=True)
+                counts["folders_removed"] += 1
+                _log_line(box, f"removed folder {uid}: no rows left server-side")
+                for rid in rids:
+                    _forget(box, uid, rid, root)
+                continue
+            for entry in sorted(folder.glob("*.json")):
+                rid = entry.name.split(".", 1)[0]
+                if entry.name.endswith(".sidecar.json"):
+                    continue
+                if rid not in seen[uid]:
+                    for gone in folder.glob(f"{rid}.*"):
+                        try:
+                            gone.unlink()
+                        except OSError:
+                            pass
+                    counts["removed"] += 1
+                    _log_line(box, f"removed {uid}/{rid}: the report is gone server-side")
+                    _forget(box, uid, rid, root)
+    counts["users"] = len(seen)
+    write_index(root)
     return counts
 
 
-# ------------------------------------------------------------------- CLI
+def rows_on_disk(root: Path | None = None) -> list[dict]:
+    """Every inbox row as stored, newest first — the routine's second
+    glob, in one call."""
+    box = inbox_dir(root)
+    out: list[dict] = []
+    if not box.exists():
+        return out
+    for folder in box.iterdir():
+        if not folder.is_dir():
+            continue
+        for entry in folder.glob("*.json"):
+            if entry.name.endswith(".sidecar.json"):
+                continue
+            try:
+                item = json.loads(entry.read_text("utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(item, dict):
+                out.append(item)
+    out.sort(key=lambda i: str(i.get("at", "")), reverse=True)
+    return out
 
-def main(argv: list[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-    dry = "--dry-run" in args
-    words = [a for a in args if not a.startswith("-")]
-    if words and words != ["pull"]:
-        print(__doc__.split("Run it:", 1)[1].strip())
-        return 2
-    if not paths.DEVELOPER:
-        print("the inbox is the owner's: it runs only in the checkout "
-              "(no .git beside main.py here)")
-        return 2
+
+def write_index(root: Path | None = None) -> Path | None:
+    """index.md: one line per report on disk, from the disk — so it can
+    never name a report a tombstone removed."""
+    box = inbox_dir(root)
+    rows = rows_on_disk(root)
+    if not box.exists():
+        return None
+    lines = [f"# Inbox — {len(rows)} report(s), rewritten {_now()}", ""]
+    for item in rows:
+        files = ", ".join(n for n in ("shot", "wav") if
+                          (item.get("shot") if n == "shot" else (item.get("dictation") or {}).get("wav")))
+        lines.append(f"- `{item.get('user_id', '')[:8]}/{item.get('id', '')}` · "
+                     f"{item.get('at', '')[:16]} · {item.get('kind', '')} · "
+                     f"{item.get('where', '') or '?'} · {item.get('status', '')}"
+                     + (f" · files: {files}" if files else ""))
+    path = box / INDEX
+    path.write_text("\n".join(lines) + "\n", "utf-8")
+    return path
+
+
+def status(root: Path | None = None) -> dict:
+    rows = rows_on_disk(root)
+    return {"reports": len(rows), "users": len({r.get("user_id") for r in rows}),
+            "open": sum(1 for r in rows if r.get("status") == "open"),
+            "inbox": str(inbox_dir(root))}
+
+
+# --------------------------------------------------------------- the CLI
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    p = sub.add_parser("pull", help="fetch consented rows and files into problems\\inbox\\")
+    p.add_argument("--status", default=None, help="only rows of this status (open, fixed, closed)")
+    p.add_argument("--dry-run", action="store_true", help="count what would be pulled; write nothing")
+    sub.add_parser("status", help="what is in the inbox on this disk")
+    args = parser.parse_args(argv)
+    if args.cmd == "status":
+        print(json.dumps(status(), indent=2))
+        return 0
     try:
-        counts = pull(os.environ.get(SECRET_ENV, ""), dry=dry)
+        project = Project(project_url(), secret())
+        counts = pull(project, status=args.status, dry_run=args.dry_run)
     except InboxError as e:
         print(f"inbox: {e}")
-        return 2 if "not set" in str(e) or "not a secret" in str(e) else 1
-    except (OSError, urllib.error.URLError) as e:
-        print(f"inbox: could not reach the project ({e})")
+        return 2
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        print(f"inbox: the project did not answer ({e})")
         return 1
-    print(("would fetch " if dry else "inbox: ")
-          + f"{counts['rows']} reports on the server: {counts['new']} new, "
-            f"{counts['changed']} changed, {counts['unchanged']} unchanged, "
-            f"{counts['objects']} files, {counts['gone']} gone, "
-            f"{counts['skipped']} skipped")
+    # counts only — a row on stdout would land in the routine's run.log
+    print(json.dumps(counts))
     return 0
 
 

@@ -93,6 +93,25 @@ CANCEL_W = 96
 
 SEND, CANCEL, FIELD, CARD_REGION = "send", "cancel", "field", "card"
 KIND_PREFIX = "kind:"
+# The copy that travels (DISTRIBUTION_PLAN.md 7.6, screen 7; D16, D33).
+# One checkbox under the chips — "Send to the developer", off — and,
+# only while it is ticked, a strip of four toggles saying exactly what
+# would leave this PC, each with its size. The primary button's label
+# follows the checkbox: off, the report is kept here and the button
+# says so; on, it says Preview, because nothing goes before he has
+# seen the whole of it. `SEND` stays the primary button's region name
+# on both surfaces whatever its label reads.
+SEND_TOGGLE = "send_toggle"
+ATTACH_PREFIX = "attach:"
+ATTACH_ORDER = ("shot", "recording", "transcript", "settings")
+# ui.Switch's pill, to the pixel (SWITCH_W, SWITCH_H, the knob's inset):
+# a tick in a square box is the one thing this window's toolkit refuses
+# to draw, and the desk's box uses the real ui.Switch in these rows.
+SWITCH_W, SWITCH_H, KNOB_INSET = 46, 26, 4
+ROW_H = 30                # one toggle row
+STRIP_INDENT = SWITCH_W + 10   # the strip sits under the switch's label
+STRIP_GAP = 8
+CHECK_GAP = 14            # above the checkbox
 
 # The dashboard's copy, verbatim except for one clause. Its hint opens
 # with "One line." and this field is deliberately not one line any more,
@@ -104,10 +123,23 @@ TITLE = "What is wrong?"
 HINT = ("The screen you are on, the last dictation and the settings "
         "behind it are attached for you.")
 KEYS = "Enter sends  ·  Shift+Enter for a new line  ·  Esc cancels"
+# With Send ticked, Enter no longer files anything: it goes on to the
+# Preview, and the line says so before he finds out by pressing it.
+KEYS_SEND = "Enter continues  ·  Shift+Enter for a new line  ·  Esc cancels"
 SHOT_CAPTION = ("The screen as it was a moment before this box opened. "
                 "It goes with the report.")
-SEND_LABEL = "Send"
+SEND_LABEL = "Keep on this PC"
+PREVIEW_LABEL = "Preview"
 CANCEL_LABEL = "Cancel"
+SEND_TOGGLE_LABEL = "Send to the developer"
+STRIP_EYEBROW = "WHAT LEAVES THIS PC"
+# The four toggles' words — problems.ATTACH_WORDS, spelled here as well
+# so a painter with no problems module still draws them; a test keeps
+# the two equal.
+ATTACH_WORDS = {"shot": "Screenshot", "recording": "Recording",
+                "transcript": "Transcript text",
+                "settings": "Settings snapshot"}
+NONE_WORD = "none"
 
 # The palette, spelled out. Read lazily from `ui` when `ui` imports —
 # so skin\palette.py's repaint reaches this card the way it reaches every
@@ -125,7 +157,8 @@ _FALLBACK = {"CARD": "#24201a", "CARD_HI": "#2e2921",
              "ACCENT_SOFT": "#332711", "ACCENT_TEXT": "#f0ba5c",
              "ACCENT_ON": "#1a1409",
              "ACCENT_EDGE": "#5a431a", "EDGE_HI": "#332d24",
-             "CHIP_BG": "#292419", "TILE_EDGE": "#5a5240"}
+             "CHIP_BG": "#292419", "TILE_EDGE": "#5a5240",
+             "TRACK_OFF": "#4e4737"}
 
 
 def hex_of(name: str) -> str:
@@ -155,7 +188,9 @@ def rgb(name: str) -> tuple[int, int, int]:
 
 def card_for(where: str, *, kinds=None, typed: str = "", kind: str = "",
              shot: bytes | str | None = None, lines: int = FIELD_LINES_MIN,
-             focused: bool = True, hover: str | None = None) -> dict:
+             focused: bool = True, hover: str | None = None,
+             send: bool = False, attach: dict | None = None,
+             sizes: dict | None = None) -> dict:
     """The whole card as data: what overlay.ProblemCard holds and every
     painter consumes.
 
@@ -165,6 +200,11 @@ def card_for(where: str, *, kinds=None, typed: str = "", kind: str = "",
     the app already knows. `kinds` defaults to problems.KINDS so the two
     surfaces cannot drift; the default kind is the first of them, which
     the module orders as "wrong" first and "other" last on purpose.
+
+    `send` is the checkbox; `attach` the four toggles (problems'
+    defaults for the kind when not given); `sizes` the bytes behind
+    each, 0 for a piece the report does not have — its toggle draws
+    greyed and cannot be ticked.
     """
     if kinds is None:
         try:
@@ -174,11 +214,42 @@ def card_for(where: str, *, kinds=None, typed: str = "", kind: str = "",
             kinds = ()
         kinds = kinds or ("wrong",)
     kinds = tuple(kinds)
+    picked = kind if kind in kinds else kinds[0]
     return {"where": str(where or "").strip(), "kinds": kinds,
-            "kind": kind if kind in kinds else kinds[0],
+            "kind": picked,
             "typed": typed or "", "shot": shot,
             "lines": max(FIELD_LINES_MIN, min(FIELD_LINES_MAX, int(lines))),
-            "focused": bool(focused), "hover": hover}
+            "focused": bool(focused), "hover": hover,
+            "send": bool(send),
+            "attach": attach_for(picked, attach),
+            "sizes": {name: max(0, int((sizes or {}).get(name) or 0))
+                      for name in ATTACH_ORDER}}
+
+
+def attach_for(kind: str, attach: dict | None = None) -> dict:
+    """The four toggles as booleans: what was handed in, else problems'
+    defaults for the kind, else (no problems module) settings only."""
+    if isinstance(attach, dict):
+        return {name: bool(attach.get(name)) for name in ATTACH_ORDER}
+    try:
+        import problems
+        got = problems.attach_defaults(kind)
+    except Exception:                 # noqa: BLE001
+        got = {"settings": True, "transcript": kind == "wrong"}
+    return {name: bool(got.get(name)) for name in ATTACH_ORDER}
+
+
+def size_word(n: int) -> str:
+    """"214 KB", "1.1 MB", "0.4 KB" — or NONE_WORD for a piece that is
+    not there."""
+    n = int(n or 0)
+    if n <= 0:
+        return NONE_WORD
+    if n >= 1000 * 1024:
+        return f"{n / (1024 * 1024):.1f} MB"
+    if n >= 10 * 1024:
+        return f"{n // 1024} KB"
+    return f"{n / 1024:.1f} KB"
 
 
 def field_lines(text: str, per_line: int = 46) -> int:
@@ -232,6 +303,7 @@ def layout(card: dict, cache: dict | None = None) -> dict:
     them.
     """
     cache = cache if cache is not None else {}
+    send = bool(card.get("send"))
     hint = _ltr(cache, HINT, 8.0, rgb("FAINT"), INNER)
     hint_h = hint.height
     # The keys line goes HERE, above the field, and not on the empty half
@@ -240,7 +312,8 @@ def layout(card: dict, cache: dict | None = None) -> dict:
     # underneath the buttons. Above the field it has the card's whole
     # width, and it reads in the right order — what the box is for, what
     # gets attached, how to answer, then the place to answer.
-    keys = _ltr(cache, KEYS, KEYS_PT, rgb("FAINT"), INNER)
+    keys = _ltr(cache, KEYS_SEND if send else KEYS, KEYS_PT, rgb("FAINT"),
+                INNER)
     keys_box = (0, HINT_Y + hint_h + 7, INNER,
                 HINT_Y + hint_h + 7 + keys.height)
     y = keys_box[3] + 12
@@ -273,14 +346,39 @@ def layout(card: dict, cache: dict | None = None) -> dict:
     else:
         shot_box = None
 
+    # -- the checkbox, and under it — only while it is ticked — the strip
+    # of what would leave. Each toggle row is the card's whole width so
+    # the word is as pressable as the square.
+    y += CHECK_GAP
+    check = (0, y, INNER, y + ROW_H)
+    y += ROW_H
+    strip_head = None
+    attach_rows: dict[str, tuple] = {}
+    if send:
+        y += STRIP_GAP
+        eyebrow = _ltr(cache, STRIP_EYEBROW, 8.0, rgb("FAINT"),
+                       INNER - STRIP_INDENT)
+        strip_head = (STRIP_INDENT, y, INNER, y + eyebrow.height)
+        y += eyebrow.height + 6
+        for name in ATTACH_ORDER:
+            attach_rows[name] = (STRIP_INDENT, y, INNER, y + ROW_H)
+            y += ROW_H
+
     y += ACTS_GAP
-    send = (INNER - CANCEL_W - BTN_GAP - SEND_W, y,
-            INNER - CANCEL_W - BTN_GAP, y + BTN_H)
+    # The primary button is as wide as its word needs — "Keep on this
+    # PC" is longer than "Send" was — and never narrower than the
+    # dashboard's 104.
+    label = _rtl(cache, PREVIEW_LABEL if send else SEND_LABEL, 9.5,
+                 rgb("ACCENT_ON"), weight=600)
+    primary_w = max(SEND_W, label.width + 14 + 8 + 2 * 16)
+    send_box = (INNER - CANCEL_W - BTN_GAP - primary_w, y,
+                INNER - CANCEL_W - BTN_GAP, y + BTN_H)
     cancel = (INNER - CANCEL_W, y, INNER, y + BTN_H)
     height = PAD + y + BTN_H + PAD
     return {"hint_h": hint_h, "keys": keys_box, "field": field,
             "echo_h": echo_h, "chips": chips, "shot": shot_box,
-            "shot_image": shot, "send": send, "cancel": cancel,
+            "shot_image": shot, "check": check, "strip_head": strip_head,
+            "attach": attach_rows, "send": send_box, "cancel": cancel,
             "size": (CARD_W, int(height))}
 
 
@@ -296,9 +394,11 @@ def regions(card: dict, cache: dict | None = None) -> dict:
     card in a corner)."""
     box = layout(card, cache)
     out = {SEND: _shift(box["send"]), CANCEL: _shift(box["cancel"]),
-           FIELD: _shift(box["field"])}
+           FIELD: _shift(box["field"]), SEND_TOGGLE: _shift(box["check"])}
     for name, rect in box["chips"].items():
         out[KIND_PREFIX + name] = _shift(rect)
+    for name, rect in box["attach"].items():
+        out[ATTACH_PREFIX + name] = _shift(rect)
     out[CARD_REGION] = (0, 0, CARD_W, box["size"][1])
     return out
 
@@ -518,7 +618,9 @@ def compose(card: dict, cache: dict | None = None):
     # is always there — and Enter changed meaning the moment the field
     # grew past one line, which he must not have to discover by losing a
     # sentence to it.
-    put(_ltr(cache, KEYS, KEYS_PT, rgb("FAINT"), INNER), 0, box["keys"][1])
+    send_on = bool(card.get("send"))
+    put(_ltr(cache, KEYS_SEND if send_on else KEYS, KEYS_PT, rgb("FAINT"),
+             INNER), 0, box["keys"][1])
 
     # -- the field: a well he can see the edges of, lit when it has the
     # caret. Drawn here and only drawn: the caret, the selection and the
@@ -590,10 +692,38 @@ def compose(card: dict, cache: dict | None = None):
         put(_ltr(cache, SHOT_CAPTION, 8.0, rgb("FAINT"), cap_w),
             shot.width + SHOT_CAP_GAP, sy0 + 2)
 
-    # -- the two answers. Send carries the accent and the icon the
-    # dashboard's does; Cancel is the quiet one, and it is a real button
-    # rather than only the Escape key because a floating card with no
-    # frame gives the mouse nothing else to say no with.
+    # -- "Send to the developer": one checkbox, off. Under it, while it
+    # is on, the strip — what would leave, each piece with its size,
+    # each a toggle; a piece the report does not have is greyed and says
+    # "none". The words are the row: a press anywhere on the line flips
+    # it, and the square is only where the answer is drawn.
+    cx0, cy0, cx1, cy1 = box["check"]
+    _switch(img, (body[0] + cx0, body[1] + cy0 + (ROW_H - SWITCH_H) / 2),
+            send_on, hot=hover == SEND_TOGGLE)
+    word = _rtl(cache, SEND_TOGGLE_LABEL, 9.5,
+                rgb("FG") if send_on else rgb("DIM"))
+    put(word, cx0 + STRIP_INDENT, cy0 + (ROW_H - word.height) / 2)
+    if send_on and box["strip_head"] is not None:
+        hx0, hy0, _hx1, _hy1 = box["strip_head"]
+        put(_ltr(cache, STRIP_EYEBROW, 8.0, rgb("FAINT"), INNER - STRIP_INDENT),
+            hx0, hy0)
+        attach = card.get("attach") or {}
+        sizes = card.get("sizes") or {}
+        for name, (ax0, ay0, _ax1, _ay1) in box["attach"].items():
+            have = int(sizes.get(name) or 0) > 0
+            on = have and bool(attach.get(name))
+            _switch(img, (body[0] + ax0, body[1] + ay0 + (ROW_H - SWITCH_H) / 2),
+                    on, hot=hover == ATTACH_PREFIX + name, dead=not have)
+            text = f"{ATTACH_WORDS.get(name, name)}  ·  {size_word(sizes.get(name))}"
+            word = _rtl(cache, text, 9.0,
+                        rgb("FAINT") if not have else rgb("FG") if on else rgb("DIM"))
+            put(word, ax0 + STRIP_INDENT, ay0 + (ROW_H - word.height) / 2)
+
+    # -- the two answers. The primary carries the accent and the icon
+    # the dashboard's does, and its word follows the checkbox — Keep on
+    # this PC, or Preview; Cancel is the quiet one, and it is a real
+    # button rather than only the Escape key because a floating card
+    # with no frame gives the mouse nothing else to say no with.
     #
     # ON the accent fill the label is ACCENT_ON and not FG. Under the blue
     # palette white on the accent was 4.10:1 — already below AA — and on a
@@ -604,7 +734,8 @@ def compose(card: dict, cache: dict | None = None):
     put(_rr((sx1 - sx0, sy1 - sy0), BTN_RADIUS,
             fill=(rgb("ACCENT_HI") if hot else rgb("ACCENT")) + (255,)),
         sx0, sy0)
-    label = _rtl(cache, SEND_LABEL, 9.5, rgb("ACCENT_ON"), weight=600)
+    label = _rtl(cache, PREVIEW_LABEL if send_on else SEND_LABEL, 9.5,
+                 rgb("ACCENT_ON"), weight=600)
     icon = 14
     total = icon + 8 + label.width
     ix = sx0 + (sx1 - sx0 - total) / 2
@@ -646,9 +777,39 @@ def _circle_x(img, centre, size: int, colour) -> None:
     img.paste(layer, (int(centre[0]), int(centre[1] - size / 2)), layer)
 
 
-__all__ = ["card_for", "field_lines", "layout", "measure", "regions",
-           "hit_test", "compose", "rgb", "hex_of", "CARD_W", "PAD", "INNER",
-           "FIELD_LINE_H", "FIELD_FONT", "FIELD_FONT_LINE", "FIELD_PAD_X",
-           "FIELD_PAD_Y", "FIELD_PT", "FIELD_LINES_MIN", "FIELD_LINES_MAX",
-           "SEND", "CANCEL", "FIELD", "CARD_REGION", "KIND_PREFIX", "TITLE",
-           "HINT", "KEYS", "SHOT_CAPTION", "SEND_LABEL", "CANCEL_LABEL"]
+def _switch(img, corner, on: bool, *, hot: bool = False,
+            dead: bool = False) -> None:
+    """ui.Switch, painted: the track a pill — the accent when on, the
+    off track when not, LINE-faint when the piece is not there to turn
+    on — and the knob a disc of FG at the end the answer is. Same
+    numbers as the widget's, so the desk's box and this card show one
+    switch. Supersampled 4x like the rest."""
+    k = 4
+    w, h, inset = SWITCH_W * k, SWITCH_H * k, KNOB_INSET * k
+    if on:
+        track = rgb("ACCENT_HI") if hot else rgb("ACCENT")
+    elif dead:
+        track = rgb("LINE")
+    else:
+        track = rgb("TRACK_OFF")
+    knob = rgb("FAINT") if dead else rgb("FG")
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    d.rounded_rectangle((0, 0, w - 1, h - 1), radius=h // 2,
+                        fill=track + (255,))
+    dia = h - 2 * inset
+    x = w - inset - dia if on else inset
+    d.ellipse((x, inset, x + dia, inset + dia), fill=knob + (255,))
+    layer = layer.resize((SWITCH_W, SWITCH_H), Image.LANCZOS)
+    img.paste(layer, (int(corner[0]), int(corner[1])), layer)
+
+
+__all__ = ["card_for", "attach_for", "size_word", "field_lines", "layout",
+           "measure", "regions", "hit_test", "compose", "rgb", "hex_of",
+           "CARD_W", "PAD", "INNER", "FIELD_LINE_H", "FIELD_FONT",
+           "FIELD_FONT_LINE", "FIELD_PAD_X", "FIELD_PAD_Y", "FIELD_PT",
+           "FIELD_LINES_MIN", "FIELD_LINES_MAX", "SEND", "CANCEL", "FIELD",
+           "CARD_REGION", "KIND_PREFIX", "SEND_TOGGLE", "ATTACH_PREFIX",
+           "ATTACH_ORDER", "ATTACH_WORDS", "TITLE", "HINT", "KEYS",
+           "KEYS_SEND", "SHOT_CAPTION", "SEND_LABEL", "PREVIEW_LABEL",
+           "CANCEL_LABEL", "SEND_TOGGLE_LABEL", "STRIP_EYEBROW", "NONE_WORD"]
