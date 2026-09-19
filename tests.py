@@ -34862,7 +34862,11 @@ class _FakeSupabase:
 
 class _fixture_project:
     """sb.py pointed at the fake project for the block, the wire faked,
-    the session blob and the cursors cleared on both sides."""
+    the session blob and the cursors cleared on both sides. The way back
+    to the app after a Google sign-in (sb._back_to_the_app: the window
+    in front, the card through /notify) is a recorder — `fake.back` is
+    the e-mails it was handed — so no test raises a window on whatever
+    desktop it runs on or knocks on the owner's running app."""
 
     def __enter__(self):
         import net as net_mod
@@ -34870,10 +34874,12 @@ class _fixture_project:
         import sync as sync_mod
         self.sb, self.net, self.sync = sb, net_mod, sync_mod
         self.fake = _FakeSupabase()
+        self.fake.back = []
         self._old = (sb.PROJECT_REF, sb.PUBLISHABLE_KEY, net_mod._connect,
-                     sb.FIRST_DELAY_S)
+                     sb.FIRST_DELAY_S, sb._back_to_the_app)
         sb.configure(self.fake.REF, self.fake.KEY)
         net_mod._connect = self.fake
+        sb._back_to_the_app = self.fake.back.append
         self._clean()
         return self.fake
 
@@ -34890,10 +34896,11 @@ class _fixture_project:
         try:
             self._clean()
         finally:
-            ref, key, connect, delay = self._old
+            ref, key, connect, delay, back = self._old
             self.net._connect = connect
             self.sb.configure(ref, key)
             self.sb.FIRST_DELAY_S = delay
+            self.sb._back_to_the_app = back
         return False
 
 
@@ -35491,12 +35498,14 @@ def test_google_signin_round_trip_and_delete_me():
             try:
                 import urllib.request as ur
                 with ur.urlopen(redirect + "?code=fixture-code", timeout=5) as r:
-                    assert "DeskIT" in r.read().decode("utf-8")
+                    served.append(r.read().decode("utf-8"))
+                    assert "DeskIT" in served[-1]
             except Exception as e:                           # noqa: BLE001
                 print("    (callback failed:", e, ")")
         threading.Thread(target=come_back, daemon=True).start()
         return True
 
+    served: list[str] = []
     d = Path(tempfile.mkdtemp(prefix="deskit-google-"))
     try:
         outbox = d / "outbox"
@@ -35505,6 +35514,10 @@ def test_google_signin_round_trip_and_delete_me():
         with _fixture_project() as fake, _consented("account"), _patched(paths, "OUTBOX_DIR", outbox):
             who = sb.sign_in_google(open_browser=browser, timeout_s=10)
             assert who["email"] == "person@example.com" and not who["is_anonymous"], who
+            # the page the browser got is the app's own, and the way back
+            # to the app was taken once, with the account's e-mail
+            assert served and "Close this tab" in served[0] and "signed in to DeskIT" in served[0]
+            assert fake.back == ["person@example.com"], fake.back
             assert len(opened) == 1 and opened[0].startswith(f"{sb.base_url()}/auth/v1/authorize?")
             q = dict(urllib_parse.parse_qsl(urllib_parse.urlsplit(opened[0]).query))
             assert q["provider"] == "google" and q["code_challenge_method"] == "s256"
@@ -35547,6 +35560,246 @@ def test_google_signin_round_trip_and_delete_me():
             assert sb.status()["signed_in"] is False
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_signin_page_is_the_apps_own_and_fetches_nothing():
+    """The loopback page after Sign in with Google (sb.signin_page): the
+    owner's verdict of 2026-09-19 was a bare white page he had to leave
+    to go and find the app. Now: English, LAMPLIGHT (the ground, the
+    text, the dim, the gold — skin\\palette.py's numbers), the mark
+    inline as a data: URI of icon.png, the two sentences, a [Close this
+    tab] that calls window.close(), and NOT ONE request to anywhere — no
+    src/href that is not data:, no <link>, no @import, no url(), a font
+    stack that starts at the system's. The failure page is the same
+    surface and ESCAPES Google's reason, which arrives on the query
+    string."""
+    import base64
+
+    import sb
+    from skin import palette
+
+    page = sb.signin_page(True)
+    assert page.startswith("<!doctype html><html lang=\"en\"")
+    assert "signed in to DeskIT" in page and "<title>Signed in to DeskIT</title>" in page
+    assert "DeskIT is back in front — you can close this tab." in page
+    assert ">Close this tab</button>" in page and "window.close()" in page
+    for colour in (palette.BG, palette.FG, palette.DIM, palette.ACCENT, palette.CARD, palette.LINE):
+        assert colour.lower() in page.lower(), colour
+    assert "font-family:system-ui,'Segoe UI'" in page
+    # nothing fetched: every src/href is a data: URI, and there is no
+    # stylesheet, import, url() or font from anywhere
+    refs = re.findall(r"""(?:src|href)=["']([^"']*)""", page)
+    assert refs and all(r.startswith("data:image/png;base64,") for r in refs), refs
+    assert not re.search(r"<link\b|@import|url\(|@font-face|https?://|fetch\(|XMLHttp", page, re.I), \
+        "the page reaches out"
+    # the mark IS icon.png
+    raw = base64.b64decode(refs[0].split(",", 1)[1])
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n" and raw == (REPO / "icon.png").read_bytes()
+    # the failure page: same surface, the reason escaped, never a script
+    fail = sb.signin_page(False, "access_denied: <script>alert(1)</script> & 'quotes'")
+    assert "The sign-in did not finish" in fail and ">Close this tab</button>" in fail
+    assert "<script>alert" not in fail and "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &#x27;quotes&#x27;" in fail
+    assert "no code came back" in sb.signin_page(False, "")
+    # the handler serves exactly these two, with the reason from the query
+    import http.server
+    import urllib.request as ur
+    server = http.server.HTTPServer(("127.0.0.1", 0), sb._Callback)
+    port = server.server_port
+    sb._Callback.result = {}
+    try:
+        def one(query: str) -> str:
+            got: list[str] = []
+
+            def fetch():
+                try:
+                    with ur.urlopen(f"http://127.0.0.1:{port}/cb?{query}", timeout=5) as r:
+                        got.append(r.read().decode("utf-8"))
+                except Exception as e:                       # noqa: BLE001
+                    got.append(f"ERROR {e}")
+            t = threading.Thread(target=fetch, daemon=True)
+            t.start()
+            server.timeout = 5
+            server.handle_request()
+            t.join(5)
+            return got[0] if got else ""
+
+        assert "Close this tab" in one("code=abc") and sb._Callback.result == {"code": "abc"}
+        body = one("error=access_denied&error_description=the+%3Cperson%3E+said+no")
+        assert "the &lt;person&gt; said no" in body and sb._Callback.result == {"error": "the <person> said no"}
+    finally:
+        sb._Callback.result = {}
+        server.server_close()
+
+
+def test_bring_back_finds_only_the_apps_window_and_never_raises():
+    """foreground.bring_back (the way back after the browser): the finder
+    takes a visible TkTopLevel titled with the part and nothing else —
+    not a plain window with the same title (the browser tab is titled
+    "DeskIT" too, because the page is), not a tool window, not an empty
+    part (that would match every Tk window on the desktop). Without a
+    window it is False, with a broken user32 it is False, and it never
+    raises. Whether the window actually reached the foreground is not
+    asserted: on the hidden desktop the tests run on GetForegroundWindow
+    is 0 whatever is done, so the three tries and the flash run and
+    read False — which is the honest answer this function gives."""
+    import ctypes
+    import tkinter as tk
+    import uuid
+
+    import foreground
+
+    tag = uuid.uuid4().hex[:10]
+    assert foreground.candidates("") == [] and foreground.bring_back("") is False
+    assert foreground.find_window(f"nothing-{tag}") == 0
+    assert foreground.bring_back(f"nothing-{tag}") is False
+    assert foreground.raise_window(0) is False and foreground.raise_window("x") is False
+    # a plain (non-Tk) window with the title is not the app's
+    u32 = ctypes.WinDLL("user32", use_last_error=True)
+    u32.CreateWindowExW.restype = ctypes.c_void_p
+    u32.CreateWindowExW.argtypes = [ctypes.c_ulong, ctypes.c_wchar_p, ctypes.c_wchar_p,
+                                    ctypes.c_ulong, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
+                                    ctypes.c_void_p, ctypes.c_void_p]
+    u32.DestroyWindow.argtypes = [ctypes.c_void_p]
+    u32.GetParent.restype = ctypes.c_void_p
+    u32.GetParent.argtypes = [ctypes.c_void_p]
+    decoy = u32.CreateWindowExW(0, "STATIC", f"DeskIT decoy {tag}", 0x10000000 | 0x80000000,
+                                10, 10, 120, 60, None, None, None, None)
+    root = None
+    try:
+        assert decoy and foreground.candidates(f"decoy {tag}") == []
+        try:
+            root = tk.Tk()
+        except tk.TclError as err:
+            print(f"    (no Tk window here — {err})")
+            return
+        root.title(f"DeskIT probe {tag}")
+        root.geometry("240x120+40+40")
+        root.update()
+        top = int(u32.GetParent(int(root.winfo_id())) or 0)
+        assert foreground.candidates(f"probe {tag}") == [(top, f"DeskIT probe {tag}")]
+        assert foreground.find_window(f"PROBE {tag.upper()}") == top, "case-insensitive"
+        with _patched(foreground, "SETTLE_S", 0.05):
+            assert foreground.bring_back(f"probe {tag}") in (True, False)
+            root.iconify()
+            root.update()
+            assert foreground.bring_back(f"probe {tag}") in (True, False)
+            # a user32 that throws is a False, not a traceback
+            with _patched(foreground, "_handles", lambda: (_ for _ in ()).throw(OSError("no user32"))):
+                assert foreground.bring_back(f"probe {tag}") is False
+                assert foreground.find_window(f"probe {tag}") == 0
+    finally:
+        if root is not None:
+            root.destroy()
+        if decoy:
+            u32.DestroyWindow(decoy)
+    assert foreground.find_window(f"probe {tag}") == 0
+    # stdlib and ctypes only, private handles only (AGENTS.md's rule)
+    src = (REPO / "foreground.py").read_text("utf-8")
+    assert "ctypes.windll." not in src and "tkinter" not in src and "import net" not in src
+    for line in src.splitlines():
+        m = re.match(r"\s*(?:import|from)\s+([\w.]+)", line)
+        if m:
+            assert m.group(1).split(".")[0] in ("ctypes", "logging", "os", "sys", "time",
+                                                "pathlib", "__future__", "notify_hook"), line
+
+
+def test_signed_in_card_goes_through_the_notify_door_or_nowhere():
+    """foreground.signed_in_card: the card is a POST /notify on the
+    running app — notify_hook.post, the door Claude Code's Stop hook
+    uses — carrying "Signed in as <e-mail>", "Back to DeskIT", and the
+    app window's handle so a click raises it. Without a phone token
+    there is no app to knock on (the wizard signs in before the server
+    exists) and NOTHING is sent; a door that refuses or throws is a log
+    line, never an exception; the payload is one notify.clean() takes
+    as it is, and an e-mail is drawn, never parsed — a 200-character one
+    is cut, a control character stripped."""
+    import foreground
+    import notify
+    import notify_hook
+
+    posted: list[tuple] = []
+    with _patched(notify_hook, "read_token", lambda path=None: None), \
+            _patched(notify_hook, "post", lambda *a, **k: posted.append((a, k)) or True):
+        foreground.signed_in_card("person@example.com")
+    assert posted == [], "knocked with no token"
+    with _patched(notify_hook, "read_token", lambda path=None: "tok"), \
+            _patched(notify_hook, "post", lambda *a, **k: posted.append((a, k)) or True), \
+            _patched(foreground, "find_window", lambda title_part="DeskIT": 4242):
+        foreground.signed_in_card("person@example.com")
+    assert len(posted) == 1, posted
+    (payload, url, token), kw = posted[0]
+    assert url == notify_hook.server_url() and url.endswith("/notify") and token == "tok"
+    assert payload == {"source": "dashboard", "kind": "done",
+                       "title": "Signed in as person@example.com",
+                       "body": "Back to DeskIT", "app": "DeskIT", "hwnd": 4242}
+    cleaned = notify.clean(payload)
+    assert cleaned["title"] == payload["title"] and cleaned["body"] == payload["body"]
+    assert cleaned["hwnd"] == 4242 and cleaned["kind"] == "done"
+    assert notify.label_for(cleaned["source"]) == "Dashboard"
+    # a refusal and a throw are both nothing
+    with _patched(notify_hook, "read_token", lambda path=None: "tok"), \
+            _patched(notify_hook, "post", lambda *a, **k: False):
+        foreground.signed_in_card("person@example.com")
+    with _patched(notify_hook, "read_token", lambda path=None: "tok"), \
+            _patched(notify_hook, "post", lambda *a, **k: (_ for _ in ()).throw(OSError("down"))):
+        foreground.signed_in_card("person@example.com")
+    # the e-mail is text on a card: cut, controls stripped, nothing parsed
+    long = foreground.card_payload("x" * 200 + "@example.com")
+    assert len(long["title"]) <= notify.TITLE_MAX and long["title"].endswith("…")
+    assert notify.clean(foreground.card_payload("a\x07b@c.d"))["title"] == "Signed in as ab@c.d"
+    assert foreground.card_payload("")["title"] == "Signed in"
+    assert foreground.card_payload("  a@b.c \n")["hwnd"] == 0
+
+
+def test_the_signin_callback_path_takes_the_way_back():
+    """sb._back_to_the_app, what sign_in_google calls the moment the code
+    is exchanged (test_google_signin_round_trip_and_delete_me pins the
+    call and its argument): bring_back() first, then signed_in_card(the
+    e-mail); one of them throwing does not stop the other or the
+    sign-in; a copy without foreground.py does without. The two names
+    and signatures are the wizard's contract too (firstrun.py imports
+    them in a try/except)."""
+    import builtins
+    import inspect
+
+    import foreground
+    import sb
+
+    back = inspect.signature(foreground.bring_back)
+    assert list(back.parameters) == ["title_part"] and back.parameters["title_part"].default == "DeskIT"
+    card = inspect.signature(foreground.signed_in_card)
+    assert list(card.parameters) == ["email"] and card.parameters["email"].default is inspect.Parameter.empty
+    assert inspect.get_annotations(foreground.bring_back, eval_str=True)["return"] is bool
+    assert inspect.get_annotations(foreground.signed_in_card, eval_str=True)["return"] is None
+    calls: list = []
+    with _patched(foreground, "bring_back", lambda title_part="DeskIT": calls.append(("back", title_part)) or True), \
+            _patched(foreground, "signed_in_card", lambda email: calls.append(("card", email))):
+        sb._back_to_the_app("person@example.com")
+    assert calls == [("back", "DeskIT"), ("card", "person@example.com")], calls
+    calls.clear()
+    with _patched(foreground, "bring_back", lambda title_part="DeskIT": (_ for _ in ()).throw(RuntimeError("no"))), \
+            _patched(foreground, "signed_in_card", lambda email: calls.append(("card", email))):
+        sb._back_to_the_app("person@example.com")
+    assert calls == [("card", "person@example.com")], "a failed bring_back stopped the card"
+    real_import = builtins.__import__
+
+    def no_foreground(name, *a, **k):
+        if name == "foreground":
+            raise ImportError("gone")
+        return real_import(name, *a, **k)
+
+    calls.clear()
+    with _patched(builtins, "__import__", no_foreground), \
+            _patched(foreground, "bring_back", lambda title_part="DeskIT": calls.append("back")):
+        sb._back_to_the_app("person@example.com")
+    assert calls == [], "a copy without foreground.py still tried"
+    # and sign_in_google reaches it AFTER the session is stored: the
+    # fixture's recorder sees the e-mail the exchange returned
+    src = (REPO / "sb.py").read_text("utf-8")
+    body = src[src.index("def sign_in_google("):src.index("def _back_to_the_app(")]
+    assert body.index("session = _exchange(code, verifier)") < body.index("_back_to_the_app(")
+    assert body.index("_back_to_the_app(") < body.index("ensure_profile(force=True)")
 
 
 def test_first_sync_on_a_fresh_pc_pulls_and_does_not_echo():
