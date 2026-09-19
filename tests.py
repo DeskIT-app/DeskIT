@@ -33193,6 +33193,216 @@ def test_the_wizard_asks_the_consent_card_before_the_cloud_switch_stays_on():
             shutil.rmtree(d, ignore_errors=True)
 
 
+def test_the_wizard_shows_one_row_per_microphone():
+    """firstrun.one_per_device (2026-09-19, the owner's screen: five rows
+    for two microphones): the same name under MME, WASAPI, WDM-KS and
+    DirectSound is one row, WASAPI's; an MME name cut at 31 characters
+    is its WASAPI row; the device the settings already name is the row
+    kept for its group, whatever its API, so it lights up and Next
+    writes nothing; DirectSound and the two "default" aliases are not
+    rows; two Bluetooth endpoints with different names stay two rows."""
+    import firstrun
+
+    def row(name, api, index):
+        return (firstrun.device_key(name, api), firstrun.clean_name(name), api, index)
+
+    listing = [
+        row("Microphone (HD Webcam eMeet C960)", "Windows WASAPI", 20),
+        row("Headset Microphone (Arctis 7 Chat)", "Windows WASAPI", 21),
+        row("Microphone (Realtek HD Audio Mic input)", "Windows WDM-KS", 23),
+        row("Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0\r\n;(Nothing Ear))",
+            "Windows WDM-KS", 31),
+        row("Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0\r\n;(Nothing ear (1)))",
+            "Windows WDM-KS", 43),
+        row("Headset Microphone (Arctis 7 Chat)", "Windows WDM-KS", 45),
+        row("Microphone (HD Webcam eMeet C960)", "Windows WDM-KS", 48),
+        row("Microsoft Sound Mapper - Input", "MME", 0),
+        row("Headset Microphone (Arctis 7 Ch", "MME", 1),
+        row("Microphone (HD Webcam eMeet C96", "MME", 2),
+        row("Primary Sound Capture Driver", "Windows DirectSound", 8),
+        row("Headset Microphone (Arctis 7 Chat)", "Windows DirectSound", 9),
+        row("Microphone (HD Webcam eMeet C960)", "Windows DirectSound", 10),
+    ]
+    rows = firstrun.one_per_device(listing)
+    names = [r[1] for r in rows]
+    assert names == ["Microphone (HD Webcam eMeet C960)", "Headset Microphone (Arctis 7 Chat)",
+                     "Microphone (Realtek HD Audio Mic input)", "Nothing Ear", "Nothing ear (1"], names
+    assert all(r[2] == "Windows WASAPI" for r in rows[:2]), "the microphone's best API is the row"
+    assert not any("Sound Mapper" in n or "Primary Sound" in n for n in names)
+    # the settings name the MME row: that row is the group's, and lights up
+    mme = firstrun.device_key("Headset Microphone (Arctis 7 Ch", "MME")
+    kept = firstrun.one_per_device(listing, mme)
+    assert [r[0] for r in kept if "Arctis" in r[1]] == [mme], kept
+    assert len(kept) == len(rows)
+    assert firstrun.order_for(kept, mme)[0][0] == mme
+    # the same-device rule is exactly the MME cut, nothing looser
+    assert firstrun.same_device(row("Nothing Ear", "Windows WDM-KS", 1), row("Nothing ear (1", "Windows WDM-KS", 2)) is False
+    assert firstrun.same_device(row("Headset Microphone (Arctis 7 Ch", "MME", 1), row("Headset Microphone (Arctis 7 Chat)", "Windows WASAPI", 2))
+    assert firstrun.same_device(row("Headset Microphone (Arctis 7 Ch", "Windows WDM-KS", 1), row("Headset Microphone (Arctis 7 Chat)", "Windows WASAPI", 2)) is False
+    # the Windows default (an MME index) is named by the row shown for it
+    assert firstrun.default_device(listing, rows) in ("", firstrun.device_key("Headset Microphone (Arctis 7 Chat)", "Windows WASAPI"),
+                                                     *[r[0] for r in rows])
+    # every word on every page is English, bar the person's own sentence
+    hebrew = [k for k, v in firstrun.WORDS.items()
+              if any(0x0590 <= ord(ch) <= 0x05FF for ch in " ".join(v) if isinstance(v, tuple)) or
+              (isinstance(v, str) and any(0x0590 <= ord(ch) <= 0x05FF for ch in v))]
+    assert hebrew == [], hebrew
+    assert firstrun.WORDS["finish"] == "Start" and firstrun.WORDS["account.continue"] == "Continue"
+
+
+def test_the_wizards_microphone_help_is_on_screen_once():
+    """The microphone page's help (Windows may be blocking desktop apps)
+    is drawn into one frame and never twice: asked for by the registry
+    at page-build, by the quiet timer, and again after another device is
+    picked, the page shows one block with one button; a level that moves
+    takes it down; and the mic page's Next is the primary while the
+    account page's is quiet behind [Sign in with Google]."""
+    import firstrun
+    import sb
+    import ui as ui_mod
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    offers = {"portable": True, "model": None, "pack": None, "detector": None, "tier": "gpu"}
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(sb, "user", lambda: None):
+        try:
+            w = firstrun.Wizard(cfg, facts={}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            w.page = firstrun.PAGES.index("account")
+            w._show_page()
+            if getattr(w, "signin", None) is not None:
+                assert w.next is w.next_quiet, "Sign in is the page's action; Next is quiet"
+                assert w.signin._primary
+                w._account_said({"email": "person@example.com"})
+                assert w.next is w.next_loud and w.next._enabled
+                assert "person@example.com" in w.account_line.cget("text")
+            w.page = firstrun.PAGES.index("mic")
+            w._show_page()
+            w.root.update()
+            assert w.next is w.next_loud
+            if w.hint is None:
+                print("    (no input device on this machine: the help has no page)")
+                return
+            w._warn_silent()
+            w._warn_silent()
+            w.root.update()
+            assert w.hint_count() == 1, "the help was drawn twice"
+            buttons = [c for c in w.hint.winfo_children()[0].body.winfo_children()
+                       if isinstance(c, ui_mod.Button)]
+            assert len(buttons) == 1, "one [Open Windows settings]"
+            # another device picked: the timer starts again, the block does not double
+            others = [k for k in w._rows if k != w.device]
+            if others:
+                w._pick(others[0])
+                assert w._warned is False and w.hint_count() == 0
+                w._warn_silent()
+                w._warn_silent()
+                assert w.hint_count() == 1
+            # it moved: the help comes down
+            w.meter.show(firstrun.SPEECH * 2)
+            w._quiet_since = 0
+            w.listener.level = lambda: firstrun.SPEECH * 2
+            w._closing = False
+            w._tick()
+            assert w.hint_count() == 0, "the help stayed after the bar moved"
+            assert w.meter_note.cget("text") == firstrun.WORDS["mic.heard"]
+        finally:
+            try:
+                w._close()
+            except Exception:                                # noqa: BLE001
+                pass
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_wizard_rebinds_a_key_on_its_own_page():
+    """The keys page's chips (the owner, 2026-09-19: "let me change the
+    keys already on this page"): a click listens, the next key is
+    written through config.with_field + check_hotkeys + config.save
+    under the dashboard's NESTED_HOTKEYS name — the path Settings > Keys
+    takes — and the chip and the wizard's cfg show it; Esc cancels and
+    writes nothing; a key another field already means is refused with
+    the wizard's sentence and nothing is written; a modifier alone waits
+    for its release; a chord on the hold key is refused."""
+    import firstrun
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    offers = {"portable": True, "model": None, "pack": None, "detector": None, "tier": "gpu"}
+
+    class Event:
+        def __init__(self, keysym, keycode):
+            self.keysym, self.keycode = keysym, keycode
+
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(hotkey_mod, "held_modifier_groups", lambda probe=None: frozenset()):
+        try:
+            w = firstrun.Wizard(cfg, facts={}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            w.page = firstrun.PAGES.index("keys")
+            w._show_page()
+            w.root.update()
+            assert set(w.caps) == {"hotkey", "latch_hotkey", "punctuate_hotkey", "visual_qa_hotkey"}
+            before = cfg.punctuate_hotkey
+            # Esc: nothing written, the chip says what it said
+            w._rebind("punctuate_hotkey")
+            assert w._capturing == "punctuate_hotkey" and w._key_binds
+            assert w.caps["punctuate_hotkey"].itemcget(w.caps["punctuate_hotkey"]._label, "text") == firstrun.WORDS["keys.press"]
+            w._key_down(Event("Escape", 27))
+            assert w._capturing is None and not w._key_binds
+            assert not s.exists() or "punctuate_hotkey" not in s.read_text("utf-8")
+            assert w.cfg.punctuate_hotkey == before
+            # F7 (free in defaults.toml; F8 is Translate): written, shown, remembered
+            w._rebind("punctuate_hotkey")
+            w._key_down(Event("F7", 0x76))
+            assert w._capturing is None
+            assert config_mod.read_settings(s).get("punctuate_hotkey") == "f7", config_mod.read_settings(s)
+            assert w.cfg.punctuate_hotkey == "f7"
+            assert w.caps["punctuate_hotkey"].itemcget(w.caps["punctuate_hotkey"]._label, "text") == "F7"
+            assert "F7" in w.note.cget("text")
+            # F8 is Translate's: refused by name, nothing written
+            w._rebind("punctuate_hotkey")
+            w._key_down(Event("F8", 0x77))
+            assert w.note.cget("text") == firstrun.WORDS["keys.taken"].format(key="F8", other="Translate (tap)"), w.note.cget("text")
+            assert config_mod.read_settings(s).get("punctuate_hotkey") == "f7"
+            # the hold key, pressed for the latch: refused, nothing written
+            w._rebind("latch_hotkey")
+            w._key_down(Event("Control_R", 0x11))
+            assert w._capturing == "latch_hotkey", "a modifier waits for its release"
+            w._key_up(Event("Control_R", 0x11))
+            assert w._capturing is None
+            assert "Hold and talk" in w.note.cget("text") and "Right Ctrl" in w.note.cget("text"), w.note.cget("text")
+            assert config_mod.read_settings(s).get("latch_hotkey") is None
+            assert w.cfg.latch_hotkey == cfg.latch_hotkey
+            # a chord on the held key: refused with the plain sentence
+            w._apply_key("hotkey", "ctrl+f6")
+            assert w.note.cget("text") == firstrun.WORDS["keys.no_chord"]
+            assert config_mod.read_settings(s).get("hotkey") is None
+            # the nested one goes under its section's name
+            w._rebind("visual_qa_hotkey")
+            w._key_down(Event("F5", 0x74))
+            assert config_mod.read_settings(s).get("visual_qa.visual_qa_hotkey") == "f5", config_mod.read_settings(s)
+            assert w.cfg.visual_qa.hotkey == "f5"
+            # leaving the page while listening stops listening
+            w._rebind("punctuate_hotkey")
+            w._next()
+            assert w.name == "extras" and w._capturing is None and not w._key_binds
+        finally:
+            try:
+                w._close()
+            except Exception:                                # noqa: BLE001
+                pass
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def test_the_claude_code_door_is_installed_and_removed_cleanly():
     """notify_hook.hook_installed / uninstall_hook: a settings.json with
     somebody else's hooks keeps them byte for byte in meaning; ours are
