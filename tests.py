@@ -34925,8 +34925,12 @@ def test_iss_settings():
     assert 'Name: "hebrew"; MessagesFile: "compiler:Languages\\Hebrew.isl"' in iss
     icons = iss[iss.index("[Icons]"):iss.index("[Run]")]
     entries = [ln for ln in icons.splitlines() if ln.startswith("Name:")]
-    assert len(entries) == 1 and 'AppUserModelID: "DeskIT.App"' in entries[0], entries
-    assert "pythonw.exe" in entries[0] and "deskit.pyw" in entries[0]
+    # two since 1.1.1: the Start menu and the user's desktop (the owner
+    # closed the 1.1.0 install and could not find it again, 2026-09-19);
+    # both the same launcher under the app's own AppUserModelID
+    assert [e.split('"')[1] for e in entries] == ["{userprograms}\\DeskIT", "{userdesktop}\\DeskIT"], entries
+    for entry in entries:
+        assert 'AppUserModelID: "DeskIT.App"' in entry and "pythonw.exe" in entry and "deskit.pyw" in entry, entry
     assert "{commondesktop}" not in iss and "{userstartup}" not in iss
     assert "[Registry]" not in iss, "the Run value is the app's (autostart.py)"
     code = iss[iss.index("[Code]"):]
