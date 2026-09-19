@@ -40,7 +40,7 @@ def local_kwargs(cfg, hotwords=None) -> dict:
                 boilerplate=boilerplate)
 
 
-def _local(cfg, hotwords) -> Transcriber:
+def _local(cfg, hotwords, english_later: bool = False) -> Transcriber:
     """The local backend — or, on an installed copy whose model is not
     on disk yet (models.py), the stand-in that lets the app start and
     says so at the first dictation. The checkout never meets this: its
@@ -48,7 +48,8 @@ def _local(cfg, hotwords) -> Transcriber:
     from .local_whisper import LocalWhisperTranscriber
 
     def build():
-        return LocalWhisperTranscriber(**local_kwargs(cfg, hotwords))
+        return LocalWhisperTranscriber(**local_kwargs(cfg, hotwords),
+                                       english_later=english_later)
     try:
         return build()
     except ModelMissing as e:
@@ -59,10 +60,17 @@ def _local(cfg, hotwords) -> Transcriber:
         return MissingModelTranscriber(e, build)
 
 
-def get_transcriber(cfg, hotwords=None) -> Transcriber:
+def get_transcriber(cfg, hotwords=None, *,
+                    english_later: bool = False) -> Transcriber:
     """Build the backend selected in config. Imports lazily so the fake
     backend works without google-genai and the local stub without
-    faster-whisper."""
+    faster-whisper.
+
+    `english_later` (the live app): the local backend returns as soon
+    as the Hebrew model is ready and loads the English detector on a
+    thread of its own — see LocalWhisperTranscriber. The default loads
+    both before returning, which is what the wizard's timed sentence,
+    --benchmark and --drain want."""
     if cfg.backend == "gemini":
         from .gemini import ConsentRequired, GeminiTranscriber
         try:
@@ -78,10 +86,10 @@ def get_transcriber(cfg, hotwords=None) -> Transcriber:
             logging.getLogger("app").warning(
                 "backend = \"gemini\" but %s — transcribing on this PC "
                 "instead until it is granted", e)
-            return _local(cfg, hotwords)
+            return _local(cfg, hotwords, english_later)
     if cfg.backend == "fake":
         from .fake import FakeTranscriber
         return FakeTranscriber()
     if cfg.backend == "local":
-        return _local(cfg, hotwords)
+        return _local(cfg, hotwords, english_later)
     raise ValueError(f"unknown backend: {cfg.backend!r}")

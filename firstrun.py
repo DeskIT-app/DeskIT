@@ -454,17 +454,32 @@ class Listener:
             self._rec = None
 
 
-def transcribe(cfg, wav: bytes) -> tuple[str, str]:
+def transcribe(cfg, wav: bytes, timing: dict | None = None) -> tuple[str, str]:
     """(text, problem). Loads the real backend — seconds cold, and said so.
 
     The app's own `get_transcriber`, not a shortcut: the point of the step
     is to prove the pipeline the user is about to rely on, and a wizard
     that passed while the app failed would be worse than no wizard.
+
+    `timing`, when given, comes back with `load_s` (building the backend:
+    both models, their warm-ups) and `seconds` (the sentence itself,
+    detection and decode) — APART, because the page used to time the
+    two together and say "took 8.0 s" of a sentence that decoded in 0.5 s
+    (2026-09-19, the installed copy: 7.5 s of that was the load).
     """
     try:
         from transcribers import get_transcriber
+        started = time.monotonic()
         backend = get_transcriber(cfg)
-        return (backend.transcribe(wav) or "").strip(), ""
+        loaded = time.monotonic()
+        text = (backend.transcribe(wav) or "").strip()
+        seconds = time.monotonic() - loaded
+        if timing is not None:
+            timing.update(load_s=loaded - started, seconds=seconds)
+        log.info("wizard: the backend loaded in %.1f s, the sentence took "
+                 "%.1f s (%s)", loaded - started, seconds,
+                 getattr(backend, "last_timing", None) or "no split")
+        return text, ""
     except Exception as e:
         log.info("wizard transcription failed: %r", e, exc_info=True)
         return "", str(e) or e.__class__.__name__
@@ -1352,9 +1367,11 @@ class Wizard:
                 return self._on_result("", WORDS["say.nothing"], 0.0)
             self._later(lambda: self.status.configure(
                 text=WORDS["say.loading"], fg=ui.DIM))
-            started = time.monotonic()
-            text, problem = transcribe(self.cfg, wav)
-            self._on_result(text, problem, time.monotonic() - started)
+            # "took" is the sentence, not the load: transcribe() times
+            # the two apart and the load is in app.log.
+            timing: dict = {}
+            text, problem = transcribe(self.cfg, wav, timing)
+            self._on_result(text, problem, float(timing.get("seconds", 0.0)))
 
         threading.Thread(target=work, daemon=True, name="setup-test").start()
 

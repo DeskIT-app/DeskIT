@@ -397,7 +397,12 @@ class App:
             hebrew_after_hits=getattr(cfg.vocab, "hebrew_after_hits", 3))
         hotwords = self.vocab.hotwords if cfg.vocab.enabled else None
         if self._model_wanted:
-            self.transcriber = get_transcriber(cfg, hotwords)  # fail fast: no key
+            # fail fast: no key. english_later: usable the moment the
+            # Hebrew model is ready; the English detector lands on its
+            # own thread a few seconds after the ready cue (measured
+            # 2026-09-19: 4.8-6.6 s of the splash were its load).
+            self.transcriber = get_transcriber(cfg, hotwords,
+                                               english_later=True)
         else:
             from transcribers.off import OffTranscriber
             self.transcriber = OffTranscriber(self.MODEL_OFF_WORDS)
@@ -2421,6 +2426,12 @@ class App:
         with self._model_lock:
             old, self.transcriber = self.transcriber, OffTranscriber(self.MODEL_OFF_WORDS)
             self._local = None
+        # An English detector still loading on its thread (english_later)
+        # is told its result is not wanted; the thread holds the object
+        # until it lands, the memory goes with it.
+        closer = getattr(old, "close", None)
+        if callable(closer):
+            closer()
         del old
         gc.collect()
         self._model_state = "off"
@@ -2467,7 +2478,8 @@ class App:
             splash = None
         self._say("loading the model…")
         try:
-            fresh = get_transcriber(self.cfg, self._hotwords)
+            fresh = get_transcriber(self.cfg, self._hotwords,
+                                    english_later=True)
         except Exception as e:                               # noqa: BLE001
             self._model_state = "off"
             self._set_state("paused")
@@ -6166,10 +6178,18 @@ class App:
         # not move again. polish.max_wait_s bounds how long that can take.
         # Minus whatever the rolling transcriber's stretches already had
         # repaired while the key was held (_improve_rolled).
+        #
+        # TIMED APART from the decode, because it is where the seconds
+        # go: 2026-09-19 on the installed copy, a 12 s dictation decoded
+        # in 0.6 s and the paste landed 8.5 s after the release — 7.1 s
+        # of local repair between them — while this line said "0.6 s
+        # round trip" and the log read as if the paste had been fast.
+        repair_started = time.monotonic()
         cleaned = self._improve_rolled(cleaned, head)
         # And the punctuation, if the box is ticked — after the repair, so
         # it works on the final words; punctuate.max_wait_s bounds it.
         cleaned = self._auto_punctuate(cleaned)
+        repair_s = time.monotonic() - repair_started
         kept = None
         # The decoder's per-word confidence belongs to ONE decode; a
         # recording transcribed in pieces has several, so it carries none.
@@ -6243,10 +6263,18 @@ class App:
             item.discard()            # needed, drop it from the spool
         self._bump(dictations=1, seconds=seconds, chars=len(cleaned),
                    latency=latency)
+        # The number a person feels is release-to-paste, and the two
+        # halves are what say whether the decoder or the repair pass was
+        # slow. `latency` (the decode) stays the stat and the transcripts
+        # line, as it always was.
+        to_paste = time.monotonic() - started
         self._say(f"{seconds:.1f} s spoken -> {len(cleaned)} chars in "
-                  f"{latency:.1f} s via {backend}")
-        log.info("pasted %d chars (%.1f s round trip via %s; %s)",
-                 len(cleaned), latency, backend, status)
+                  f"{to_paste:.1f} s via {backend}"
+                  + (f" ({latency:.1f} s decode + {repair_s:.1f} s repair)"
+                     if repair_s >= 0.05 else ""))
+        log.info("pasted %d chars (%.1f s to the paste via %s: %.1f s "
+                 "decode, %.1f s repair; %s)",
+                 len(cleaned), to_paste, backend, latency, repair_s, status)
         # AFTER the paste, never before: the reading is slower than the
         # text and must not be what the text waits for.
         self._review_submit(kept, hwnd)

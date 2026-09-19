@@ -31130,6 +31130,362 @@ def test_the_ladder_honours_the_number_format():
     assert config_mod.LocalConfig().compute_type == "auto" and config_mod.LocalConfig().cpu_threads == 0
 
 
+# ------------------------------------------- the load, timed and warmed
+#
+# 2026-09-19, the installed copy on the RTX: the wizard's sentence page said
+# "took 8.0 s" of a 3 s sentence, and the splash stood ~17 s on every
+# start. Measured apart (transcribers/local_whisper.py, the docstrings):
+# the sentence DECODED in 0.4-0.7 s; the rest was the load — the Hebrew
+# model 4.8-7.3 s, its warm-up 0.5-2.3 s, the English detector 4.8-6.6 s
+# — timed as if it were the transcription. The load is now timed on its
+# own and written down (timing), the warm-up runs the LIVE settings so
+# the first sentence costs what the tenth does, and the live app loads the
+# detector after the Hebrew model is ready, not before it.
+
+
+class _WarmFakeModel:
+    """A WhisperModel that remembers every transcribe() it was asked for.
+    `hold` is an Event a load of the named model waits on — how a test
+    makes the English detector's load take as long as it likes."""
+
+    calls: list[dict] = []
+    hold: threading.Event | None = None
+    slow = ""
+
+    def __init__(self, model, device, compute_type, **kw):
+        self.model = model
+        if self.slow and model == self.slow and self.hold is not None:
+            self.hold.wait(10)
+
+    def transcribe(self, audio, **kw):
+        _WarmFakeModel.calls.append({"model": self.model, **kw})
+        return iter(()), None
+
+    def detect_language(self, audio=None, vad_filter=False):
+        _WarmFakeModel.calls.append({"model": self.model, "detect": vad_filter})
+        return "he", 1.0, []
+
+
+def test_the_warm_up_runs_the_live_settings_once_at_load() -> None:
+    """The first inference on a freshly loaded model is the slow one —
+    CUDA's kernels, Silero's session, the word-timestamp alignment — and
+    it used to be a BARE decode, so the first real dictation still paid
+    0.65 s against 0.24 s warm (measured 2026-09-19). Now the warm-up is
+    two decodes with the live settings: the guarded one without VAD (the
+    encoder, the decoder, the alignment all run) and one with VAD (which
+    builds Silero). Once, at the load, and never again; the load and the
+    warm-up are timed apart and written down."""
+    import transcribers.local_whisper as lw
+    import faster_whisper
+
+    _WarmFakeModel.calls, _WarmFakeModel.slow = [], ""
+    with _patched(faster_whisper, "WhisperModel", _WarmFakeModel), \
+            _patched(lw, "_register_cuda_dlls", lambda: None):
+        t = lw.LocalWhisperTranscriber("m", "he", device="cpu", beam_size=3)
+        warm = [c for c in _WarmFakeModel.calls if c["model"] == "m"]
+        assert len(warm) == 2, warm
+        bare, vad = warm
+        assert bare["vad_filter"] is False and bare["word_timestamps"] is True, bare
+        assert bare["beam_size"] == 3 and bare["language"] == "he", bare
+        assert bare["hallucination_silence_threshold"] == 2.0, "not the live guards"
+        assert vad["vad_filter"] is True, vad
+        for key in ("import_s", "load_s", "warm_s", "ready_s"):
+            assert key in t.timing and t.timing[key] >= 0, (key, t.timing)
+        assert "english_load_s" not in t.timing, "no detector was asked for"
+        # a real decode afterwards is one call — the warm-up does not repeat
+        before = len(_WarmFakeModel.calls)
+        t.transcribe(RIFF)
+        assert len(_WarmFakeModel.calls) == before + 1, _WarmFakeModel.calls[before:]
+        assert t.last_timing["detect_s"] == 0.0 and t.last_timing["decode_s"] >= 0, t.last_timing
+        # the guards off: the warm-up still runs, without them
+        _WarmFakeModel.calls.clear()
+        lw.LocalWhisperTranscriber("m", "he", device="cpu", guard_hallucinations=False)
+        bare = _WarmFakeModel.calls[0]
+        assert "word_timestamps" not in bare and bare["vad_filter"] is False, bare
+
+
+def test_the_english_detector_can_land_after_the_hebrew_model_is_ready() -> None:
+    """english_later: the constructor returns when the Hebrew model is
+    warm and the detector loads on a thread of its own. A dictation in
+    those seconds is Hebrew — no detection, no wait, one log line — and
+    the moment the detector lands, the next one is detected. The default
+    still loads both before returning (the wizard, --benchmark). A
+    transcriber closed before its detector lands drops it."""
+    import logging
+    import transcribers.local_whisper as lw
+    import faster_whisper
+
+    lines: list[str] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    app_log = logging.getLogger("app")
+    catch = _Catch()
+    level = app_log.level
+    app_log.setLevel(logging.INFO)
+    app_log.addHandler(catch)
+    hold = threading.Event()
+    _WarmFakeModel.calls, _WarmFakeModel.hold, _WarmFakeModel.slow = [], hold, "en-model"
+    try:
+        with _patched(faster_whisper, "WhisperModel", _WarmFakeModel), \
+                _patched(lw, "_register_cuda_dlls", lambda: None):
+            started = time.monotonic()
+            t = lw.LocalWhisperTranscriber("m", "he", device="cpu",
+                                           english_model="en-model",
+                                           english_later=True)
+            assert time.monotonic() - started < 2.0, "the constructor waited for the detector"
+            assert t.english_state == "loading" and t._english is None, t.english_state
+            assert "ready_s" in t.timing and "english_load_s" not in t.timing, t.timing
+            # a dictation meanwhile: Hebrew, no detection, said once
+            t.transcribe(RIFF)
+            t.transcribe(RIFF)
+            said = [l for l in lines if "still loading" in l]
+            assert len(said) == 1, said
+            assert t.last_timing["detect_s"] == 0.0, t.last_timing
+            assert not any("detect" in c for c in _WarmFakeModel.calls), "it detected on nothing"
+            # the second opinion says why it has none, rather than "no model"
+            try:
+                t.study_decode(RIFF, general=True)
+            except lw.TranscriptionError as e:
+                assert "still loading" in str(e), e
+            else:
+                raise AssertionError("a general decode ran without the model")
+            # the detector lands
+            hold.set()
+            assert t.wait_for_english(5.0), "the detector never landed"
+            assert t.english_state == "ready" and t._english is not None
+            assert t._english.model == "en-model"
+            assert t.timing["english_load_s"] >= 0 and t.timing["english_warm_s"] >= 0, t.timing
+            warm = [c for c in _WarmFakeModel.calls if c.get("model") == "en-model" and "detect" in c]
+            assert [c["detect"] for c in warm] == [True, False], warm
+            assert any("English model ready" in l and "from here" in l for l in lines), lines
+            # ...and from here the dictation is detected
+            _WarmFakeModel.calls.clear()
+            t.transcribe(RIFF)
+            assert any("detect" in c for c in _WarmFakeModel.calls), "no detection after the load"
+            assert t.last_timing["detect_s"] >= 0
+
+            # the default: both before returning, as always
+            hold.clear()
+            hold.set()
+            _WarmFakeModel.calls.clear()
+            e = lw.LocalWhisperTranscriber("m", "he", device="cpu", english_model="en-model")
+            assert e.english_state == "ready" and e._english is not None
+            assert e._english_thread is None
+            assert "english_load_s" in e.timing, e.timing
+
+            # closed before it lands: dropped, never installed
+            hold.clear()
+            c = lw.LocalWhisperTranscriber("m", "he", device="cpu",
+                                           english_model="en-model",
+                                           english_later=True)
+            c.close()
+            hold.set()
+            c.wait_for_english(5.0)
+            assert c._english is None and c.english_state == "closed", c.english_state
+            assert any("dropped" in l for l in lines), lines
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
+        _WarmFakeModel.hold, _WarmFakeModel.slow = None, ""
+        _WarmFakeModel.calls = []
+
+
+def test_get_transcriber_hands_english_later_to_the_local_backend_only_when_asked() -> None:
+    """The live app asks for the detector after the Hebrew model
+    (main.App, load_model); nobody else does, so the wizard's timed
+    sentence and --benchmark keep the whole backend before they start."""
+    import transcribers
+    import transcribers.local_whisper as lw
+
+    seen: list[dict] = []
+
+    class _Recorder:
+        name = "local"
+
+        def __init__(self, **kw):
+            seen.append(kw)
+
+    cfg = dataclasses.replace(config_mod.Config(), backend="local")
+    with _patched(lw, "LocalWhisperTranscriber", _Recorder):
+        transcribers.get_transcriber(cfg)
+        transcribers.get_transcriber(cfg, english_later=True)
+        transcribers.get_transcriber(cfg, None, english_later=False)
+    assert [kw["english_later"] for kw in seen] == [False, True, False], seen
+    assert seen[1]["model"] == cfg.local.model, seen[1]
+    # the live app, on both of its loads; the CLI paths, not
+    src = Path(__file__).resolve().parent.joinpath("main.py").read_text("utf-8")
+    live = re.findall(r"get_transcriber\((?:cfg|self\.cfg), (?:hotwords|self\._hotwords),\s*english_later=True\)", src)
+    assert len(live) == 2, live
+    assert "get_transcriber(cfg)" in src, "the CLI path still loads both up front"
+
+
+def test_the_wizards_seconds_are_the_sentence_not_the_load() -> None:
+    """The sentence page said "took 8.0 s" of a 3 s sentence because the
+    clock wrapped get_transcriber — both models, their warm-ups — around
+    a decode that took 0.5 s (2026-09-19). transcribe() now times the two
+    apart: `seconds` is the sentence, `load_s` the backend, and the page
+    shows the first."""
+    import firstrun
+    import transcribers
+
+    class _Slow:
+        name = "slow"
+
+        def transcribe(self, wav, language=None):
+            time.sleep(0.05)
+            return "שלום"
+
+    def build(cfg, hotwords=None, **kw):
+        time.sleep(0.3)
+        return _Slow()
+
+    cfg = dataclasses.replace(
+        config_mod.load(Path(__file__).resolve().parent / "defaults.toml"),
+        backend="fake")
+    timing: dict = {}
+    with _patched(transcribers, "get_transcriber", build):
+        text, problem = firstrun.transcribe(cfg, RIFF, timing)
+    assert text == "שלום" and not problem, (text, problem)
+    assert timing["load_s"] >= 0.25, timing
+    # monotonic() ticks every ~16 ms on Windows: a 50 ms sleep reads 47
+    assert 0.03 <= timing["seconds"] < 0.25, timing
+    # without the dict, the old two-tuple exactly as before
+    with _patched(transcribers, "get_transcriber", build):
+        assert firstrun.transcribe(cfg, RIFF) == ("שלום", "")
+    # the page feeds the sentence's seconds to the result, never the load
+    src = Path(firstrun.__file__).read_text("utf-8")
+    assert 'timing.get("seconds"' in src, "the page reads the sentence's seconds"
+    assert "transcribe(self.cfg, wav, timing)" in src
+
+
+def test_the_paste_line_counts_the_repair_pass() -> None:
+    """The log said "0.6 s round trip" of a paste that landed 8.5 s after
+    the release (2026-09-19, app.log: a 12 s dictation decoded in 0.6 s,
+    then 7.1 s of local repair IN FRONT of the paste — the contract of
+    test_the_transcript_is_final_when_it_lands). The transcripts line
+    and the stat keep the decode; the paste line and the status say the
+    time to the paste with its two halves."""
+    import logging
+
+    import main as main_mod
+
+    lines: list[str] = []
+    said: list[str] = []
+
+    class _Catch(logging.Handler):
+        def emit(self, record):
+            lines.append(record.getMessage())
+
+    app_log = logging.getLogger("app")
+    catch = _Catch()
+    level = app_log.level
+    app_log.setLevel(logging.INFO)
+    app_log.addHandler(catch)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = _worker_app(_Flaky(0, text="המקללת מסתירה את השדה"), tmp)
+            app.cfg = dataclasses.replace(app.cfg, polish=config_mod.PolishConfig(
+                when="always", min_chars=1, max_wait_s=5))
+            app._say = lambda text: said.append(text)
+
+            import polish as polish_mod
+
+            class Reply:
+                name = "stub-model"
+
+                def translate(self, text):
+                    time.sleep(0.25)
+                    return "המקלדת מסתירה את השדה"
+
+            polisher = polish_mod.Polisher(app.cfg, app.vocab)
+            polisher._backends = lambda text: iter([Reply()])
+            app._polisher = polisher
+            fake = _FakeInjector()
+            with _patched(main_mod, "injector", fake):
+                app._handle(b"RIFF-audio", 6.0, fake.focus)
+    finally:
+        app_log.removeHandler(catch)
+        app_log.setLevel(level)
+    pasted = [l for l in lines if l.startswith("pasted ")]
+    assert len(pasted) == 1, lines
+    m = re.search(r"\((\d+\.\d) s to the paste via \S+: (\d+\.\d) s decode, (\d+\.\d) s repair;", pasted[0])
+    assert m, pasted[0]
+    to_paste, decode, repair = (float(x) for x in m.groups())
+    assert repair >= 0.2 and to_paste >= repair and to_paste >= decode, pasted[0]
+    status = [s for s in said if "spoken ->" in s]
+    assert status and "s decode + " in status[0] and "s repair)" in status[0], said
+
+
+def test_a_refused_repair_backend_is_left_alone_for_a_minute() -> None:
+    """A stranger's machine: no Groq key, no Ollama. Windows takes 2.05 s
+    to refuse a connection to a local port nobody listens on (measured
+    2026-09-19, socket.create_connection to 127.0.0.1:1), and the context
+    pass paid it in front of every paste — for nothing. After a REFUSED
+    connection the backend is skipped for polish.UNREACHABLE_S and asked
+    again after; a backend that answered (a missing model, a bad reply)
+    is not put down, and the warm-up at startup counts as the first ask."""
+    import dataclasses
+
+    import net as net_mod
+    import polish as polish_mod
+
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    cfg = dataclasses.replace(cfg, polish=dataclasses.replace(
+        cfg.polish, prefer="ollama", min_chars=1, max_wait_s=5))
+    asks: list[str] = []
+
+    def refused(method, url, headers, body, timeout_s):
+        asks.append(url)
+        raise net_mod.NetError("[WinError 10061] No connection could be made")
+
+    def local(urls):                   # Ollama's asks; a Groq key on this
+        return [u for u in urls if "/api/chat" in u]   # PC is refused too
+
+    polisher = polish_mod.Polisher(cfg, _tmp_vocab())
+    text = "משפט ארוך מספיק כדי שהמעבר ירוץ עליו"
+    with _patched(net_mod, "_connect", refused):
+        assert polisher.polish(text) == (text, None)
+        assert len(local(asks)) == 1, asks
+        assert polisher._unreachable.get("ollama", 0) > time.monotonic()
+        # the next dictations do not wait on it
+        started = time.monotonic()
+        for _ in range(3):
+            assert polisher.polish(text) == (text, None)
+        assert len(local(asks)) == 1, asks
+        assert time.monotonic() - started < 0.5
+        # a minute later it is asked again
+        polisher._unreachable["ollama"] = time.monotonic() - 1
+        polisher.polish(text)
+        assert len(local(asks)) == 2, asks
+
+    # a backend that ANSWERS — 404, no such model — is not put down
+    asks.clear()
+    fresh = polish_mod.Polisher(cfg, _tmp_vocab())
+
+    def no_model(method, url, headers, body, timeout_s):
+        asks.append(url)
+        return _FakeRaw(b'{"error":"model not found"}', status=404)
+
+    with _patched(net_mod, "_connect", no_model):
+        fresh.polish(text)
+        fresh.polish(text)
+    assert len(local(asks)) == 2 and "ollama" not in fresh._unreachable, (asks, fresh._unreachable)
+
+    # the warm-up at startup is the first ask, so the first dictation
+    # does not pay the refusal either
+    asks.clear()
+    warmed = polish_mod.Polisher(cfg, _tmp_vocab())
+    with _patched(net_mod, "_connect", refused):
+        warmed.warm()
+        assert len(local(asks)) == 1, asks
+        warmed.polish(text)
+        assert len(local(asks)) == 1, asks
+    assert polish_mod.UNREACHABLE_S >= 30
+
+
 # ------------------------------------------------ the model on disk (PR 15)
 #
 # DISTRIBUTION_PLAN.md 6.4, D13: models.lock names what an installed copy
@@ -36035,9 +36391,14 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
         VK_RCTRL, on_start=lambda lang: None, on_stop=lambda lang: None,
         on_abort=lambda why: calls.append(f"abort:{why}"),
         on_refused=app._on_dictation_refused)
-    with _patched(main_mod, "get_transcriber",
-                  lambda cfg, hotwords=None: calls.append("build") or
-                  type("T", (), {"name": "local"})()):
+    builds: list[dict] = []
+
+    def build(cfg, hotwords=None, **kw):
+        calls.append("build")
+        builds.append(kw)
+        return type("T", (), {"name": "local"})()
+
+    with _patched(main_mod, "get_transcriber", build):
         # a live recording: refused
         app.machine.handle("down", VK_RCTRL, injected=False)
         reply = app.control_command("unload", {})
@@ -36086,13 +36447,16 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
             time.sleep(0.02)
         assert app._model_state == "on" and app.transcriber.name == "local"
         assert calls[-2:] == ["build", "dot:show"] and "start" not in calls, calls
+        # Start loads like a process start: usable when the Hebrew model
+        # is, the English detector on its own thread after
+        assert builds == [{"english_later": True}], builds
         assert not app.machine.dictation_off and states[-1] == "ready"
         assert said[-1] == "listening again"
         assert not app.control_command("load", {})["ok"], "loaded twice"
     # a build that fails leaves the model off, with the reason said
     app._model_state = "off"
     with _patched(main_mod, "get_transcriber",
-                  lambda cfg, hotwords=None: (_ for _ in ()).throw(RuntimeError("no GPU today"))):
+                  lambda cfg, hotwords=None, **kw: (_ for _ in ()).throw(RuntimeError("no GPU today"))):
         assert app.control_command("load", {})["ok"]
         for _ in range(100):
             if app._model_state == "off" and "did not load" in said[-1]:
