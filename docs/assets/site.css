@@ -117,6 +117,7 @@ img { max-width: 100%; height: auto; }
 .btn.ghost { border-color: var(--line); color: var(--fg); }
 .btn.ghost:hover { border-color: var(--gold); }
 .buttons .note { color: var(--faint); font-size: 14px; }
+.hero .signing { margin: 14px 0 0; color: var(--faint); font-size: 13.5px; }
 .cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 24px 0 8px; }
 .cards > div { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px 20px 18px; }
 .cards h3 { margin: 0 0 6px; font-size: 17px; font-weight: 500; }

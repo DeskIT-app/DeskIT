@@ -13,6 +13,7 @@ lang: he
 <a class="btn ghost" href="he/quickstart">התחלה מהירה</a>
 <span class="note">Windows 10/11 · בלי סיסמת מנהל · <a href="https://github.com/DeskIT-app/DeskIT/releases/latest">הגרסה, ה־SHA-256 והסריקה</a></span>
 </div>
+<p class="signing">חתימת קוד: SignPath Foundation (הבקשה הוגשה; עד אז Windows מזהיר פעם אחת — More info → Run anyway) · <a href="https://github.com/DeskIT-app/DeskIT/blob/main/CODE_SIGNING_POLICY.md">Code signing policy</a></p>
 </div>
 <figure class="shot"><img src="img/02-welcome.png" alt="המסך הראשון של DeskIT: הקול שלך נשאר במחשב הזה" width="736" height="679"></figure>
 </section>
@@ -53,6 +54,7 @@ lang: he
 <a class="btn ghost" href="en/quickstart">Quick start</a>
 <span class="note">Windows 10/11 · no administrator password · <a href="https://github.com/DeskIT-app/DeskIT/releases/latest">version, SHA-256, scan</a></span>
 </div>
+<p class="signing">Code signing: SignPath Foundation (application pending; until then Windows warns once — More info → Run anyway) · <a href="https://github.com/DeskIT-app/DeskIT/blob/main/CODE_SIGNING_POLICY.md">Code signing policy</a></p>
 </div>
 <div class="cards" style="grid-template-columns: 1fr; margin: 0;">
 <div><h3>Stays on your PC</h3><p>Transcription runs on your own machine with ivrit.ai's Hebrew model; nothing is sent anywhere until you switch it on.</p></div>
