@@ -178,8 +178,9 @@ WORDS = {
                  "recording."),
     "mic.open": "Open Windows settings",
     "computer.title": "This computer",
-    "computer.sub": ("What is missing downloads once. It keeps going while you continue, "
-                     "and can be finished later from the desk."),
+    "computer.sub": ("What is missing downloads once. Next opens when the download is done; "
+                     "Pause it if you must go on, and finish it later from the desk."),
+    "computer.wait": "Downloading — Next opens when it is done, or press Pause.",
     "computer.ready": "Everything this computer needs is already on the disk.",
     "computer.portable": "Portable copy: the models come from the Hugging Face cache, as always.",
     "computer.cpu": ("Without an NVIDIA card DeskIT works, only slower. Later you can add a "
@@ -1560,6 +1561,17 @@ class Wizard:
         if waiting and not self._busy:
             self.status.configure(text="", fg=ui.DIM)
 
+    def _computer_gate(self) -> None:
+        """Next waits for the downloads of this page: the owner watched
+        a stranger's Next stay live under a running bar (2026-09-19) and
+        asked that nobody could leave mid-download. Paused, failed,
+        offline or done: the way on opens again; the foot note says why
+        it is shut while it is."""
+        busy = any(run.running for run in self.runs.values())
+        for twin in (self.next_loud, self.next_quiet):
+            twin.enable(not busy)
+        self.note.configure(text=WORDS["computer.wait"] if busy else "", fg=ui.DIM)
+
     def _model_missing(self) -> bool:
         run = self.runs.get("model")
         if run is None:
@@ -1969,6 +1981,8 @@ class Wizard:
                         and time.monotonic() - self._quiet_since > QUIET_S):
                     self._warn_silent()
             self._pump_runs()
+            if self.name == "computer":
+                self._computer_gate()
             if self.name == "say":
                 self._say_ready()
         except Exception:                                  # noqa: BLE001

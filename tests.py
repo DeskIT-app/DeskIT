@@ -33388,7 +33388,14 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
             w._download()
             assert w.queue == ["model", "pack", "detector"] and w.active == 0
             assert w.runs["model"].running
-            w._next()                                        # while it runs
+            w._computer_gate()                               # what the tick does
+            assert not w.next_loud._enabled and not w.next_quiet._enabled,                 "Next stayed live under a running bar (the owner's 1.1.1 walkthrough)"
+            assert w.note.cget("text") == firstrun.WORDS["computer.wait"]
+            w.runs["model"].state = "paused"                 # Pause opens the way on
+            w._computer_gate()
+            assert w.next._enabled and w.note.cget("text") == ""
+            w.runs["model"].state = "running"
+            w._next()                                        # programmatically, while it runs
             assert w.name == "say" and w.pane is not None and w.pane.compact
             assert not w.say._enabled, "the record button ran before the model landed"
             pump(w, lambda: w.active == 2 and w.runs["detector"].ended, seconds=12)
