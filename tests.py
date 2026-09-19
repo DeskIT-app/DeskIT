@@ -31355,10 +31355,11 @@ def test_the_wizards_seconds_are_the_sentence_not_the_load() -> None:
     # without the dict, the old two-tuple exactly as before
     with _patched(transcribers, "get_transcriber", build):
         assert firstrun.transcribe(cfg, RIFF) == ("שלום", "")
-    # the page feeds the sentence's seconds to the result, never the load
+    # the page feeds the sentence's seconds to the result, never the load:
+    # its worker calls transcribe_timed() and the result line prints
+    # Heard.decode_s (the wizard redesign of the same day, lane C)
     src = Path(firstrun.__file__).read_text("utf-8")
-    assert 'timing.get("seconds"' in src, "the page reads the sentence's seconds"
-    assert "transcribe(self.cfg, wav, timing)" in src
+    assert "transcribe_timed(self.cfg, wav" in src and "decode_s" in src,         "the page reads the sentence's seconds"
 
 
 def test_the_paste_line_counts_the_repair_pass() -> None:

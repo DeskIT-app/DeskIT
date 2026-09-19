@@ -723,12 +723,6 @@ def transcribe_timed(cfg, wav: bytes, backend=None) -> tuple[Heard, object]:
     return Heard(text=text, load_s=load_s, decode_s=decode_s), backend
 
 
-def transcribe(cfg, wav: bytes) -> tuple[str, str]:
-    """(text, problem) — the shape the older callers and the test know."""
-    heard, _backend = transcribe_timed(cfg, wav)
-    return heard.text, heard.problem
-
-
 # ------------------------------------------------------- this computer
 
 def card_tier(facts: dict | None) -> str:
