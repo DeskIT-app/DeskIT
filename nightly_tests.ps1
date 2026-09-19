@@ -46,7 +46,9 @@ $Script = Join-Path $Repo 'nightly.py'
 # Where a message goes when the repo itself is missing. Without this the
 # "repo is gone" line would be written UNDER the gone repo: New-Item -Force
 # happily creates the whole missing tree and buries the warning in it.
-$Fallback = Join-Path $env:LOCALAPPDATA 'DeskIT\nightly-run.log'
+# DeskIT-dev, not DeskIT: %LOCALAPPDATA%\DeskIT is the INSTALLED copy's data folder
+# (paths.py), and a stray owner's log there is not a fresh user's slate (2026-09-19).
+$Fallback = Join-Path $env:LOCALAPPDATA 'DeskIT-dev\nightly-run.log'
 $script:Target = $Fallback
 
 # run.log is capped rather than rotated forever: one previous generation, the

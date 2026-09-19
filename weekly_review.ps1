@@ -112,7 +112,9 @@ if (-not $Claude) {
 # and buried the FATAL there, which is a phantom directory and a lost warning.
 # So the target starts outside the repo and only moves in once the repo is
 # confirmed to exist.
-$Fallback = Join-Path $env:LOCALAPPDATA 'DeskIT\weekly-run.log'
+# DeskIT-dev, not DeskIT: %LOCALAPPDATA%\DeskIT is the INSTALLED copy's data folder
+# (paths.py), and a stray owner's log there is not a fresh user's slate (2026-09-19).
+$Fallback = Join-Path $env:LOCALAPPDATA 'DeskIT-dev\weekly-run.log'
 $script:Target = $Fallback
 
 # Permission mode for the unattended run. The command reads problems.json,
