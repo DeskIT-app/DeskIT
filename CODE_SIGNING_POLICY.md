@@ -24,8 +24,8 @@ tree's manifest on the user's PC.
 
 | Role | Who |
 |---|---|
-| Committers and reviewers | [the DeskIT-app members](https://github.com/orgs/DeskIT-app/people) — Yoav Shimron, the maintainer |
-| Approvers | [the DeskIT-app owners](https://github.com/orgs/DeskIT-app/people?query=role%3Aowner) — Yoav Shimron |
+| Committers and reviewers | [DeskIT-app](https://github.com/DeskIT-app) — Yoav Shimron, the maintainer and the repository's only committer |
+| Approvers | [DeskIT-app](https://github.com/DeskIT-app) — Yoav Shimron |
 
 Every release is approved by hand in SignPath before it is signed; an unapproved build is not signed
 and not published.
