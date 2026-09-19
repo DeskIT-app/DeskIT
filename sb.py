@@ -29,9 +29,12 @@ What this module is allowed to be (chapter 8.7, ``test_sb_imports_are_narrow``):
 
 Sign-in is Google (D31: free, no domain, no SMTP) through Supabase's
 PKCE flow with a one-shot listener on 127.0.0.1 — the browser comes back
-to this process with a code, the code is exchanged here — or anonymous
-(a report-only account, later linkable to Google). Exactly one process
-holds the session: the app; the dashboard asks it over the control pipe.
+to this process with a code, the code is exchanged here, and the page
+it lands on is the app's own (``signin_page``); foreground.py then
+brings the app's window back in front of the browser and cards the
+account — or anonymous (a report-only account, later linkable to
+Google). Exactly one process holds the session: the app; the dashboard
+asks it over the control pipe.
 
 Sync (D31, sync.py holds the shapes): pull, merge, push — the learned
 words as rows, the settings overrides as one blob, this PC's
@@ -48,6 +51,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import html
 import http.server
 import json
 import logging
@@ -447,13 +451,88 @@ def _pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
-_DONE_PAGE = ("<!doctype html><meta charset='utf-8'><title>DeskIT</title>"
-              "<body style='font-family:sans-serif;direction:rtl;text-align:center;"
-              "padding:3em'><h2>נכנסת ל-DeskIT</h2><p>אפשר לסגור את הלשונית הזו "
-              "ולחזור לאפליקציה.</p></body>")
-_FAIL_PAGE = ("<!doctype html><meta charset='utf-8'><title>DeskIT</title>"
-              "<body style='font-family:sans-serif;direction:rtl;text-align:center;"
-              "padding:3em'><h2>הכניסה לא הושלמה</h2><p>{why}</p></body>")
+# THE PAGE THE BROWSER LANDS ON. It is the last thing the person sees
+# before the app, and until 2026-09-19 it was a bare white page in Hebrew
+# — "you can close this tab" — over which he had to go and find the
+# window himself. It is the app's own surface now: LAMPLIGHT (skin\
+# palette.py — ground #14110C, card #24201A, text #F1ECE2, dim #B2A896,
+# the gold #E3A63C only where the palette allows it, the focus ring), the
+# mark inline from icon.png, English (the first-run flow's language, his
+# decision that night), one card, one plain button. Nothing is fetched:
+# no font, no script, no image from anywhere — a page on 127.0.0.1 that
+# reached out would be the one network row nobody asked for. The gold
+# does not fill the button: the lamp in the mark is the one lit thing on
+# the surface (palette rule 1). foreground.bring_back() is what makes the
+# second sentence true; the button is for the browsers that let a script
+# close a tab it did not open, and the sentence is for the rest.
+_PAGE_CSS = (
+    ":root{color-scheme:dark}"
+    "html,body{height:100%;margin:0}"
+    "body{background:#14110c radial-gradient(60% 45% at 50% 0%,#292011 0%,#14110c 70%);"
+    "color:#f1ece2;font-family:system-ui,'Segoe UI',Rubik,Arial,sans-serif;"
+    "display:flex;align-items:center;justify-content:center;box-sizing:border-box;"
+    "padding:24px 16px;-webkit-font-smoothing:antialiased}"
+    "main{background:#24201a;border:1px solid #3a342a;border-radius:16px;"
+    "padding:40px 36px 34px;max-width:420px;width:100%;text-align:center;"
+    "box-shadow:0 24px 60px rgba(0,0,0,.45)}"
+    ".mark{width:72px;height:72px;display:block;margin:0 auto 22px;border-radius:17px}"
+    "h1{font-size:22px;font-weight:600;line-height:1.3;margin:0 0 10px;letter-spacing:-.01em}"
+    "p{color:#b2a896;font-size:15px;line-height:1.55;margin:0 0 26px}"
+    "p.why{color:#f1ece2;background:#1c1813;border:1px solid #3a342a;border-radius:10px;"
+    "padding:10px 14px;font-size:14px;word-break:break-word}"
+    "button{font:inherit;font-size:15px;font-weight:600;color:#f1ece2;background:#29241d;"
+    "border:1px solid #4e4737;border-radius:10px;padding:11px 24px;cursor:pointer}"
+    "button:hover{background:#332d24;border-color:#5a5240}"
+    "button:active{background:#1f1b15}"
+    "button:focus-visible{outline:2px solid #e3a63c;outline-offset:2px}"
+    "small{display:block;margin-top:20px;color:#7e7564;font-size:12px}"
+)
+_PAGE_JS = (
+    "function shut(){window.close();setTimeout(function(){"
+    "var b=document.getElementById('close');"
+    "if(b){b.textContent='Press Ctrl+W to close it'}},400)}"
+)
+_MARK_URI: str | None = None
+
+
+def _mark_uri() -> str:
+    """The mark for the page: icon.png — the file the taskbar shows — as
+    a data: URI, read once; "" when a copy has no icon, and the page
+    then simply carries no picture."""
+    global _MARK_URI
+    if _MARK_URI is None:
+        try:
+            raw = (paths.APP_DIR / "icon.png").read_bytes()
+            _MARK_URI = "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
+        except OSError:
+            _MARK_URI = ""
+    return _MARK_URI
+
+
+def signin_page(ok: bool, why: str = "") -> str:
+    """The loopback page: the signed-in card, or the one that says the
+    sign-in did not finish and quotes Google's reason (escaped — it
+    arrives on the query string)."""
+    mark = _mark_uri()
+    picture = f'<img class="mark" src="{mark}" alt="" width="72" height="72">' if mark else ""
+    if ok:
+        title = "Signed in to DeskIT"
+        body = ("<h1>You’re signed in to DeskIT</h1>"
+                "<p>DeskIT is back in front — you can close this tab.</p>")
+    else:
+        title = "DeskIT — the sign-in did not finish"
+        reason = html.escape(" ".join(str(why or "").split())[:200] or "no code came back")
+        body = ("<h1>The sign-in did not finish</h1>"
+                f'<p class="why">{reason}</p>'
+                "<p>Go back to DeskIT and press Sign in again.</p>")
+    return ("<!doctype html><html lang=\"en\" dir=\"ltr\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+            f"<title>{title}</title><style>{_PAGE_CSS}</style>"
+            f"<script>{_PAGE_JS}</script></head><body><main>"
+            f"{picture}{body}"
+            "<button id=\"close\" type=\"button\" onclick=\"shut()\">Close this tab</button>"
+            "<small>DeskIT · this page came from the app on this PC</small>"
+            "</main></body></html>")
 
 
 class _Callback(http.server.BaseHTTPRequestHandler):
@@ -471,11 +550,11 @@ class _Callback(http.server.BaseHTTPRequestHandler):
             return
         if query.get("code"):
             type(self).result = {"code": query["code"]}
-            page = _DONE_PAGE
+            page = signin_page(True)
         else:
             why = query.get("error_description") or query.get("error") or "no code"
             type(self).result = {"error": str(why)}
-            page = _FAIL_PAGE.format(why=str(why)[:200])
+            page = signin_page(False, str(why))
         data = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -566,6 +645,7 @@ def sign_in_google(open_browser=None, timeout_s: float = SIGNIN_TIMEOUT_S) -> di
         except Exception:                                    # noqa: BLE001
             pass
     log.info("account: signed in (%s)", "Google" if session["user"]["email"] else "anonymous")
+    _back_to_the_app(session["user"].get("email", ""))
     sync.forget_all()
     try:
         ensure_profile(force=True)
@@ -573,6 +653,25 @@ def sign_in_google(open_browser=None, timeout_s: float = SIGNIN_TIMEOUT_S) -> di
         log.warning("account: %s", e)
     _status["last_error"] = ""
     return dict(session["user"])
+
+
+def _back_to_the_app(email: str) -> None:
+    """The browser has the foreground when the code comes back, and the
+    person is looking at it. foreground.py brings the app's window (the
+    wizard or the dashboard) in front of it and puts up the app's own
+    card naming the account, with the way back on it. Both are a
+    courtesy: neither may fail a sign-in that has succeeded, and a copy
+    without the module simply does without."""
+    try:
+        import foreground
+    except Exception:                                        # noqa: BLE001
+        return
+    for step in (lambda: foreground.bring_back(),
+                 lambda: foreground.signed_in_card(email)):
+        try:
+            step()
+        except Exception:                                    # noqa: BLE001
+            log.debug("account: the way back to the app tripped", exc_info=True)
 
 
 def sign_in_anonymous() -> dict:
