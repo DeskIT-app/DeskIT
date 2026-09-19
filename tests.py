@@ -3408,11 +3408,13 @@ def test_a_phone_dictation_is_kept_for_the_second_reading() -> None:
         recent=recent, _review=engine, _last_words=[], _local=None,
         transcriber=types.SimpleNamespace(last_warning=None),
         _transcribe=lambda w, language=None: ("שלום מהטלפון", "fake"),
-        _improve=lambda t, wait=False: t)
+        _improve=lambda t, wait=False, receipt=None: t)
     text, backend, warning = main_mod.App._transcribe_for_phone(app, wav)
     assert text == "שלום מהטלפון" and backend == "fake" and warning is None
     assert len(submitted) == 1, submitted
     item, hwnd, card = submitted[0]
+    # nobody repaired it before the reply: the reading's local repair may
+    assert item.meta.get("repair") == "", item.meta
     assert card is False, "a phone clip must not raise the desktop card"
     assert item.meta["source"] == "phone", item.meta
     assert item.meta["text"] == "שלום מהטלפון"
@@ -4569,7 +4571,7 @@ def test_the_repair_pass_ships_its_backend_choice_in_the_real_config(
     # The fallback under it is what classic runs. Losing that is losing
     # every repair the moment a key expires or the network goes.
     assert cfg.polish.ollama_model, "no local fallback model configured"
-    assert cfg.polish.when in ("never", "known", "always")
+    assert cfg.polish.when in ("never", "known", "cloud", "always")
 
 
 # THE TWO-VERSION TESTS LIVED HERE, and they went with the two versions.
@@ -5143,11 +5145,22 @@ def test_the_fast_knobs_validate_and_default_classic_shaped() -> None:
 
 
 def test_the_transcript_is_final_when_it_lands() -> None:
-    """THE contract the placeholder makes. The context pass runs BEFORE the
-    paste, so what appears at the cursor is finished: nothing rewrites it a
-    few seconds later. That ordering was reversed once, for the speed, and
-    reversed back — text that might still change is text you cannot send,
-    because you never know whether you are looking at the final version."""
+    """THE contract the placeholder makes: what appears at the cursor is
+    finished, nothing rewrites it a few seconds later. The context pass
+    once ran BEFORE the paste for every backend to keep that — the
+    ordering was reversed for the speed and reversed back, because text
+    that might still change is text you cannot send.
+
+    What the owner decided on 2026-09-19 keeps the contract and moves the
+    LOCAL model out of the way: measured that day on the installed copy,
+    a stranger (no Groq key) waited 5-7 s before every paste for Ollama,
+    and 2 s with no Ollama at all. So under the default `when = "cloud"`
+    only a cloud backend (~0.3 s) repairs in front of the paste; the local
+    model's reading arrives afterwards as a PROPOSAL on the second
+    reading's card, which touches nothing until he says yes
+    (test_the_local_repair_no_longer_holds_the_paste). `when = "always"`,
+    pinned here, is the old way: every backend before the paste, and the
+    text is written exactly once."""
     import main as main_mod
 
     seen = []
@@ -5178,6 +5191,220 @@ def test_the_transcript_is_final_when_it_lands() -> None:
     writes = [c for c in fake.calls if c[0] in ("replace", "inject")]
     assert len(writes) == 1, f"the text was written more than once: {fake.calls}"
     assert writes[0][-1] == "המקלדת מסתירה את השדה", writes[0]
+    # "always" is not the default any more — "cloud" is (defaults.toml,
+    # config.PolishConfig), and the file says so in its own words
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    assert cfg.polish.when == "cloud" and config_mod.PolishConfig().when == "cloud"
+    assert '# never | known | cloud | always' in (
+        Path(__file__).resolve().parent / "defaults.toml").read_text("utf-8")
+
+
+class _SideBackend:
+    """A polish backend on one side of the paste: `name` decides the side
+    (polish.kind_of), `reply` is the sentence it answers with."""
+
+    def __init__(self, name: str, reply: str, seen: list):
+        self.name, self._reply, self._seen = name, reply, seen
+
+    def translate(self, text):
+        self._seen.append((self.name, text))
+        return self._reply
+
+
+def _sided_polisher(app, backends: list, asked: list):
+    """A Polisher whose backends are `backends`, filtered by the side the
+    caller asks for exactly as the real _backends does."""
+    import polish as polish_mod
+
+    polisher = polish_mod.Polisher(app.cfg, app.vocab)
+
+    def _backends(text, kinds=None):
+        asked.append(kinds)
+        for b in backends:
+            if kinds is None or polish_mod.kind_of(b.name) in kinds:
+                yield b
+    polisher._backends = _backends
+    return polisher
+
+
+def test_the_local_repair_no_longer_holds_the_paste() -> None:
+    """`when = "cloud"`, the default since 2026-09-19. A local-only setup
+    — no Groq key, the stranger's machine — pastes the transcript at
+    once: the pass in front of the paste asks only the cloud side and
+    nobody is there. The local model's reading then reaches the proposal
+    path: the second reading asks App._local_repair for the sentence and
+    turns what it changed into changes on the card (review.
+    changes_from_repair) — and only for a dictation nobody repaired
+    before the paste (the sidecar's "repair"). With Groq there, the
+    repair still runs in front of the paste, exactly as before, and the
+    reading does not run the pass a second time."""
+    import main as main_mod
+    import review as review_mod
+
+    raw = "המקללת מסתירה את השדה"
+    fixed = "המקלדת מסתירה את השדה"
+
+    # 1. local only: pasted raw, at once, the local side never asked
+    seen: list = []
+    asked: list = []
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _worker_app(_Flaky(0, text=raw), tmp)
+        app.cfg = dataclasses.replace(app.cfg, polish=config_mod.PolishConfig(
+            when="cloud", min_chars=1, max_wait_s=5))
+        ollama = _SideBackend("ollama", fixed, seen)
+        app._polisher = _sided_polisher(app, [ollama], asked)
+        fake = _FakeInjector()
+        started = time.monotonic()
+        with _patched(main_mod, "injector", fake):
+            app._handle(b"RIFF-audio", 6.0, fake.focus)
+        waited = time.monotonic() - started
+        writes = [c for c in fake.calls if c[0] in ("replace", "inject")]
+        assert len(writes) == 1 and writes[0][-1] == raw, fake.calls
+        assert asked == [("cloud",)], asked
+        assert seen == [], "the local model held the paste"
+        assert waited < 2.0, waited
+
+        # ...and the proposal path gets the text: the reading asks the
+        # local side, the sentence becomes a change on the card
+        assert app._local_repair(raw) == fixed
+        assert asked[-1] == ("local",) and seen == [("ollama", raw)], (asked, seen)
+        assert app._local_repair("קצר") is None, "min_chars still gates it"
+
+        item = _StudyItem(Path(tmp) / "clip.wav",
+                          {"text": raw, "raw": raw, "seconds": 3.0, "repair": ""},
+                          seconds=3.0)
+        transcriber = _StudyTranscriber(wide=raw, general=raw, loose=raw)
+        result = review_mod.read_one(item, transcriber, reader=None,
+                                     repair=app._local_repair)
+        assert result["repair"] is True, result
+        [change] = result["changes"]
+        assert (change["before"], change["after"], change["kind"]) == \
+            ("המקללת", "המקלדת", "replace"), change
+        assert change["why"] == review_mod.WHY_REPAIR and change["support"] == 0
+        assert result["proposed"] == fixed, result
+        # the whole channel: the engine puts it on the card, and nothing
+        # was written to the screen by anyone but the paste
+        shown: list = []
+        engine = review_mod.Engine(
+            app.cfg, transcriber, app.vocab, _ReviewRecent([item], Path(tmp)),
+            review_mod.Store(Path(tmp) / "review.json"),
+            model_lock=None, quiet=lambda: True, app_dir=Path(tmp),
+            on_suggest=shown.append, on_accept=lambda s: None,
+            reader=_ReviewReader(None), corpus=_NoCorpus(),
+            repair=app._local_repair)
+        engine._read(item, 0, True, 0)
+        assert shown and shown[0]["proposed"] == fixed, shown
+        assert item.meta["review"]["repair"] is True, item.meta["review"]
+        writes = [c for c in fake.calls if c[0] in ("replace", "inject")]
+        assert len(writes) == 1, "the card path wrote to the screen"
+
+        # a dictation the cloud repaired before the paste is not read
+        # by the local model again
+        seen.clear()
+        done = _StudyItem(Path(tmp) / "done.wav",
+                          {"text": fixed, "raw": raw, "seconds": 3.0,
+                           "repair": "groq"}, seconds=3.0)
+        result = review_mod.read_one(done, transcriber, reader=None,
+                                     repair=app._local_repair)
+        assert result["repair"] is False and seen == [], (result, seen)
+
+    # 2. Groq there: in front of the paste, as before, and the sidecar
+    #    says who did it
+    seen, asked = [], []
+    with tempfile.TemporaryDirectory() as tmp:
+        app = _worker_app(_Flaky(0, text=raw), tmp)
+        app.cfg = dataclasses.replace(app.cfg, polish=config_mod.PolishConfig(
+            when="cloud", min_chars=1, max_wait_s=5))
+        app._polisher = _sided_polisher(
+            app, [_SideBackend("groq", fixed, seen), _SideBackend("ollama", fixed, seen)],
+            asked)
+        from spool import Spool
+        app.recent = Spool(Path(tmp) / "recent", keep=5)
+        fake = _FakeInjector()
+        with _patched(main_mod, "injector", fake):
+            app._handle(b"RIFF-audio", 6.0, fake.focus)
+        writes = [c for c in fake.calls if c[0] in ("replace", "inject")]
+        assert len(writes) == 1 and writes[0][-1] == fixed, fake.calls
+        assert seen == [("groq", raw)] and asked == [("cloud",)], (seen, asked)
+        [kept] = app.recent.pending()
+        assert kept.meta.get("repair") == "groq", kept.meta
+
+    # 3. the engine is handed the repair only under "cloud"
+    src = Path(main_mod.__file__).read_text("utf-8")
+    assert 'if self.cfg.polish.when == "cloud" else None' in src
+
+
+def test_a_repaired_sentence_becomes_changes_on_the_card() -> None:
+    """review.changes_from_repair: the local model answers with a whole
+    sentence; the card needs changes with spans. A replaced stretch is a
+    replacement, a removed one a drop, an inserted word nothing; the
+    reading's own spans are not touched; a rewrite goes whole."""
+    import review as review_mod
+
+    final = "טוב אז הלכתי לאכול מטוס עם החברים אה שלי"
+    changes = review_mod.changes_from_repair(
+        final, "טוב אז הלכתי לאכול מנטוס עם החברים שלי",
+        ["טוב אז הלכתי לאכול מנטוס עם החברים"])
+    assert [(c["before"], c["after"], c["kind"], c["span"]) for c in changes] == \
+        [("מטוס", "מנטוס", "replace", [4, 5]), ("אה", "", "drop", [7, 8])], changes
+    assert changes[0]["support"] == 1 and changes[0]["why"] == review_mod.WHY_REPAIR
+    assert review_mod.apply_changes(final, changes) == \
+        "טוב אז הלכתי לאכול מנטוס עם החברים שלי"
+    # an insertion has no word on the card to hang on
+    assert review_mod.changes_from_repair("אכלתי מטוס", "היום אכלתי מטוס", []) == []
+    assert review_mod.changes_from_repair("אכלתי מטוס", "אכלתי מנטוס", []) == \
+        [{"before": "מטוס", "after": "מנטוס", "why": review_mod.WHY_REPAIR,
+          "kind": "replace", "span": [1, 2], "family": "context", "support": 0}]
+    # a span the reading already proposed stays its
+    assert review_mod.changes_from_repair(final, "טוב אז הלכתי לאכול מנטוס עם החברים אה שלי",
+                                          [], taken=[(4, 5)]) == []
+    # a stretch longer than a mishearing is not one; a set that touches a
+    # quarter of the words is a rewrite and goes whole
+    assert review_mod.changes_from_repair(
+        "אחת שתיים שלוש ארבע חמש שש שבע שמונה",
+        "אלף בית גימל דלת חמש שש שבע שמונה", []) == []
+    assert review_mod.changes_from_repair(
+        "א ב ג ד ה ו ז ח ט י", "x y ג w v ו u t ט י", []) == []
+    assert review_mod.changes_from_repair("", "משהו", []) == []
+    # max_changes bounds it
+    assert len(review_mod.changes_from_repair(
+        "א ב ג ד ה ו ז ח ט י כ ל מ נ ס ע", "x ב y ד z ו w ח ט י כ ל מ נ ס ע", [],
+        max_changes=2)) == 2
+
+
+def test_polish_sides_of_the_paste() -> None:
+    """polish.kind_of / before_paste_kinds / polish(kinds=...): the cloud
+    side is groq and cerebras, the local side ollama; "cloud" asks the
+    cloud side in front of the paste, "always" and "known" everyone,
+    "never" nobody; and polish() with a side asks only that side."""
+    import polish as polish_mod
+
+    assert polish_mod.kind_of("groq") == "cloud" and polish_mod.kind_of("cerebras") == "cloud"
+    assert polish_mod.kind_of("ollama") == "local"
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    for when, kinds in (("cloud", ("cloud",)), ("always", None), ("known", None),
+                        ("never", ())):
+        p = polish_mod.Polisher(dataclasses.replace(
+            cfg, polish=dataclasses.replace(cfg.polish, when=when)), _tmp_vocab())
+        assert p.before_paste_kinds() == kinds, (when, p.before_paste_kinds())
+    p = polish_mod.Polisher(dataclasses.replace(
+        cfg, polish=dataclasses.replace(cfg.polish, when="cloud", min_chars=1)),
+        _tmp_vocab())
+    assert p.should_run("משפט ארוך מספיק לתיקון")
+    seen: list = []
+    text = "המקללת מסתירה את השדה"
+    p._backends = lambda t, kinds=None: iter(
+        b for b in [_SideBackend("groq", "המקלדת מסתירה את השדה", seen),
+                    _SideBackend("ollama", "המקלדת מסתירה את השדה", seen)]
+        if kinds is None or polish_mod.kind_of(b.name) in kinds)
+    assert p.polish(text, kinds=("local",))[1] == "ollama"
+    assert p.polish(text, kinds=("cloud",))[1] == "groq"
+    assert p.polish(text)[1] == "groq"
+    assert [n for n, _ in seen] == ["ollama", "groq", "groq"], seen
+    # the Settings page offers the default first, in plain words
+    import settings as settings_mod
+    assert settings_mod._REPAIR[0][0] == "cloud" and "card" in settings_mod._REPAIR[0][1]
+    assert [v for v, _ in settings_mod._REPAIR] == ["cloud", "always", "known", "never"]
 
 
 def test_word_timestamps_stay_on_because_the_silence_guard_needs_them() -> None:
@@ -19696,7 +19923,7 @@ def test_the_help_on_a_setting_is_the_comment_in_the_file() -> None:
                              "bottom-left")),
             ("dot.corner", ("bottom-right", "top-right")),
             ("backend", ("gemini", "local")),
-            ("polish.when", ("never", "known", "always")),
+            ("polish.when", ("never", "known", "cloud", "always")),
             ("local.device", ("auto", "cuda", "cpu"))):
         setting = find(path)
         assert setting.choices == choices, (path, setting.choices)
@@ -20666,7 +20893,7 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
             sections = board.parts["sections"]
             when = settings_mod.find(sections, "polish.when")
             [(kind, menu)] = board.parts["rows"]["polish.when"]
-            assert kind == "dropdown" and menu.get() == "always", \
+            assert kind == "dropdown" and menu.get() == "cloud", \
                 (kind, menu.get())
             assert menu.label_for("known").startswith("Only taught"), \
                 "the menu shows the value, not its name"
@@ -28885,21 +29112,32 @@ def test_the_repair_pass_skips_the_stretches_repaired_while_he_spoke():
         app = _worker_app(_Flaky(fail_times=0), tmp)
         seen = []
 
-        def improve(text, wait=True, max_wait_s=None):
+        def improve(text, wait=True, max_wait_s=None, receipt=None):
             seen.append(text)
+            if receipt is not None:
+                receipt["by"] = "stub"
             return f"<{text}>"
 
         app._improve = improve
         app.transcriber.clean_text = lambda t: t.replace("אה ", "")
         head = rolling.Head([], 0.0)
-        w1 = rolling.Window(0.0, 25.0, "אחת", polished="<אחת>")
-        w2 = rolling.Window(25.0, 50.0, "שתיים", polished="<שתיים>")
+        w1 = rolling.Window(0.0, 25.0, "אחת", polished="<אחת>", polished_by="groq")
+        w2 = rolling.Window(25.0, 50.0, "שתיים", polished="<שתיים>", polished_by="groq")
         w3 = rolling.Window(50.0, 75.0, "אה שלוש")          # still on its way
         tail = rolling.Window(75.0, 80.0, "ארבע")
         app._last_windows = [w1, w2, w3, tail]
-        out = app._improve_rolled("אחת שתיים שלוש ארבע", head)
+        receipt: dict = {}
+        out = app._improve_rolled("אחת שתיים שלוש ארבע", head, receipt)
         assert out == "<אחת> <שתיים> <שלוש ארבע>", ascii(out)
         assert seen == ["שלוש ארבע"], ascii(seen)
+        # who repaired it, for the second reading: the pass now, or a
+        # stretch's own while he spoke
+        assert receipt == {"by": "stub"}, receipt
+        w2b = rolling.Window(25.0, 50.0, "שתיים", polished="<שתיים>", polished_by="groq")
+        app._last_windows = [w1, w2b]
+        receipt = {}
+        assert app._improve_rolled("אחת שתיים", head, receipt) == "<אחת> <שתיים>"
+        assert receipt == {"by": "groq"}, receipt
         # Nothing repaired in time: the whole text, one pass, as before.
         seen.clear()
         app._last_windows = [rolling.Window(0.0, 25.0, "אחת"), tail]
@@ -28911,11 +29149,12 @@ def test_the_repair_pass_skips_the_stretches_repaired_while_he_spoke():
         out = app._improve_rolled("אחת שתיים", None)
         assert out == "<אחת שתיים>" and seen == ["אחת שתיים"], (out, seen)
         # The stretch's own repair: filler cleanup first, then the pass,
-        # and the answer lands on the window.
+        # and the answer lands on the window — with who gave it.
         seen.clear()
         window = rolling.Window(0.0, 25.0, "אה חמש")
         app._polish_window(window, app.transcriber)
         assert window.polished == "<חמש>" and seen == ["חמש"],             (window.polished, seen)
+        assert window.polished_by == "stub", window.polished_by
         # A pass that raises leaves the window for the release.
         app._improve = lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError())
         window = rolling.Window(0.0, 25.0, "שש")

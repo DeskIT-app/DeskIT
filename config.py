@@ -954,12 +954,17 @@ class PolishConfig:
       known   — only when the transcript contains something you have
                 corrected before. Keeps most dictations fast and misses
                 most repairs; the setting to reach for if the wait bites.
-      always  — every dictation. THE DEFAULT: it adds ~5 s to every paste
-                and earns it, catching the mishearings that have never been
-                corrected before, which is most of them (17.9% -> 13.9% WER
-                on the corrected clips, 3 better and 0 worse).
+      cloud   — THE DEFAULT (the owner's decision, 2026-09-19): a cloud
+                backend (Groq, ~0.3 s) repairs before the paste; the local
+                model does not hold the paste — the text lands at once and
+                the local repair follows as a proposal on the second
+                reading's card (review.py). A stranger without a key
+                waited 5-7 s per paste, 2 s with no Ollama at all.
+      always  — every backend before the paste, the local one included:
+                ~5 s on every paste, earned when it fires (17.9% -> 13.9%
+                WER on the corrected clips, 3 better and 0 worse).
     """
-    when: str = "always"
+    when: str = "cloud"
     # Below this a "sentence" is a phrase with no context to reason from,
     # which is precisely where a model starts inventing one.
     min_chars: int = 20
@@ -2133,9 +2138,9 @@ def build(data: dict) -> Config:
             '"90s" (a plain number is seconds, "-1" holds the model until '
             'Ollama stops, "" leaves it to Ollama), got '
             f"{cfg.lookup.keep_alive!r}")
-    if cfg.polish.when not in ("never", "known", "always"):
-        raise ConfigError('polish.when must be "never", "known" or "always", '
-                          f"got {cfg.polish.when!r}")
+    if cfg.polish.when not in ("never", "known", "cloud", "always"):
+        raise ConfigError('polish.when must be "never", "known", "cloud" or '
+                          f'"always", got {cfg.polish.when!r}')
     if cfg.polish.prefer not in ("groq", "cerebras", "ollama"):
         raise ConfigError('polish.prefer must be "groq", "cerebras" or '
                           f'"ollama", got {cfg.polish.prefer!r}')

@@ -375,7 +375,8 @@ APP = "The app"           # the blocks that used to be screens, and [awake]
 
 _ENGINES = (("local", "On this computer"),
             ("gemini", "In Google's cloud"))
-_REPAIR = (("always", "Always"),
+_REPAIR = (("cloud", "Before the paste with a key, as a card without one"),
+           ("always", "Always before the paste"),
            ("known", "Only taught words"),
            ("never", "Never"))
 _DOT_CORNERS = (("bottom-right", "Bottom right"), ("top-right", "Top right"))
@@ -426,7 +427,11 @@ TABS: tuple[Tab, ...] = (
                      "The Hebrew vowel marks go in along with the "
                      "punctuation."),
             Friendly("polish.when", "Fix misheard words with a model",
-                     "Always, only when the sentence holds a word you have "
+                     "With a cloud key the fix goes in before the text is "
+                     "pasted (a third of a second); without one the model "
+                     "on this PC takes 5-7 s, so the text is pasted at "
+                     "once and its fix arrives as a card you can accept. "
+                     "Or always before the paste, only for words you have "
                      "corrected before, or never.", _REPAIR),
             Friendly("vocab.enabled", "Use the words it has learned",
                      "Corrections you taught it with the correction key "

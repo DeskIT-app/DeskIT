@@ -1536,21 +1536,36 @@ read_goal_hours = 3       # how much of your voice a fine-tune wants
 # dictation, measured 2026-09-13) — which also means the words of a
 # dictation you then abort with Esc may already have gone.
 #
-# IT SITS IN FRONT OF YOUR CURSOR, and that costs you seconds. It was tried
-# the other way — paste instantly, rewrite the text on screen a few seconds
-# later — and moved back, because text that might still change is text you
-# cannot send: you never know whether what you are looking at is the final
-# version. So the rule is simple and worth relying on:
-#
-#     "..." on screen  = not finished
-#     text on screen   = finished, and it will not change again
-when = "always"           # never | known | always
-                          # "known" only runs when the transcript contains
-                          # something you have corrected before, which keeps
-                          # most dictations fast and misses most repairs.
-                          # "always" is the default because the pass is worth
-                          # its wait when it fires: 17.9% -> 13.9% WER on the
-                          # corrected clips, 3 better and 0 worse
+# WHERE IT SITS depends on who answers (the owner's decision, 2026-09-19).
+# A cloud backend answers in ~0.3 s, so it sits IN FRONT OF YOUR CURSOR and
+# the rule holds: "..." on screen = not finished, text on screen = finished
+# and it will not change again. The local model answers in 5-7 s, and a
+# machine without a key — every stranger's — waited that long before every
+# paste (2 s even with no Ollama at all: that is how long Windows takes to
+# refuse a local port). So the local model is no longer in front of the
+# cursor: the text is pasted at once, and what the local model would have
+# changed arrives a few seconds later as a proposal — the same card the
+# second reading already shows ([review]), yes teaches it, no is
+# remembered, ignoring it changes nothing. The text on screen is only ever
+# touched by your yes. It was once the other way round (paste, then
+# rewrite on screen a few seconds later) and rejected because a sentence
+# that may still rewrite itself is one you cannot send; a proposal beside
+# the text is not a rewrite.
+when = "cloud"            # never | known | cloud | always
+                          # "cloud": a cloud backend (a Groq key + consent)
+                          # repairs before the paste; the local model
+                          # proposes after it, on the second reading's card
+                          # ([review] enabled — off, it does not run at
+                          # all). THE DEFAULT.
+                          # "always": every backend before the paste, the
+                          # local one included — the pass earns its wait
+                          # when it fires (17.9% -> 13.9% WER on the
+                          # corrected clips, 3 better and 0 worse), if you
+                          # would rather wait 5-7 s than read a card.
+                          # "known" only runs, before the paste, when the
+                          # transcript contains something you have corrected
+                          # before, which keeps most dictations fast and
+                          # misses most repairs.
 min_chars = 20            # below this there is no context to reason from, which
                           # is exactly where a model starts inventing some
 

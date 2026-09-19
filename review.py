@@ -29,6 +29,13 @@ and that question can only be answered against the sentence. Two kinds:
     structurally, without a language model, from the decodes and the
     live pass's own per-word confidence (LocalWhisperTranscriber
     .last_words, kept in the recording's sidecar as "words").
+  - since 2026-09-19, THE LOCAL REPAIR MODEL'S READING as well: the
+    context pass (polish.py) on the model on this PC, which used to hold
+    the paste 5-7 s and now runs here instead, behind it, under the
+    default `polish.when = "cloud"`. Its whole-sentence answer is diffed
+    against the pasted text into replacements and drops
+    (changes_from_repair), and only for a dictation no cloud backend
+    repaired before the paste (the sidecar's "repair" names who did).
 
 WHAT APPROVAL DOES, AND WHAT NOTHING ELSE MAY DO. Accepting teaches
 vocab.py the pair exactly as the correction key does — a human decision,
@@ -93,6 +100,9 @@ KEEP_DECIDED = 300
 WHY_TAIL = "מילים שאף פענוח אחר לא שמע"
 WHY_DEFAULT = "נשמע כמו טעות שמיעה"
 WHY_TYPED = "תיקנת בעצמך"
+# The local repair model's changes (polish.py behind the paste, `when =
+# "cloud"`): the card says whose reading this is.
+WHY_REPAIR = "מודל התיקון המקומי מציע"
 
 PENDING, ACCEPTED, REJECTED = "pending", "accepted", "rejected"
 VERDICTS = (ACCEPTED, REJECTED)
@@ -442,6 +452,65 @@ def validate(final: str, proposals: list[dict], variants: list[str],
     return out
 
 
+def changes_from_repair(final: str, repaired: str, variants: list[str],
+                        taken=(), max_changes: int = 4) -> list[dict]:
+    """The local repair model's sentence, as proposals on the pasted one.
+
+    The context pass (polish.py) answers with the WHOLE sentence as it
+    thinks it was said; since 2026-09-19 (`when = "cloud"`) that answer
+    no longer replaces the text on screen but is offered on the card, so
+    it has to become the card's currency — a change with a span. A word
+    diff between the two sentences gives it: every stretch the model
+    replaced becomes a REPLACEMENT (one to three words for one to four),
+    every stretch it took out a DROP, an insertion nothing (there is no
+    word on the card to hang it on). The same bounds as validate():
+    spans may not overlap what the reading already proposed, and a set
+    that touches more than a quarter of the words is a rewrite and goes
+    whole. No witnesses are demanded — polish._is_safe already vetted
+    the sentence as a whole, and the card is a question, not a rewrite
+    — but `support` still counts the decodes that heard the new words,
+    for the card to say so.
+    """
+    fw, rw = words(final), words(repaired)
+    if not fw or not rw:
+        return []
+    heard = [set(_low(words(v))) for v in variants if v.strip()]
+    used = list(taken)
+    out: list[dict] = []
+    touched = 0
+    matcher = difflib.SequenceMatcher(None, _low(fw), _low(rw),
+                                      autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag not in ("replace", "delete"):
+            continue
+        if i2 - i1 > MAX_BEFORE_WORDS or j2 - j1 > MAX_AFTER_WORDS:
+            continue
+        if _overlaps((i1, i2), used):
+            continue
+        before = " ".join(fw[i1:i2])
+        after = " ".join(rw[j1:j2])
+        used.append((i1, i2))
+        touched += i2 - i1
+        if tag == "delete":
+            out.append({"before": before, "after": "", "why": WHY_REPAIR,
+                        "kind": "drop", "span": [i1, i2],
+                        "family": "repair", "support": 0})
+        else:
+            low_after = _low(rw[j1:j2])
+            out.append({"before": before, "after": after, "why": WHY_REPAIR,
+                        "kind": "replace", "span": [i1, i2],
+                        "family": vocab_mod.family(before, after),
+                        "support": sum(1 for h in heard
+                                       if all(w in h for w in low_after))})
+        if len(out) >= max_changes:
+            break
+    if touched > max(4, round(len(fw) * 0.25)):
+        log.info("the local repair changed %d of %d words — that is a "
+                 "rewrite, not proposed", touched, len(fw))
+        return []
+    return out
+
+
 class Reader:
     """The language-model leg, on the polish backends: Groq first, the
     local model underneath — text only, the audio never leaves the machine
@@ -544,13 +613,20 @@ def needs_review(item) -> bool:
 
 def read_one(item, transcriber, *, reader=None, model_lock=None, pause=None,
              glossary=(), context=(), max_changes: int = 4,
-             witness: int = 2) -> dict | None:
+             witness: int = 2, repair=None) -> dict | None:
     """Read one recording. The result dict (what the sidecar keeps), or
     None when `pause` asked to stop — the clip stays unread and is taken
     from the top later.
 
     Like study_one: the model lock is held PER DECODE, never across the
-    set, so a dictation that arrives mid-reading waits out one decode."""
+    set, so a dictation that arrives mid-reading waits out one decode.
+
+    `repair` (main.App._local_repair) is the context pass on the local
+    model, behind the paste since 2026-09-19: text in, the repaired
+    sentence or None out. Asked only for a dictation nobody repaired
+    before the paste (the sidecar's "repair" names who did), so the pass
+    never runs twice for one dictation; its changes join the card's
+    (changes_from_repair) and the result says so ("repair")."""
     import study as study_mod
 
     meta = item.meta
@@ -588,6 +664,21 @@ def read_one(item, transcriber, *, reader=None, model_lock=None, pause=None,
                                 taken=[tuple(tail["span"])] if tail else (),
                                 max_changes=max_changes, glossary=glossary,
                                 witness=witness)
+    used_repair = False
+    if repair is not None and not (meta.get("repair") or "").strip() \
+            and len(changes) < max_changes:
+        try:
+            repaired = repair(final)
+        except Exception as e:            # noqa: BLE001 — a proposal lost
+            log.info("the local repair did not answer (%s)",
+                     str(e).splitlines()[0][:160])
+            repaired = None
+        if repaired and repaired.strip() and repaired.strip() != final:
+            used_repair = True
+            changes += changes_from_repair(
+                final, repaired.strip(), texts,
+                taken=[tuple(c["span"]) for c in changes],
+                max_changes=max_changes - len(changes))
     changes = changes[:max_changes]
     return {"engine": ENGINE,
             "when": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -595,6 +686,7 @@ def read_one(item, transcriber, *, reader=None, model_lock=None, pause=None,
             "variants": texts,
             "agree": round(agree, 3),
             "llm": used_llm,
+            "repair": used_repair,
             "changes": changes,
             "proposed": apply_changes(final, changes) if changes else final}
 
@@ -898,7 +990,7 @@ class Engine:
 
     def __init__(self, cfg, transcriber, vocab, recent, store: Store, *,
                  model_lock, quiet, app_dir: Path, on_suggest=None,
-                 on_accept=None, reader=None, corpus=None):
+                 on_accept=None, reader=None, corpus=None, repair=None):
         import study as study_mod
 
         self._cfg = cfg
@@ -911,6 +1003,9 @@ class Engine:
         self._quiet = quiet
         self._on_suggest = on_suggest
         self._on_accept = on_accept
+        # The local context pass behind the paste (read_one's `repair`);
+        # None when it is not wanted here (polish.when != "cloud").
+        self._repair = repair
         self._reader = reader if reader is not None else Reader(
             cfg, local=bool(getattr(cfg.review, "local_model", False)))
         scfg = getattr(cfg, "study", None)
@@ -1021,7 +1116,8 @@ class Engine:
             glossary=glossary_for(self._vocab,
                                   (item.meta.get("text") or "")),
             max_changes=self._rcfg.max_changes,
-            witness=int(getattr(self._rcfg, "witness", 2)))
+            witness=int(getattr(self._rcfg, "witness", 2)),
+            repair=self._repair)
         if result is None:
             # A dictation took the GPU mid-reading. Back of the queue,
             # a little later; after six tries it is read regardless.
@@ -1039,6 +1135,7 @@ class Engine:
         stamp = {k: result[k] for k in ("engine", "when", "agree", "llm",
                                         "decodes", "variants")}
         stamp["changes"] = len(result["changes"])
+        stamp["repair"] = bool(result.get("repair"))
         self._recent.update(item, review=stamp)
         meta = item.meta
         corrected = (meta.get("corrected") or "").strip()
@@ -1048,9 +1145,10 @@ class Engine:
               and len(result["decodes"]) >= 2):
             self.corpus.admit(item, (meta.get("text") or "").strip(), "silver")
         if not result["changes"]:
-            log.info("second reading of %s: nothing to propose (agree %.0f%%%s)",
+            log.info("second reading of %s: nothing to propose (agree %.0f%%%s%s)",
                      item.wav_path.name, result["agree"] * 100,
-                     ", llm" if result["llm"] else "")
+                     ", llm" if result["llm"] else "",
+                     ", local repair" if result.get("repair") else "")
             return
         suggestion = suggestion_from(item, result, hwnd=hwnd)
         self.store.add(suggestion)
