@@ -6,6 +6,12 @@ attestation, the previous version) — do not write those here. Hebrew
 paragraph first (the owner's), English second (DISTRIBUTION_PLAN.md
 11.11 step 2).
 
+## 1.1.1
+
+הסיבוב הראשון של משתמש מאפס (19.9.2026), על 1.1.0 המותקנת. "Open the desk" לא פתח כלום — כל קובץ שהעותק המותקן מפעיל לפי נתיב לא מצא את המודולים שלו (המפרש המבודד; תוקן בכולם, ולתהליכי־בת יש עכשיו spawn.log). האשף באנגלית פשוטה ובצבעי האפליקציה: שורה אחת לכל מיקרופון, ההסבר על חלונות פעם אחת ונכון, החשבון ככרטיס, המקשים ניתנים לשינוי כבר שם, ומשפט הבדיקה מראה את זמן הפענוח (0.5 שניות) ולא את טעינת המודל (8). הנקודה היא הסימן עצמו ונראית על כל רקע; מסך הטעינה וכרטיס המקשים צוירו מחדש; skia נכללת בהתקנה, אז העותק המותקן נראה כמו של המפתח. בלי מפתח ענן ההדבקה נוחתת מיד (0.6 שניות) והתיקון המקומי מציע בכרטיס; עם מפתח — התיקון לפני ההדבקה כמו קודם. המזהה האנגלי נטען אחרי שהאפליקציה כבר שמישה. דף "נכנסת" מעוצב, והחלון חוזר קדימה אחרי הכניסה. המתקין: דף פתיחה עם הסימן, שתי לחיצות. בדיקת העדכון: המארח החדש של GitHub להורדות.
+
+The first walkthrough as a stranger (2026-09-19), on the installed 1.1.0. "Open the desk" did nothing — every script an installed copy starts by path could not import its own modules under the isolated interpreter (fixed in all of them; child processes now leave their last words in spawn.log). The wizard in plain English and the app's own colours: one row per microphone, the Windows-privacy help once and right, the account as a card, keys rebound on the page, and the test sentence shows the decode (0.5 s), not the model's load (8 s). The dot is the mark itself and reads on any wallpaper; the boot card and the keys card are redrawn; skia ships in the base, so an install looks like the developer's desk. Without a cloud key the paste lands at once (0.6 s) and the local repair proposes on the card; with a key the repair runs before the paste as before. The English detector loads after the app is usable. The sign-in page is designed and the window comes back in front. The installer: a Welcome page with the mark, two clicks. The update check: GitHub's new download host is allowed.
+
 ## 1.1.0
 
 הגרסה הראשונה שמתקינים. מתקין למשתמש בלבד, נבנה כולו ב־GitHub מהתג; המודל העברי יורד פעם אחת בהפעלה הראשונה, עם הגודל על המסך והשהיה שממשיכה מאיפה שעצרה; המפתחות שלך ב־Windows Credential Manager; כל חיבור יוצא דרך דלת אחת ומופיע במסך הרשת (הגדרות > פרטיות); בדיקת עדכון שבועית ששואלת קודם. חשבון Google נדרש פעם אחת באשף; שני סנכרונים, כל אחד מאחורי כרטיס הסכמה משלו — המילים שלמדת וההגדרות ששינית, ומה שאמרת. אף פעם לא מפתחות, לא מקשים, לא אודיו.

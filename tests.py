@@ -33056,7 +33056,8 @@ def test_diagnose_block_is_safe_to_paste():
             block = problems_mod.diagnose()
         lines = block.splitlines()
         assert lines[0].startswith("DeskIT diagnostics") and "no transcripts and no keys" in lines[0]
-        assert any(l.startswith("version: 1.1.0") for l in lines)
+        import version as version_mod
+        assert any(l.startswith(f"version: {version_mod.VERSION}") for l in lines)
         assert any(l.startswith("backend: ") for l in lines) and any(l.startswith("model: ") for l in lines)
         assert any(l.startswith("gpu pack: ") for l in lines) and any(l.startswith("channel: ") for l in lines)
         assert any(l.startswith("phone: ") for l in lines)
