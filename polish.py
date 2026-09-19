@@ -42,24 +42,42 @@ module were switched off. Failing closed is the only acceptable failure
 mode for something that stands this close to a person's words.
 
 --------------------------------------------------------------------------
-THIS RUNS IN FRONT OF THE PASTE, AND THAT IS A DELIBERATE CHOICE
+WHERE IT RUNS: IN FRONT OF THE PASTE FOR THE CLOUD, BEHIND IT FOR THE
+LOCAL MODEL (the owner's decision, 2026-09-19)
 
-It was moved BEHIND the paste for a while — paste instantly, rewrite the
-text on screen a few seconds later — because the model that helps
-(gemma3:12b, see main.py::_improve for the table) costs 4.7-5.5 s and that
-is a long time to watch a placeholder.
+It was moved BEHIND the paste once — paste instantly, rewrite the text on
+screen a few seconds later — because the model that helps (gemma3:12b,
+see main.py::_improve for the table) costs 4.7-5.5 s and that is a long
+time to watch a placeholder. And moved back, for a reason no benchmark
+shows: a sentence that may still rewrite itself in three seconds is a
+sentence you cannot send. So the placeholder became the contract — "..."
+means not finished, text means done — and this pass ran inside it, for
+every backend.
 
-It was moved back, and no benchmark shows why: a sentence that may still
-rewrite itself in three seconds is a sentence you cannot send, because you
-cannot tell whether you are looking at the final version. The seconds saved
-were spent waiting anyway, without knowing what for. So the placeholder is
-the contract — "..." means not finished, text means done — and this pass
-runs inside it.
+What that cost was measured on 2026-09-19 on the installed copy: a
+stranger has no Groq key, so every paste of twenty characters or more
+waited 5-7 s for the local model, and 2 s with no Ollama at all (Windows
+takes that long to refuse a local port). The owner's decision:
 
-  - max_wait_s (10 s) is therefore the longest a paste may be held up, and
-    past it the unrepaired transcript wins;
-  - `when = "always"` because the repair is worth the wait when it fires
-    (WER 17.9% -> 13.9% on the corrected clips, 3 better and 0 worse).
+  - a CLOUD backend (~0.3 s) still repairs in front of the paste, and the
+    contract holds exactly as before;
+  - the LOCAL model no longer holds the paste. The text lands at once,
+    and what the model would have changed arrives as a PROPOSAL on the
+    second reading's card (review.py::changes_from_repair) — yes teaches
+    it, no is remembered, ignoring it changes nothing on screen. A
+    proposal beside the text is not a rewrite of it, which is what the
+    old objection was about.
+
+`when = "cloud"` (the default) is that split; `kinds` on polish() is how
+main.py asks for one side or the other — ("cloud",) in front of the paste,
+("local",) from the second reading, and never both for one dictation.
+`when = "always"` is the old behaviour, every backend before the paste.
+
+  - max_wait_s (10 s) is the longest a paste may be held up, and past it
+    the unrepaired transcript wins;
+  - the repair is worth running when it fires (WER 17.9% -> 13.9% on the
+    corrected clips, 3 better and 0 worse), which is why "cloud" runs it
+    on every dictation rather than switching it off.
 
 --------------------------------------------------------------------------
 WHICH BACKENDS, AND THE OLD "LOCAL ONLY" RULE
@@ -125,6 +143,19 @@ log = logging.getLogger("app")
 # in a sentence while catching a paragraph that was reworded wholesale.
 MIN_SIMILARITY = 0.75
 MAX_GROWTH = 0.15
+
+#: Which backends are which side of the paste under `when = "cloud"`:
+#: the cloud ones answer in well under a second and repair in front of
+#: it, the local one proposes behind it.
+CLOUD_BACKENDS = ("groq", "cerebras")
+LOCAL_BACKENDS = ("ollama",)
+KINDS = ("cloud", "local")
+
+
+def kind_of(name: str) -> str:
+    """"local" for the backend on this PC, "cloud" for the rest."""
+    return "local" if name in LOCAL_BACKENDS else "cloud"
+
 
 #: How long a backend nobody answers at is left alone after a refused
 #: connection. Measured 2026-09-19: Windows takes 2.05 s to refuse a
@@ -353,7 +384,7 @@ class Polisher:
                               if name != prefer and name != "cerebras"])
         return [(name, order[name]) for name in ranked]
 
-    def _backends(self, text: str):
+    def _backends(self, text: str, kinds=None):
         """Yield ready backends in preference order for THIS text.
 
         A backend that cannot be built at all (no GROQ_API_KEY in .env is
@@ -362,9 +393,14 @@ class Polisher:
         skipped with one log line rather than failing the pass: the
         fallback below it is exactly what classic ran, so missing cloud
         setup must cost speed, never repairs.
+
+        `kinds` — ("cloud",), ("local",) or None for every backend — is
+        which side of the paste is asking (the module docstring).
         """
         cap = _token_cap(text)
         for name, build in self._builders():
+            if kinds is not None and kind_of(name) not in kinds:
+                continue
             if self._unreachable.get(name, 0.0) > time.monotonic():
                 log.debug("repair via %s skipped — nobody answered there "
                           "a moment ago", name)
@@ -376,20 +412,32 @@ class Polisher:
                          str(e).splitlines()[0][:160])
                 continue
 
-    def should_run(self, text: str) -> bool:
-        """`when`: never | known | always.
+    def before_paste_kinds(self):
+        """Which backends may hold the paste, from `when`: none for
+        "never", the cloud ones for "cloud" (the default), all of them
+        (None) for "always" and "known"."""
+        when = self._cfg.polish.when
+        if when == "never":
+            return ()
+        if when == "cloud":
+            return ("cloud",)
+        return None
 
-        "always" is the default: the pass earns its ~5 s when it fires.
-        "known" — run only when the transcript holds a string this user has
-        corrected before — keeps most dictations fast and misses most
-        repairs, and is the setting to reach for if the wait bites.
+    def should_run(self, text: str) -> bool:
+        """`when`: never | known | cloud | always — whether THIS text gets
+        the pass at all; before_paste_kinds() says who may hold the paste.
+
+        "cloud" and "always" run it on every text long enough to reason
+        about. "known" — only when the transcript holds a string this user
+        has corrected before — keeps most dictations fast and misses most
+        repairs.
         """
         when = self._cfg.polish.when
         if when == "never" or not text.strip():
             return False
         if len(text) < self._cfg.polish.min_chars:
             return False
-        if when == "always":
+        if when in ("always", "cloud"):
             return True
         garbles = self._vocab.known_garbles()
         return bool(garbles and
@@ -453,8 +501,8 @@ class Polisher:
             raise box["error"]
         return box.get("text", "")
 
-    def polish(self, text: str,
-               max_wait_s: float | None = None) -> tuple[str, str | None]:
+    def polish(self, text: str, max_wait_s: float | None = None,
+               kinds=None) -> tuple[str, str | None]:
         """Returns (text, backend_name). On any failure — unreachable
         backend, unsafe reply, timeout — returns the input unchanged with a
         backend of None. This never raises.
@@ -464,8 +512,14 @@ class Polisher:
         is waiting: the transcript is already at the cursor and the repair
         lands behind it. The phone endpoint holds an HTTP response open
         instead, so it passes something a person will actually sit through.
+
+        `kinds` restricts the backends to one side of the paste — ("cloud",)
+        in front of it, ("local",) behind it (the module docstring); None
+        asks every backend in order, as before.
         """
-        for backend in self._backends(text):
+        backends = (self._backends(text) if kinds is None
+                    else self._backends(text, kinds))
+        for backend in backends:
             try:
                 candidate = self._within_deadline(backend, text, max_wait_s)
             except TimeoutError as e:

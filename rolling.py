@@ -119,6 +119,11 @@ class Window:
     # included, goes through the pass together, as the whole recording
     # used to.
     polished: str | None = None
+    # Which backend repaired it ("groq", "ollama"), None when none
+    # answered — so the release can tell the second reading whether the
+    # local model still owes this dictation its proposal (polish.py,
+    # `when = "cloud"`).
+    polished_by: str | None = None
 
 
 @dataclass

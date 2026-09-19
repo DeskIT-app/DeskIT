@@ -2360,7 +2360,14 @@ class App:
                     model_lock=self._model_lock,
                     quiet=self._learning_quiet, app_dir=paths.DATA_DIR,
                     on_suggest=self._review_show,
-                    on_accept=self._review_fix)
+                    on_accept=self._review_fix,
+                    # The local repair as a proposal (polish.py, `when =
+                    # "cloud"`): the reading runs it on a dictation the
+                    # cloud did not repair before the paste. Under
+                    # "always" it already ran there; under "known" and
+                    # "never" it is not wanted behind the paste either.
+                    repair=(self._local_repair
+                            if self.cfg.polish.when == "cloud" else None))
                 self._review.start()
             except Exception as e:      # noqa: BLE001 — optional feature
                 log.info("second reading unavailable (%s)", e)
@@ -2941,8 +2948,10 @@ class App:
                             backend, time.monotonic() - started, text)
         raw = text.strip()
         # Same blocking pass the desktop runs, under the same ceiling: both
-        # have somebody waiting on the other end of it.
-        text = self._improve(raw) if raw else text
+        # have somebody waiting on the other end of it — and the same
+        # split: the cloud side here, the local model on the reading.
+        receipt: dict = {}
+        text = self._improve(raw, receipt=receipt) if raw else text
         # A decoder loop means words are LOST, not garbled — surface that
         # on the phone right away instead of letting reading discover it.
         warning = None
@@ -2967,7 +2976,8 @@ class App:
                            "backend": backend, "language": "auto",
                            "words": list(getattr(self, "_last_words", [])
                                          or []),
-                           "source": "phone"})
+                           "source": "phone",
+                           "repair": receipt.get("by") or ""})
                 engine = getattr(self, "_review", None)
                 if engine is not None:
                     engine.submit(kept, hwnd=0, card=False)
@@ -5721,7 +5731,8 @@ class App:
                  answer.mode, answer.target, len(answer.text))
 
     def _improve(self, text: str, wait: bool = True,
-                 max_wait_s: float | None = None) -> str:
+                 max_wait_s: float | None = None,
+                 receipt: dict | None = None) -> str:
         """What was learned, applied: repair pass then context pass.
 
         Both are strictly optional and neither may raise. This sits between
@@ -5730,7 +5741,9 @@ class App:
         than to no transcript at all.
 
         `wait=False` runs only the vocabulary repair — instant, offline, a
-        dictionary lookup — and skips the LLM pass entirely.
+        dictionary lookup — and skips the LLM pass entirely. `receipt`,
+        when given, comes back with "by": the backend that answered the
+        context pass, or None (see _context_pass).
         """
         if self.cfg.vocab.enabled:
             try:
@@ -5744,7 +5757,7 @@ class App:
 
         if not wait:
             return text          # the caller will run the context pass after
-        return self._context_pass(text, max_wait_s)
+        return self._context_pass(text, max_wait_s, receipt)
 
     def _polish_window(self, window, backend) -> None:
         """The repair pass on ONE stretch of a recording still in
@@ -5760,12 +5773,16 @@ class App:
         try:
             text = backend.clean_text(window.text)
             if text:
-                window.polished = self._improve(text, wait=True)
+                receipt: dict = {}
+                polished = self._improve(text, wait=True, receipt=receipt)
+                window.polished_by = receipt.get("by")
+                window.polished = polished
         except Exception:
             log.exception("a stretch could not be repaired while you spoke "
                           "— the release will repair it")
 
-    def _improve_rolled(self, cleaned: str, head) -> str:
+    def _improve_rolled(self, cleaned: str, head,
+                        receipt: dict | None = None) -> str:
         """_improve, minus the stretches already repaired while he spoke.
 
         The leading run of windows whose repair has landed is taken as it
@@ -5774,6 +5791,9 @@ class App:
         the whole recording used to. Measured 2026-09-13 in app.log: the
         pass on a 106 s dictation (997 chars) took 2.0 s; on its last
         stretch alone it is the 0.7 s a short dictation pays.
+
+        `receipt["by"]` says which backend repaired any of it — the
+        stretches while he spoke or the rest now — or None.
         """
         windows = list(getattr(self, "_last_windows", None) or [])
         done: list = []
@@ -5783,40 +5803,57 @@ class App:
                     break
                 done.append(window)
         if not done:
-            return self._improve(cleaned, wait=True)
+            return self._improve(cleaned, wait=True, receipt=receipt)
         rest_raw = " ".join(w.text for w in windows[len(done):]
                             if w.text).strip()
         rest = ""
+        rest_receipt: dict = {}
         if rest_raw:
             cleaner = getattr(self.transcriber, "clean_text", None)
             rest = cleaner(rest_raw) if cleaner else rest_raw
-            rest = self._improve(rest, wait=True)
+            rest = self._improve(rest, wait=True, receipt=rest_receipt)
         log.info("context pass: %d stretch(es) were repaired while you "
                  "spoke — %d chars went now", len(done), len(rest_raw))
+        if receipt is not None:
+            receipt["by"] = (rest_receipt.get("by")
+                             or next((w.polished_by for w in done
+                                      if getattr(w, "polished_by", None)),
+                                     None))
         parts = [w.polished for w in done if w.polished]
         if rest:
             parts.append(rest)
         return " ".join(parts).strip()
 
-    def _context_pass(self, text: str,
-                      max_wait_s: float | None = None) -> str:
+    def _context_pass(self, text: str, max_wait_s: float | None = None,
+                      receipt: dict | None = None) -> str:
         """The LLM repair, run to completion. Returns the text either way.
 
         Never raises: this is optional work sitting near a person's words,
         and the failure mode has to be "the transcript as the backend
         produced it", never "no transcript".
+
+        Only the backends that may hold the paste are asked
+        (Polisher.before_paste_kinds — under the default `when =
+        "cloud"` the cloud ones; the local model proposes after the
+        paste instead, _local_repair). `receipt["by"]` is the backend
+        that answered, or None.
         """
+        if receipt is not None:
+            receipt["by"] = None
         polisher = self._polish()
         if polisher is None:
             return text
         try:
-            if not polisher.should_run(text):
+            kinds = polisher.before_paste_kinds()
+            if kinds == () or not polisher.should_run(text):
                 return text
             started = time.monotonic()
             log.info("checking the transcript against %d learned "
                      "confusion(s)...", len(self.vocab))
             with privacy.pressed():
-                polished, by = polisher.polish(text, max_wait_s)
+                polished, by = polisher.polish(text, max_wait_s, kinds=kinds)
+            if receipt is not None:
+                receipt["by"] = by
             if by:
                 transcript_log.info("POLISHED | %.1fs | %s | %s",
                                     time.monotonic() - started, by, polished)
@@ -5827,6 +5864,31 @@ class App:
             log.exception("the context pass failed — using the transcript "
                           "as it came out of the backend")
         return text
+
+    def _local_repair(self, text: str) -> str | None:
+        """The local model's reading of a pasted dictation, for the second
+        reading's card (review.py) — the repair that used to hold the
+        paste 5-7 s, behind it since 2026-09-19 (`when = "cloud"`). The
+        repaired text, or None when the model did not answer or had
+        nothing to say. From the review thread; nobody is waiting, so
+        the wait is the local model's own timeout, not polish.max_wait_s.
+        Never raises."""
+        polisher = self._polish()
+        if polisher is None:
+            return None
+        try:
+            if not polisher.should_run(text):
+                return None
+            limit = float(getattr(self.cfg.translate, "ollama_timeout_s",
+                                  0) or 0) or None
+            polished, by = polisher.polish(text, limit, kinds=("local",))
+            if not by or polished.strip() == text.strip():
+                return None
+            transcript_log.info("REPAIR-CARD | %s | %s", by, polished)
+            return polished
+        except Exception:
+            log.exception("the local repair failed — no proposal from it")
+            return None
 
     def _warm_feature_keys(self) -> None:
         """Touch the lazily-built controllers once, on a thread that is
@@ -6162,22 +6224,31 @@ class App:
                 self._say(state["heard"]["verdict"])
             return
 
-        # IN FRONT OF THE PASTE, on purpose, and this is the one decision
-        # the whole module is arranged around.
+        # THE CONTEXT PASS, AND WHICH SIDE OF THE PASTE IT SITS ON.
         #
-        # It was moved BEHIND the paste for a while: paste instantly, repair
-        # the text on screen a few seconds later. That is measurably faster
-        # to first text and it was rejected for a reason no benchmark shows
-        # — the user could no longer tell when the text was FINISHED. A
-        # sentence that may still rewrite itself in three seconds is a
-        # sentence you cannot send, so the saved seconds were spent waiting
-        # anyway, just without knowing what you were waiting for.
+        # It ran in front of the paste, for every backend, and that was
+        # the one decision this module was arranged around: it had been
+        # moved behind the paste once — paste instantly, rewrite the text
+        # on screen a few seconds later — and moved back because a
+        # sentence that may still rewrite itself is a sentence you cannot
+        # send. The placeholder was the contract: "..." = not final, text
+        # = done and it will not move again.
         #
-        # So the placeholder is the contract: while "..." is on screen
-        # nothing is final, and when the text appears it is done and will
-        # not move again. polish.max_wait_s bounds how long that can take.
-        # Minus whatever the rolling transcriber's stretches already had
-        # repaired while the key was held (_improve_rolled).
+        # The owner's decision of 2026-09-19 keeps that contract and
+        # splits the pass by who answers (polish.py, `when = "cloud"`,
+        # the default): a CLOUD backend (~0.3 s) still repairs here, in
+        # front of the paste; the LOCAL model no longer holds it — the
+        # text lands at once and the model's reading follows as a
+        # PROPOSAL on the second reading's card (_local_repair, handed to
+        # review.Engine), which touches nothing on screen until he says
+        # yes. Why: measured on the installed copy that day, a stranger
+        # — no Groq key — waited 5-7 s before every paste for the local
+        # model, and 2 s with no Ollama at all (Windows takes that long
+        # to refuse a local port). `when = "always"` is the old way.
+        # `receipt["by"]` says who repaired it here, so the reading does
+        # not run the pass twice for one dictation. Minus whatever the
+        # rolling transcriber's stretches already had repaired while the
+        # key was held (_improve_rolled).
         #
         # TIMED APART from the decode, because it is where the seconds
         # go: 2026-09-19 on the installed copy, a 12 s dictation decoded
@@ -6185,7 +6256,8 @@ class App:
         # of local repair between them — while this line said "0.6 s
         # round trip" and the log read as if the paste had been fast.
         repair_started = time.monotonic()
-        cleaned = self._improve_rolled(cleaned, head)
+        receipt: dict = {}
+        cleaned = self._improve_rolled(cleaned, head, receipt)
         # And the punctuation, if the box is ticked — after the repair, so
         # it works on the final words; punctuate.max_wait_s bounds it.
         cleaned = self._auto_punctuate(cleaned)
@@ -6204,7 +6276,11 @@ class App:
                     wav, seconds, "",
                     extra={"text": cleaned, "raw": text.strip(),
                            "backend": backend, "language": language or "auto",
-                           "words": words})
+                           "words": words,
+                           # who repaired it before the paste ("" = nobody):
+                           # the second reading's local repair runs only
+                           # for a dictation nobody has repaired
+                           "repair": receipt.get("by") or ""})
             except OSError as e:
                 log.info("could not keep this recording for later "
                          "measurement: %s", e)

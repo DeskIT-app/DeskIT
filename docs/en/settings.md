@@ -19,7 +19,7 @@ beside the app keeps the defaults and the help for every key.
 | `auto_language` — Also understand English | The app decides for each recording; off, everything you say is taken as Hebrew. | on | on / off |
 | `punctuate.auto` — Punctuate every dictation | Commas, full stops and question marks go in on the way to the cursor, which costs about a second each time. | off | on / off |
 | `punctuate.nikud` — Add vowel points as well | The Hebrew vowel marks go in along with the punctuation. | off | on / off |
-| `polish.when` — Fix misheard words with a model | Always, only when the sentence holds a word you have corrected before, or never. (per tier — cpu: `never`) | `always` | Always / Only taught words / Never |
+| `polish.when` — Fix misheard words with a model | With a cloud key the fix goes in before the text is pasted (a third of a second); without one the model on this PC takes 5-7 s, so the text is pasted at once and its fix arrives as a card you can accept. Or always before the paste, only for words you have corrected before, or never. (per tier — cpu: `never`) | `cloud` | Before the paste with a key, as a card without one / Always before the paste / Only taught words / Never |
 | `vocab.enabled` — Use the words it has learned | Corrections you taught it with the correction key are applied to new dictations. | on | on / off |
 | `local.cleanup` — Take out the ums and the false starts | The sounds you make while thinking, and a phrase you began again, are dropped. | on | on / off |
 | `review.enabled` — Suggest a better word after a dictation | A small card offers the word it thinks you meant; yes teaches it, no is remembered. Off, it learns quietly instead. (per tier — cpu: off) | on | on / off |
