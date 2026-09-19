@@ -87,6 +87,7 @@ Write-Host ("stage: {0:N0} MB on disk" -f ($size / 1MB))
 # 9-10. the channel word and, when Inno Setup 6 is installed here, the
 #       installer itself (steps 8 and 11-15 are the workflow's alone)
 Set-Content -Path (Join-Path $Stage "CHANNEL") -Value github -NoNewline -Encoding ascii
+& .venv\Scripts\python.exe dev\make_wizard_images.py --out packaging\wizard --version $Version
 $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 if (Test-Path $iscc) {
     $core = ($Version -split '-')[0]

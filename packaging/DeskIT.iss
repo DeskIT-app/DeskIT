@@ -63,11 +63,35 @@ OutputBaseFilename=DeskIT-Setup-{#Version}
 SetupIconFile={#Stage}\app\icon.ico
 UninstallDisplayIcon={app}\app\icon.ico
 UninstallDisplayName=DeskIT
+AppVerName=DeskIT {#Version}
 WizardStyle=modern
+; The wizard's own pictures, drawn at build time by dev\make_wizard_images.py
+; from icon.png (never committed); Inno picks the size that fits the DPI.
+; The Welcome page carries the three privacy sentences and, with the
+; Ready page gone, its button is already Install: Welcome > Installing
+; > Finished, two clicks.
+WizardImageFile=packaging\wizard\side-314.bmp,packaging\wizard\side-386.bmp,packaging\wizard\side-459.bmp,packaging\wizard\side-556.bmp,packaging\wizard\side-604.bmp
+WizardSmallImageFile=packaging\wizard\small-55.bmp,packaging\wizard\small-64.bmp,packaging\wizard\small-83.bmp,packaging\wizard\small-92.bmp,packaging\wizard\small-110.bmp,packaging\wizard\small-119.bmp,packaging\wizard\small-138.bmp
+DisableWelcomePage=no
+DisableReadyPage=yes
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "hebrew"; MessagesFile: "compiler:Languages\Hebrew.isl"
+
+[Messages]
+english.SetupWindowTitle=%1
+english.WelcomeLabel1=Welcome to DeskIT
+english.WelcomeLabel2=Hebrew dictation that stays on this PC.%n%nDeskIT installs for your user only, without an administrator password. On the first start a short wizard sets up the microphone, the key and the Hebrew model (a 1.6 GB download, once).%n%nYour voice stays on this computer. Nothing is sent anywhere until you turn it on yourself.
+english.FinishedHeadingLabel=DeskIT is installed
+english.FinishedLabel=Start it now: the first-run wizard takes about two minutes, most of it the model's download.
+english.ClickFinish=Click Finish to exit Setup.
+hebrew.SetupWindowTitle=%1
+hebrew.WelcomeLabel1=ברוכים הבאים ל־DeskIT
+hebrew.WelcomeLabel2=הכתבה בעברית שנשארת במחשב הזה.%n%nDeskIT מותקן למשתמש שלך בלבד, בלי סיסמת מנהל. בהפעלה הראשונה אשף קצר מגדיר את המיקרופון, את המקש ואת המודל העברי (הורדה של 1.6 ג'יגה־בייט, פעם אחת).%n%nהקול שלך נשאר במחשב הזה. שום דבר לא נשלח לשום מקום עד שתפעיל את זה בעצמך.
+hebrew.FinishedHeadingLabel=DeskIT מותקן
+hebrew.FinishedLabel=אפשר להפעיל עכשיו: אשף ההפעלה הראשונה לוקח כשתי דקות, רובן הורדת המודל.
+hebrew.ClickFinish=לחץ על סיום כדי לצאת מההתקנה.
 
 [CustomMessages]
 english.LaunchNow=Start DeskIT now

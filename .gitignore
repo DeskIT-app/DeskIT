@@ -148,3 +148,6 @@ network.log*
 questions.json
 questions.lock
 .agents/
+
+# the installer's pictures, drawn at build time (dev/make_wizard_images.py)
+packaging/wizard/
