@@ -52,13 +52,15 @@ Three rules the values alone cannot carry, and every surface has to:
    badge gets a shape rather than a hue.
 
 The five dot states are not drawn from this ladder. The status dot is a
-38 px layered window sitting on the user's *wallpaper*, so it paints its
-own dark backplate and needs lit colours whatever is behind it. Against
-#1A1A1A: listening 9.09, recording 5.68, locked 7.62, transcribing 10.36,
-paused 3.46. Every pair separates by light (dL* >= 8) or by hue, except
-recording/locked, which are one colour by design — the 0.16 Hz breath is
-what separates them — and paused, which separates from listening by having
-NO HALO at all rather than by hue alone.
+38 px layered window sitting on the user's *wallpaper* — since 2026-09-19
+the mark itself, a CARD tile with the lamp on it (skin\\mark.py) — so the
+lamp needs lit colours against that one dark ground whatever is behind
+the tile. Measured against CARD: listening 8.46, recording 5.29, locked
+7.09, transcribing 9.64, paused 3.22. Every pair separates by light
+(dL* >= 8) or by hue, except recording/locked, which are one colour by
+design — the 0.16 Hz breath is what separates them — and paused, which
+separates from listening by casting NO LIGHT on the tile at all rather
+than by hue alone.
 """
 from __future__ import annotations
 
@@ -219,9 +221,9 @@ UI_NAMES = {
 # overlay.STATES is (fill, ring, pulses) and a test asserts that shape, so
 # the dot's colours are given here in the same form rather than as a new
 # structure the test would not recognise. `ring` is the backplate the Tk
-# fallback paints under the disc; the glass dot draws a halo of `fill`
-# instead. Measured against #1A1A1A, the darkest wallpaper the dot has to
-# survive: 9.09 / 5.68 / 7.62 / 10.36 / 3.46.
+# fallback paints under the disc; the glass dot paints `fill` as the lamp
+# on the mark's CARD tile and casts it on the tile as a glow. Measured
+# against CARD: 8.46 / 5.29 / 7.09 / 9.64 / 3.22.
 DOT_STATES = {
     "ready":     (COOL, "#16232f", False),        # listening — the one cool
     "recording": (RECORDING, "#3a140f", False),   # capturing now
@@ -231,7 +233,7 @@ DOT_STATES = {
 }
 
 # Paused is the ONE state with no halo. It is the only neutral in the set,
-# and a grey halo on a dark wallpaper is a smudge rather than a light — so
-# the state reads by the halo's ABSENCE, which no colourblindness and no
-# wallpaper can take away. Everything else glows.
+# and a grey glow on the tile is a smudge rather than a light — so the
+# state reads by the light's ABSENCE, which no colourblindness and no
+# wallpaper can take away. Everything else casts its colour on the tile.
 NO_HALO = frozenset({"paused"})

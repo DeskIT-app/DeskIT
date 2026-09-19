@@ -68,10 +68,51 @@ def on() -> bool:
     return ok
 
 
+def lite() -> bool:
+    """The glass without skia: can a layered window be painted here at
+    all, with nothing but Pillow and ctypes?
+
+    THIS IS WHAT A FRESH INSTALL HAS. skia-python is the skin pack — a
+    10.9 MB wheel the installer does not carry and most people never
+    fetch (packs.py) — so until 2026-09-19 every stranger's copy showed
+    the Tk overlays: a 13 px chroma-keyed disc for the dot, a Tk frame
+    with an amber bar for the splash. The owner walked a fresh install
+    and called both terrible, and he was looking at exactly that path.
+    The dot, the boot card and the hint card now paint with Pillow into
+    the same UpdateLayeredWindow the skia cards use (skin\\glass.Glass
+    tolerates a missing skia), so they look the same with the pack and
+    without it. The release animation, the shelf, the notify and review
+    cards still need skia and still fall back to Tk without it.
+
+    Off when `on()` would be off for a REASON OTHER than skia — switched
+    off in this file, or HD_SKIN=0 — so the one switch still reaches
+    everything. Cached like `on()`.
+    """
+    if _state.get("lite_checked"):
+        return _state["lite"]
+    _state["lite_checked"] = True
+    ok = False
+    try:
+        if not ENABLED:
+            pass
+        elif os.environ.get("HD_SKIN", "1") in ("0", "off", "false", "no"):
+            pass
+        else:
+            from PIL import Image                # noqa: F401
+            from . import glass                  # noqa: F401  (ctypes only)
+            ok = True
+    except Exception as e:
+        _log.info("skin (lite) unavailable, using the original look: %r", e)
+    _state["lite"] = ok
+    return ok
+
+
 def reset() -> None:
     """Forget the cached answer — for tests that toggle ENABLED."""
     _state["checked"] = False
     _state["ok"] = False
+    _state["lite_checked"] = False
+    _state["lite"] = False
 
 
 # --------------------------------------------------------------- palette
@@ -107,7 +148,7 @@ def splash_run(splash) -> bool:
     were: the skin swaps the PICTURE, never the lifecycle that main.py and
     three tests depend on.
     """
-    if not on():
+    if not (on() or lite()):
         return False
     try:
         from .boot import run
@@ -119,8 +160,10 @@ def splash_run(splash) -> bool:
 
 
 def dot_run(dot) -> bool:
-    """The same trade for the status dot."""
-    if not on():
+    """The same trade for the status dot — and, since 2026-09-19, taken
+    WITHOUT skia too (`lite()`): the dot is a Pillow picture on a layered
+    window, which every copy can draw."""
+    if not (on() or lite()):
         return False
     try:
         from .dot import run

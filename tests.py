@@ -3821,10 +3821,12 @@ print("ok")
 
 def test_the_dot_is_a_button_only_on_its_disc() -> None:
     """The arithmetic behind the probe above, checked without a window:
-    HTCLIENT inside the disc plus two pixels, HTTRANSPARENT at 14 px and
-    at the corners; and `place` puts the 38 px box in the bottom-right of
-    the WORK AREA it is given, with the same margins the top-right always
-    had. BOX stays 38 — two tests identify the dot by its size."""
+    HTCLIENT on the tile (28 px in the 38 px box, so out to 13 px from
+    the centre), HTTRANSPARENT one pixel past it — the shadow — at the
+    tile's own rounded-off corners and at the window's; and `place` puts
+    the 38 px box in the bottom-right of the WORK AREA it is given, with
+    the same margins the top-right always had. BOX stays 38 — two tests
+    identify the dot by its size."""
     skin = _skin_or_skip()
     if skin is None or not skin.on():
         return
@@ -3832,16 +3834,16 @@ def test_the_dot_is_a_button_only_on_its_disc() -> None:
     from skin.glass import HTCLIENT, HTTRANSPARENT
 
     assert skin_dot.BOX == 38 and skin_dot.CORE == 10.0
-    assert skin_dot.HIT_R == skin_dot.CORE / 2 + 2
+    assert skin_dot.TILE == 28
     assert skin_dot.CORNERS == ("bottom-right", "top-right")
     assert skin_dot.DEFAULT_CORNER == "bottom-right"
     d = skin_dot.Dot()
     c = skin_dot.BOX / 2
     assert d.corner == "bottom-right"
     assert d.hit(c, c) == HTCLIENT
-    assert d.hit(c + 7, c) == HTCLIENT and d.hit(c, c - 7) == HTCLIENT
-    assert d.hit(c + 8, c) == HTTRANSPARENT, "the ring is not a button"
-    assert d.hit(c + 14, c) == HTTRANSPARENT, "the glow is not a button"
+    assert d.hit(c + 13, c) == HTCLIENT and d.hit(c, c - 13) == HTCLIENT
+    assert d.hit(c + 14, c) == HTTRANSPARENT, "the shadow is not a button"
+    assert d.hit(5, 5) == HTTRANSPARENT, "the tile's corner is rounded off"
     for corner in ((0, 0), (0, 37), (37, 0), (37, 37)):
         assert d.hit(*corner) == HTTRANSPARENT, corner
     work = (0, 0, 2560, 1392)                 # this machine: a 48 px taskbar
@@ -3863,9 +3865,11 @@ def test_the_dot_glows_to_nothing_inside_its_own_window() -> None:
     wallpaper or title bar. Measured 2026-09-07: 27/27/27/27 for every lit
     state. Every glow and sweep now reaches alpha 0 strictly inside the
     window, so this walks the WHOLE border of every state, after the
-    cross-fade has settled (14 frames), and asks for zero. The halo still
-    has to read: alpha > 8 at 14 px from the centre, as the paused test
-    already requires."""
+    cross-fade has settled (14 frames), and asks for zero. Since
+    2026-09-19 the dot is the mark — a 28 px tile with its shadow in the
+    5 px around it — and the shadow is the soft thing that has to end
+    inside the box; the tile itself has to be solid at 13 px from the
+    centre, or the mark has lost its ground."""
     skin = _skin_or_skip()
     if skin is None or not skin.on():
         return
@@ -3876,7 +3880,7 @@ def test_the_dot_glows_to_nothing_inside_its_own_window() -> None:
     except Exception:
         return
     B = skin_dot.BOX
-    assert skin_dot.HALO_R <= B / 2 - 1, skin_dot.HALO_R
+    assert skin_dot.TILE + 2 * 4 <= B, "no room left for the shadow"
     for state in DOT_STATES:
         d = skin_dot.Dot()
         d.set(state)                          # from "ready", cross-fading
@@ -3895,9 +3899,10 @@ def test_the_dot_glows_to_nothing_inside_its_own_window() -> None:
         for x, y in ((0, mid), (B - 1, mid), (mid, 0), (mid, B - 1),
                      (0, 0), (0, B - 1), (B - 1, 0), (B - 1, B - 1)):
             assert alpha[y, x] == 0, (state, x, y, int(alpha[y, x]))
-        if state not in skin.palette.NO_HALO:
-            assert alpha[mid, mid + 14] > 8, (
-                f"the {state} halo no longer reads at 14 px")
+        assert alpha[mid, mid + 13] == 255, (
+            f"the {state} tile is not solid at its edge")
+        assert 0 < alpha[mid, mid + 14] < 255, (
+            f"the {state} shadow is missing beside the tile")
 
 
 def test_status_dot_ignores_states_it_does_not_know() -> None:
@@ -3917,11 +3922,12 @@ def test_paused_is_the_one_dot_state_with_no_halo() -> None:
 
     It is the only neutral in the set. On a grey wallpaper hue alone would
     leave paused and listening a coin toss for anyone who does not see
-    blue, and a grey halo is a smudge rather than a light — so the app
-    draws no halo at all for paused and one for every other state. That is
-    a rule about drawing, not about a colour table, which is why the check
-    is on the rendered alpha 8 px out from the disc rather than on
-    DOT_STATES.
+    blue, and a grey glow is a smudge rather than a light — so the app
+    casts no light on the tile for paused and does for every other state.
+    That is a rule about drawing, not about a colour table, which is why
+    the check is on the rendered pixel 3 px out from the lamp, ON the
+    tile: for paused it is the bare tile, exactly; for every lit state it
+    carries the lamp's colour.
     """
     skin = _skin_or_skip()
     if skin is None or not skin.on():
@@ -3932,7 +3938,11 @@ def test_paused_is_the_one_dot_state_with_no_halo() -> None:
     except Exception:
         return
 
-    def halo_alpha(state: str) -> int:
+    lx, ly, lr = skin_dot.mark().lamp
+    probe = (int(lx + lr + 3), int(ly))
+    bare = skin_dot.mark()._plate.getpixel(probe)[:3]
+
+    def beside_the_lamp(state: str) -> tuple[int, int, int]:
         d = skin_dot.Dot()
         d.state = d._shown = d._from = state
         d._blend = 1.0
@@ -3940,19 +3950,18 @@ def test_paused_is_the_one_dot_state_with_no_halo() -> None:
         canvas = surface.getCanvas()
         canvas.clear(0x00000000)
         d.draw(canvas, 0.0)      # t=0: the breath is at its brightest
-        alpha = surface.makeImageSnapshot().toarray(
-            colorType=skia.kRGBA_8888_ColorType)[:, :, 3]
-        mid = skin_dot.BOX // 2
-        # Outside the disc and its containing ring, inside the halo.
-        return int(alpha[mid, mid + int(skin_dot.CORE * 1.4)])
+        pixels = surface.makeImageSnapshot().toarray(
+            colorType=skia.kRGBA_8888_ColorType)
+        return tuple(int(v) for v in pixels[probe[1], probe[0]][:3])
 
-    assert halo_alpha("paused") == 0, (
-        "the paused dot is glowing — it is the one state whose meaning is "
-        "carried by having no halo")
+    assert beside_the_lamp("paused") == tuple(bare), (
+        "the paused lamp is casting light on the tile — it is the one "
+        "state whose meaning is carried by having none", bare)
     for state in ("ready", "recording", "locked", "busy"):
-        assert halo_alpha(state) > 8, (
-            f"the {state} dot has no halo; every lit state glows, and the "
-            f"halo is the whole reason this is a layered window")
+        lit = beside_the_lamp(state)
+        assert max(abs(a - b) for a, b in zip(lit, bare)) > 20, (
+            f"the {state} lamp casts no light on the tile; every lit state "
+            f"glows, and the glow is what tells it from paused", lit, bare)
 
 
 def test_the_app_hands_gdi_its_own_fonts_before_it_asks_for_one() -> None:
@@ -16958,8 +16967,9 @@ def test_every_skin_window_is_click_through_and_never_focusable() -> None:
     text = (Path(__file__).resolve().parent / "skin" / "dot.py").read_text(
         "utf-8")
     assert "if on_click is not None:\n        glass = Glass(*dot.placement(), " \
-           "hit=dot.hit" in text, "the dot takes the mouse unconditionally"
-    assert "else:\n        glass = Glass(*dot.placement())" in text
+           "gpu=False, hit=dot.hit" in text, \
+        "the dot takes the mouse unconditionally"
+    assert "else:\n        glass = Glass(*dot.placement(), gpu=False)" in text
     # SW_SHOWNOACTIVATE, not deiconify: AGENTS.md measured Tk taking the
     # foreground the instant it realises a window, and the fix there is to
     # take it BACK. A plain popup shown this way never takes it at all.
@@ -19119,13 +19129,13 @@ def test_the_dot_is_dragged_by_its_disc_and_never_by_its_glow() -> None:
     assert d.moving is False, "a dot nobody armed is a button"
     assert d.hit(c, c) == HTCLIENT
     d.moving = True
-    assert d.hit(c, c) == HTCAPTION, "the disc does not hand over the drag"
-    assert d.hit(c + 7, c) == HTCAPTION and d.hit(c, c - 7) == HTCAPTION
-    for x, y in ((c + 8, c), (c + 14, c), (0, 0), (0, 37), (37, 0),
+    assert d.hit(c, c) == HTCAPTION, "the tile does not hand over the drag"
+    assert d.hit(c + 13, c) == HTCAPTION and d.hit(c, c - 13) == HTCAPTION
+    for x, y in ((c + 14, c), (5, 5), (0, 0), (0, 37), (37, 0),
                  (37, 37)):
         assert d.hit(x, y) == HTTRANSPARENT, (
-            f"the glow took the drag at {x}, {y} — it is click-through in "
-            f"both modes or the window underneath loses clicks")
+            f"the shadow took the drag at {x}, {y} — it is click-through "
+            f"in both modes or the window underneath loses clicks")
     d.moving = False
     assert d.hit(c, c) == HTCLIENT, "and it is a button again afterwards"
 
@@ -19147,10 +19157,17 @@ def test_the_dot_is_dragged_by_its_disc_and_never_by_its_glow() -> None:
                   int(alpha[:, 0].max()), int(alpha[:, B - 1].max())]
         assert border == [0, 0, 0, 0], (
             f"waiting to be dragged, the dot paints its own edge {border}")
-    # the ring that says "waiting" is at the grab radius, not out in the
-    # glow: what lights up has to be what can actually be pressed
-    assert skin_dot.MOVE_W > 1.0
-    assert skin_dot.CORE * 0.5 + 3.0 + skin_dot.MOVE_W / 2 < skin_dot.HALO_R
+    # the rim that says "waiting" is the tile's own edge, which is what
+    # can actually be pressed: brighter than at rest, and only there
+    from skin import mark as skin_mark
+    assert skin_mark.RIM_MOVING_A > skin_mark.RIM_A * 2
+    rest = skin_dot.mark().frame((0, 0, 0), 0.0, None, False)
+    armed = skin_dot.mark().frame((0, 0, 0), 0.0, None, True)
+    edge = (skin_dot.BOX // 2, (skin_dot.BOX - skin_dot.TILE) // 2)
+    assert armed.getpixel(edge)[0] > rest.getpixel(edge)[0] + 60, (
+        armed.getpixel(edge), rest.getpixel(edge))
+    assert armed.getpixel((skin_dot.BOX // 2, 1)) == rest.getpixel(
+        (skin_dot.BOX // 2, 1)), "the armed rim reached into the shadow"
 
 
 def test_the_move_button_reaches_the_running_app_down_the_real_pipe() -> None:

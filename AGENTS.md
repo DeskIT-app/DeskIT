@@ -908,7 +908,9 @@ exactly what classic did.
   square" on every wallpaper and title bar it crossed. UpdateLayeredWindow
   composites the whole rectangle, so any non-zero pixel on the border
   draws the rectangle. Every soft thing on a Glass has to end strictly
-  inside its box (`skin\dot.HALO_R` = BOX / 2 − 1, and
+  inside its box (since 2026-09-19 the dot is the mark, `skin\mark.py`,
+  whose shadow is box-filtered down from 4x and whose border row and
+  column are zeroed outright, and
   `test_the_dot_glows_to_nothing_inside_its_own_window` walks the whole
   border of every state) — and check it by rendering, never by the
   radius alone: `Dither=True` and antialiasing both reach past a number.
