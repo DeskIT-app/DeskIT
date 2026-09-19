@@ -75,6 +75,10 @@ ALLOWED_HOSTS: frozenset[str] = frozenset({
     "api.github.com",                      # update check + installer (ch. 11)
     "github.com",
     "objects.githubusercontent.com",
+    # Where a release asset's download actually lands since 2026: the
+    # first real check (v1.1.0, 2026-09-19) was refused here. Both names
+    # are GitHub's, one per generation of its asset store.
+    "release-assets.githubusercontent.com",
 })
 
 #: Hugging Face's download hosts, by DOMAIN: the Hub answers a model

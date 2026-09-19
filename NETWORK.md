@@ -26,7 +26,7 @@ line here fails the build.
 | `pypi.org` | `pack-install` | the lock tool's metadata look-up (the owner's checkout only) | never | — |
 | `files.pythonhosted.org` | `pack-install` | the GPU pack (NVIDIA's cuBLAS, cuDNN, NVRTC) and the skin pack (skia-python), each wheel pinned by hash; pip then installs them with no network | never | the pack step itself is the consent |
 | `api.github.com` | `update-check` | the weekly look at GitHub Releases for `latest.json` — no identifier of any kind | never | the update-check switch (asked once) |
-| `github.com`, `objects.githubusercontent.com` | `update-check`, `update-download` | the release page and the installer file it links to, verified by SHA-256 before it is run | never | the same, and your click on Download |
+| `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | `update-check`, `update-download` | the release page and the installer file it links to, verified by SHA-256 before it is run | never | the same, and your click on Download |
 | `eogvmcbwfthxedcltyrs.supabase.co` — the one project named in `sb.py` (`net.SUPABASE_HOST`; Frankfurt) | `account`, `sync`, `history`, `report` | the optional account: sign-in (anonymous, or Google through Supabase's own flow), your learned words and changed settings, what you said, the problem reports you chose to send | your account's session token as a bearer, to this host only; the project's PUBLISHABLE key in the `apikey` header (public, opens nothing); never a Groq or Google key | the account consent, then one consent per sync; the reports consent |
 
 The Supabase host is a single value, never a suffix rule: a suffix would
