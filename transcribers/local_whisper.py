@@ -31,6 +31,14 @@ Notes that cost real time to discover, keep them:
   copy is handed the folder models.py downloaded and verified, and a
   folder that is not there is a typed ModelMissing BEFORE WhisperModel
   is asked for anything — the library can load, never fetch.
+- THE LOAD IS NOT THE DECODE, and they are timed apart (timing,
+  last_timing). Measured 2026-09-19 on the RTX with the GPU shared: a 3 s
+  sentence decodes in 0.25-0.45 s warm and 12 s in 0.6-0.9 s; the Hebrew
+  model loads in 4.8-7.3 s, its first inference costs another 0.5-2.3 s,
+  the English detector 4.8-6.6 s more. "Transcription takes a lot of
+  time" was those three, timed as if they were the decode — by the
+  wizard's sentence page (8.0 s) and by the splash on every start
+  (~17 s). Hence the live-settings warm-up (_warm) and english_later.
 """
 from __future__ import annotations
 
@@ -40,6 +48,8 @@ import re
 import os
 import struct
 import sys
+import threading
+import time
 import wave
 from io import BytesIO
 from pathlib import Path
@@ -257,10 +267,25 @@ def hallucination_guards(enabled: bool) -> dict:
 class LocalWhisperTranscriber:
     name = "local"
 
-    # Class-level default, not just an __init__ one: the test suite builds
+    # Class-level defaults, not just __init__ ones: the test suite builds
     # instances with __new__ to reach single methods without loading a
     # model, and those must transcribe too.
     _beam_size = 5
+    #: The English detector's state: "" (none configured), "loading"
+    #: (on its thread, english_later), "ready", "failed", "closed" (it
+    #: landed after close() and was dropped).
+    english_state = ""
+    _said_loading = False
+    _closed = False
+    _english_thread: threading.Thread | None = None
+    #: Where the seconds went, for the log and the wizard: the ivrit
+    #: load, its warm-up, the English load and ITS warm-up — each alone,
+    #: so a slow start can be read instead of guessed at.
+    timing: dict = {}
+    #: The LAST transcribe(): detect_s (the language pass, 0.0 when
+    #: none ran) and decode_s (the decoder alone). What the wizard's
+    #: sentence page shows is decode_s — the load is not the decode.
+    last_timing: dict = {}
 
     def _load(self, model_name: str):
         """Second model, loaded lazily and sharing the device we settled on.
@@ -273,6 +298,68 @@ class LocalWhisperTranscriber:
         log.info("loading English model %s on %s...", model_name, self.device)
         return WhisperModel(source, device=self.device,
                             compute_type=compute)
+
+    def _load_english(self) -> None:
+        """The detector, loaded and warmed, into self._english — on the
+        constructor's thread (english_later=False) or its own. Never
+        raises: a detector that will not load is Hebrew-only, said once.
+        A transcriber closed while the load was still running (the desk's
+        Stop, the wizard moving on) drops the result instead of keeping
+        1.6 GB on the card for an object nobody holds."""
+        started = time.perf_counter()
+        try:
+            english = self._load(self._english_model_name)
+            load_s = time.perf_counter() - started
+            self._warm_detector(english)
+            warm_s = time.perf_counter() - started - load_s
+        except Exception as e:
+            log.warning("English model unavailable (%s) — Hebrew only; "
+                        "short English phrases may be transliterated", e)
+            self.english_state = "failed"
+            return
+        # A new dict, never an update in place: the class carries an
+        # empty one for instances built with __new__.
+        self.timing = {**self.timing, "english_load_s": round(load_s, 2),
+                       "english_warm_s": round(warm_s, 2)}
+        if self._closed:
+            self.english_state = "closed"
+            log.info("English model loaded after this transcriber was "
+                     "closed — dropped")
+            return
+        self._english = english
+        self.english_state = "ready"
+        log.info("English model ready on %s (load %.1f s, warm-up %.1f s)"
+                 "%s", self.device, load_s, warm_s,
+                 " — Hebrew or English from here"
+                 if self._english_thread is not None else "")
+
+    def wait_for_english(self, timeout: float | None = None) -> bool:
+        """Whether the detector is there, after waiting up to `timeout`
+        for a load still on its thread. For the tests and for whoever
+        can afford to wait; the live path never calls this."""
+        thread = self._english_thread
+        if thread is not None:
+            thread.join(timeout)
+        return self._english is not None
+
+    def close(self) -> None:
+        """Nothing to release on the ivrit model — CTranslate2 frees it
+        with the object — only the word to a detector load still on its
+        thread that its result is not wanted (see _load_english)."""
+        self._closed = True
+
+    def _detector(self):
+        """The English model, or None — and, while it is still on its
+        way (english_later), None with ONE log line saying so: the
+        dictation that lands in those seconds is Hebrew, as it was
+        before the detector existed, and never waits for the load."""
+        detector = self._english
+        if detector is None and self.english_state == "loading" \
+                and not self._said_loading:
+            self._said_loading = True
+            log.info("the English detector is still loading — this "
+                     "dictation is Hebrew")
+        return detector
 
     def _pick_language(self, audio) -> str:
         """Detect the language, but bias hard towards Hebrew.
@@ -325,7 +412,19 @@ class LocalWhisperTranscriber:
                  initial_prompt: str = "", guard_hallucinations: bool = True,
                  boilerplate: tuple = cleanup_mod.PARLIAMENTARY_BOILERPLATE,
                  hotwords=None, beam_size: int = 5,
-                 compute_type: str = "auto", cpu_threads: int = 0):
+                 compute_type: str = "auto", cpu_threads: int = 0,
+                 english_later: bool = False):
+        """`english_later`: load the English detector on a thread of its
+        own AFTER this returns, so the app is usable the moment the
+        Hebrew model is — measured 2026-09-19, the detector's load is
+        4.8-6.6 s of a 13 s construction on the RTX, and every start
+        paid it behind the splash. False (the default) loads it here,
+        as always: the wizard's test sentence and --benchmark want the
+        whole backend before they time anything."""
+        self.timing = {}
+        self.last_timing = {}
+        self._english_thread = None
+        began = time.perf_counter()
         _register_cuda_dlls()
         # Where the weights come from (models.py, plan 6.4): the hub name
         # and the global cache in the checkout, the verified folder on an
@@ -341,6 +440,7 @@ class LocalWhisperTranscriber:
             raise TranscriptionError(
                 "the local backend needs faster-whisper: run "
                 r".venv\Scripts\pip install faster-whisper") from e
+        self.timing["import_s"] = round(time.perf_counter() - began, 2)
 
         if not language:
             raise TranscriptionError(
@@ -408,15 +508,17 @@ class LocalWhisperTranscriber:
         threads = {"cpu_threads": int(cpu_threads)} if cpu_threads else {}
         last: Exception | None = None
         for dev, compute in attempts:
+            started = time.perf_counter()
             try:
                 candidate = WhisperModel(source, device=dev,
                                          compute_type=compute, **threads)
+                load_s = time.perf_counter() - started
                 # Constructing on "cuda" succeeds even when the CUDA math
                 # libraries are missing — the failure only surfaces on the
                 # first real inference. Force that here, so a broken GPU
                 # falls back to CPU now instead of breaking every dictation.
-                list(candidate.transcribe(_pcm(_silence_wav()),
-                                          language=language)[0])
+                self._warm(candidate, language)
+                warm_s = time.perf_counter() - started - load_s
             except Exception as e:                 # no GPU, no kernels, OOM
                 last = e
                 log.info("local model cannot use %s (%s) — %s", dev, compute,
@@ -430,25 +532,55 @@ class LocalWhisperTranscriber:
                 continue
             self._model = candidate
             self.device = dev
-            log.info("local model %s ready on %s (%s)", model, dev, compute)
+            self.timing["load_s"] = round(load_s, 2)
+            self.timing["warm_s"] = round(warm_s, 2)
+            log.info("local model %s ready on %s (%s) — load %.1f s, "
+                     "warm-up %.1f s", model, dev, compute, load_s, warm_s)
             break
         else:
             raise TranscriptionError(
                 f"could not load the local model {model!r}: {last}")
 
-        # Loaded eagerly, not on demand: it is the language DETECTOR for
-        # every utterance, not just a backup transcriber, so a lazy load
-        # would make the first dictation after login pay for it.
-        if self._english_model_name:
-            try:
-                self._english = self._load(self._english_model_name)
-                self._warm_detector()
-            except Exception as e:
-                log.warning("English model unavailable (%s) — Hebrew only; "
-                            "short English phrases may be transliterated", e)
-                self._english = None
+        # The language DETECTOR for every utterance, not just a backup
+        # transcriber — so never on demand, where the first dictation
+        # after login would pay for it: here, before this returns, or
+        # (english_later) on a thread that starts now and lands while
+        # the rest of the app comes up. A dictation in the seconds
+        # before it lands is Hebrew (see _detector) and never waits.
+        if self._english_model_name and not english_later:
+            self.english_state = "loading"
+            self._load_english()
+        # Written before the thread starts: from then on the thread is
+        # the only writer of self.timing (it replaces the dict).
+        self.timing["ready_s"] = round(time.perf_counter() - began, 2)
+        if self._english_model_name and english_later:
+            self.english_state = "loading"
+            self._english_thread = threading.Thread(
+                target=self._load_english, daemon=True,
+                name="english-model")
+            self._english_thread.start()
 
-    def _warm_detector(self) -> None:
+    def _warm(self, model, language: str) -> None:
+        """The first inference, at load and not on the first dictation —
+        WITH THE LIVE SETTINGS. Measured 2026-09-19 on the RTX: the bare
+        decode this used to be paid the CUDA warm-up (0.5-2.3 s) but the
+        first real decode still cost 0.65 s against 0.24 s warm, because
+        vad_filter=True builds the Silero session on first use and the
+        word-timestamp alignment has a first call of its own. Two passes,
+        for the reason _warm_detector gives: VAD strips silence to
+        nothing, so the guarded decode runs WITHOUT it (encoder, decoder,
+        alignment) and a second pass WITH it builds the VAD. Both are the
+        probe: a device that cannot run them cannot dictate either, and
+        raising here is what sends the ladder to the next rung."""
+        audio = _pcm(_silence_wav())
+        list(model.transcribe(audio, language=language, vad_filter=False,
+                              beam_size=self._beam_size,
+                              condition_on_previous_text=False,
+                              **self._guards)[0])
+        list(model.transcribe(audio, language=language,
+                              vad_filter=True)[0])
+
+    def _warm_detector(self, detector=None) -> None:
         """Pay the first-inference cost at startup, not on the first
         dictation.
 
@@ -463,13 +595,17 @@ class LocalWhisperTranscriber:
         first-call cost; vad_filter=False guarantees the encoder actually
         runs, because VAD strips silence down to nothing. Never fatal — a
         warm-up that fails only means the first dictation is slow.
+
+        `detector` is the model to warm before it is installed as
+        self._english (english_later); without it, self._english.
         """
         audio = _decode_pcm(_silence_wav())
-        if audio is None or self._english is None:
+        detector = self._english if detector is None else detector
+        if audio is None or detector is None:
             return
         for vad in (True, False):
             try:
-                self._english.detect_language(audio=audio, vad_filter=vad)
+                detector.detect_language(audio=audio, vad_filter=vad)
             except Exception as e:
                 log.debug("detector warm-up (vad=%s) skipped: %s", vad, e)
 
@@ -517,6 +653,9 @@ class LocalWhisperTranscriber:
         if general:
             if self._english is None:
                 raise TranscriptionError(
+                    "the English model is still loading — no second "
+                    "opinion this time"
+                    if self.english_state == "loading" else
                     "no general model loaded for a second opinion")
             model = self._english
             # ...and it is allowed to disagree about the LANGUAGE, which
@@ -561,16 +700,22 @@ class LocalWhisperTranscriber:
 
         `language` is the caller's explicit choice (a dedicated hotkey).
         It always wins — detection only runs when nothing was specified.
+        The seconds the detection took go to last_timing["detect_s"].
         """
         model, chosen = self._model, self._language
-        if language == "en" and self._english is not None:
-            model, chosen = self._english, "en"
-        elif language in (None, "") and self._english is not None:
+        detector = self._detector()
+        detect_s = 0.0
+        if language == "en" and detector is not None:
+            model, chosen = detector, "en"
+        elif language in (None, "") and detector is not None:
+            started = time.perf_counter()
             audio = _decode_pcm(wav_bytes)
             if audio is not None and self._pick_language(audio) == "en":
-                model, chosen = self._english, "en"
+                model, chosen = detector, "en"
+            detect_s = time.perf_counter() - started
         elif language:
             chosen = language
+        self.last_timing = {"detect_s": round(detect_s, 3), "decode_s": 0.0}
         return model, chosen
 
     def _decode(self, model, chosen: str, wav_bytes: bytes):
@@ -695,10 +840,15 @@ class LocalWhisperTranscriber:
     def transcribe(self, wav_bytes: bytes,
                    language: str | None = None) -> str:
         """`language` is the caller's explicit choice (a dedicated hotkey).
-        It always wins — detection only runs when nothing was specified."""
+        It always wins — detection only runs when nothing was specified.
+        Afterwards last_timing says what the detection and the decode
+        each cost — the decode alone is what a page may call "took"."""
         try:
             model, chosen = self._choose(wav_bytes, language)
+            started = time.perf_counter()
             segs, text = self._decode(model, chosen, wav_bytes)
+            self.last_timing["decode_s"] = round(
+                time.perf_counter() - started, 3)
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
         window = self._settle(self._words_of(segs), text)
@@ -794,6 +944,7 @@ class LocalWhisperTranscriber:
         if windows and total_s - start < MIN_TAIL_S:
             start = windows.pop().start_s
         lead = min(start, LEAD_S) if self.can_overlap else 0.0
+        began = time.perf_counter()
         try:
             tail = _slice_wav(wav_bytes, start - lead)
             if tail is not None and _wav_seconds(tail) - lead >= 0.05:
@@ -802,6 +953,7 @@ class LocalWhisperTranscriber:
                 windows.append(last)
         except Exception as e:
             raise TranscriptionError(f"local transcription failed: {e}") from e
+        self.last_timing["decode_s"] = round(time.perf_counter() - began, 3)
         self.last_words = [(word, round(begin + w.start_s, 2),
                             round(end + w.start_s, 2), p)
                            for w in windows

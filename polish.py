@@ -113,6 +113,7 @@ from __future__ import annotations
 import difflib
 import logging
 import threading
+import time
 
 from transcribers.base import RateLimitError, TranscriptionError
 from vocab import words
@@ -124,6 +125,17 @@ log = logging.getLogger("app")
 # in a sentence while catching a paragraph that was reworded wholesale.
 MIN_SIMILARITY = 0.75
 MAX_GROWTH = 0.15
+
+#: How long a backend nobody answers at is left alone after a refused
+#: connection. Measured 2026-09-19: Windows takes 2.05 s to refuse a
+#: connection to a local port nobody listens on (127.0.0.1:11434 without
+#: Ollama — the stranger's machine, since prefer = "groq" has no key
+#: there either), and that was paid IN FRONT OF EVERY PASTE of twenty
+#: characters or more, for a repair that could not happen. A minute,
+#: then it is asked again, so an Ollama started later is found within
+#: the minute. Only a connection that was REFUSED counts: a model that
+#: is missing (404) or slow is the backend answering, and it stays asked.
+UNREACHABLE_S = 60.0
 
 
 def _token_cap(text: str) -> int:
@@ -275,6 +287,21 @@ class Polisher:
     def __init__(self, cfg, vocab):
         self._cfg = cfg
         self._vocab = vocab
+        #: backend name -> monotonic time until which it is not asked,
+        #: after a refused connection (UNREACHABLE_S).
+        self._unreachable: dict[str, float] = {}
+
+    def _note_unreachable(self, name: str, error: Exception) -> None:
+        """A refused connection puts `name` down for UNREACHABLE_S; any
+        other failure (a missing model, a bad reply, a timeout) does not
+        — those are the backend answering."""
+        import net
+        if not isinstance(getattr(error, "__cause__", None), net.NetError):
+            return
+        self._unreachable[name] = time.monotonic() + UNREACHABLE_S
+        log.info("repair via %s: nobody answers there — not asked again "
+                 "for %.0f s, so the paste stops waiting on it", name,
+                 UNREACHABLE_S)
 
     def _system_prompt(self) -> str:
         """Rebuilt per request — the glossary grows every time the user
@@ -338,6 +365,10 @@ class Polisher:
         """
         cap = _token_cap(text)
         for name, build in self._builders():
+            if self._unreachable.get(name, 0.0) > time.monotonic():
+                log.debug("repair via %s skipped — nobody answered there "
+                          "a moment ago", name)
+                continue
             try:
                 yield build(cap)
             except Exception as e:
@@ -389,6 +420,7 @@ class Polisher:
                          "the first repair will be slow, or skipped if it "
                          "exceeds polish.max_wait_s",
                          backend.name, str(e).splitlines()[0][:120])
+                self._note_unreachable(backend.name, e)
 
     def _within_deadline(self, backend, text: str,
                          max_wait_s: float | None = None) -> str:
@@ -449,6 +481,7 @@ class Polisher:
                 return text, None
             except (RateLimitError, TranscriptionError) as e:
                 log.info("polish via %s unavailable (%s)", backend.name, e)
+                self._note_unreachable(backend.name, e)
                 continue
             except Exception as e:
                 log.info("polish via %s failed (%s)", backend.name, e)
