@@ -27,6 +27,15 @@ Two commands, both explicit, neither ever run by the app on its own
     caches — and keep ONLY the settings (``settings.toml``, ``state.json``,
     the keys). Refuses without ``--yes`` and prints what it would remove.
 
+``main.py --reset-data --yes --everything``
+    D9's "Delete everything on this PC" — what the uninstaller's Delete
+    runs (2026-09-20: until then it ran the plain reset and left the
+    settings, the keys and 1.6-4.6 GB of models behind while promising
+    to take them). The five steps of plan 4.6: the secrets (Credential
+    Manager entries and DPAPI blobs), the Run value, the Claude Code hook
+    lines, then the whole data folder. Refused on a portable or developer
+    copy, whose data folder IS the app folder.
+
 Both refuse while the app is running: the stores must not change under
 a live process, and the app holds ``vocab.json`` in memory and would
 write it straight back.
@@ -335,8 +344,60 @@ def reset_targets() -> list[Path]:
     return targets
 
 
-def reset_data(*, yes: bool, out=print) -> int:
-    """Delete what the app learned and recorded; keep the settings."""
+def delete_everything(*, yes: bool, out=print) -> int:
+    """D9's "Delete everything on this PC": the secrets, the Run value,
+    the hook lines, the folder — the uninstaller's Delete. Refused on a
+    portable or developer copy, where the data folder is the app's."""
+    if _running():
+        out("DeskIT is running — stop it first.")
+        return 2
+    if paths.PORTABLE:
+        out("This copy keeps its data beside the app (portable or developer "
+            "layout): nothing is deleted here — remove what you want by hand.")
+        return 2
+    import autostart
+    import notify_hook
+    import secretstore
+    out("This removes EVERYTHING DeskIT keeps on this PC:")
+    out(f"  the keys in Credential Manager and the secrets folder ({', '.join(secretstore.present()) or 'none stored'})")
+    out("  the Start-with-Windows entry, if any")
+    out("  the two Claude Code hook lines, if installed")
+    out(f"  the whole folder {paths.DATA_DIR}")
+    if not yes:
+        out("Add --yes to do it.")
+        return 1
+    problems = 0
+    try:
+        gone = secretstore.delete_all()
+        out(f"secrets removed: {', '.join(gone) or 'none were stored'}")
+    except Exception as e:                                   # noqa: BLE001
+        problems += 1
+        out(f"  could not remove the secrets: {e}")
+    try:
+        autostart.apply(False)
+    except Exception as e:                                   # noqa: BLE001
+        problems += 1
+        out(f"  could not remove the Run value: {e}")
+    try:
+        if notify_hook.uninstall_hook():
+            out("Claude Code hook lines removed")
+    except Exception as e:                                   # noqa: BLE001
+        problems += 1
+        out(f"  could not remove the hook lines: {e}")
+    shutil.rmtree(paths.DATA_DIR, ignore_errors=True)
+    if paths.DATA_DIR.exists():
+        problems += 1
+        out(f"  {paths.DATA_DIR} could not be removed whole (a file in use?)")
+    else:
+        out(f"removed {paths.DATA_DIR}")
+    return 0 if not problems else 1
+
+
+def reset_data(*, yes: bool, out=print, everything: bool = False) -> int:
+    """Delete what the app learned and recorded; keep the settings —
+    or, with `everything`, D9's whole-PC delete."""
+    if everything:
+        return delete_everything(yes=yes, out=out)
     if _running():
         out("DeskIT is running — stop it first.")
         return 2

@@ -589,9 +589,11 @@ begin
 end;
 
 { One question, Keep by default (and the only answer a silent uninstall
-  gives): Delete runs the app's own reset over its data folder. Either
-  way the Run value goes — a stale autostart pointing at nothing is the
-  bug people report. }
+  gives): Delete runs the app's own whole-PC delete (--everything: the
+  keys, the Run value, the hook lines, the folder with the models - plan
+  D9; the plain --reset-data kept the settings, the keys and the models
+  until 2026-09-20). Either way the Run value goes - a stale autostart
+  pointing at nothing is the bug people report. }
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   Answer, ResultCode: Integer;
@@ -608,6 +610,6 @@ begin
   begin
     Py := ExpandConstant('{app}\python\pythonw.exe');
     Entry := ExpandConstant('{app}\app\deskit.pyw');
-    Exec(Py, '"' + Entry + '" --reset-data --yes', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    Exec(Py, '"' + Entry + '" --reset-data --yes --everything', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
 end;

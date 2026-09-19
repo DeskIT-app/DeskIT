@@ -86,5 +86,6 @@ installer runs. winget users can also run `winget upgrade YoavShimron.DeskIT`.
 ## Uninstalling
 
 **Settings > Apps** like any program. The uninstaller asks whether to remove your data too
-(`%LOCALAPPDATA%\DeskIT`: the model, your learned words, history and recordings). Keep is the
-default.
+(`%LOCALAPPDATA%\DeskIT`: the model, your learned words, history and recordings — and the
+key you pasted, from Windows Credential Manager). Keep is the default; Delete leaves nothing of
+DeskIT on the PC.

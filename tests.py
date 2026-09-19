@@ -29845,6 +29845,58 @@ def test_migrate_writes_the_two_files_and_retires_the_old_one():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def test_reset_data_everything_is_the_uninstallers_delete():
+    """--reset-data --yes --everything (D9, the uninstaller's Delete since
+    2026-09-20): the secrets through secretstore.delete_all, the Run value
+    through autostart.apply(False), the hook lines through
+    notify_hook.uninstall_hook, then the whole data folder — settings,
+    keys, models and all, which the plain reset keeps (his uninstall of
+    the test build kept 4.6 GB of models under a question that promised
+    to take them). Without --yes it only says what it would do; on a
+    portable or developer copy it refuses, because there the data folder
+    is the app folder."""
+    import autostart
+    import migrate
+    import notify_hook
+    import secretstore
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-everything-"))
+    calls: list = []
+    try:
+        home = d / "home"
+        for rel in ("settings.toml", "state.json", "models/x/model.bin", "packs/gpu/site/a.py",
+                    "secrets/hook_token.bin", "logs/app.log"):
+            (home / rel).parent.mkdir(parents=True, exist_ok=True)
+            (home / rel).write_text("x", "utf-8")
+        said: list[str] = []
+        with _patched(paths, "DATA_DIR", home), _patched(paths, "PORTABLE", False), \
+                _patched(migrate, "_running", lambda: False), \
+                _patched(secretstore, "present", lambda: {"groq": "Credential Manager"}), \
+                _patched(secretstore, "delete_all", lambda: calls.append("secrets") or ["groq"]), \
+                _patched(autostart, "apply", lambda on: calls.append(("run", on)) or True), \
+                _patched(notify_hook, "uninstall_hook", lambda *a, **k: calls.append("hooks") or True):
+            assert migrate.reset_data(yes=False, out=said.append, everything=True) == 1
+            assert calls == [] and (home / "models" / "x" / "model.bin").exists()
+            text = "\n".join(said)
+            assert "EVERYTHING" in text and str(home) in text and "Add --yes" in text, text
+            said.clear()
+            assert migrate.reset_data(yes=True, out=said.append, everything=True) == 0
+            assert calls == ["secrets", ("run", False), "hooks"], calls
+            assert not home.exists(), "the folder stayed"
+            assert any(l.startswith("secrets removed: groq") for l in said), said
+        with _patched(paths, "DATA_DIR", home), _patched(paths, "PORTABLE", True), \
+                _patched(migrate, "_running", lambda: False):
+            calls.clear(); said.clear()
+            home.mkdir()
+            assert migrate.reset_data(yes=True, out=said.append, everything=True) == 2
+            assert calls == [] and home.exists() and "beside the app" in said[0], said
+        src = (REPO / "main.py").read_text("utf-8")
+        assert 'parser.add_argument("--everything"' in src
+        assert "everything=args.everything" in src
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_notify_hook_reads_the_port_through_the_layers():
     """The hook's port comes from state.json first, then settings.toml,
     then defaults.toml."""
@@ -35529,7 +35581,7 @@ def test_iss_settings():
     assert "Check: not NoLaunch" in iss and "skipifsilent" in iss
     assert "SuppressibleTaskDialogMsgBox" in code and "IDNO, IDNO" in code, \
         "the uninstall question must default to Keep, silently too"
-    assert "--reset-data --yes" in code
+    assert "--reset-data --yes --everything" in code, "the uninstaller's Delete must take everything (D9)"
     assert "RegDeleteValue(HKCU, RunKey, RunValue)" in code
     assert "VersionNumber(Have) > VersionNumber('{#Version}')" in code, "no downgrade refusal"
     assert "hebrew.DeleteDataQuestion=" in iss and "english.DeleteDataQuestion=" in iss

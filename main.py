@@ -6634,6 +6634,11 @@ def main() -> int:
                              "the settings (needs --yes)")
     parser.add_argument("--yes", action="store_true",
                         help="confirm --reset-data")
+    parser.add_argument("--everything", action="store_true",
+                        help="with --reset-data: the settings, the keys, the "
+                             "models — the whole data folder, the Start-with-"
+                             "Windows entry and the Claude Code hook lines; what "
+                             "the uninstaller's Delete runs (plan D9)")
     parser.add_argument("--keys", action="store_true",
                         help="which cloud keys are stored and where (never "
                              "the values)")
@@ -6746,7 +6751,7 @@ def main() -> int:
         return migrate_mod.migrate(Path(args.migrate) if args.migrate else None)
     if args.reset_data:
         import migrate as migrate_mod
-        return migrate_mod.reset_data(yes=args.yes)
+        return migrate_mod.reset_data(yes=args.yes, everything=args.everything)
     if args.verify:
         # The tree's own check, before any config or data folder is
         # touched: the build wrote MANIFEST.sha256 beside python\ and
