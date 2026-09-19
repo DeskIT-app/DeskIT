@@ -6,8 +6,8 @@
 > This page states the policy that applies from the first signed release.
 
 DeskIT's Windows installer (`DeskIT-Setup-x.y.z.exe`, also published as `DeskIT-Setup.exe`)
-is signed by [SignPath Foundation](https://signpath.org), with a certificate issued by SignPath.
-Free code signing is provided by SignPath.io.
+is signed under SignPath Foundation's programme for open-source projects:
+**Free code signing provided by [SignPath.io](https://signpath.io), certificate by [SignPath Foundation](https://signpath.org).**
 
 ## What gets signed
 
@@ -24,8 +24,8 @@ tree's manifest on the user's PC.
 
 | Role | Who |
 |---|---|
-| Committer, reviewer | Yoav Shimron (the maintainer) |
-| Approver of each signing request | Yoav Shimron |
+| Committers and reviewers | [the DeskIT-app members](https://github.com/orgs/DeskIT-app/people) — Yoav Shimron, the maintainer |
+| Approvers | [the DeskIT-app owners](https://github.com/orgs/DeskIT-app/people?query=role%3Aowner) — Yoav Shimron |
 
 Every release is approved by hand in SignPath before it is signed; an unapproved build is not signed
 and not published.

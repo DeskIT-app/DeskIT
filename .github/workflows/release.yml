@@ -401,6 +401,7 @@ jobs:
             "``DeskIT-Setup-$version.exe`` SHA-256: ``$sha``",
             $vtLine,
             "Build attestation: https://github.com/$repo/attestations",
+            "Code signing policy: https://github.com/$repo/blob/main/CODE_SIGNING_POLICY.md",
             $prevLine,
             "Install: download the installer, or ``winget install YoavShimron.DeskIT`` once the manifest is merged."
           ) -join "`n"
