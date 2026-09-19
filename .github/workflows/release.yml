@@ -227,6 +227,10 @@ jobs:
           }
           $latest | ConvertTo-Json | Set-Content -Path dist/latest.json -Encoding utf8
           Copy-Item stage/MANIFEST.sha256 dist/MANIFEST.sha256
+          # The same bytes under a name without the version, so the site's
+          # Download button is one fixed URL for every release:
+          # releases/latest/download/DeskIT-Setup.exe (2026-09-19)
+          Copy-Item $exe dist/DeskIT-Setup.exe
           Get-Content "$exe.sha256", dist/latest.json
 
       # 12. smoke — the installer, silent, on the runner itself; the tree
@@ -368,10 +372,9 @@ jobs:
           body_path: dist/notes.md
           files: |
             dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe
+            dist/DeskIT-Setup.exe
             dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe.sha256
             dist/latest.json
             dist/MANIFEST.sha256
             stage/THIRD-PARTY-NOTICES.txt
-            dist/latest.json
-            dist/MANIFEST.sha256
           retention-days: 14

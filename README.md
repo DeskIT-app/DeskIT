@@ -10,8 +10,8 @@
 
 ## להתקין
 
-- **[הגרסה האחרונה](https://github.com/DeskIT-app/DeskIT/releases/latest)** — קובץ
-  `DeskIT-Setup-x.y.z.exe`, בערך 60 מגה־בייט. מותקן למשתמש שלך בלבד, בלי סיסמת מנהל.
+- **[להוריד את המתקין](https://github.com/DeskIT-app/DeskIT/releases/latest/download/DeskIT-Setup.exe)** — `DeskIT-Setup.exe`, בערך 60 מגה־בייט
+  ([דף הגרסה](https://github.com/DeskIT-app/DeskIT/releases/latest): ה־SHA-256, סריקת VirusTotal, ה־attestation). מותקן למשתמש שלך בלבד, בלי סיסמת מנהל.
 - או בטרמינל, אם יש לך winget: `winget install YoavShimron.DeskIT` (אחרי שהחבילה תאושר).
 
 חלונות 10 (1809 ומעלה) או 11, 64 ביט. בהפעלה הראשונה אשף קצר ומודל העברית יורד פעם אחת
@@ -53,8 +53,8 @@ until you turn it on yourself, and every request can be seen. Open source, Apach
 
 ## Install
 
-- **[Latest release](https://github.com/DeskIT-app/DeskIT/releases/latest)** —
-  `DeskIT-Setup-x.y.z.exe`, about 60 MB. Installs for your user only, no admin password.
+- **[Download the installer](https://github.com/DeskIT-app/DeskIT/releases/latest/download/DeskIT-Setup.exe)** — `DeskIT-Setup.exe`, about 60 MB
+  ([the release page](https://github.com/DeskIT-app/DeskIT/releases/latest): SHA-256, the VirusTotal scan, the attestation). Installs for your user only, no admin password.
 - Or, with winget: `winget install YoavShimron.DeskIT` (once the package is accepted).
 
 Windows 10 (1809+) or 11, 64-bit. First start: a short wizard, and the Hebrew model downloads

@@ -8,7 +8,7 @@ paragraph first (the owner's), English second (DISTRIBUTION_PLAN.md
 
 ## 1.1.0
 
-<Hebrew paragraph — the owner writes it before the tag.>
+הגרסה הראשונה שמתקינים. מתקין למשתמש בלבד, נבנה כולו ב־GitHub מהתג; המודל העברי יורד פעם אחת בהפעלה הראשונה, עם הגודל על המסך והשהיה שממשיכה מאיפה שעצרה; המפתחות שלך ב־Windows Credential Manager; כל חיבור יוצא דרך דלת אחת ומופיע במסך הרשת (הגדרות > פרטיות); בדיקת עדכון שבועית ששואלת קודם. חשבון Google נדרש פעם אחת באשף; שני סנכרונים, כל אחד מאחורי כרטיס הסכמה משלו — המילים שלמדת וההגדרות ששינית, ומה שאמרת. אף פעם לא מפתחות, לא מקשים, לא אודיו.
 
 An account — required: the first-run wizard asks for a Google sign-in
 before the keys work, once, and this PC remembers you until you sign

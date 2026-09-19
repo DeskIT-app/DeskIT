@@ -9,9 +9,9 @@ lang: he
 <h1>הכתבה בעברית לחלונות שנשארת במחשב שלך.</h1>
 <p class="lead">ה־Win+H שעברית מעולם לא קיבלה. מחזיקים מקש, מדברים, משחררים — הטקסט העברי מופיע אצל הסמן, בכל חלון.</p>
 <div class="buttons">
-<a class="btn gold" href="https://github.com/DeskIT-app/DeskIT/releases/latest">להוריד ל־Windows</a>
+<a class="btn gold" href="https://github.com/DeskIT-app/DeskIT/releases/latest/download/DeskIT-Setup.exe" download>להוריד ל־Windows</a>
 <a class="btn ghost" href="he/quickstart">התחלה מהירה</a>
-<span class="note">Windows 10/11 · בלי סיסמת מנהל</span>
+<span class="note">Windows 10/11 · בלי סיסמת מנהל · <a href="https://github.com/DeskIT-app/DeskIT/releases/latest">הגרסה, ה־SHA-256 והסריקה</a></span>
 </div>
 </div>
 <figure class="shot"><img src="img/02-welcome.png" alt="המסך הראשון של DeskIT: הקול שלך נשאר במחשב הזה" width="736" height="679"></figure>
@@ -49,9 +49,9 @@ lang: he
 <h1>Hebrew dictation for Windows that stays on your PC.</h1>
 <p class="lead">The Win+H that Hebrew never got. Hold a key, speak, release: the Hebrew text appears at the cursor, in any window.</p>
 <div class="buttons">
-<a class="btn gold" href="https://github.com/DeskIT-app/DeskIT/releases/latest">Download for Windows</a>
+<a class="btn gold" href="https://github.com/DeskIT-app/DeskIT/releases/latest/download/DeskIT-Setup.exe" download>Download for Windows</a>
 <a class="btn ghost" href="en/quickstart">Quick start</a>
-<span class="note">Windows 10/11 · no administrator password</span>
+<span class="note">Windows 10/11 · no administrator password · <a href="https://github.com/DeskIT-app/DeskIT/releases/latest">version, SHA-256, scan</a></span>
 </div>
 </div>
 <div class="cards" style="grid-template-columns: 1fr; margin: 0;">
