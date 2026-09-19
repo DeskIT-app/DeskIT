@@ -31,6 +31,7 @@ skin/record.py          export-ignore
 AGENTS.md               export-ignore
 *_PLAN.md               export-ignore
 SKIN.md                 export-ignore
+CODE_SIGNING_POLICY.md  export-ignore
 *.html                  export-ignore
 .gitattributes          export-ignore
 .gitignore              export-ignore

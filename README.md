@@ -16,7 +16,8 @@
 
 חלונות 10 (1809 ומעלה) או 11, 64 ביט. בהפעלה הראשונה אשף קצר ומודל העברית יורד פעם אחת
 (1.6 ג'יגה־בייט). כרטיס NVIDIA הופך את התמלול למיידי; בלעדיו זה עובד, לאט יותר.
-חלונות עשוי להזהיר פעם אחת שהמתקין לא חתום — [למה, ומה לעשות](https://deskit-app.github.io/DeskIT/he/01-install).
+חלונות עשוי להזהיר פעם אחת שהמתקין לא חתום — [למה, ומה לעשות](https://deskit-app.github.io/DeskIT/he/01-install);
+[מדיניות חתימת הקוד](CODE_SIGNING_POLICY.md).
 
 ## המדריך
 
@@ -60,7 +61,7 @@ until you turn it on yourself, and every request can be seen. Open source, Apach
 Windows 10 (1809+) or 11, 64-bit. First start: a short wizard, and the Hebrew model downloads
 once (1.6 GB). An NVIDIA card makes transcription instant; without one it works, slower.
 Windows may warn once that the installer is unsigned —
-[why, and what to do](https://deskit-app.github.io/DeskIT/en/01-install).
+[why, and what to do](https://deskit-app.github.io/DeskIT/en/01-install); [code signing policy](CODE_SIGNING_POLICY.md).
 
 ## The guide
 

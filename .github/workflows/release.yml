@@ -37,10 +37,12 @@ permissions:
 jobs:
   stage:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 180        # step 10b may wait up to two hours for the owner's approval
     defaults:
       run:
         shell: pwsh
+    env:
+      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}   # read by step 10b's `if`
     steps:
       # 0. checkout — the tag and VERSION must agree
       - uses: actions/checkout@v5
@@ -208,6 +210,49 @@ jobs:
           & $iscc packaging/DeskIT.iss /DVersion=$version /DVersionInfo=$info /DStage=stage /DOutDir=dist
           if ($LASTEXITCODE) { throw "ISCC failed" }
           Get-ChildItem dist
+
+      # 10b. sign — SignPath Foundation (10.8, phase 5): the unsigned
+      #      installer goes up as a run artifact, SignPath fetches it by
+      #      that id, the owner approves the request in SignPath's UI
+      #      (release-signing is approval-gated there), and the signed
+      #      file replaces the unsigned one BEFORE anything hashes it.
+      #      Dormant until the four values exist: the secret
+      #      SIGNPATH_API_TOKEN and the repository variables
+      #      SIGNPATH_ORGANIZATION_ID, SIGNPATH_PROJECT_SLUG,
+      #      SIGNPATH_POLICY_SLUG. CODE_SIGNING_POLICY.md is the page
+      #      SignPath reads. Not on a dry run.
+      - name: Unsigned installer as a run artifact
+        if: ${{ github.ref_type == 'tag' && env.SIGNPATH_API_TOKEN != '' }}
+        id: unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-installer
+          path: dist/DeskIT-Setup-${{ steps.version.outputs.version }}.exe
+          retention-days: 3
+
+      - name: SignPath signing request
+        if: ${{ github.ref_type == 'tag' && env.SIGNPATH_API_TOKEN != '' }}
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 7200
+          output-artifact-directory: signed
+
+      - name: The signed installer takes the unsigned one's place
+        if: ${{ github.ref_type == 'tag' && env.SIGNPATH_API_TOKEN != '' }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $signed = Get-ChildItem signed -Recurse -Filter "DeskIT-Setup-$version.exe" | Select-Object -First 1
+          if (-not $signed) { throw "SignPath returned no DeskIT-Setup-$version.exe" }
+          $sig = Get-AuthenticodeSignature $signed.FullName
+          if ($sig.Status -ne 'Valid') { throw "signature status $($sig.Status): $($sig.StatusMessage)" }
+          Write-Host "signed by $($sig.SignerCertificate.Subject)"
+          Copy-Item $signed.FullName "dist/DeskIT-Setup-$version.exe" -Force
 
       # 11. sha + latest.json — the forms the guide and the Update card read
       - name: SHA-256 and latest.json
