@@ -31,8 +31,9 @@ bolted.
 `--install-hook` writes the two entries into ~/.claude/settings.json,
 replacing any earlier entry that names this script and leaving every
 other key and every foreign hook alone, so it can be run again after a
-move or a python <-> pythonw change. The default interpreter is the
-venv's pythonw.exe: Claude Code runs hooks through a shell, and a
+move or a python <-> pythonw change. The default interpreter is
+launch.pythonw() — the installed copy's python\\pythonw.exe when there
+is one, else the venv's: Claude Code runs hooks through a shell, and a
 console-subsystem python would flash a window on every turn.
 """
 from __future__ import annotations
@@ -47,9 +48,17 @@ import sys
 import tomllib
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parent
+
+# Claude Code runs this BY PATH (`"pythonw.exe" "…\notify_hook.py"`), and
+# an installed copy's interpreter isolates sys.path (python311._pth) —
+# the script's folder is not on it, so `import paths` found nothing
+# and every hook died in silence. The same guard as main.py's.
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
 import paths
 
-HERE = Path(__file__).resolve().parent
 DEFAULT_PORT = 8756
 DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
 TOKEN_FILE = paths.PHONE_TOKEN     # the pre-2026-09-17 plaintext file
@@ -456,9 +465,16 @@ def install_hook(settings_path, python: str | None = None,
                  script: str | None = None) -> bool:
     """Write our two hook entries into settings.json; True if the file
     changed. Idempotent: an entry naming notify_hook.py is replaced,
-    everything else in the file is kept byte for byte in meaning."""
+    everything else in the file is kept byte for byte in meaning.
+
+    The interpreter, left unsaid, is launch.pythonw(): python\\ beside
+    app\\ on an installed copy, the venv's in the checkout. It used to be
+    the venv's alone, which an installed copy does not have — the hook
+    the wizard wrote there named an interpreter that was not on disk."""
+    import launch
+
     settings_path = Path(settings_path)
-    python = python or str(HERE / ".venv" / "Scripts" / "pythonw.exe")
+    python = python or launch.pythonw()
     script = script or str(HERE / "notify_hook.py")
     try:
         data = json.loads(settings_path.read_text("utf-8"))

@@ -63,10 +63,21 @@ import math
 import os
 import queue
 import re
+import sys
 import threading
 import time
 import tkinter as tk
 from pathlib import Path
+
+APP_DIR = Path(__file__).resolve().parent
+
+# Started BY PATH by an installed copy (launch.open_dashboard →
+# `python\pythonw.exe app\dashboard.py`), whose python311._pth isolates
+# sys.path to its four lines — the script's own folder is not one of
+# them, so `import config` below found nothing and "Open the desk" did
+# nothing (1.1.0, stderr in DEVNULL). The same guard as main.py's.
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
 
 import config as config_mod
 import control
@@ -88,7 +99,6 @@ import updates
 import version
 import widgets
 
-APP_DIR = Path(__file__).resolve().parent
 import paths
 DEFAULTS_PATH = paths.DEFAULTS_FILE
 ICON_PATH = APP_DIR / "icon.ico"

@@ -135,6 +135,9 @@ problems/
 
 # the egress log net.py writes (D12): hosts and byte counts, no bodies
 network.log*
+# launch.spawn's record: one row per child it started, and whatever a
+# child wrote to stderr before it died (the desk's import error, 1.1.0)
+spawn.log*
 
 # packaginguild_local.ps1's output: the wheelhouse, the python.org zip,
 # the staged tree (~250 MB) and, with Inno Setup here, the installer

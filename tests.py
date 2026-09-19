@@ -58,6 +58,9 @@ _paths_mod.PHONE_TOKEN = _SCRATCH_HOME / "phone" / "server_token.txt"
 # And the egress log: every net.py row a test provokes lands here, not in
 # the checkout's network.log the owner reads.
 _paths_mod.NETWORK_LOG = _SCRATCH_HOME / "network.log"
+# And launch.spawn's record: a test that starts a child leaves its row
+# here, not in the checkout's spawn.log.
+_paths_mod.SPAWN_LOG = _SCRATCH_HOME / "spawn.log"
 # And the consents: a test that grants one grants it in the scratch file,
 # never in the owner's consent.json (privacy.py reads paths.CONSENT_FILE).
 _paths_mod.CONSENT_FILE = _SCRATCH_HOME / "consent.json"
@@ -34367,6 +34370,224 @@ def test_verify_flag_reports_the_installed_tree():
     yml = (REPO / ".github" / "workflows" / "release.yml").read_text("utf-8")
     assert '"$app\\app\\main.py" --verify' in yml, "the smoke step bypasses --verify"
     assert "files match the manifest" in yml, "the smoke step does not read the verdict"
+
+
+# The installed interpreter runs under python311._pth, which ISOLATES
+# sys.path to that file's four lines: the folder of the script it was
+# given is NOT added, the way a normal python adds it. So every script an
+# installed copy starts BY PATH — `python\pythonw.exe app\dashboard.py`
+# from launch.open_dashboard, notify_hook.py from Claude Code's hook
+# line, main.py from the shortcut — dies on its first `import <ours>`
+# unless it puts its own folder there first. main.py learned that from
+# the 1.1.0 build (run 35400078650); dashboard.py learned it from the
+# owner's install, where "Open the desk" did nothing and stderr went to
+# DEVNULL. `python -I -P` is the same sys.path without the build.
+
+#: A product module whose `__main__` block makes it a script, though
+#: nothing of the product starts it by path: firstrun.py's is the
+#: developer's door to the wizard (main.py hosts it on an install).
+#: Lane C's file (2026-09-19); it dies under -I like the others did.
+_ENTRY_POINT_EXCUSED = frozenset({"firstrun.py"})
+
+_ISOLATED = [sys.executable, "-I", "-P", "-B"]
+#: The top level of a script under the isolated path, WITHOUT its
+#: `__main__` block: the imports are what die, and dashboard.py's
+#: block would take the desk's mutex and open the window.
+_TOP_LEVEL_PROBE = "import runpy, sys; runpy.run_path(sys.argv[1], run_name='probe')"
+
+
+def entry_points() -> list[Path]:
+    """Every product file that is a script — a top-level `if __name__
+    == "__main__"` — and imports one of ours at the top level: those
+    are the ones that die by path without the guard. deskit.pyw is
+    the installed entry and is always one."""
+    import ast
+
+    ours = set(product_modules())
+    found = [REPO / "deskit.pyw"]
+    for path in sorted(REPO.glob("*.py")):
+        if path.name in DEV_FILES:
+            continue
+        tree = ast.parse(path.read_text("utf-8"))
+        is_script = any(
+            isinstance(n, ast.If) and isinstance(n.test, ast.Compare)
+            and isinstance(n.test.left, ast.Name) and n.test.left.id == "__name__"
+            and any(isinstance(c, ast.Constant) and c.value == "__main__"
+                    for c in n.test.comparators)
+            for n in tree.body)
+        if not is_script:
+            continue
+        if _first_own_import(tree, ours) is not None:
+            found.append(path)
+    return found
+
+
+def _first_own_import(tree, ours: set[str]):
+    """The line of the first top-level import of a product module."""
+    import ast
+
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            names = [a.name.split(".")[0] for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            names = [(node.module or "").split(".")[0]]
+        else:
+            continue
+        if any(n in ours for n in names):
+            return node.lineno
+    return None
+
+
+def test_entry_points_put_their_own_folder_on_sys_path():
+    """Statically: every entry point (entry_points() above) has
+    `sys.path.insert(0, <its folder>)` BEFORE its first import of a
+    product module — the guard main.py carries — and the set is the
+    one this test knows, so a new script by path is a deliberate
+    addition here. Then live, under the isolated path an installed
+    copy has (`-I -P`): the desk's whole top level runs, the hook runs
+    by path the way Claude Code runs it (empty stdin → exit 0, silent),
+    and `main.py --verify` answers as the release smoke expects. On
+    the code before 2026-09-19 all three died with ModuleNotFoundError."""
+    import ast
+
+    ours = set(product_modules())
+    points = entry_points()
+    names = sorted(p.name for p in points)
+    assert names == ["dashboard.py", "deskit.pyw", "firstrun.py", "lookup.py",
+                     "main.py", "migrate.py", "models.py", "notify_hook.py",
+                     "packs.py"], names
+    offenders = []
+    for path in points:
+        if path.name in _ENTRY_POINT_EXCUSED:
+            continue
+        src = path.read_text("utf-8")
+        first = _first_own_import(ast.parse(src), ours)
+        assert first is not None, path.name
+        head = "\n".join(src.splitlines()[:first - 1])
+        if "sys.path.insert(0," not in head or "__file__" not in head:
+            offenders.append(f"{path.name}: no sys.path guard before line {first}")
+    assert not offenders, offenders
+
+    env = {k: v for k, v in os.environ.items() if k != "DESKIT_PORTABLE"}
+    env["DESKIT_HOME"] = str(_SCRATCH_HOME / "isolated")
+
+    def run(argv, **kw):
+        return subprocess.run(argv, cwd=str(REPO), env=env, capture_output=True,
+                              encoding="utf-8", errors="replace", timeout=180, **kw)
+
+    desk = run([*_ISOLATED, "-c", _TOP_LEVEL_PROBE, str(REPO / "dashboard.py")])
+    assert desk.returncode == 0 and "Error" not in desk.stderr, \
+        (desk.returncode, desk.stderr[-600:])
+    hook = run([*_ISOLATED, str(REPO / "notify_hook.py")], stdin=subprocess.DEVNULL)
+    assert (hook.returncode, hook.stdout, hook.stderr) == (0, "", ""), \
+        (hook.returncode, hook.stdout, hook.stderr[-600:])
+    import manifest
+    verify = run([*_ISOLATED, str(REPO / "main.py"), "--verify"])
+    assert verify.returncode == manifest.NOT_A_BUILD and "not an installed build" in verify.stdout, \
+        (verify.returncode, verify.stdout, verify.stderr[-600:])
+
+
+def test_spawn_keeps_the_childs_last_words():
+    """launch.spawn() hands the child paths.SPAWN_LOG as its stderr, one
+    dated row naming the script first, so a child that dies before it
+    has a window leaves its traceback where the next person looks
+    (until 2026-09-19 stderr was DEVNULL and "Open the desk" on the
+    1.1.0 install did nothing, silently). A log past SPAWN_LOG_MAX is
+    cut to its tail; a log that cannot be opened costs nothing — the
+    child still starts, stderr in DEVNULL."""
+    import subprocess as sp
+
+    import launch
+
+    with tempfile.TemporaryDirectory() as d:
+        log = Path(d) / "logs" / "spawn.log"           # logs\ is not there yet
+        dies = Path(d) / "dies.py"
+        dies.write_text("import sys\nsys.stderr.write('last words\\n')\n"
+                        "import no_such_module_xyz\n", "utf-8")
+        with _patched(paths, "SPAWN_LOG", log):
+            assert launch.spawn([str(dies), "--flag"]) is True
+        text = ""
+        for _ in range(300):                            # the child dies in ~1 s
+            text = log.read_text("utf-8", errors="replace") if log.exists() else ""
+            if "no_such_module_xyz" in text:
+                break
+            time.sleep(0.1)
+        lines = text.splitlines()
+        assert lines and re.match(r"^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\] ", lines[0]), lines[:1]
+        assert lines[0].endswith(f"{dies} --flag"), lines[0]
+        assert "last words" in text and \
+            "ModuleNotFoundError: No module named 'no_such_module_xyz'" in text, text
+        # a second launch appends under the first
+        with _patched(paths, "SPAWN_LOG", log), \
+                _patched(sp, "Popen", lambda argv, **k: k["stderr"].write(b"child\n")):
+            assert launch.spawn(["x.py"]) is True
+        rows = log.read_text("utf-8").splitlines()
+        assert rows[-1] == "child" and rows[-2].endswith("] x.py"), rows[-2:]
+        assert "no_such_module_xyz" in "\n".join(rows[:-2])
+        # past the cap the file is cut to its tail, the new row after it
+        log.write_bytes(b"old\n" * (launch.SPAWN_LOG_MAX // 4 + 1))
+        with _patched(paths, "SPAWN_LOG", log), \
+                _patched(sp, "Popen", lambda argv, **k: None):
+            assert launch.spawn(["y.py"]) is True
+        data = log.read_bytes()
+        assert len(data) <= launch.SPAWN_LOG_KEEP + 100, len(data)
+        assert data.startswith(b"old\n") and data.rstrip().endswith(b"] y.py")
+        # a log that cannot be had: the child still starts, stderr in DEVNULL
+        seen: list = []
+        with _patched(paths, "SPAWN_LOG", Path(d)), \
+                _patched(sp, "Popen", lambda argv, **k: seen.append(k["stderr"])):
+            assert launch.spawn(["z.py"]) is True
+        assert seen == [sp.DEVNULL], seen
+    # the scratch guard at the top of this file keeps every row out of
+    # the checkout's own spawn.log; the layout knows the name
+    assert paths.SPAWN_LOG == _SCRATCH_HOME / "spawn.log"
+    assert paths._LAYOUTS["SPAWN_LOG"] == ("spawn.log", "logs/spawn.log")
+
+
+def test_install_hook_names_an_interpreter_that_exists():
+    """notify_hook.install_hook, asked for no interpreter, writes
+    launch.pythonw() — python\\pythonw.exe beside app\\ on an installed
+    tree, the venv's here — never the checkout's `.venv` by name: an
+    installed copy has no .venv, and the hook the wizard's "Connect
+    Claude Code" switch wrote there pointed at nothing. The CLI door
+    (`notify_hook.py --install-hook --settings X`), run by path under
+    the isolated interpreter, writes a command whose interpreter is
+    on disk."""
+    import launch
+    import notify_hook as hook
+
+    with tempfile.TemporaryDirectory() as d:
+        tree = Path(d) / "DeskIT"
+        (tree / "python").mkdir(parents=True)
+        (tree / "app").mkdir()
+        (tree / "python" / "pythonw.exe").write_bytes(b"MZ")
+        settings = tree / "home" / "settings.json"
+        with _patched(paths, "PORTABLE", False), _patched(paths, "DEVELOPER", False), \
+                _patched(launch, "APP_DIR", tree / "app"):
+            assert hook.install_hook(settings) is True
+        cmd = json.loads(settings.read_text("utf-8"))["hooks"]["Stop"][0]["hooks"][0]["command"]
+        python, script = re.findall(r'"([^"]+)"', cmd)
+        assert python == str(tree / "python" / "pythonw.exe"), cmd
+        assert Path(python).exists() and script == str(hook.HERE / "notify_hook.py")
+        assert ".venv" not in cmd, cmd
+        # the checkout: the venv's (or this python's) pythonw, which exists
+        here = tree / "here.json"
+        assert hook.install_hook(here) is True
+        python = re.findall(r'"([^"]+)"', json.loads(here.read_text("utf-8"))
+                            ["hooks"]["Stop"][0]["hooks"][0]["command"])[0]
+        assert python == launch.pythonw() and Path(python).exists(), python
+        # the CLI door, by path, under the installed copy's sys.path
+        cli = tree / "cli.json"
+        env = dict(os.environ, DESKIT_HOME=str(tree / "home"))
+        proc = subprocess.run([*_ISOLATED, str(REPO / "notify_hook.py"), "--install-hook",
+                               "--settings", str(cli)], cwd=str(REPO), env=env,
+                              capture_output=True, encoding="utf-8", errors="replace",
+                              timeout=120, stdin=subprocess.DEVNULL)
+        assert proc.returncode == 0 and "hooks written to" in proc.stderr, \
+            (proc.returncode, proc.stdout, proc.stderr[-600:])
+        python = re.findall(r'"([^"]+)"', json.loads(cli.read_text("utf-8"))
+                            ["hooks"]["Stop"][0]["hooks"][0]["command"])[0]
+        assert Path(python).exists() and python.lower().endswith("pythonw.exe"), python
 
 
 # ------------------------------------------------ the split suite (PR 8)
