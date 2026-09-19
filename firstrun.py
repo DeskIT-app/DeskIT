@@ -29,20 +29,23 @@ The pages, and the ORDER is the point:
   1. Account — Sign in with Google (the owner's rule of 2026-09-18: no
      account, no dictation); the one page Next cannot pass until a
      session exists. Remembered until Sign out.
-  2. Microphone — the live meter, the trap named, the fix one click away
+  2. Microphone — one row per physical microphone, the live meter, the
+     trap named once, the fix one click away
   3. This computer — what the probe found, and the downloads this PC
      needs, asked before a byte moves: the Hebrew model (models.py),
      NVIDIA's libraries on a card that has one (packs.py), the English
      detector where there is room for it. The download keeps running
      while the wizard moves on.
-  4. Say one sentence — recorded and read back through the real backend
-  5. Keys — the bindings, on one screen you can leave open
-  6. Optional extras — the five switches of D33, each one thing that
-     leaves this PC or changes Windows: the cloud repair (its consent
-     card first — privacy.py, consent_card.py), keep-awake, the weekly
-     update check, the Claude Code door, the Snipping-Tool key. Drawn as
-     they stand (D34: the defaults are what the owner runs) and written
-     only when moved.
+  4. Say one sentence — recorded and read back through the real backend,
+     the decode time on its own, the model's load time said once
+  5. Keys — the bindings as chips; a click rebinds one, through the same
+     path Settings > Keys writes
+  6. Extras — the five switches of D33, each one thing that leaves this
+     PC or changes Windows: the cloud repair (its consent card first —
+     privacy.py, consent_card.py), keep-awake, the weekly update check,
+     the Claude Code door, the Snipping-Tool key. Drawn as they stand
+     (D34: the defaults are what the owner runs) and written only when
+     moved.
   7. Ready — the hotkey named, Start-with-Windows and the phone asked
      once, the desk one button away
 
@@ -50,21 +53,46 @@ At most four real decisions (arch-A §1 P2): the microphone (only when
 more than one input exists), the downloads, the extras, and nothing
 else; every page has a way through without deciding.
 
+THE WORDS ARE ENGLISH — the owner's verdict of 2026-09-19, walking the
+installed copy as a stranger: "the design must be redone here, and the
+text in English". Short, plain, one primary action per page. The one
+thing that stays Hebrew is what the person SAID: the sentence page's
+transcript, which goes through the bitmap path (chapter 9.1).
+
+THE LOOK IS LAMPLIGHT (skin\\palette.py): the warm graphite ground, gold
+for the one primary action, the same face as the site and the
+installer's pictures. ui.py takes that palette only when the skin's
+skia imports, and on a first run the skin pack is not on the disk yet —
+which is how the installed copy came up in the old blue. The wizard
+applies the palette itself (`_lamplight`), since it is numbers and
+needs no library.
+
 Built on ui.py, so it is the dashboard's window rather than a Tk
-dialog: same palette, same buttons, same bidi text renderer. The chrome
-(buttons, labels, the size lines) is English like the whole dashboard;
-every paragraph the person READS is Hebrew and goes through the bitmap
-path (chapter 9.1). Nothing here imports main.py — the wizard has to
-run BEFORE the app does, and pulling in the app's imports would make
-the "loading" step start before the window.
+dialog: same buttons, same switches, same bidi text renderer. Nothing
+here imports main.py — the wizard has to run BEFORE the app does, and
+pulling in the app's imports would make the "loading" step start
+before the window.
 """
 from __future__ import annotations
 
+import dataclasses
 import logging
+import os
+import re
+import sys
 import threading
 import time
 import tkinter as tk
 from pathlib import Path
+
+APP_DIR = Path(__file__).resolve().parent
+
+# The installed interpreter runs under python311._pth, which isolates
+# sys.path to the four lines in that file: the script's own folder is
+# NOT added, so `python\python.exe app\firstrun.py` by path found no
+# `paths`. main.py and deskit.pyw make the same insert.
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
 
 import config as config_mod
 import paths
@@ -73,7 +101,6 @@ import ui
 
 log = logging.getLogger("app")
 
-APP_DIR = Path(__file__).resolve().parent
 # Where "this copy has been set up" is written: `setup.done` in
 # state.json (D2) — a fact about one installation, in the file that
 # holds the other facts about it. The marker file is what a --config
@@ -81,9 +108,11 @@ APP_DIR = Path(__file__).resolve().parent
 # key), and older copies that wrote it are still honoured by needed().
 MARKER = paths.SETUP_MARKER
 
-W, H = 720, 640
+W, H = 720, 660
 PAD = 28
-METER_W, METER_H = 360, 10
+INNER = W - 2 * PAD                 # the width everything on a page gets
+METER_W, METER_H = INNER, 12
+ROW_H = 44                          # one microphone row
 # How long a silent meter is allowed to stay silent before the wizard says
 # something. Long enough not to nag someone who is reading the screen,
 # short enough to beat the conclusion that the app is broken.
@@ -98,82 +127,116 @@ PAGES = ("welcome", "account", "mic", "computer", "say", "keys", "extras", "done
 #: The screenshot key when the Snipping-Tool switch is on / off (screen 13).
 SNIP_KEY, PLAIN_SNIP_KEY = "win+shift+s", "ctrl+f11"
 
+#: The keys page: (config field, the label a stranger reads).
+KEY_ROWS = (("hotkey", "keys.hold"), ("latch_hotkey", "keys.latch"),
+            ("punctuate_hotkey", "keys.punctuate"),
+            ("visual_qa_hotkey", "keys.screen"))
+
 #: Every sentence the wizard shows, in one place so the guide (chapter
-#: 14) can quote it. `he` = a paragraph drawn through the bitmap path;
-#: everything else is English chrome.
+#: 14) can quote it. English throughout; only the person's own sentence
+#: on the "say" page is Hebrew, and that is not a string here.
 WORDS = {
-    "welcome.title": "ברוכים הבאים לדסק-איט",
-    "welcome.he": ("הקול שלך נשאר במחשב הזה.",
-                   "המילים שאמרת נשמרות בתיקייה אחת שאפשר למחוק.",
-                   "שום דבר לא נשלח לשום מקום עד שתפעיל את זה בעצמך."),
-    "welcome.defaults.he": "ברירות המחדל טובות; כל דבר אפשר לשנות אחר כך בהגדרות.",
+    "eyebrow": "DeskIT",
+    "step": "Step {n} of {total}",
+    "welcome.title": "Welcome to DeskIT",
+    "welcome.lines": ("Your voice stays on this computer.",
+                      "What you said is kept in one folder you can delete.",
+                      "Nothing is sent anywhere until you turn it on yourself."),
+    "welcome.defaults": "The defaults are good. Everything can be changed later in Settings.",
     "welcome.link": "How to check this yourself",
     "welcome.privacy": "Privacy policy",
-    "account.title": "החשבון שלך",
-    "account.he": ("דסק-איט עובד עם חשבון: המילים שלמדת, ההגדרות ומה שאמרת "
-                   "יכולים ללכת איתך לכל מחשב שתיכנס אליו. נכנסים פעם אחת "
-                   "עם חשבון גוגל — המחשב הזה יזכור אותך עד שתצא."),
-    "account.what.he": ("מה נשמר: מזהה חשבון וכתובת הדוא\"ל של חשבון גוגל "
-                        "שבחרת; שם המחשב הזה, גרסת האפליקציה וגרסת Windows. "
-                        "השרת: של דסק-איט (Supabase, פרנקפורט). המפתחות שלך "
-                        "לעולם לא נוסעים לשם. כל סנכרון נשאר כבוי עד שתפעיל "
-                        "אותו בעצמו, בכרטיס משלו."),
-    "account.none.he": "בעותק הזה אין שרת חשבון — אפשר להמשיך.",
+    "account.title": "Your account",
+    "account.sub": "Sign in once with Google. This PC remembers you until you sign out.",
+    "account.for": ("Your learned words and settings follow you to any PC you sign in on.",
+                    "One Google sign-in, and this computer remembers you."),
+    "account.stored": ("Stored: the account id and e-mail of the Google account you pick, "
+                       "this PC's name, the app version and the Windows version — on "
+                       "DeskIT's server (Supabase, Frankfurt)."),
+    "account.never": ("Never stored: your voice, what you said, your keys. Every sync "
+                      "stays off until you turn it on, on its own card."),
+    "account.none": "This copy has no account server — you can go on.",
     "account.button": "Sign in with Google",
     "account.waiting": "Waiting for Google's sign-in page in your browser…",
     "account.signed": "Signed in as {email}",
     "account.anonymous": "Signed in (anonymous account)",
+    "account.remembered": "This PC remembers you until you sign out (Settings > Account).",
     "account.failed": "Not signed in: {why}",
     "account.terms": "Terms",
-    "mic.title": "איזה מיקרופון?",
-    "mic.he": ("דבר עכשיו. הפס למטה צריך לזוז. אם הוא לא זז — "
-               "המיקרופון לא מגיע לאפליקציה, וזאת כמעט תמיד הגדרה "
-               "של ווינדוס ולא תקלה."),
+    "account.continue": "Continue",
+    "mic.title": "Which microphone?",
+    "mic.sub": ("Say a few words. The bar below should move — if it does, "
+                "everything else is a detail."),
     "mic.none": "No microphone was found.",
-    "mic.talk": "Talking? The bar should move",
-    "mic.heard": "Heard. You can go on",
-    "mic.cannot": "Cannot open the microphone: {error}",
-    "mic.quiet.he": ("הפס לא זז. ברוב המקרים ווינדוס חוסם מיקרופון "
-                     "לאפליקציות שולחן עבודה."),
-    "mic.blocked.he": ("ווינדוס חוסם את המיקרופון לאפליקציות שולחן עבודה "
-                       "(הגדרות > פרטיות > מיקרופון). פתח את ההגדרה, "
-                       "הפעל את המתג, וחזור לכאן."),
-    "mic.open": "Open the Windows setting",
-    "computer.title": "המחשב הזה",
-    "computer.he": ("מה שחסר יורד פעם אחת. ההורדה ממשיכה ברקע כשאתה "
-                    "ממשיך הלאה, ואפשר להשלים אותה גם אחר כך מדף הבית."),
-    "computer.ready.he": "כל מה שהמחשב הזה צריך כבר נמצא בדיסק.",
-    "computer.portable.he": ("עותק נייד: המודלים מגיעים מהמטמון של "
-                             "Hugging Face, כמו תמיד."),
-    "computer.cpu.he": ("בלי כרטיס אנבידיה דסק-איט עובד, רק לאט יותר. אחר כך "
-                        "אפשר להוסיף מפתח חינמי של Groq לתמלול מהיר בענן "
-                        "(הגדרות > פרטיות)."),
+    "mic.default": "Windows default",
+    "mic.talk": "Talking? The bar should move.",
+    "mic.heard": "Heard. You can go on.",
+    "mic.cannot": "Cannot open this microphone: {error}",
+    "mic.help": ("Nothing moving? Windows may be blocking microphone access for desktop "
+                 "apps. Open Settings > Privacy & security > Microphone and turn on both "
+                 "“Microphone access” and “Let desktop apps access your "
+                 "microphone”. DeskIT appears in that list only after its first "
+                 "recording."),
+    "mic.open": "Open Windows settings",
+    "computer.title": "This computer",
+    "computer.sub": ("What is missing downloads once. It keeps going while you continue, "
+                     "and can be finished later from the desk."),
+    "computer.ready": "Everything this computer needs is already on the disk.",
+    "computer.portable": "Portable copy: the models come from the Hugging Face cache, as always.",
+    "computer.cpu": ("Without an NVIDIA card DeskIT works, only slower. Later you can add a "
+                     "free Groq key for fast transcription in the cloud (Settings > Privacy)."),
     "computer.pack": "Use the NVIDIA card",
-    "computer.pack.help": "{size} of NVIDIA's CUDA libraries from PyPI · NVIDIA licence",
+    "computer.pack.help": "{size} of NVIDIA's CUDA libraries from PyPI, under NVIDIA's licence.",
     "computer.detector": "Detect English automatically",
-    "computer.detector.help": "{size} more, uses {size} of video memory",
+    "computer.detector.help": "{size} more on the disk, and the same in video memory.",
     "computer.queue": "{n} of {total} · {name} · ",
-    "say.title": "תגיד משפט אחד",
-    "say.he": ("לחץ, דבר שלוש שניות, וקרא מה שיצא. טעינת המודל "
-               "בפעם הראשונה לוקחת כמה שניות — פעם אחת, לא בכל הכתבה."),
-    "say.waiting.he": "המודל עוד יורד — הפס למעלה. אפשר לדלג ולנסות מהבית.",
+    "step.model.title": "The Hebrew model",
+    "step.model.body": ("DeskIT transcribes on this computer, without the cloud, with a "
+                        "Hebrew model that downloads once — {size} from huggingface.co "
+                        "into DeskIT's folder. Pause any time; the next start continues "
+                        "from the same point."),
+    "step.pack.title": "Speed from the NVIDIA card",
+    "step.pack.body": ("An NVIDIA card was found. To transcribe on it — many times faster "
+                       "than on the processor — DeskIT needs NVIDIA's CUDA libraries: "
+                       "{size} from PyPI, under NVIDIA's licence."),
+    "step.detector.title": "English detection",
+    "step.detector.body": ("A second, general model that notices when you spoke English and "
+                           "transcribes it as English: {size} more on the disk and in video "
+                           "memory. Without it an English sentence comes out in Hebrew letters."),
+    "step.done": "Downloaded and verified.",
+    "step.offline": ("No internet connection. DeskIT asks again at the next start, and the "
+                     "download continues from the same point."),
+    "step.paused": "Paused. The next start continues from the same point.",
+    "step.failed": "The download failed ({why}). DeskIT asks again at the next start.",
+    "say.title": "Say one sentence",
+    "say.sub": ("Press the button, talk for three seconds, and read what came out. "
+                "The model loads once, the first time — a few seconds."),
+    "say.waiting": "The model is still downloading — the bar above. You can skip and try from the desk.",
+    "say.placeholder": "Your sentence appears here.",
     "say.button": "Record 3 seconds",
     "say.recording": "Recording…",
     "say.loading": "Loading the model and transcribing…",
-    "say.nothing": "Nothing was captured",
+    "say.nothing": "Nothing was captured.",
     "say.quiet": "Silence. Go back and check the bar.",
-    "say.heard": "This is what it heard — took {seconds:.1f} s",
-    "say.cpu.he": "זאת המהירות שאפשר לצפות לה במחשב הזה.",
-    "keys.title": "המקשים",
-    "keys.he": "אלה המקשים. אפשר לשנות אותם אחר כך תחת Keys בלוח המחוונים.",
+    "say.heard": "This is what it heard — decoded in {seconds:.1f} s",
+    "say.loaded": "model loaded in {seconds:.1f} s",
+    "say.cpu": "This is the speed to expect on this computer.",
+    "keys.title": "Keys",
+    "keys.sub": ("Click a key to change it. Everything here can be changed later "
+                 "under Keys on the desk."),
     "keys.hold": "Hold and talk",
     "keys.latch": "Latch — talk without holding",
     "keys.punctuate": "Punctuate what was just pasted",
     "keys.screen": "Ask about the screen",
-    "extras.title": "תוספות",
-    "extras.he": ("כל שורה כאן היא דבר אחד שיוצא מהמחשב או משנה משהו "
-                  "בווינדוס. שום דבר לא יוצא לענן עד שתפעיל; הכול ניתן "
-                  "לשינוי אחר כך בהגדרות."),
+    "keys.press": "Press a key…",
+    "keys.listening": "Press the new key or combination. Esc cancels.",
+    "keys.saved": "{label}: {key}",
+    "keys.refused": "Not a key this can use — try another.",
+    "keys.taken": "{key} already means “{other}” — pick another key.",
+    "keys.no_chord": "This key is held, not tapped, so it cannot take Ctrl, Shift or Alt — press a single key.",
+    "extras.title": "Extras",
+    "extras.sub": ("Each row is one thing that leaves this PC or changes Windows. Nothing "
+                   "goes to the cloud until you switch it on; all of it can be changed "
+                   "later in Settings."),
     "extras.cloud": "Fix misheard words with a free cloud model (text only)",
     "extras.cloud.help": "Needs your own free Groq key; the text of what you said leaves this PC.",
     "extras.cloud.key": "Consent recorded — add your free Groq key under Settings > Privacy to switch it on.",
@@ -182,26 +245,80 @@ WORDS = {
     "extras.updates": "Check for updates weekly",
     "extras.updates.help": "One request to github.com, no identifier sent.",
     "extras.claude": "Connect Claude Code",
-    "extras.claude.help": "Two hook lines in ~/.claude/settings.json: when Claude Code finishes or asks, DeskIT shows a card and plays a cue.",
+    "extras.claude.help": "Two hook lines in ~/.claude/settings.json: when Claude Code finishes or asks, DeskIT shows a card.",
     "extras.snip": "Take over Win+Shift+S for DeskIT's screenshot key",
     "extras.snip.help": "Windows' own Snipping Tool stops answering that shortcut while DeskIT runs; off, the key is Ctrl+F11.",
     "done.autostart": "Start with Windows",
     "done.autostart.help": "A Run entry for your user; Settings > The app turns it off.",
     "done.phone": "Dictate from your phone",
     "done.phone.help": "This PC listens for the DeskIT keyboard on your Tailscale address (Settings > Phone shows how).",
-    "done.title": "דסק-איט מוכן",
-    "done.he": "החזק את המקש ודבר. הטקסט נדבק במקום שבו הסמן עומד, בכל חלון.",
-    "done.deferred.he": ("דסק-איט מותקן. את המודל העברי אפשר להוריד מדף "
-                         "הבית כשתרצה."),
+    "done.title": "DeskIT is ready",
+    "done.sub": "Hold the key and talk. The text lands where your cursor is, in any window.",
+    "done.deferred": ("DeskIT is installed. The Hebrew model can be downloaded from the desk "
+                      "whenever you like."),
     "done.hold": "Hold",
     "done.desk": "Open the desk",
-    "next": "Next", "back": "Back", "skip": "Skip", "finish": "Finish",
+    "next": "Next", "back": "Back", "skip": "Skip", "finish": "Start",
     "saved.error": "Could not save: {error}",
 }
 
 GUIDE_PRIVACY_CHECK = f"{paths.PAGES_URL}/he/04-privacy"      # guide chapter 4
 PRIVACY_URL = f"{paths.PAGES_URL}/privacy"
 
+
+# ------------------------------------------------------------ the palette
+
+def _lamplight() -> None:
+    """The app's own palette, whether or not the skin's skia is here.
+
+    ui.py repaints itself from skin\\palette.py only when `skin.on()` —
+    which needs skia-python, a PACK on an installed copy. On a first run
+    the pack is not there yet, so the wizard came up in the old blue (the
+    owner's screenshots, 2026-09-19) while the site and the installer
+    were gold. The palette is numbers; nothing about it needs a library,
+    so the wizard applies it here. HD_SKIN=0 and ENABLED = False in
+    skin\\__init__.py still mean the old look, the way they do for the
+    rest of the app.
+    """
+    if os.environ.get("HD_SKIN", "1").strip().lower() in ("0", "off", "false", "no"):
+        return
+    try:
+        import skin
+        from skin import palette
+    except Exception:                                      # noqa: BLE001
+        return
+    if not getattr(skin, "ENABLED", True) or ui.ACCENT == palette.ACCENT:
+        return
+    for name, value in palette.UI_NAMES.items():
+        if name in ui.__dict__:
+            setattr(ui, name, value)
+    ui.forget_images()
+    log.info("wizard: palette applied without the skin pack")
+
+
+def _colorref(colour: str) -> int:
+    r, g, b = (int(colour[i:i + 2], 16) for i in (1, 3, 5))
+    return r | (g << 8) | (b << 16)
+
+
+def _caption(root) -> None:
+    """The title bar in the window's own colours (DWM 20, 35, 36 — the
+    same three dashboard._dark_caption sets, on THIS palette rather
+    than the dashboard's literal)."""
+    try:
+        import ctypes
+        root.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(int(root.winfo_id()))
+        for attribute, value in ((20, 1), (35, _colorref(ui.BG)),
+                                 (36, _colorref(ui.FG))):
+            payload = ctypes.c_int(value)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attribute, ctypes.byref(payload), 4)
+    except Exception:                                      # noqa: BLE001
+        pass                          # Windows 10: the window still works
+
+
+# ---------------------------------------------------------- microphones
 
 def clean_name(name: str) -> str:
     """A device name a person can read.
@@ -244,14 +361,26 @@ def device_key(raw_name, api: str) -> str:
     return f'{" ".join(str(raw_name or "").split())}, {api}'
 
 
+# The host APIs, best first. WASAPI gives 16 kHz shared-mode capture
+# without the fallback in recorder.py and does not truncate names.
+API_RANK = {"Windows WASAPI": 0, "Windows WDM-KS": 1, "MME": 2,
+            "Windows DirectSound": 3}
+#: MME cuts every device name at 31 characters ("Headset Microphone
+#: (Arctis 7 Ch"), which is how the same microphone fails to match its
+#: own WASAPI row by name.
+MME_CUT = 31
+#: An API's "whatever Windows calls the default" alias — not a device.
+ALIASES = frozenset({"microsoft sound mapper - input",
+                     "primary sound capture driver"})
+
+
 def _devices() -> list[tuple[str, str, str, int]]:
     """(key, readable name, host API, index) for every input device, best
     first.
 
     The KEY is what gets written (see device_key). The index is kept for
-    the row's small print — the same microphone appears three times on a
-    normal Windows box, they are not equally good, and the number is how
-    a person tells two identical names apart.
+    the tie-breaks below — the same microphone appears three or four
+    times on a normal Windows box, and one_per_device() folds them.
     """
     try:
         import sounddevice as sd
@@ -272,45 +401,101 @@ def _devices() -> list[tuple[str, str, str, int]]:
     except Exception as e:
         log.info("could not list input devices: %r", e)
         return []
-    # WASAPI first: it is the one that gives 16 kHz shared-mode capture
-    # without the fallback in recorder.py, and its names are not truncated.
-    order = {"Windows WASAPI": 0, "Windows WDM-KS": 1, "MME": 2}
-    out.sort(key=lambda d: (order.get(d[2], 3), d[3]))
+    out.sort(key=lambda d: (API_RANK.get(d[2], 9), d[3]))
+    return out
+
+
+def same_device(a, b) -> bool:
+    """Are two listing rows one physical microphone under two host APIs?
+
+    The same name is the same device. An MME name that is exactly the
+    truncation of a longer one is too: MME's "Headset Microphone (Arctis
+    7 Ch" IS WASAPI's "Headset Microphone (Arctis 7 Chat)". Nothing
+    looser — "Nothing Ear" and "Nothing ear (1" are two Bluetooth
+    endpoints and stay two rows.
+    """
+    x, y = str(a[1]).lower(), str(b[1]).lower()
+    if x == y:
+        return True
+    for short, long_, api in ((x, y, a[2]), (y, x, b[2])):
+        if api == "MME" and len(short) >= MME_CUT and long_.startswith(short):
+            return True
+    return False
+
+
+def one_per_device(listing, chosen: str = "") -> list:
+    """The listing folded to ONE row per physical microphone.
+
+    The owner's screen showed five rows for two microphones — MME, WASAPI
+    and WDM-KS each list the same hardware — and a stranger cannot tell
+    which of three identical names to click. Each group keeps one row:
+    the device the settings already name (so the selected row lights up
+    and Next writes nothing new), else its best API (API_RANK: WASAPI
+    first), else the lowest index. DirectSound is a wrapper over the
+    same devices and its rows are dropped, as are the two "default"
+    aliases — unless one of those is what the settings name.
+    """
+    chosen = str(chosen or "")
+    groups: list[list] = []
+    for row in listing:
+        for group in groups:
+            if any(same_device(row, other) for other in group):
+                group.append(row)
+                break
+        else:
+            groups.append([row])
+    out = []
+    for group in groups:
+        mine = [r for r in group if str(r[0]) == chosen]
+        if mine:
+            out.append(mine[0])
+            continue
+        real = [r for r in group
+                if r[2] != "Windows DirectSound" and str(r[1]).lower() not in ALIASES]
+        if not real:
+            continue
+        out.append(min(real, key=lambda r: (API_RANK.get(r[2], 9), r[3])))
     return out
 
 
 def order_for(listing, chosen: str):
     """The list as the wizard shows it: whatever is already selected first.
 
-    Pulled out of the screen so it can be tested: the sort below puts
-    WASAPI first, and on this machine the device the settings already
-    name is an MME one that landed ninth — so the row the owner was
-    actually using was off the bottom of a list of their own microphones.
+    Pulled out of the screen so it can be tested: the sort puts WASAPI
+    first, and on this machine the device the settings already name is
+    an MME one that landed ninth — so the row the owner was actually
+    using was off the bottom of a list of their own microphones.
     """
     chosen = str(chosen or "")
     mine = [d for d in listing if str(d[0]) == chosen]
     return mine + [d for d in listing if str(d[0]) != chosen]
 
 
-def default_device() -> str:
-    """The device the wizard starts on: whatever Windows calls the default.
+def default_device(listing=None, rows=None) -> str:
+    """The device the wizard starts on: whatever Windows calls the default,
+    named by the ROW the wizard shows for it.
 
     "" would also work — recorder.py reads an empty string as the system
     default — but showing a row selected is what tells someone the list is
-    a choice rather than a warning.
-
-    Answers with the same key the rows are keyed by, so the right row
-    lights up; "" when the default cannot be named.
+    a choice rather than a warning. sounddevice's default is an MME
+    index; the row shown for that microphone is its best API's
+    (one_per_device), so that is the key answered, and the same physical
+    device lights up. "" when the default cannot be named.
     """
     try:
         import sounddevice as sd
         index = sd.default.device[0]
         if index is None or index < 0:
             return ""
-        for key, _name, _api, listed in _devices():
-            if listed == int(index):
-                return key
-        return ""
+        listing = _devices() if listing is None else listing
+        raw = next((r for r in listing if r[3] == int(index)), None)
+        if raw is None:
+            return ""
+        rows = one_per_device(listing) if rows is None else rows
+        for row in rows:
+            if same_device(row, raw):
+                return row[0]
+        return raw[0]
     except Exception:
         return ""
 
@@ -318,7 +503,6 @@ def default_device() -> str:
 def open_microphone_settings() -> bool:
     """The Settings page for the trap, opened for them."""
     try:
-        import os
         os.startfile("ms-settings:privacy-microphone")   # noqa: S606
         return True
     except Exception as e:
@@ -362,13 +546,15 @@ class Meter(tk.Canvas):
     time you look back, and the whole screen exists to prove one thing.
     """
 
-    def __init__(self, parent, bg: str):
-        super().__init__(parent, width=METER_W, height=METER_H + 6, bg=bg,
+    def __init__(self, parent, bg: str, width: int = METER_W):
+        super().__init__(parent, width=width, height=METER_H + 6, bg=bg,
                          highlightthickness=0, bd=0)
         self._peak = 0.0
-        self._track = self.create_rectangle(
-            0, 3, METER_W, 3 + METER_H, fill=ui.EDGE, width=0)
-        self._fill = self.create_rectangle(0, 3, 0, 3 + METER_H,
+        self._width = width
+        self._track = self.create_image(
+            0, 3, anchor="nw",
+            image=ui.rounded(width, METER_H, METER_H // 2, ui.EDGE, bg, ui.LINE))
+        self._fill = self.create_rectangle(2, 5, 2, 1 + METER_H,
                                            fill=ui.ACCENT, width=0)
         self._mark = self.create_rectangle(0, 0, 0, 0, fill=ui.GREEN, width=0)
 
@@ -379,12 +565,12 @@ class Meter(tk.Canvas):
         # square root is not a decoration, it is what makes the thing
         # readable at the level people actually speak at.
         shown = level ** 0.5
-        self.coords(self._fill, 0, 3, METER_W * shown, 3 + METER_H)
+        self.coords(self._fill, 2, 5, max(2, (self._width - 4) * shown), 1 + METER_H)
         self.itemconfig(self._fill,
                         fill=ui.GREEN if self._peak >= SPEECH else ui.ACCENT)
         if level > self._peak:
             self._peak = level
-            x = METER_W * (self._peak ** 0.5)
+            x = (self._width - 4) * (self._peak ** 0.5)
             self.coords(self._mark, x - 1, 0, x + 1, METER_H + 6)
 
     @property
@@ -394,6 +580,7 @@ class Meter(tk.Canvas):
     def forget(self) -> None:
         self._peak = 0.0
         self.coords(self._mark, 0, 0, 0, 0)
+        self.coords(self._fill, 2, 5, 2, 1 + METER_H)
 
 
 class Listener:
@@ -454,20 +641,69 @@ class Listener:
             self._rec = None
 
 
-def transcribe(cfg, wav: bytes) -> tuple[str, str]:
-    """(text, problem). Loads the real backend — seconds cold, and said so.
+# ---------------------------------------------------------- the sentence
+
+@dataclasses.dataclass
+class Heard:
+    """What the sentence page got back: the text, or why not, and the
+    two times apart — the model's load (once, seconds) and the decode
+    (what every later dictation costs)."""
+
+    text: str = ""
+    problem: str = ""
+    load_s: float = 0.0
+    decode_s: float = 0.0
+
+
+#: Where a backend may report its own timing (lane B is separating load
+#: from decode in the result). The first attribute found wins; the wall
+#: clock around the call is the fallback.
+DECODE_FIELDS = ("last_decode_s", "decode_s", "last_latency", "latency")
+LOAD_FIELDS = ("last_load_s", "load_s", "model_load_s")
+
+
+def _reported(backend, names) -> float | None:
+    for name in names:
+        value = getattr(backend, name, None)
+        if isinstance(value, (int, float)) and value >= 0:
+            return float(value)
+    return None
+
+
+def transcribe_timed(cfg, wav: bytes, backend=None) -> tuple[Heard, object]:
+    """(Heard, backend). Loads the real backend — seconds cold, and said
+    so — and keeps it, so a second try on the page does not load again.
 
     The app's own `get_transcriber`, not a shortcut: the point of the step
     is to prove the pipeline the user is about to rely on, and a wizard
     that passed while the app failed would be worse than no wizard.
     """
+    load_s = 0.0
     try:
-        from transcribers import get_transcriber
-        backend = get_transcriber(cfg)
-        return (backend.transcribe(wav) or "").strip(), ""
+        if backend is None:
+            from transcribers import get_transcriber
+            started = time.monotonic()
+            backend = get_transcriber(cfg)
+            load_s = time.monotonic() - started
+        started = time.monotonic()
+        text = (backend.transcribe(wav) or "").strip()
+        decode_s = time.monotonic() - started
     except Exception as e:
         log.info("wizard transcription failed: %r", e, exc_info=True)
-        return "", str(e) or e.__class__.__name__
+        return Heard(problem=str(e) or e.__class__.__name__), backend
+    reported = _reported(backend, DECODE_FIELDS)
+    if reported is not None:
+        decode_s = reported
+    reported_load = _reported(backend, LOAD_FIELDS)
+    if reported_load is not None and load_s:
+        load_s = reported_load
+    return Heard(text=text, load_s=load_s, decode_s=decode_s), backend
+
+
+def transcribe(cfg, wav: bytes) -> tuple[str, str]:
+    """(text, problem) — the shape the older callers and the test know."""
+    heard, _backend = transcribe_timed(cfg, wav)
+    return heard.text, heard.problem
 
 
 # ------------------------------------------------------- this computer
@@ -549,6 +785,56 @@ def downloads_for(cfg, facts: dict | None) -> dict:
     return out
 
 
+def english_step(kind: str, step: steps.Step, size: int) -> steps.Step:
+    """The step with the wizard's English words on it. models.py and
+    packs.py speak Hebrew — that is the standalone window's design — and
+    the wizard's pages are English, so the copy the wizard hosts carries
+    its own title, paragraph and end sentences. The work, the size line,
+    the links and the button are the step's own."""
+    words = WORDS
+    title = words.get(f"step.{kind}.title", step.title)
+    body = words.get(f"step.{kind}.body", step.body).format(size=steps.human(size))
+    said = {"done": words["step.done"], "offline": words["step.offline"],
+            "paused": words["step.paused"], "failed": words["step.failed"]}
+    return dataclasses.replace(step, title=title, body=body, said=said)
+
+
+def _write_key(field: str) -> str:
+    """The dotted settings key a hotkey field is written under — the
+    dashboard's NESTED_HOTKEYS, the one table Settings > Keys writes
+    through; the field itself when that table cannot be read."""
+    try:
+        import dashboard
+        return dashboard.NESTED_HOTKEYS.get(field, field)
+    except Exception:                                      # noqa: BLE001
+        return field
+
+
+def _label_of(field: str) -> str:
+    for name, word in KEY_ROWS:
+        if name == field:
+            return WORDS[word]
+    for name, label in config_mod.HOTKEY_FIELDS:
+        if name == field:
+            return label
+    return field
+
+
+def plain_refusal(error: str, key: str) -> str:
+    """check_hotkeys' sentence, in the wizard's words: which key is
+    taken by what, or why a chord is refused here — read off the error's
+    text, never re-derived."""
+    text = str(error)
+    taken = re.search(r"must differ from (\w+)", text)
+    if taken:
+        return WORDS["keys.taken"].format(key=_pretty(key), other=_label_of(taken.group(1)))
+    if "cannot take modifiers" in text:
+        return WORDS["keys.no_chord"]
+    for name, _label in config_mod.HOTKEY_FIELDS:
+        text = text.replace(name, _label_of(name))
+    return text
+
+
 class Result:
     """What `run()` answers: truthy when the wizard ran to the end and
     wrote `setup.done`; the two side facts main.py acts on."""
@@ -565,7 +851,7 @@ class Result:
 
 
 class Wizard:
-    """Seven pages in one window, and a Back that actually goes back.
+    """Eight pages in one window, and a Back that actually goes back.
 
     Not a chain of modal dialogs: every page here can fail in a way whose
     fix is on the PREVIOUS page ("no, it was the other microphone"), and
@@ -586,14 +872,22 @@ class Wizard:
         self.listener = Listener(cfg.audio.sample_rate)
         self.result = Result()
         self.page = 0
-        self._rows: dict[str, tk.Widget] = {}
+        self._rows: dict[str, tuple] = {}
         self._quiet_since = time.monotonic()
         self._warned = False
         self._busy = False
         self._sample = ""
         self._seconds = 0.0
+        self._said_loaded = False
+        self._backend = None
         self._closing = False
+        self._capturing: str | None = None
+        self._pending = {"mod": None, "name": None}
+        self._key_binds: tuple = ()
+        self.caps: dict = {}
+        self.rings: dict = {}
         self.meter = None
+        self.hint = None
         self.pane: steps.StepPane | None = None
         self._stepper = stepper or self._step_for
         if facts is None:
@@ -635,6 +929,7 @@ class Wizard:
             pass
         self._extras_shown = dict(self.extras)
 
+        _lamplight()
         # A PhotoImage belongs to the interpreter that made it: the step
         # windows and the dashboard may have had a Tk of their own in
         # this process, so the cache is emptied on both sides.
@@ -642,37 +937,63 @@ class Wizard:
         self.root = tk.Tk()
         self.root.title("DeskIT")
         self.root.configure(bg=ui.BG)
+        self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
         self._centre()
         try:
             import dashboard
             dashboard._set_window_icon(self.root)
-            dashboard._dark_caption(self.root)
         except Exception:
             pass                      # cosmetic: never a reason not to run
+        _caption(self.root)
 
+        # The foot is packed FIRST, at the bottom: a page that grows (the
+        # microphone help) then clips its own tail rather than pushing
+        # Back and Next out of the window.
+        self.foot = tk.Frame(self.root, bg=ui.BG)
+        self.foot.pack(side="bottom", fill="x", padx=PAD, pady=(14, PAD))
         self.body = tk.Frame(self.root, bg=ui.BG)
         self.body.pack(fill="both", expand=True, padx=PAD, pady=(PAD, 0))
-        self.foot = tk.Frame(self.root, bg=ui.BG)
-        self.foot.pack(fill="x", padx=PAD, pady=PAD)
-        # RTL: the primary action sits on the RIGHT, where the eye lands
-        # first in a Hebrew window, and Back to its left.
-        self.next = ui.Button(self.foot, WORDS["next"], self._next, bg=ui.BG,
-                              primary=True, w=150)
-        self.next.pack(side="right")
+        # One primary action per page (the owner's word): the way on is
+        # gold on the pages where it IS the action, and quiet where the
+        # page has a louder one — Sign in, Download, Record. Two buttons
+        # with one job, because a ui.Button's faces are built once.
+        self.next_loud = ui.Button(self.foot, WORDS["next"], self._next, bg=ui.BG,
+                                   primary=True, w=150)
+        self.next_quiet = ui.Button(self.foot, WORDS["next"], self._next, bg=ui.BG,
+                                    w=150)
+        self._loud = True
+        self.next_loud.pack(side="right")
         self.back = ui.Button(self.foot, WORDS["back"], self._back, bg=ui.BG,
                               quiet=True, w=96)
         self.back.pack(side="right", padx=(0, 10))
         self.skip = ui.Button(self.foot, WORDS["skip"], self._skip, bg=ui.BG,
                               quiet=True, w=96)
-        self.note = tk.Label(self.foot, text="", bg=ui.BG, fg=ui.FAINT,
-                             font=(ui.UI, 9), anchor="w")
+        self.note = tk.Label(self.foot, text="", bg=ui.BG, fg=ui.DIM,
+                             font=(ui.UI, 9), anchor="w", justify="left",
+                             wraplength=INNER - 270)
         self.note.pack(side="left", fill="x", expand=True)
 
         self._show_page()
         self.root.after(60, self._tick)
 
     # ---------------------------------------------------------------- frame
+    @property
+    def next(self) -> ui.Button:
+        """The way-on button as it is shown now (the tests read it)."""
+        return self.next_loud if self._loud else self.next_quiet
+
+    def _foot(self, loud: bool, label: str | None = None) -> None:
+        """Which twin is packed, and what it says."""
+        shown, hidden = ((self.next_loud, self.next_quiet) if loud
+                         else (self.next_quiet, self.next_loud))
+        if loud != self._loud:
+            hidden.pack_forget()
+            shown.pack(side="right", before=self.back)
+            self._loud = loud
+        for twin in (self.next_loud, self.next_quiet):
+            twin.configure_text(label or WORDS["next"])
+
     def _centre(self) -> None:
         self.root.update_idletasks()
         sw = self.root.winfo_screenwidth()
@@ -680,15 +1001,40 @@ class Wizard:
         self.root.geometry(f"{W}x{H}+{(sw - W) // 2}+{max(0, (sh - H) // 3)}")
 
     def _clear(self) -> None:
+        self._stop_capture()
         self.pane = None
         self.meter = None
+        self.hint = None
+        self.list_holder = None
+        self.caps = {}
+        self.rings = {}
         for child in self.body.winfo_children():
             child.destroy()
         self._rows = {}
 
+    def _head(self, title: str, sub: str = "") -> None:
+        """Every page's top: the mark and the name, the step count, the
+        title and one line under it."""
+        row = tk.Frame(self.body, bg=ui.BG)
+        row.pack(fill="x")
+        mark = ui.icon_bitmap(APP_DIR / "icon.png", 20, ui.BG)
+        if mark is not None:
+            badge = tk.Label(row, image=mark, bg=ui.BG)
+            badge.photo = mark
+            badge.pack(side="left", padx=(0, 8))
+        tk.Label(row, text=WORDS["eyebrow"], bg=ui.BG, fg=ui.DIM,
+                 font=(ui.MEDIUM, 9)).pack(side="left")
+        tk.Label(row, text=WORDS["step"].format(n=self.page + 1, total=len(PAGES)),
+                 bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 9)).pack(side="right")
+        tk.Label(self.body, text=title, bg=ui.BG, fg=ui.FG,
+                 font=(ui.DISPLAY, 18), anchor="w").pack(fill="x", pady=(16, 2))
+        if sub:
+            self._line(sub, colour=ui.DIM, size=10, pady=(0, 14))
+
     def _para(self, text: str, *, pt: int, colour: str, lines: int = 4,
-              pady=(0, 0), parent=None) -> tk.Label:
-        """A Hebrew paragraph, drawn by Windows rather than by Tk.
+              pady=(0, 0), parent=None, bg: str | None = None) -> tk.Label:
+        """A Hebrew paragraph, drawn by Windows rather than by Tk — the
+        person's own sentence on the "say" page.
 
         Tk hands a string to ExtTextOutW with an LTR base direction and no
         way to say otherwise: Hebrew words come out shaped correctly but
@@ -702,29 +1048,28 @@ class Wizard:
         nothing references it, and the label then goes blank.
         """
         parent = parent or self.body
-        photo, _h, _n = ui.draw_text(text, pt=pt, width=W - PAD * 2,
+        bg = bg or ui.BG
+        photo, _h, _n = ui.draw_text(text, pt=pt, width=INNER - 40,
                                      max_lines=lines, colour=colour,
-                                     bg=ui.BG, rtl=True)
-        label = tk.Label(parent, image=photo, bg=ui.BG, anchor="e")
+                                     bg=bg, rtl=True)
+        label = tk.Label(parent, image=photo, bg=bg, anchor="e")
         label.photo = photo
         label.pack(fill="x", pady=pady)
         return label
 
-    def _title(self, text: str, sub: str, lines: int = 4) -> None:
-        self._para(text, pt=17, colour=ui.FG, lines=1)
-        self._para(sub, pt=10, colour=ui.DIM, lines=lines, pady=(6, 16))
-
     def _line(self, text: str, *, colour: str | None = None, pady=(0, 0),
-              parent=None, size: int = 9) -> tk.Label:
-        """One English line, left-aligned like the dashboard's chrome."""
-        label = tk.Label(parent or self.body, text=text, bg=ui.BG,
-                         fg=colour or ui.FAINT, font=(ui.UI, size), anchor="w",
-                         justify="left", wraplength=W - PAD * 2)
+              parent=None, size: int = 10, bg: str | None = None,
+              width: int | None = None, anchor: str = "w") -> tk.Label:
+        """One English line or short paragraph, left-aligned."""
+        label = tk.Label(parent or self.body, text=text, bg=bg or ui.BG,
+                         fg=colour or ui.DIM, font=(ui.UI, size), anchor=anchor,
+                         justify="left" if anchor == "w" else "center",
+                         wraplength=width or INNER)
         label.pack(fill="x", pady=pady)
         return label
 
-    def _link(self, text: str, url: str, parent=None) -> tk.Label:
-        label = tk.Label(parent or self.body, text=text, bg=ui.BG,
+    def _link(self, text: str, url: str, parent=None, bg: str | None = None) -> tk.Label:
+        label = tk.Label(parent or self.body, text=text, bg=bg or ui.BG,
                          fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"),
                          cursor="hand2", anchor="w")
         label.bind("<Button-1>", lambda _e, u=url: self._open(u))
@@ -738,21 +1083,34 @@ class Wizard:
         except Exception:                                  # noqa: BLE001
             log.info("could not open %s", url)
 
+    def _card(self, parent=None, pad: int = 18) -> ui.Card:
+        """A lifted face to put a page's rows on; `_fit` sizes it to
+        them once they are packed."""
+        card = ui.Card(parent or self.body, INNER, 2 * pad + 1, bg=ui.BG, pad=pad)
+        card.pad = pad
+        return card
+
+    @staticmethod
+    def _fit(card: ui.Card) -> None:
+        card.body.update_idletasks()
+        card.resize(card.body.winfo_reqheight() + 2 * card.pad)
+
     def _switch_row(self, label: str, help_: str, value: bool, command,
-                    parent=None) -> ui.Switch:
-        """A switch, its English label and one help line — the Settings
-        page's row shape, on the wizard's ground."""
+                    parent=None, bg: str | None = None, last: bool = False) -> ui.Switch:
+        """A switch, its label and one help line — the Settings page's
+        row shape, on whatever face it is put on."""
         parent = parent or self.body
-        row = tk.Frame(parent, bg=ui.BG)
-        row.pack(fill="x", pady=(0, 8))
-        switch = ui.Switch(row, value, command, bg=ui.BG)
-        switch.pack(side="left", padx=(0, 12), pady=(2, 0))
-        words = tk.Frame(row, bg=ui.BG)
+        bg = bg or ui.BG
+        row = tk.Frame(parent, bg=bg)
+        row.pack(fill="x", pady=(0, 0 if last else 10))
+        switch = ui.Switch(row, value, command, bg=bg)
+        switch.pack(side="left", padx=(0, 14), pady=(2, 0))
+        words = tk.Frame(row, bg=bg)
         words.pack(side="left", fill="x", expand=True)
-        tk.Label(words, text=label, bg=ui.BG, fg=ui.FG, font=(ui.UI, 10),
+        tk.Label(words, text=label, bg=bg, fg=ui.FG, font=(ui.UI, 10),
                  anchor="w").pack(fill="x")
-        tk.Label(words, text=help_, bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
-                 anchor="w", justify="left", wraplength=W - PAD * 2 - 80
+        tk.Label(words, text=help_, bg=bg, fg=ui.DIM, font=(ui.UI, 8),
+                 anchor="w", justify="left", wraplength=INNER - 110
                  ).pack(fill="x")
         return switch
 
@@ -763,16 +1121,49 @@ class Wizard:
 
     def _show_page(self) -> None:
         self._clear()
+        self.note.configure(text="", fg=ui.DIM)
+        for twin in (self.next_loud, self.next_quiet):
+            twin.enable(True)
+        self._foot(True, WORDS["finish"] if self.name == "done" else WORDS["next"])
         getattr(self, f"_page_{self.name}")()
         self.back.enable(self.page > 0)
-        self.next.configure_text(WORDS["finish"] if self.name == "done"
-                                 else WORDS["next"])
         if self.name == "say":
             self.skip.pack(side="right", padx=(0, 10))
         else:
             self.skip.pack_forget()
-        self.note.configure(text="", fg=ui.FAINT)
 
+    # ---------------------------------------------------------------- welcome
+    def _page_welcome(self) -> None:
+        """The mark, the name, three sentences, two quiet links — the
+        installer's side picture continued: dark tile, DeskIT, a gold
+        rule."""
+        head = tk.Frame(self.body, bg=ui.BG)
+        head.pack(fill="x", pady=(22, 0))
+        mark = ui.icon_bitmap(APP_DIR / "icon.png", 84, ui.BG)
+        if mark is not None:
+            badge = tk.Label(head, image=mark, bg=ui.BG)
+            badge.photo = mark
+            badge.pack()
+        tk.Label(self.body, text=WORDS["welcome.title"], bg=ui.BG, fg=ui.FG,
+                 font=(ui.DISPLAY, 22)).pack(pady=(18, 10))
+        rule = tk.Canvas(self.body, width=28, height=2, bg=ui.ACCENT,
+                         highlightthickness=0, bd=0)
+        rule.pack(pady=(0, 22))
+        for sentence in WORDS["welcome.lines"]:
+            tk.Label(self.body, text=sentence, bg=ui.BG, fg=ui.FG,
+                     font=(ui.UI, 12)).pack(pady=(0, 8))
+        self._line(WORDS["welcome.defaults"], colour=ui.DIM, size=10,
+                   pady=(14, 22), anchor="center")
+        links = tk.Frame(self.body, bg=ui.BG)
+        links.pack()
+        self._link(WORDS["welcome.link"], GUIDE_PRIVACY_CHECK, parent=links
+                   ).pack(side="left")
+        tk.Label(links, text="·", bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 9)
+                 ).pack(side="left", padx=10)
+        self._link(WORDS["welcome.privacy"], PRIVACY_URL, parent=links
+                   ).pack(side="left")
+
+    # ---------------------------------------------------------------- account
     def _page_account(self) -> None:
         """Sign in (chapter 9 screen 16, the owner's rule of 2026-09-18):
         the one page with no way past — Next stays off until a session
@@ -782,40 +1173,79 @@ class Wizard:
         browser does Google's part and comes back on the app's loopback
         listener (sb.sign_in_google). A copy without a project says so
         and lets Next through."""
-        self._title(WORDS["account.title"], WORDS["account.he"], lines=4)
+        self._head(WORDS["account.title"], WORDS["account.sub"])
         self._account_state = "idle"
         try:
             import sb
             configured = sb.configured()
             signed = sb.user() if configured else None
+            required = bool(sb.REQUIRED)
         except Exception:                                  # noqa: BLE001
-            configured, signed = False, None
+            configured, signed, required = False, None, False
         if not configured:
-            self._para(WORDS["account.none.he"], pt=10, colour=ui.DIM, lines=2)
-            self.next.enable(True)
+            self._line(WORDS["account.none"], colour=ui.DIM, size=10)
             return
-        self._para(WORDS["account.what.he"], pt=10, colour=ui.DIM, lines=5,
-                   pady=(0, 14))
-        row = tk.Frame(self.body, bg=ui.BG)
-        row.pack(fill="x")
-        self.signin = ui.Button(row, WORDS["account.button"], self._sign_in,
-                                bg=ui.BG, primary=True, w=190)
-        self.signin.pack(side="right")
-        self._link(WORDS["welcome.privacy"], PRIVACY_URL, parent=row
-                   ).pack(side="right", padx=(0, 14))
-        self._link(WORDS["account.terms"], f"{paths.PAGES_URL}/terms", parent=row
-                   ).pack(side="right", padx=(0, 14))
-        self.account_line = self._line("", pady=(12, 0), size=10)
+        self.account_holder = tk.Frame(self.body, bg=ui.BG)
+        self.account_holder.pack(fill="x")
         if signed:
             self._account_said(signed)
         else:
-            self.next.enable(False)
+            self._account_offer(required)
+
+    def _account_offer(self, required: bool = True) -> None:
+        """The card with the sign-in button: what the account is for,
+        what is stored and never stored, [Sign in with Google]. The way
+        on is shut while sb.REQUIRED says no account, no dictation."""
+        for child in self.account_holder.winfo_children():
+            child.destroy()
+        card = self._card(self.account_holder, pad=20)
+        card.pack(fill="x")
+        f, bg = card.body, ui.CARD
+        for sentence in WORDS["account.for"]:
+            self._line(sentence, parent=f, bg=bg, colour=ui.FG, size=11,
+                       width=INNER - 40, pady=(0, 4))
+        self._line(WORDS["account.stored"], parent=f, bg=bg, colour=ui.DIM,
+                   size=9, width=INNER - 40, pady=(14, 6))
+        self._line(WORDS["account.never"], parent=f, bg=bg, colour=ui.DIM,
+                   size=9, width=INNER - 40, pady=(0, 18))
+        row = tk.Frame(f, bg=bg)
+        row.pack(fill="x")
+        self.signin = ui.Button(row, WORDS["account.button"], self._sign_in,
+                                bg=bg, primary=True, w=210, h=44)
+        self.signin.pack(side="left")
+        self._link(WORDS["welcome.privacy"], PRIVACY_URL, parent=row, bg=bg
+                   ).pack(side="right", padx=(14, 0))
+        self._link(WORDS["account.terms"], f"{paths.PAGES_URL}/terms", parent=row,
+                   bg=bg).pack(side="right")
+        self.account_line = self._line("", parent=f, bg=bg, colour=ui.DIM,
+                                       size=9, width=INNER - 40, pady=(12, 0))
+        self._fit(card)
+        self._foot(False)
+        self.next.enable(not required)
 
     def _account_said(self, who: dict) -> None:
-        self.account_line.configure(
-            text=(WORDS["account.signed"].format(email=who["email"]) if who.get("email")
-                  else WORDS["account.anonymous"]), fg=ui.GREEN)
-        self.signin.enable(False)
+        """Signed in: the card becomes a check mark, the e-mail and one
+        sentence; the way on is the primary again and says Continue."""
+        for child in self.account_holder.winfo_children():
+            child.destroy()
+        card = self._card(self.account_holder, pad=20)
+        card.pack(fill="x")
+        f, bg = card.body, ui.CARD
+        row = tk.Frame(f, bg=bg)
+        row.pack(fill="x")
+        tk.Label(row, text=ui.ICON["check"], bg=bg, fg=ui.GREEN,
+                 font=(ui.ICONS, 16)).pack(side="left", padx=(0, 14))
+        words = tk.Frame(row, bg=bg)
+        words.pack(side="left", fill="x", expand=True)
+        self.account_line = self._line(
+            (WORDS["account.signed"].format(email=who["email"]) if who.get("email")
+             else WORDS["account.anonymous"]),
+            parent=words, bg=bg, colour=ui.FG, size=12, width=INNER - 90)
+        self._line(WORDS["account.remembered"], parent=words, bg=bg,
+                   colour=ui.DIM, size=9, width=INNER - 90, pady=(4, 0))
+        self._fit(card)
+        self.signin = None
+        self._foot(True, WORDS["account.continue"])
         self.next.enable(True)
 
     def _sign_in(self) -> None:
@@ -855,78 +1285,103 @@ class Wizard:
         if result.get("who"):
             self.result.signed_in = True
             self._account_said(result["who"])
+            self._came_back(result["who"])
         else:
             self.account_line.configure(
                 text=WORDS["account.failed"].format(why=result.get("error", "?"))[:160],
                 fg=ui.RED)
             self.signin.enable(True)
 
-    def _page_welcome(self) -> None:
-        self._para(WORDS["welcome.title"], pt=17, colour=ui.FG, lines=1,
-                   pady=(0, 14))
-        for sentence in WORDS["welcome.he"]:
-            self._para(sentence, pt=12, colour=ui.FG, lines=2, pady=(0, 8))
-        self._para(WORDS["welcome.defaults.he"], pt=10, colour=ui.DIM,
-                   lines=2, pady=(10, 18))
-        self._link(WORDS["welcome.link"], GUIDE_PRIVACY_CHECK).pack(anchor="w")
-        self._link(WORDS["welcome.privacy"], PRIVACY_URL).pack(anchor="w",
-                                                                pady=(4, 0))
+    def _came_back(self, who: dict) -> None:
+        """The browser had the foreground; foreground.py (lane E) brings
+        the wizard back and shows the signed-in card. Optional: a copy
+        without the module still signs in."""
+        try:
+            import foreground
+        except ImportError:
+            return
+        try:
+            foreground.bring_back()
+            foreground.signed_in_card(who.get("email") or "")
+        except Exception:                                  # noqa: BLE001
+            log.debug("foreground after the sign-in", exc_info=True)
 
+    # ------------------------------------------------------------ microphone
     def _page_mic(self) -> None:
-        self._title(WORDS["mic.title"], WORDS["mic.he"])
+        self._head(WORDS["mic.title"], WORDS["mic.sub"])
         listing = _devices()
         if not listing:
             self._line(WORDS["mic.none"], colour=ui.RED, size=11)
             return
+        rows = one_per_device(listing, self.device)
+        default_key = default_device(listing, rows)
         # Every device, not the first few: a silent cap here is somebody
         # whose microphone is ninth concluding it is not supported.
-        holder = ui.Scroller(self.body, w=W - PAD * 2 - 10, h=230, bg=ui.BG)
-        holder.pack(fill="both", expand=True)
-        for key, name, api, index in order_for(listing, self.device):
-            self._device_row(holder.inner, key, name, api, index)
-        holder.bind_wheel(holder.inner)
-        bar = tk.Frame(self.body, bg=ui.BG)
-        bar.pack(fill="x", pady=(16, 0))
-        self.meter = Meter(bar, ui.BG)
-        self.meter.pack(side="right")
-        self.meter_note = tk.Label(bar, text="", bg=ui.BG, fg=ui.DIM,
-                                   font=(ui.UI, 9), anchor="e")
-        self.meter_note.pack(side="right", fill="x", expand=True,
-                             padx=(0, 14))
+        self.list_rows = len(rows)
+        self.list_holder = ui.Scroller(self.body, w=INNER - 10,
+                                       h=self._list_height(4), bg=ui.BG)
+        self.list_holder.pack(fill="x")
+        for key, name, _api, _index in order_for(rows, self.device):
+            self._device_row(self.list_holder.inner, key, name, key == default_key)
+        self.list_holder.bind_wheel(self.list_holder.inner)
+        self.meter_note = tk.Label(self.body, text="", bg=ui.BG, fg=ui.DIM,
+                                   font=(ui.UI, 10), anchor="w")
+        self.meter_note.pack(fill="x", pady=(14, 6))
+        self.meter = Meter(self.body, ui.BG)
+        self.meter.pack(anchor="w")
+        # The help, ONCE: one frame the warning is drawn into, emptied
+        # before it is drawn again. It used to be appended to the page
+        # on every warning, and picking a second device after the first
+        # warning put the whole block on screen twice (2026-09-19).
+        self.hint = tk.Frame(self.body, bg=ui.BG)
+        self.hint.pack(fill="x", pady=(14, 0))
         self._listen()
         if microphone_allowed() is False and not self._warned:
-            self._warn_silent(WORDS["mic.blocked.he"])
+            self._warn_silent()
 
-    def _device_row(self, parent, key: str, name: str, api: str,
-                    index: int) -> None:
-        # `key` is the identity (what the settings store, see device_key);
-        # `index` is only ever shown, because two rows can carry the same
-        # name and the number is how a person tells them apart.
-        chosen = key == self.device
+    def _device_row(self, parent, key: str, name: str, default: bool) -> None:
+        # `key` is the identity (what the settings store, see device_key).
         # Ten narrower than the page, because `ui.Scroller` keeps
-        # ui.GUTTER px of its canvas clear on the right for the way home,
-        # and the two lines are drawn at `width - 16`.
-        width = W - PAD * 2 - 10 - ui.GUTTER
-        row = tk.Canvas(parent, width=width, height=40, bd=0,
-                        highlightthickness=0, cursor="hand2",
-                        bg=ui.ACCENT_SOFT if chosen else ui.CARD)
-        row.pack(fill="x", pady=3)
-        row.create_text(width - 16, 14, text=name or f"Device {index}",
-                        anchor="e", fill=ui.FG, font=(ui.UI, 10))
-        row.create_text(width - 16, 29, text=f"{api}  ·  {index}",
-                        anchor="e", fill=ui.FAINT, font=(ui.UI, 8))
+        # ui.GUTTER px of its canvas clear on the right for the way home.
+        width = INNER - 10 - ui.GUTTER
+        row = tk.Canvas(parent, width=width, height=ROW_H, bd=0,
+                        highlightthickness=0, cursor="hand2", bg=ui.BG)
+        row.pack(fill="x", pady=(0, 6))
+        face = row.create_image(0, 0, anchor="nw",
+                                image=self._row_face(width, key == self.device))
+        row.create_text(18, ROW_H / 2 + 1, text=name, anchor="w",
+                        fill=ui.FG, font=(ui.UI, 11))
+        if default:
+            row.create_text(width - 18, ROW_H / 2 + 1, text=WORDS["mic.default"],
+                            anchor="e", fill=ui.DIM, font=(ui.UI, 8))
         row.bind("<Button-1>", lambda _e, k=key: self._pick(k))
-        self._rows[key] = row
+        row.bind("<Enter>", lambda _e, k=key: self._hover(k, True))
+        row.bind("<Leave>", lambda _e, k=key: self._hover(k, False))
+        self._rows[key] = (row, face, width)
 
-    def _pick(self, index: str) -> None:
-        if index == self.device:
+    @staticmethod
+    def _row_face(width: int, chosen: bool, hot: bool = False):
+        if chosen:
+            return ui.rounded(width, ROW_H, 10, ui.ACCENT_SOFT, ui.BG, ui.ACCENT_EDGE)
+        if hot:
+            return ui.rounded(width, ROW_H, 10, ui.CARD_HI, ui.BG, ui.LINE_HI)
+        return ui.rounded(width, ROW_H, 10, ui.CARD, ui.BG, ui.LINE)
+
+    def _hover(self, key: str, over: bool) -> None:
+        row, face, width = self._rows.get(key, (None, None, 0))
+        if row is not None:
+            row.itemconfig(face, image=self._row_face(width, key == self.device, over))
+
+    def _pick(self, key: str) -> None:
+        if key == self.device:
             return
-        self.device = index
-        for key, row in self._rows.items():
-            row.configure(bg=ui.ACCENT_SOFT if key == index else ui.CARD)
+        self.device = key
+        for other, (row, face, width) in self._rows.items():
+            row.itemconfig(face, image=self._row_face(width, other == key))
         self.meter.forget()
         self._quiet_since = time.monotonic()
         self._warned = False
+        self._clear_hint()
         self._listen()
 
     def _listen(self) -> None:
@@ -937,32 +1392,80 @@ class Wizard:
                 text=WORDS["mic.cannot"].format(error=self.listener.error),
                 fg=ui.RED)
 
+    def _list_height(self, rows: int) -> int:
+        return min(rows, getattr(self, "list_rows", rows)) * (ROW_H + 6) + 4
+
+    def _clear_hint(self) -> None:
+        if self.hint is not None:
+            for child in self.hint.winfo_children():
+                child.destroy()
+        holder = getattr(self, "list_holder", None)
+        if holder is not None and self.name == "mic":
+            holder.resize(self._list_height(4))
+
+    def _warn_silent(self, text: str | None = None) -> None:
+        """The trap, named, with the fix one click away.
+
+        Silence is not an error anywhere in Windows' audio API — the
+        stream opens, the callbacks arrive, every sample is zero — so
+        nothing downstream can report it. Here is the only place it can be
+        said before someone decides the app does not work. Drawn into the
+        one hint frame, which is emptied first, so it is on screen once
+        however many times it is asked for.
+        """
+        self._warned = True
+        if self.hint is None:
+            return
+        self._clear_hint()
+        # Room for the card: the list shows three rows instead of four
+        # while the help is up (the page is 660 px tall on purpose — a
+        # 720 px laptop screen with its taskbar has no more).
+        holder = getattr(self, "list_holder", None)
+        if holder is not None:
+            holder.resize(self._list_height(3))
+        card = self._card(self.hint, pad=16)
+        card.pack(fill="x")
+        self._line(text or WORDS["mic.help"], parent=card.body, bg=ui.CARD,
+                   colour=ui.FG, size=10, width=INNER - 36, pady=(0, 12))
+        ui.Button(card.body, WORDS["mic.open"], open_microphone_settings,
+                  bg=ui.CARD, w=200).pack(anchor="w")
+        self._fit(card)
+
+    def hint_count(self) -> int:
+        """How many help blocks the microphone page shows (a test's
+        question; the answer is never more than one)."""
+        if self.hint is None:
+            return 0
+        return len(self.hint.winfo_children())
+
+    # --------------------------------------------------------- this computer
     def _page_computer(self) -> None:
-        self._title(WORDS["computer.title"], WORDS["computer.he"], lines=2)
-        self._line(hardware_line(self.facts), colour=ui.FG, size=10,
-                   pady=(0, 10))
+        self._head(WORDS["computer.title"], WORDS["computer.sub"])
+        self._line(hardware_line(self.facts), colour=ui.FG, size=11,
+                   pady=(0, 4))
         offers = self.offers
         if offers.get("portable"):
-            self._para(WORDS["computer.portable.he"], pt=10, colour=ui.DIM,
-                       lines=2)
+            self._line(WORDS["computer.portable"], colour=ui.DIM, size=10)
             return
         if not any(offers.get(k) for k in ("model", "pack", "detector")):
-            self._para(WORDS["computer.ready.he"], pt=10, colour=ui.GREEN,
-                       lines=2)
+            self._line(WORDS["computer.ready"], colour=ui.GREEN, size=11)
             return
         self._ensure_runs()
         current = self._current_run()
+        started = self.active >= 0
         if current is not None:
             self.pane = steps.StepPane(
-                self.body, current, width=W - PAD * 2, secondary=None,
+                self.body, current, width=INNER, bg=ui.BG, secondary=None,
                 closing=None, on_end=self._run_ended, compact=False,
-                prefix=self._prefix(), on_go=self._download, title_pt=12,
+                prefix=self._prefix(), on_go=self._download, title_pt=13,
                 body_lines=3)
             self.pane.pack(fill="x", pady=(0, 8))
-        started = self.active >= 0
+            # [Download] is the action here until it is pressed; then the
+            # bar runs by itself and the way on is the action again.
+            self._foot(started)
         if not card_tier(self.facts):
-            self._para(WORDS["computer.cpu.he"], pt=10, colour=ui.DIM, lines=2,
-                       pady=(0, 8))
+            self._line(WORDS["computer.cpu"], colour=ui.DIM, size=9,
+                       pady=(0, 12))
         if offers.get("pack") is not None:
             p = offers["pack"]
             switch = self._switch_row(
@@ -985,30 +1488,50 @@ class Wizard:
             return                       # the queue is running; too late
         self.want[which] = not self.want[which]
 
+    # ------------------------------------------------------- say one sentence
     def _page_say(self) -> None:
-        self._title(WORDS["say.title"], WORDS["say.he"], lines=2)
+        self._head(WORDS["say.title"], WORDS["say.sub"])
         current = self._current_run()
         if current is not None and not self._all_landed():
             self.pane = steps.StepPane(
-                self.body, current, width=W - PAD * 2, secondary=None,
+                self.body, current, width=INNER, bg=ui.BG, secondary=None,
                 closing=None, on_end=self._run_ended, compact=True,
                 prefix=self._prefix(), on_go=self._download)
-            self.pane.pack(fill="x", pady=(0, 12))
+            self.pane.pack(fill="x", pady=(0, 14))
         if self._model_missing():
-            self._para(WORDS["say.waiting.he"], pt=10, colour=ui.AMBER,
-                       lines=2, pady=(0, 12))
+            self._line(WORDS["say.waiting"], colour=ui.AMBER, size=10,
+                       pady=(0, 12))
         self.say = ui.Button(self.body, WORDS["say.button"], self._record,
                              bg=ui.BG, primary=True, w=200, h=44)
-        self.say.pack(anchor="e")
-        self.result_label = tk.Label(
-            self.body, text=self._sample, bg=ui.CARD, fg=ui.FG,
-            font=(ui.TEXT, 13), anchor="e", justify="right",
-            wraplength=W - PAD * 2 - 40, padx=18, pady=14)
-        self.result_label.pack(fill="x", pady=(14, 0))
+        self.say.pack(anchor="w")
+        self._foot(False)
+        self.result_card = self._card(pad=18)
+        self.result_card.pack(fill="x", pady=(16, 0))
+        self.result_label = None
+        self._show_sample(self._sample)
         self.status = tk.Label(self.body, text="", bg=ui.BG, fg=ui.DIM,
-                               font=(ui.UI, 9), anchor="e")
+                               font=(ui.UI, 10), anchor="w", justify="left",
+                               wraplength=INNER)
         self.status.pack(fill="x", pady=(10, 0))
+        self.cpu_note = None
+        if self._sample:
+            self._say_result_line(self._seconds, 0.0)
         self._say_ready()
+
+    def _show_sample(self, text: str) -> None:
+        """The transcript on its card: Hebrew, right-aligned, through the
+        bitmap path; the placeholder while there is none."""
+        card = self.result_card
+        for child in card.body.winfo_children():
+            child.destroy()
+        if text:
+            self.result_label = self._para(text, pt=ui.PT_WORDS, colour=ui.FG,
+                                           lines=3, parent=card.body, bg=ui.CARD)
+        else:
+            self.result_label = self._line(WORDS["say.placeholder"], parent=card.body,
+                                           bg=ui.CARD, colour=ui.DIM, size=10,
+                                           width=INNER - 36)
+        self._fit(card)
 
     def _say_ready(self) -> None:
         """The record button waits for the model: a queue still running
@@ -1026,39 +1549,149 @@ class Wizard:
             return False
         return run.state != "done" and not self.offers.get("portable")
 
+    # ------------------------------------------------------------------ keys
     def _page_keys(self) -> None:
-        self._title(WORDS["keys.title"], WORDS["keys.he"], lines=2)
-        keys = [(WORDS["keys.hold"], self.cfg.hotkey),
-                (WORDS["keys.latch"], self.cfg.latch_hotkey),
-                (WORDS["keys.punctuate"], self.cfg.punctuate_hotkey),
-                (WORDS["keys.screen"], getattr(
-                    getattr(self.cfg, "visual_qa", None), "hotkey", ""))]
-        keys = [(label, key) for label, key in keys if key]
-        width = W - PAD * 2
-        card = tk.Canvas(self.body, width=width, height=42 * len(keys) + 14,
-                         bg=ui.CARD, bd=0, highlightthickness=0)
+        self._head(WORDS["keys.title"], WORDS["keys.sub"])
+        card = self._card(pad=18)
         card.pack(fill="x")
-        y = 21
-        for label, key in keys:
-            card.create_text(18, y, text=label, anchor="w",
-                             fill=ui.FG, font=(ui.UI, 11))
-            ui.pill(card, width - 18, y - 15, _pretty(key), ui.CARD, size=9,
-                    fill=ui.ACCENT_SOFT, border=ui.ACCENT_EDGE,
-                    colour=ui.ACCENT_TEXT)
-            y += 42
+        rows = list(KEY_ROWS)
+        for i, (field, word) in enumerate(rows):
+            row = tk.Frame(card.body, bg=ui.CARD)
+            row.pack(fill="x", pady=(0, 0 if i == len(rows) - 1 else 10))
+            tk.Label(row, text=WORDS[word], bg=ui.CARD, fg=ui.FG,
+                     font=(ui.UI, 11), anchor="w").pack(side="left", fill="x",
+                                                       expand=True)
+            # The cap sits in a ring that lights gold while the wizard is
+            # listening for its key — the focus ring IS the accent.
+            ring = tk.Frame(row, bg=ui.CARD, highlightthickness=2,
+                            highlightbackground=ui.CARD, highlightcolor=ui.CARD)
+            ring.pack(side="right")
+            cap = ui.KeyCap(ring, _pretty(getattr(self.cfg, field, "") or ""),
+                            lambda f=field: self._rebind(f), bg=ui.CARD, w=180)
+            cap.pack()
+            self.caps[field] = cap
+            self.rings[field] = ring
+        self._fit(card)
 
+    def _ring(self, field: str, lit: bool) -> None:
+        ring = self.rings.get(field)
+        if ring is not None:
+            colour = ui.ACCENT if lit else ui.CARD
+            ring.configure(highlightbackground=colour, highlightcolor=colour)
+
+    def _rebind(self, field: str) -> None:
+        """A chip pressed: the wizard listens for the next key. The
+        dashboard's dialog does the same dance (a modifier WAITS and is
+        bound on its release if nothing else came) — the events are read
+        by the same hotkey.binding_name_from_event. Nothing is paused
+        first: the wizard runs before the app does."""
+        if self._capturing is not None or field not in self.caps:
+            return
+        self._capturing = field
+        self._pending = {"mod": None, "name": None}
+        self.caps[field].set(WORDS["keys.press"])
+        self._ring(field, True)
+        self.note.configure(text=WORDS["keys.listening"], fg=ui.DIM)
+        self._key_binds = (self.root.bind("<KeyPress>", self._key_down, add="+"),
+                           self.root.bind("<KeyRelease>", self._key_up, add="+"))
+        try:
+            self.root.focus_set()
+        except Exception:                                  # noqa: BLE001
+            pass
+
+    def _key_down(self, event) -> str:
+        import hotkey as hotkey_mod
+        if self._capturing is None:
+            return "break"
+        if event.keysym == "Escape":
+            self._captured(None)
+            return "break"
+        name = hotkey_mod.binding_name_from_event(event.keysym, event.keycode)
+        if hotkey_mod.is_modifier_key(event.keycode):
+            self._pending = {"mod": event.keycode, "name": name}
+            return "break"
+        self._pending["mod"] = None       # it became half of a chord
+        if not name:
+            self.note.configure(text=WORDS["keys.refused"], fg=ui.AMBER)
+            return "break"
+        self._captured(name)
+        return "break"
+
+    def _key_up(self, event) -> str:
+        """A modifier let go with nothing pressed while it was down is
+        the modifier itself — `hotkey = "right ctrl"` is set this way."""
+        if self._capturing is None or self._pending.get("mod") != event.keycode:
+            return "break"
+        name = self._pending.get("name")
+        self._pending = {"mod": None, "name": None}
+        if name:
+            self._captured(name)
+        return "break"
+
+    def _stop_capture(self) -> None:
+        if self._key_binds:
+            for sequence, funcid in zip(("<KeyPress>", "<KeyRelease>"), self._key_binds):
+                try:
+                    self.root.unbind(sequence, funcid)
+                except Exception:                          # noqa: BLE001
+                    pass
+            self._key_binds = ()
+        self._capturing = None
+
+    def _captured(self, key: str | None) -> None:
+        field = self._capturing
+        self._stop_capture()
+        if field is None:
+            return
+        self._ring(field, False)
+        if key is None:
+            self.caps[field].set(_pretty(getattr(self.cfg, field, "") or ""))
+            self.note.configure(text="", fg=ui.DIM)
+            return
+        self._apply_key(field, key)
+
+    def _apply_key(self, field: str, key: str) -> None:
+        """The same path Settings > Keys takes when the app is not
+        running: with_field + check_hotkeys, then config.save under the
+        dashboard's NESTED_HOTKEYS name (set_values in one-file mode). A
+        collision is refused with a sentence and nothing is written."""
+        key = (key or "").strip().lower()
+        try:
+            new = config_mod.with_field(self.cfg, field, key)
+            config_mod.check_hotkeys(new)
+            write_key = _write_key(field)
+            if self.path is None:
+                config_mod.save({write_key: key})
+            else:
+                config_mod.set_values(self.path, {write_key: key})
+        except Exception as e:                             # noqa: BLE001
+            self.caps[field].set(_pretty(getattr(self.cfg, field, "") or ""))
+            self.note.configure(text=plain_refusal(e, key), fg=ui.RED)
+            return
+        self.cfg = new
+        self.caps[field].set(_pretty(key))
+        self.note.configure(
+            text=WORDS["keys.saved"].format(label=_label_of(field), key=_pretty(key)),
+            fg=ui.GREEN)
+        log.info("setup: %s is now %r", field, key)
+
+    # ---------------------------------------------------------------- extras
     def _page_extras(self) -> None:
-        self._title(WORDS["extras.title"], WORDS["extras.he"], lines=3)
+        self._head(WORDS["extras.title"], WORDS["extras.sub"])
         self.switches: dict[str, ui.Switch] = {}
+        card = self._card(pad=18)
+        card.pack(fill="x")
         rows = [("cloud", WORDS["extras.cloud"], WORDS["extras.cloud.help"]),
                 ("awake", WORDS["extras.awake"], WORDS["extras.awake.help"]),
                 ("updates", WORDS["extras.updates"], WORDS["extras.updates.help"]),
                 ("claude", WORDS["extras.claude"], WORDS["extras.claude.help"]),
                 ("snip", WORDS["extras.snip"], WORDS["extras.snip.help"])]
-        for key, label, help_ in rows:
+        for i, (key, label, help_) in enumerate(rows):
             self.switches[key] = self._switch_row(
                 label, help_, self.extras[key],
-                lambda _v=None, k=key: self._extra_flipped(k))
+                lambda _v=None, k=key: self._extra_flipped(k),
+                parent=card.body, bg=ui.CARD, last=i == len(rows) - 1)
+        self._fit(card)
 
     def _extra_flipped(self, key: str) -> None:
         on = self.switches[key].get()
@@ -1088,7 +1721,7 @@ class Wizard:
             except Exception:                              # noqa: BLE001
                 pass
         if granted:
-            self.note.configure(text=WORDS["extras.cloud.key"], fg=ui.FAINT)
+            self.note.configure(text=WORDS["extras.cloud.key"], fg=ui.DIM)
 
     def _ask_consent(self, kind: str, answer) -> None:
         """The consent card's own picture (consent_card.flat) in a small
@@ -1166,32 +1799,30 @@ class Wizard:
             pass
         self.consent_window = top
 
+    # ----------------------------------------------------------------- ready
     def _page_done(self) -> None:
         deferred = self._model_missing()
-        self._title(WORDS["done.title"],
-                    WORDS["done.deferred.he"] if deferred else WORDS["done.he"],
-                    lines=3)
-        width = W - PAD * 2
-        card = tk.Canvas(self.body, width=width, height=56, bg=ui.CARD, bd=0,
-                         highlightthickness=0)
+        self._head(WORDS["done.title"],
+                   WORDS["done.deferred"] if deferred else WORDS["done.sub"])
+        card = self._card(pad=18)
         card.pack(fill="x")
-        card.create_text(18, 28, text=WORDS["done.hold"], anchor="w",
-                         fill=ui.FG, font=(ui.UI, 11))
-        ui.pill(card, width - 18, 13, _pretty(self.cfg.hotkey), ui.CARD,
-                size=10, fill=ui.ACCENT_SOFT, border=ui.ACCENT_EDGE,
-                colour=ui.ACCENT_TEXT)
+        row = tk.Frame(card.body, bg=ui.CARD)
+        row.pack(fill="x", pady=(0, 16))
+        tk.Label(row, text=WORDS["done.hold"], bg=ui.CARD, fg=ui.FG,
+                 font=(ui.UI, 11), anchor="w").pack(side="left", fill="x", expand=True)
+        ui.KeyCap(row, _pretty(self.cfg.hotkey), bg=ui.CARD, w=180).pack(side="right")
         self.switches = {}
-        holder = tk.Frame(self.body, bg=ui.BG)
-        holder.pack(fill="x", pady=(22, 0))
-        for key, label, help_ in (
-                ("autostart", WORDS["done.autostart"], WORDS["done.autostart.help"]),
-                ("phone", WORDS["done.phone"], WORDS["done.phone.help"])):
+        rows = (("autostart", WORDS["done.autostart"], WORDS["done.autostart.help"]),
+                ("phone", WORDS["done.phone"], WORDS["done.phone.help"]))
+        for i, (key, label, help_) in enumerate(rows):
             self.switches[key] = self._switch_row(
                 label, help_, self.extras[key],
-                lambda _v=None, k=key: self._extra_flipped(k), parent=holder)
+                lambda _v=None, k=key: self._extra_flipped(k), parent=card.body,
+                bg=ui.CARD, last=i == len(rows) - 1)
+        self._fit(card)
         self.desk = ui.Button(self.body, WORDS["done.desk"], self._open_desk,
                               bg=ui.BG, w=160)
-        self.desk.pack(anchor="e", pady=(14, 0))
+        self.desk.pack(anchor="w", pady=(18, 0))
 
     def _open_desk(self) -> None:
         self.result.open_desk = True
@@ -1212,7 +1843,9 @@ class Wizard:
         for kind in ("model", "pack", "detector"):
             thing = self.offers.get(kind)
             if thing is not None and kind not in self.runs:
-                self.runs[kind] = steps.StepRun(self._stepper(kind, thing))
+                step = self._stepper(kind, thing)
+                size = int(getattr(thing, "bytes", 0) or step.total)
+                self.runs[kind] = steps.StepRun(english_step(kind, step, size))
 
     def _download(self) -> None:
         """[Download] on page 2: the queue is decided by the switches
@@ -1310,13 +1943,14 @@ class Wizard:
                 self.meter.show(level)
                 if level >= SPEECH:
                     self._quiet_since = time.monotonic()
-                    if not self._warned:
-                        self.meter_note.configure(text=WORDS["mic.heard"],
-                                                  fg=ui.GREEN)
+                    if self.hint_count():
+                        self._clear_hint()       # it moved: the help was wrong
+                    self.meter_note.configure(text=WORDS["mic.heard"],
+                                              fg=ui.GREEN)
                 elif (not self._warned
                         and self.meter.peak < SPEECH
                         and time.monotonic() - self._quiet_since > QUIET_S):
-                    self._warn_silent(WORDS["mic.quiet.he"])
+                    self._warn_silent()
             self._pump_runs()
             if self.name == "say":
                 self._say_ready()
@@ -1324,37 +1958,22 @@ class Wizard:
             log.debug("the wizard's tick tripped", exc_info=True)
         self.root.after(60, self._tick)
 
-    def _warn_silent(self, text: str) -> None:
-        """The trap, named, with the fix one click away.
-
-        Silence is not an error anywhere in Windows' audio API — the
-        stream opens, the callbacks arrive, every sample is zero — so
-        nothing downstream can report it. Here is the only place it can be
-        said before someone decides the app does not work.
-        """
-        self._warned = True
-        self.meter_note.configure(text="", fg=ui.AMBER)
-        self._para(text, pt=10, colour=ui.AMBER, lines=3, pady=(10, 0))
-        ui.Button(self.body, WORDS["mic.open"], open_microphone_settings,
-                  bg=ui.BG, w=230).pack(anchor="e", pady=(10, 0))
-
     def _record(self) -> None:
         if self._busy:
             return
         self._busy = True
         self.say.enable(False)
         self.status.configure(text=WORDS["say.recording"], fg=ui.DIM)
-        self.result_label.configure(text="")
+        self._show_sample("")
 
         def work():
             wav, _seconds = self.listener.record(TEST_S)
             if not wav:
-                return self._on_result("", WORDS["say.nothing"], 0.0)
+                return self._on_result(Heard(problem=WORDS["say.nothing"]))
             self._later(lambda: self.status.configure(
                 text=WORDS["say.loading"], fg=ui.DIM))
-            started = time.monotonic()
-            text, problem = transcribe(self.cfg, wav)
-            self._on_result(text, problem, time.monotonic() - started)
+            heard, self._backend = transcribe_timed(self.cfg, wav, self._backend)
+            self._on_result(heard)
 
         threading.Thread(target=work, daemon=True, name="setup-test").start()
 
@@ -1365,26 +1984,35 @@ class Wizard:
             except Exception:
                 pass
 
-    def _on_result(self, text: str, problem: str, seconds: float) -> None:
+    def _on_result(self, heard: Heard) -> None:
         def land():
             self._busy = False
             self.say.enable(True)
-            if problem:
-                self.status.configure(text=problem, fg=ui.RED)
-            elif not text:
+            if heard.problem:
+                self.status.configure(text=heard.problem, fg=ui.RED)
+            elif not heard.text:
                 self.status.configure(text=WORDS["say.quiet"], fg=ui.AMBER)
             else:
-                self._sample = text
-                self._seconds = seconds
-                self.result_label.configure(text=text)
-                self.status.configure(
-                    text=WORDS["say.heard"].format(seconds=seconds),
-                    fg=ui.GREEN)
-                if not card_tier(self.facts):
-                    self._para(WORDS["say.cpu.he"], pt=10, colour=ui.DIM,
-                               lines=2, pady=(8, 0))
-                self._save_seconds(seconds)
+                self._sample = heard.text
+                self._seconds = heard.decode_s
+                self._show_sample(heard.text)
+                self._say_result_line(heard.decode_s, heard.load_s)
+                self._save_seconds(heard.decode_s)
         self._later(land)
+
+    def _say_result_line(self, decode_s: float, load_s: float) -> None:
+        """"decoded in 0.8 s", and "model loaded in 4.2 s" once — the
+        load is paid on the first sentence of a start, never per
+        dictation, and a stranger reading one number would take the
+        slow first one for the app's speed."""
+        line = WORDS["say.heard"].format(seconds=decode_s)
+        if load_s >= 0.5 and not self._said_loaded:
+            self._said_loaded = True
+            line += " · " + WORDS["say.loaded"].format(seconds=load_s)
+        self.status.configure(text=line, fg=ui.GREEN)
+        if not card_tier(self.facts) and getattr(self, "cpu_note", None) is None:
+            self.cpu_note = self._line(WORDS["say.cpu"], colour=ui.DIM, size=9,
+                                       pady=(6, 0))
 
     def _save_seconds(self, seconds: float) -> None:
         """The measured decode into the machine layer: the CPU copy on
@@ -1450,7 +2078,7 @@ class Wizard:
                                 fg=ui.RED)
 
     def _save_extras(self) -> None:
-        """The switches of pages 5 and 6, each through its own writer and
+        """The switches of pages 6 and 7, each through its own writer and
         only when the person moved it: the awake hold, the screenshot
         key and the phone listener are settings, the update check a
         privacy switch, autostart a state key plus the Run value, the

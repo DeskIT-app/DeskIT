@@ -304,19 +304,27 @@ class StepPane:
     # ------------------------------------------------------------ drawing
     def _para(self, parent, text: str, *, pt: int, colour: str, lines: int,
               pady=(0, 0)):
+        # The direction is the text's own (ui.is_rtl): the standalone
+        # window speaks Hebrew and lays out to the right; the wizard puts
+        # its English words on the same pane (firstrun.english_step) and
+        # those read from the left, or a trailing full stop lands at the
+        # front of the line.
         ui = self._ui
+        rtl = ui.is_rtl(text)
         photo, _h, _n = ui.draw_text(text, pt=pt, width=self.width, max_lines=lines,
-                                     colour=colour, bg=self.bg, rtl=True)
-        label = self._tk.Label(parent, image=photo, bg=self.bg, anchor="e")
+                                     colour=colour, bg=self.bg, rtl=rtl)
+        label = self._tk.Label(parent, image=photo, bg=self.bg,
+                               anchor="e" if rtl else "w")
         label.photo = photo
         label.pack(fill="x", pady=pady)
         return label
 
     def _repaint(self, label, text: str, *, pt: int, colour: str, lines: int) -> None:
         ui = self._ui
+        rtl = ui.is_rtl(text)
         photo, _h, _n = ui.draw_text(text, pt=pt, width=self.width, max_lines=lines,
-                                     colour=colour, bg=self.bg, rtl=True)
-        label.configure(image=photo)
+                                     colour=colour, bg=self.bg, rtl=rtl)
+        label.configure(image=photo, anchor="e" if rtl else "w")
         label.photo = photo
 
     def _draw_links(self) -> None:
@@ -338,9 +346,10 @@ class StepPane:
             self.note.photo = None
             self.note.pack_forget()
             return
+        rtl = ui.is_rtl(text)
         photo, _h, _n = ui.draw_text(text, pt=10, width=self.width, max_lines=3,
-                                     colour=colour or ui.FG, bg=self.bg, rtl=True)
-        self.note.configure(image=photo)
+                                     colour=colour or ui.FG, bg=self.bg, rtl=rtl)
+        self.note.configure(image=photo, anchor="e" if rtl else "w")
         self.note.photo = photo
         self.note.pack(fill="x", pady=(6, 0), after=self.status)
 
