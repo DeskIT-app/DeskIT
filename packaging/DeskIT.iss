@@ -123,10 +123,14 @@ Source: "{#Stage}\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 Type: filesandordirs; Name: "{app}\app"
 
 [Icons]
-; One entry, the AppUserModelID the app sets on its own windows (D5), so
-; the taskbar shows DeskIT rather than pythonw. No desktop icon, no
-; Startup-folder entry: "Start with Windows" is the app's own switch.
+; The Start-menu entry and a desktop icon, both with the AppUserModelID
+; the app sets on its own windows (D5), so the taskbar shows DeskIT rather
+; than pythonw. The desktop icon since 1.1.1: the owner closed the 1.1.0
+; install and could not find it again (2026-09-19) — the Start menu alone
+; is not where people look. No Startup-folder entry: "Start with Windows"
+; is the app's own switch.
 Name: "{userprograms}\DeskIT"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\deskit.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\app\icon.ico"; AppUserModelID: "DeskIT.App"
+Name: "{userdesktop}\DeskIT"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\deskit.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\app\icon.ico"; AppUserModelID: "DeskIT.App"
 
 [Run]
 ; The first-run wizard follows the install. /NOLAUNCH (winget, the smoke
