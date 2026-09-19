@@ -47,16 +47,9 @@ Store build (later) is the way, or Windows lets you turn Smart App Control off o
   Windows in a third language is asked which of the two to use. Three pages: **Install**,
   **Downloads**, then **Finish** with "Start DeskIT now" ticked. The app itself is English
   chrome with Hebrew text.
-- **Downloads**: what this PC still needs, each a ticked box with its size and its licence
-  linked under it — the Hebrew speech model (1.62 GB, Apache-2.0); on a PC with an NVIDIA card
-  and a driver from 545.84, NVIDIA's CUDA libraries (1.37 GB, NVIDIA's licence) and, with 6 GB
-  of video memory, the English detector (1.62 GB, MIT); and screen recording (28 MB, PyAV with
-  a GPL build of FFmpeg). Keeping a box ticked is your acceptance of its licence; untick
-  anything and the first-run wizard offers it instead. The files come from the same addresses,
-  checked against the same SHA-256s, that DeskIT itself uses — nothing is inside the
-  installer — and a download that fails asks to retry or leaves the item to the wizard. It
-  never fails the install. A silent install (winget, `/VERYSILENT`) and `/NODOWNLOAD` download
-  nothing.
+- **Downloads**: a few big files DeskIT needs, fetched now so the first start is ready — the
+  boxes are ticked; untick what you do not want and DeskIT offers it again later. What each
+  one is, its exact size and its licence: [below](#downloads).
 - Puts the program in `%LOCALAPPDATA%\Programs\DeskIT`, the downloads in
   `%LOCALAPPDATA%\DeskIT\models` and `\packs`, and a shortcut in the Start menu and on the
   desktop.
@@ -64,6 +57,24 @@ Store build (later) is the way, or Windows lets you turn Smart App Control off o
   computer page is skipped when the downloads all landed.
 - Never bundles a speech model or NVIDIA's libraries: they are downloaded, with your tick,
   by the installer — or, if you unticked them, by the wizard on the first run.
+
+## Downloads {#downloads}
+
+The installer's Downloads page, in full. Every file comes from the address DeskIT itself
+would download it from and is checked against the same SHA-256; nothing is packed inside the
+installer. Ticking a box is your acceptance of that item's licence.
+
+| Box | What it is | Size | Licence |
+|---|---|---|---|
+| Hebrew speech | The Hebrew speech model, [ivrit-ai/whisper-large-v3-turbo-ct2](https://huggingface.co/ivrit-ai/whisper-large-v3-turbo-ct2) — without it there is no dictation | 1.62 GB | Apache-2.0 |
+| English detection | A second, general model, [deepdml/faster-whisper-large-v3-turbo-ct2](https://huggingface.co/deepdml/faster-whisper-large-v3-turbo-ct2), that notices when you spoke English and transcribes it as English. Offered on an NVIDIA card with 6 GB of video memory | 1.62 GB | MIT |
+| Faster with your NVIDIA card | NVIDIA's own CUDA libraries (cuBLAS, cuDNN, NVRTC) from PyPI. Offered on an NVIDIA card with 4 GB and a driver from 545.84; without them the card runs like a CPU | 1.37 GB | [NVIDIA CUDA EULA](https://docs.nvidia.com/cuda/eula/index.html), [cuDNN SLA](https://docs.nvidia.com/deeplearning/cudnn/backend/latest/reference/eula.html) |
+| Screen recording | PyAV with FFmpeg, for the record key, the photo key and the phone's audio | 28 MB | [PyAV (BSD-3)](https://github.com/PyAV-Org/PyAV/blob/main/LICENSE.txt), [FFmpeg — this build is GPL: x264, x265](https://ffmpeg.org/legal.html) |
+
+Anything already on the PC is not offered again. A download that fails asks to retry or is left
+for the first start, which offers exactly what is still missing — it never fails the install.
+The files land in `%LOCALAPPDATA%\DeskIT\models` and `\packs`. A silent install (winget,
+`/VERYSILENT`) and `/NODOWNLOAD` download nothing; the first start offers everything instead.
 
 ## Updating
 

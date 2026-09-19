@@ -121,25 +121,33 @@ hebrew.DeleteData=&למחוק
 hebrew.Downgrade=DeskIT %1 כבר מותקן; קובץ ההתקנה הזה הוא גרסה %2.%n%nכדי לחזור לגרסה ישנה יותר, הסר את DeskIT ואז הפעל את קובץ ההתקנה הישן (הקישור נמצא בהערות הגרסה).
 ; The Downloads page (10.4): the items with their sizes, the licence line,
 ; and the three sentences the download itself may need.
+; Plain words, one link (the owner, 2026-09-19: "half the people do not
+; understand this; a wall of programmer-level text makes them MORE afraid,
+; not less") — what each thing does for you and how big it is; the exact
+; figures, the licences and their links are one click away, in the guide.
 english.DlCaption=Downloads
-english.DlDescription=What DeskIT fetches now, so the first start has nothing left to download
-english.DlSub=Untick anything you would rather leave to the first-run wizard. By keeping a box ticked you accept its licence, linked below:
-english.DlItem_model=Hebrew speech model — %1 (Apache-2.0)
-english.DlItem_detector=English detector, so a sentence in English is heard as English — %1 (MIT)
-english.DlItem_gpu=NVIDIA CUDA libraries, for fast transcription on your card — %1 (NVIDIA's licence)
-english.DlItem_recording=Screen recording: PyAV with FFmpeg, a GPL build — %1
-english.DlFailed=The download did not finish: %1%n%nRetry, or Cancel to leave it to the first-run wizard, which downloads whatever is still missing.
-english.DlNoRoom=Not enough room for the downloads: %1 MB needed, %2 MB free on this drive. The first-run wizard can download them later.
+english.DlDescription=A few big files DeskIT needs, downloaded now so it is ready the first time you start it
+english.DlSub=Leave the boxes ticked unless you know you do not want something — each can be added later. Ticking a box accepts its licence.
+english.DlItem_model=Hebrew speech — %1
+english.DlItem_detector=English detection — %1
+english.DlItem_gpu=Faster with your NVIDIA card — %1
+english.DlItem_recording=Screen recording — %1
+english.DlMore=More about these downloads and their licences
+english.DlMoreUrl=https://deskit-app.github.io/DeskIT/en/01-install#downloads
+english.DlFailed=The download did not finish: %1%n%nRetry, or Cancel — DeskIT will offer it again the first time you start it.
+english.DlNoRoom=Not enough room for the downloads: %1 MB needed, %2 MB free on this drive. DeskIT will offer them again the first time you start it.
 english.DlFinishing=Checking the downloads and putting them in place...
 hebrew.DlCaption=הורדות
-hebrew.DlDescription=מה ש־DeskIT מוריד עכשיו, כדי שבהפעלה הראשונה לא יישאר מה להוריד
-hebrew.DlSub=אפשר לבטל סימון של מה שעדיף להשאיר לאשף ההפעלה הראשונה. השארת תיבה מסומנת היא הסכמה לרישיון שלה, בקישור למטה:
-hebrew.DlItem_model=מודל הדיבור העברי — %1 (Apache-2.0)
-hebrew.DlItem_detector=מזהה אנגלית, כדי שמשפט באנגלית יישמע כאנגלית — %1 (MIT)
-hebrew.DlItem_gpu=ספריות CUDA של NVIDIA, לתמלול מהיר על הכרטיס שלך — %1 (הרישיון של NVIDIA)
-hebrew.DlItem_recording=הקלטת מסך: PyAV עם FFmpeg, גרסת GPL — %1
-hebrew.DlFailed=ההורדה לא הסתיימה: %1%n%nנסה שוב, או בטל כדי להשאיר אותה לאשף ההפעלה הראשונה, שמוריד את מה שעדיין חסר.
-hebrew.DlNoRoom=אין די מקום להורדות: נדרשים %1 מגה־בייט, פנויים %2 מגה־בייט בכונן הזה. אשף ההפעלה הראשונה יוכל להוריד אותן אחר כך.
+hebrew.DlDescription=כמה קבצים גדולים ש־DeskIT צריך, יורדים עכשיו כדי שבהפעלה הראשונה הכול יהיה מוכן
+hebrew.DlSub=השאר את התיבות מסומנות אלא אם ברור לך שמשהו לא נחוץ — אפשר להוסיף הכול גם אחר כך. סימון תיבה הוא הסכמה לרישיון שלה.
+hebrew.DlItem_model=דיבור בעברית — %1
+hebrew.DlItem_detector=זיהוי אנגלית — %1
+hebrew.DlItem_gpu=מהיר יותר עם כרטיס ה־NVIDIA שלך — %1
+hebrew.DlItem_recording=הקלטת מסך — %1
+hebrew.DlMore=עוד על ההורדות האלה ועל הרישיונות
+hebrew.DlMoreUrl=https://deskit-app.github.io/DeskIT/he/01-install#downloads
+hebrew.DlFailed=ההורדה לא הסתיימה: %1%n%nנסה שוב, או בטל — DeskIT יציע אותה שוב בהפעלה הראשונה.
+hebrew.DlNoRoom=אין די מקום להורדות: נדרשים %1 מגה־בייט, פנויים %2 מגה־בייט בכונן הזה. DeskIT יציע אותן שוב בהפעלה הראשונה.
 hebrew.DlFinishing=בודק את ההורדות ומניח אותן במקומן...
 
 [Files]
@@ -330,18 +338,28 @@ begin
   Result := True;
 end;
 
-procedure LicenseClick(Sender: TObject);
+procedure MoreClick(Sender: TObject);
 var
   Code: Integer;
 begin
-  ShellExec('open', TNewStaticText(Sender).Hint, '', '', SW_SHOWNORMAL, ewNoWait, Code);
+  ShellExec('open', CustomMessage('DlMoreUrl'), '', '', SW_SHOWNORMAL, ewNoWait, Code);
+end;
+
+{ The size line in the page's language: Hebrew units under Hebrew, so the
+  number and its unit stay one run and do not swap places. }
+function DlSize(Item: String): String;
+begin
+  if ActiveLanguage = 'hebrew' then
+    Result := DlHumanHe(Item)
+  else
+    Result := DlHuman(Item);
 end;
 
 procedure InitializeWizard;
 var
-  Items, Pairs, Pair: TArrayOfString;
+  Items: TArrayOfString;
   Item: String;
-  I, J, N, Top: Integer;
+  I, N: Integer;
   Link: TNewStaticText;
 begin
   SetArrayLength(DlOffered, 0);
@@ -357,36 +375,23 @@ begin
     Item := Items[I];
     if DlWanted(Item) then
     begin
-      N := DlPage.Add(FmtMessage(CustomMessage('DlItem_' + Item), [DlHuman(Item)]));
+      N := DlPage.Add(FmtMessage(CustomMessage('DlItem_' + Item), [DlSize(Item)]));
       DlPage.Values[N] := True;
       AppendTo(DlOffered, Item);
     end;
   end;
-  { the licences, one link each, under the list }
-  DlPage.CheckListBox.Height := ScaleY(22) * (GetArrayLength(DlOffered) + 1);
-  Top := DlPage.CheckListBox.Top + DlPage.CheckListBox.Height + ScaleY(10);
-  for I := 0 to GetArrayLength(DlOffered) - 1 do
-  begin
-    SplitOn(DlLicenses(DlOffered[I]), '|', Pairs);
-    for J := 0 to GetArrayLength(Pairs) - 1 do
-    begin
-      SplitOn(Pairs[J], '>', Pair);
-      if GetArrayLength(Pair) = 2 then
-      begin
-        Link := TNewStaticText.Create(DlPage);
-        Link.Parent := DlPage.Surface;
-        Link.Caption := Pair[0];
-        Link.Hint := Pair[1];
-        Link.Cursor := crHand;
-        Link.Font.Style := [fsUnderline];
-        Link.Font.Color := clBlue;
-        Link.OnClick := @LicenseClick;
-        Link.Left := DlPage.CheckListBox.Left;
-        Link.Top := Top;
-        Top := Top + Link.Height + ScaleY(2);
-      end;
-    end;
-  end;
+  { one link under the list: the guide's page on these downloads, where the
+    exact sizes, what each one is and every licence live }
+  DlPage.CheckListBox.Height := ScaleY(24) * GetArrayLength(DlOffered) + ScaleY(6);
+  Link := TNewStaticText.Create(DlPage);
+  Link.Parent := DlPage.Surface;
+  Link.Caption := CustomMessage('DlMore');
+  Link.Cursor := crHand;
+  Link.Font.Style := [fsUnderline];
+  Link.Font.Color := clBlue;
+  Link.OnClick := @MoreClick;
+  Link.Left := DlPage.CheckListBox.Left;
+  Link.Top := DlPage.CheckListBox.Top + DlPage.CheckListBox.Height + ScaleY(10);
   DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing),
     SetupMessage(msgPreparingDesc), @OnDownloadProgress);
 end;

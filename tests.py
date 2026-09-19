@@ -35597,11 +35597,30 @@ def test_the_installer_downloads_what_the_wizard_used_to_and_the_list_is_the_loc
     assert "ExpandConstant('{localappdata}\\DeskIT')" in code, "paths.DATA_DIR of an installed copy"
     assert "--adopt-downloads" in code and "PlaceDownloads;" in code
     assert "if not RenameFile(Src, Dest) then" in code and "FileCopy(Src, Dest, False)" in code
-    assert "Link.Hint := Pair[1];" in code and "ShellExec('open', TNewStaticText(Sender).Hint" in code
-    for lang in ("english", "hebrew"):
+    # plain words on the page (the owner, 2026-09-19: programmer-level text
+    # frightens half the people): what each download does for you and its
+    # size, no licence names, no library names — one link to the guide's
+    # Downloads section, which holds the exact figures and every licence
+    assert "ShellExec('open', CustomMessage('DlMoreUrl')" in code and "Link.OnClick := @MoreClick;" in code
+    assert "DlLicenses(" not in code, "the licence links are the guide's, not the page's"
+    for lang, human_fn in (("english", "DlHuman"), ("hebrew", "DlHumanHe")):
         for key in ("DlCaption", "DlDescription", "DlSub", "DlItem_model", "DlItem_detector",
-                    "DlItem_gpu", "DlItem_recording", "DlFailed", "DlNoRoom", "DlFinishing"):
+                    "DlItem_gpu", "DlItem_recording", "DlMore", "DlMoreUrl", "DlFailed", "DlNoRoom", "DlFinishing"):
             assert f"{lang}.{key}=" in iss, f"{lang}.{key}"
+        assert f"Result := {human_fn}(Item)" in code, human_fn
+    items = [ln for ln in iss.splitlines() if ".DlItem_" in ln]
+    assert len(items) == 8
+    for ln in items:
+        text = ln.split("=", 1)[1]
+        assert len(text) <= 48 and "(" not in text, ln
+        for word in ("Apache", "MIT", "GPL", "CUDA", "PyAV", "FFmpeg", "model", "מודל", "libraries", "ספריות"):
+            assert word not in text, (word, ln)
+    assert "en/01-install#downloads" in iss and "he/01-install#downloads" in iss
+    for lang in ("en", "he"):
+        guide = (REPO / "docs" / lang / "01-install.md").read_text("utf-8")
+        assert "{#downloads}" in guide, f"the {lang} guide has no Downloads anchor for the installer's link"
+        for _title, url in [pair for it in ("gpu", "recording") for pair in packs.pack(it).licenses]:
+            assert url in guide, f"the {lang} guide does not link {url}"
     assert "1.6 GB download, once" not in iss, "the Welcome text still promises a download at first start"
     for name in (".github/workflows/release.yml", "packaging/build_local.ps1"):
         assert "make_downloads_iss.py --check" in (REPO / name).read_text("utf-8"), name

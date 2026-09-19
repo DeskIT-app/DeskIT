@@ -38,14 +38,18 @@ HUB = "https://huggingface.co"
 ITEMS = ("model", "detector", "gpu", "recording")
 
 
-def human(n: int) -> str:
-    """steps.human without importing the app: 1.62 GB, 28 MB."""
+def human(n: int, hebrew: bool = False) -> str:
+    """The size as the page says it: 1.6 GB / 28 MB — one decimal, not
+    the lock's two (the owner, 2026-09-19: a page of exact figures and
+    licence names reads like a programmer's and frightens; the exact
+    numbers are one link away, in the guide). Hebrew units in Hebrew, so
+    the line does not turn into a bidi jumble."""
     n = int(n)
     if n >= 1_000_000_000:
-        return f"{n / 1e9:.2f} GB"
+        return f"{n / 1e9:.1f} " + ("ג׳יגה" if hebrew else "GB")
     if n >= 1_000_000:
-        return f"{n / 1e6:.0f} MB"
-    return f"{n / 1e3:.1f} kB"
+        return f"{n / 1e6:.0f} " + ("מגה" if hebrew else "MB")
+    return f"{n / 1e3:.1f} " + ("קילו" if hebrew else "kB")
 
 
 def _pas(s: str) -> str:
@@ -127,6 +131,7 @@ def render(table: dict[str, dict]) -> str:
     lookup("DlBytes", lambda t: str(t["bytes"]),
            "The item's size in bytes, as a string (StrToInt64 - the sum is past an Integer)")
     lookup("DlHuman", lambda t: human(t["bytes"]), "The size the page shows")
+    lookup("DlHumanHe", lambda t: human(t["bytes"], hebrew=True), "The same, in Hebrew")
     lookup("DlMarker", lambda t: t["marker"],
            "The file under the data folder whose presence says the item is already on this PC")
     lookup("DlStamps", lambda t: "|".join(t["stamps"]),

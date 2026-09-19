@@ -44,10 +44,20 @@ end;
 function DlHuman(Item: String): String;
 begin
   Result := '';
-  if Item = 'model' then Result := '1.62 GB'
-  else if Item = 'detector' then Result := '1.62 GB'
-  else if Item = 'gpu' then Result := '1.37 GB'
+  if Item = 'model' then Result := '1.6 GB'
+  else if Item = 'detector' then Result := '1.6 GB'
+  else if Item = 'gpu' then Result := '1.4 GB'
   else if Item = 'recording' then Result := '28 MB';
+end;
+
+{ The same, in Hebrew }
+function DlHumanHe(Item: String): String;
+begin
+  Result := '';
+  if Item = 'model' then Result := '1.6 ג׳יגה'
+  else if Item = 'detector' then Result := '1.6 ג׳יגה'
+  else if Item = 'gpu' then Result := '1.4 ג׳יגה'
+  else if Item = 'recording' then Result := '28 מגה';
 end;
 
 { The file under the data folder whose presence says the item is already on this PC }
