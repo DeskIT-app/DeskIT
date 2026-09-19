@@ -48,6 +48,21 @@ LABELS: dict[str, str] = {
 # to sit on one row; it is the same fact main._allowed logs at length.
 NEEDS_A_HAND = "צריך יד פנויה"
 
+# THE CARD IS THREE GROUPS, since 2026-09-19: what the dictation itself
+# answers to, the keys that look at the screen, and everything else. One
+# flat list of every live key was the owner's "this design is terrible
+# too" — twelve rows with nothing to say which three matter while a hand
+# is on the hotkey. The groups are named here, in the card's own Hebrew,
+# and the painters (skin\hint.py, overlay._hint_paint) only draw them.
+GROUP_DICTATION = "הכתבה"
+GROUP_SCREEN = "מסך"
+GROUP_OTHER = "עוד"
+# Which feature keys are "the screen": the four that take a picture or
+# ask about one. The rest of main._SCREEN_ACTIONS (screens off, dismiss
+# a notification, the shelf) fire mid-hold too but are not about the
+# screen, so they sit with the text keys under "more".
+SCREEN_KEYS = frozenset({"visual_qa", "capture", "record", "photo"})
+
 _PRETTY = {
     "ctrl": "Ctrl", "shift": "Shift", "alt": "Alt", "win": "Win",
     "right ctrl": "Right Ctrl", "left ctrl": "Left Ctrl",
@@ -159,12 +174,26 @@ def card_for(cfg, state: str, screen_actions=frozenset()) -> dict | None:
     top.append(("Esc", "ביטול, בלי להדביק כלום", True))
 
     live, refused = [], []
+    screen, other_live, other_refused = [], [], []
     for action, binding in bindings(cfg):
         label = LABELS.get(action, action)
         if latched or action in screen_actions:
-            live.append((pretty(binding), label, True))
+            row = (pretty(binding), label, True)
+            live.append(row)
+            (screen if action in SCREEN_KEYS else other_live).append(row)
         else:
-            refused.append((pretty(binding), f"{label} — {NEEDS_A_HAND}", False))
+            row = (pretty(binding), f"{label} — {NEEDS_A_HAND}", False)
+            refused.append(row)
+            (screen if action in SCREEN_KEYS else other_refused).append(row)
+
+    # `rows` and `keys` are the flat halves every reader of this card has
+    # always had; `groups` is the same rows with the headings the painters
+    # draw, empty groups left out so a Config with no screen keys does
+    # not show an empty heading.
+    groups = [(name, rows) for name, rows in (
+        (GROUP_DICTATION, top),
+        (GROUP_SCREEN, screen),
+        (GROUP_OTHER, other_live + other_refused)) if rows]
 
     return {
         "state": state,
@@ -176,5 +205,6 @@ def card_for(cfg, state: str, screen_actions=frozenset()) -> dict | None:
                     else "עובד גם באמצע ההקלטה"),
         "rows": top,
         "keys": live + refused,
+        "groups": groups,
         "footer": "אל תציג את זה יותר",
     }

@@ -151,35 +151,21 @@ def _rubik(weight: int, size: float):
     return font
 
 
-class Card:
-    """The picture. Stateless about threads: the caller drives draw()."""
+class Progress:
+    """What the boot has said so far, as a number and a phrase.
+
+    The half of the card that has no picture: the milestone table read
+    against the log, the floor that only rises, the creep toward the next
+    milestone. Card (skia) and Lite (Pillow) both draw from it, so a line
+    that is kept off one card is kept off both.
+    """
 
     def __init__(self) -> None:
-        import skia
-        self._skia = skia
         self.line = "starting…"
         self._floor = 0.0             # the last milestone actually reached
         self._next = 0.10             # the one after it, which creep aims at
         self._since = time.monotonic()
-        self.charge = 0.0             # what is drawn, which eases toward it
-        self.alpha = 0.0
         self.released_at = None
-        self._seed = int(time.time() * 1000) & 0xFFFF
-
-        # 600 for the tracked micro-label, 400 for the sentence. A weight
-        # contrast of one step reads as mush; two steps reads as decided.
-        self.f_label = _rubik(600, 10.0)
-        self.f_status = _rubik(400, 13.5)
-        self._plate = None       # the static half of the card, baked once
-
-    # -------------------------------------------------------------- state
-    def placement(self) -> tuple[int, int, int, int]:
-        """Bottom-right of the work area — out of the way of whatever the
-        owner is actually looking at, and above the taskbar rather than
-        under it."""
-        wx, wy, ww, wh = work_area()
-        return (wx + ww - WIN_W - MARGIN_X + PAD // 2,
-                wy + wh - WIN_H - MARGIN_Y + PAD // 2, WIN_W, WIN_H)
 
     def status(self, text: str) -> None:
         """Take a log line and show what it MEANS.
@@ -217,6 +203,10 @@ class Card:
         span = (self._next - self._floor) * CREEP_TO
         return self._floor + span * (1 - math.exp(-idle / CREEP_TAU))
 
+    def ready(self) -> bool:
+        """The milestone that actually arrived, not the animation."""
+        return self._floor >= 0.999
+
     def release(self) -> None:
         if self.released_at is None:
             self.released_at = time.monotonic()
@@ -225,6 +215,33 @@ class Card:
         if self.released_at is None:
             return -1e9
         return (time.monotonic() - self.released_at) * 1000.0
+
+
+class Card(Progress):
+    """The picture. Stateless about threads: the caller drives draw()."""
+
+    def __init__(self) -> None:
+        import skia
+        super().__init__()
+        self._skia = skia
+        self.charge = 0.0             # what is drawn, which eases toward it
+        self.alpha = 0.0
+        self._seed = int(time.time() * 1000) & 0xFFFF
+
+        # 600 for the tracked micro-label, 400 for the sentence. A weight
+        # contrast of one step reads as mush; two steps reads as decided.
+        self.f_label = _rubik(600, 10.0)
+        self.f_status = _rubik(400, 13.5)
+        self._plate = None       # the static half of the card, baked once
+
+    # -------------------------------------------------------------- state
+    def placement(self) -> tuple[int, int, int, int]:
+        """Bottom-right of the work area — out of the way of whatever the
+        owner is actually looking at, and above the taskbar rather than
+        under it."""
+        wx, wy, ww, wh = work_area()
+        return (wx + ww - WIN_W - MARGIN_X + PAD // 2,
+                wy + wh - WIN_H - MARGIN_Y + PAD // 2, WIN_W, WIN_H)
 
     # --------------------------------------------------------------- text
     def _clamp(self, font, text, width):
@@ -583,6 +600,225 @@ class Card:
                     positions=[0.0, 0.5, 1.0])))
 
 
+# ------------------------------------------------------- the lite card
+# THE CARD A FRESH INSTALL SEES. skia-python is the skin pack, a download
+# most people never make, so the card above — the waveform, the release —
+# is the owner's and this one is everybody else's. Until 2026-09-19
+# everybody else got overlay.Splash's Tk window: a title, the raw log line
+# and an amber bar sliding in a frame, which the owner walked into on a
+# fresh install and called "outdated". This is the same information on
+# LAMPLIGHT, drawn by Pillow on the same layered window: the mark, the
+# wordmark, one line that says what is happening, and a thin gold line
+# that is the progress — read out of the log the way the waveform's
+# amplitude is, so it cannot run backwards or arrive early.
+LITE_W, LITE_H = 372, 104
+LITE_RADIUS = 16
+LITE_INSET = 26                 # shadow room (face.SHADOW)
+LITE_BADGE = 44                 # the mark's tile
+LITE_TEXT_X = 22 + LITE_BADGE + 16
+LITE_BAR_H = 2
+LITE_APPEAR_MS = 380.0
+LITE_LEAVE_MS = 260.0
+LITE_BREATH_HZ = 0.09           # the lamp, while it waits
+
+
+def _pil_rubik(weight: int, size: float):
+    """Rubik at a real weight, through FreeType's variation axis — the
+    same trap _rubik documents for Skia: the four files are one variable
+    font and its default is Light."""
+    from PIL import ImageFont
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(here, "fonts", "Rubik.ttf")
+    try:
+        font = ImageFont.truetype(path, int(round(size)))
+        try:
+            font.set_variation_by_axes([float(weight)])
+        except Exception:
+            _log.debug("skin: no variable axis on Rubik (Pillow)",
+                       exc_info=True)
+        return font
+    except Exception:
+        _log.debug("skin: no Rubik for the lite card", exc_info=True)
+    try:
+        return ImageFont.truetype("segoeui.ttf", int(round(size)))
+    except Exception:
+        return ImageFont.load_default()
+
+
+class Lite(Progress):
+    """The boot card with no skia in it: `frame()` is a Pillow picture."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        from .face import plate
+        from .mark import Mark
+        self.charge = 0.0
+        self.alpha = 0.0
+        self.win = (LITE_W + LITE_INSET * 2, LITE_H + LITE_INSET * 2)
+        self._plate = plate(LITE_W, LITE_H, LITE_RADIUS, LITE_INSET)
+        # the badge's tile is BG, one step under the card's face, so it
+        # reads as a tile set INTO the card rather than melting into it
+        self._mark = Mark(LITE_BADGE, LITE_BADGE + 10, "icon", tile_rgb=rgb(BG))
+        self.f_word = _pil_rubik(600, 15)
+        self.f_status = _pil_rubik(400, 13)
+        self.f_label = _pil_rubik(600, 10)
+        self._closing_since = None
+
+    def placement(self) -> tuple[int, int, int, int]:
+        """The same corner as Card: bottom-right of the work area, above
+        the taskbar, out of the way of whatever is being looked at."""
+        wx, wy, ww, wh = work_area()
+        return (wx + ww - self.win[0] - MARGIN_X + LITE_INSET // 2,
+                wy + wh - self.win[1] - MARGIN_Y + LITE_INSET // 2,
+                self.win[0], self.win[1])
+
+    def leave(self) -> None:
+        if self._closing_since is None:
+            self._closing_since = time.monotonic()
+
+    def gone(self) -> bool:
+        return (self._closing_since is not None and
+                (time.monotonic() - self._closing_since) * 1000.0
+                >= LITE_LEAVE_MS)
+
+    def _tracked(self, draw, x, y, text, font, fill, gap=1.5):
+        """Tracked capitals, a glyph at a time — Pillow has no
+        letter-spacing either, and wide tracking on a 10 px label is what
+        makes a micro-heading read as typography."""
+        for ch in text:
+            draw.text((x, y), ch, font=font, fill=fill)
+            x += font.getlength(ch) + gap
+        return x
+
+    def _width(self, text, font, gap=1.5):
+        return sum(font.getlength(ch) + gap for ch in text)
+
+    def _clamp(self, text, font, width):
+        if font.getlength(text) <= width:
+            return text
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if font.getlength(text[:mid] + "…") <= width:
+                lo = mid
+            else:
+                hi = mid - 1
+        return text[:lo].rstrip() + "…"
+
+    def frame(self, clock_ms: float):
+        """One picture of the card, or None once it has left."""
+        from PIL import Image, ImageDraw
+        from .palette import ACCENT, ACCENT_TEXT, DIM, FAINT, FG, LINE
+        if self.gone():
+            return None
+        appear = ease.out_cubic(ease.seg(clock_ms, 40, 40 + LITE_APPEAR_MS))
+        fade = 1.0
+        if self._closing_since is not None:
+            fade = 1.0 - ease.clamp01(
+                (time.monotonic() - self._closing_since) * 1000.0
+                / LITE_LEAVE_MS)
+        self.alpha = appear * fade
+        self.charge = ease.approach(self.charge, self.target(), 0.06)
+
+        W, H = self.win
+        img = self._plate.copy()
+        draw = ImageDraw.Draw(img)
+        x0, y0 = LITE_INSET, LITE_INSET
+        fg, dim, faint = rgb(FG), rgb(DIM), rgb(FAINT)
+
+        # the mark, its lamp breathing while the load runs and steady at
+        # full once the app is ready — quiet, like everything on a card
+        # that is up for twenty seconds beside someone's work
+        if self.ready():
+            glow = 1.0
+        else:
+            glow = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(
+                clock_ms / 1000.0 * math.tau * LITE_BREATH_HZ))
+        badge = self._mark.frame(rgb(ACCENT), glow)
+        bx = x0 + 22 - 5
+        by = y0 + (LITE_H - LITE_BADGE) // 2 - 5
+        img.alpha_composite(badge, (bx, by))
+
+        # the wordmark and, right-aligned to it, the state word
+        tx = x0 + LITE_TEXT_X
+        draw.text((tx, y0 + 24), "DeskIT", font=self.f_word, fill=fg)
+        word = "READY" if self.ready() else "LOADING"
+        tint = rgb(ACCENT_TEXT) if self.ready() else faint
+        self._tracked(draw, x0 + LITE_W - 22 - self._width(word, self.f_label),
+                      y0 + 28, word, self.f_label, tint)
+
+        # one line: what is happening, in words a person waits on
+        line = self._clamp(self.line, self.f_status, LITE_W - LITE_TEXT_X - 22)
+        draw.text((tx, y0 + 48), line, font=self.f_status, fill=dim)
+
+        # the progress: a hairline track and the gold on it
+        left, right = x0 + LITE_TEXT_X, x0 + LITE_W - 22
+        yb = y0 + LITE_H - 22
+        draw.rounded_rectangle((left, yb, right, yb + LITE_BAR_H), radius=1,
+                               fill=rgb(LINE))
+        lit = left + int(round((right - left) * ease.clamp01(self.charge)))
+        if lit > left + 1:
+            draw.rounded_rectangle((left, yb, lit, yb + LITE_BAR_H),
+                                   radius=1, fill=rgb(ACCENT))
+
+        if self.alpha < 0.999:
+            a = img.getchannel("A").point(lambda v: int(v * self.alpha))
+            img.putalpha(a)
+            if appear < 1.0:
+                # a small rise on entry, like the skia card's
+                lift = int((1 - appear) * 12)
+                risen = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+                risen.paste(img, (0, lift))
+                img = risen
+        return img
+
+
+def _run_lite(splash) -> None:
+    """The lite loop: the same queue, the same (_DONE, linger_ms), the
+    same land() — and no release, so the going-away is the landing, as
+    it is for the Tk splash."""
+    import overlay
+
+    card = Lite()
+    glass = Glass(*card.placement(), gpu=False)
+    glass.show()
+    splash._alive.set()
+    start = time.perf_counter()
+    finish_at = None
+    last = None
+    try:
+        while not splash._closing.is_set():
+            now = time.perf_counter()
+            try:
+                while True:
+                    item = splash._q.get_nowait()
+                    if isinstance(item, tuple):        # (_DONE, linger_ms)
+                        finish_at = now + max(0, item[1]) / 1000.0
+                    elif item is overlay._DONE:
+                        finish_at = now
+                    else:
+                        card.status(item)
+            except queue.Empty:
+                pass
+            if finish_at is not None and now >= finish_at:
+                card.leave()
+            image = card.frame((now - start) * 1000.0)
+            if image is None:
+                break
+            raw = image.tobytes()
+            if raw != last:
+                last = raw
+                glass.present(image)
+            glass.pump()
+            time.sleep(1.0 / 30.0)
+    except Exception:
+        _log.info("skin lite boot card stopped early", exc_info=True)
+    finally:
+        glass.close()
+        splash.land()
+        splash._closing.set()
+
+
 # ------------------------------------------------------------------ driver
 FRAME_S = 1.0 / 90.0
 IDLE_FRAME_S = 1.0 / 50.0
@@ -596,8 +832,17 @@ def run(splash) -> None:
     the _alive gate, the _closing Event and the (_DONE, linger_ms) protocol
     are what main.py and three tests in tests.py rely on, and none of them
     change. Only what gets painted does.
+
+    Without skia — a fresh install — the lite card runs instead, on the
+    same window and the same protocol, with no release at the end.
     """
     import overlay
+
+    try:
+        import skia                          # noqa: F401
+    except Exception:                        # noqa: BLE001 — no skin pack
+        _run_lite(splash)
+        return
 
     card = Card()
     # THE CARD IS DRAWN ON THE CPU, DELIBERATELY. Building the OpenGL

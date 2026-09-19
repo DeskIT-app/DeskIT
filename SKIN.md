@@ -10,8 +10,10 @@ half state.
 ```
 set HD_SKIN=0
 ```
-for one run — the app starts on its original Tk overlays and the original
-palette.
+for one run — the app starts on its original Tk overlays. The palette
+stays: since 2026-09-19 `ui.py`'s own literals ARE LAMPLIGHT (a test holds
+them to `skin\palette.py`), because a fresh install has no skia and the
+blue it fell back to was the one window that disagreed with the mark.
 
 ```
 skin\__init__.py  ->  ENABLED = False
@@ -57,9 +59,10 @@ the direction needs (`COOL`, `RECORDING`), and twelve that `ui.py` used
 to spell out as hex INSIDE its own widget constructors — below the
 `# --- SKIN` marker, where `repaint` could never reach them. A test now
 fails on any `"#rrggbb"` below that marker. Each new name was also added
-to `ui.py`'s pre-marker block at an OLD-palette value, so deleting
-`skin\` still gives back a coherent COBALT window rather than a
-half-repainted one.
+to `ui.py`'s pre-marker block — at an old-palette value then, at the
+LAMPLIGHT value since 2026-09-19 (`test_the_window_carries_lamplight_itself`
+holds every one of the 47 to `UI_NAMES`), so the window is one palette
+with the skin pack and without it.
 
 **`fonts.py` is not part of the revert, and should not be.** The look
 needs Rubik actually loaded — measured 2026-09-06, it was not: a fresh
@@ -80,13 +83,15 @@ makes the answer true.
 | `palette.py` | LAMPLIGHT: the elevation ladder, the contrast table, the light ramp, `UI_NAMES` (47), `DOT_STATES` as `(fill, ring, pulses)` and `NO_HALO` |
 | `ease.py` | the curves, as one-line canonical formulas |
 | `gl.py` | an OpenGL context, so Skia can use the graphics card |
-| `glass.py` | a click-through, never-focusable layered window Skia paints on |
-| `boot.py` | the corner card, the waveform, and the thread that drives both |
+| `glass.py` | a click-through, never-focusable layered window Skia paints on — or, since 2026-09-19, that `present()` hands a Pillow picture to, so a copy WITHOUT skia (every fresh install: skia is the skin pack) still gets per-pixel alpha |
+| `mark.py` | the mark drawn small by Pillow, on make_icon.py's 64-unit grid: the CARD tile with its drop shadow and hairline rim, the desk, the lamp and its glow. `Mark(tile, box, cut)` bakes the static half once; `frame()` is three pastes. The dot at 28 px, the boot card's badge at 44 |
+| `boot.py` | the corner card, the waveform, and the thread that drives both — and `Lite`, the card a copy without skia gets: the mark, the wordmark, one line of status and a thin gold progress line, on `face.py`'s plate, the same milestones and the same protocol, no release |
+| `face.py` | a card's face by Pillow — shadow, CARD-to-BG surface, LINE rim, specular hairline — the plate under every painter that cannot assume skia |
 | `reveal.py` | the release, on the GPU |
 | `burst.py` | the release, for machines with no GPU |
-| `dot.py` | the status dot: five states, the halo gated on `NO_HALO` — paused is the one without one, checked on rendered alpha 8 px out from the disc rather than on the colour table, because the halo rule is about DRAWING — and, since 2026-09-07, a BUTTON: `Dot.hit` answers HTCLIENT on the disc plus 2 px and HTTRANSPARENT on the glow, `place()` puts it in a corner of the work area (`[dot] corner`, bottom-right by default) while `spot()` prefers wherever it was dragged to (`[dot] x/y`), the disc answers HTCAPTION instead while `move()` is armed so Windows drags it, and the halo ends at `HALO_R` = 18 px so no glow reaches the window's edge |
+| `dot.py` | the status dot: THE MARK, since 2026-09-19 — a 28 px tile in the 38 px box, and the lamp is the state. Five states, the lamp's glow on the tile gated on `NO_HALO` — paused is the one that casts no light, checked on the rendered pixel 3 px out from the lamp rather than on the colour table, because the rule is about DRAWING — and, since 2026-09-07, a BUTTON: `Dot.hit` answers HTCLIENT on the tile and HTTRANSPARENT on the shadow and the corners, `place()` puts it in a corner of the work area (`[dot] corner`, bottom-right by default) while `spot()` prefers wherever it was dragged to (`[dot] x/y`), the tile answers HTCAPTION instead while `move()` is armed so Windows drags it, and the shadow is zeroed on the window's border so nothing reaches the edge. Painted by `mark.py`, so it needs no skia |
 | `shelf.py` | the glass under the panel beside the dot (`face()` + `run()`): `notify.py`'s recipe with the shelf's geometry and `hint.py`'s shadow put back. Nothing animates, so `run()` caches the composed picture on `(card, hover, scale)` and re-blits it — composing a full panel is 41 ms and the tick is one second |
-| `hint.py` | the key card while a key is held; its `DOTS` are derived from `DOT_STATES`, so the card and the corner dot cannot disagree |
+| `hint.py` | the key card while a key is held — since 2026-09-19 a Pillow picture (`paint()`) on `face.py`'s plate, the keys in hint.py's three groups under small headings, every key cap one width so the legend is a table, the checkbox row at the foot; `run()` presents it without skia. Its `DOTS` are derived from `DOT_STATES`, so the card and the corner dot cannot disagree |
 | `notify.py`, `review.py` | the glass under the notification column and the second-reading card |
 | `wave.py` | the microphone rings in the ask card |
 | `preview.py` | `python -m skin.preview burst\|card\|all` |
@@ -160,16 +165,28 @@ holds today because the review card and the notify card never both need
 it, and it will bite the day it stops holding.
 
 **The five dot states.** The dot is a layered window sitting on the
-user's wallpaper, so it always paints its own `#1A1A1A` backplate and is
-checked against that rather than against a surface:
+user's wallpaper — since 2026-09-19 the mark itself (`mark.py`): a
+`CARD` tile that carries its own ground, with a drop shadow to lift it
+off a light wallpaper and a hairline rim to find its edge on a dark one
+— and the lamp on the tile is the state, checked against `CARD`
+(L\* 12.5) rather than against whatever is behind the window:
 
-| state | hex | on the backplate | L\* |
+| state | hex | on the tile | L\* |
 |---|---|---|---|
-| listening | `#8FC0F0` | 9.09 | 76.0 |
-| recording | `#FF5B4E` | 5.68 | 61.0 |
-| locked | `#FF8A7E` | 7.62 | 70.1 |
-| transcribing | `#F5C043` | 10.36 | 80.5 |
-| paused | `#6F6F6F` | 3.46 | 46.8 |
+| listening | `#8FC0F0` | 8.46 | 76.0 |
+| recording | `#FF5B4E` | 5.29 | 61.0 |
+| locked | `#FF8A7E` | 7.09 | 70.1 |
+| transcribing | `#F5C043` | 9.64 | 80.5 |
+| paused | `#6F6F6F` | 3.22 | 46.8 |
+
+Why a tile at all: the owner walked a fresh install on 2026-09-19 and his
+screenshot showed the dot in the top-right of a bright sky wallpaper as
+"a thin ring", nearly invisible. A disc of light is only ever as visible
+as the contrast between its colour and the wallpaper, and listening is
+sky blue. What he was looking at was in fact the Tk fallback — a fresh
+install has no skia (it is the skin pack, a 10.9 MB download nobody
+makes) — which is why `mark.py` is Pillow and `glass.present()` exists:
+the dot is now the same picture with the pack and without it.
 
 Every pair separates by light (ΔL\* ≥ 8) or by hue (Δhue ≥ 40) — ΔL\* is
 what a colour-blind eye keeps, Δhue is what it may lose — and all ten
@@ -177,53 +194,56 @@ pairs pass. The one exception is **recording against locked**, which is
 one colour by design: they are 9.1 L\* and 1.2° apart, and what actually
 separates them is the 0.16 Hz breath the dot has always had.
 
-**Paused is the one state with no halo**, and that is the rule, not a
-detail: `paused` is a neutral grey with no warmth in it at all, and
-listening is a cool blue at nearly the same distance from transcribing
-(ΔL\* 4.5) — so the halo's *presence* is what tells "off" from "on",
-rather than hue alone. `palette.NO_HALO = frozenset({"paused"})` and
-`skin\dot.py` gates on it. The test checks rendered alpha 8 px out from
-the disc, not the colour table, because the halo rule is about drawing.
+**Paused is the one state with no light on the tile**, and that is the
+rule, not a detail: `paused` is a neutral grey with no warmth in it at
+all, and listening is a cool blue at nearly the same distance from
+transcribing (ΔL\* 4.5) — so the glow's *presence* is what tells "off"
+from "on", rather than hue alone. `palette.NO_HALO = frozenset({"paused"})`
+and `skin\dot.py` gates on it. The test checks the rendered pixel 3 px
+out from the lamp — the bare tile for paused, exactly; tinted for every
+lit state — not the colour table, because the rule is about drawing.
 
-**The halo ends inside the window, and that was a bug until 2026-09-07.**
-The gradient ran to CORE × 2.6 = 26 px in a 38 px box, which left alpha
-27 at every edge midpoint (0 at the corners) — a faint tinted square on
-any wallpaper or title bar, and the owner's words for it were "the dot
-looks like a square". It ends at `HALO_R` = BOX / 2 − 1 = 18 px now, the
-inner stop moved out to 0.62 so the light around the disc is the same
-light (alpha 27 at 14 px from the centre, against 42 before), and a test
-walks the whole border of every state and asks for zero. BOX stays 38
-because two tests identify the dot by its size.
+**Everything ends inside the window, and that was a bug until
+2026-09-07.** The old halo ran to CORE × 2.6 = 26 px in a 38 px box,
+which left alpha 27 at every edge midpoint (0 at the corners) — a faint
+tinted square on any wallpaper or title bar, and the owner's words for
+it were "the dot looks like a square". The mark's shadow is the soft
+thing now: blurred at 4× and reduced with a box filter (no ringing), and
+the border row and column zeroed outright. A test walks the whole border
+of every state and asks for zero, and asks that the tile be solid at
+13 px from the centre. BOX stays 38 because two tests identify the dot
+by its size.
 
-**The dot is a button, and only the disc is.** It moved from the
+**The dot is a button, and only the tile is.** It moved from the
 top-right corner to the bottom-right of the work area that same night —
 above the taskbar, a corner nothing else lives in — which is what made a
 button possible at all: in the top-right it sat on the close button of
 every maximised window and had to be click-through as a whole. Now
-`Dot.hit` answers HTCLIENT inside CORE / 2 + 2 px and HTTRANSPARENT
-everywhere else (the ring, the halo, the corners), `glass.Glass` is
-built without WS_EX_TRANSPARENT and asks it per pixel, and a click on the
-disc calls `overlay.StatusDot.on_click` — main.py's `_tap_shelf`, the
-same toggle as ctrl+alt+d. Two clicks inside 300 ms are one click, so a
-double-click is not an open and a close. The reveal's landing follows
-the dot (`boot._landing` asks `dot.spot`), and so do the shelf and the
-key card (`HintCard.origin`, `DOT_ROOM`, measured against the work area).
+`Dot.hit` answers HTCLIENT on the tile (its rounded-off corners
+included in "not") and HTTRANSPARENT everywhere else (the shadow, the
+window's corners), `glass.Glass` is built without WS_EX_TRANSPARENT and
+asks it per pixel, and a click on the tile calls
+`overlay.StatusDot.on_click` — main.py's `_tap_shelf`, the same toggle
+as ctrl+alt+d. Two clicks inside 300 ms are one click, so a double-click
+is not an open and a close. The reveal's landing follows the dot
+(`boot._landing` asks `dot.spot`), and so do the shelf and the key card
+(`HintCard.origin`, `DOT_ROOM`, measured against the work area).
 
-**And the same disc is the drag handle.** `overlay.StatusDot.move()`
+**And the same tile is the drag handle.** `overlay.StatusDot.move()`
 arms move mode for a few seconds — the dashboard's "Move the dot" sends
 it down the control pipe while the app runs — and while it is armed
-`Dot.hit` answers **HTCAPTION** on the disc instead of HTCLIENT, so
+`Dot.hit` answers **HTCAPTION** on the tile instead of HTCLIENT, so
 Windows itself runs the drag exactly as it does for the notify column
 and the shelf. That message split is what makes one press unable to be
 both gestures: a caption press arrives as WM_NCLBUTTONDOWN and the
-shelf's toggle is on WM_LBUTTONDOWN. Everything outside CORE / 2 + 2 px
-still answers HTTRANSPARENT in move mode — the glow never takes a click
-away from the window underneath, armed or not — so the thing that
-LIGHTS UP to say "drag me" is the containing ring at 8 px, drawn white
-and `MOVE_W` wide, and not a bigger halo: what glows has to be what can
-be pressed. The drop is read off the handle with `glass.where()`,
-clamped so the whole 38 px square stays on the virtual desktop, and
-written to `[dot] x/y`.
+shelf's toggle is on WM_LBUTTONDOWN. Everything off the tile still
+answers HTTRANSPARENT in move mode — the shadow never takes a click away
+from the window underneath, armed or not — so the thing that LIGHTS UP
+to say "drag me" is the tile's own rim, drawn bright (`mark.RIM_MOVING_A`)
+and twice as wide, and not anything outside it: what glows has to be
+what can be pressed. The drop is read off the handle with
+`glass.where()`, clamped so the whole 38 px square stays on the virtual
+desktop, and written to `[dot] x/y`.
 
 **The mark.** A dalet drawn as a desk: a tabletop with one leg hanging
 from its right end, the top's edge just past the leg, the lamp-dot above

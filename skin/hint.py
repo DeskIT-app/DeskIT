@@ -5,15 +5,31 @@ picture, and — because a picture you can drag has to know where it is —
 the three things the owner can change about it: where it sits, how big it
 is, and whether it comes back at all.
 
+WHAT IT LOOKS LIKE, SINCE 2026-09-19. A LAMPLIGHT card — face.py's plate,
+the same shadow, surface and rim as the boot card — with the state bead
+and the title on the right, and the keys in THREE GROUPS under their own
+small headings (hint.py names them: the dictation, the screen, more),
+every key cap right-aligned to one column at one minimum width so the
+column reads as a column, and the "don't show this again" row as a quiet
+checkbox at the foot. The card before this was one flat list of every
+live key with chips of a dozen widths, and the owner's verdict on it was
+"this design is terrible too".
+
+AND IT IS PAINTED BY PILLOW, so a fresh install — which has no skia; that
+is the skin pack — gets this card and not overlay._hint_paint's flat Tk
+canvas. `paint()` is the picture; `draw()` puts it on a skia canvas for
+the path that has one; `run()` hands it to the window with
+glass.present(), which needs neither.
+
 THREE THINGS THIS DOES THAT THE OTHER TWO OVERLAYS DO NOT.
 
 * **It has text to read**, and the text is Hebrew with Latin key names in
-  it. Skia's drawString lays glyphs out in logical order with no bidi and
-  no shaping, so every line here would come out backwards. Every string
-  therefore goes through `visual_qa.text_pil`, which is Windows'
-  DrawTextW + DT_RTLREADING rendered white-on-black so the luminance is
-  the alpha — the one bidi path in this repo that was checked glyph by
-  glyph (popup.py), and the same one the ask card uses.
+  it. Pillow's own text has no bidi and no shaping, so every line here
+  would come out backwards. Every string therefore goes through
+  `visual_qa.text_pil`, which is Windows' DrawTextW + DT_RTLREADING
+  rendered white-on-black so the luminance is the alpha — the one bidi
+  path in this repo that was checked glyph by glyph (popup.py), and the
+  same one the ask card uses.
 
   That function right-aligns inside the width it is HANDED and clips the
   rest, and its pixel size is `pt` scaled by the screen DPI — so a width
@@ -44,10 +60,11 @@ import logging
 import queue
 import time
 
+from .face import disc, plate, rule, shape
 from .glass import (Glass, primary_screen, virtual_screen, work_area,
                     HTTRANSPARENT, HTCLIENT, HTCAPTION)
-from .palette import (BG, CARD, LINE, FG, KEY_BG, KEY_EDGE, LINE_HI,
-                      DOT_STATES, argb, rgb)
+from .palette import (BG, LINE, FG, KEY_BG, KEY_EDGE, LINE_HI, DOT_STATES,
+                      rgb)
 
 _log = logging.getLogger("app")
 
@@ -56,14 +73,18 @@ RADIUS = 20
 PAD = 18
 ROW_H = 30
 CHIP_H = 21
+CHIP_MIN_W = 46           # every key cap at least this wide: ONE column
+GROUP_H = 22              # a group's heading and the hairline under it
+GROUP_GAP = 6             # between the last row of a group and the next
 HEAD_H = 44               # the drag strip: everything above the hairline
 SHADOW = 26               # room around the card for its own shadow
-FACE_A = 202              # the face's alpha. boot.py uses 252; this is glass
+FACE_A = 216              # the face's alpha. boot.py uses 252; this is glass
 BLUR = 11                 # px, the frost behind it
 DOT_ROOM = 46             # the status dot's own corner, which is not ours
 STEP = 0.1                # what one press of − or + is worth
 SCALE_MIN, SCALE_MAX = 0.6, 1.4
 BTN = 18                  # the − and + squares
+FOOT_H = 26               # the checkbox row
 
 INK = (241, 236, 226)        # FG      13.76:1 on the card
 INK_DIM = (178, 168, 150)    # DIM      6.89:1
@@ -118,13 +139,27 @@ def clamp_scale(scale: float) -> float:
     return max(SCALE_MIN, min(SCALE_MAX, round(float(scale), 3)))
 
 
+def _groups(card: dict) -> list:
+    """The card's groups, or — for a card built before groups existed —
+    its two flat halves as two groups, so an old picture still draws."""
+    groups = card.get("groups")
+    if groups:
+        return list(groups)
+    out = []
+    if card.get("rows"):
+        out.append(("", card["rows"]))
+    if card.get("keys"):
+        out.append((card.get("section", ""), card["keys"]))
+    return out
+
+
 def measure(card: dict, scale: float = 1.0) -> tuple[int, int]:
     """The card's size, and therefore the window's. Pure arithmetic."""
     s = clamp_scale(scale)
-    h = PAD + HEAD_H + 10
-    h += ROW_H * len(card["rows"]) + 3 + 19
-    h += ROW_H * len(card["keys"])
-    h += 12 + 26 + PAD - 4
+    h = PAD + HEAD_H + 8
+    for _name, rows in _groups(card):
+        h += GROUP_H + ROW_H * len(rows) + GROUP_GAP
+    h += 8 + FOOT_H + PAD - 4
     return int(round(CARD_W * s)), int(round(h * s))
 
 
@@ -146,9 +181,10 @@ def regions(card: dict, scale: float = 1.0) -> dict:
     smaller = (x0 + pad, y0 + pad + 2, x0 + pad + btn, y0 + pad + 2 + btn)
     bigger = (smaller[2] + 4 * s, smaller[1], smaller[2] + 4 * s + btn,
               smaller[3])
-    # the footer box, at the same place it is drawn
-    fy = y0 + height - (26 + PAD - 4) * s
-    dismiss = (right - 15 * s - 6, fy, right + 6, fy + 20 * s)
+    # the footer row, at the same place it is drawn: the whole row is the
+    # checkbox, the way a settings row is, not the 14 px square alone
+    fy = y0 + height - (FOOT_H + PAD - 4) * s
+    dismiss = (x0 + pad, fy, right + 6, fy + FOOT_H * s - 4)
     drag = (x0, y0, x0 + width, y0 + HEAD_H * s)
     return {SMALLER: smaller, BIGGER: bigger, DISMISS: dismiss, DRAG: drag}
 
@@ -186,140 +222,111 @@ def _frost(x: int, y: int, width: int, height: int):
         return None
 
 
-def draw(canvas, card: dict, backdrop=None, scale: float = 1.0) -> None:
-    """Paint the whole card onto `canvas`, origin at the window's corner."""
-    import skia
-    canvas.clear(0x00000000)
+def _rrect(img, box, radius, fill=None, outline=None, width=1):
+    """A rounded rectangle composited OVER the picture — antialiased, and
+    a layer rather than a draw, because ImageDraw's fill replaces pixels,
+    which on a translucent face punches a hole."""
+    img.alpha_composite(shape(img.size, box, radius, fill, outline, width))
+
+
+def _rule(img, x0, x1, y, colour):
+    img.alpha_composite(rule(img.size, x0, x1, y, colour))
+
+
+def paint(card: dict, backdrop=None, scale: float = 1.0):
+    """The whole card as a Pillow RGBA picture, origin at the window's
+    corner — the shadow's room included."""
     s = clamp_scale(scale)
     width, height = measure(card, s)
     pad = PAD * s
     x0 = y0 = SHADOW
-    rect = skia.Rect.MakeXYWH(x0, y0, width, height)
-    radius = RADIUS * s
-    rrect = skia.RRect.MakeRectXY(rect, radius, radius)
-
-    # Six offset round-rects with geometrically decaying alpha rather than
-    # a MaskFilter blur — boot.py's recipe, and its reasoning: a blur is a
-    # separate rasterise-and-convolve, and stacked hard shapes are
-    # indistinguishable from one at this radius.
-    for i in range(6, 0, -1):
-        grow = i * 3.4
-        a = 17 * (0.62 ** (6 - i))
-        canvas.drawRRect(
-            skia.RRect.MakeRectXY(
-                skia.Rect.MakeXYWH(rect.left() - grow,
-                                   rect.top() - grow * 0.35 + 5,
-                                   rect.width() + grow * 2,
-                                   rect.height() + grow * 1.5),
-                radius + grow, radius + grow),
-            skia.Paint(AntiAlias=True, Color=argb(a, (0, 0, 0))))
-
-    if backdrop is not None:
-        canvas.save()
-        canvas.clipRRect(rrect, doAntiAlias=True)
-        canvas.drawImage(_to_skia(backdrop), 0, 0)
-        canvas.restore()
-
-    # The face, a hair lighter at the top the way a surface lit from above
-    # actually is, and translucent enough to read the desktop through.
-    canvas.drawRRect(rrect, skia.Paint(
-        AntiAlias=True, Dither=True,
-        Shader=skia.GradientShader.MakeLinear(
-            points=[(x0, y0), (x0, y0 + height)],
-            colors=[argb(FACE_A, CARD), argb(FACE_A + 14, BG)],
-            positions=[0.0, 1.0])))
-    canvas.drawRRect(rrect, skia.Paint(
-        AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.0,
-        Color=argb(180, LINE)))
-    # a specular hairline on the top edge only, 60% of the width, fading at
-    # both ends — the cheapest thing that says "glass"
-    canvas.drawLine(
-        x0 + width * 0.20, y0 + 0.5, x0 + width * 0.80, y0 + 0.5,
-        skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style,
-                   StrokeWidth=1.0,
-                   Shader=skia.GradientShader.MakeLinear(
-                       points=[(x0 + width * 0.20, y0),
-                               (x0 + width * 0.80, y0)],
-                       colors=[argb(0, FG), argb(64, FG), argb(0, FG)],
-                       positions=[0.0, 0.5, 1.0])))
-
+    img = plate(width, height, RADIUS * s, SHADOW, FACE_A, backdrop)
     right = x0 + width - pad
     y = y0 + pad
     boxes = regions(card, s)
+    line = rgb(LINE)
 
-    # -- the head: state dot and title on the right, size buttons on the
+    def put(text_img, x, yy):
+        img.alpha_composite(text_img, (int(round(x)), int(round(yy))))
+
+    # -- the head: state bead and title on the right, size buttons on the
     # left, and the whole strip is the handle you drag it by.
-    canvas.drawCircle(right - 5 * s, y + 8 * s, 4.5 * s, skia.Paint(
-        AntiAlias=True, Color=argb(255, DOTS.get(card.get("dot"),
-                                                 DOTS["ready"]))))
+    bead = DOTS.get(card.get("dot"), DOTS["ready"])
+    bx, by, br = right - 5 * s, y + 8 * s, 4.5 * s
+    img.alpha_composite(disc(img.size, bx, by, br * 2.2, bead + (34,)))
+    img.alpha_composite(disc(img.size, bx, by, br, bead + (255,)))
     title = _text(card["title"], pt=12.0 * s, weight=600)
-    canvas.drawImage(_to_skia(title), right - 16 * s - title.width, y + 1)
+    put(title, right - 16 * s - title.width, y + 1)
     sub = _text(card["sub"], pt=9.0 * s, colour=INK_DIM)
-    canvas.drawImage(_to_skia(sub), right - 16 * s - sub.width, y + 22 * s)
+    put(sub, right - 16 * s - sub.width, y + 22 * s)
 
     for name, glyph in ((SMALLER, "−"), (BIGGER, "+")):
         bx0, by0, bx1, by1 = boxes[name]
-        canvas.drawRRect(skia.RRect.MakeRectXY(
-            skia.Rect.MakeLTRB(bx0, by0, bx1, by1), 5 * s, 5 * s),
-            skia.Paint(AntiAlias=True, Color=argb(110, BG)))
-        canvas.drawRRect(skia.RRect.MakeRectXY(
-            skia.Rect.MakeLTRB(bx0, by0, bx1, by1), 5 * s, 5 * s),
-            skia.Paint(AntiAlias=True, Style=skia.Paint.kStroke_Style,
-                       StrokeWidth=1.0, Color=argb(150, LINE_HI)))
+        _rrect(img, (bx0, by0, bx1, by1), 5 * s, fill=rgb(BG) + (110,),
+               outline=rgb(LINE_HI) + (150,))
         mark = _text(glyph, pt=10.0 * s, colour=INK_DIM, weight=600,
                      rtl=False)
-        canvas.drawImage(_to_skia(mark),
-                         (bx0 + bx1) / 2 - mark.width / 2,
-                         (by0 + by1) / 2 - mark.height / 2)
+        put(mark, (bx0 + bx1) / 2 - mark.width / 2,
+            (by0 + by1) / 2 - mark.height / 2)
 
     y += HEAD_H * s
-    canvas.drawLine(x0 + pad, y, right, y, skia.Paint(
-        AntiAlias=True, StrokeWidth=1.0, Color=argb(150, LINE)))
-    y += 10 * s
+    _rule(img, x0 + pad, right, y, line + (150,))
+    y += 8 * s
+
+    # ONE chip width for the whole card — the widest key plus its padding,
+    # never under CHIP_MIN_W — so the caps make a column and every label
+    # starts at the same edge. Chips of a dozen widths were a ragged
+    # list; a legend is a table.
+    chips = {}
+    for _name, items in _groups(card):
+        for key, _label, on in items:
+            chips[(key, on)] = _text(key, pt=9.0 * s, weight=700, rtl=False,
+                                     colour=INK_KEY if on else INK_FAINT)
+    cw = max([CHIP_MIN_W * s] + [c.width + 20 * s for c in chips.values()])
 
     def rows(items):
         nonlocal y
         for key, label, on in items:
-            chip = _text(key, pt=9.0 * s, weight=700, rtl=False,
-                         colour=INK_KEY if on else INK_FAINT)
-            cw = chip.width + 20 * s
-            box = skia.RRect.MakeRectXY(
-                skia.Rect.MakeXYWH(right - cw, y + 3 * s, cw, CHIP_H * s),
-                7 * s, 7 * s)
-            canvas.drawRRect(box, skia.Paint(
-                AntiAlias=True,
-                Color=argb(190 if on else 120, KEY_BG if on else BG)))
-            canvas.drawRRect(box, skia.Paint(
-                AntiAlias=True, Style=skia.Paint.kStroke_Style,
-                StrokeWidth=1.0,
-                Color=argb(200 if on else 110, KEY_EDGE if on else LINE)))
-            canvas.drawImage(_to_skia(chip), right - cw + 10 * s,
-                             y + 3 * s + (CHIP_H * s - chip.height) / 2)
+            chip = chips[(key, on)]
+            box = (right - cw, y + 3 * s, right, y + 3 * s + CHIP_H * s)
+            _rrect(img, box, 7 * s,
+                   fill=(rgb(KEY_BG) + (190,)) if on else (rgb(BG) + (120,)),
+                   outline=(rgb(KEY_EDGE) + (200,)) if on
+                   else (line + (110,)))
+            put(chip, right - cw / 2 - chip.width / 2,
+                y + 3 * s + (CHIP_H * s - chip.height) / 2)
             text = _text(label, pt=10.0 * s, colour=INK if on else INK_FAINT)
-            canvas.drawImage(_to_skia(text), right - cw - 11 * s - text.width,
-                             y + 3 * s + (CHIP_H * s - text.height) / 2)
+            put(text, right - cw - 11 * s - text.width,
+                y + 3 * s + (CHIP_H * s - text.height) / 2)
             y += ROW_H * s
 
-    rows(card["rows"])
-    y += 3 * s
-    section = _text(card["section"], pt=8.5 * s, colour=INK_FAINT, weight=600)
-    canvas.drawImage(_to_skia(section), right - section.width, y + 2)
-    y += 19 * s
-    rows(card["keys"])
+    for name, items in _groups(card):
+        if name:
+            head = _text(name, pt=8.5 * s, colour=INK_FAINT, weight=600)
+            put(head, right - head.width, y + 2)
+            _rule(img, x0 + pad, right - head.width - 8 * s,
+                  y + GROUP_H * s - 5 * s, line + (90,))
+        y += GROUP_H * s
+        rows(items)
+        y += GROUP_GAP * s
 
     y += 8 * s
-    canvas.drawLine(x0 + pad, y, right, y, skia.Paint(
-        AntiAlias=True, StrokeWidth=1.0, Color=argb(110, LINE)))
-    y += 12 * s
-    tick = skia.RRect.MakeRectXY(
-        skia.Rect.MakeXYWH(right - 15 * s, y + 1, 14 * s, 14 * s), 4 * s, 4 * s)
-    canvas.drawRRect(tick, skia.Paint(AntiAlias=True, Color=argb(120, BG)))
-    canvas.drawRRect(tick, skia.Paint(
-        AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.0,
-        Color=argb(190, LINE)))
+    _rule(img, x0 + pad, right, y, line + (110,))
+    # the footer: a quiet checkbox row, the box at the right where the
+    # eye lands first in Hebrew and the words to its left
+    fy = boxes[DISMISS][1]
+    tick = (right - 14 * s, fy + 5 * s, right, fy + 5 * s + 14 * s)
+    _rrect(img, tick, 4 * s, fill=rgb(BG) + (120,), outline=line + (190,))
     foot = _text(card["footer"], pt=9.0 * s, colour=INK_DIM)
-    canvas.drawImage(_to_skia(foot), right - 24 * s - foot.width,
-                     y + 8 * s - foot.height / 2)
+    put(foot, right - 24 * s - foot.width, fy + 12 * s - foot.height / 2)
+    return img
+
+
+def draw(canvas, card: dict, backdrop=None, scale: float = 1.0) -> None:
+    """Paint the whole card onto a skia `canvas`, origin at the window's
+    corner: the same picture as `paint()`, for the path that has one."""
+    canvas.clear(0x00000000)
+    canvas.drawImage(_to_skia(paint(card, backdrop, scale)), 0, 0)
 
 
 def run(hint_card) -> None:
@@ -333,8 +340,8 @@ def run(hint_card) -> None:
     The window is built when a card becomes due and destroyed when it goes
     away, because its height depends on how many keys are live and on the
     scale. That is a few milliseconds once per hesitated dictation,
-    against keeping a layered window and a GPU surface alive for a panel
-    that is usually not on screen.
+    against keeping a layered window alive for a panel that is usually
+    not on screen.
     """
     import overlay
 
@@ -398,13 +405,15 @@ def run(hint_card) -> None:
         if glass is not None and (glass.width, glass.height) != (win_w, win_h):
             take_down()
         if glass is None:
-            glass = Glass(x, y, win_w, win_h, hit=on_hit, moved=on_move,
-                          clicked=on_click)
+            # gpu=False: the picture is Pillow's and static, so a GPU
+            # surface would be a readback for nothing — and a GL context
+            # a copy without skia cannot build
+            glass = Glass(x, y, win_w, win_h, gpu=False, hit=on_hit,
+                          moved=on_move, clicked=on_click)
             glass.show()
         else:
             glass.move(x, y)
-        draw(glass.canvas, card, _frost(x, y, win_w, win_h), s)
-        glass.flush()
+        glass.present(paint(card, _frost(x, y, win_w, win_h), s))
         glass.raise_()
         shown = card
 
@@ -447,4 +456,5 @@ def run(hint_card) -> None:
         hint_card._closing.set()
 
 
-__all__ = ["draw", "measure", "regions", "hit_test", "clamp_scale", "run"]
+__all__ = ["paint", "draw", "measure", "regions", "hit_test", "clamp_scale",
+           "run"]

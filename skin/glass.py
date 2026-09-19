@@ -273,7 +273,15 @@ class Glass:
 
     def __init__(self, x: int, y: int, width: int, height: int,
                  gpu: bool = True, hit=None, moved=None, clicked=None) -> None:
-        import skia                       # deferred: see skin/__init__
+        # Deferred (see skin/__init__), and OPTIONAL since 2026-09-19: a
+        # fresh install has no skia — it is the skin pack, a download —
+        # and the dot, the boot card and the hint card paint with Pillow
+        # and hand the picture to `present()`. Without skia there is no
+        # `canvas`; everything else about the window is the same.
+        try:
+            import skia
+        except Exception:                 # noqa: BLE001 — no skin pack
+            skia = None
 
         self.x, self.y = int(x), int(y)
         self.width, self.height = int(width), int(height)
@@ -334,6 +342,12 @@ class Glass:
         nbytes = self.width * self.height * 4
         self._buf = (ctypes.c_char * nbytes).from_address(bits.value)
         self._view = memoryview(self._buf)
+        self._src = _POINT(0, 0)
+        self._dst = _POINT(self.x, self.y)
+        self._size = _SIZE(self.width, self.height)
+        self._blend = _BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
+        if skia is None:
+            return                        # a window for present() alone
         # BGRA premultiplied, which is what a 32-bit top-down DIB is and
         # what UpdateLayeredWindow wants. Naming it explicitly rather than
         # taking N32 means the readback below cannot silently swap the
@@ -372,11 +386,6 @@ class Glass:
             raise RuntimeError("Skia would not wrap the layered window's DIB")
         self.canvas = self.surface.getCanvas()
 
-        self._src = _POINT(0, 0)
-        self._dst = _POINT(self.x, self.y)
-        self._size = _SIZE(self.width, self.height)
-        self._blend = _BLENDFUNCTION(AC_SRC_OVER, 0, 255, AC_SRC_ALPHA)
-
     def show(self) -> None:
         _user32.ShowWindow(self.hwnd, SW_SHOWNOACTIVATE)
 
@@ -401,20 +410,50 @@ class Glass:
         """Push the frame. `alpha` is a whole-window multiplier on top of
         the per-pixel alpha, which is how a finished effect fades out
         without every element having to fade itself."""
-        if self.surface is None or self.hwnd is None:
+        if self.hwnd is None or self._view is None:
             return False
-        self.surface.flushAndSubmit()
-        if self.on_gpu:
-            # the one cost of the GPU path: 4.33 ms at 2560x1440, straight
-            # into the DIB the layered window is about to be handed
-            if not self.surface.readPixels(self._info, self._view,
-                                           self.width * 4, 0, 0):
-                return False
+        if self.surface is not None:
+            self.surface.flushAndSubmit()
+            if self.on_gpu:
+                # the one cost of the GPU path: 4.33 ms at 2560x1440,
+                # straight into the DIB the layered window is about to be
+                # handed
+                if not self.surface.readPixels(self._info, self._view,
+                                               self.width * 4, 0, 0):
+                    return False
         self._blend.SourceConstantAlpha = max(0, min(255, int(alpha * 255)))
         return bool(_user32.UpdateLayeredWindow(
             self.hwnd, None, ctypes.byref(self._dst), ctypes.byref(self._size),
             self.dc, ctypes.byref(self._src), 0, ctypes.byref(self._blend),
             ULW_ALPHA))
+
+    def present(self, image, alpha: float = 1.0) -> bool:
+        """Show a Pillow RGBA picture of the window's size: the path that
+        needs no skia at all, and the one the dot and the boot card take on
+        every copy.
+
+        The DIB is premultiplied BGRA and Pillow can write exactly that
+        (`tobytes("raw", "BGRa")`), so a frame is one memcpy and one
+        UpdateLayeredWindow. On a window that DOES have a GPU surface the
+        picture goes through the canvas instead, because `flush()` reads
+        the surface back over the DIB and would overwrite the bytes.
+        """
+        if self.hwnd is None or self._view is None:
+            return False
+        if image.size != (self.width, self.height):
+            image = image.resize((self.width, self.height))
+        if image.mode != "RGBA":
+            image = image.convert("RGBA")
+        if self.surface is not None and self.on_gpu:
+            import skia
+            self.canvas.clear(0x00000000)
+            self.canvas.drawImage(skia.Image.frombytes(
+                image.tobytes(), image.size, skia.kRGBA_8888_ColorType), 0, 0)
+            return self.flush(alpha)
+        # cast: the DIB's view is a c_char array ("<c"), which refuses a
+        # bytes object; as unsigned bytes it takes one in a memcpy
+        self._view.cast("B")[:] = image.tobytes("raw", "BGRa")
+        return self.flush(alpha)
 
     def pump(self) -> None:
         """Drain this window's messages so Windows never calls it hung."""
