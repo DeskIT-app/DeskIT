@@ -10,8 +10,10 @@ half state.
 ```
 set HD_SKIN=0
 ```
-for one run — the app starts on its original Tk overlays and the original
-palette.
+for one run — the app starts on its original Tk overlays. The palette
+stays: since 2026-09-19 `ui.py`'s own literals ARE LAMPLIGHT (a test holds
+them to `skin\palette.py`), because a fresh install has no skia and the
+blue it fell back to was the one window that disagreed with the mark.
 
 ```
 skin\__init__.py  ->  ENABLED = False
@@ -57,9 +59,10 @@ the direction needs (`COOL`, `RECORDING`), and twelve that `ui.py` used
 to spell out as hex INSIDE its own widget constructors — below the
 `# --- SKIN` marker, where `repaint` could never reach them. A test now
 fails on any `"#rrggbb"` below that marker. Each new name was also added
-to `ui.py`'s pre-marker block at an OLD-palette value, so deleting
-`skin\` still gives back a coherent COBALT window rather than a
-half-repainted one.
+to `ui.py`'s pre-marker block — at an old-palette value then, at the
+LAMPLIGHT value since 2026-09-19 (`test_the_window_carries_lamplight_itself`
+holds every one of the 47 to `UI_NAMES`), so the window is one palette
+with the skin pack and without it.
 
 **`fonts.py` is not part of the revert, and should not be.** The look
 needs Rubik actually loaded — measured 2026-09-06, it was not: a fresh

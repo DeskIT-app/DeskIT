@@ -16769,8 +16769,8 @@ def test_the_window_has_a_name_for_every_shade_its_widgets_draw() -> None:
     cap on the old colours, and the only way to notice was to look.
 
     The palette block is everything above the `# --- SKIN` hook, because
-    that is what `test_deleting_the_skin_leaves_the_original_palette`
-    reads and what the app falls back to. Below it, a colour is a NAME.
+    that is what `test_the_window_carries_lamplight_itself` reads and
+    what the app falls back to. Below it, a colour is a NAME.
     """
     import re
 
@@ -16784,23 +16784,38 @@ def test_the_window_has_a_name_for_every_shade_its_widgets_draw() -> None:
         f"add it to skin.palette.UI_NAMES")
 
 
-def test_deleting_the_skin_leaves_the_original_palette() -> None:
-    """ui.py's own literals must still be the OLD ones.
+def test_the_window_carries_lamplight_itself() -> None:
+    """ui.py's own literals ARE skin\\palette.py's, name for name.
 
-    The hook overwrites them at import time, so the values in the file are
-    what the app falls back to. If someone ever "tidies" them to match the
-    skin, deleting skin\\ would silently keep the new colours and the
-    revert would no longer be a revert.
+    Until 2026-09-19 they were the old blue, and the test that stood here
+    said they had to stay so — "or deleting skin\\ would not restore the
+    old look". That contract cost every fresh install its palette: skia
+    is the skin pack, most copies never fetch it, `repaint` therefore
+    never ran there, and the desk was blue under a gold dot, a gold icon
+    and gold cards — the one window that disagreed with the mark was the
+    window. The values live in the file now, and this holds them to the
+    skin's so the two cannot drift; what deleting skin\\ still gives back
+    is the Tk PICTURES, not the blue.
     """
+    import re
+    skin = _skin_or_skip()
+    if skin is None:
+        return
+    from skin.palette import UI_NAMES
     here = Path(__file__).resolve().parent
     source = (here / "ui.py").read_text("utf-8")
     head = source[:source.index("# --- SKIN")]
-    for name, was in (("BG", "#0d1017"), ("PANE", "#10131a"),
-                      ("CARD", "#161b25"), ("ACCENT", "#2d6cdf"),
-                      ("RED", "#e0352b"), ("SIDE_CARD", "#131822")):
-        assert f'{name} ' in head and was in head, (
-            f"ui.py no longer carries the original {name} = {was}; "
-            f"deleting skin\\ would not restore the old look")
+    literals = dict(re.findall(r'^([A-Z_]+)\s*=\s*"(#[0-9a-fA-F]{6})"', head,
+                               re.M))
+    drift = {name: (literals.get(name), want)
+             for name, want in UI_NAMES.items()
+             if (literals.get(name) or "").lower() != want.lower()}
+    assert not drift, (
+        f"ui.py's own palette has drifted from skin\\palette.py: {drift} — "
+        f"a copy without the skin pack would show a different window")
+    assert len(literals) == len(UI_NAMES), (
+        f"ui.py names {len(literals)} colours and the skin {len(UI_NAMES)}; "
+        f"one of them has a shade the other cannot answer for")
 
 
 def test_the_release_is_one_flash_and_is_over_inside_a_second() -> None:

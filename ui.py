@@ -7,7 +7,7 @@ So every card, pill, button and switch in the dashboard is a Canvas
 holding one pre-rendered bitmap with ordinary Tk widgets placed on top of
 it, the widget's own background set to the same flat colour as the middle
 of that bitmap. The seam is invisible because there is nothing to see: the
-label really is sitting on a solid `#161b25`, and the only rounded part is
+label really is sitting on a solid `CARD`, and the only rounded part is
 the 14 px at each corner.
 
 Two consequences worth knowing before changing anything here:
@@ -20,8 +20,8 @@ Two consequences worth knowing before changing anything here:
    does this) must clear it first, or it hands out images the new
    interpreter has never heard of and Tk raises "image doesn't exist".
 
-The palette is the old dashboard's, unchanged — the same greys, the same
-blue. Only the geometry and the spacing moved.
+The palette is LAMPLIGHT — skin\palette.py's values, spelled out here so
+the window is warm graphite and gold with the skin pack and without it.
 """
 from __future__ import annotations
 
@@ -34,70 +34,76 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFilter, ImageTk
 
 # ---------------------------------------------------------------- palette
-BG          = "#0d1017"   # the window, and the sidebar on it
-PANE        = "#10131a"   # the content pane      (the old window colour)
-CARD        = "#161b25"   # a card face           (kept)
-CARD_HI     = "#1b2130"   # a card face under the pointer
-LINE        = "#232a36"   # hairline border       (kept)
-FG          = "#e8ecf4"   # text                  (kept)
-DIM         = "#8b97ad"   # secondary text        (kept)
-FAINT       = "#5d6779"   # tertiary text         (kept)
-ACCENT      = "#2d6cdf"   # (kept)
-ACCENT_HI   = "#3d7cef"
-ACCENT_DOWN = "#2559bd"
-ACCENT_SOFT = "#1a2740"   # the accent at card weight, for selected states
-ACCENT_TEXT = "#8fb2f5"   # the accent at text weight, which #2d6cdf is not
-RED         = "#e0352b"   # (kept)
-AMBER       = "#e0a32b"   # (kept)
-GREEN       = "#33b877"
-VIOLET      = "#8b6cf0"
-TEAL        = "#2bb8c4"
-EDGE        = "#1e2634"   # a secondary button
-EDGE_HI     = "#273040"
-EDGE_DOWN   = "#1a212d"
-STROKE      = "#2a3242"
+# LAMPLIGHT, in the window's own hand. These are skin\palette.py's values
+# spelled out, and a test holds the two in step — so the window is warm
+# graphite and gold WITH the skin pack and WITHOUT it. Until 2026-09-19
+# this block was the old blue (COBALT: #0d1017 ground, #2d6cdf accent)
+# and `repaint` below turned it warm only when skia was here; a fresh
+# install has no skia, so every stranger's desk was the blue one while
+# the dot, the cards and the icon were the lamp. The one window that
+# disagreed with the mark was the window.
+BG          = "#14110c"   # the window, and the sidebar on it   L*  5.2
+PANE        = "#1c1813"   # the content pane                    L*  8.5
+CARD        = "#24201a"   # a card face                         L* 12.5
+CARD_HI     = "#2e2921"   # a card face under the pointer       L* 16.9
+LINE        = "#3a342a"   # hairline border                     L* 22.0
+FG          = "#f1ece2"   # text                       15.99:1 on BG
+DIM         = "#b2a896"   # secondary text              8.01:1
+FAINT       = "#7e7564"   # tertiary text               4.14:1 — labels, rules
+ACCENT      = "#e3a63c"   # the lamp
+ACCENT_HI   = "#f0b854"
+ACCENT_DOWN = "#c68c28"
+ACCENT_SOFT = "#332711"   # the accent at card weight, for selected states
+ACCENT_TEXT = "#f0ba5c"   # the accent at text weight — 10.66:1
+RED         = "#f1867a"
+AMBER       = "#e3a63c"   # = ACCENT, deliberately (skin\palette.py, rule 3)
+GREEN       = "#63c88c"
+VIOLET      = "#c3a2ec"
+TEAL        = "#7fc8c8"
+EDGE        = "#29241d"   # a secondary button
+EDGE_HI     = "#332d24"
+EDGE_DOWN   = "#1f1b15"
+STROKE      = "#3a342a"   # = LINE
 
-# The eight colours dashboard.py used to spell out inline. Their values
-# here are exactly the literals it had, so nothing about the window
-# changes by naming them — but a palette can now reach them, and a shade
-# that lives in one place can no longer drift from the ramp it belongs to.
-RULE        = "#1a202b"   # the hairline between the sidebar and the pane
-ACCENT_EDGE = "#2b3f66"   # the border of a selected sidebar row
-SIDE_IDLE   = "#141922"   # a sidebar row that is not selected
-SIDE_CARD   = "#131822"   # the state card at the foot of the sidebar
-QUOTE_BG    = "#1b2231"   # the quoted-transcript panel
-QUOTE_EDGE  = "#2c3648"
-TILE_EDGE   = "#2f3a4d"   # a tile or row under the pointer
-CHIP_BG     = "#1c2432"   # the small square behind a row's icon
+# The eight colours dashboard.py used to spell out inline. A palette can
+# reach them because they have names, and a shade that lives in one place
+# can no longer drift from the ramp it belongs to.
+RULE        = "#211d17"   # the hairline between the sidebar and the pane
+ACCENT_EDGE = "#5a431a"   # the border of a selected sidebar row
+SIDE_IDLE   = "#1a1610"   # a sidebar row that is not selected
+SIDE_CARD   = "#1c1813"   # the state card at the foot of the sidebar = PANE
+QUOTE_BG    = "#24201a"   # the quoted-transcript panel = CARD
+QUOTE_EDGE  = "#3a342a"   # = LINE
+TILE_EDGE   = "#5a5240"   # a tile or row under the pointer
+CHIP_BG     = "#292419"   # the small square behind a row's icon
 
-# Five names skin\palette.py already had and this module did not, so
-# `repaint` was silently skipping them — it only writes over names that
-# already exist here. Their values are the old palette's, like everything
-# above: this whole block is the app with skin\ deleted.
-LINE_HI     = "#2b3444"   # a border that is being interacted with
-FOCUS       = "#5d6779"   # a focus ring, where the accent is not it
-ACCENT_ON   = "#ffffff"   # text ON the accent fill
-COOL        = "#8fb2f5"   # informational: a link, the listening dot
-RECORDING   = "#e0352b"   # the dot while it is capturing
+# Five names skin\palette.py had before this module did, so `repaint` was
+# silently skipping them — it only writes over names that already exist
+# here.
+LINE_HI     = "#4e4737"   # a border that is being interacted with
+FOCUS       = "#e3a63c"   # the focus ring IS the accent
+ACCENT_ON   = "#1a1409"   # text ON the accent fill — 8.52:1 on the gold
+COOL        = "#8fc0f0"   # informational: a link, the listening dot
+RECORDING   = "#ff5b4e"   # the dot while it is capturing
 
 # The thirteen shades this file used to spell out INSIDE its own widget
 # constructors — the disabled button, the chip's three faces, the switch's
 # off track, the key cap, the scroller's thumb, the two pills. Every one of
 # them was invisible to a repalette, so the filter chips and every key cap
-# stayed on the old colours while the rest of the window changed. The
-# literals are unchanged; only their address is.
-BTN_OFF         = "#151a23"   # a disabled button's face
-BTN_OFF_EDGE    = "#1e2531"
-CHIP_ON_EDGE    = "#2f4d80"   # a chip that is on — ACCENT_SOFT plus an edge
-CHIP_OFF        = "#151b26"   # a chip, a pill and a pair pill at rest
-CHIP_OFF_EDGE   = "#222a36"
-CHIP_HOVER      = "#1b2230"
-CHIP_HOVER_EDGE = "#2c3648"
-TRACK_OFF       = "#2a3242"   # the switch's track when it is off
-KEY_BG          = "#1c2331"   # a key cap
-KEY_EDGE        = "#303a4c"
-KEY_HI          = "#243044"   # a key cap under the pointer
-THUMB           = "#2b3444"   # the scroller's thumb
+# stayed on the old colours while the rest of the window changed. They
+# have names now, and a test forbids a hex below the SKIN marker.
+BTN_OFF         = "#211d17"   # a disabled button's face — RULE, flat
+BTN_OFF_EDGE    = "#2b2620"
+CHIP_ON_EDGE    = "#5a431a"   # a chip that is on — ACCENT_SOFT plus an edge
+CHIP_OFF        = "#1f1b15"   # a chip, a pill and a pair pill at rest
+CHIP_OFF_EDGE   = "#332d24"
+CHIP_HOVER      = "#29241d"
+CHIP_HOVER_EDGE = "#4e4737"
+TRACK_OFF       = "#4e4737"   # the switch's track when it is off — LINE_HI
+KEY_BG          = "#29241d"   # a key cap
+KEY_EDGE        = "#4e4737"
+KEY_HI          = "#332d24"   # a key cap under the pointer
+THUMB           = "#4e4737"   # the scroller's thumb — LINE_HI
 
 # --- SKIN -----------------------------------------------------------------
 # One hook, and it has to be HERE rather than anywhere later: `from ui
@@ -108,8 +114,10 @@ THUMB           = "#2b3444"   # the scroller's thumb
 # without a line of its own.
 #
 # Delete skin\ and the import fails, the except swallows it, and the
-# palette above is what the app uses — which is exactly what it used before
-# any of this existed.
+# palette above is what the app uses — the same LAMPLIGHT since 2026-09-19,
+# so the hook is a no-op until the skin's palette moves again, and a copy
+# without skia (no skin pack: `repaint` declines there) is not the old
+# blue any more.
 try:
     import skin as _skin
     _skin.repaint(globals())
