@@ -257,8 +257,9 @@ WORDS = {
     "extras.key.have": "A Groq key is already stored on this PC — checking it…",
     "extras.key.testing": "Checking the key with Groq…",
     "extras.key.works": "Key works — cloud repair is on.",
-    "extras.key.refused": "Groq refused this key ({detail}) — check it and paste it again.",
-    "extras.key.offline": "Could not reach Groq ({detail}) — the key was kept; it is checked again when the cloud is used.",
+    "extras.key.refused": "Groq did not accept this key — check it and paste it again.",
+    "extras.key.offline": "Could not reach Groq right now — the key was kept and is checked the first time the cloud is used.",
+    "extras.key.notkey": "That does not look like a Groq key — keys start with gsk_ and hold only English letters and digits. Paste it again.",
     "extras.key.wait": "Turn the cloud switch off, or paste a working key.",
     "extras.key.checking": "Checking the key…",
     "extras.key.placeholder": "Paste your Groq API key here",
@@ -852,6 +853,13 @@ def english_step(kind: str, step: steps.Step, size: int) -> steps.Step:
 
 class KeyRefused(Exception):
     """Groq answered, and the answer was no (a 4xx): the key is wrong."""
+
+
+def looks_like_key(value: str) -> bool:
+    """What a Groq key can be: printable ASCII with no spaces. Not a
+    check of the key — Groq does that — a check that it CAN be one, so
+    Hebrew or a sentence pasted by mistake is said so at once."""
+    return bool(value) and value.isascii() and value.isprintable() and not any(ch.isspace() for ch in value)
 
 
 def key_probe() -> int:
@@ -1905,9 +1913,13 @@ class Wizard:
             have = bool(secretstore.get("groq"))
         except Exception:                                  # noqa: BLE001
             pass
+        # Two lines tall from the start, whatever it says: a note that
+        # grew from one line to two pushed the rows under it and the card
+        # face was never re-fitted, so the last row's help was cut off
+        # (his walk of the built installer, 2026-09-19 night).
         self.key_note = tk.Label(panel, text=WORDS["extras.key.have"] if have else WORDS["extras.cloud.key"],
-                                 bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9),
-                                 anchor="w", justify="left", wraplength=INNER - 110)
+                                 bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9), height=2,
+                                 anchor="nw", justify="left", wraplength=INNER - 110)
         self.key_note.pack(fill="x")
         row = tk.Frame(panel, bg=ui.CARD)
         row.pack(fill="x", pady=(6, 0))
@@ -1927,24 +1939,37 @@ class Wizard:
         if have:
             self._test_key()
 
+    def _key_say(self, key: str, colour: str, **fmt) -> None:
+        """One line under the row, and the card re-fitted around it —
+        the note's words change height (a wrap), the face must follow."""
+        self.key_note.configure(text=WORDS[key].format(**fmt), fg=colour)
+        self._fit(self.extras_card)
+
     def _save_key(self) -> None:
         """The pasted value into the store — never into a file — the
         field emptied either way, and the key checked with Groq at once
         (the owner, 2026-09-19: "a quick check that it really exists and
-        works")."""
+        works"). Something that cannot be a key — Hebrew, a space — is
+        said so in plain words and never stored: a non-ASCII value put in
+        the Authorization header came back as a codec error dressed as
+        "could not reach Groq" (his walk of the built installer)."""
         import secretstore
         value = self.key_field.get().strip()
         self.key_box.set("")                 # emptied either way; the placeholder returns
         if not value:
-            self.key_note.configure(text=WORDS["extras.key.empty"], fg=ui.AMBER)
+            self._key_say("extras.key.empty", ui.AMBER)
+            return
+        if not looks_like_key(value):
+            del value
+            self._key_say("extras.key.notkey", ui.RED)
             return
         try:
             secretstore.set("groq", value)
         except Exception as e:                             # noqa: BLE001
-            self.key_note.configure(text=WORDS["extras.key.failed"].format(error=e), fg=ui.RED)
+            self._key_say("extras.key.failed", ui.RED, error=e)
             return
         del value
-        self.key_note.configure(text=WORDS["extras.key.stored"], fg=ui.DIM)
+        self._key_say("extras.key.stored", ui.DIM)
         self._test_key()
 
     def _test_key(self) -> None:
@@ -1957,7 +1982,8 @@ class Wizard:
         def work() -> None:
             try:
                 count = key_probe()
-            except KeyRefused as e:
+            except (KeyRefused, UnicodeEncodeError) as e:
+                # a 4xx, or a stored value no header can carry: not a key
                 detail = str(e)               # bound now: `e` is gone once the clause ends
                 self._later(lambda: self._key_tested("bad", detail))
             except Exception as e:                         # noqa: BLE001
@@ -1973,9 +1999,10 @@ class Wizard:
         or paste a key" only makes sense while nothing is there."""
         if self.name != "extras" or getattr(self, "key_note", None) is None:
             return
+        log.info("setup: the Groq key test said %s (%s)", word, detail)
         if word == "ok":
             self._key_state = "ok"
-            self.key_note.configure(text=WORDS["extras.key.works"], fg=ui.GREEN)
+            self._key_say("extras.key.works", ui.GREEN)
         elif word == "bad":
             self._key_state = "bad"
             try:
@@ -1983,12 +2010,13 @@ class Wizard:
                 secretstore.delete("groq")
             except Exception:                              # noqa: BLE001
                 pass
-            self.key_note.configure(text=WORDS["extras.key.refused"].format(detail=detail), fg=ui.RED)
+            self._key_say("extras.key.refused", ui.RED)
         else:
             # no answer from Groq: the key stays, and so does the person
-            # — the cloud pass checks it again on its first use
+            # — the cloud pass checks it again on its first use; the
+            # reason is in the log, not on the card (plain words)
             self._key_state = "ok"
-            self.key_note.configure(text=WORDS["extras.key.offline"].format(detail=detail), fg=ui.AMBER)
+            self._key_say("extras.key.offline", ui.AMBER)
         self._extras_gate()
 
     def _extras_gate(self) -> None:

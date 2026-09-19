@@ -33940,13 +33940,45 @@ def test_the_cloud_switch_is_the_consent_and_next_waits_for_a_working_key():
 
             w._save_key()                                    # nothing pasted
             assert store == {} and "paste the key first" in w.key_note.cget("text")
+            # THE NOTE IS TWO LINES TALL FROM THE START and the card is
+            # re-fitted after every message (his walk of the built
+            # installer, 2026-09-19 night: a note that wrapped pushed the
+            # rows down under a face that was never re-fitted, and the
+            # last row was cut off)
+            assert int(w.key_note.cget("height")) == 2 and w.key_note.cget("anchor") == "nw"
+            w.root.update_idletasks()
+            assert w.extras_card.h == w.extras_card.body.winfo_reqheight() + 2 * w.extras_card.pad
+            # something that cannot be a key — Hebrew, a sentence — is said
+            # so in plain words and never stored (the same walk: Hebrew in
+            # the Authorization header came back as a codec error dressed
+            # as "could not reach Groq")
+            probe["answer"] = 3
+            w.key_field.insert(0, "שלום")
+            w._save_key()
+            settle(w, 0.3)
+            assert store == {} and w.key_note.cget("text") == firstrun.WORDS["extras.key.notkey"]
+            assert not w.next._enabled and "gsk_" in firstrun.WORDS["extras.key.notkey"]
+            for bad in ("a key with spaces", "", "gsk\tkey"):
+                assert not firstrun.looks_like_key(bad), bad
+            assert firstrun.looks_like_key("gsk_Abc123_xyz")
             probe["answer"] = firstrun.KeyRefused("HTTP 401")
             w.key_field.insert(0, "gsk_wrong_key_xxxxxxxxxxxxxxxxxxxxxx")
             w._save_key()
             settle(w, 1.0)
             assert "groq" not in store, "a refused key stayed in the store"
-            assert "refused" in w.key_note.cget("text") and not w.next._enabled
+            assert w.key_note.cget("text") == firstrun.WORDS["extras.key.refused"] and not w.next._enabled
             assert w.key_field.get() == "", "the field is emptied after Save"
+            # plain words on the card: no Python error text, the reason
+            # goes to the log
+            for key in ("extras.key.refused", "extras.key.offline"):
+                assert "{detail}" not in firstrun.WORDS[key] and "(" not in firstrun.WORDS[key], key
+            probe["answer"] = UnicodeEncodeError("latin-1", "x", 0, 1, "bad")
+            w.key_field.insert(0, "gsk_stored_elsewhere")
+            w._save_key()
+            settle(w, 1.0)
+            assert "groq" not in store and w.key_note.cget("text") == firstrun.WORDS["extras.key.refused"]
+            w.root.update_idletasks()
+            assert w.extras_card.h == w.extras_card.body.winfo_reqheight() + 2 * w.extras_card.pad
 
             probe["answer"] = 3
             w.key_field.insert(0, "gsk_test_not_a_real_key_1234567890")
