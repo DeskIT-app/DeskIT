@@ -182,8 +182,11 @@ def hint_run(card) -> bool:
     composite per-pixel alpha over the desktop at all — so returning False
     here is a downgrade in looks and nothing else. That is the point of
     the folder being deletable.
+
+    Taken without skia too (`lite()`), since 2026-09-19: the card is a
+    Pillow picture on a layered window.
     """
-    if not on():
+    if not (on() or lite()):
         return False
     try:
         from .hint import run
