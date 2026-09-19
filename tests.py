@@ -32346,7 +32346,12 @@ def test_packs_lock_is_the_shipped_list():
     assert rec is not None and [w.name for w in rec.wheels] == ["av"], "PyAV is the Recording pack (13.4)"
     assert any("GPL" in label for label, _u in rec.licenses), rec.licenses
     base = (REPO / "requirements.lock").read_text("utf-8")
-    assert "\nav==" not in base and "nvidia-" not in base and "skia-python" not in base
+    assert "\nav==" not in base and "nvidia-" not in base
+    # skia-python is in BOTH since 2026-09-19: the base wheelhouse ships the
+    # skin (the owner's desk look on every install); the pack entry stays
+    # for a copy that lost it, and its pinned wheel is the base's own
+    skin = packs.pack("skin")
+    assert skin is not None and f"skia-python=={skin.wheels[0].version}" in base, "one skia, two lists"
     if not_here:
         print(f"        (not installed in this venv, versions not compared: "
               f"{', '.join(not_here)})")
@@ -35041,8 +35046,11 @@ def test_deskit_pyw_is_the_entry_and_the_window_is_relaunched_by_layout():
 # These hold the inputs the build reads from the repo honest; the git
 # half (what the archive contains) is dev/tests_ops.py's.
 
+# skia-python left this set on 2026-09-19: the owner saw the Tk fallbacks on
+# a fresh install ("terrible") and asked why it was not his desk's look —
+# the skin ships in the base now (10.9 MB); the Skin pack is a no-op there.
 LOCK_EXCLUDED = ("av", "keyboard", "nvidia-cublas-cu12", "nvidia-cudnn-cu12",
-                 "nvidia-cuda-nvrtc-cu12", "skia-python", "google-genai")
+                 "nvidia-cuda-nvrtc-cu12", "google-genai")
 
 
 def _requirement_names(text: str) -> list[str]:
@@ -35057,8 +35065,8 @@ def _requirement_names(text: str) -> list[str]:
 
 
 def test_requirements_base_set():
-    """requirements.txt is the base set of 10.5: pillow and comtypes named
-    (they were only ever pulled in sideways), the CUDA runtimes, skia,
+    """requirements.txt is the base set of 10.5: pillow, comtypes and, since
+    2026-09-19, skia-python named; the CUDA runtimes,
     the keyboard package, and — since the REST port — google-genai gone
     (packs, a rename, gemini_pool.Client). httpx is still in the lock as
     huggingface-hub's dependency; nothing of ours imports it
