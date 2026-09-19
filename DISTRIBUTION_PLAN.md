@@ -2456,7 +2456,7 @@ marker holds the lock's revision / every wheel's version) is not offered; a fail
 or the wizard's, never a failed install; `WizardSilent` (winget, the smoke test) and `/NODOWNLOAD`
 download nothing. D13 and D24 hold: nothing is bundled, every byte is fetched with the person's tick
 and the licence in view. The wizard's computer page then has nothing to offer and is skipped
-(firstrun.Wizard._hidden). Measured: the real 1.62 GB model, placed and adopted, 2.2 s.
+(firstrun.Wizard._hidden). Measured: the real 1.62 GB model, placed and adopted, 2.2 s; the script compiled with Inno Setup 6.7.3 on the owner's PC and the page photographed on the hidden desktop in both languages the same night. Still to walk for real: the download, the placing and the adopt step inside one install.
 
 ## 10.5 Sizes
 

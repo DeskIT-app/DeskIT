@@ -6,7 +6,11 @@ PrintWindow, then closes it with WM_CLOSE and answers the "exit setup?"
 question with its Yes button. The owner's screen never sees a window
 (memory: hidden desktop, every driver and screenshot).
 
-    python dev/shot_installer.py <setup.exe> <out.png> [/LANG=hebrew]
+    python dev/shot_installer.py <setup.exe> <out.png> [--next N] [/LANG=hebrew]
+
+--next N presses the wizard's Next (Install) button N times first, so a
+later page can be photographed: 1 is the Downloads page (10.4), which
+starts nothing until ITS Next is pressed — this driver never presses it.
 """
 from __future__ import annotations
 
@@ -70,9 +74,29 @@ def _shot(hwnd: int, out: Path) -> None:
     g.DeleteObject(bmp); g.DeleteDC(mem); u.ReleaseDC(hwnd, hdc)
 
 
+def _press(hwnd: int, words: tuple[str, ...]) -> bool:
+    """BM_CLICK the wizard's button whose caption starts with one of
+    `words` (the & of the accelerator stripped); the buttons are direct
+    children of the wizard form."""
+    child = u.FindWindowExW(hwnd, 0, "TNewButton", None)
+    while child:
+        n = u.GetWindowTextLengthW(child); buf = ctypes.create_unicode_buffer(n + 1)
+        u.GetWindowTextW(child, buf, n + 1)
+        if buf.value.replace("&", "").strip().lower().startswith(words):
+            u.SendMessageW(child, BM_CLICK, 0, 0)
+            return True
+        child = u.FindWindowExW(hwnd, child, "TNewButton", None)
+    return False
+
+
 def main(argv: list[str]) -> int:
     exe, out = Path(argv[0]), Path(argv[1])
     extra = argv[2:]
+    nexts = 0
+    if "--next" in extra:
+        at = extra.index("--next")
+        nexts = int(extra[at + 1])
+        extra = extra[:at] + extra[at + 2:]
     p = subprocess.Popen([str(exe), "/SUPPRESSMSGBOXES", *extra])
     hwnd = 0
     for _ in range(300):                       # up to 30 s for the wizard to appear
@@ -83,11 +107,15 @@ def main(argv: list[str]) -> int:
     if not hwnd:
         p.kill(); print("no wizard window"); return 1
     time.sleep(1.5)                            # fonts and pictures settle
+    for _ in range(nexts):
+        if not _press(hwnd, ("next", "install", "הבא", "התקנה")):
+            print("no Next button"); break
+        time.sleep(1.0)
     _shot(hwnd, out)
     print(f"wrote {out}")
     u.PostMessageW(hwnd, WM_CLOSE, 0, 0)       # "Exit Setup?" — answer Yes
     for _ in range(50):
-        q = _find("Exit Setup", p.pid) or _find("לצאת", p.pid)
+        q = _find("Exit Setup", p.pid) or _find("לצאת", p.pid) or _find("יציאה", p.pid)
         if q:
             yes = u.FindWindowExW(q, 0, "Button", None)
             while yes:

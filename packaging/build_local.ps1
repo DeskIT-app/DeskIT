@@ -93,6 +93,11 @@ Set-Content -Path (Join-Path $Stage "CHANNEL") -Value github -NoNewline -Encodin
 & .venv\Scripts\python.exe dev\make_downloads_iss.py --check
 if ($LASTEXITCODE) { throw "packaging\downloads.iss is stale: run dev\make_downloads_iss.py" }
 $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+if (-not (Test-Path $iscc)) {
+    # the per-user install (`winget install JRSoftware.InnoSetup --scope user`,
+    # this PC since 2026-09-19): no admin, under the user's Programs
+    $iscc = "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+}
 if (Test-Path $iscc) {
     $core = ($Version -split '-')[0]
     $beta = if ($Version -match '-beta\.(\d+)$') { $Matches[1] } else { '0' }
