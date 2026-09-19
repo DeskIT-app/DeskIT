@@ -78,6 +78,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+import queue
 import re
 import sys
 import threading
@@ -209,13 +210,17 @@ WORDS = {
     "step.paused": "Paused. The next start continues from the same point.",
     "step.failed": "The download failed ({why}). DeskIT asks again at the next start.",
     "say.title": "Say one sentence",
-    "say.sub": ("Press the button, talk for three seconds, and read what came out. "
-                "The model loads once, the first time — a few seconds."),
+    "say.sub": ("Two steps. First load the speech model — once, a few seconds. "
+                "Then press Record, talk for three seconds, and read what came out."),
+    "say.load": "Load the speech model",
+    "say.loading_model": "Loading the speech model… a few seconds, once. Every sentence after this is fast.",
+    "say.loaded_ready": "Model loaded in {seconds:.1f} s — now press Record and say a sentence.",
+    "say.load_failed": "The model could not load: {error}",
     "say.waiting": "The model is still downloading — the bar above. You can skip and try from the desk.",
     "say.placeholder": "Your sentence appears here.",
     "say.button": "Record 3 seconds",
     "say.recording": "Recording…",
-    "say.loading": "Loading the model and transcribing…",
+    "say.loading": "Transcribing…",
     "say.nothing": "Nothing was captured.",
     "say.quiet": "Silence. Go back and check the bar.",
     "say.heard": "This is what it heard — decoded in {seconds:.1f} s",
@@ -240,7 +245,14 @@ WORDS = {
                    "later in Settings."),
     "extras.cloud": "Fix misheard words with a free cloud model (text only)",
     "extras.cloud.help": "Needs your own free Groq key; the text of what you said leaves this PC.",
-    "extras.cloud.key": "Consent recorded — add your free Groq key under Settings > Privacy to switch it on.",
+    "extras.cloud.key": "Consent recorded. Paste your free Groq key below and the fix is on.",
+    "extras.key.have": "A Groq key is already stored on this PC — the fix is on.",
+    "extras.key.placeholder": "Paste your Groq API key here",
+    "extras.key.save": "Save key",
+    "extras.key.get": "No key yet? Get a free one at console.groq.com/keys — a minute, no card needed.",
+    "extras.key.stored": "Stored in Windows Credential Manager. Cloud repair is on.",
+    "extras.key.empty": "Nothing to save — paste the key first.",
+    "extras.key.failed": "Could not store the key: {error}",
     "extras.awake": "Keep this PC awake while DeskIT runs",
     "extras.awake.help": "Stops Windows from sleeping while it runs; Settings > The app turns it off.",
     "extras.updates": "Check for updates weekly",
@@ -899,6 +911,7 @@ class Wizard:
         self._said_loaded = False
         self._backend = None
         self._closing = False
+        self._deferred: queue.Queue = queue.Queue()   # worker threads' hand-backs, drained by the tick
         self._capturing: str | None = None
         self._pending = {"mod": None, "name": None}
         self._key_binds: tuple = ()
@@ -1519,8 +1532,14 @@ class Wizard:
         if self._model_missing():
             self._line(WORDS["say.waiting"], colour=ui.AMBER, size=10,
                        pady=(0, 12))
-        self.say = ui.Button(self.body, WORDS["say.button"], self._record,
-                             bg=ui.BG, primary=True, w=200, h=44)
+        # One primary button, two jobs in order: load the model, then
+        # record. People do not read the small print (the owner, 1.1.1
+        # walkthrough, 2026-09-19): a Record that silently spent five
+        # seconds loading read as "transcription is slow".
+        self.say = ui.Button(self.body,
+                             WORDS["say.button"] if self._backend is not None
+                             else WORDS["say.load"],
+                             self._say_action, bg=ui.BG, primary=True, w=220, h=44)
         self.say.pack(anchor="w")
         self._foot(False)
         self.result_card = self._card(pad=18)
@@ -1721,6 +1740,9 @@ class Wizard:
                 lambda _v=None, k=key: self._extra_flipped(k),
                 parent=card.body, bg=ui.CARD, last=i == len(rows) - 1)
         self._fit(card)
+        self.key_panel = None
+        if self.extras.get("cloud"):
+            self._show_key_panel()
 
     def _extra_flipped(self, key: str) -> None:
         on = self.switches[key].get()
@@ -1750,7 +1772,60 @@ class Wizard:
             except Exception:                              # noqa: BLE001
                 pass
         if granted:
-            self.note.configure(text=WORDS["extras.cloud.key"], fg=ui.DIM)
+            self._show_key_panel()
+
+    def _show_key_panel(self) -> None:
+        """The Groq key, asked for where the switch is (the owner, 1.1.1
+        walkthrough: "make it clickable, open a field for the key, and a
+        line that sends people to Groq's site"): a masked field, Save,
+        and the way to a free key for anyone who has none. The value
+        goes to secretstore (Credential Manager) and nowhere else."""
+        if self.name != "extras" or getattr(self, "key_panel", None) is not None:
+            return
+        import secretstore
+        panel = tk.Frame(self.body, bg=ui.BG)
+        panel.pack(fill="x", pady=(12, 0))
+        self.key_panel = panel
+        have = False
+        try:
+            have = bool(secretstore.get("groq"))
+        except Exception:                                  # noqa: BLE001
+            pass
+        self.key_note = tk.Label(panel, text=WORDS["extras.key.have"] if have else WORDS["extras.cloud.key"],
+                                 bg=ui.BG, fg=ui.GREEN if have else ui.DIM, font=(ui.UI, 10),
+                                 anchor="w", justify="left", wraplength=INNER)
+        self.key_note.pack(fill="x")
+        row = tk.Frame(panel, bg=ui.BG)
+        row.pack(fill="x", pady=(8, 0))
+        self.key_field = tk.Entry(row, show="\u2022", bg=ui.CARD, fg=ui.FG,
+                                  insertbackground=ui.FG, relief="flat",
+                                  font=(ui.UI, 11), highlightthickness=1,
+                                  highlightbackground=ui.LINE, highlightcolor=ui.ACCENT)
+        self.key_field.pack(side="left", fill="x", expand=True, ipady=7, padx=(0, 10))
+        self.key_field.bind("<Return>", lambda _e: self._save_key())
+        self.key_save = ui.Button(row, WORDS["extras.key.save"], self._save_key,
+                                  bg=ui.BG, primary=True, w=120, h=38)
+        self.key_save.pack(side="left")
+        self._link(WORDS["extras.key.get"], "https://console.groq.com/keys",
+                   parent=panel).pack(fill="x", pady=(8, 0))
+        self.key_field.focus_set()
+
+    def _save_key(self) -> None:
+        """The pasted value into the store — never into a file — and the
+        field emptied either way."""
+        import secretstore
+        value = self.key_field.get().strip()
+        self.key_field.delete(0, "end")
+        if not value:
+            self.key_note.configure(text=WORDS["extras.key.empty"], fg=ui.AMBER)
+            return
+        try:
+            secretstore.set("groq", value)
+        except Exception as e:                             # noqa: BLE001
+            self.key_note.configure(text=WORDS["extras.key.failed"].format(error=e), fg=ui.RED)
+            return
+        del value
+        self.key_note.configure(text=WORDS["extras.key.stored"], fg=ui.GREEN)
 
     def _ask_consent(self, kind: str, answer) -> None:
         """The consent card's own picture (consent_card.flat) in a small
@@ -1822,8 +1897,13 @@ class Wizard:
         top.bind("<Escape>", lambda _e: finish(False))
         top.protocol("WM_DELETE_WINDOW", lambda: finish(False))
         try:
+            # In front and kept there: on the owner's second monitor
+            # (2026-09-19, negative x) the card opened BEHIND the wizard
+            # with its grab held — "no button responds".
+            top.lift()
+            top.attributes("-topmost", True)
             top.grab_set()
-            top.focus_set()
+            top.focus_force()
         except Exception:                                  # noqa: BLE001
             pass
         self.consent_window = top
@@ -1964,6 +2044,7 @@ class Wizard:
         page exists for — and the sign-in's outcome on the account page."""
         if self._closing:
             return
+        self._drain()
         if self.name == "account":
             self._account_poll()
         try:
@@ -1989,6 +2070,48 @@ class Wizard:
             log.debug("the wizard's tick tripped", exc_info=True)
         self.root.after(60, self._tick)
 
+    def _say_action(self) -> None:
+        """The button's job right now: the model first, then the sentence."""
+        if self._backend is None:
+            self._load_model()
+        else:
+            self._record()
+
+    def _load_model(self) -> None:
+        """The app's own backend, loaded on its own thread while the page
+        says so; on landing the same button becomes Record."""
+        if self._busy:
+            return
+        self._busy = True
+        self.say.enable(False)
+        self.status.configure(text=WORDS["say.loading_model"], fg=ui.DIM)
+
+        def work():
+            started = time.monotonic()
+            try:
+                from transcribers import get_transcriber
+                backend = get_transcriber(self.cfg)
+            except Exception as e:                        # noqa: BLE001
+                log.info("wizard: the model did not load: %r", e, exc_info=True)
+                return self._later(lambda: self._model_landed(None, 0.0, str(e) or e.__class__.__name__))
+            load_s = time.monotonic() - started
+            reported = _reported(backend, LOAD_FIELDS)
+            self._later(lambda: self._model_landed(backend, reported or load_s, ""))
+
+        threading.Thread(target=work, daemon=True, name="setup-load").start()
+
+    def _model_landed(self, backend, load_s: float, error: str) -> None:
+        self._busy = False
+        if backend is None:
+            self.status.configure(text=WORDS["say.load_failed"].format(error=error), fg=ui.RED)
+            self.say.enable(True)
+            return
+        self._backend = backend
+        self._said_loaded = True
+        self.status.configure(text=WORDS["say.loaded_ready"].format(seconds=load_s), fg=ui.GREEN)
+        self.say.configure_text(WORDS["say.button"])
+        self._say_ready()
+
     def _record(self) -> None:
         if self._busy:
             return
@@ -2009,11 +2132,23 @@ class Wizard:
         threading.Thread(target=work, daemon=True, name="setup-test").start()
 
     def _later(self, fn) -> None:
+        """Run `fn` on the Tk thread. A queue the tick drains, not
+        root.after from the worker: Tk delivers a cross-thread after()
+        only inside mainloop, so a test pumping update() never saw the
+        model land (2026-09-19); the queue is delivered either way."""
         if not self._closing:
+            self._deferred.put(fn)
+
+    def _drain(self) -> None:
+        while True:
             try:
-                self.root.after(0, fn)
-            except Exception:
-                pass
+                fn = self._deferred.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                fn()
+            except Exception:                              # noqa: BLE001
+                log.debug("a deferred call in the wizard tripped", exc_info=True)
 
     def _on_result(self, heard: Heard) -> None:
         def land():

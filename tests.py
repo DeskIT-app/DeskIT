@@ -33313,6 +33313,72 @@ def test_the_wizard_offers_what_this_copy_lacks():
     assert firstrun.microphone_allowed() in (True, False, None)
 
 
+def test_the_sentence_page_loads_the_model_before_it_records():
+    """Two jobs on one button, in order: "Load the speech model" first —
+    the status says it is loading and, on landing, how long it took —
+    and only then "Record 3 seconds". People do not read the small print
+    (the owner's 1.1.1 walkthrough, 2026-09-19): a Record that spent five
+    seconds loading read as "transcription is slow"."""
+    import dataclasses
+
+    import firstrun
+    import transcribers
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    _d, s, t = _layer_files()
+    loads: list[str] = []
+
+    class Fake:
+        timing = {"load_s": 4.2}
+
+        def transcribe(self, wav, language=None):
+            time.sleep(0.05)
+            return "שלום"
+
+    def build(_cfg):
+        loads.append("load")
+        time.sleep(0.05)
+        return Fake()
+
+    def pump(w, until, seconds=6.0):
+        deadline = time.monotonic() + seconds
+        while not until() and time.monotonic() < deadline:
+            try:
+                w.root.update()
+            except Exception:                                # noqa: BLE001
+                break
+            time.sleep(0.02)
+
+    offers = {"portable": True}
+    facts = {"tier": "gpu", "vram_mb": 16311, "cuda_devices": 1, "driver_ok": True}
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(transcribers, "get_transcriber", build):
+        try:
+            w = firstrun.Wizard(cfg, facts=facts, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            w.page = firstrun.PAGES.index("say")
+            w._show_page()
+            assert w.name == "say" and w.say.itemcget(w.say._label, "text") == firstrun.WORDS["say.load"]
+            w.listener.record = lambda seconds: (RIFF, seconds)   # no microphone here
+            w._say_action()                                   # job one: the model
+            assert loads == ["load"] or w._busy
+            pump(w, lambda: w._backend is not None)
+            assert loads == ["load"] and w._backend is not None
+            assert w.say.itemcget(w.say._label, "text") == firstrun.WORDS["say.button"], w.say.itemcget(w.say._label, "text")
+            assert w.status.cget("text").startswith("Model loaded in 4.2 s"), w.status.cget("text")
+            w._say_action()                                   # job two: the sentence
+            pump(w, lambda: w._sample == "שלום")
+            assert loads == ["load"], "the model was loaded once"
+            assert w.status.cget("text").startswith("This is what it heard — decoded in"), w.status.cget("text")
+        finally:
+            w._closing = True
+            w.root.destroy()
+
+
 def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
     """The seven pages walked with Next: the queue pressed on page 2 runs
     the model, then the pack, then the detector, one after the other,
@@ -33491,7 +33557,25 @@ def test_the_wizard_asks_the_consent_card_before_the_cloud_switch_stays_on():
             row = privacy.consent("cloud_text")
             assert row is not None and row["text_version"] == card["text_version"], row
             assert w.extras["cloud"] is True and w.switches["cloud"].get() is True
-            assert "Groq key" in w.note.cget("text")
+            # granted: the key is asked for right there — a masked field,
+            # Save, and the way to a free key (the owner's 1.1.1 walkthrough)
+            assert w.key_panel is not None and w.key_panel.winfo_exists()
+            assert "Groq key" in w.key_note.cget("text"), w.key_note.cget("text")
+            assert w.key_field.cget("show") == "•", "the key is masked while typed"
+            import tkinter as tk
+            links = [c for c in w.key_panel.winfo_children()
+                     if isinstance(c, tk.Label) and "console.groq.com" in c.cget("text")]
+            assert links, "no way to a free key"
+            import secretstore
+            stored: list = []
+            with _patched(secretstore, "set", lambda name, value: stored.append((name, value))):
+                w._save_key()
+                assert stored == [] and "paste the key first" in w.key_note.cget("text")
+                w.key_field.insert(0, "gsk_test_not_a_real_key_1234567890")
+                w._save_key()
+            assert stored == [("groq", "gsk_test_not_a_real_key_1234567890")], stored
+            assert w.key_field.get() == "", "the field is emptied after Save"
+            assert "Credential Manager" in w.key_note.cget("text")
         finally:
             privacy.withdraw("cloud_text")
             try:
