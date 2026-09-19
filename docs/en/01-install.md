@@ -44,12 +44,26 @@ Store build (later) is the way, or Windows lets you turn Smart App Control off o
 
 - Installs for your user only: no UAC prompt, no administrator password.
 - Speaks Hebrew or English by your Windows display language, with no question; only a
-  Windows in a third language is asked which of the two to use. Two pages: **Install**, then
-  **Finish** with "Start DeskIT now" ticked. The app itself is English chrome with Hebrew text.
-- Puts the program in `%LOCALAPPDATA%\Programs\DeskIT` and a shortcut in the Start menu.
-- Starts DeskIT at the end; the first run opens the wizard ([chapter 2](02-first-run)).
-- Never installs a speech model: that is 1.62 GB, downloaded on the first run with your
-  consent, into `%LOCALAPPDATA%\DeskIT\models`.
+  Windows in a third language is asked which of the two to use. Three pages: **Install**,
+  **Downloads**, then **Finish** with "Start DeskIT now" ticked. The app itself is English
+  chrome with Hebrew text.
+- **Downloads**: what this PC still needs, each a ticked box with its size and its licence
+  linked under it — the Hebrew speech model (1.62 GB, Apache-2.0); on a PC with an NVIDIA card
+  and a driver from 545.84, NVIDIA's CUDA libraries (1.37 GB, NVIDIA's licence) and, with 6 GB
+  of video memory, the English detector (1.62 GB, MIT); and screen recording (28 MB, PyAV with
+  a GPL build of FFmpeg). Keeping a box ticked is your acceptance of its licence; untick
+  anything and the first-run wizard offers it instead. The files come from the same addresses,
+  checked against the same SHA-256s, that DeskIT itself uses — nothing is inside the
+  installer — and a download that fails asks to retry or leaves the item to the wizard. It
+  never fails the install. A silent install (winget, `/VERYSILENT`) and `/NODOWNLOAD` download
+  nothing.
+- Puts the program in `%LOCALAPPDATA%\Programs\DeskIT`, the downloads in
+  `%LOCALAPPDATA%\DeskIT\models` and `\packs`, and a shortcut in the Start menu and on the
+  desktop.
+- Starts DeskIT at the end; the first run opens the wizard ([chapter 2](02-first-run)), whose
+  computer page is skipped when the downloads all landed.
+- Never bundles a speech model or NVIDIA's libraries: they are downloaded, with your tick,
+  by the installer — or, if you unticked them, by the wizard on the first run.
 
 ## Updating
 

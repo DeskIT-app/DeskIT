@@ -393,6 +393,11 @@ NESTED_HOTKEYS = {
 # The right-hand column of a settings row: a switch, a menu, or a field.
 CONTROL_W = 236
 ENTRY_W = 150
+#: The folder settings get a picker beside their field (the owner,
+#: 2026-09-19 evening: "it opens my whole computer and I mark where I
+#: want" — he could not find where recordings go, nor type a path).
+FOLDER_SETTINGS = frozenset({"capture.folder", "capture.clip_folder"})
+BROWSE_W = 92
 # A field is drawn as a ui.Field — a rounded Pillow face with the Entry
 # flat inside it — at exactly the height ui.Dropdown is, because the two
 # alternate down the same column and a field one pixel shorter than the
@@ -1742,7 +1747,21 @@ class Dashboard:
 
     def _show(self, name: str) -> None:
         """Swap screens. Everything the old one registered goes with it, so
-        _refresh has to ask for a widget rather than assume one."""
+        _refresh has to ask for a widget rather than assume one.
+
+        THE SHEET IS OFF THE WINDOW while the old screen is torn down and
+        the new one built, and comes back whole with the slide. Built in
+        the open, every `update_idletasks()` a builder needs for its
+        arithmetic (_settle_page, _paint_doors, the scrollers) also
+        PAINTED the half-built page — Home showed seven of those frames
+        per switch, which is the "everything jumps on top of each other"
+        he saw on 2026-09-19. Unmapped, the same calls lay out and paint
+        nothing; the pixels of all seven screens came out identical
+        (measured that night), and Home's switch went from 0.34 s to
+        0.22 s of frozen window because the paints were most of it.
+        The floor under that is Tk's own: one OS window per widget,
+        1-2 ms each on this PC to create — 92 of them on Keys.
+        """
         if self._landing_up and name != "Landing":
             # Nothing but the landing until a sign-in: not a door on
             # Home, not a link in a note, not a stale `after`.
@@ -1759,23 +1778,30 @@ class Dashboard:
             except Exception:
                 pass
             self._slide_after = None
-        for child in self.sheet.winfo_children():
-            child.destroy()
-        keep = {k: self.parts[k] for k in
-                ("hint", "lamp", "state", "uptime", "chip", "run",
-                 "bar_screens", "stop_bar", "tests_stop")
-                if k in self.parts}
-        self.parts = keep
-        self._hide_toast()
-        {"Home": self._screen_home,
-         "Corrections": self._screen_corrections,
-         "Problems": self._screen_problems,
-         "Said": self._screen_said,
-         "Keys": self._screen_keys,
-         "Settings": self._screen_settings,
-         "Network": self._screen_network,
-         "Landing": self._screen_landing}[name]()
-        self._refresh(self.status or None)
+        self.sheet.place_forget()
+        try:
+            for child in self.sheet.winfo_children():
+                child.destroy()
+            keep = {k: self.parts[k] for k in
+                    ("hint", "lamp", "state", "uptime", "chip", "run",
+                     "bar_screens", "stop_bar", "tests_stop")
+                    if k in self.parts}
+            self.parts = keep
+            self._hide_toast()
+            {"Home": self._screen_home,
+             "Corrections": self._screen_corrections,
+             "Problems": self._screen_problems,
+             "Said": self._screen_said,
+             "Keys": self._screen_keys,
+             "Settings": self._screen_settings,
+             "Network": self._screen_network,
+             "Landing": self._screen_landing}[name]()
+            self._refresh(self.status or None)
+        except BaseException:
+            # A builder that died must not leave a blank window behind:
+            # whatever it managed to draw goes back on, in place.
+            self.sheet.place(x=0, y=0)
+            raise
         self._slide_in()
 
     def _slide_in(self, step: int = 0) -> None:
@@ -8192,9 +8218,21 @@ class Dashboard:
             # with a one-pixel highlight, and it was the only square thing
             # left in a window of rounded faces. ui.Field says the rest,
             # including why its disabled colours are set.
-            field = ui.Field(card, _shown(value), w=ENTRY_W, h=ENTRY_H,
+            # A folder gets a picker too: the field for the path as it
+            # stands, [Browse…] for the dialog that walks the disk.
+            folder = setting.path in FOLDER_SETTINGS
+            x = right
+            if folder:
+                browse = ui.Button(card, "Browse…",
+                                   lambda s=setting: self._browse_folder(s),
+                                   w=BROWSE_W, h=ENTRY_H, quiet=True, bg=ui.CARD)
+                card.create_window(right, y - 1, window=browse, anchor="ne")
+                self.parts.setdefault("browse", {})[setting.path] = browse
+                x = right - BROWSE_W - 8
+            field = ui.Field(card, _shown(value),
+                             w=ENTRY_W + (60 if folder else 0), h=ENTRY_H,
                              bg=ui.CARD)
-            card.create_window(right, y - 1, window=field, anchor="ne")
+            card.create_window(x, y - 1, window=field, anchor="ne")
             field.bind_entry("<Return>", lambda _e, s=setting, f=field:
                              self._entry_done(s, f))
             field.bind_entry("<FocusOut>", lambda _e, s=setting, f=field:
@@ -9498,6 +9536,28 @@ class Dashboard:
 
     # -- changing one
 
+    def _browse_folder(self, setting) -> None:
+        """Windows' own folder dialog for a folder setting, opened where
+        the setting points now; the choice goes to the file through the
+        same road a typed path takes."""
+        from tkinter import filedialog
+        current = self.parts["values"].get(setting.path, setting.value)
+        try:
+            start = paths.resolve_folder(str(current or "captures"))
+        except Exception:                                    # noqa: BLE001
+            start = paths.DATA_DIR
+        chosen = filedialog.askdirectory(parent=self.root, title=settings_mod.label_for(setting.path),
+                                         initialdir=str(start), mustexist=False)
+        if not chosen:
+            return
+        chosen = str(Path(chosen))
+        for kind, widget in self.parts.get("rows", {}).get(setting.path, []):
+            if kind == "entry":
+                widget.set(chosen)
+                self._entry_done(setting, widget)
+                return
+        self._apply_setting(setting, chosen)
+
     def _entry_done(self, setting, entry) -> None:
         """Return, or the focus leaving: what is in the field goes to the
         file if it parses as the kind the file holds and differs from
@@ -10337,10 +10397,22 @@ class Dashboard:
     # ------------------------------------------------------------ shutdown
 
     def _close(self) -> None:
-        # Closing this window must never stop dictation — it is a remote
-        # control, not the app. It must not leave it PAUSED either, which
-        # is what closing it on top of an open key dialog used to do.
+        # THE X CLOSES EVERYTHING. Until 2026-09-19 this window was a remote
+        # control and its X left the app running — the owner walked a fresh
+        # copy, closed the desk, and the screenshot key still answered:
+        # "make sure the X closes completely everything it runs in the
+        # background". So the desk's X is Quit DeskIT (the same named
+        # event as Settings > The app > Quit) — only for the desk a person
+        # opened (`_looping`: the entry point's run), never for a window a
+        # test or a picture built, and never on Restart, whose new copy is
+        # already on its way. It must not leave the app PAUSED either,
+        # which is what closing it on top of an open key dialog used to do.
         self.closing = True
+        if getattr(self, "_looping", False) and not getattr(self, "_relaunch", False):
+            try:
+                singleton.request_quit()
+            except Exception:                            # noqa: BLE001
+                pass
         self._resume_after_capture()
         if self.screen == "Corrections" and self._corr_tab == "read":
             self._read_leave()

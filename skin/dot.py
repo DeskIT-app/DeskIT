@@ -1,24 +1,5 @@
 """The status dot: a windowless app's only proof that it is running.
 
-WHAT IT LOOKS LIKE, SINCE 2026-09-19: THE MARK. A 28 px dark tile in a
-38 px window, the desk and the lamp on it — the app's own icon, drawn by
-skin\\mark.py on the same 64-unit grid make_icon.py draws icon.ico on —
-and the LAMP is the state: sky blue while it listens, red while it
-records, red and breathing while latched, gold with a slow sweep while it
-transcribes, grey and unlit while paused. The tile carries its own ground,
-a drop shadow for light wallpapers and a hairline rim for dark ones, so
-the state reads wherever the window is. The owner's screenshot of a
-fresh install is why: a thin ring on a bright sky, nearly invisible. The
-old dot was a 10 px disc of light with nothing behind it, and a disc of
-light is only ever as visible as the wallpaper lets it be.
-
-AND IT IS PAINTED WITHOUT SKIA. The picture is Pillow's (skin\\mark.Mark),
-handed to the layered window by skin\\glass.Glass.present, so the dot
-looks the same on a fresh install — which has no skia; that is the skin
-pack — as it does here. `Dot.draw` still paints onto a skia canvas for
-the tests that render it that way; it is the same picture, drawn as an
-image.
-
 WHERE IT SITS, AND WHY THAT CHANGED. Until 2026-09-07 it lived in the
 top-right corner and this docstring called that "not a design choice to
 revisit", because that corner is the close button of every maximised
@@ -40,38 +21,51 @@ be movable, and without needing to open and close the app... I press
 'set' and then the desk disappears and I drag the dot wherever I want
 it". Nothing here is read once any more: Settings' "Move the dot" goes
 down the control pipe to the RUNNING app, which arms
-overlay.StatusDot.move(), and the next frame this loop draws has the tile
+overlay.StatusDot.move(), and the next frame this loop draws has the disc
 answering HTCAPTION.
 
-THE TILE IS A BUTTON; THE SHADOW IS NOT. A click on the tile opens the
-shelf, exactly what ctrl+alt+d does (main.App._tap_shelf: it reads one
-flag and starts a thread, so it is safe to call from this window's own
-thread), and a second click closes it. Every other pixel of the window —
-the shadow, the empty corners — answers HTTRANSPARENT, so the click falls
-through to whatever is underneath as if the mark were painted on the
-glass. skin\\glass.Glass does the work: given `hit=` it is created
+THE DISC IS A BUTTON; THE GLOW IS NOT. A click on the disc — the CORE
+circle plus about 2 px, `HIT_R` — opens the shelf, exactly what
+ctrl+alt+d does (main.App._tap_shelf: it reads one flag and starts a
+thread, so it is safe to call from this window's own thread), and a
+second click closes it. Every other pixel of the window — the halo, the
+containing ring, the empty corners — answers HTTRANSPARENT, so the click
+falls through to whatever is underneath as if the light were painted on
+the glass. skin\\glass.Glass does the work: given `hit=` it is created
 WITHOUT WS_EX_TRANSPARENT and asks `Dot.hit` per pixel. overlay.StatusDot
 carries the callback as `on_click`; with none set the window keeps the
 old style and the mouse never sees it at all.
 
 THE DRAG IS THE BUTTON'S OTHER ANSWER, AND THE TWO CAN NEVER BOTH FIRE.
-In move mode the same tile answers HTCAPTION instead of HTCLIENT, which
+In move mode the same disc answers HTCAPTION instead of HTCLIENT, which
 means Windows itself runs the drag (its own modal move loop, the notify
 column's and the shelf's road) and — the part that matters — the press
 arrives as WM_NCLBUTTONDOWN and NEVER as WM_LBUTTONDOWN, so `clicked` is
 not merely ignored during a drag, it is never called. That is why there
 is no travelled-far-enough test guarding the shelf here the way there is
-on the notify card: the two gestures are on different messages. While it
-waits to be dragged the rim goes bright and twice as wide — the control
-window has hidden itself by then, so the dot is the only thing on screen
-that can say the next press will move it.
+on the notify card: the two gestures are on different messages. The GLOW
+IS STILL NOT A BUTTON in move mode either — every pixel outside HIT_R
+answers HTTRANSPARENT in both modes, so nothing underneath ever loses a
+click to the light, which is the rule the top-right corner taught us.
 
-EVERYTHING REACHES ALPHA 0 INSIDE THE WINDOW. The old halo did not
-(alpha 27 on every edge midpoint, measured 2026-09-07) and the owner read
-the window's rectangle as "the dot looks like a square". The mark's
-shadow is blurred at 4 x and reduced with a box filter, and the picture's
-border row and column are zeroed outright; a test walks the whole border
-of every state. BOX stays 38: two tests identify the dot by its size.
+THE HALO REACHES ZERO INSIDE THE WINDOW. It used to be a radial gradient
+of radius CORE * 2.6 = 26 px in a 38 px box, which put alpha 27 on each
+edge midpoint (0 at the corners): a faint tinted SQUARE, visible on any
+wallpaper or title bar, that the owner read as "the dot looks like a
+square". Measured 2026-09-07, all four lit states, 27/27/27/27. Now the
+gradient ends at `HALO_R` = BOX / 2 - 1 = 18 px, its inner stop moved
+out to keep the light where it was (alpha 27 at 14 px from the centre
+against 42 before, measured), and a test asserts alpha 0 along the whole
+border of every state. BOX stays 38: two tests identify the dot by its
+size.
+
+What the dot is MADE OF is the other half of the story. The old dot was
+a Tk oval on a chroma-keyed window: a 1-bit key with no antialiasing, so
+a 13 px circle had visibly stepped edges and could not have a halo,
+because every halo pixel is a partly transparent pixel and a chroma key
+has no such thing. On a layered surface with real per-pixel alpha it can
+be a disc with light around it, which is what makes RECORDING catchable
+out of the corner of an eye rather than only when looked at directly.
 
 The state names and the (fill, ring, pulses) shape of overlay.STATES are
 untouched — tests assert both, and main.py's _set_state speaks that
@@ -80,9 +74,7 @@ vocabulary from the keyboard hook.
 NOTHING HERE FLICKERS. The locked breath is 0.16 Hz and the busy sweep is
 a rotation, not a blink. The photosensitivity guidance prohibits anything
 periodic between 3 and 55 Hz, and a status indicator sits on screen for
-hours, which is exactly the case the rule is about. And a frame that is
-the same picture as the last one is not sent at all: a listening dot
-costs one UpdateLayeredWindow, not forty-five a second.
+hours, which is exactly the case the rule is about.
 """
 from __future__ import annotations
 
@@ -94,8 +86,7 @@ import time
 from . import ease
 from .glass import (Glass, HTCAPTION, HTCLIENT, HTTRANSPARENT,
                     virtual_screen, work_area)
-from .mark import Mark
-from .palette import DOT_STATES, NO_HALO, rgb
+from .palette import DOT_STATES, NO_HALO, argb, rgb
 
 _log = logging.getLogger("app")
 
@@ -103,11 +94,18 @@ _log = logging.getLogger("app")
 # One accepts 10 < side < 60, the other identifies the dot as the window
 # at most 40 px wide (that is how it tells the dot from the splash). A
 # 46 px dot passed the first and silently failed the second.
-BOX = 38                  # the window
-TILE = 28                 # the tile inside it; the rest is the shadow's
-CORE = 10.0               # the lamp's diameter, in px
+BOX = 38                  # window; the disc is a fraction of it
+CORE = 10.0               # the disc's diameter, in px
 MARGIN_X, MARGIN_Y = 8, 4
 FRAME_S = 1.0 / 45.0      # a status light does not need 90 fps
+# Every glow must be alpha 0 STRICTLY inside the window, or the window's
+# rectangle shows as a tinted square. The halo's gradient ends here — one
+# pixel short of the edge — and a test walks the whole border.
+HALO_R = BOX / 2.0 - 1.0
+# The button: the disc and about two pixels of forgiveness around it.
+# Never the ring (CORE * 0.5 + 3) and never the halo — those let the
+# mouse through.
+HIT_R = CORE / 2.0 + 2.0
 # Two clicks closer together than this are one click. A double-click is
 # the mouse's auto-repeat, and _tap_shelf is a toggle: without this a
 # double-clicker would see the shelf open and close in one gesture.
@@ -119,21 +117,12 @@ DEFAULT_CORNER = "bottom-right"
 # together — it has to be one no desktop can reach, because the monitor
 # to the left of the primary starts at x = -1920 here.
 UNSET = -100000
-# The locked breath: the glow swings between these, at 0.16 Hz.
-BREATH_LO, BREATH_HI = 0.50, 1.0
-SWEEP_DEG_PER_MS = 1.0 / 3.6      # one turn every 1.3 s
-
-_mark: Mark | None = None
-
-
-def mark() -> Mark:
-    """The one baked mark at the dot's size; built on first use because
-    baking it is a few milliseconds of Pillow and this module is imported
-    by things that never draw."""
-    global _mark
-    if _mark is None:
-        _mark = Mark(TILE, BOX, "dot")
-    return _mark
+# How thick the containing ring is drawn while the dot is waiting to be
+# dragged. The ring is at CORE * 0.5 + 3 = 8 px and this widens it to
+# either side, so the outermost lit pixel is about 9 px from the centre —
+# well inside HALO_R, because everything on this window still has to
+# reach alpha 0 before the border or the dot shows as a square again.
+MOVE_W = 2.2
 
 
 def place(corner: str, work: tuple[int, int, int, int]
@@ -176,6 +165,8 @@ def spot(corner: str, work: tuple[int, int, int, int],
 class Dot:
     def __init__(self, corner: str = DEFAULT_CORNER,
                  x: int = UNSET, y: int = UNSET) -> None:
+        import skia
+        self._skia = skia
         self.corner = corner if corner in CORNERS else DEFAULT_CORNER
         # Where it was dragged to, and whether it is waiting to be
         # dragged again. `run` keeps both in step with the StatusDot;
@@ -202,74 +193,114 @@ class Dot:
                     virtual_screen())
 
     def hit(self, x: float, y: float) -> int:
-        """WM_NCHITTEST for one window-relative pixel: the tile, and
-        HTTRANSPARENT everywhere else — the shadow and the corners —
-        which is what keeps everything but the button click-through, in
-        both modes.
+        """WM_NCHITTEST for one window-relative pixel: the disc, and
+        HTTRANSPARENT everywhere else — including the halo and the
+        containing ring, which is what keeps everything but the button
+        click-through, in both modes.
 
-        The tile's answer is the one thing that changes. HTCLIENT is the
+        The disc's answer is the one thing that changes. HTCLIENT is the
         button; HTCAPTION, while it is waiting to be moved, hands the
         press to Windows' own move loop — and a press that becomes
         WM_NCLBUTTONDOWN can never also arrive as the WM_LBUTTONDOWN
         that opens the shelf, which is the whole of "a drag must not fire
         the click".
         """
-        if mark().inside(float(x), float(y)):
+        c = BOX / 2.0
+        if math.hypot(float(x) - c, float(y) - c) <= HIT_R:
             return HTCAPTION if self.moving else HTCLIENT
         return HTTRANSPARENT
 
-    @staticmethod
-    def _look(name: str) -> tuple[tuple[int, int, int], float, bool]:
-        """(lamp colour, glow, breathes) for a state name."""
-        fill, _ring, pulses = DOT_STATES.get(name, DOT_STATES["ready"])
-        return rgb(fill), (0.0 if name in NO_HALO else 1.0), bool(pulses)
+    def draw(self, canvas, clock_ms: float,
+             alarm_fill: str | None = None) -> None:
+        skia = self._skia
+        canvas.clear(0x00000000)
+        cx = cy = BOX / 2.0
 
-    def frame(self, clock_ms: float, alarm_fill: str | None = None):
-        """One picture of the dot, as a Pillow RGBA image BOX x BOX."""
         self._blend = min(1.0, self._blend + 0.10)
         if self._blend >= 1.0:
             self._shown = self.state
-        fill_a, glow_a, pulse_a = self._look(self._from)
-        fill_b, glow_b, pulse_b = self._look(self.state)
+        fill_a, ring_a, pulse_a = DOT_STATES.get(self._from,
+                                                 DOT_STATES["ready"])
+        fill_b, ring_b, pulse_b = DOT_STATES.get(self.state,
+                                                 DOT_STATES["ready"])
         k = ease.smoothstep(self._blend)
-        fill = tuple(int(a + (b - a) * k) for a, b in zip(fill_a, fill_b))
-        # The halo fades across a state change with everything else, so
-        # switching INTO paused dims out rather than snapping off — and
-        # paused is the one state with no light on the tile at all, so it
-        # reads by the glow's ABSENCE, which no wallpaper and no
-        # colourblindness can take away.
-        glow = glow_a * (1.0 - k) + glow_b * k
+        fill = tuple(int(a + (b - a) * k)
+                     for a, b in zip(rgb(fill_a), rgb(fill_b)))
         pulses = pulse_b if k > 0.5 else pulse_a
-        if pulses:
-            # A slow breath, so a recording you walked away from still
-            # reads as live rather than as a frozen red lamp. 0.16 Hz:
-            # nowhere near the 3-55 Hz band, and slow enough to be
-            # ignorable while typing.
-            breath = 0.5 + 0.5 * math.cos(clock_ms / 1000.0)
-            glow *= BREATH_LO + (BREATH_HI - BREATH_LO) * breath
-        sweep = None
-        if self.state == "busy" and k > 0.5:
-            # a sweep, not a blink: transcribing is work in progress and a
-            # rotation says that without ever changing luminance
-            sweep = (clock_ms * SWEEP_DEG_PER_MS) % 360.0
         if alarm_fill is not None:
             # The dead-microphone alarm (overlay.StatusDot.alarm): the
             # blink is decided by the StatusDot's clock and handed in as
             # a colour, so this painter and the Tk one blink alike. It
-            # overrides the state's lamp and its breath — the alarm is
+            # overrides the state's fill and its breath — the alarm is
             # the one thing the dot has to say right now.
-            fill, glow, sweep = rgb(alarm_fill), 1.0, None
-        return mark().frame(fill, glow, sweep, self.moving)
+            fill, pulses = rgb(alarm_fill), False
 
-    def draw(self, canvas, clock_ms: float,
-             alarm_fill: str | None = None) -> None:
-        """The same picture, onto a skia canvas: for the tests that render
-        the dot that way, and for a Glass that has a GPU surface."""
-        import skia
-        image = self.frame(clock_ms, alarm_fill)
-        canvas.clear(0x00000000)
-        canvas.drawImage(skia.Image.frombytes(
-            image.tobytes(), image.size, skia.kRGBA_8888_ColorType), 0, 0)
+        # A slow breath, so a recording you walked away from still reads as
+        # live rather than as a frozen red dot. 0.16 Hz: nowhere near the
+        # 3-55 Hz band, and slow enough to be ignorable while typing.
+        glow = 1.0
+        if pulses:
+            glow = 0.62 + 0.38 * (0.5 + 0.5 * math.cos(clock_ms / 1000.0))
+
+        # THE HALO — the whole reason this is a layered window, and the
+        # whole reason PAUSED is legible. Every lit state glows; paused is
+        # the one neutral in the set and it gets nothing, so the state
+        # reads by the halo's ABSENCE. A grey halo on a dark wallpaper is
+        # a smudge rather than a light, and hue alone would leave paused
+        # and listening a colourblind viewer's coin toss. The halo fades
+        # across a state change with everything else, so switching INTO
+        # paused dims out rather than snapping off.
+        halo = (0.0 if self.state in NO_HALO else 1.0) * k
+        halo += (0.0 if self._from in NO_HALO else 1.0) * (1.0 - k)
+        if halo > 0.004:
+            # HALO_R, not CORE * 2.6: the gradient has to reach alpha 0
+            # inside the window (see the module docstring — the square).
+            # The inner stop sits at 0.62 of it, 11.2 px, roughly where
+            # the old 0.45 of 26 px put it, so the light around the disc
+            # is the same light and only its tail is shorter.
+            canvas.drawCircle(cx, cy, HALO_R, skia.Paint(
+                BlendMode=skia.BlendMode.kPlus, Dither=True,
+                Shader=skia.GradientShader.MakeRadial(
+                    center=(cx, cy), radius=HALO_R,
+                    colors=[argb(150 * glow * halo, fill),
+                            argb(52 * glow * halo, fill),
+                            argb(0, fill)],
+                    positions=[0.0, 0.62, 1.0])))
+
+        # A hairline containing ring, so the dot has an edge against a
+        # white window as well as against a dark one — and, while it is
+        # waiting to be dragged, that same ring drawn white and twice as
+        # thick. The control window has hidden itself by then ("the desk
+        # disappears"), so the dot is the ONLY thing on screen that can
+        # say the next press will move it rather than open the shelf, and
+        # that move mode has not run out yet. It is the ring and not a
+        # wider halo on purpose: what lights up has to be what you can
+        # actually grab, and what you can grab is HIT_R — a bright circle
+        # further out would be an invitation to press somewhere that
+        # answers HTTRANSPARENT and does nothing.
+        canvas.drawCircle(cx, cy, CORE * 0.5 + 3.0, skia.Paint(
+            AntiAlias=True, Style=skia.Paint.kStroke_Style,
+            StrokeWidth=MOVE_W if self.moving else 1.0,
+            Color=argb(225 if self.moving else 58, (255, 255, 255))))
+
+        if self.state == "busy":
+            # a sweep, not a blink: transcribing is work in progress and a
+            # rotation says that without ever changing luminance
+            start = (clock_ms / 3.6) % 360.0
+            box = skia.Rect.MakeLTRB(cx - CORE * 1.35, cy - CORE * 1.35,
+                                     cx + CORE * 1.35, cy + CORE * 1.35)
+            canvas.drawArc(box, start, 96, False, skia.Paint(
+                AntiAlias=True, Style=skia.Paint.kStroke_Style,
+                StrokeWidth=2.0, StrokeCap=skia.Paint.kRound_Cap,
+                Color=argb(210, fill)))
+
+        canvas.drawCircle(cx, cy, CORE * 0.5, skia.Paint(
+            AntiAlias=True, Color=argb(255, fill)))
+        # a specular highlight, up and left, the way a lit bead has one
+        canvas.drawCircle(cx - CORE * 0.16, cy - CORE * 0.18, CORE * 0.20,
+                          skia.Paint(AntiAlias=True,
+                                     BlendMode=skia.BlendMode.kPlus,
+                                     Color=argb(120, (255, 255, 255))))
 
 
 def run(status_dot) -> None:
@@ -278,7 +309,7 @@ def run(status_dot) -> None:
     Same contract as the splash: the queue, _alive, _closing and the _DONE
     sentinel all stay exactly where overlay.py put them. What is read off
     the StatusDot: `corner` and `x, y` (where), `on_click` (what a click
-    on the tile does — None, and the window is the old click-through
+    on the disc does — None, and the window is the old click-through
     layer with no hit test at all), `moving()` (whether the next press
     drags it instead) and `_replace` (somebody moved it from elsewhere).
     What is written back: `rect`, so the shelf knows which square not to
@@ -294,9 +325,9 @@ def run(status_dot) -> None:
 
     def clicked(_x, _y) -> None:
         """WM_LBUTTONDOWN on an HTCLIENT pixel — by construction the
-        tile, since everything else answered HTTRANSPARENT and never got
+        disc, since everything else answered HTTRANSPARENT and never got
         the message, and by construction NOT while it is being moved,
-        since the tile answers HTCAPTION then and this message is never
+        since the disc answers HTCAPTION then and this message is never
         sent at all. Fired on this thread; the callback only toggles.
 
         The move-mode line is belt as well as braces: Windows will not
@@ -320,14 +351,14 @@ def run(status_dot) -> None:
     alarming = [False]
 
     def dropped() -> None:
-        """The press on the tile was let go, and Windows' move loop has
+        """The press on the disc was let go, and Windows' move loop has
         finished. Fires for a real drag AND for a press that never moved,
         because DefWindowProc enters that loop either way — and move mode
-        ends on both, since he asked for ONE move and leaving the tile
+        ends on both, since he asked for ONE move and leaving the disc
         armed would leave it unable to open the shelf.
 
         IT DOES NOT ASK WHETHER MOVE MODE IS STILL ON, and that is
-        deliberate. This message can only exist because the tile answered
+        deliberate. This message can only exist because the disc answered
         HTCAPTION, which only happens in move mode — so getting here IS
         the proof. Asking again would throw away a drag that started at
         second 44 of a 45-second deadline and finished after it, which is
@@ -356,14 +387,11 @@ def run(status_dot) -> None:
         status_dot.placed(at_x, at_y)
         _log.info("the dot was dropped at %d, %d", at_x, at_y)
 
-    # gpu=False: the picture is Pillow's and 38 px square, so a GPU
-    # surface would only add a readback per frame — and a GL context,
-    # which the boot may not have built on a copy without skia.
     if on_click is not None:
-        glass = Glass(*dot.placement(), gpu=False, hit=dot.hit,
-                      clicked=clicked, moved=dropped)
+        glass = Glass(*dot.placement(), hit=dot.hit, clicked=clicked,
+                      moved=dropped)
     else:
-        glass = Glass(*dot.placement(), gpu=False)
+        glass = Glass(*dot.placement())
     hidden = bool(getattr(status_dot, "hidden", False))
     if hidden:                          # a start without the model
         status_dot.rect = None
@@ -374,7 +402,6 @@ def run(status_dot) -> None:
     placed_at[0], placed_at[1] = glass.x, glass.y
     status_dot._alive.set()
     start = time.perf_counter()
-    last_bytes = None
     try:
         while not status_dot._closing.is_set():
             try:
@@ -395,7 +422,6 @@ def run(status_dot) -> None:
                         placed_at[0], placed_at[1] = at_x, at_y
                         glass.show()
                         status_dot.rect = (at_x, at_y, at_x + BOX, at_y + BOX)
-                        last_bytes = None
                         continue
                     dot.set(item)
             except queue.Empty:
@@ -411,7 +437,6 @@ def run(status_dot) -> None:
             # reads it — which is what makes it expire on its own if he
             # presses the button and then walks away.
             dot.moving = status_dot.moving()
-            moved = False
             if status_dot._replace.is_set():
                 # A drop that had to be clamped, or "Back to the corner"
                 # from the dashboard. UpdateLayeredWindow moves the
@@ -431,7 +456,6 @@ def run(status_dot) -> None:
                 glass.move(at_x, at_y)
                 placed_at[0], placed_at[1] = at_x, at_y
                 status_dot.rect = (at_x, at_y, at_x + BOX, at_y + BOX)
-                moved = True
             # The dead-microphone alarm travels the window toward the
             # middle of the work area and blinks; the frame the alarm
             # ends, the window goes back to where it rests (`alarming`
@@ -443,16 +467,10 @@ def run(status_dot) -> None:
                     (rest_x, rest_y), BOX, work_area())
                 glass.move(at[0], at[1])
                 status_dot.rect = (at[0], at[1], at[0] + BOX, at[1] + BOX)
-                moved = True
             alarming[0] = alarm_fill is not None
-            image = dot.frame((time.perf_counter() - start) * 1000.0,
-                              alarm_fill)
-            # The same picture as last time, in the same place, is not
-            # sent again: a dot that listens all day costs nothing.
-            raw = image.tobytes()
-            if moved or raw != last_bytes:
-                last_bytes = raw
-                glass.present(image)
+            dot.draw(glass.canvas, (time.perf_counter() - start) * 1000.0,
+                     alarm_fill)
+            glass.flush()
             glass.pump()
             time.sleep(FRAME_S)
     except Exception:
@@ -464,5 +482,5 @@ def run(status_dot) -> None:
         status_dot._closing.set()
 
 
-__all__ = ["Dot", "run", "place", "spot", "mark", "BOX", "TILE", "CORE",
-           "UNSET", "CORNERS", "DEFAULT_CORNER"]
+__all__ = ["Dot", "run", "place", "spot", "BOX", "CORE", "HALO_R", "HIT_R",
+           "MOVE_W", "UNSET", "CORNERS", "DEFAULT_CORNER"]

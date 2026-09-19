@@ -388,8 +388,10 @@ def install(installer: Path, release: Release, quit_app=None) -> list[str]:
     """Copy settings.toml to settings.toml.bak, start the installer
     detached, then ask the app to leave through its own quit path. The
     checkout refuses: it updates with git, and an installer over it would
-    be a second copy in the wrong place."""
-    if paths.DEVELOPER:
+    be a second copy in the wrong place — and so does the stranger's copy
+    of it (paths.STRANGER), whose installer would land on the real
+    install. The card, the download and its checksum run as they would."""
+    if paths.DEVELOPER or paths.STRANGER:
         raise UpdateError("this is the checkout — it updates with git pull")
     if not installer.exists():
         raise UpdateError("the downloaded installer is gone")

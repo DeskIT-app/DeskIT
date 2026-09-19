@@ -1580,14 +1580,38 @@ def load(path: Path) -> Config:
     return build(_read_toml(path))
 
 
+#: Parsed TOML by file, with the mtime and size it was parsed at.
+_TOML_CACHE: dict[str, tuple[tuple[int, int], dict]] = {}
+
+
 def _read_toml(path: Path) -> dict:
+    """One TOML file as a mapping — parsed once per version of the file.
+
+    The desk reads the layered config a dozen times per screen switch
+    and once or more per 800 ms poll, and of the 5.5 ms each read
+    costs, 4.7 are tomllib on defaults.toml's 1,900 lines (measured
+    2026-09-19: 13 reads on a switch to Home, 90 ms with the profiler
+    on). The cache is keyed on the file's mtime and size, so a saved
+    settings.toml or a replaced defaults.toml is seen on the next read
+    with no one to tell; a deep copy goes out (0.1 ms), so a caller
+    that edits what it got cannot edit what the next caller gets.
+    """
+    import copy
+    path = Path(path)
     if not path.exists():
         raise ConfigError(f"Config file not found: {path}")
     try:
+        stat = path.stat()
+        stamp = (stat.st_mtime_ns, stat.st_size)
+        hit = _TOML_CACHE.get(str(path))
+        if hit is not None and hit[0] == stamp:
+            return copy.deepcopy(hit[1])
         with path.open("rb") as f:
-            return tomllib.load(f)
+            data = tomllib.load(f)
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"Bad TOML in {path}: {e}") from e
+    _TOML_CACHE[str(path)] = (stamp, data)
+    return copy.deepcopy(data)
 
 
 def build(data: dict) -> Config:

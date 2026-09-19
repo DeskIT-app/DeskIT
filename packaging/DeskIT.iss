@@ -11,6 +11,17 @@
 ; launched straight after so the first-run wizard follows, upgrades in
 ; place through Restart Manager, a downgrade refused by name, and an
 ; uninstaller that asks once whether the person's data goes too.
+;
+; And, since 2026-09-19 (10.4, the owner's "everything comes the moment I
+; install"): the downloads the first-run wizard's computer page used to
+; make are this installer's, with the person's tick — the Hebrew model,
+; and with an NVIDIA card its libraries and the English detector, and the
+; Recording pack — from the same URLs and against the same SHA-256s the
+; app's own models.py and packs.py use (downloads.iss, generated from the
+; two locks). Nothing is bundled (D13, D24). What lands is placed under
+; the data folder and `main.py --adopt-downloads` hashes and completes
+; it; what does not, the wizard offers as before. Silent installs and
+; /NODOWNLOAD download nothing.
 
 #ifndef Version
   #error Pass /DVersion=x.y.z (the VERSION file)
@@ -82,19 +93,19 @@ Name: "hebrew"; MessagesFile: "compiler:Languages\Hebrew.isl"
 [Messages]
 english.SetupWindowTitle=%1
 english.WelcomeLabel1=Welcome to DeskIT
-english.WelcomeLabel2=Hebrew dictation that stays on this PC.%n%nDeskIT installs for your user only, without an administrator password. On the first start a short wizard sets up the microphone, the key and the Hebrew model (a 1.6 GB download, once).%n%nYour voice stays on this computer. Nothing is sent anywhere until you turn it on yourself.
+english.WelcomeLabel2=Hebrew dictation that stays on this PC.%n%nDeskIT installs for your user only, without an administrator password. The next page downloads the Hebrew model (1.6 GB, once); on the first start a short wizard sets up the microphone and the key.%n%nYour voice stays on this computer. Nothing is sent anywhere until you turn it on yourself.
 english.ButtonNext=&Install
 english.ClickNext=Click Install to continue, or Cancel to exit.
 english.FinishedHeadingLabel=DeskIT is installed
-english.FinishedLabel=Start it now: the first-run wizard takes about two minutes, most of it the model's download.
+english.FinishedLabel=Start it now: the first-run wizard takes about a minute.
 english.ClickFinish=Click Finish to exit Setup.
 hebrew.SetupWindowTitle=%1
 hebrew.WelcomeLabel1=ברוכים הבאים ל־DeskIT
-hebrew.WelcomeLabel2=הכתבה בעברית שנשארת במחשב הזה.%n%nDeskIT מותקן למשתמש שלך בלבד, בלי סיסמת מנהל. בהפעלה הראשונה אשף קצר מגדיר את המיקרופון, את המקש ואת המודל העברי (הורדה של 1.6 ג'יגה־בייט, פעם אחת).%n%nהקול שלך נשאר במחשב הזה. שום דבר לא נשלח לשום מקום עד שתפעיל את זה בעצמך.
+hebrew.WelcomeLabel2=הכתבה בעברית שנשארת במחשב הזה.%n%nDeskIT מותקן למשתמש שלך בלבד, בלי סיסמת מנהל. העמוד הבא מוריד את המודל העברי (1.6 ג'יגה־בייט, פעם אחת); בהפעלה הראשונה אשף קצר מגדיר את המיקרופון ואת המקש.%n%nהקול שלך נשאר במחשב הזה. שום דבר לא נשלח לשום מקום עד שתפעיל את זה בעצמך.
 hebrew.ButtonNext=&התקנה
 hebrew.ClickNext=לחץ על 'התקנה' כדי להמשיך, או על 'ביטול' כדי לצאת.
 hebrew.FinishedHeadingLabel=DeskIT מותקן
-hebrew.FinishedLabel=אפשר להפעיל עכשיו: אשף ההפעלה הראשונה לוקח כשתי דקות, רובן הורדת המודל.
+hebrew.FinishedLabel=אפשר להפעיל עכשיו: אשף ההפעלה הראשונה לוקח כדקה.
 hebrew.ClickFinish=לחץ על סיום כדי לצאת מההתקנה.
 
 [CustomMessages]
@@ -108,6 +119,28 @@ hebrew.DeleteDataQuestion=למחוק גם את ההגדרות, ההיסטורי�
 hebrew.KeepData=&להשאיר
 hebrew.DeleteData=&למחוק
 hebrew.Downgrade=DeskIT %1 כבר מותקן; קובץ ההתקנה הזה הוא גרסה %2.%n%nכדי לחזור לגרסה ישנה יותר, הסר את DeskIT ואז הפעל את קובץ ההתקנה הישן (הקישור נמצא בהערות הגרסה).
+; The Downloads page (10.4): the items with their sizes, the licence line,
+; and the three sentences the download itself may need.
+english.DlCaption=Downloads
+english.DlDescription=What DeskIT fetches now, so the first start has nothing left to download
+english.DlSub=Untick anything you would rather leave to the first-run wizard. By keeping a box ticked you accept its licence, linked below:
+english.DlItem_model=Hebrew speech model — %1 (Apache-2.0)
+english.DlItem_detector=English detector, so a sentence in English is heard as English — %1 (MIT)
+english.DlItem_gpu=NVIDIA CUDA libraries, for fast transcription on your card — %1 (NVIDIA's licence)
+english.DlItem_recording=Screen recording: PyAV with FFmpeg, a GPL build — %1
+english.DlFailed=The download did not finish: %1%n%nRetry, or Cancel to leave it to the first-run wizard, which downloads whatever is still missing.
+english.DlNoRoom=Not enough room for the downloads: %1 MB needed, %2 MB free on this drive. The first-run wizard can download them later.
+english.DlFinishing=Checking the downloads and putting them in place...
+hebrew.DlCaption=הורדות
+hebrew.DlDescription=מה ש־DeskIT מוריד עכשיו, כדי שבהפעלה הראשונה לא יישאר מה להוריד
+hebrew.DlSub=אפשר לבטל סימון של מה שעדיף להשאיר לאשף ההפעלה הראשונה. השארת תיבה מסומנת היא הסכמה לרישיון שלה, בקישור למטה:
+hebrew.DlItem_model=מודל הדיבור העברי — %1 (Apache-2.0)
+hebrew.DlItem_detector=מזהה אנגלית, כדי שמשפט באנגלית יישמע כאנגלית — %1 (MIT)
+hebrew.DlItem_gpu=ספריות CUDA של NVIDIA, לתמלול מהיר על הכרטיס שלך — %1 (הרישיון של NVIDIA)
+hebrew.DlItem_recording=הקלטת מסך: PyAV עם FFmpeg, גרסת GPL — %1
+hebrew.DlFailed=ההורדה לא הסתיימה: %1%n%nנסה שוב, או בטל כדי להשאיר אותה לאשף ההפעלה הראשונה, שמוריד את מה שעדיין חסר.
+hebrew.DlNoRoom=אין די מקום להורדות: נדרשים %1 מגה־בייט, פנויים %2 מגה־בייט בכונן הזה. אשף ההפעלה הראשונה יוכל להוריד אותן אחר כך.
+hebrew.DlFinishing=בודק את ההורדות ומניח אותן במקומן...
 
 [Files]
 ; Everything the build staged: python\, app\, MANIFEST.sha256. ignoreversion
@@ -147,9 +180,331 @@ const
   RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
   RunValue = 'DeskIT';
 
+{ The download list, one function per fact, generated from the two locks
+  by dev\make_downloads_iss.py - never edited by hand. }
+#include "downloads.iss"
+
+var
+  DlPage: TInputOptionWizardPage;
+  DownloadPage: TDownloadWizardPage;
+  DlOffered: TArrayOfString;     { the items on the page, in checkbox order }
+  DlGot: TArrayOfString;         { the items whose every file came down }
+  DlCardVram: Integer;
+  DlCardDriver: String;
+
 function NoLaunch: Boolean;
 begin
   Result := ExpandConstant('{param:NOLAUNCH|no}') <> 'no';
+end;
+
+function NoDownload: Boolean;
+begin
+  Result := ExpandConstant('{param:NODOWNLOAD|no}') <> 'no';
+end;
+
+{ The app's data folder on an installed copy (paths.py, no DESKIT_HOME). }
+function DataDir: String;
+begin
+  Result := ExpandConstant('{localappdata}\DeskIT');
+end;
+
+procedure SplitOn(S, Sep: String; var Parts: TArrayOfString);
+var
+  P: Integer;
+begin
+  SetArrayLength(Parts, 0);
+  P := Pos(Sep, S);
+  while P > 0 do
+  begin
+    SetArrayLength(Parts, GetArrayLength(Parts) + 1);
+    Parts[GetArrayLength(Parts) - 1] := Copy(S, 1, P - 1);
+    S := Copy(S, P + Length(Sep), Length(S));
+    P := Pos(Sep, S);
+  end;
+  SetArrayLength(Parts, GetArrayLength(Parts) + 1);
+  Parts[GetArrayLength(Parts) - 1] := S;
+end;
+
+procedure AppendTo(var List: TArrayOfString; Item: String);
+begin
+  SetArrayLength(List, GetArrayLength(List) + 1);
+  List[GetArrayLength(List) - 1] := Item;
+end;
+
+function InList(Item: String; List: TArrayOfString): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 0 to GetArrayLength(List) - 1 do
+    if List[I] = Item then
+      Result := True;
+end;
+
+{ The item is already on this PC: its marker file holds every stamp the
+  lock names (the model's revision, each wheel's version) - the same
+  test models.state and packs.state make, so an upgrade fetches nothing
+  that is there and a release that moved a version fetches the new one. }
+function DlPresent(Item: String): Boolean;
+var
+  Marker, Content: String;
+  Ansi: AnsiString;
+  Stamps: TArrayOfString;
+  I: Integer;
+begin
+  Result := False;
+  Marker := DataDir + '\' + DlMarker(Item);
+  if not FileExists(Marker) then
+    Exit;
+  if not LoadStringFromFile(Marker, Ansi) then
+    Exit;
+  Content := Ansi;
+  SplitOn(DlStamps(Item), '|', Stamps);
+  for I := 0 to GetArrayLength(Stamps) - 1 do
+    if Pos(Stamps[I], Content) = 0 then
+      Exit;
+  Result := True;
+end;
+
+{ The card, the way hardware.py asks: nvidia-smi's memory and driver
+  version. No NVIDIA driver, no nvidia-smi, no card. }
+procedure ProbeCard;
+var
+  SmiFile, Line: String;
+  Lines: TArrayOfString;
+  Code, Comma: Integer;
+begin
+  DlCardVram := 0;
+  DlCardDriver := '';
+  SmiFile := ExpandConstant('{tmp}\nvidia-smi.txt');
+  if not Exec(ExpandConstant('{cmd}'), '/C nvidia-smi --query-gpu=memory.total,driver_version --format=csv,noheader,nounits > "' + SmiFile + '" 2>&1', '', SW_HIDE, ewWaitUntilTerminated, Code) then
+    Exit;
+  if Code <> 0 then
+    Exit;
+  if not LoadStringsFromFile(SmiFile, Lines) then
+    Exit;
+  if GetArrayLength(Lines) = 0 then
+    Exit;
+  Line := Trim(Lines[0]);
+  Comma := Pos(',', Line);
+  if Comma = 0 then
+    Exit;
+  DlCardVram := StrToIntDef(Trim(Copy(Line, 1, Comma - 1)), 0);
+  DlCardDriver := Trim(Copy(Line, Comma + 1, Length(Line)));
+end;
+
+{ hardware.DRIVER_FLOOR: 545.84, the first driver CUDA 12.3 runs on. }
+function DriverOk(Driver: String): Boolean;
+var
+  Dot, Major, Minor: Integer;
+begin
+  Result := False;
+  Dot := Pos('.', Driver);
+  if Dot = 0 then
+    Exit;
+  Major := StrToIntDef(Copy(Driver, 1, Dot - 1), 0);
+  Minor := StrToIntDef(Copy(Driver, Dot + 1, Length(Driver)), 0);
+  Result := (Major > 545) or ((Major = 545) and (Minor >= 84));
+end;
+
+{ What this PC is offered: the model and the Recording pack always; the
+  CUDA libraries with a card of 4 GB and a driver new enough; the English
+  detector with 6 GB (firstrun.card_tier) - and never what is there. }
+function DlWanted(Item: String): Boolean;
+begin
+  Result := False;
+  if (Item = 'model') or (Item = 'recording') then
+    Result := True
+  else if Item = 'gpu' then
+    Result := (DlCardVram >= 4096) and DriverOk(DlCardDriver)
+  else if Item = 'detector' then
+    Result := (DlCardVram >= 6144) and DriverOk(DlCardDriver);
+  if Result then
+    Result := not DlPresent(Item);
+end;
+
+function OnDownloadProgress(const Url, FileName: String; const Progress, ProgressMax: Int64): Boolean;
+begin
+  if (ProgressMax > 0) and (Progress = ProgressMax) then
+    Log(FileName + ' landed: ' + IntToStr(ProgressMax) + ' bytes');
+  Result := True;
+end;
+
+procedure LicenseClick(Sender: TObject);
+var
+  Code: Integer;
+begin
+  ShellExec('open', TNewStaticText(Sender).Hint, '', '', SW_SHOWNORMAL, ewNoWait, Code);
+end;
+
+procedure InitializeWizard;
+var
+  Items, Pairs, Pair: TArrayOfString;
+  Item: String;
+  I, J, N, Top: Integer;
+  Link: TNewStaticText;
+begin
+  SetArrayLength(DlOffered, 0);
+  SetArrayLength(DlGot, 0);
+  if WizardSilent or NoDownload then
+    Exit;
+  ProbeCard;
+  DlPage := CreateInputOptionPage(wpWelcome, CustomMessage('DlCaption'),
+    CustomMessage('DlDescription'), CustomMessage('DlSub'), False, False);
+  SplitOn(DlItems, '|', Items);
+  for I := 0 to GetArrayLength(Items) - 1 do
+  begin
+    Item := Items[I];
+    if DlWanted(Item) then
+    begin
+      N := DlPage.Add(FmtMessage(CustomMessage('DlItem_' + Item), [DlHuman(Item)]));
+      DlPage.Values[N] := True;
+      AppendTo(DlOffered, Item);
+    end;
+  end;
+  { the licences, one link each, under the list }
+  DlPage.CheckListBox.Height := ScaleY(22) * (GetArrayLength(DlOffered) + 1);
+  Top := DlPage.CheckListBox.Top + DlPage.CheckListBox.Height + ScaleY(10);
+  for I := 0 to GetArrayLength(DlOffered) - 1 do
+  begin
+    SplitOn(DlLicenses(DlOffered[I]), '|', Pairs);
+    for J := 0 to GetArrayLength(Pairs) - 1 do
+    begin
+      SplitOn(Pairs[J], '>', Pair);
+      if GetArrayLength(Pair) = 2 then
+      begin
+        Link := TNewStaticText.Create(DlPage);
+        Link.Parent := DlPage.Surface;
+        Link.Caption := Pair[0];
+        Link.Hint := Pair[1];
+        Link.Cursor := crHand;
+        Link.Font.Style := [fsUnderline];
+        Link.Font.Color := clBlue;
+        Link.OnClick := @LicenseClick;
+        Link.Left := DlPage.CheckListBox.Left;
+        Link.Top := Top;
+        Top := Top + Link.Height + ScaleY(2);
+      end;
+    end;
+  end;
+  DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing),
+    SetupMessage(msgPreparingDesc), @OnDownloadProgress);
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := False;
+  if (DlPage <> nil) and (PageID = DlPage.ID) then
+    Result := GetArrayLength(DlOffered) = 0;
+end;
+
+{ One item, all its files, against the lock's SHA-256s (Inno checks them
+  as they land). Retry on a failure, or leave the item to the wizard. }
+function DownloadItem(Item: String): Boolean;
+var
+  I: Integer;
+  Row: TArrayOfString;
+  Again: Boolean;
+begin
+  Result := False;
+  DownloadPage.Clear;
+  for I := 0 to DlCount - 1 do
+  begin
+    SplitOn(DlRow(I), '|', Row);
+    if Row[0] = Item then
+      DownloadPage.Add(Row[2], Item + '--' + ExtractFileName(Row[1]), Row[3]);
+  end;
+  Again := True;
+  while Again do
+  begin
+    Again := False;
+    try
+      DownloadPage.Download;
+      Result := True;
+    except
+      if DownloadPage.AbortedByUser then
+        Log('download of ' + Item + ' aborted by the user')
+      else
+      begin
+        Log('download of ' + Item + ' failed: ' + GetExceptionMessage);
+        Again := SuppressibleMsgBox(FmtMessage(CustomMessage('DlFailed'), [AddPeriod(GetExceptionMessage)]),
+          mbError, MB_RETRYCANCEL, IDCANCEL) = IDRETRY;
+      end;
+    end;
+  end;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  I: Integer;
+  Need, FreeBytes, TotalBytes: Int64;
+  Any: Boolean;
+begin
+  Result := True;
+  if (DlPage = nil) or (CurPageID <> DlPage.ID) then
+    Exit;
+  Need := 0;
+  Any := False;
+  for I := 0 to GetArrayLength(DlOffered) - 1 do
+    if DlPage.Values[I] then
+    begin
+      Need := Need + StrToInt64(DlBytes(DlOffered[I]));
+      Any := True;
+    end;
+  if not Any then
+    Exit;
+  if GetSpaceOnDisk64(ExpandConstant('{localappdata}'), FreeBytes, TotalBytes) and (FreeBytes < Need + 1073741824) then
+  begin
+    SuppressibleMsgBox(FmtMessage(CustomMessage('DlNoRoom'), [IntToStr(Need div 1048576), IntToStr(FreeBytes div 1048576)]),
+      mbInformation, MB_OK, IDOK);
+    Exit;
+  end;
+  DownloadPage.Show;
+  try
+    for I := 0 to GetArrayLength(DlOffered) - 1 do
+    begin
+      if DlPage.Values[I] and not DownloadPage.AbortedByUser then
+      begin
+        if DownloadItem(DlOffered[I]) then
+          AppendTo(DlGot, DlOffered[I]);
+      end;
+    end;
+  finally
+    DownloadPage.Hide;
+  end;
+end;
+
+{ After the files: what came down goes from the setup's temp folder to
+  its place under the data folder (a move on one drive, a copy across
+  two), and the installed Python hashes and completes it - no window,
+  no network. The wizard's computer page then has nothing to offer. }
+procedure PlaceDownloads;
+var
+  I, Code: Integer;
+  Row: TArrayOfString;
+  Src, Dest: String;
+begin
+  if GetArrayLength(DlGot) = 0 then
+    Exit;
+  WizardForm.StatusLabel.Caption := CustomMessage('DlFinishing');
+  for I := 0 to DlCount - 1 do
+  begin
+    SplitOn(DlRow(I), '|', Row);
+    if InList(Row[0], DlGot) then
+    begin
+      Src := ExpandConstant('{tmp}\') + Row[0] + '--' + ExtractFileName(Row[1]);
+      Dest := DataDir + '\' + Row[1];
+      ForceDirectories(ExtractFileDir(Dest));
+      DeleteFile(Dest);
+      if not RenameFile(Src, Dest) then
+        if not FileCopy(Src, Dest, False) then
+          Log('could not place ' + Dest);
+    end;
+  end;
+  if not Exec(ExpandConstant('{app}\python\python.exe'), '"' + ExpandConstant('{app}\app\main.py') + '" --adopt-downloads',
+      ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then
+    Code := -1;
+  Log('main.py --adopt-downloads exited ' + IntToStr(Code));
 end;
 
 { The channel this copy came through: github (default), winget (the manifest
@@ -222,7 +577,10 @@ end;
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
     SaveStringToFile(ExpandConstant('{app}\CHANNEL'), ChannelWord(), False);
+    PlaceDownloads;
+  end;
 end;
 
 { One question, Keep by default (and the only answer a silent uninstall

@@ -331,6 +331,39 @@ def install(p: Pack, *, progress=None, cancel=None, stage=None) -> Path:
     return p.site
 
 
+def placed(p: Pack) -> bool:
+    """Every wheel of the pack is in its `wheels` folder at the lock's
+    size — what the installer leaves after its own download (10.4,
+    2026-09-19)."""
+    for w in p.wheels:
+        try:
+            if (p.wheels_dir / w.filename).stat().st_size != w.size:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def adopt(p: Pack) -> str:
+    """Finish a download the INSTALLER made: the wheels are in place,
+    pip has not run. install() fetches nothing when every wheel is
+    already its size, so this is pip with `--no-index` and the lock's
+    hashes, and never the network. Returns `ok` (installed now or
+    before), `partial` (a wheel missing or the wrong size: left for
+    the wizard, whose install resumes what is there) or
+    `failed:<reason>` (pip refused — a hash, a broken wheel; the wheels
+    stay for the wizard to try again)."""
+    if state(p.name) == "ok":
+        return "ok"
+    if not placed(p):
+        return "partial"
+    try:
+        install(p)
+    except (InstallError, DownloadError) as err:
+        return f"failed:{err}"
+    return "ok"
+
+
 def _app_version() -> str:
     try:
         import version

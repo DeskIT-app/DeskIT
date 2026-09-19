@@ -16,7 +16,9 @@ would start the checkout a second time on every logon, or — once the
 released copy is installed beside it (D30) — the wrong one. apply()
 refuses while paths.DEVELOPER and says so. Tests point RUN_KEY at a
 scratch key of their own and flip DEVELOPER; nothing here may touch the
-real value from a test.
+real value from a test. The stranger's copy (paths.STRANGER) writes a
+key of its own that Windows never reads: the switch works, the registry
+changes, nothing starts at logon.
 """
 from __future__ import annotations
 
@@ -28,7 +30,8 @@ import paths
 
 log = logging.getLogger("app")
 
-RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+RUN_KEY = (r"Software\DeskIT.test\Run" if paths.STRANGER
+           else r"Software\Microsoft\Windows\CurrentVersion\Run")
 VALUE = "DeskIT"
 
 

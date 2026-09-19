@@ -1,198 +1,198 @@
 {
   "cloud_text": {
     "kind": "cloud_text",
-    "text_version": "groq-2026-06-22+gemini-2026-04-28",
-    "title": "לשלוח טקסט לענן?",
+    "text_version": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+    "title": "Send text to the cloud?",
     "blocks": [
       [
-        "מה יוצא",
-        "הטקסט שהכתבת או סימנת, עד 5,000 תווים בבקשה. תיקון ההכתבה שולח קטעים גם בזמן שהמקש עדיין לחוץ; זוגות המילים שלמדת ושמופיעים בטקסט נוסעים איתו; הקריאה השנייה מצרפת גם את המשפטים שהוכתבו רגע לפני."
+        "What leaves",
+        "The text you dictated or selected, up to 5,000 characters a request. Never your voice."
       ],
       [
-        "לאן",
-        "Groq ו/או Google — תיקון, פיסוק, תרגום, חיפוש מילה, הקריאה השנייה."
+        "To whom",
+        "Groq and/or Google — repair, punctuation, translation, lookup, the second reading."
       ],
       [
-        "על חשבון מי",
-        "עם המפתח שאתה הדבקת. אתה הלקוח שלהם — DeskIT הוא הכלי שלך, ולא עוברת דרכו שום שרת של DeskIT."
+        "On whose account",
+        "Your own key. You are their customer; nothing passes through a DeskIT server."
       ],
       [
-        "מה הספק אומר",
-        "Groq: \"not permitted to use Inputs or Outputs for training\"; בלי שמירה כברירת מחדל, יומני ניטור עד 30 יום אלא אם הפעלת Zero Data Retention בקונסולה של Groq. גיל 18 ומעלה. Google (Gemini, המסלול החינמי): התוכן משמש \"to provide, improve, and develop Google products\"; \"human reviewers may read, annotate, and process your API input and output\"; \"Do not submit sensitive, confidential, or personal information\". המכסה החינמית אינה מותרת ללקוחות API באיחוד האירופי, בבריטניה ובשווייץ. גיל 18 ומעלה."
+        "The providers say",
+        "Groq: \"not permitted to use Inputs or Outputs for training\"; nothing kept by default. 18+. Google (Gemini, free tier): used \"to provide, improve, and develop Google products\"; humans may read it. Not for the EU, UK or Switzerland. 18+."
       ],
       [
-        "איך מכבים",
-        "הגדרות > פרטיות > ביטול, או הסרת המפתח."
+        "Off again",
+        "Settings > Privacy, or remove the key."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
+    "footer": "Every connection DeskIT makes is listed under Settings > Privacy > Every connection, and in network.log."
   },
   "cloud_audio": {
     "kind": "cloud_audio",
-    "text_version": "groq-2026-06-22+gemini-2026-04-28",
-    "title": "לשלוח הקלטות לענן?",
+    "text_version": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+    "title": "Send recordings to the cloud?",
     "blocks": [
       [
-        "מה יוצא",
-        "ההקלטה של מה שאמרת עכשיו, כקובץ WAV, עם הנחיית תמלול קבועה."
+        "What leaves",
+        "The recording of what you just said, as a WAV file."
       ],
       [
-        "לאן",
-        "Google (Gemini) או Groq, לתמלול."
+        "To whom",
+        "Google (Gemini) or Groq, for transcription."
       ],
       [
-        "על חשבון מי",
-        "עם המפתח שאתה הדבקת. אתה הלקוח שלהם — DeskIT הוא הכלי שלך, ולא עוברת דרכו שום שרת של DeskIT."
+        "On whose account",
+        "Your own key. You are their customer; nothing passes through a DeskIT server."
       ],
       [
-        "מה הספק אומר",
-        "Google (Gemini, המסלול החינמי): התוכן משמש \"to provide, improve, and develop Google products\"; \"human reviewers may read, annotate, and process your API input and output\"; \"Do not submit sensitive, confidential, or personal information\". המכסה החינמית אינה מותרת ללקוחות API באיחוד האירופי, בבריטניה ובשווייץ. גיל 18 ומעלה. Groq: \"not permitted to use Inputs or Outputs for training\"; בלי שמירה כברירת מחדל, יומני ניטור עד 30 יום אלא אם הפעלת Zero Data Retention בקונסולה של Groq. גיל 18 ומעלה."
+        "The providers say",
+        "Google (Gemini, free tier): used \"to provide, improve, and develop Google products\"; humans may read it. Not for the EU, UK or Switzerland. 18+. Groq: \"not permitted to use Inputs or Outputs for training\"; nothing kept by default. 18+."
       ],
       [
-        "איך מכבים",
-        "הגדרות > פרטיות > ביטול, או הסרת המפתח. המנוע חוזר להיות מקומי."
+        "Off again",
+        "Settings > Privacy, or remove the key. The engine goes back to local."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
+    "footer": "Every connection DeskIT makes is listed under Settings > Privacy > Every connection, and in network.log."
   },
   "cloud_screenshots": {
     "kind": "cloud_screenshots",
-    "text_version": "groq-2026-06-22+gemini-2026-04-28",
-    "title": "לשלוח תמונת מסך לענן?",
+    "text_version": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+    "title": "Send a screenshot to the cloud?",
     "blocks": [
       [
-        "מה יוצא",
-        "תמונת JPEG של האזור שסימנת (צלע ארוכה עד 1,344 פיקסלים ל-Google, 896 ל-Groq), השאלה שלך, והשאלות והתשובות הקודמות באותו כרטיס. תמונת מסך יכולה להכיל דואר, בנק, כל מה שהיה על המסך."
+        "What leaves",
+        "A JPEG of the area you marked, your question, and the earlier questions on the same card. A screenshot can hold mail, a bank, anything that was on screen."
       ],
       [
-        "לאן",
-        "Groq ו/או Google, לשאלה על המסך."
+        "To whom",
+        "Groq and/or Google, for the question about the screen."
       ],
       [
-        "על חשבון מי",
-        "עם המפתח שאתה הדבקת. אתה הלקוח שלהם — DeskIT הוא הכלי שלך, ולא עוברת דרכו שום שרת של DeskIT."
+        "On whose account",
+        "Your own key. You are their customer; nothing passes through a DeskIT server."
       ],
       [
-        "מה הספק אומר",
-        "Groq: \"not permitted to use Inputs or Outputs for training\"; בלי שמירה כברירת מחדל, יומני ניטור עד 30 יום אלא אם הפעלת Zero Data Retention בקונסולה של Groq. גיל 18 ומעלה. Google (Gemini, המסלול החינמי): התוכן משמש \"to provide, improve, and develop Google products\"; \"human reviewers may read, annotate, and process your API input and output\"; \"Do not submit sensitive, confidential, or personal information\". המכסה החינמית אינה מותרת ללקוחות API באיחוד האירופי, בבריטניה ובשווייץ. גיל 18 ומעלה."
+        "The providers say",
+        "Groq: \"not permitted to use Inputs or Outputs for training\"; nothing kept by default. 18+. Google (Gemini, free tier): used \"to provide, improve, and develop Google products\"; humans may read it. Not for the EU, UK or Switzerland. 18+."
       ],
       [
-        "איך מכבים",
-        "הגדרות > פרטיות > ביטול, או הסרת המפתח."
+        "Off again",
+        "Settings > Privacy, or remove the key."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
+    "footer": "Every connection DeskIT makes is listed under Settings > Privacy > Every connection, and in network.log."
   },
   "account": {
     "kind": "account",
-    "text_version": "deskit-terms-0",
-    "title": "לפתוח חשבון?",
+    "text_version": "deskit-terms-0+en-2026-09-19",
+    "title": "Open an account?",
     "blocks": [
       [
-        "מה יוצא",
-        "מזהה חשבון — אנונימי, או כתובת הדוא\"ל של חשבון Google שבחרת להיכנס איתו; שם המחשב הזה; גרסת האפליקציה, גרסת Windows, דרגת החומרה."
+        "What leaves",
+        "An account id — anonymous, or the e-mail of the Google account you chose; this PC's name; the app, Windows and hardware versions."
       ],
       [
-        "לאן",
-        "השרת של DeskIT (Supabase, פרנקפורט) — השרת היחיד של DeskIT."
+        "To whom",
+        "DeskIT's server (Supabase, Frankfurt) — the only server DeskIT has."
       ],
       [
-        "על חשבון מי",
-        "על חשבון הפרויקט של DeskIT; המפתחות שלך לעולם לא נוסעים לשם — אין להם אפילו עמודה בבסיס הנתונים."
+        "On whose account",
+        "DeskIT's project; your keys never travel there — they have no column in the database."
       ],
       [
-        "מה הספק אומר",
-        "תנאי השימוש בעמוד אחד, ומדיניות הפרטיות."
+        "The providers say",
+        "The one-page terms and the privacy policy."
       ],
       [
-        "איך מכבים",
-        "הנתונים שלי > מחיקת החשבון."
+        "Off again",
+        "Your data > Delete my account."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
+    "footer": "Every connection DeskIT makes is listed under Settings > Privacy > Every connection, and in network.log."
   },
   "report_upload": {
     "kind": "report_upload",
-    "text_version": "deskit-terms-0",
-    "title": "לשלוח דיווחי בעיות?",
+    "text_version": "deskit-terms-0+en-2026-09-19",
+    "title": "Send problem reports?",
     "blocks": [
       [
-        "מה יוצא",
-        "רק מה שהתצוגה המקדימה של הדיווח הראתה — אחרי ניקוי."
+        "What leaves",
+        "Only what the report's preview showed — after the clean-up."
       ],
       [
-        "לאן",
-        "השרת של DeskIT (Supabase, פרנקפורט)."
+        "To whom",
+        "DeskIT's server (Supabase, Frankfurt) — the only server DeskIT has."
       ],
       [
-        "על חשבון מי",
-        "על חשבון הפרויקט של DeskIT, דרך החשבון האנונימי שלך."
+        "On whose account",
+        "DeskIT's project, through your anonymous account."
       ],
       [
-        "מה הספק אומר",
-        "תנאי השימוש בעמוד אחד, ומדיניות הפרטיות."
+        "The providers say",
+        "The one-page terms and the privacy policy."
       ],
       [
-        "איך מכבים",
-        "לשמור על המחשב הזה במקום, או הגדרות > פרטיות > ביטול."
+        "Off again",
+        "Keep it on this PC instead, or Settings > Privacy > Withdraw."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
+    "footer": "Every connection DeskIT makes is listed under Settings > Privacy > Every connection, and in network.log."
   },
   "settings_sync": {
     "kind": "settings_sync",
-    "text_version": "deskit-terms-0",
-    "title": "לסנכרן הגדרות ומילים?",
+    "text_version": "deskit-terms-0+en-2026-09-19",
+    "title": "Sync settings and words?",
     "blocks": [
       [
-        "מה יוצא",
-        "השינויים שלך בהגדרות והמילים שלמדת (מה נשמע ומה התכוונת) — לעולם לא מפתחות, מקשים, מכשירים, תיקיות או מיקומים; לעולם לא שמע, היסטוריה או דיווחים."
+        "What leaves",
+        "Your settings changes and the words you taught it — never keys, hotkeys, devices, folders or positions; never audio, history or reports."
       ],
       [
-        "לאן",
-        "השרת של DeskIT (Supabase, פרנקפורט), וממנו לכל מחשב שתיכנס אליו עם אותו חשבון."
+        "To whom",
+        "DeskIT's server (Supabase, Frankfurt) — the only server DeskIT has. From there to every PC you sign in on."
       ],
       [
-        "על חשבון מי",
-        "על חשבון הפרויקט של DeskIT, דרך החשבון שלך."
+        "On whose account",
+        "DeskIT's project, through your account."
       ],
       [
-        "מה הספק אומר",
-        "תנאי השימוש בעמוד אחד, ומדיניות הפרטיות."
+        "The providers say",
+        "The one-page terms and the privacy policy."
       ],
       [
-        "איך מכבים",
-        "הגדרות > פרטיות > ביטול."
+        "Off again",
+        "Settings > Privacy > Withdraw."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
+    "footer": "Every connection DeskIT makes is listed under Settings > Privacy > Every connection, and in network.log."
   },
   "history_sync": {
     "kind": "history_sync",
-    "text_version": "deskit-terms-0",
-    "title": "לסנכרן את מה שאמרת?",
+    "text_version": "deskit-terms-0+en-2026-09-19",
+    "title": "Sync what you said?",
     "blocks": [
       [
-        "מה יוצא",
-        "כל מה שהכתבת, תרגמת, פיסקת וחיפשת — הטקסט, לא ההקלטה — כדי שעמוד \"נאמר\" יהיה זהה בכל מחשב שלך."
+        "What leaves",
+        "Everything you dictated, translated, punctuated and looked up — the text, not the recording — so the Said page is the same on every PC."
       ],
       [
-        "לאן",
-        "השרת של DeskIT (Supabase, פרנקפורט). הוא נשמר בחשבון שלך; המפתח של DeskIT יכול טכנית לקרוא אותו — ההגנה מפרידה בין משתמשים, לא מפני מנהל הפרויקט."
+        "To whom",
+        "DeskIT's server (Supabase, Frankfurt) — the only server DeskIT has. Kept in your account; DeskIT's key can technically read it — the protection separates users, not the project's admin."
       ],
       [
-        "על חשבון מי",
-        "על חשבון הפרויקט של DeskIT, דרך החשבון שלך."
+        "On whose account",
+        "DeskIT's project, through your account."
       ],
       [
-        "מה הספק אומר",
-        "תנאי השימוש בעמוד אחד, ומדיניות הפרטיות."
+        "The providers say",
+        "The one-page terms and the privacy policy."
       ],
       [
-        "איך מכבים",
-        "הגדרות > פרטיות > ביטול; \"מחיקת החשבון\" מוחקת גם את מה שכבר סונכרן."
+        "Off again",
+        "Settings > Privacy > Withdraw; \"Delete my account\" removes what was synced too."
       ]
     ],
-    "footer": "כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > EVERY CONNECTION ובקובץ network.log."
+    "footer": "Every connection DeskIT makes is listed under Settings > Privacy > Every connection, and in network.log."
   }
 }

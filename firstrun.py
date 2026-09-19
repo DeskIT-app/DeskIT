@@ -76,6 +76,7 @@ before the window.
 from __future__ import annotations
 
 import dataclasses
+import gc
 import logging
 import os
 import queue
@@ -109,7 +110,7 @@ log = logging.getLogger("app")
 # key), and older copies that wrote it are still honoured by needed().
 MARKER = paths.SETUP_MARKER
 
-W, H = 720, 660
+W, H = 720, 720                     # 660 until 2026-09-19: the consent panel lives on the extras card now
 PAD = 28
 INNER = W - 2 * PAD                 # the width everything on a page gets
 METER_W, METER_H = INNER, 12
@@ -190,6 +191,8 @@ WORDS = {
     "computer.pack.help": "{size} of NVIDIA's CUDA libraries from PyPI, under NVIDIA's licence.",
     "computer.detector": "Detect English automatically",
     "computer.detector.help": "{size} more on the disk, and the same in video memory.",
+    "computer.recording": "Screen recording and the camera",
+    "computer.recording.help": "{size} from PyPI: PyAV with FFmpeg (a GPL build), for the record key, the photo key and the phone's audio.",
     "computer.queue": "{n} of {total} · {name} · ",
     "step.model.title": "The Hebrew model",
     "step.model.body": ("DeskIT transcribes on this computer, without the cloud, with a "
@@ -204,6 +207,9 @@ WORDS = {
     "step.detector.body": ("A second, general model that notices when you spoke English and "
                            "transcribes it as English: {size} more on the disk and in video "
                            "memory. Without it an English sentence comes out in Hebrew letters."),
+    "step.recording.title": "Screen recording and the camera",
+    "step.recording.body": ("The record key, the photo key and the phone's audio need PyAV — "
+                            "{size} from PyPI, with FFmpeg (a GPL build), under their own licences."),
     "step.done": "Downloaded and verified.",
     "step.offline": ("No internet connection. DeskIT asks again at the next start, and the "
                      "download continues from the same point."),
@@ -217,6 +223,8 @@ WORDS = {
     "say.loaded_ready": "Model loaded in {seconds:.1f} s — now press Record and say a sentence.",
     "say.load_failed": "The model could not load: {error}",
     "say.waiting": "The model is still downloading — the bar above. You can skip and try from the desk.",
+    "say.waiting.idle": "The model is not downloaded yet — press Download above, or skip and get it from the desk.",
+    "say.waiting.stopped": "The download stopped — Download above continues it, or skip and finish it from the desk.",
     "say.placeholder": "Your sentence appears here.",
     "say.button": "Record 3 seconds",
     "say.recording": "Recording…",
@@ -245,12 +253,18 @@ WORDS = {
                    "later in Settings."),
     "extras.cloud": "Fix misheard words with a free cloud model (text only)",
     "extras.cloud.help": "Needs your own free Groq key; the text of what you said leaves this PC.",
-    "extras.cloud.key": "Consent recorded. Paste your free Groq key below and the fix is on.",
-    "extras.key.have": "A Groq key is already stored on this PC — the fix is on.",
+    "extras.cloud.key": "Paste your free Groq key — it is checked the moment you save it.",
+    "extras.key.have": "A Groq key is already stored on this PC — checking it…",
+    "extras.key.testing": "Checking the key with Groq…",
+    "extras.key.works": "Key works — cloud repair is on.",
+    "extras.key.refused": "Groq refused this key ({detail}) — check it and paste it again.",
+    "extras.key.offline": "Could not reach Groq ({detail}) — the key was kept; it is checked again when the cloud is used.",
+    "extras.key.wait": "Turn the cloud switch off, or paste a working key.",
+    "extras.key.checking": "Checking the key…",
     "extras.key.placeholder": "Paste your Groq API key here",
     "extras.key.save": "Save key",
     "extras.key.get": "No key yet? Get a free one at console.groq.com/keys — a minute, no card needed.",
-    "extras.key.stored": "Stored in Windows Credential Manager. Cloud repair is on.",
+    "extras.key.stored": "Stored in Windows Credential Manager — checking it with Groq…",
     "extras.key.empty": "Nothing to save — paste the key first.",
     "extras.key.failed": "Could not store the key: {error}",
     "extras.awake": "Keep this PC awake while DeskIT runs",
@@ -266,16 +280,15 @@ WORDS = {
     "done.phone": "Dictate from your phone",
     "done.phone.help": "This PC listens for the DeskIT keyboard on your Tailscale address (Settings > Phone shows how).",
     "done.title": "DeskIT is ready",
-    "done.sub": "Hold the key and talk. The text lands where your cursor is, in any window.",
+    "done.sub": "Hold the key and talk. The text lands where your cursor is, in any window. Start opens the desk.",
     "done.deferred": ("DeskIT is installed. The Hebrew model can be downloaded from the desk "
                       "whenever you like."),
     "done.hold": "Hold",
-    "done.desk": "Open the desk",
     "next": "Next", "back": "Back", "skip": "Skip", "finish": "Start",
     "saved.error": "Could not save: {error}",
 }
 
-GUIDE_PRIVACY_CHECK = f"{paths.PAGES_URL}/he/04-privacy"      # guide chapter 4
+GUIDE_PRIVACY_CHECK = f"{paths.PAGES_URL}/en/04-privacy"      # guide chapter 4, in the wizard's language
 PRIVACY_URL = f"{paths.PAGES_URL}/privacy"
 
 
@@ -793,7 +806,7 @@ def downloads_for(cfg, facts: dict | None) -> dict:
     cache, as always). Everything that is already on disk is left out,
     so `--setup` on a finished install shows an empty page."""
     out = {"portable": paths.PORTABLE, "model": None, "pack": None,
-           "detector": None, "tier": (facts or {}).get("tier", "")}
+           "detector": None, "recording": None, "tier": (facts or {}).get("tier", "")}
     if paths.PORTABLE:
         return out
     import models
@@ -803,6 +816,14 @@ def downloads_for(cfg, facts: dict | None) -> dict:
         out["model"] = models.entry(repo)
     if packs.wanted(cfg, facts):
         out["pack"] = packs.pack("gpu")
+    # The Recording pack (PyAV, 13.4): offered HERE, on by default, so
+    # nobody meets "needs the Recording pack" on the record key later —
+    # the owner's stranger walk, 2026-09-19 evening: "the software comes
+    # with everything; nobody installs things in the middle". It stays a
+    # download rather than a line in the installer because PyAV's wheel
+    # bundles a GPL FFmpeg (D24) — fetched with its licences shown.
+    if packs.state("recording") in ("missing", "stale"):
+        out["recording"] = packs.pack("recording")
     # The detector goes with the CARD, not with the tier of the moment:
     # on a first start the pack is not there yet, the tier says cpu, and
     # the cpu tier's machine layer blanks local.english_model — so the
@@ -827,6 +848,28 @@ def english_step(kind: str, step: steps.Step, size: int) -> steps.Step:
     said = {"done": words["step.done"], "offline": words["step.offline"],
             "paused": words["step.paused"], "failed": words["step.failed"]}
     return dataclasses.replace(step, title=title, body=body, said=said)
+
+
+class KeyRefused(Exception):
+    """Groq answered, and the answer was no (a 4xx): the key is wrong."""
+
+
+def key_probe() -> int:
+    """How many models the stored Groq key can see — the one `key-test`
+    call, the same the desk's Privacy tab makes. KeyRefused on a 4xx
+    (the key itself), any other error for the road (offline, a 5xx)."""
+    import json as json_mod
+
+    import net
+    status, _headers, body = net.request(
+        "GET", "https://api.groq.com/openai/v1/models", "key-test",
+        secret="groq", timeout_s=20)
+    if 400 <= status < 500:
+        raise KeyRefused(f"HTTP {status}")
+    if status != 200:
+        raise RuntimeError(f"HTTP {status}")
+    data = json_mod.loads(body.decode("utf-8"))
+    return len(data.get("data") or [])
 
 
 def _write_key(field: str) -> str:
@@ -870,11 +913,16 @@ class Result:
     wrote `setup.done`; the two side facts main.py acts on."""
 
     def __init__(self, saved: bool = False, open_desk: bool = False,
-                 installed_pack: bool = False, signed_in: bool = False):
+                 installed_pack: bool = False, signed_in: bool = False,
+                 closed: bool = False):
         self.saved = saved
         self.open_desk = open_desk
         self.installed_pack = installed_pack
         self.signed_in = signed_in
+        #: The X on the window: the person left. Nothing starts behind
+        #: their back (the owner, 2026-09-19 evening: "I pressed the red
+        #: X and the model just started out of nowhere").
+        self.closed = closed
 
     def __bool__(self) -> bool:
         return self.saved
@@ -935,7 +983,8 @@ class Wizard:
         self.queue: list[str] = []
         self.active: int = -1
         self.want = {"pack": self.offers.get("pack") is not None,
-                     "detector": self.offers.get("detector") is not None}
+                     "detector": self.offers.get("detector") is not None,
+                     "recording": self.offers.get("recording") is not None}
         # The extras page shows each switch as it STANDS (D34: the
         # defaults are what the owner runs — keep-awake ships on, the
         # update check ships on, the phone and autostart off) and writes
@@ -1036,6 +1085,8 @@ class Wizard:
         self.pane = None
         self.meter = None
         self.hint = None
+        self.say = None
+        self.waiting = None
         self.list_holder = None
         self.caps = {}
         self.rings = {}
@@ -1055,7 +1106,8 @@ class Wizard:
             badge.pack(side="left", padx=(0, 8))
         tk.Label(row, text=WORDS["eyebrow"], bg=ui.BG, fg=ui.DIM,
                  font=(ui.MEDIUM, 9)).pack(side="left")
-        tk.Label(row, text=WORDS["step"].format(n=self.page + 1, total=len(PAGES)),
+        shown = [name for name in PAGES if not self._hidden(name)]
+        tk.Label(row, text=WORDS["step"].format(n=shown.index(self.name) + 1, total=len(shown)),
                  bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 9)).pack(side="right")
         tk.Label(self.body, text=title, bg=ui.BG, fg=ui.FG,
                  font=(ui.DISPLAY, 18), anchor="w").pack(fill="x", pady=(16, 2))
@@ -1133,7 +1185,7 @@ class Wizard:
         parent = parent or self.body
         bg = bg or ui.BG
         row = tk.Frame(parent, bg=bg)
-        row.pack(fill="x", pady=(0, 0 if last else 10))
+        row.pack(fill="x", pady=(0, 0 if last else 8))
         switch = ui.Switch(row, value, command, bg=bg)
         switch.pack(side="left", padx=(0, 14), pady=(2, 0))
         words = tk.Frame(row, bg=bg)
@@ -1478,7 +1530,7 @@ class Wizard:
         if offers.get("portable"):
             self._line(WORDS["computer.portable"], colour=ui.DIM, size=10)
             return
-        if not any(offers.get(k) for k in ("model", "pack", "detector")):
+        if not any(offers.get(k) for k in ("model", "pack", "detector", "recording")):
             self._line(WORDS["computer.ready"], colour=ui.GREEN, size=11)
             return
         self._ensure_runs()
@@ -1513,6 +1565,14 @@ class Wizard:
                 self.want["detector"], lambda _v=None: self._flip("detector"))
             if started:
                 switch.configure(state="disabled")
+        if offers.get("recording") is not None:
+            r = offers["recording"]
+            switch = self._switch_row(
+                WORDS["computer.recording"],
+                WORDS["computer.recording.help"].format(size=steps.human(r.bytes)),
+                self.want["recording"], lambda _v=None: self._flip("recording"))
+            if started:
+                switch.configure(state="disabled")
 
     def _flip(self, which: str) -> None:
         if self.active >= 0:
@@ -1529,9 +1589,15 @@ class Wizard:
                 closing=None, on_end=self._run_ended, compact=True,
                 prefix=self._prefix(), on_go=self._download)
             self.pane.pack(fill="x", pady=(0, 14))
+        self.waiting = None
         if self._model_missing():
-            self._line(WORDS["say.waiting"], colour=ui.AMBER, size=10,
-                       pady=(0, 12))
+            # Three ways to be without the model, three sentences: the
+            # stranger who pressed Next past page 4 without Download
+            # (the checkout's own walk, 2026-09-19) read "still
+            # downloading" over a bar that had never moved. The tick
+            # keeps the sentence with the run (_say_ready).
+            self.waiting = self._line(WORDS[self._waiting_key()], colour=ui.AMBER,
+                                      size=10, pady=(0, 12))
         # One primary button, two jobs in order: load the model, then
         # record. People do not read the small print (the owner, 1.1.1
         # walkthrough, 2026-09-19): a Record that silently spent five
@@ -1570,6 +1636,12 @@ class Wizard:
                                            width=INNER - 36)
         self._fit(card)
 
+    def _waiting_key(self) -> str:
+        state = self.runs["model"].state
+        return ("say.waiting" if state == "running"
+                else "say.waiting.idle" if state == "idle"
+                else "say.waiting.stopped")
+
     def _say_ready(self) -> None:
         """The record button waits for the model: a queue still running
         means the backend would load a half-written folder or the CPU."""
@@ -1579,6 +1651,13 @@ class Wizard:
         self.say.enable(not waiting and not self._busy)
         if waiting and not self._busy:
             self.status.configure(text="", fg=ui.DIM)
+        line = getattr(self, "waiting", None)
+        if line is not None:
+            if not waiting:
+                line.pack_forget()            # it landed while this page was up
+                self.waiting = None
+            elif line.cget("text") != WORDS[self._waiting_key()]:
+                line.configure(text=WORDS[self._waiting_key()])
 
     def _computer_gate(self) -> None:
         """Next waits for the downloads of this page: the owner watched
@@ -1734,27 +1813,51 @@ class Wizard:
                 ("updates", WORDS["extras.updates"], WORDS["extras.updates.help"]),
                 ("claude", WORDS["extras.claude"], WORDS["extras.claude.help"]),
                 ("snip", WORDS["extras.snip"], WORDS["extras.snip.help"])]
+        self.extras_card = card
+        self.cloud_slot = None
         for i, (key, label, help_) in enumerate(rows):
             self.switches[key] = self._switch_row(
                 label, help_, self.extras[key],
                 lambda _v=None, k=key: self._extra_flipped(k),
                 parent=card.body, bg=ui.CARD, last=i == len(rows) - 1)
+            if key == "cloud":
+                # What the cloud row opens — the consent, then the key —
+                # opens HERE, under the row, inside the card (the owner's
+                # walk of 2026-09-19: not a window somewhere else, not a
+                # square field under the card).
+                self.cloud_slot = tk.Frame(card.body, bg=ui.CARD)
+                self.cloud_slot.pack(fill="x")
         self._fit(card)
         self.key_panel = None
+        self._key_state = "none"      # none | testing | ok | bad — Next waits for ok
         if self.extras.get("cloud"):
             self._show_key_panel()
 
     def _extra_flipped(self, key: str) -> None:
         on = self.switches[key].get()
         if key == "cloud":
-            # The gate opens only through its card (privacy.py): the
-            # switch shows the answer, never the wish. Off is immediate
+            # THE SWITCH IS THE CONSENT here (the owner, 2026-09-19 evening:
+            # "whoever turns it on — that is enough"): the row's own two
+            # lines say what leaves and to whom, and privacy.grant records
+            # the same text_version the card carries, so Settings > Privacy
+            # shows the grant like any other. Off is immediate
             # (privacy.withdraw), like the Privacy tab's button.
             if on:
-                self.switches[key].set(False)
-                self.extras["cloud"] = False
-                self._ask_consent("cloud_text", self._cloud_answered)
+                granted = False
+                try:
+                    import consent_card as cc
+                    import privacy
+                    privacy.grant("cloud_text", cc.card_for("cloud_text")["text_version"])
+                    granted = True
+                except Exception as e:                     # noqa: BLE001
+                    log.warning("the wizard could not record the cloud consent: %s", e)
+                self.extras["cloud"] = granted
+                if granted:
+                    self._show_key_panel()
+                else:
+                    self.switches[key].set(False)
             else:
+                self._clear_slot()
                 self.extras["cloud"] = False
                 try:
                     import privacy
@@ -1764,27 +1867,38 @@ class Wizard:
             return
         self.extras[key] = on
 
-    def _cloud_answered(self, granted: bool) -> None:
-        self.extras["cloud"] = granted
-        if "cloud" in getattr(self, "switches", {}):
-            try:
-                self.switches["cloud"].set(granted)
-            except Exception:                              # noqa: BLE001
-                pass
-        if granted:
-            self._show_key_panel()
+    def _clear_slot(self) -> None:
+        """Whatever the cloud row had opened under it, gone; the card
+        shrinks back to its rows."""
+        slot = getattr(self, "cloud_slot", None)
+        if slot is None or not slot.winfo_exists():
+            return
+        for child in slot.winfo_children():
+            child.destroy()
+        # A frame whose last child is gone KEEPS its size (the packer only
+        # propagates while it has slaves): back to the 1 px it was born.
+        slot.configure(height=1)
+        self.key_panel = None
+        self._key_state = "none"
+        self._fit(self.extras_card)
 
     def _show_key_panel(self) -> None:
-        """The Groq key, asked for where the switch is (the owner, 1.1.1
-        walkthrough: "make it clickable, open a field for the key, and a
-        line that sends people to Groq's site"): a masked field, Save,
-        and the way to a free key for anyone who has none. The value
-        goes to secretstore (Credential Manager) and nowhere else."""
+        """The Groq key, asked for under the switch, ON the card (the
+        owner, 1.1.1 walkthrough: "make it clickable, open a field for
+        the key, and a line that sends people to Groq's site"; his
+        stranger walk of 2026-09-19: "inside the card, under the row I
+        flipped, pretty and rounded"): a masked ui.Field, Save, and the
+        way to a free key for anyone who has none. The value goes to
+        secretstore (Credential Manager) and nowhere else."""
         if self.name != "extras" or getattr(self, "key_panel", None) is not None:
             return
+        slot = getattr(self, "cloud_slot", None)
+        if slot is None or not slot.winfo_exists():
+            return
+        self._clear_slot()
         import secretstore
-        panel = tk.Frame(self.body, bg=ui.BG)
-        panel.pack(fill="x", pady=(12, 0))
+        panel = tk.Frame(slot, bg=ui.CARD)
+        panel.pack(fill="x", padx=(54, 0), pady=(2, 10))    # under the words, past the switch
         self.key_panel = panel
         have = False
         try:
@@ -1792,30 +1906,35 @@ class Wizard:
         except Exception:                                  # noqa: BLE001
             pass
         self.key_note = tk.Label(panel, text=WORDS["extras.key.have"] if have else WORDS["extras.cloud.key"],
-                                 bg=ui.BG, fg=ui.GREEN if have else ui.DIM, font=(ui.UI, 10),
-                                 anchor="w", justify="left", wraplength=INNER)
+                                 bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9),
+                                 anchor="w", justify="left", wraplength=INNER - 110)
         self.key_note.pack(fill="x")
-        row = tk.Frame(panel, bg=ui.BG)
-        row.pack(fill="x", pady=(8, 0))
-        self.key_field = tk.Entry(row, show="\u2022", bg=ui.CARD, fg=ui.FG,
-                                  insertbackground=ui.FG, relief="flat",
-                                  font=(ui.UI, 11), highlightthickness=1,
-                                  highlightbackground=ui.LINE, highlightcolor=ui.ACCENT)
-        self.key_field.pack(side="left", fill="x", expand=True, ipady=7, padx=(0, 10))
-        self.key_field.bind("<Return>", lambda _e: self._save_key())
+        row = tk.Frame(panel, bg=ui.CARD)
+        row.pack(fill="x", pady=(6, 0))
+        self.key_box = ui.Field(row, w=INNER - 110 - 130, h=34, bg=ui.CARD, justify="left",
+                                placeholder=WORDS["extras.key.placeholder"], pt=10)
+        self.key_box.pack(side="left", padx=(0, 10))
+        self.key_field = self.key_box.entry
+        self.key_field.configure(show="\u2022")
+        self.key_box.bind_entry("<Return>", lambda _e: self._save_key())
         self.key_save = ui.Button(row, WORDS["extras.key.save"], self._save_key,
-                                  bg=ui.BG, primary=True, w=120, h=38)
+                                  bg=ui.CARD, primary=True, w=120, h=34)
         self.key_save.pack(side="left")
         self._link(WORDS["extras.key.get"], "https://console.groq.com/keys",
-                   parent=panel).pack(fill="x", pady=(8, 0))
+                   parent=panel, bg=ui.CARD).pack(fill="x", pady=(6, 0))
+        self._fit(self.extras_card)
         self.key_field.focus_set()
+        if have:
+            self._test_key()
 
     def _save_key(self) -> None:
-        """The pasted value into the store — never into a file — and the
-        field emptied either way."""
+        """The pasted value into the store — never into a file — the
+        field emptied either way, and the key checked with Groq at once
+        (the owner, 2026-09-19: "a quick check that it really exists and
+        works")."""
         import secretstore
         value = self.key_field.get().strip()
-        self.key_field.delete(0, "end")
+        self.key_box.set("")                 # emptied either way; the placeholder returns
         if not value:
             self.key_note.configure(text=WORDS["extras.key.empty"], fg=ui.AMBER)
             return
@@ -1825,88 +1944,67 @@ class Wizard:
             self.key_note.configure(text=WORDS["extras.key.failed"].format(error=e), fg=ui.RED)
             return
         del value
-        self.key_note.configure(text=WORDS["extras.key.stored"], fg=ui.GREEN)
+        self.key_note.configure(text=WORDS["extras.key.stored"], fg=ui.DIM)
+        self._test_key()
 
-    def _ask_consent(self, kind: str, answer) -> None:
-        """The consent card's own picture (consent_card.flat) in a small
-        window over the wizard, its two buttons hit-tested the way the
-        painted card does it — one Tk, no second thread, the same words
-        and the same text_version privacy.grant records."""
-        try:
-            import consent_card as cc
-            from PIL import ImageTk
-        except Exception as e:                             # noqa: BLE001
-            log.info("no consent card for the wizard: %r", e)
-            answer(False)
-            return
-        card = cc.card_for(kind)
-        cache: dict = {}
-        scale = 1.0
-        width, height = cc.measure(card, scale, cache)
-        if height > H - 40:
-            scale = max(0.7, (H - 40) / height)
-            width, height = cc.measure(card, scale, cache)
-        top = tk.Toplevel(self.root)
-        top.overrideredirect(True)
-        top.configure(bg=ui.BG)
-        top.transient(self.root)
-        self.root.update_idletasks()
-        x = self.root.winfo_rootx() + (W - width) // 2
-        y = self.root.winfo_rooty() + max(0, (H - height) // 2)
-        top.geometry(f"{width}x{height}+{x}+{y}")
-        photo = ImageTk.PhotoImage(cc.flat(card, scale, None, cache), master=top)
-        face = tk.Label(top, image=photo, bd=0, bg=ui.BG, cursor="hand2")
-        face.photo = photo
-        face.pack()
-        answered = {"done": False}
+    def _test_key(self) -> None:
+        """One `key-test` request through net.py on a thread — Groq's
+        model list under the stored key; the value never touches this
+        code, net.py attaches it by name. The answer lands through the
+        queue the tick drains."""
+        self._key_state = "testing"
 
-        def finish(granted: bool) -> None:
-            if answered["done"]:
-                return
-            answered["done"] = True
+        def work() -> None:
             try:
-                top.grab_release()
-                top.destroy()
+                count = key_probe()
+            except KeyRefused as e:
+                detail = str(e)               # bound now: `e` is gone once the clause ends
+                self._later(lambda: self._key_tested("bad", detail))
+            except Exception as e:                         # noqa: BLE001
+                detail = str(e)[:120]
+                self._later(lambda: self._key_tested("offline", detail))
+            else:
+                self._later(lambda: self._key_tested("ok", str(count)))
+
+        threading.Thread(target=work, daemon=True, name="setup-key-test").start()
+
+    def _key_tested(self, word: str, detail: str) -> None:
+        """A refused key is taken out of the store again — "turn it off
+        or paste a key" only makes sense while nothing is there."""
+        if self.name != "extras" or getattr(self, "key_note", None) is None:
+            return
+        if word == "ok":
+            self._key_state = "ok"
+            self.key_note.configure(text=WORDS["extras.key.works"], fg=ui.GREEN)
+        elif word == "bad":
+            self._key_state = "bad"
+            try:
+                import secretstore
+                secretstore.delete("groq")
             except Exception:                              # noqa: BLE001
                 pass
-            if granted:
-                try:
-                    import privacy
-                    privacy.grant(kind, card["text_version"])
-                except Exception as e:                     # noqa: BLE001
-                    log.warning("the wizard could not record the consent "
-                                "for %s: %s", kind, e)
-                    granted = False
-            else:
-                try:
-                    import privacy
-                    privacy.not_now(kind)
-                except Exception:                          # noqa: BLE001
-                    pass
-            answer(granted)
+            self.key_note.configure(text=WORDS["extras.key.refused"].format(detail=detail), fg=ui.RED)
+        else:
+            # no answer from Groq: the key stays, and so does the person
+            # — the cloud pass checks it again on its first use
+            self._key_state = "ok"
+            self.key_note.configure(text=WORDS["extras.key.offline"].format(detail=detail), fg=ui.AMBER)
+        self._extras_gate()
 
-        def click(event) -> None:
-            _where, hit = cc.hit_test(card, scale, event.x + cc.SHADOW,
-                                      event.y + cc.SHADOW, cache)
-            if hit == cc.TURN_ON:
-                finish(True)
-            elif hit == cc.NOT_NOW:
-                finish(False)
-
-        face.bind("<Button-1>", click)
-        top.bind("<Escape>", lambda _e: finish(False))
-        top.protocol("WM_DELETE_WINDOW", lambda: finish(False))
-        try:
-            # In front and kept there: on the owner's second monitor
-            # (2026-09-19, negative x) the card opened BEHIND the wizard
-            # with its grab held — "no button responds".
-            top.lift()
-            top.attributes("-topmost", True)
-            top.grab_set()
-            top.focus_force()
-        except Exception:                                  # noqa: BLE001
-            pass
-        self.consent_window = top
+    def _extras_gate(self) -> None:
+        """Next waits while the cloud switch is on with no working key
+        (the owner, 2026-09-19: "if I turned it on and put no key it must
+        not let me continue — turn it off or paste a key")."""
+        if self.name != "extras":
+            return
+        waiting = bool(self.extras.get("cloud")) and self._key_state != "ok"
+        for twin in (self.next_loud, self.next_quiet):
+            twin.enable(not waiting)
+        text = ""
+        if waiting:
+            text = WORDS["extras.key.checking" if self._key_state == "testing" else "extras.key.wait"]
+        if self.note.cget("text") != text:
+            self.note.configure(text=text, fg=ui.DIM)
 
     # ----------------------------------------------------------------- ready
     def _page_done(self) -> None:
@@ -1929,11 +2027,12 @@ class Wizard:
                 lambda _v=None, k=key: self._extra_flipped(k), parent=card.body,
                 bg=ui.CARD, last=i == len(rows) - 1)
         self._fit(card)
-        self.desk = ui.Button(self.body, WORDS["done.desk"], self._open_desk,
-                              bg=ui.BG, w=160)
-        self.desk.pack(anchor="w", pady=(18, 0))
 
     def _open_desk(self) -> None:
+        """[Start]: the app AND the desk. Until 2026-09-19 evening the desk
+        had a button of its own beside Start, and the owner pressed Start
+        without it — "the model ran without the app": a dot and nothing
+        to look at. One way out of the wizard, and it opens the desk."""
         self.result.open_desk = True
         self._save_extras()
         self._finish()
@@ -1942,14 +2041,14 @@ class Wizard:
     def _step_for(self, kind: str, thing) -> steps.Step:
         import models
         import packs
-        if kind == "pack":
+        if kind in ("pack", "recording"):
             return packs.step(thing)
         if kind == "detector":
             return models.step(thing, words=models.DETECTOR_TEXT)
         return models.step(thing)
 
     def _ensure_runs(self) -> None:
-        for kind in ("model", "pack", "detector"):
+        for kind in ("model", "pack", "detector", "recording"):
             thing = self.offers.get(kind)
             if thing is not None and kind not in self.runs:
                 step = self._stepper(kind, thing)
@@ -1966,7 +2065,7 @@ class Wizard:
                 if self.pane is not None:
                     self.pane.refresh()
             return
-        self.queue = [k for k in ("model", "pack", "detector")
+        self.queue = [k for k in ("model", "pack", "detector", "recording")
                       if k in self.runs and (k == "model" or self.want.get(k))]
         if not self.queue:
             return
@@ -2005,6 +2104,12 @@ class Wizard:
             kind = self.queue[self.active] if 0 <= self.active < len(self.queue) else ""
             if kind == "pack":
                 self._after_pack()
+            if kind == "recording":
+                try:
+                    import packs
+                    packs.activate("recording")   # the record key works from here
+                except Exception:                              # noqa: BLE001
+                    log.info("the Recording pack landed but was not activated", exc_info=True)
             if self.active + 1 < len(self.queue):
                 self.active += 1
                 nxt = self.runs[self.queue[self.active]]
@@ -2066,6 +2171,8 @@ class Wizard:
                 self._computer_gate()
             if self.name == "say":
                 self._say_ready()
+            if self.name == "extras":
+                self._extras_gate()
         except Exception:                                  # noqa: BLE001
             log.debug("the wizard's tick tripped", exc_info=True)
         self.root.after(60, self._tick)
@@ -2102,12 +2209,15 @@ class Wizard:
 
     def _model_landed(self, backend, load_s: float, error: str) -> None:
         self._busy = False
+        if backend is not None:
+            self._backend = backend
+            self._said_loaded = True
+        if self.name != "say" or self.say is None:
+            return                # the page moved on; the model is kept
         if backend is None:
             self.status.configure(text=WORDS["say.load_failed"].format(error=error), fg=ui.RED)
             self.say.enable(True)
             return
-        self._backend = backend
-        self._said_loaded = True
         self.status.configure(text=WORDS["say.loaded_ready"].format(seconds=load_s), fg=ui.GREEN)
         self.say.configure_text(WORDS["say.button"])
         self._say_ready()
@@ -2153,6 +2263,8 @@ class Wizard:
     def _on_result(self, heard: Heard) -> None:
         def land():
             self._busy = False
+            if self.name != "say" or self.say is None:
+                return            # the page moved on while it decoded
             self.say.enable(True)
             if heard.problem:
                 self.status.configure(text=heard.problem, fg=ui.RED)
@@ -2192,12 +2304,24 @@ class Wizard:
             log.debug("the test seconds were not written", exc_info=True)
 
     # ----------------------------------------------------------- navigation
+    def _hidden(self, name: str) -> bool:
+        """A page with nothing on it is not shown (the owner, 2026-09-19
+        evening: "I do not want the installation page"): the computer
+        page when nothing is left to download — a copy whose downloads
+        landed, or a portable one."""
+        if name != "computer":
+            return False
+        offers = self.offers
+        return not any(offers.get(k) for k in ("model", "pack", "detector", "recording"))
+
     def _back(self) -> None:
         if self.page == 0:
             return
         if self.name == "mic":
             self.listener.close()
         self.page -= 1
+        while self.page > 0 and self._hidden(self.name):
+            self.page -= 1
         self._show_page()
 
     def _skip(self) -> None:
@@ -2207,17 +2331,19 @@ class Wizard:
     def _next(self) -> None:
         if self.name == "mic":
             self._save_device()
-        if self.name in ("extras", "done"):
-            self._save_extras()
         if self.name == "done":
-            self._finish()
+            self._open_desk()
             return
+        if self.name == "extras":
+            self._save_extras()
         self._advance()
 
     def _advance(self) -> None:
         if self.name == "mic":
             self.listener.close()
         self.page += 1
+        while self.page < len(PAGES) - 1 and self._hidden(self.name):
+            self.page += 1
         if self.name == "say":
             # the sentence page records: the stream is opened again
             self.listener.listen_to(self.device)
@@ -2303,6 +2429,8 @@ class Wizard:
         self._close()
 
     def _close(self) -> None:
+        if not self.result.saved:
+            self.result.closed = True      # the X, not Start
         self._closing = True
         self.listener.close()
         for run in self.runs.values():
@@ -2370,11 +2498,26 @@ def run(cfg, path: Path | None = None,
     Never raises. This runs before anything else does, and a wizard that
     can stop the app from starting is worse than no wizard at all.
     """
+    wizard = None
     try:
-        return Wizard(cfg, path, marker, **kw).run()
+        wizard = Wizard(cfg, path, marker, **kw)
+        return wizard.run()
     except Exception as e:
         log.info("the setup wizard could not run: %r", e, exc_info=True)
         return Result()
+    finally:
+        # Buried HERE, on the thread that owns Tcl. The wizard's widgets,
+        # their PhotoImages and the consent card form reference cycles
+        # that only the cyclic collector frees — and a PhotoImage whose
+        # __del__ runs in a collection triggered on a DECODE thread, once
+        # the app is up and its Tk is gone, aborts the whole process:
+        # "Tcl_AsyncDelete: async handler deleted by the wrong thread",
+        # the last line of the stranger's copy on 2026-09-19 (spawn.log),
+        # 34 s into its first dictation. Two passes: finalizers make
+        # garbage of their own.
+        wizard = None
+        gc.collect()
+        gc.collect()
 
 
 if __name__ == "__main__":

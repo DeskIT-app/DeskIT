@@ -11,10 +11,11 @@ test can read, and each kind carries the ``text_version`` privacy.py
 writes into consent.json when [Turn on] is pressed: the words change,
 the version bumps, the old row goes stale (D11).
 
-The provider sentences are the providers' own, in their language, from
-the terms research/legal read (Groq Services Agreement 2026-06-22,
-Gemini API terms 2026-04-28). They are quoted, not paraphrased, because
-a paraphrase is a promise this app cannot keep on someone else's behalf.
+The provider sentences are the providers' own, from the terms
+research/legal read (Groq Services Agreement 2026-06-22, Gemini API
+terms 2026-04-28), cut to the clause that matters; the guide's cloud
+chapter carries them whole. They are quoted, not paraphrased, because a
+paraphrase is a promise this app cannot keep on someone else's behalf.
 
 Everything geometric is a function of the card dict and the scale;
 ``regions()`` is what both the painter and the hit test read, which is
@@ -45,129 +46,127 @@ BTN_GAP = 8
 
 TURN_ON, NOT_NOW, DRAG = "turn_on", "not_now", "drag"
 BUTTONS = ((TURN_ON, 124), (NOT_NOW, 112))       # name, width at 1.0
-LABELS = {TURN_ON: "הפעל", NOT_NOW: "לא עכשיו"}
+LABELS = {TURN_ON: "Turn on", NOT_NOW: "Not now"}
 
-FOOTER = ("כל חיבור שהאפליקציה יוצרת רשום תחת Settings > Privacy > "
-          "EVERY CONNECTION ובקובץ network.log.")
+FOOTER = ("Every connection DeskIT makes is listed under Settings > Privacy > "
+          "Every connection, and in network.log.")
 
-# The five labels, in the order the plan lists them.
-WHAT, WHOM, ACCOUNT, TERMS, OFF = ("מה יוצא", "לאן", "על חשבון מי",
-                                   "מה הספק אומר", "איך מכבים")
+# The labels, in the order the plan lists them. ENGLISH, SHORT, since
+# 2026-09-19 evening — the owner met the Hebrew card mid-dictation:
+# "make it English and much shorter". The providers' sentences stay
+# theirs, cut to the clause that matters; the full quotes are in the
+# guide's cloud chapter (docs/en/05-cloud), which the wizard links.
+WHAT, WHOM, ACCOUNT, TERMS, OFF = ("What leaves", "To whom", "On whose account",
+                                   "The providers say", "Off again")
 
-_GROQ = ('Groq: "not permitted to use Inputs or Outputs for training"; '
-         'בלי שמירה כברירת מחדל, יומני ניטור עד 30 יום אלא אם הפעלת '
-         'Zero Data Retention בקונסולה של Groq. גיל 18 ומעלה.')
-_GEMINI = ('Google (Gemini, המסלול החינמי): התוכן משמש "to provide, improve, '
-           'and develop Google products"; "human reviewers may read, '
-           'annotate, and process your API input and output"; "Do not '
-           'submit sensitive, confidential, or personal information". '
-           'המכסה החינמית אינה מותרת ללקוחות API באיחוד האירופי, בבריטניה '
-           'ובשווייץ. גיל 18 ומעלה.')
-_KEY = ("עם המפתח שאתה הדבקת. אתה הלקוח שלהם — DeskIT הוא הכלי שלך, "
-        "ולא עוברת דרכו שום שרת של DeskIT.")
-_OFF = "הגדרות > פרטיות > ביטול, או הסרת המפתח."
+_GROQ = ('Groq: "not permitted to use Inputs or Outputs for training"; nothing kept '
+         'by default. 18+.')
+_GEMINI = ('Google (Gemini, free tier): used "to provide, improve, and develop Google '
+           'products"; humans may read it. Not for the EU, UK or Switzerland. 18+.')
+_KEY = "Your own key. You are their customer; nothing passes through a DeskIT server."
+_OFF = "Settings > Privacy, or remove the key."
+_DESKIT = "DeskIT's server (Supabase, Frankfurt) — the only server DeskIT has."
+_PROJECT = "DeskIT's project, through your account."
+_TERMS = "The one-page terms and the privacy policy."
 
 #: kind -> the card's words. ``version`` is privacy.TEXT_VERSIONS[kind]
 #: spelled here too, so a change to the words and a bump of the version
 #: land in the same file (a test holds the two equal).
 TEXTS: dict[str, dict] = {
     "cloud_text": {
-        "version": "groq-2026-06-22+gemini-2026-04-28",
-        "title": "לשלוח טקסט לענן?",
+        "version": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+        "title": "Send text to the cloud?",
         "blocks": (
-            (WHAT, "הטקסט שהכתבת או סימנת, עד 5,000 תווים בבקשה. תיקון "
-                   "ההכתבה שולח קטעים גם בזמן שהמקש עדיין לחוץ; זוגות "
-                   "המילים שלמדת ושמופיעים בטקסט נוסעים איתו; הקריאה "
-                   "השנייה מצרפת גם את המשפטים שהוכתבו רגע לפני."),
-            (WHOM, "Groq ו/או Google — תיקון, פיסוק, תרגום, חיפוש מילה, "
-                   "הקריאה השנייה."),
+            (WHAT, "The text you dictated or selected, up to 5,000 characters a request. "
+                   "Never your voice."),
+            (WHOM, "Groq and/or Google — repair, punctuation, translation, lookup, the "
+                   "second reading."),
             (ACCOUNT, _KEY),
             (TERMS, _GROQ + " " + _GEMINI),
             (OFF, _OFF),
         ),
     },
     "cloud_audio": {
-        "version": "groq-2026-06-22+gemini-2026-04-28",
-        "title": "לשלוח הקלטות לענן?",
+        "version": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+        "title": "Send recordings to the cloud?",
         "blocks": (
-            (WHAT, "ההקלטה של מה שאמרת עכשיו, כקובץ WAV, עם הנחיית תמלול "
-                   "קבועה."),
-            (WHOM, "Google (Gemini) או Groq, לתמלול."),
+            (WHAT, "The recording of what you just said, as a WAV file."),
+            (WHOM, "Google (Gemini) or Groq, for transcription."),
             (ACCOUNT, _KEY),
             (TERMS, _GEMINI + " " + _GROQ),
-            (OFF, _OFF + " המנוע חוזר להיות מקומי."),
+            (OFF, _OFF + " The engine goes back to local."),
         ),
     },
     "cloud_screenshots": {
-        "version": "groq-2026-06-22+gemini-2026-04-28",
-        "title": "לשלוח תמונת מסך לענן?",
+        "version": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+        "title": "Send a screenshot to the cloud?",
         "blocks": (
-            (WHAT, "תמונת JPEG של האזור שסימנת (צלע ארוכה עד 1,344 פיקסלים "
-                   "ל-Google, 896 ל-Groq), השאלה שלך, והשאלות והתשובות "
-                   "הקודמות באותו כרטיס. תמונת מסך יכולה להכיל דואר, בנק, "
-                   "כל מה שהיה על המסך."),
-            (WHOM, "Groq ו/או Google, לשאלה על המסך."),
+            (WHAT, "A JPEG of the area you marked, your question, and the earlier "
+                   "questions on the same card. A screenshot can hold mail, a bank, "
+                   "anything that was on screen."),
+            (WHOM, "Groq and/or Google, for the question about the screen."),
             (ACCOUNT, _KEY),
             (TERMS, _GROQ + " " + _GEMINI),
             (OFF, _OFF),
         ),
     },
     "account": {
-        "version": "deskit-terms-0",
-        "title": "לפתוח חשבון?",
+        "version": "deskit-terms-0+en-2026-09-19",
+        "title": "Open an account?",
         "blocks": (
-            (WHAT, "מזהה חשבון — אנונימי, או כתובת הדוא\"ל של חשבון Google "
-                   "שבחרת להיכנס איתו; שם המחשב הזה; גרסת האפליקציה, גרסת "
-                   "Windows, דרגת החומרה."),
-            (WHOM, "השרת של DeskIT (Supabase, פרנקפורט) — השרת היחיד של "
-                   "DeskIT."),
-            (ACCOUNT, "על חשבון הפרויקט של DeskIT; המפתחות שלך לעולם לא "
-                      "נוסעים לשם — אין להם אפילו עמודה בבסיס הנתונים."),
-            (TERMS, "תנאי השימוש בעמוד אחד, ומדיניות הפרטיות."),
-            (OFF, "הנתונים שלי > מחיקת החשבון."),
+            (WHAT, "An account id — anonymous, or the e-mail of the Google account you "
+                   "chose; this PC's name; the app, Windows and hardware versions."),
+            (WHOM, _DESKIT),
+            (ACCOUNT, "DeskIT's project; your keys never travel there — they have no "
+                      "column in the database."),
+            (TERMS, _TERMS),
+            (OFF, "Your data > Delete my account."),
         ),
     },
     "report_upload": {
-        "version": "deskit-terms-0",
-        "title": "לשלוח דיווחי בעיות?",
+        "version": "deskit-terms-0+en-2026-09-19",
+        "title": "Send problem reports?",
         "blocks": (
-            (WHAT, "רק מה שהתצוגה המקדימה של הדיווח הראתה — אחרי ניקוי."),
-            (WHOM, "השרת של DeskIT (Supabase, פרנקפורט)."),
-            (ACCOUNT, "על חשבון הפרויקט של DeskIT, דרך החשבון האנונימי שלך."),
-            (TERMS, "תנאי השימוש בעמוד אחד, ומדיניות הפרטיות."),
-            (OFF, "לשמור על המחשב הזה במקום, או הגדרות > פרטיות > ביטול."),
+            (WHAT, "Only what the report's preview showed — after the clean-up."),
+            (WHOM, _DESKIT),
+            (ACCOUNT, "DeskIT's project, through your anonymous account."),
+            (TERMS, _TERMS),
+            (OFF, "Keep it on this PC instead, or Settings > Privacy > Withdraw."),
         ),
     },
     "settings_sync": {
-        "version": "deskit-terms-0",
-        "title": "לסנכרן הגדרות ומילים?",
+        "version": "deskit-terms-0+en-2026-09-19",
+        "title": "Sync settings and words?",
         "blocks": (
-            (WHAT, "השינויים שלך בהגדרות והמילים שלמדת (מה נשמע ומה "
-                   "התכוונת) — לעולם לא מפתחות, מקשים, מכשירים, תיקיות "
-                   "או מיקומים; לעולם לא שמע, היסטוריה או דיווחים."),
-            (WHOM, "השרת של DeskIT (Supabase, פרנקפורט), וממנו לכל מחשב "
-                   "שתיכנס אליו עם אותו חשבון."),
-            (ACCOUNT, "על חשבון הפרויקט של DeskIT, דרך החשבון שלך."),
-            (TERMS, "תנאי השימוש בעמוד אחד, ומדיניות הפרטיות."),
-            (OFF, "הגדרות > פרטיות > ביטול."),
+            (WHAT, "Your settings changes and the words you taught it — never keys, "
+                   "hotkeys, devices, folders or positions; never audio, history or "
+                   "reports."),
+            (WHOM, _DESKIT + " From there to every PC you sign in on."),
+            (ACCOUNT, _PROJECT),
+            (TERMS, _TERMS),
+            (OFF, "Settings > Privacy > Withdraw."),
         ),
     },
     "history_sync": {
-        "version": "deskit-terms-0",
-        "title": "לסנכרן את מה שאמרת?",
+        "version": "deskit-terms-0+en-2026-09-19",
+        "title": "Sync what you said?",
         "blocks": (
-            (WHAT, "כל מה שהכתבת, תרגמת, פיסקת וחיפשת — הטקסט, לא ההקלטה "
-                   "— כדי שעמוד \"נאמר\" יהיה זהה בכל מחשב שלך."),
-            (WHOM, "השרת של DeskIT (Supabase, פרנקפורט). הוא נשמר בחשבון "
-                   "שלך; המפתח של DeskIT יכול טכנית לקרוא אותו — ההגנה "
-                   "מפרידה בין משתמשים, לא מפני מנהל הפרויקט."),
-            (ACCOUNT, "על חשבון הפרויקט של DeskIT, דרך החשבון שלך."),
-            (TERMS, "תנאי השימוש בעמוד אחד, ומדיניות הפרטיות."),
-            (OFF, "הגדרות > פרטיות > ביטול; \"מחיקת החשבון\" מוחקת גם את "
-                  "מה שכבר סונכרן."),
+            (WHAT, "Everything you dictated, translated, punctuated and looked up — the "
+                   "text, not the recording — so the Said page is the same on every PC."),
+            (WHOM, _DESKIT + " Kept in your account; DeskIT's key can technically read "
+                   "it — the protection separates users, not the project's admin."),
+            (ACCOUNT, _PROJECT),
+            (TERMS, _TERMS),
+            (OFF, "Settings > Privacy > Withdraw; \"Delete my account\" removes what was "
+                  "synced too."),
         ),
     },
 }
+
+#: The words' direction, decided from the table: English lays out from
+#: the left; a Hebrew table would lay itself out from the right again.
+RTL: bool = any("\u0590" <= ch <= "\u05FF"
+                for card in TEXTS.values() for _label, text in card["blocks"] for ch in text)
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +194,7 @@ def _body(cache: dict, text: str, pt: float, width: int, colour=INK):
     if img is None:
         from visual_qa import text_pil
         img = text_pil(text, max(40, int(width)), pt=pt, colour=colour,
-                       rtl=True, single=False)
+                       rtl=RTL, single=False)
         box = img.getchannel("A").getbbox()
         # Keep the full WIDTH (the right edge is the margin) and crop
         # only the height, so every paragraph starts at the same x.
@@ -215,11 +214,11 @@ def layout(card: dict, scale: float = 1.0, cache: dict | None = None) -> dict:
     pad = PAD * s
     inner = int(width - 2 * pad)
     y = pad
-    title = _text(cache, card["title"], TITLE_PT * s, weight=600)
+    title = _text(cache, card["title"], TITLE_PT * s, weight=600, rtl=RTL)
     items = [("title", title, y)]
     y += title.height + 8 * s
     for label, text in card["blocks"]:
-        lab = _text(cache, label, LABEL_PT * s, colour=INK_FAINT, weight=600)
+        lab = _text(cache, label, LABEL_PT * s, colour=INK_FAINT, weight=600, rtl=RTL)
         items.append(("label", lab, y))
         y += lab.height + 3 * s
         body = _body(cache, text, BODY_PT * s, inner)
@@ -284,8 +283,9 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     s, width, height = lay["scale"], lay["width"], lay["height"]
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     right = width - lay["pad"]
+    left = lay["pad"]
     for kind, piece, y in lay["items"]:
-        img.alpha_composite(piece, (int(right - piece.width), int(y)))
+        img.alpha_composite(piece, (int(right - piece.width) if RTL else int(left), int(y)))
     boxes = regions(card, s, cache)
     for name, _w in BUTTONS:
         bx0, by0, bx1, by1 = (v - SHADOW for v in boxes[name])

@@ -6575,6 +6575,44 @@ def is_elevated() -> bool:
         return False
 
 
+def _adopt_downloads() -> int:
+    """The installer's last step (DeskIT.iss, 10.4, 2026-09-19): it
+    downloaded the model files and the packs' wheels itself, with the
+    person's tick and the licences shown, and put them where models.py
+    and packs.py keep theirs. Nothing has hashed the files or run pip.
+    This does both, for every entry of the two locks that is on disk,
+    with no window and no network — models.adopt() / packs.adopt()
+    fetch nothing when every file is already its size — and prints one
+    line per item. Always exit 0: an item that is partial or failed is
+    left to the wizard's computer page, which offers exactly what is
+    still missing; the installer must never fail over a download."""
+    import packs as packs_mod
+
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:                                    # noqa: BLE001
+        pass
+    for repo, e in sorted(models_mod.read_lock().items()):
+        if not e.folder.is_dir():
+            continue
+        try:
+            word = models_mod.adopt(e)
+        except Exception as err:                         # noqa: BLE001
+            word = f"failed:{err}"
+        log.info("adopt: model %s -> %s", repo, word)
+        print(f"model {repo}: {word}")
+    for name, p in sorted(packs_mod.read_lock().items()):
+        if not p.wheels_dir.is_dir() and packs_mod.state(name) != "ok":
+            continue
+        try:
+            word = packs_mod.adopt(p)
+        except Exception as err:                         # noqa: BLE001
+            word = f"failed:{err}"
+        log.info("adopt: pack %s -> %s", name, word)
+        print(f"pack {name}: {word}")
+    return 0
+
+
 def main() -> int:
     # Before argparse, because every mode below can end up showing a
     # window — the splash, a lookup popup, the setup wizard, a fatal
@@ -6670,6 +6708,13 @@ def main() -> int:
                         help="show a pack's install step on its own (gpu "
                              "or skin; an installed copy with an NVIDIA "
                              "card offers gpu at start) and exit")
+    parser.add_argument("--adopt-downloads", action="store_true",
+                        help="finish what the installer downloaded: hash "
+                             "the model files it put under models\ and "
+                             "mark them complete, pip-install the packs "
+                             "whose wheels it left under packs\ — no "
+                             "window, no network — and exit 0 (the "
+                             "installer's last step, 10.4)")
     parser.add_argument("--benchmark", action="store_true",
                         help="replay every recording you have corrected, "
                              "with the learned vocabulary on and off, and "
@@ -6736,6 +6781,9 @@ def main() -> int:
     # is given a folder, so the library never needs the network, and
     # nothing lands in the person's global cache.
     models_mod.env()
+
+    if args.adopt_downloads:
+        return _adopt_downloads()
 
     if args.dashboard:
         import dashboard
@@ -6897,10 +6945,23 @@ def main() -> int:
             except Exception:                 # noqa: BLE001
                 pass
         open_desk = bool(outcome.open_desk)
+        if getattr(outcome, "closed", False):
+            # The X on the wizard: the person left, and nothing starts
+            # behind their back — no model, no dot, no keys. The next
+            # start shows the wizard again (setup.done was not written).
+            log.info("the wizard was closed; nothing started")
+            return 0
         if args.setup:
             if open_desk:
                 open_dashboard()
             return 0
+
+    # Whatever Tk the pre-start windows made — the wizard, the model and
+    # pack steps — dies here, on this thread, before a decode thread's
+    # allocation can trigger the collection that buries a PhotoImage from
+    # the wrong thread and aborts the process (firstrun.run says why).
+    import gc
+    gc.collect()
 
     if args.check:
         try:

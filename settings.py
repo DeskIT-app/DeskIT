@@ -605,6 +605,17 @@ def friendly_paths() -> list[str]:
             for row in group.rows]
 
 
+def label_for(path: str) -> str:
+    """The friendly label a row shows for `path`, or the path itself
+    when no tab draws it — a dialog's title, a message."""
+    for tab in TABS:
+        for group in tab.groups:
+            for row in group.rows:
+                if row.path == path:
+                    return row.label
+    return path
+
+
 def groups_for(name: str) -> tuple[Group, ...]:
     """What a tab draws, in order. The rows are the tab's own; a tab
     that draws only blocks (a screen that used to be its own) has no

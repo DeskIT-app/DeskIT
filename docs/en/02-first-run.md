@@ -16,6 +16,9 @@ long version of those four cards.
 **The two-sentence version.** The first start opens a seven-page wizard; only three pages ask
 you anything (which microphone, whether to download now, and the optional extras) and every
 other page is **Next**. It runs once; `main.py --setup` from the install folder runs it again.
+Since the installer downloads the model and the packs itself ([chapter 1](01-install)), the
+"This computer" page is usually skipped — it appears only for what you unticked there or
+what did not finish.
 
 ![Welcome](../img/02-welcome.png)
 
@@ -45,6 +48,9 @@ Pick another row if you have more than one microphone. **Next** saves the choice
 
 ![This computer](../img/02-computer.png)
 
+This page exists only while something is left to download — after an install whose
+Downloads page you left as it was, it is not shown at all, and the counter says "of 6".
+
 The top line is what DeskIT found: an NVIDIA card and its memory ("fast transcription"), a
 small NVIDIA card ("fast, smaller mode"), or no NVIDIA card ("transcription will take about
 as long as you spoke"). Under it, what this PC still needs, each asked before a byte moves:
@@ -59,6 +65,9 @@ as long as you spoke"). Under it, what this PC still needs, each asked before a 
 - **Detect English automatically** (only on a larger NVIDIA card): a second, general model
   that notices when you spoke English and transcribes it as English. 1.60 GB more on disk and
   in video memory.
+- **Screen recording and the camera**: 28 MB from PyPI — PyAV with FFmpeg, for the record
+  key, the photo key and the phone's audio. On by default, so nothing has to be installed
+  later; the two licences are linked on the card.
 
 The switches queue behind the model: one **Download**, one bar, "1 of 3 · Hebrew model".
 This happens only once.
@@ -89,7 +98,7 @@ stand and written only if you move them:
 
 | switch | what it does |
 |---|---|
-| Fix misheard words with a free cloud model (text only) | Off. Turning it on opens the consent card first ([chapter 5](05-cloud)); needs your own free Groq key. |
+| Fix misheard words with a free cloud model (text only) | Off. Turning it on is the consent ([chapter 5](05-cloud) says what leaves and to whom) and opens a field under the row for your own free Groq key, checked with Groq the moment you save it. Next waits until a key works — or the switch is off again. |
 | Keep this PC awake while DeskIT runs | On. Windows does not sleep while DeskIT runs; Settings > The app turns it off. |
 | Check for updates weekly | On. One request to github.com, no identifier. |
 | Connect Claude Code | Off. Two hook lines in `~/.claude/settings.json`: when Claude Code finishes or asks, DeskIT shows a card and plays a cue. |
@@ -100,6 +109,6 @@ stand and written only if you move them:
 ![Ready](../img/02-done.png)
 
 The hotkey to hold, and two more switches asked once: **Start with Windows** (a Run entry for
-your user) and **Dictate from your phone** ([chapter 6](06-phone)). **Open the desk** opens
-the dashboard; **Finish** just finishes. If you skipped the model, this page says so and Home
-has the download button.
+your user) and **Dictate from your phone** ([chapter 6](06-phone)). **Start** starts DeskIT
+and opens the desk. If you skipped the model, this page says so and Home has the download
+button.

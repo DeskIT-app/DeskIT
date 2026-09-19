@@ -50,6 +50,16 @@ the difference lives.
 the tester's choosing with the INSTALLED layout, so the product suite can
 exercise that layout without touching anyone's real data folder.
 
+``DESKIT_STRANGER=1`` beside it is the stranger hatch (2026-09-19): the
+checkout then runs as an INSTALLED copy — no ``DEVELOPER``, no
+``PORTABLE``, so the model is looked for under ``DATA_DIR`` and not in
+the global cache, the ``.env`` and the bare key names are not read, the
+owner-only surfaces are hidden, and the kernel names carry ``.test``
+so the copy collides with neither the release nor DeskIT Dev. It is
+how the owner walks the first run a stranger walks, from the checkout,
+with the checkout's code (``dev\\stranger.py``). Ignored without
+``DESKIT_HOME``: the checkout's own data is never the stranger's.
+
 Nothing here creates a folder at import. ``ensure()`` does, and ``main.py``
 calls it before the first log line, so ``app.log`` never meets a folder
 that is not there.
@@ -67,20 +77,26 @@ VENDOR_DIR = APP_DIR / "vendor"
 if str(VENDOR_DIR) not in sys.path:
     sys.path.append(str(VENDOR_DIR))
 
+_HOME_OVERRIDE = os.environ.get("DESKIT_HOME", "").strip()
+
+#: The stranger hatch: this checkout run as an installed copy, against
+#: the DESKIT_HOME folder. Only WITH that folder — without one it would
+#: turn the owner's own data into an installed tree in place.
+STRANGER: bool = (bool(_HOME_OVERRIDE)
+                  and os.environ.get("DESKIT_STRANGER", "").strip() == "1")
+
 #: The checkout. ``.git`` is a folder in a normal clone and a FILE in a git
 #: worktree; ``exists()`` answers both, ``is_dir()`` would not.
-DEVELOPER: bool = (APP_DIR / ".git").exists()
+DEVELOPER: bool = (APP_DIR / ".git").exists() and not STRANGER
 
 #: Today's layout, beside the code. DEVELOPER implies PORTABLE (D4); the
 #: reverse is not true — a copy run from a USB stick is portable without
 #: any owner-only surface.
-PORTABLE: bool = (
+PORTABLE: bool = not STRANGER and (
     os.environ.get("DESKIT_PORTABLE", "").strip() == "1"
     or (APP_DIR / "portable.txt").exists()
     or DEVELOPER
 )
-
-_HOME_OVERRIDE = os.environ.get("DESKIT_HOME", "").strip()
 
 if _HOME_OVERRIDE:
     DATA_DIR = Path(_HOME_OVERRIDE).expanduser().resolve()
@@ -213,18 +229,21 @@ ICON_PNG = APP_DIR / "icon.png"
 # ---- D30: the checkout is "DeskIT Dev" and never collides with the release
 
 #: The suffix that keeps the checkout's kernel objects apart from the
-#: installed copy's: ``""`` for a release, ``".dev"`` for DeskIT Dev.
-DEV_SUFFIX: str = ".dev" if DEVELOPER else ""
+#: installed copy's: ``""`` for a release, ``".dev"`` for DeskIT Dev,
+#: ``".test"`` for the stranger's copy — beside both of the others.
+DEV_SUFFIX: str = ".dev" if DEVELOPER else ".test" if STRANGER else ""
 
 #: What the window titles, the dot tooltip and the dashboard bar append.
+#: Nothing for the stranger's copy: the stranger sees no tag.
 DEV_TAG: str = "Dev" if DEVELOPER else ""
 
 #: The port the phone endpoint tries first; the release keeps the number
-#: the phone app has always known, the checkout sits one above it.
-DEFAULT_PORT: int = 8757 if DEVELOPER else 8756
+#: the phone app has always known, the checkout sits one above it, the
+#: stranger's copy one above that — the three may all be listening.
+DEFAULT_PORT: int = 8757 if DEVELOPER else 8758 if STRANGER else 8756
 
 #: AppUserModelID for the taskbar: neutral (D5), and distinct for Dev.
-APP_ID: str = "DeskIT.Dev" if DEVELOPER else "DeskIT.App"
+APP_ID: str = "DeskIT.Dev" if DEVELOPER else "DeskIT.Test" if STRANGER else "DeskIT.App"
 
 # ---- the channel this copy came through (chapter 10 §10.4, chapter 11)
 
@@ -328,4 +347,6 @@ def describe() -> str:
     mode = "portable" if FLAT else "installed"
     if DEVELOPER:
         mode = "developer (DeskIT Dev)"
+    elif STRANGER:
+        mode = "stranger (the checkout run as an installed copy)"
     return f"{mode}: code {APP_DIR}, data {DATA_DIR}"

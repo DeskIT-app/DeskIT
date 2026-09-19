@@ -338,6 +338,42 @@ def download(e: Entry, *, progress=None, cancel=None, stage=None) -> Path:
     return e.folder
 
 
+def placed(e: Entry) -> bool:
+    """Every file of the lock's entry is in its folder at the lock's
+    size — what the installer leaves after its own download (10.4,
+    2026-09-19), before anything has hashed it."""
+    for name, (size, _sha) in e.files.items():
+        try:
+            if (e.folder / name).stat().st_size != size:
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def adopt(e: Entry) -> str:
+    """Finish a download the INSTALLER made: the files are in the
+    folder, nothing has verified them, `.complete` is not there. Hashed
+    against the lock and marked complete through download(), which
+    fetches nothing when every file is already its size — so this
+    never touches the network. Returns `ready` (verified now or
+    before), `partial` (a file missing or the wrong size: left for the
+    wizard's own download, which resumes what is there), or
+    `failed:<names>` (a hash did not match; the bad files are deleted,
+    the wizard downloads them again)."""
+    if state(e.repo) == "ready":
+        return "ready"
+    if not placed(e):
+        return "partial"
+    try:
+        download(e)
+    except VerifyError as err:
+        return "failed:" + ",".join(err.files)
+    except DownloadError as err:               # not expected: every file was placed
+        return f"failed:{err}"
+    return "ready"
+
+
 # ---------------------------------------------------------------- the step
 
 #: The paragraphs, Hebrew, drawn through ui.draw_text (chapter 9.1).

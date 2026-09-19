@@ -160,10 +160,11 @@ def splash_run(splash) -> bool:
 
 
 def dot_run(dot) -> bool:
-    """The same trade for the status dot — and, since 2026-09-19, taken
-    WITHOUT skia too (`lite()`): the dot is a Pillow picture on a layered
-    window, which every copy can draw."""
-    if not (on() or lite()):
+    """The same trade for the status dot: the disc with its halo, drawn on
+    skia — which every copy has since 1.1.1 (skia-python ships in the
+    base). The owner's word of 2026-09-19 evening: this dot, not the mark
+    tile that stood in for one afternoon."""
+    if not on():
         return False
     try:
         from .dot import run

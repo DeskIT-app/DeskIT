@@ -88,6 +88,10 @@ Write-Host ("stage: {0:N0} MB on disk" -f ($size / 1MB))
 #       installer itself (steps 8 and 11-15 are the workflow's alone)
 Set-Content -Path (Join-Path $Stage "CHANNEL") -Value github -NoNewline -Encoding ascii
 & .venv\Scripts\python.exe dev\make_wizard_images.py --out packaging\wizard --version $Version
+# the Downloads page's list is generated from the two locks; a lock that
+# moved without it is a stale installer, so the check is a build failure
+& .venv\Scripts\python.exe dev\make_downloads_iss.py --check
+if ($LASTEXITCODE) { throw "packaging\downloads.iss is stale: run dev\make_downloads_iss.py" }
 $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
 if (Test-Path $iscc) {
     $core = ($Version -split '-')[0]

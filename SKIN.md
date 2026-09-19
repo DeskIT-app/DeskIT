@@ -165,11 +165,12 @@ holds today because the review card and the notify card never both need
 it, and it will bite the day it stops holding.
 
 **The five dot states.** The dot is a layered window sitting on the
-user's wallpaper — since 2026-09-19 the mark itself (`mark.py`): a
-`CARD` tile that carries its own ground, with a drop shadow to lift it
-off a light wallpaper and a hairline rim to find its edge on a dark one
-— and the lamp on the tile is the state, checked against `CARD`
-(L\* 12.5) rather than against whatever is behind the window:
+user's wallpaper: a 10 px disc of light with its halo (`dot.py`), the
+look the owner kept on 2026-09-19 evening after one afternoon as the
+mark tile (`mark.py`, which still draws the boot card's badge). Since
+1.1.1 skia ships in the base install, so a fresh copy draws this same
+disc. The colours are checked against `CARD` (L\* 12.5), the darkest
+ground the disc has to read on:
 
 | state | hex | on the tile | L\* |
 |---|---|---|---|

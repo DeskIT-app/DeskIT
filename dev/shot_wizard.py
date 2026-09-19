@@ -69,10 +69,12 @@ def _pages(out: Path) -> list[Path]:
             for i in range(8):
                 progress((i + 1) * thing.bytes // 8, thing.bytes)
                 time.sleep(0.25)
-        names = {"model": "Hebrew model", "pack": "NVIDIA libraries", "detector": "English detector"}
+        names = {"model": "Hebrew model", "pack": "NVIDIA libraries", "detector": "English detector",
+                 "recording": "PyAV (FFmpeg)"}
         where = {"model": "huggingface.co into %LOCALAPPDATA%\\DeskIT\\models\\ivrit-ai--whisper-large-v3-turbo-ct2",
                  "pack": "pypi.org into %LOCALAPPDATA%\\DeskIT\\packs\\gpu",
-                 "detector": "huggingface.co into %LOCALAPPDATA%\\DeskIT\\models\\Systran--faster-whisper-large-v3"}
+                 "detector": "huggingface.co into %LOCALAPPDATA%\\DeskIT\\models\\Systran--faster-whisper-large-v3",
+                 "recording": "pypi.org into %LOCALAPPDATA%\\DeskIT\\packs\\recording"}
         return steps.Step(title=kind, body=kind,
                           size_line=f"{steps.human(thing.bytes)} from {where[kind]}",
                           total=thing.bytes, work=work, name=names.get(kind, kind),
@@ -80,7 +82,7 @@ def _pages(out: Path) -> list[Path]:
 
     offers = {"portable": False, "model": Thing("m", 1_620_000_000),
               "pack": Thing("gpu", 1_370_000_000), "detector": Thing("e", 1_600_000_000),
-              "tier": "gpu"}
+              "recording": Thing("av", 27_556_236), "tier": "gpu"}
     facts = {"tier": "gpu", "vram_mb": 16311, "cuda_devices": 1, "driver_ok": True}
 
     real_user = sb.user
@@ -116,8 +118,12 @@ def _pages(out: Path) -> list[Path]:
         w._warn_silent(); shot("03-microphone-help")
         show("computer"); shot("04-computer")
         w._download(); settle(0.3); shot("04-computer-downloading")
-        settle(7.0)                                # the three fakes land
+        settle(9.5)                                # the four fakes land
         show("say"); shot("05-say")
+        # the model "loaded": the button is Record from here, as it is
+        # for a person after [Load the speech model]
+        w._backend = object()
+        w.say.configure_text(firstrun.WORDS["say.button"])
         w._on_result(firstrun.Heard(text="בדקתי את המיקרופון ושמעתי את עצמי בבירור",
                                     load_s=4.2, decode_s=0.8))
         shot("05-say-heard")

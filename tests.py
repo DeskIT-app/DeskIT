@@ -3849,12 +3849,10 @@ print("ok")
 
 def test_the_dot_is_a_button_only_on_its_disc() -> None:
     """The arithmetic behind the probe above, checked without a window:
-    HTCLIENT on the tile (28 px in the 38 px box, so out to 13 px from
-    the centre), HTTRANSPARENT one pixel past it — the shadow — at the
-    tile's own rounded-off corners and at the window's; and `place` puts
-    the 38 px box in the bottom-right of the WORK AREA it is given, with
-    the same margins the top-right always had. BOX stays 38 — two tests
-    identify the dot by its size."""
+    HTCLIENT inside the disc plus two pixels, HTTRANSPARENT at 14 px and
+    at the corners; and `place` puts the 38 px box in the bottom-right of
+    the WORK AREA it is given, with the same margins the top-right always
+    had. BOX stays 38 — two tests identify the dot by its size."""
     skin = _skin_or_skip()
     if skin is None or not skin.on():
         return
@@ -3862,16 +3860,16 @@ def test_the_dot_is_a_button_only_on_its_disc() -> None:
     from skin.glass import HTCLIENT, HTTRANSPARENT
 
     assert skin_dot.BOX == 38 and skin_dot.CORE == 10.0
-    assert skin_dot.TILE == 28
+    assert skin_dot.HIT_R == skin_dot.CORE / 2 + 2
     assert skin_dot.CORNERS == ("bottom-right", "top-right")
     assert skin_dot.DEFAULT_CORNER == "bottom-right"
     d = skin_dot.Dot()
     c = skin_dot.BOX / 2
     assert d.corner == "bottom-right"
     assert d.hit(c, c) == HTCLIENT
-    assert d.hit(c + 13, c) == HTCLIENT and d.hit(c, c - 13) == HTCLIENT
-    assert d.hit(c + 14, c) == HTTRANSPARENT, "the shadow is not a button"
-    assert d.hit(5, 5) == HTTRANSPARENT, "the tile's corner is rounded off"
+    assert d.hit(c + 7, c) == HTCLIENT and d.hit(c, c - 7) == HTCLIENT
+    assert d.hit(c + 8, c) == HTTRANSPARENT, "the ring is not a button"
+    assert d.hit(c + 14, c) == HTTRANSPARENT, "the glow is not a button"
     for corner in ((0, 0), (0, 37), (37, 0), (37, 37)):
         assert d.hit(*corner) == HTTRANSPARENT, corner
     work = (0, 0, 2560, 1392)                 # this machine: a 48 px taskbar
@@ -3893,11 +3891,9 @@ def test_the_dot_glows_to_nothing_inside_its_own_window() -> None:
     wallpaper or title bar. Measured 2026-09-07: 27/27/27/27 for every lit
     state. Every glow and sweep now reaches alpha 0 strictly inside the
     window, so this walks the WHOLE border of every state, after the
-    cross-fade has settled (14 frames), and asks for zero. Since
-    2026-09-19 the dot is the mark — a 28 px tile with its shadow in the
-    5 px around it — and the shadow is the soft thing that has to end
-    inside the box; the tile itself has to be solid at 13 px from the
-    centre, or the mark has lost its ground."""
+    cross-fade has settled (14 frames), and asks for zero. The halo still
+    has to read: alpha > 8 at 14 px from the centre, as the paused test
+    already requires."""
     skin = _skin_or_skip()
     if skin is None or not skin.on():
         return
@@ -3908,7 +3904,7 @@ def test_the_dot_glows_to_nothing_inside_its_own_window() -> None:
     except Exception:
         return
     B = skin_dot.BOX
-    assert skin_dot.TILE + 2 * 4 <= B, "no room left for the shadow"
+    assert skin_dot.HALO_R <= B / 2 - 1, skin_dot.HALO_R
     for state in DOT_STATES:
         d = skin_dot.Dot()
         d.set(state)                          # from "ready", cross-fading
@@ -3927,10 +3923,9 @@ def test_the_dot_glows_to_nothing_inside_its_own_window() -> None:
         for x, y in ((0, mid), (B - 1, mid), (mid, 0), (mid, B - 1),
                      (0, 0), (0, B - 1), (B - 1, 0), (B - 1, B - 1)):
             assert alpha[y, x] == 0, (state, x, y, int(alpha[y, x]))
-        assert alpha[mid, mid + 13] == 255, (
-            f"the {state} tile is not solid at its edge")
-        assert 0 < alpha[mid, mid + 14] < 255, (
-            f"the {state} shadow is missing beside the tile")
+        if state not in skin.palette.NO_HALO:
+            assert alpha[mid, mid + 14] > 8, (
+                f"the {state} halo no longer reads at 14 px")
 
 
 def test_status_dot_ignores_states_it_does_not_know() -> None:
@@ -3950,12 +3945,11 @@ def test_paused_is_the_one_dot_state_with_no_halo() -> None:
 
     It is the only neutral in the set. On a grey wallpaper hue alone would
     leave paused and listening a coin toss for anyone who does not see
-    blue, and a grey glow is a smudge rather than a light — so the app
-    casts no light on the tile for paused and does for every other state.
-    That is a rule about drawing, not about a colour table, which is why
-    the check is on the rendered pixel 3 px out from the lamp, ON the
-    tile: for paused it is the bare tile, exactly; for every lit state it
-    carries the lamp's colour.
+    blue, and a grey halo is a smudge rather than a light — so the app
+    draws no halo at all for paused and one for every other state. That is
+    a rule about drawing, not about a colour table, which is why the check
+    is on the rendered alpha 8 px out from the disc rather than on
+    DOT_STATES.
     """
     skin = _skin_or_skip()
     if skin is None or not skin.on():
@@ -3966,11 +3960,7 @@ def test_paused_is_the_one_dot_state_with_no_halo() -> None:
     except Exception:
         return
 
-    lx, ly, lr = skin_dot.mark().lamp
-    probe = (int(lx + lr + 3), int(ly))
-    bare = skin_dot.mark()._plate.getpixel(probe)[:3]
-
-    def beside_the_lamp(state: str) -> tuple[int, int, int]:
+    def halo_alpha(state: str) -> int:
         d = skin_dot.Dot()
         d.state = d._shown = d._from = state
         d._blend = 1.0
@@ -3978,18 +3968,19 @@ def test_paused_is_the_one_dot_state_with_no_halo() -> None:
         canvas = surface.getCanvas()
         canvas.clear(0x00000000)
         d.draw(canvas, 0.0)      # t=0: the breath is at its brightest
-        pixels = surface.makeImageSnapshot().toarray(
-            colorType=skia.kRGBA_8888_ColorType)
-        return tuple(int(v) for v in pixels[probe[1], probe[0]][:3])
+        alpha = surface.makeImageSnapshot().toarray(
+            colorType=skia.kRGBA_8888_ColorType)[:, :, 3]
+        mid = skin_dot.BOX // 2
+        # Outside the disc and its containing ring, inside the halo.
+        return int(alpha[mid, mid + int(skin_dot.CORE * 1.4)])
 
-    assert beside_the_lamp("paused") == tuple(bare), (
-        "the paused lamp is casting light on the tile — it is the one "
-        "state whose meaning is carried by having none", bare)
+    assert halo_alpha("paused") == 0, (
+        "the paused dot is glowing — it is the one state whose meaning is "
+        "carried by having no halo")
     for state in ("ready", "recording", "locked", "busy"):
-        lit = beside_the_lamp(state)
-        assert max(abs(a - b) for a, b in zip(lit, bare)) > 20, (
-            f"the {state} lamp casts no light on the tile; every lit state "
-            f"glows, and the glow is what tells it from paused", lit, bare)
+        assert halo_alpha(state) > 8, (
+            f"the {state} dot has no halo; every lit state glows, and the "
+            f"halo is the whole reason this is a layered window")
 
 
 def test_the_app_hands_gdi_its_own_fonts_before_it_asks_for_one() -> None:
@@ -11056,6 +11047,33 @@ def _window(log=None):
         control_mod.send, singleton_mod.is_running, history_mod.load = saved
 
 
+def test_the_desks_x_quits_the_app_only_for_the_desk_a_person_opened() -> None:
+    """The owner's word (2026-09-19): the X of the desk ends everything
+    the app runs in the background — Quit DeskIT, the named event. Only
+    for the desk a person opened (the entry point's run sets _looping):
+    a window a test or a picture built must never signal the live app,
+    and Restart's close must not either — its new copy is on its way."""
+    import singleton as singleton_mod
+    asked: list[int] = []
+    saved = singleton_mod.request_quit
+    singleton_mod.request_quit = lambda: asked.append(1) or True
+    try:
+        for looping, relaunch, expect in ((False, False, 0), (True, True, 0), (True, False, 1)):
+            asked.clear()
+            with _window() as board:
+                if board is None:
+                    return
+                board._looping = looping
+                board._relaunch = relaunch
+                board._close()
+                if looping:
+                    board._looping = False       # no run() here to bury it
+                    board._bury()
+            assert len(asked) == expect, (looping, relaunch, asked)
+    finally:
+        singleton_mod.request_quit = saved
+
+
 def test_every_screen_of_the_window_builds() -> None:
     """Four screens, built by four methods, and only the one you are
     looking at exists at any moment — so a mistake on the Settings screen
@@ -11068,6 +11086,49 @@ def test_every_screen_of_the_window_builds() -> None:
             board._show(name)
             assert board.screen == name
             assert board.pane.winfo_children(), f"{name} drew nothing"
+
+
+def test_the_sheet_is_off_the_window_while_a_screen_is_built() -> None:
+    """The desk builds a new screen with the sheet UNMAPPED and puts it
+    back with the slide (2026-09-19): built in the open, each
+    update_idletasks() a builder needs also painted the half-built page
+    — seven visible frames on a switch to Home, his "everything jumps on
+    top of each other". Measured on the hidden desktop that night: the
+    pixels of every screen identical, Home's frozen time 0.34 -> 0.22 s.
+    A builder that dies puts the sheet back rather than leave a blank
+    window; the slide ends with the sheet at y 0."""
+    import dashboard as dash
+    with _window() as board:
+        if board is None:
+            return
+        seen: list = []
+        real = board._screen_keys
+
+        def spy() -> None:
+            seen.append((dict(board.sheet.place_info()), board.sheet.winfo_ismapped()))
+            real()
+        board._screen_keys = spy
+        board._show("Keys")
+        assert seen == [({}, False)], seen              # not placed, not mapped
+        assert board.sheet.place_info(), "the slide did not put the sheet back"
+        for _ in range(40):                            # the slide's six frames
+            board.root.update()
+            if board._slide_after is None:
+                break
+        assert board._slide_after is None
+        assert int(board.sheet.place_info()["y"]) == 0, board.sheet.place_info()
+        assert board.sheet.winfo_ismapped()
+
+        def dies() -> None:
+            raise RuntimeError("the builder is having a day")
+        board._screen_network = dies
+        try:
+            board._show("Network")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("the builder's error was swallowed")
+        assert board.sheet.place_info() and int(board.sheet.place_info()["y"]) == 0
 
 
 def test_no_button_draws_its_label_past_its_own_face() -> None:
@@ -17235,9 +17296,8 @@ def test_every_skin_window_is_click_through_and_never_focusable() -> None:
     text = (Path(__file__).resolve().parent / "skin" / "dot.py").read_text(
         "utf-8")
     assert "if on_click is not None:\n        glass = Glass(*dot.placement(), " \
-           "gpu=False, hit=dot.hit" in text, \
-        "the dot takes the mouse unconditionally"
-    assert "else:\n        glass = Glass(*dot.placement(), gpu=False)" in text
+           "hit=dot.hit" in text, "the dot takes the mouse unconditionally"
+    assert "else:\n        glass = Glass(*dot.placement())" in text
     # SW_SHOWNOACTIVATE, not deiconify: AGENTS.md measured Tk taking the
     # foreground the instant it realises a window, and the fix there is to
     # take it BACK. A plain popup shown this way never takes it at all.
@@ -19397,13 +19457,13 @@ def test_the_dot_is_dragged_by_its_disc_and_never_by_its_glow() -> None:
     assert d.moving is False, "a dot nobody armed is a button"
     assert d.hit(c, c) == HTCLIENT
     d.moving = True
-    assert d.hit(c, c) == HTCAPTION, "the tile does not hand over the drag"
-    assert d.hit(c + 13, c) == HTCAPTION and d.hit(c, c - 13) == HTCAPTION
-    for x, y in ((c + 14, c), (5, 5), (0, 0), (0, 37), (37, 0),
+    assert d.hit(c, c) == HTCAPTION, "the disc does not hand over the drag"
+    assert d.hit(c + 7, c) == HTCAPTION and d.hit(c, c - 7) == HTCAPTION
+    for x, y in ((c + 8, c), (c + 14, c), (0, 0), (0, 37), (37, 0),
                  (37, 37)):
         assert d.hit(x, y) == HTTRANSPARENT, (
-            f"the shadow took the drag at {x}, {y} — it is click-through "
-            f"in both modes or the window underneath loses clicks")
+            f"the glow took the drag at {x}, {y} — it is click-through in "
+            f"both modes or the window underneath loses clicks")
     d.moving = False
     assert d.hit(c, c) == HTCLIENT, "and it is a button again afterwards"
 
@@ -19425,17 +19485,10 @@ def test_the_dot_is_dragged_by_its_disc_and_never_by_its_glow() -> None:
                   int(alpha[:, 0].max()), int(alpha[:, B - 1].max())]
         assert border == [0, 0, 0, 0], (
             f"waiting to be dragged, the dot paints its own edge {border}")
-    # the rim that says "waiting" is the tile's own edge, which is what
-    # can actually be pressed: brighter than at rest, and only there
-    from skin import mark as skin_mark
-    assert skin_mark.RIM_MOVING_A > skin_mark.RIM_A * 2
-    rest = skin_dot.mark().frame((0, 0, 0), 0.0, None, False)
-    armed = skin_dot.mark().frame((0, 0, 0), 0.0, None, True)
-    edge = (skin_dot.BOX // 2, (skin_dot.BOX - skin_dot.TILE) // 2)
-    assert armed.getpixel(edge)[0] > rest.getpixel(edge)[0] + 60, (
-        armed.getpixel(edge), rest.getpixel(edge))
-    assert armed.getpixel((skin_dot.BOX // 2, 1)) == rest.getpixel(
-        (skin_dot.BOX // 2, 1)), "the armed rim reached into the shadow"
+    # the ring that says "waiting" is at the grab radius, not out in the
+    # glow: what lights up has to be what can actually be pressed
+    assert skin_dot.MOVE_W > 1.0
+    assert skin_dot.CORE * 0.5 + 3.0 + skin_dot.MOVE_W / 2 < skin_dot.HALO_R
 
 
 def test_the_move_button_reaches_the_running_app_down_the_real_pipe() -> None:
@@ -20627,23 +20680,28 @@ def test_restart_stops_the_app_waits_for_it_to_go_starts_it_and_then_reopens_the
             order.append("run")
             return Window.wants
 
+    # bring_up_the_keys is faked too: left real, each main() here spawned a
+    # real `main.py --no-model` under the suite's home, and the second of
+    # them opened a real desk — the pair every full run left on the hidden
+    # desktop until 2026-09-19 (found through the suite home's spawn.log).
     saved = (singleton_mod.InstanceLock, dash.Dashboard,
-             dash._relaunch_dashboard)
+             dash._relaunch_dashboard, dash.bring_up_the_keys)
     try:
         singleton_mod.InstanceLock = Lock
         dash.Dashboard = Window
         dash._relaunch_dashboard = lambda: (order.append("relaunch"), True)[1]
+        dash.bring_up_the_keys = lambda: (order.append("keys"), False)[1]
         assert dash.main() == 0
-        assert order == [f"lock {singleton_mod.DASHBOARD_MUTEX}", "run",
+        assert order == [f"lock {singleton_mod.DASHBOARD_MUTEX}", "keys", "run",
                          "release", "relaunch"], order
         order.clear()
         Window.wants = False
         assert dash.main() == 0
-        assert order == [f"lock {singleton_mod.DASHBOARD_MUTEX}", "run",
+        assert order == [f"lock {singleton_mod.DASHBOARD_MUTEX}", "keys", "run",
                          "release"], order
     finally:
         (singleton_mod.InstanceLock, dash.Dashboard,
-         dash._relaunch_dashboard) = saved
+         dash._relaunch_dashboard, dash.bring_up_the_keys) = saved
 
 
 def test_an_answered_report_reopens_and_the_x_asks_before_it_deletes(
@@ -29415,6 +29473,75 @@ def test_paths_dev_mark_only_in_a_checkout():
     assert dashboard_mod.APP_ID == "DeskIT.Dev.Dashboard"
 
 
+_STRANGER_PROBE = (
+    "import json, sys; sys.path.insert(0, sys.argv[1]);"
+    "import paths, autostart, notify_hook, secretstore, models, packs;"
+    "print(json.dumps({'STRANGER': paths.STRANGER, 'DEVELOPER': paths.DEVELOPER,"
+    " 'PORTABLE': paths.PORTABLE, 'FLAT': paths.FLAT, 'DATA_DIR': str(paths.DATA_DIR),"
+    " 'suffix': paths.DEV_SUFFIX, 'tag': paths.DEV_TAG, 'port': paths.DEFAULT_PORT,"
+    " 'app_id': paths.APP_ID, 'mutex': paths.kernel_name(r'Local\\DeskIT.instance'),"
+    " 'run_key': autostart.RUN_KEY, 'hook_file': str(notify_hook.DEFAULT_SETTINGS),"
+    " 'prefix': secretstore.TARGET_PREFIX,"
+    " 'groq': secretstore.find_key('groq')[1], 'gemini': secretstore.find_key('gemini')[1],"
+    " 'model': models.state('ivrit-ai/whisper-large-v3-turbo-ct2'), 'pack': packs.state('gpu'),"
+    " 'describe': paths.describe()}))"
+)
+
+
+def test_the_stranger_hatch_runs_the_checkout_as_an_installed_copy():
+    """DESKIT_STRANGER=1 with DESKIT_HOME (dev\\stranger.py): the checkout
+    is neither DEVELOPER nor PORTABLE — the model is absent (not the
+    cache's), the pack missing, no .env and no bare variable answers for
+    a key, the store prefix is the test one — and its kernel names,
+    port, AppUserModelID, Run key and Claude settings file are its own,
+    beside DeskIT Dev's and the release's, so the copy collides with
+    neither and the owner's hook and Run value are never touched.
+    Without DESKIT_HOME the flag is ignored: the checkout's own folder is
+    never turned into a stranger's."""
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-stranger-")).resolve()
+    env_file = REPO / ".env"
+    had_env = env_file.exists()
+    if not had_env:
+        env_file.write_text("GROQ_API_KEY=gsk_stranger_test_key_xxxxxxxx\n", encoding="utf-8")
+    try:
+        base = {k: v for k, v in os.environ.items()
+                if k not in ("DESKIT_HOME", "DESKIT_STRANGER", "DESKIT_PORTABLE")}
+        base["GROQ_API_KEY"] = "gsk_from_the_owners_shell_xxxxxxxx"
+        base["GEMINI_API_KEY"] = "gem_from_the_owners_shell_xxxxxxxx"
+
+        def probe(extra: dict) -> dict:
+            out = subprocess.run([sys.executable, "-c", _STRANGER_PROBE, str(REPO)],
+                                 capture_output=True, encoding="utf-8", errors="replace",
+                                 timeout=120, env={**base, **extra})
+            assert out.returncode == 0, (out.stdout, out.stderr)
+            return json.loads(out.stdout.strip().splitlines()[-1])
+
+        got = probe({"DESKIT_HOME": str(tmp), "DESKIT_STRANGER": "1"})
+        assert got["STRANGER"] and not got["DEVELOPER"] and not got["PORTABLE"] and not got["FLAT"], got
+        assert got["DATA_DIR"] == str(tmp), got
+        assert got["suffix"] == ".test" and got["tag"] == "" and got["port"] == 8758, got
+        assert got["app_id"] == "DeskIT.Test" and got["mutex"] == r"Local\DeskIT.test.instance", got
+        assert got["run_key"] == r"Software\DeskIT.test\Run", got
+        assert got["hook_file"] == str(tmp / "claude-settings.json"), got
+        assert got["prefix"] == "DeskIT.test", got
+        assert got["groq"] == "not found" and got["gemini"] == "not found", \
+            "the stranger's copy read the owner's .env or shell"
+        assert got["model"] == "absent" and got["pack"] == "missing", got
+        assert got["describe"].startswith("stranger ("), got["describe"]
+
+        same = probe({"DESKIT_HOME": str(tmp)})
+        assert not same["STRANGER"] and same["DEVELOPER"], "DESKIT_HOME alone is the test hatch, not the stranger"
+        assert same["suffix"] == ".dev" and same["run_key"].endswith(r"CurrentVersion\Run"), same
+
+        alone = probe({"DESKIT_STRANGER": "1"})
+        assert not alone["STRANGER"] and alone["DEVELOPER"] and alone["PORTABLE"], alone
+        assert alone["DATA_DIR"] == str(REPO), "the flag without a home moved the checkout's data"
+    finally:
+        if not had_env:
+            env_file.unlink(missing_ok=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_no_store_path_is_built_beside_the_code():
     """Static: the product tree builds a personal-store path only through
     paths.py. What is still allowed to hang off APP_DIR is read-only
@@ -29475,6 +29602,56 @@ def test_config_layers_merge_order():
         plain = config_mod.load_layered(settings=d / "none.toml", state=d / "none.json")
         assert plain.vocab.max_terms == config_mod.defaults_flat()["vocab.max_terms"]
     finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_a_toml_layer_is_parsed_once_per_version_of_the_file():
+    """config._read_toml parses a file once and hands out deep copies
+    until the file's mtime or size moves (2026-09-19): the desk read the
+    layers 13 times on one switch to Home and once or more per 800 ms
+    poll, 4.7 of each read's 5.5 ms being tomllib on defaults.toml. A
+    rewrite is seen on the next read; what a caller edits stays its own;
+    a file that is not there or will not parse still raises."""
+    import os
+    import tomllib
+    d, s, _t = _layer_files()
+    parses: list = []
+    real = tomllib.load
+
+    def counted(f):
+        parses.append(f.name)
+        return real(f)
+    try:
+        s.write_text('[vocab]\nmax_terms = 7\n', encoding="utf-8")
+        config_mod._TOML_CACHE.pop(str(s), None)
+        with _patched(tomllib, "load", counted):
+            first = config_mod._read_toml(s)
+            second = config_mod._read_toml(s)
+            assert first == second == {"vocab": {"max_terms": 7}}
+            assert len(parses) == 1, parses
+            first["vocab"]["max_terms"] = 99                  # my copy, not theirs
+            assert config_mod._read_toml(s)["vocab"]["max_terms"] == 7
+            assert len(parses) == 1, parses
+            s.write_text('[vocab]\nmax_terms = 8\n', encoding="utf-8")
+            os.utime(s, ns=(os.stat(s).st_atime_ns, os.stat(s).st_mtime_ns + 1_000_000))
+            assert config_mod._read_toml(s)["vocab"]["max_terms"] == 8
+            assert len(parses) == 2, parses
+            s.write_text('[vocab\nmax_terms = 8\n', encoding="utf-8")
+            os.utime(s, ns=(os.stat(s).st_atime_ns, os.stat(s).st_mtime_ns + 1_000_000))
+            try:
+                config_mod._read_toml(s)
+            except config_mod.ConfigError:
+                pass
+            else:
+                raise AssertionError("bad TOML read back from the cache")
+            try:
+                config_mod._read_toml(d / "none.toml")
+            except config_mod.ConfigError:
+                pass
+            else:
+                raise AssertionError("a missing file read back from the cache")
+    finally:
+        config_mod._TOML_CACHE.pop(str(s), None)
         shutil.rmtree(d, ignore_errors=True)
 
 
@@ -29833,10 +30010,12 @@ def test_secrets_never_on_disk_in_data_dir():
     --keys names where it is and never the value, and no file under the
     data folder holds the key; --delete-key takes it back out. The
     hatch selects the DeskIT.test/ prefix, so the owner's entries are
-    never in play."""
+    never in play; the stranger hatch beside it makes the copy an
+    installed one, so the owner's .env (gemini on his PC) is not read
+    either."""
     d = Path(tempfile.mkdtemp(prefix="deskit-secrets-e2e-"))
     fixture = "gsk_fixture_e2e_" + "x" * 24
-    env = {**os.environ, "DESKIT_HOME": str(d)}
+    env = {**os.environ, "DESKIT_HOME": str(d), "DESKIT_STRANGER": "1"}
     for var in ("DESKIT_PORTABLE", "GROQ_API_KEY", "GEMINI_API_KEY",
                 "DESKIT_GROQ_API_KEY", "DESKIT_GEMINI_API_KEY"):
         env.pop(var, None)          # the owner's shell must not answer
@@ -30148,7 +30327,8 @@ def test_net_never_puts_key_in_url():
         assert value not in text, "a secret value reached network.log"
     tail = text.splitlines()[-4:]
     assert any("| catalog | 0 | 2 | 200 | gemini | -" in line for line in tail), tail
-    assert any("| polish | 8 | 2 | 200 | groq | cloud_text@groq-2026-06-22+gemini-2026-04-28"
+    import privacy as privacy_mod
+    assert any("| polish | 8 | 2 | 200 | groq | cloud_text@" + privacy_mod.TEXT_VERSIONS["cloud_text"]
                in line for line in tail), tail
 
 
@@ -30449,12 +30629,17 @@ def test_warmups_never_open_a_card():
             except Exception:
                 pass
         assert asked == [], f"a warm-up opened a card: {asked}"
-        # The same refusal inside a press the person made asks — once.
+        # The same refusal inside a press the person made opens nothing
+        # either (2026-09-19 evening: the card met him mid-dictation);
+        # the kind is written down once, and the card waits for a button.
         with privacy.pressed():
             for _ in range(3):
                 for _b in polish_mod.Polisher(cfg, _tmp_vocab())._backends("שלום"):
                     pass
-        assert asked == ["cloud_text"], asked
+        assert asked == [], f"a press opened a card: {asked}"
+        assert "cloud_text" in privacy._asked
+        privacy._asked.discard("cloud_text")
+        assert privacy.request("cloud_text") is True and asked == ["cloud_text"], "a button still asks"
         privacy._asked.discard("cloud_text")
     from urllib.parse import urlsplit
     remote = [u for u in tried if urlsplit(u).hostname != "127.0.0.1"]
@@ -30538,11 +30723,15 @@ def test_consent_card_words_and_layout():
         assert (img.width, img.height) == (w, h)
         small_w, small_h = cc.measure(card, 0.6, cache)
         assert small_w < w and small_h < h
-    # The cloud cards quote the providers' own words, in their words.
+    # The cloud cards quote the providers' own words, in their words —
+    # cut short since 2026-09-19 evening (the owner: "English and much
+    # shorter"), the whole quotes in the guide's cloud chapter.
     for kind in ("cloud_text", "cloud_audio", "cloud_screenshots"):
         terms = dict(cc.TEXTS[kind]["blocks"])[cc.TERMS]
         assert "not permitted to use Inputs or Outputs for training" in terms, kind
-        assert "human reviewers may read" in terms, kind
+        assert "to provide, improve, and develop Google products" in terms, kind
+        assert not any("א" <= ch <= "ת" for ch in terms), "the card is English now"
+    assert cc.RTL is False and cc.LABELS[cc.TURN_ON] == "Turn on"
 
 
 def test_the_card_answers_reach_privacy():
@@ -30626,7 +30815,7 @@ def test_the_consent_card_stands_up_on_the_hidden_desktop():
 # dot, main.py shows it once after the wizard and again on request.
 
 def test_tour_card_words_and_layout():
-    """Four stops, Hebrew, one sentence each; the last has one button and
+    """Four stops, English, one sentence each; the last has one button and
     the others two; the beak's frame adds room on the side it is on and
     nowhere else; the buttons are hit where they are drawn on every
     side; the beak stays off the rounded corners; the picture is the
@@ -30639,9 +30828,11 @@ def test_tour_card_words_and_layout():
     assert [s["tail"] for s in tc.STOPS] == [True, False, True, False]
     for stop in tc.STOPS:
         assert stop["title"] and stop["body"]
-        assert any("א" <= ch <= "ת" for ch in stop["body"]), stop
+        assert not any("א" <= ch <= "ת" for ch in stop["body"]), \
+            ("the tour is in the wizard's language, English (2026-09-19)", stop)
     for label in tc.LABELS.values():
-        assert any("א" <= ch <= "ת" for ch in label), label
+        assert label and not any("א" <= ch <= "ת" for ch in label), label
+    assert tc.RTL is False, "English lays out from the left"
     cache: dict = {}
     for i in range(len(tc.STOPS)):
         card = tc.card_for(i, key="Right Ctrl")
@@ -33256,6 +33447,116 @@ def test_step_run_state_machine():
     assert run.state == "failed" and run.said() == ("נכשל: disk full", "red")
 
 
+def test_the_computer_page_is_skipped_when_nothing_is_left_to_download():
+    """A copy whose downloads have all landed — or a portable one — never
+    sees the computer page (the owner, 2026-09-19 evening: "I do not
+    want the installation page"): Next from the microphone lands on the
+    sentence page, Back from there on the microphone, and the counter
+    counts seven. A copy with one thing to download still gets the page."""
+    import firstrun
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    nothing = {"portable": False, "model": None, "pack": None, "detector": None,
+               "recording": None, "tier": "gpu"}
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+        try:
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=nothing)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            w.page = firstrun.PAGES.index("mic")
+            w._show_page()
+            w._next()
+            assert w.name == "say", w.name
+            w._back()
+            assert w.name == "mic", w.name
+            w.page = firstrun.PAGES.index("say")
+            w._show_page()
+            assert [c for c in w.body.winfo_children()], "no page drawn"
+            assert "of 7" in _wizard_words(w), "the counter still counts the hidden page"
+        finally:
+            try:
+                w._close()            # the microphone stream too, not only the window
+            except Exception:                                # noqa: BLE001
+                pass
+            # buried before the next Tk: firstrun.run's rule, here by hand
+            # (a Recorder collected with its stream open is an access
+            # violation on the audio thread — measured here, 2026-09-19)
+            w = None
+            gc.collect()
+        one = dict(nothing, recording=type("T", (), {"name": "recording", "bytes": 5})())
+        try:
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=one,
+                                stepper=lambda kind, thing: __import__("steps").Step(
+                                    title="t", body="b", size_line="5 B", total=5,
+                                    work=lambda progress, cancel, stage: None, name=kind))
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            w.page = firstrun.PAGES.index("mic")
+            w._show_page()
+            w._next()
+            assert w.name == "computer", "one download, and the page was skipped"
+            assert "of 8" in _wizard_words(w)
+        finally:
+            try:
+                w._close()
+            except Exception:                                # noqa: BLE001
+                pass
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def _wizard_words(w) -> str:
+    """Every Label's text on the wizard's body, joined."""
+    import tkinter as tk
+    out = []
+
+    def walk(widget):
+        for child in widget.winfo_children():
+            if isinstance(child, tk.Label):
+                out.append(str(child.cget("text")))
+            walk(child)
+    walk(w.body)
+    return " | ".join(out)
+
+
+def test_the_wizard_offers_the_recording_pack_until_it_is_there():
+    """The fourth offer on the computer page (the owner, 2026-09-19
+    evening: "the software comes with everything; nobody installs things
+    in the middle"): the Recording pack, on by default, queued after the
+    others — offered while packs.lock names it and it is not installed,
+    never on a portable copy, never when the lock does not know it. It
+    stays a download rather than a line in the installer: PyAV's wheel
+    carries a GPL FFmpeg (D24)."""
+    import firstrun
+    import models
+    import packs
+
+    cfg = config_mod.load(REPO / "defaults.toml")
+    gpu = {"tier": "gpu", "vram_mb": 16311, "cuda_devices": 1, "driver_ok": True}
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-wizard-rec-"))
+    try:
+        with _patched(paths, "PORTABLE", False),                 _patched(paths, "MODELS_DIR", tmp / "models"),                 _patched(paths, "MODELS_LOCK", tmp / "models.lock"),                 _patched(paths, "PACKS_DIR", tmp / "packs"),                 _patched(paths, "PACKS_LOCK", tmp / "packs.lock"):
+            models.write_lock([models.Entry(cfg.local.model, "b" * 40, {"model.bin": (5, "0" * 64)})],
+                              tmp / "models.lock")
+            gpu_pack = _pack_lock(tmp, "gpu", {"nvidia_cublas_cu12-1.0-py3-none-win_amd64.whl": b"a" * 5})
+            assert firstrun.downloads_for(cfg, gpu)["recording"] is None, "offered without a lock entry"
+            rec = _pack_lock(tmp, "recording", {"av-18.0.0-cp311-abi3-win_amd64.whl": b"v" * 9})
+            packs.write_lock([gpu_pack, rec], tmp / "packs.lock")
+            out = firstrun.downloads_for(cfg, gpu)
+            assert out["recording"] is not None and out["recording"].name == "recording", out
+            assert firstrun.WORDS["computer.recording.help"].format(size="28 MB").startswith("28 MB")
+            assert firstrun.english_step("recording", packs.step(rec), rec.bytes).title ==                 firstrun.WORDS["step.recording.title"]
+        with _patched(paths, "PORTABLE", True):
+            assert firstrun.downloads_for(cfg, gpu)["recording"] is None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_the_wizard_offers_what_this_copy_lacks():
     """firstrun.downloads_for: nothing on a portable copy; the model
     when the local backend has none ready; the pack when packs.wanted
@@ -33379,6 +33680,68 @@ def test_the_sentence_page_loads_the_model_before_it_records():
             w.root.destroy()
 
 
+def test_the_wizard_leaves_no_tk_object_for_another_thread_to_bury():
+    """The stranger's copy died 34 s into its first dictation (2026-09-19,
+    spawn.log: "Tcl_AsyncDelete: async handler deleted by the wrong
+    thread"): the wizard's widgets, their PhotoImages and the consent
+    card are reference cycles, and the cyclic collector that finally
+    freed them ran on a DECODE thread — a PhotoImage's __del__ then
+    talks to a Tk that is gone, from the wrong thread, and the process
+    aborts. firstrun.run() now buries the wizard on the main thread
+    before it returns: every Tk-bound object the wizard made is gone
+    when run() hands back its Result, so no later collection on any
+    thread has one to finalize."""
+    import firstrun
+    import tkinter
+    from PIL import ImageTk
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    kinds = (ImageTk.PhotoImage, tkinter.Image, tkinter.Variable, tkinter.Misc)
+
+    def tk_bound(collect: bool) -> set[int]:
+        if collect:
+            gc.collect()
+        return {id(o) for o in gc.get_objects() if isinstance(o, kinds)}
+
+    before = tk_bound(collect=True)
+    made: list[int] = []
+
+    class Walked(firstrun.Wizard):
+        """The wizard, walking itself: extras with the consent card up,
+        then closed from its own tick — the way a person closes it."""
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            made.append(id(self))
+            self.root.after(150, self._walk)
+
+        def _walk(self):
+            try:
+                self.page = firstrun.PAGES.index("extras")
+                self._show_page()
+                self.switches["cloud"].toggle()              # the key field opens
+                self.root.after(150, self._close)
+            except Exception:                                # noqa: BLE001
+                self._close()
+                raise
+
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t),             _patched(paths, "CONSENT_FILE", d / "consent.json"),             _patched(firstrun, "key_probe", lambda: 1),             _patched(firstrun, "Wizard", Walked):
+        result = firstrun.run(cfg, facts={"tier": "cpu"},
+                              offers={"portable": True, "model": None, "pack": None,
+                                      "detector": None, "tier": "cpu"})
+    if not made:
+        print("    (skipped: no Tk window)")
+        return
+    assert bool(result) is False, "closing the wizard is not finishing it"
+    # Counted WITHOUT collecting: a collection here, on the main thread,
+    # would bury them safely and hide the bug (43 survivors measured
+    # without run()'s burial, 0 with it).
+    left = tk_bound(collect=False) - before
+    assert not left, (f"{len(left)} Tk-bound object(s) of the wizard survived run() — "
+                      "the next collection on a decode thread aborts the app")
+
+
 def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
     """The seven pages walked with Next: the queue pressed on page 2 runs
     the model, then the pack, then the detector, one after the other,
@@ -33450,7 +33813,7 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
             w._next()
             assert w.name == "computer" and w.pane is not None
             assert w.pane.run is w.runs["model"] and w.active == -1
-            assert w.want == {"pack": True, "detector": True}
+            assert w.want == {"pack": True, "detector": True, "recording": False}
             w._download()
             assert w.queue == ["model", "pack", "detector"] and w.active == 0
             assert w.runs["model"].running
@@ -33508,20 +33871,44 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
             shutil.rmtree(d, ignore_errors=True)
 
 
-def test_the_wizard_asks_the_consent_card_before_the_cloud_switch_stays_on():
-    """The cloud switch on the extras page: flipping it opens the consent
-    card's own picture (consent_card.flat) over the wizard; [Not now]
-    leaves the switch off and no row; [Turn on] writes the row with the
-    card's text_version through privacy.grant and the switch shows it."""
+def test_the_cloud_switch_is_the_consent_and_next_waits_for_a_working_key():
+    """The cloud switch on the extras page (the owner, 2026-09-19 evening:
+    "whoever turns it on — that is enough; a key must be checked; on with
+    no key, it must not let me continue"): flipping it on records the
+    consent row with the card's text_version at once and opens the key
+    field under the row — a rounded ui.Field, masked, the way to a free
+    key; Next is shut with "turn it off or paste a working key" until a
+    key passes the `key-test` probe; a refused key is taken out of the
+    store and Next stays shut; off again withdraws the consent, folds
+    the field away and opens Next."""
     import consent_card as cc
     import firstrun
     import privacy
+    import secretstore
+    import tkinter as tk
+    import ui
 
     cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
                               setup=config_mod.SetupConfig(done=False))
     d, s, t = _layer_files()
     offers = {"portable": True, "model": None, "pack": None, "detector": None, "tier": "gpu"}
-    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t):
+    store: dict = {}
+    probe = {"answer": None}
+
+    def fake_probe():
+        if isinstance(probe["answer"], Exception):
+            raise probe["answer"]
+        return probe["answer"]
+
+    def settle(w, seconds=1.0):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            w.root.update()
+            w._drain()
+            w._extras_gate()
+            time.sleep(0.02)
+
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t),             _patched(firstrun, "key_probe", fake_probe),             _patched(secretstore, "set", lambda name, value: store.__setitem__(name, value)),             _patched(secretstore, "get", lambda name: store.get(name)),             _patched(secretstore, "delete", lambda name: store.pop(name, None) is not None):
         assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
         privacy.withdraw("cloud_text")
         try:
@@ -33534,48 +33921,46 @@ def test_the_wizard_asks_the_consent_card_before_the_cloud_switch_stays_on():
             w._show_page()
             w.root.update()
             card = cc.card_for("cloud_text")
-
-            def press(name):
-                top = w.consent_window
-                w.root.update()
-                face = top.winfo_children()[0]
-                scale = 1.0
-                width, height = cc.measure(card, scale)
-                if height > firstrun.H - 40:
-                    scale = max(0.7, (firstrun.H - 40) / height)
-                x0, y0, x1, y1 = cc.regions(card, scale)[name]
-                face.event_generate("<Button-1>", x=int((x0 + x1) / 2 - cc.SHADOW),
-                                    y=int((y0 + y1) / 2 - cc.SHADOW))
-                w.root.update()
+            rows_only = w.extras_card.h
+            w._extras_gate()
+            assert w.next._enabled, "Next shut with the cloud off"
 
             w.switches["cloud"].toggle()
-            assert w.switches["cloud"].get() is False and w.consent_window.winfo_exists()
-            press(cc.NOT_NOW)
-            assert w.extras["cloud"] is False and privacy.consent("cloud_text") is None
-            w.switches["cloud"].toggle()
-            press(cc.TURN_ON)
+            settle(w, 0.2)
             row = privacy.consent("cloud_text")
             assert row is not None and row["text_version"] == card["text_version"], row
             assert w.extras["cloud"] is True and w.switches["cloud"].get() is True
-            # granted: the key is asked for right there — a masked field,
-            # Save, and the way to a free key (the owner's 1.1.1 walkthrough)
-            assert w.key_panel is not None and w.key_panel.winfo_exists()
-            assert "Groq key" in w.key_note.cget("text"), w.key_note.cget("text")
-            assert w.key_field.cget("show") == "•", "the key is masked while typed"
-            import tkinter as tk
-            links = [c for c in w.key_panel.winfo_children()
-                     if isinstance(c, tk.Label) and "console.groq.com" in c.cget("text")]
-            assert links, "no way to a free key"
-            import secretstore
-            stored: list = []
-            with _patched(secretstore, "set", lambda name, value: stored.append((name, value))):
-                w._save_key()
-                assert stored == [] and "paste the key first" in w.key_note.cget("text")
-                w.key_field.insert(0, "gsk_test_not_a_real_key_1234567890")
-                w._save_key()
-            assert stored == [("groq", "gsk_test_not_a_real_key_1234567890")], stored
+            assert w.key_panel is not None and w.key_panel.master is w.cloud_slot
+            assert isinstance(w.key_box, ui.Field) and w.key_field.cget("show") == "•"
+            labels = [c.cget("text") for c in w.key_panel.winfo_children() if isinstance(c, tk.Label)]
+            assert any("console.groq.com" in t_ for t_ in labels), "no way to a free key"
+            assert w.extras_card.h > rows_only
+            assert not w.next_loud._enabled and not w.next_quiet._enabled, "Next open with no key"
+            assert w.note.cget("text") == firstrun.WORDS["extras.key.wait"]
+
+            w._save_key()                                    # nothing pasted
+            assert store == {} and "paste the key first" in w.key_note.cget("text")
+            probe["answer"] = firstrun.KeyRefused("HTTP 401")
+            w.key_field.insert(0, "gsk_wrong_key_xxxxxxxxxxxxxxxxxxxxxx")
+            w._save_key()
+            settle(w, 1.0)
+            assert "groq" not in store, "a refused key stayed in the store"
+            assert "refused" in w.key_note.cget("text") and not w.next._enabled
             assert w.key_field.get() == "", "the field is emptied after Save"
-            assert "Credential Manager" in w.key_note.cget("text")
+
+            probe["answer"] = 3
+            w.key_field.insert(0, "gsk_test_not_a_real_key_1234567890")
+            w._save_key()
+            settle(w, 1.0)
+            assert store == {"groq": "gsk_test_not_a_real_key_1234567890"}, store
+            assert w.key_note.cget("text") == firstrun.WORDS["extras.key.works"]
+            assert w.next._enabled and w.note.cget("text") == ""
+
+            w.switches["cloud"].toggle()                     # off: the row folds away
+            settle(w, 0.2)
+            assert w.key_panel is None and w.extras["cloud"] is False
+            assert privacy.consent("cloud_text") is None, "off did not withdraw"
+            assert w.extras_card.h == rows_only and w.next._enabled
         finally:
             privacy.withdraw("cloud_text")
             try:
@@ -34203,6 +34588,51 @@ def test_the_keys_block_stores_tests_and_removes_without_showing_the_value():
         board._key_remove("gemini")
 
 
+def test_the_folder_settings_have_a_picker_beside_the_field():
+    """Settings > Screen: "Where pictures are saved" and "Where recordings
+    are saved" carry a [Browse…] beside their field (the owner, 2026-09-19
+    evening: he could not find where recordings go, and wants to point
+    at a folder, not type one). The dialog's answer goes to settings.toml
+    through the field, the way a typed path does; a cancelled dialog
+    changes nothing."""
+    import tkinter.filedialog as fd
+    import settings as settings_mod
+    import dashboard as dash
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-folders-"))
+    asked: list[dict] = []
+    answer = {"path": ""}
+
+    def fake_dialog(**kw):
+        asked.append(kw)
+        return answer["path"]
+
+    try:
+        with _patched(paths, "SETTINGS_FILE", d / "s.toml"), _patched(paths, "STATE_FILE", d / "t.json"),                 _patched(fd, "askdirectory", fake_dialog), _window() as board:
+            if board is None:
+                return
+            board._show("Settings")
+            board._settings_go("Screen")
+            board._finish_settings()
+            board.root.update_idletasks()
+            rows = board.parts["rows"]
+            for path in dash.FOLDER_SETTINGS:
+                assert [k for k, _w in rows.get(path, [])] == ["entry"], path
+                assert path in board.parts["browse"], f"no picker beside {path}"
+            assert "capture.quality" not in dash.FOLDER_SETTINGS
+            assert "capture.quality" not in board.parts["browse"], "a picker on a non-folder row"
+            setting = next(st for section in settings_mod.read(paths.DEFAULTS_FILE)
+                           for st in section.settings if st.path == "capture.folder")
+            board._browse_folder(setting)                         # cancelled
+            assert asked and asked[-1]["title"] == "Where pictures are saved"
+            assert "capture.folder" not in config_mod.read_settings(d / "s.toml")
+            answer["path"] = str(d / "my pictures")
+            board._browse_folder(setting)
+            assert config_mod.read_settings(d / "s.toml").get("capture.folder") == str(d / "my pictures")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def test_the_two_d33_switches_live_on_their_tabs():
     """Connect Claude Code on The app (notify_hook.install_hook /
     uninstall_hook, notify.enabled) and the Snipping-Tool key on Screen
@@ -34768,11 +35198,26 @@ def test_update_download_sha_mismatch_discards():
 
 
 def test_inno_script_never_names_data_dir():
-    """The installer touches APP_DIR only: {localappdata}\\DeskIT appears
-    in the script solely as {localappdata}\\Programs\\DeskIT (11.6)."""
+    """The installer's [Files] and [InstallDelete] touch APP_DIR only
+    (11.6): the data folder is named in [Code] exactly twice since the
+    Downloads page (2026-09-19) — the DataDir function the download
+    placing reads and writes THROUGH, and the free-space check — and
+    DataDir is used only to read an item's marker and to put a ticked
+    download under models\\ or packs\\; nothing of the person's is
+    deleted or listed, and a silent run (the Update card's) never
+    reaches it."""
     iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
-    assert iss.count("{localappdata}") == iss.count("{localappdata}\\Programs\\DeskIT"), \
-        "the installer names the data folder"
+    sections = iss[:iss.index("[Code]")]
+    assert sections.count("{localappdata}") == sections.count("{localappdata}\\Programs\\DeskIT"), \
+        "a section outside [Code] names the data folder"
+    code = iss[iss.index("[Code]"):]
+    naming = [ln.strip() for ln in code.splitlines() if "{localappdata}" in ln]
+    assert naming == ["Result := ExpandConstant('{localappdata}\\DeskIT');",
+                      "if GetSpaceOnDisk64(ExpandConstant('{localappdata}'), FreeBytes, TotalBytes) and (FreeBytes < Need + 1073741824) then"], naming
+    uses = [ln.strip() for ln in code.splitlines() if "DataDir" in ln and "function DataDir" not in ln]
+    assert uses == ["Marker := DataDir + '\\' + DlMarker(Item);",
+                    "Dest := DataDir + '\\' + Row[1];"], uses
+    assert "if WizardSilent or NoDownload then" in code
     assert "{userappdata}" not in iss and "{userdocs}" not in iss
     assert "updates.py" not in iss, "the script does not do the app's job"
     for key in ("updates.last_check", "updates.latest_seen", "updates.installed_version"):
@@ -35056,6 +35501,257 @@ def test_iss_settings():
     assert "RegDeleteValue(HKCU, RunKey, RunValue)" in code
     assert "VersionNumber(Have) > VersionNumber('{#Version}')" in code, "no downgrade refusal"
     assert "hebrew.DeleteDataQuestion=" in iss and "english.DeleteDataQuestion=" in iss
+
+
+def _iss_scan(text: str, name: str) -> None:
+    """test_iss_settings' two compiler traps, for any Inno script: no
+    line that begins with '[' after an indent, no brace inside a brace
+    comment of [Code]."""
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.strip().startswith("[") and line != line.lstrip():
+            raise AssertionError(f"{name}:{n} begins with '[' inside a section")
+    code = text[text.index("[Code]"):] if "[Code]" in text else text
+    in_str = in_comment = False
+    for n, ch in enumerate(code):
+        if in_str:
+            in_str = ch != "'"
+        elif in_comment:
+            if ch == "}":
+                in_comment = False
+            elif ch == "{":
+                raise AssertionError(f"{name}: a brace inside a brace comment near offset {n}")
+        elif ch == "'":
+            in_str = True
+        elif ch == "{" and code[n + 1] != "#":
+            in_comment = True
+
+
+def test_the_installer_downloads_what_the_wizard_used_to_and_the_list_is_the_locks():
+    """10.4, 2026-09-19 (the owner: "everything comes the moment I
+    install; no installation page"): the installer has a Downloads page
+    after Welcome — the Hebrew model and the Recording pack always, the
+    CUDA libraries with a card of 4 GB and a driver past 545.84, the
+    English detector with 6 GB, each a ticked box with its size and its
+    licence link — downloads the ticked items against the locks' SHA-256s
+    into the setup's temp folder, places them under the data folder at
+    ssPostInstall and runs `main.py --adopt-downloads`. Nothing when the
+    item is already there (its marker holds the lock's stamps), nothing
+    silent, nothing with /NODOWNLOAD, and a failed download is a Retry or
+    the wizard's — never a failed install. The list itself is generated
+    from models.lock, packs.lock and defaults.toml into downloads.iss,
+    committed, and both builds fail when it is stale."""
+    import importlib.util
+
+    import models
+    import packs
+
+    spec = importlib.util.spec_from_file_location("make_downloads_iss", REPO / "dev" / "make_downloads_iss.py")
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+    generated = (REPO / "packaging" / "downloads.iss").read_text("utf-8")
+    assert gen.render(gen.items()) == generated, "packaging/downloads.iss is stale: run dev/make_downloads_iss.py"
+    _iss_scan(generated, "downloads.iss")
+    assert "GENERATED" in generated.splitlines()[0]
+
+    # every row is a file of the two locks, with the lock's URL, hash and size
+    table = gen.items()
+    hebrew = models.entry(config_mod.defaults_flat()["local.model"])
+    english = models.entry(config_mod.defaults_flat()["local.english_model"])
+    for item, e in (("model", hebrew), ("detector", english)):
+        rows = table[item]["rows"]
+        assert [r[0].split("\\")[-1] for r in rows] == list(e.files), item
+        for rel, url, sha, size in rows:
+            name = rel.split("\\")[-1]
+            assert rel == f"models\\{e.folder.name}\\{name}", rel
+            assert url == e.url(name) and (size, sha) == e.files[name], name
+        assert table[item]["bytes"] == e.bytes and table[item]["stamps"] == [e.revision]
+        assert table[item]["marker"] == f"models\\{e.folder.name}\\{models.COMPLETE}"
+    for item in ("gpu", "recording"):
+        pk = packs.pack(item)
+        rows = table[item]["rows"]
+        assert [(r[1], r[2], r[3]) for r in rows] == [(w.url, w.sha256, w.size) for w in pk.wheels], item
+        assert [r[0] for r in rows] == [f"packs\\{item}\\wheels\\{w.filename}" for w in pk.wheels]
+        assert table[item]["marker"] == f"packs\\{item}\\{packs.RECORD}"
+        assert table[item]["stamps"] == [f'"{w.name}": "{w.version}"' for w in pk.wheels]
+        assert table[item]["licenses"] == list(pk.licenses)
+    for row in [(item, *r) for item in gen.ITEMS for r in table[item]["rows"]]:
+        assert "|" not in "".join(str(x) for x in row) and "'" not in "".join(str(x) for x in row), row
+    assert f"DlCount: Integer; begin Result := {sum(len(table[i]['rows']) for i in gen.ITEMS)}; end;" in generated
+    # the stamps are what models.py / packs.py themselves write, so the
+    # installer's "already there" is the app's own "ready" / "ok"
+    assert '"repo": e.repo, "revision": e.revision,' in inspect.getsource(models._mark_complete)
+    assert '"pack": p.name, "versions": p.versions,' in inspect.getsource(packs.install)
+
+    iss = (REPO / "packaging" / "DeskIT.iss").read_text("utf-8")
+    code = iss[iss.index("[Code]"):]
+    assert '#include "downloads.iss"' in code
+    assert "CreateInputOptionPage(wpWelcome," in code and "CreateDownloadPage(" in code
+    assert "if WizardSilent or NoDownload then" in code and "{param:NODOWNLOAD|no}" in code
+    assert "nvidia-smi --query-gpu=memory.total,driver_version" in code
+    assert "(Major > 545) or ((Major = 545) and (Minor >= 84))" in code, "hardware.DRIVER_FLOOR"
+    assert "(DlCardVram >= 4096)" in code and "(DlCardVram >= 6144)" in code, "GPU_SMALL_MB / GPU_MB"
+    assert "Result := not DlPresent(Item)" in code
+    assert "Pos(Stamps[I], Content) = 0" in code, "a marker without the lock's stamp is stale"
+    assert "MB_RETRYCANCEL, IDCANCEL) = IDRETRY" in code, "a failed download is Retry or the wizard's"
+    assert "GetSpaceOnDisk64(ExpandConstant('{localappdata}')" in code
+    assert "ExpandConstant('{localappdata}\\DeskIT')" in code, "paths.DATA_DIR of an installed copy"
+    assert "--adopt-downloads" in code and "PlaceDownloads;" in code
+    assert "if not RenameFile(Src, Dest) then" in code and "FileCopy(Src, Dest, False)" in code
+    assert "Link.Hint := Pair[1];" in code and "ShellExec('open', TNewStaticText(Sender).Hint" in code
+    for lang in ("english", "hebrew"):
+        for key in ("DlCaption", "DlDescription", "DlSub", "DlItem_model", "DlItem_detector",
+                    "DlItem_gpu", "DlItem_recording", "DlFailed", "DlNoRoom", "DlFinishing"):
+            assert f"{lang}.{key}=" in iss, f"{lang}.{key}"
+    assert "1.6 GB download, once" not in iss, "the Welcome text still promises a download at first start"
+    for name in (".github/workflows/release.yml", "packaging/build_local.ps1"):
+        assert "make_downloads_iss.py --check" in (REPO / name).read_text("utf-8"), name
+    assert "--adopt-downloads" in (REPO / "main.py").read_text("utf-8")
+
+
+def test_models_adopt_finishes_what_the_installer_placed_without_the_network():
+    """models.adopt(): files the installer put in the folder at the
+    lock's sizes are hashed and marked complete with no request made;
+    a file missing or short is `partial` (left for the wizard, whose
+    download resumes what is there); a file that hashes wrong is
+    `failed:<name>`, deleted, and .complete is not written; a ready
+    folder answers `ready` and is not touched."""
+    import models
+    import net as net_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-adopt-"))
+    try:
+        bodies = {"config.json": b'{"model_type": "whisper"}', "model.bin": bytes(range(256)) * 40}
+
+        def never(*a, **k):
+            raise AssertionError("adopt went to the network")
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "MODELS_LOCK", tmp / "models.lock"), \
+                _patched(net_mod, "download", never):
+            e = _model_lock(tmp, bodies)
+            assert models.adopt(e) == "partial" and not e.folder.exists()
+            e.folder.mkdir(parents=True)
+            (e.folder / "config.json").write_bytes(bodies["config.json"])
+            assert models.adopt(e) == "partial", "model.bin missing"
+            (e.folder / "model.bin").write_bytes(bodies["model.bin"][:-1])
+            assert models.adopt(e) == "partial", "model.bin short"
+            (e.folder / "model.bin").write_bytes(b"x" * len(bodies["model.bin"]))
+            assert models.adopt(e) == "failed:model.bin"
+            assert not (e.folder / "model.bin").exists() and (e.folder / "config.json").exists()
+            assert not (e.folder / models.COMPLETE).exists()
+            (e.folder / "model.bin").write_bytes(bodies["model.bin"])
+            assert models.adopt(e) == "ready"
+            assert json.loads((e.folder / models.COMPLETE).read_text("utf-8"))["revision"] == e.revision
+            assert models.state(e.repo) == "ready"
+            stamp = (e.folder / models.COMPLETE).stat().st_mtime_ns
+            assert models.adopt(e) == "ready"
+            assert (e.folder / models.COMPLETE).stat().st_mtime_ns == stamp, "a ready folder was redone"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_packs_adopt_runs_pip_offline_on_the_wheels_the_installer_left():
+    """packs.adopt(): wheels in the pack's folder at the lock's sizes go
+    through pip with --no-index and the lock's hashes, no request made,
+    and the record says ok; a wheel missing or short is `partial` and
+    pip does not run; a pip that refuses is `failed:<its line>` with
+    the wheels kept for the wizard; an installed pack is `ok` untouched."""
+    import net as net_mod
+    import packs
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-adopt-packs-"))
+    try:
+        bodies = {"nvidia_cublas_cu12-1.0-py3-none-win_amd64.whl": bytes(range(256)) * 60,
+                  "nvidia_cudnn_cu12-2.0-py3-none-win_amd64.whl": b"d" * 3000}
+
+        def never(*a, **k):
+            raise AssertionError("adopt went to the network")
+        pip = _Pip()
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "PACKS_DIR", tmp / "packs"), \
+                _patched(paths, "PACKS_LOCK", tmp / "packs.lock"), \
+                _patched(paths, "STATE_FILE", tmp / "state.json"), \
+                _patched(paths, "SETTINGS_FILE", tmp / "settings.toml"), \
+                _patched(net_mod, "download", never), \
+                _patched(packs.subprocess, "run", pip):
+            p = _pack_lock(tmp, "gpu", bodies)
+            assert packs.adopt(p) == "partial" and pip.calls == []
+            p.wheels_dir.mkdir(parents=True)
+            names = list(bodies)
+            (p.wheels_dir / names[0]).write_bytes(bodies[names[0]])
+            assert packs.adopt(p) == "partial" and pip.calls == [], "one wheel missing"
+            (p.wheels_dir / names[1]).write_bytes(bodies[names[1]][:-1])
+            assert packs.adopt(p) == "partial" and pip.calls == [], "one wheel short"
+            (p.wheels_dir / names[1]).write_bytes(bodies[names[1]])
+            refusing = _Pip(fail="THESE PACKAGES DO NOT MATCH THE HASHES")
+            with _patched(packs.subprocess, "run", refusing):
+                word = packs.adopt(p)
+            assert word.startswith("failed:") and "HASHES" in word, word
+            assert p.wheels_dir.exists() and not p.record.exists(), "the wheels stay for the wizard"
+            assert packs.adopt(p) == "ok"
+            pips = [c for c, _kw in pip.calls if "pip" in c]     # the record also asks git for the version
+            assert len(pips) == 1 and "--no-index" in pips[0] and "--require-hashes" in pips[0], pips
+            assert packs.state("gpu") == "ok" and not p.wheels_dir.exists()
+            again = packs.adopt(p)
+            assert again == "ok" and len([c for c, _kw in pip.calls if "pip" in c]) == 1, "an installed pack was redone"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_main_adopt_downloads_walks_both_locks_and_never_fails_the_installer():
+    """main.py --adopt-downloads: every lock entry with a folder on disk
+    through models.adopt, every pack with wheels through packs.adopt,
+    one line each, exit 0 whatever they answer — the installer's last
+    step must never fail over a download. Nothing on disk, nothing
+    said."""
+    import io
+    import contextlib
+
+    import main as main_mod
+    import models
+    import packs
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-adopt-main-"))
+    try:
+        e = models.Entry("t/one", "b" * 40, {"config.json": (2, "00" * 32)})
+        gone = models.Entry("t/two", "c" * 40, {"config.json": (2, "00" * 32)})
+        pk = packs.Pack("gpu", (packs.Wheel("x", "1", "x-1-py3-none-win_amd64.whl", "https://files.pythonhosted.org/x", 2, "00" * 32),))
+        calls: list = []
+
+        def adopt_model(entry):
+            calls.append(("model", entry.repo))
+            if entry.repo == "t/one":
+                raise RuntimeError("boom")
+            return "ready"
+
+        def adopt_pack(pack):
+            calls.append(("pack", pack.name))
+            return "partial"
+        with _patched(paths, "PORTABLE", False), \
+                _patched(paths, "MODELS_DIR", tmp / "models"), \
+                _patched(paths, "PACKS_DIR", tmp / "packs"), \
+                _patched(models, "read_lock", lambda *a, **k: {"t/one": e, "t/two": gone}), \
+                _patched(packs, "read_lock", lambda *a, **k: {"gpu": pk}), \
+                _patched(packs, "state", lambda *a, **k: "missing"), \
+                _patched(models, "adopt", adopt_model), \
+                _patched(packs, "adopt", adopt_pack):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                assert main_mod._adopt_downloads() == 0
+            assert out.getvalue() == "" and calls == [], "nothing on disk, nothing said"
+            e.folder.mkdir(parents=True)
+            pk.wheels_dir.mkdir(parents=True)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                assert main_mod._adopt_downloads() == 0
+            assert calls == [("model", "t/one"), ("pack", "gpu")], calls
+            assert out.getvalue().splitlines() == ["model t/one: failed:boom", "pack gpu: partial"], out.getvalue()
+        src = (REPO / "main.py").read_text("utf-8")
+        assert 'parser.add_argument("--adopt-downloads"' in src
+        assert src.index("if args.adopt_downloads:") < src.index("if args.dashboard:"), \
+            "the adopt step runs before anything opens a window"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def test_channel_values():

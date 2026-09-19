@@ -28,9 +28,14 @@ asks again for every request by its purpose (``kind_for``), which is
 what makes a consent withdrawn from the dashboard — another process —
 take effect on the app's very next request without anyone restarting
 anything. Start-up warm-ups therefore never open a card: a shut gate is
-one INFO line, the way a missing key is. The CARD is opened by the
-feature's controller when it catches ``ConsentRequired`` (D7: "the first
-key press that needs a cloud pass opens the card").
+one INFO line, the way a missing key is. NEITHER DOES A KEY PRESS, since
+2026-09-19 evening: D7 said "the first key press that needs a cloud pass
+opens the card", and the owner, walking a fresh copy, met the card in
+the middle of a dictation — "it should not appear here". A shut gate now
+refuses quietly everywhere; the card opens only from a BUTTON the
+person pressed for it (``request``: the wizard's cloud switch records
+the consent itself, Settings > Privacy's [Turn on], the ask card's
+"use my own key").
 
 A change runs the registered resets (``on_change``): the punctuator,
 the lookup engine and the translator forget the cloud leg they cached —
@@ -74,13 +79,13 @@ SWITCHES: tuple[str, ...] = ("update_check", "offline")
 #: every old row goes stale. The four DeskIT-side kinds carry the
 #: version of the one-page terms of chapter 13 (docs/terms.md).
 TEXT_VERSIONS: dict[str, str] = {
-    "cloud_text": "groq-2026-06-22+gemini-2026-04-28",
-    "cloud_audio": "groq-2026-06-22+gemini-2026-04-28",
-    "cloud_screenshots": "groq-2026-06-22+gemini-2026-04-28",
-    "account": "deskit-terms-0",
-    "report_upload": "deskit-terms-0",
-    "settings_sync": "deskit-terms-0",
-    "history_sync": "deskit-terms-0",
+    "cloud_text": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+    "cloud_audio": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+    "cloud_screenshots": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+    "account": "deskit-terms-0+en-2026-09-19",
+    "report_upload": "deskit-terms-0+en-2026-09-19",
+    "settings_sync": "deskit-terms-0+en-2026-09-19",
+    "history_sync": "deskit-terms-0+en-2026-09-19",
 }
 
 #: net.py's purpose -> the gate it needs. A purpose absent here (key
@@ -286,16 +291,15 @@ def in_press() -> bool:
 
 
 def _ask(kind: str) -> None:
+    """A refusal met inside a press: written down, and NO card (the
+    owner, 2026-09-19 evening). `request` is the road for a button."""
     if _asker is None or not in_press():
         return
     with _lock:
         if kind in _asked:
             return
         _asked.add(kind)
-    try:
-        _asker(kind)
-    except Exception:                                        # noqa: BLE001
-        log.info("could not open the consent card for %s", kind, exc_info=True)
+    log.info("%s: not granted — the switch is in the wizard and Settings > Privacy", kind)
 
 
 def request(kind: str) -> bool:

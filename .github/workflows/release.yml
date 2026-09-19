@@ -83,10 +83,11 @@ jobs:
       #     downloaded, hashed, no second download, no dependency
       #     resolution, the same install ci.yml runs. (Dry run #1 ran the
       #     check on a bare Python and stopped at `import PIL`.)
-      - name: The guide is fresh
+      - name: The guide and the installer's download list are fresh
         run: |
           python -m pip install --no-index --find-links wheels --require-hashes --no-deps -r requirements.lock
           python dev/gen_settings_doc.py --check
+          python dev/make_downloads_iss.py --check
 
       # 2. embed — the python.org zip, checked against the committed SHA-256
       - name: Embeddable Python

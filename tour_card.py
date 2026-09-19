@@ -1,12 +1,15 @@
 """What the first-run tour says, and how a stop is drawn (D36).
 
 THE TOUR IS THE GUIDE. The owner, 2026-09-18: the user's guide must be
-minimal and in Hebrew, and "not text — more like a square with an
-arrow, on the first start, before you use it, with a skip". So the
-guide is four small cards on the live desktop, right after the wizard's
-last page: a callout beside the status dot with a beak pointing at it,
-one sentence each, [הבא] and [דלג]. The site under docs/ stays as the
-reference nobody has to read.
+minimal, and "not text — more like a square with an arrow, on the first
+start, before you use it, with a skip". So the guide is four small cards
+on the live desktop, right after the wizard's last page: a callout
+beside the status dot with a beak pointing at it, one sentence each,
+[Next] and [Skip]. The site under docs/ stays as the reference nobody
+has to read. In ENGLISH since 2026-09-19 evening, the wizard's language
+— he walked a fresh copy and "the guide is still in Hebrew" was the
+one gap left; RTL below follows the words, so a Hebrew table would lay
+itself out again from the right.
 
 Split the way consent_card.py is split: this half owns the WORDS, the
 GEOMETRY and the PICTURE — pure Python plus Pillow, no Tk, no window —
@@ -37,7 +40,7 @@ from review_card import (ACCENT, ACCENT_HI, ACCENT_ON, CARD, EDGE, EDGE_HI,
                          INK_FAINT, LINE, _rr, _text, clamp_scale)
 
 NEXT, SKIP, DONE, DRAG = "next", "skip", "done", "drag"
-LABELS = {NEXT: "הבא", SKIP: "דלג", DONE: "סיימתי"}
+LABELS = {NEXT: "Next", SKIP: "Skip", DONE: "Done"}
 SIDES = ("top", "bottom", "left", "right")     # which edge the beak is on
 
 CARD_W = 340
@@ -59,22 +62,27 @@ KEY_PAD = 16
 # last stop has one button; every other stop has two.
 STOPS = (
     {"kind": "dot", "tail": True, "picture": None,
-     "title": "זו הנקודה",
-     "body": ("הצבע שלה אומר מה קורה: כחול — מוכן. אדום — מקליט. "
-              "זהוב — עובד על מה שאמרת.")},
+     "title": "This is the dot",
+     "body": ("Its colour says what is happening: blue — listening. "
+              "Red — recording. Gold — working on what you said.")},
     {"kind": "key", "tail": False, "picture": "key",
-     "title": "המקש",
-     "body": ("מחזיקים, מדברים, משחררים — והטקסט מודבק איפה שהסמן "
-              "עומד, בכל תוכנה.")},
+     "title": "The key",
+     "body": ("Hold, talk, let go — and the text is pasted where your "
+              "cursor stands, in any program.")},
     {"kind": "shelf", "tail": True, "picture": None,
-     "title": "לחיצה על הנקודה",
-     "body": ("פותחת מדף קטן: מה מחכה לך, המשפט האחרון שאמרת, ודלת "
-              "לשולחן העבודה — הגדרות, היסטוריה, דיווח.")},
+     "title": "A click on the dot",
+     "body": ("Opens a small shelf: what is waiting for you, the last "
+              "sentence you said, and a door to the desk — settings, "
+              "history, reporting a problem.")},
     {"kind": "done", "tail": False, "picture": None,
-     "title": "זהו",
-     "body": ("אפשר לראות את הסיור שוב מהגדרות ← האפליקציה. "
-              "בהצלחה.")},
+     "title": "That is it",
+     "body": ("You can see this tour again from Settings > The app. "
+              "Enjoy.")},
 )
+
+#: The words' direction: Hebrew lays out from the right, English from
+#: the left. Decided from the table, so the layout follows the words.
+RTL: bool = any("\u0590" <= ch <= "\u05FF" for stop in STOPS for ch in stop["title"] + stop["body"])
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +114,7 @@ def _body(cache: dict, text: str, pt: float, width: int, colour=INK):
     if img is None:
         from visual_qa import text_pil
         img = text_pil(text, max(40, int(width)), pt=pt, colour=colour,
-                       rtl=True, single=False)
+                       rtl=RTL, single=False)
         box = img.getchannel("A").getbbox()
         if box:
             img = img.crop((0, box[1], img.width, box[3]))
@@ -147,7 +155,7 @@ def layout(card: dict, scale: float = 1.0, cache: dict | None = None) -> dict:
     y = pad
     step = _text(cache, f"{card['index'] + 1} / {card['count']}",
                  STEP_PT * s, colour=INK_FAINT, weight=600, rtl=False)
-    title = _text(cache, card["title"], TITLE_PT * s, weight=600)
+    title = _text(cache, card["title"], TITLE_PT * s, weight=600, rtl=RTL)
     items = [("step", step, y), ("title", title, y)]
     y += max(title.height, step.height) + 8 * s
     if card["picture"] == "key":
@@ -247,13 +255,16 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     right = width - lay["pad"]
     left = lay["pad"]
+    # The words' edge and the counter's: right and left for Hebrew, the
+    # mirror for English. The buttons stay at the right in both — the
+    # way on is the rightmost thing, as on the wizard's foot.
     for kind, piece, y in lay["items"]:
         if kind == "step":
-            img.alpha_composite(piece, (int(left), int(y + 2 * s)))
-        elif kind == "key":
-            img.alpha_composite(piece, (int(right - piece.width), int(y)))
+            x = left if RTL else right - piece.width
+            img.alpha_composite(piece, (int(x), int(y + 2 * s)))
         else:
-            img.alpha_composite(piece, (int(right - piece.width), int(y)))
+            x = right - piece.width if RTL else left
+            img.alpha_composite(piece, (int(x), int(y)))
     boxes = regions(card, s, cache)
     for name in card["buttons"]:
         bx0, by0, bx1, by1 = boxes[name]
@@ -268,7 +279,7 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
                        outline=LINE + (255,))
             colour = INK
         img.alpha_composite(face, (int(bx0), int(by0)))
-        lab = _text(cache, LABELS[name], 9.5 * s, colour=colour, weight=600)
+        lab = _text(cache, LABELS[name], 9.5 * s, colour=colour, weight=600, rtl=RTL)
         img.alpha_composite(lab, (int((bx0 + bx1) / 2 - lab.width / 2),
                                   int((by0 + by1) / 2 - lab.height / 2)))
     return img

@@ -60,7 +60,11 @@ if str(HERE) not in sys.path:
 import paths
 
 DEFAULT_PORT = 8756
-DEFAULT_SETTINGS = Path.home() / ".claude" / "settings.json"
+#: Claude Code's own settings file — except for the stranger's copy
+#: (paths.STRANGER), whose Connect switch must never install or remove
+#: the OWNER's hook: it gets a file of its own under its scratch home.
+DEFAULT_SETTINGS = (paths.DATA_DIR / "claude-settings.json" if paths.STRANGER
+                    else Path.home() / ".claude" / "settings.json")
 TOKEN_FILE = paths.PHONE_TOKEN     # the pre-2026-09-17 plaintext file
 BODY_MAX = 300
 SOURCE = "claude-code"

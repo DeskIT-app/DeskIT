@@ -58,8 +58,9 @@ until you turn it on yourself, and every request can be seen. Open source, Apach
   ([the release page](https://github.com/DeskIT-app/DeskIT/releases/latest): SHA-256, the VirusTotal scan, the attestation). Installs for your user only, no admin password.
 - Or, with winget: `winget install YoavShimron.DeskIT` (once the package is accepted).
 
-Windows 10 (1809+) or 11, 64-bit. First start: a short wizard, and the Hebrew model downloads
-once (1.6 GB). An NVIDIA card makes transcription instant; without one it works, slower.
+Windows 10 (1809+) or 11, 64-bit. The installer downloads the Hebrew model (1.6 GB, once, with
+your tick; an NVIDIA card's libraries too); the first start is a short wizard. An NVIDIA card
+makes transcription instant; without one it works, slower.
 Windows may warn once that the installer is unsigned —
 [why, and what to do](https://deskit-app.github.io/DeskIT/en/01-install); [Code signing policy](CODE_SIGNING_POLICY.md).
 
