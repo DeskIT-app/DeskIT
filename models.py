@@ -50,9 +50,18 @@ import hashlib
 import json
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+
+# Run by path as a command (`python models.py --lock`, `--verify REPO`);
+# an installed copy's interpreter (python311._pth) does not put the
+# script's folder on sys.path, so `import net` below found nothing.
+# The same guard as main.py's.
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 import net
 import paths
@@ -465,6 +474,4 @@ def _main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    import sys
-
     sys.exit(_main(sys.argv[1:]))

@@ -127,6 +127,7 @@ _LAYOUTS: dict[str, tuple[str, str]] = {
     "NOTIFY_LOG":      ("notify.log",         "logs/notify.log"),
     "AWAKE_LOG":       ("awake.log",          "logs/awake.log"),
     "NETWORK_LOG":     ("network.log",        "logs/network.log"),
+    "SPAWN_LOG":       ("spawn.log",          "logs/spawn.log"),
     "RECENT_DIR":      ("recent",             "audio/recent"),
     "PENDING_DIR":     ("pending",            "audio/pending"),
     "CORPUS_DIR":      ("corpus",             "corpus"),
@@ -170,6 +171,9 @@ TRANSCRIPTS_LOG = _rel("TRANSCRIPTS_LOG")
 NOTIFY_LOG = _rel("NOTIFY_LOG")
 AWAKE_LOG = _rel("AWAKE_LOG")
 NETWORK_LOG = _rel("NETWORK_LOG")
+#: What a child started by launch.spawn() wrote to stderr before it died
+#: — the one trace of a desk or an app that never came up.
+SPAWN_LOG = _rel("SPAWN_LOG")
 RECENT_DIR = _rel("RECENT_DIR")
 PENDING_DIR = _rel("PENDING_DIR")
 CORPUS_DIR = _rel("CORPUS_DIR")

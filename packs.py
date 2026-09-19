@@ -56,6 +56,14 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Run by path as a command (`python packs.py --lock`, `--install NAME`);
+# an installed copy's interpreter (python311._pth) does not put the
+# script's folder on sys.path, so `import config` below found nothing.
+# The same guard as main.py's.
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
 import config as config_mod
 import net
 import paths

@@ -54,6 +54,7 @@ app.log*                export-ignore
 notify.log*             export-ignore
 awake.log*              export-ignore
 network.log*            export-ignore
+spawn.log*              export-ignore
 recent/                 export-ignore
 pending/                export-ignore
 corpus/                 export-ignore

@@ -15,11 +15,18 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import paths
 
 APP_DIR = Path(__file__).resolve().parent
+
+#: spawn.log (paths.SPAWN_LOG) is cut back to its tail past this size:
+#: a launch row is one line and a traceback a few hundred bytes, and a
+#: file nobody rotates must not grow for the life of an install.
+SPAWN_LOG_MAX = 200_000
+SPAWN_LOG_KEEP = 50_000
 
 # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP. Without the first the child
 # inherits (or opens) a console; without the second, Ctrl+C in a
@@ -52,16 +59,50 @@ def pythonw() -> str:
     return sys.executable
 
 
+def _spawn_log(args: list[str]):
+    """An append handle on paths.SPAWN_LOG, one dated row for this launch
+    already in it, for the child to inherit as its stderr — or None when
+    the file cannot be had, in which case the launch goes on with stderr
+    in DEVNULL as it always did: a log that cannot be written must not
+    cost the desk. The row names the script and its flags, so a
+    traceback under it says which child died."""
+    try:
+        path = paths.SPAWN_LOG
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if path.stat().st_size > SPAWN_LOG_MAX:
+                path.write_bytes(path.read_bytes()[-SPAWN_LOG_KEEP:])
+        except OSError:
+            pass
+        fh = open(path, "ab")
+        fh.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] "
+                 f"{' '.join(args)}\n".encode("utf-8", "replace"))
+        fh.flush()
+        return fh
+    except OSError:
+        return None
+
+
 def spawn(args: list[str]) -> bool:
-    """Launch and forget. False if it could not be started at all."""
+    """Launch and forget. False if it could not be started at all.
+
+    stderr goes to spawn.log, not DEVNULL: a child that dies before it
+    has a window — dashboard.py on the 1.1.0 install, dead on `import
+    config` under the isolated interpreter — used to leave nothing at
+    all, and "Open the desk" simply did nothing. Now the traceback is
+    under the launch row in paths.SPAWN_LOG."""
+    sink = _spawn_log(args)
     try:
         subprocess.Popen([pythonw(), *args], cwd=str(APP_DIR),
                          creationflags=_DETACHED, close_fds=True,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL)
+                         stderr=sink if sink is not None else subprocess.DEVNULL)
         return True
     except OSError:
         return False
+    finally:
+        if sink is not None:
+            sink.close()
 
 
 def start_app(config_path: str | None = None, model: bool = True) -> bool:

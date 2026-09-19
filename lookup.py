@@ -44,11 +44,20 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sys
 import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
+
+# Run by path as a command (`python lookup.py "brittle"`, the prompt
+# probe below); an installed copy's interpreter (python311._pth) does
+# not put the script's folder on sys.path, so `import net` found
+# nothing. The same guard as main.py's.
+_HERE = str(Path(__file__).resolve().parent)
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
 
 import net
 import paths
@@ -932,8 +941,6 @@ if __name__ == "__main__":
     # A prompt is only as good as the answers it gets, and answers cannot
     # be unit-tested. This is how to read one without loading Whisper or
     # taking the keyboard hook:  python lookup.py "brittle"
-    import sys
-
     import config as config_mod
 
     if len(sys.argv) < 2:
