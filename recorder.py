@@ -412,11 +412,18 @@ class Recorder:
 
     def _callback(self, indata, frames, time_info, status) -> None:
         notify = None
+        # The level is read from EVERY buffer, recording or not: the
+        # wizard's microphone page shows meter() while nothing is being
+        # recorded, and until 2026-09-19 the bar stayed flat there (the
+        # owner's 1.1.0 and 1.1.1 walkthroughs) because the level was only
+        # taken under ACTIVE. One max over the buffer; the peak, the chunks
+        # and the alarms stay the recording's own.
+        level = float(np.abs(indata).max()) / 32768.0 if len(indata) else 0.0
         with self._lock:
+            self._level = level
             if self._state == ACTIVE:
                 self._chunks.append(indata.copy())
                 self._samples += len(indata)
-                self._level = float(np.abs(indata).max()) / 32768.0
                 self._peak = max(self._peak, self._level)
                 # The dead-microphone alarm, once; the all-clear, once.
                 # Decided on the sample count, not the clock, so a test

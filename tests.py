@@ -2770,7 +2770,30 @@ def _bare_recorder(max_seconds: float, on_overflow):
     r.sample_rate = 16000
     r._default_max_samples = float(max_seconds * r.sample_rate)
     r._max_samples = r._default_max_samples
+    r._level, r._peak = 0.0, 0.0
+    r._silent_told = r._sound_told = False
+    r.on_silent = r.on_sound = None
     return r
+
+
+def test_the_meter_moves_while_nothing_is_recorded() -> None:
+    """The wizard's microphone page reads meter() on an open, idle
+    stream — and its bar stayed flat on the owner's 1.1.0 and 1.1.1
+    walkthroughs (2026-09-19) because the level was only taken under
+    ACTIVE. Every buffer feeds the level; the peak and the chunks stay the
+    recording's own."""
+    r = _bare_recorder(2.0, lambda: None)
+    loud = np.full(1600, 16384, dtype=np.int16)
+    assert r.meter()[0] == 0.0
+    r._callback(loud, len(loud), None, None)          # idle: no begin()
+    level, recording = r.meter()
+    assert abs(level - 0.5) < 0.01 and not recording, (level, recording)
+    assert r._peak == 0.0 and r._chunks == [], "idle buffers are not kept"
+    r._callback(np.zeros(1600, dtype=np.int16), 1600, None, None)
+    assert r.meter()[0] == 0.0, "the level is the last buffer's, not a peak"
+    r.begin()
+    r._callback(loud, len(loud), None, None)
+    assert r.meter() == (0.5, True) and r._peak == 0.5 and len(r._chunks) == 1
 
 
 def test_latched_recording_is_not_capped_and_the_cap_comes_back() -> None:
