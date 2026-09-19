@@ -555,8 +555,10 @@ TABS: tuple[Tab, ...] = (
             Friendly("privacy.settings_sync", "Syncing settings and words",
                      "Your changed settings and learned words follow you "
                      "to every PC you sign into; never keys, hotkeys, "
-                     "devices, folders or positions. Opens only through "
-                     "its card."),
+                     "devices, folders or positions. Asked on the wizard's "
+                     "last page, on unless you turned it off there; "
+                     "Withdraw turns it off, Sync now under Account asks "
+                     "again."),
             Friendly("privacy.history_sync", "Syncing what you said",
                      "The Said page is the same on every PC you sign "
                      "into. Stored in your account on the developer's "

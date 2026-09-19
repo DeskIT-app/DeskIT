@@ -47,7 +47,11 @@ The pages, and the ORDER is the point:
      (D34: the defaults are what the owner runs) and written only when
      moved.
   7. Ready — the hotkey named, Start-with-Windows and the phone asked
-     once, the desk one button away
+     once, and — signed in — the words-and-settings sync, ON by
+     default (the owner, 2026-09-20: nobody found the gate in
+     Settings; the row says what leaves and how to turn it off, and
+     Start records the consent — a row nobody saw is never one); the
+     desk one button away
 
 At most four real decisions (arch-A §1 P2): the microphone (only when
 more than one input exists), the downloads, the extras, and nothing
@@ -154,8 +158,9 @@ WORDS = {
     "account.stored": ("Stored: the account id and e-mail of the Google account you pick, "
                        "this PC's name, the app version and the Windows version — on "
                        "DeskIT's server (Supabase, Frankfurt)."),
-    "account.never": ("Never stored: your voice, what you said, your keys. Every sync "
-                      "stays off until you turn it on, on its own card."),
+    "account.never": ("Never stored: your voice, what you said, your keys. The last page "
+                      "asks whether your learned words and settings stay in the account; "
+                      "what you said is synced only if you turn that on in Settings."),
     "account.none": "This copy has no account server — you can go on.",
     "account.button": "Sign in with Google",
     "account.waiting": "Waiting for Google's sign-in page in your browser…",
@@ -280,6 +285,11 @@ WORDS = {
     "done.autostart.help": "A Run entry for your user; Settings > The app turns it off.",
     "done.phone": "Dictate from your phone",
     "done.phone.help": "This PC listens for the DeskIT keyboard on your Tailscale address (Settings > Phone shows how).",
+    "done.sync": "Keep my learned words and settings in my account",
+    "done.sync.help": ("On any PC you sign in on, DeskIT then hears you your way from the first "
+                       "sentence: the words it learned from you and the settings you changed "
+                       "follow you there. Never your voice, your keys or what you said. "
+                       "Settings > Privacy > Withdraw turns it off."),
     "done.title": "DeskIT is ready",
     "done.sub": "Hold the key and talk. The text lands where your cursor is, in any window. Start opens the desk.",
     "done.deferred": ("DeskIT is installed. The Hebrew model can be downloaded from the desk "
@@ -1016,6 +1026,19 @@ class Wizard:
         except Exception:                                  # noqa: BLE001
             pass
         self._extras_shown = dict(self.extras)
+        # The last page's sync row (the owner, 2026-09-20: nobody found
+        # the gate in Settings — "make it the default, on the last screen,
+        # with a line that says what they are ticking and how to turn it
+        # off"): drawn ON, recorded on Start only (_save_sync), so a
+        # switch nobody has seen yet is never a consent. Kept apart from
+        # `extras`, which is written on the extras page's Next as well.
+        self.sync_wanted = True
+        self._sync_shown = False
+        try:
+            import privacy
+            self._sync_shown = bool(privacy.allowed("settings_sync"))
+        except Exception:                                  # noqa: BLE001
+            pass
 
         _lamplight()
         # A PhotoImage belongs to the interpreter that made it: the step
@@ -1843,6 +1866,9 @@ class Wizard:
 
     def _extra_flipped(self, key: str) -> None:
         on = self.switches[key].get()
+        if key == "sync":
+            self.sync_wanted = on          # written by Start, _save_sync
+            return
         if key == "cloud":
             # THE SWITCH IS THE CONSENT here (the owner, 2026-09-19 evening:
             # "whoever turns it on — that is enough"): the row's own two
@@ -2047,14 +2073,31 @@ class Wizard:
                  font=(ui.UI, 11), anchor="w").pack(side="left", fill="x", expand=True)
         ui.KeyCap(row, _pretty(self.cfg.hotkey), bg=ui.CARD, w=180).pack(side="right")
         self.switches = {}
-        rows = (("autostart", WORDS["done.autostart"], WORDS["done.autostart.help"]),
-                ("phone", WORDS["done.phone"], WORDS["done.phone.help"]))
+        # The sync row first, and only with an account to sync to: on a
+        # copy without a server, or one that walked past the account
+        # page (sb.REQUIRED off), there is nothing the switch could mean.
+        rows = []
+        if self._signed_in():
+            rows.append(("sync", WORDS["done.sync"], WORDS["done.sync.help"]))
+        rows += [("autostart", WORDS["done.autostart"], WORDS["done.autostart.help"]),
+                 ("phone", WORDS["done.phone"], WORDS["done.phone.help"])]
         for i, (key, label, help_) in enumerate(rows):
             self.switches[key] = self._switch_row(
-                label, help_, self.extras[key],
+                label, help_,
+                self.sync_wanted if key == "sync" else self.extras[key],
                 lambda _v=None, k=key: self._extra_flipped(k), parent=card.body,
                 bg=ui.CARD, last=i == len(rows) - 1)
         self._fit(card)
+
+    @staticmethod
+    def _signed_in() -> bool:
+        """A configured project and a session: the account page's own
+        test, asked again on the last page."""
+        try:
+            import sb
+            return bool(sb.configured() and sb.user())
+        except Exception:                                  # noqa: BLE001
+            return False
 
     def _open_desk(self) -> None:
         """[Start]: the app AND the desk. Until 2026-09-19 evening the desk
@@ -2062,6 +2105,7 @@ class Wizard:
         without it — "the model ran without the app": a dot and nothing
         to look at. One way out of the wizard, and it opens the desk."""
         self.result.open_desk = True
+        self._save_sync()
         self._save_extras()
         self._finish()
 
@@ -2450,6 +2494,29 @@ class Wizard:
                                 fg=ui.RED)
             return
         self._extras_shown = dict(want)
+
+    def _save_sync(self) -> None:
+        """The last page's sync row, on Start: THE ROW IS THE CONSENT, as
+        the cloud switch is on the extras page — the account page said
+        what is stored and where, the row's own line says what follows
+        the person and how to stop it — recorded with the card's
+        text_version so Settings > Privacy shows the grant like any
+        other; off on a later run (the gate open) withdraws it. Nothing
+        when the row was not on the page: no account, nothing to sync
+        to, and a consent nobody saw is not one. The sync itself is the
+        app's worker, 30 s after it starts (sb.start_worker)."""
+        if "sync" not in getattr(self, "switches", {}) or self.sync_wanted == self._sync_shown:
+            return
+        try:
+            import privacy
+            if self.sync_wanted:
+                import consent_card as cc
+                privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
+            else:
+                privacy.withdraw("settings_sync")
+            self._sync_shown = self.sync_wanted
+        except Exception as e:                             # noqa: BLE001
+            log.warning("the wizard could not record the sync consent: %s", e)
 
     def _finish(self) -> None:
         self.result.saved = (record_done() if self.path is None

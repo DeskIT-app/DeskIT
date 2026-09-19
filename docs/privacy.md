@@ -82,8 +82,12 @@ you typed), the app version, the Windows build, the hardware tier;
 timestamps; and the IP address as the processor sees it, in its logs
 only (kept one day).
 
-**Two syncs, each behind its own consent card, both off until you turn
-them on.** "Settings and words": your changed settings — minus every
+**Two syncs, each a consent you give yourself.** "Settings and words"
+is asked once, on the wizard's last page, as a switch drawn on: leave
+it on and Start records the consent, turn it off and nothing is synced;
+Settings > Privacy > Withdraw turns it off at any later time. "What you
+said" is off until you turn it on, on its own card. "Settings and
+words": your changed settings — minus every
 key, hotkey, device, folder, port and position, which never leave the
 PC — and the words the app learned from your corrections. "What you
 said": the text of what you dictated, translated, punctuated and looked

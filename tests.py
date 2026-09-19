@@ -33923,6 +33923,117 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
             shutil.rmtree(d, ignore_errors=True)
 
 
+def test_the_last_page_keeps_words_and_settings_in_the_account_by_default():
+    """The wizard's last page (the owner, 2026-09-20 — two PCs on one
+    Google account shared not one learned word, the gate being off in
+    both behind a card nobody found: "make it the default, on the last
+    screen, with a line that says what they are ticking and how to turn
+    it off"): signed in, a third switch — Keep my learned words and
+    settings in my account — drawn ON above the two, its help line
+    naming what follows and the way off; Start records the
+    settings_sync consent with the card's own text_version, and nothing
+    before Start does (the extras page's Next writes only its own
+    switches); off, Start writes no row; on a later run with the gate
+    open, off withdraws it. Not signed in, the row is not on the page
+    and Start records nothing — a consent nobody saw is not one."""
+    import consent_card as cc
+    import firstrun
+    import privacy
+    import sb
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    offers = {"portable": True, "model": None, "pack": None, "detector": None, "tier": "gpu"}
+    person = {"email": "person@example.com", "id": "x", "is_anonymous": False}
+    who = {"user": person}
+
+    def wizard():
+        try:
+            return firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return None
+
+    def bury(w):
+        try:
+            w._close()
+        except Exception:                                    # noqa: BLE001
+            pass
+        gc.collect()
+
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(sb, "user", lambda: who["user"]), _patched(sb, "configured", lambda: True):
+        assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
+        privacy.withdraw("settings_sync")
+        card = cc.card_for("settings_sync")
+        try:
+            # 1. drawn on, off by hand, Start writes nothing
+            w = wizard()
+            if w is None:
+                return
+            assert w.sync_wanted is True and w._sync_shown is False
+            w.page = firstrun.PAGES.index("extras")
+            w._show_page()
+            w._next()                                        # the extras page's own writer
+            assert w.name == "done"
+            assert privacy.consent("settings_sync") is None, "granted before the row was seen"
+            assert list(w.switches) == ["sync", "autostart", "phone"], list(w.switches)
+            assert w.switches["sync"].get() is True, "the default is on"
+            words = _wizard_words(w)
+            assert firstrun.WORDS["done.sync"] in words
+            assert "Settings > Privacy > Withdraw" in words, "no way off named on the row"
+            assert "Never your voice" in words, "the row does not say what stays"
+            w.switches["sync"].toggle()
+            assert w.sync_wanted is False
+            w._open_desk()
+            assert w.result.saved and config_mod.read_state(t).get("setup.done") is True
+            assert privacy.consent("settings_sync") is None, "off on Start wrote a row"
+            bury(w)
+
+            # 2. left on, Start records it with the card's version
+            w = wizard()
+            w.page = firstrun.PAGES.index("done")
+            w._show_page()
+            assert w.switches["sync"].get() is True
+            w._open_desk()
+            row = privacy.consent("settings_sync")
+            assert row is not None and row["text_version"] == card["text_version"], row
+            assert privacy.allowed("settings_sync")
+            bury(w)
+
+            # 3. a later run, the gate open: drawn on and quiet; off withdraws
+            w = wizard()
+            assert w._sync_shown is True and w.sync_wanted is True
+            w.page = firstrun.PAGES.index("done")
+            w._show_page()
+            w._open_desk()
+            assert privacy.consent("settings_sync") is row or privacy.consent("settings_sync") == row
+            bury(w)
+            w = wizard()
+            w.page = firstrun.PAGES.index("done")
+            w._show_page()
+            w.switches["sync"].toggle()
+            w._open_desk()
+            assert privacy.consent("settings_sync") is None, "off did not withdraw"
+            assert not privacy.allowed("settings_sync")
+            bury(w)
+
+            # 4. not signed in: no row, and Start records nothing
+            who["user"] = None
+            w = wizard()
+            w.page = firstrun.PAGES.index("done")
+            w._show_page()
+            assert list(w.switches) == ["autostart", "phone"], list(w.switches)
+            assert w.sync_wanted is True                    # the default, unseen
+            w._open_desk()
+            assert privacy.consent("settings_sync") is None, "a consent nobody saw was written"
+            bury(w)
+        finally:
+            privacy.withdraw("settings_sync")
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def test_the_cloud_switch_is_the_consent_and_next_waits_for_a_working_key():
     """The cloud switch on the extras page (the owner, 2026-09-19 evening:
     "whoever turns it on — that is enough; a key must be checked; on with

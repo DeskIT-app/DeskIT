@@ -6,6 +6,12 @@ attestation, the previous version) — do not write those here. Hebrew
 paragraph first (the owner's), English second (DISTRIBUTION_PLAN.md
 11.11 step 2).
 
+## 1.0.1
+
+המילים שלמדת הולכות איתך: בעמוד האחרון של האשף יש עכשיו מתג שלישי, דלוק מראש — "Keep my learned words and settings in my account" — עם שורה שאומרת מה יוצא (המילים שדסק-איט למד ממך וההגדרות ששינית, אף פעם לא הקול, המפתחות או מה שאמרת) ואיך מכבים (Settings > Privacy > Withdraw). עד עכשיו הסנכרון היה כבוי בכל עותק, מאחורי כרטיס שאיש לא מצא — שני מחשבים עם אותו חשבון גוגל לא חלקו אף מילה. Start הוא מה שרושם את ההסכמה; מתג שלא ראית אינו הסכמה.
+
+Your learned words follow you: the wizard's last page has a third switch, on by default — "Keep my learned words and settings in my account" — with a line saying what leaves (the words DeskIT learned from you and the settings you changed; never your voice, your keys or what you said) and how to turn it off (Settings > Privacy > Withdraw). Until now the sync was off in every copy, behind a card nobody found — two PCs on the same Google account shared not one word. Start is what records the consent; a switch you never saw is not one.
+
 ## 1.0.0
 
 הגרסה הראשונה של DeskIT — הכתבה בעברית שנשארת במחשב שלך. מתקינים בשתי לחיצות, בלי סיסמת מנהל; המתקין מוריד בעצמו את מודל הדיבור העברי (ועם כרטיס NVIDIA גם את מה שעושה את התמלול מהיר), כך שבהפעלה הראשונה אשף קצר רק מגדיר מיקרופון ומקש. מחזיקים מקש, מדברים, הטקסט נכנס איפה שהסמן. הקול לא יוצא מהמחשב; מה שאמרת נשמר בתיקייה אחת שאפשר למחוק; שום דבר לא נשלח לשום מקום עד שמפעילים זאת בעצמכם, וכל חיבור יוצא רשום במסך אחד. מסך מקשים מצויר, לימוד מילים שתיקנת, הקלטת מסך וצילום, תרגום, חיפוש מילה, וטלפון שמכתיב דרך המחשב שלך.

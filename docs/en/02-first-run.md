@@ -108,7 +108,16 @@ stand and written only if you move them:
 
 ![Ready](../img/02-done.png)
 
-The hotkey to hold, and two more switches asked once: **Start with Windows** (a Run entry for
-your user) and **Dictate from your phone** ([chapter 6](06-phone)). **Start** starts DeskIT
-and opens the desk. If you skipped the model, this page says so and Home has the download
-button.
+The hotkey to hold, and three switches asked once:
+
+- **Keep my learned words and settings in my account** — on. The words DeskIT learned from
+  you and the settings you changed follow you to any PC you sign in on, so it hears you
+  your way from the first sentence. Never your voice, your keys or what you said (the Said
+  page has its own switch, off, under Settings > Privacy). To turn it off later:
+  Settings > Privacy > **Withdraw** on *Syncing settings and words*; **Sync now** under
+  Account asks again. The row appears only when you signed in on the account page.
+- **Start with Windows** — off. A Run entry for your user.
+- **Dictate from your phone** — off ([chapter 6](06-phone)).
+
+**Start** starts DeskIT and opens the desk. If you skipped the model, this page says so and
+Home has the download button.
