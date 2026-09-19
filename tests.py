@@ -11109,7 +11109,9 @@ def test_the_sheet_is_off_the_window_while_a_screen_is_built() -> None:
             real()
         board._screen_keys = spy
         board._show("Keys")
-        assert seen == [({}, False)], seen              # not placed, not mapped
+        # placed or not is the fact; mapped-ness is the runner's (CI's
+        # desktop never maps the window, 35467636557)
+        assert [placed for placed, _mapped in seen] == [{}], seen
         assert board.sheet.place_info(), "the slide did not put the sheet back"
         for _ in range(40):                            # the slide's six frames
             board.root.update()
@@ -11117,7 +11119,6 @@ def test_the_sheet_is_off_the_window_while_a_screen_is_built() -> None:
                 break
         assert board._slide_after is None
         assert int(board.sheet.place_info()["y"]) == 0, board.sheet.place_info()
-        assert board.sheet.winfo_ismapped()
 
         def dies() -> None:
             raise RuntimeError("the builder is having a day")
@@ -29607,24 +29608,25 @@ def test_config_layers_merge_order():
 
 def test_a_toml_layer_is_parsed_once_per_version_of_the_file():
     """config._read_toml parses a file once and hands out deep copies
-    until the file's mtime or size moves (2026-09-19): the desk read the
-    layers 13 times on one switch to Home and once or more per 800 ms
-    poll, 4.7 of each read's 5.5 ms being tomllib on defaults.toml. A
-    rewrite is seen on the next read; what a caller edits stays its own;
-    a file that is not there or will not parse still raises."""
-    import os
+    until the file's BYTES change (2026-09-19): the desk read the layers
+    13 times on one switch to Home and once or more per 800 ms poll, 4.7
+    of each read's 5.5 ms being tomllib on defaults.toml. A rewrite is
+    seen on the next read — even one of the same length in the same
+    timestamp tick, which is what CI's first run with an mtime+size key
+    tripped on; what a caller edits stays its own; a file that is not
+    there or will not parse still raises."""
     import tomllib
     d, s, _t = _layer_files()
     parses: list = []
-    real = tomllib.load
+    real = tomllib.loads
 
-    def counted(f):
-        parses.append(f.name)
-        return real(f)
+    def counted(text):
+        parses.append(len(text))
+        return real(text)
     try:
         s.write_text('[vocab]\nmax_terms = 7\n', encoding="utf-8")
         config_mod._TOML_CACHE.pop(str(s), None)
-        with _patched(tomllib, "load", counted):
+        with _patched(tomllib, "loads", counted):
             first = config_mod._read_toml(s)
             second = config_mod._read_toml(s)
             assert first == second == {"vocab": {"max_terms": 7}}
@@ -29632,12 +29634,10 @@ def test_a_toml_layer_is_parsed_once_per_version_of_the_file():
             first["vocab"]["max_terms"] = 99                  # my copy, not theirs
             assert config_mod._read_toml(s)["vocab"]["max_terms"] == 7
             assert len(parses) == 1, parses
-            s.write_text('[vocab]\nmax_terms = 8\n', encoding="utf-8")
-            os.utime(s, ns=(os.stat(s).st_atime_ns, os.stat(s).st_mtime_ns + 1_000_000))
+            s.write_text('[vocab]\nmax_terms = 8\n', encoding="utf-8")   # same length, at once
             assert config_mod._read_toml(s)["vocab"]["max_terms"] == 8
             assert len(parses) == 2, parses
             s.write_text('[vocab\nmax_terms = 8\n', encoding="utf-8")
-            os.utime(s, ns=(os.stat(s).st_atime_ns, os.stat(s).st_mtime_ns + 1_000_000))
             try:
                 config_mod._read_toml(s)
             except config_mod.ConfigError:

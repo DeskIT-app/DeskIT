@@ -820,7 +820,8 @@ exactly what classic did.
   seven half-built frames per click. Do not read `winfo_x/y/width/height`
   of a sheet child inside a builder (unmapped, they are 1 and 0); use
   `winfo_req*`. And `config._read_toml` is cached per file version
-  (mtime + size, deep copies out): the layered config was read 13 times
+  (a digest of the bytes — NOT mtime + size, which CI showed can stay put across
+  a same-length rewrite — deep copies out): the layered config was read 13 times
   on one switch to Home and once or more per 800 ms poll, 4.7 of each
   read's 5.5 ms being tomllib on defaults.toml. What is left after both
   (Keys 0.45 s, Settings 0.35 s click-to-settled) is the first map of
