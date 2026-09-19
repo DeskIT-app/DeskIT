@@ -11113,11 +11113,11 @@ def test_the_sheet_is_off_the_window_while_a_screen_is_built() -> None:
         # desktop never maps the window, 35467636557)
         assert [placed for placed, _mapped in seen] == [{}], seen
         assert board.sheet.place_info(), "the slide did not put the sheet back"
-        for _ in range(40):                            # the slide's six frames
+        deadline = time.monotonic() + 3                # six 18 ms frames; CI's clock, not a count
+        while board._slide_after is not None and time.monotonic() < deadline:
             board.root.update()
-            if board._slide_after is None:
-                break
-        assert board._slide_after is None
+            time.sleep(0.02)
+        assert board._slide_after is None, "the slide never finished"
         assert int(board.sheet.place_info()["y"]) == 0, board.sheet.place_info()
 
         def dies() -> None:
