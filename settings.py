@@ -582,6 +582,10 @@ TABS: tuple[Tab, ...] = (
     )),
     Tab(APP, (
         Group("THIS COMPUTER", (
+            Friendly("local.load_at_start", "Load the speech model when DeskIT starts",
+                     "Off, DeskIT starts without it — every key that needs "
+                     "no model works at once, and Start on the desk loads "
+                     "it when you want to dictate."),
             Friendly("setup.autostart", "Start with Windows",
                      "Windows starts DeskIT when you sign in. Off, you "
                      "open it from the Start menu."),

@@ -40,6 +40,7 @@ privacy.history_sync
 privacy.update_check
 privacy.offline
 history.keep_days
+local.load_at_start
 awake.hold
 awake.screens_hotkey
 camera.camera_hotkey

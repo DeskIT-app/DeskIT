@@ -36254,7 +36254,7 @@ def test_autostart_run_value():
             assert read() == autostart.command() == autostart.current()
             assert launch.pythonw() in autostart.command() and "deskit.pyw" in autostart.command()
             assert autostart.command().count('"') == 4, "both halves quoted"
-            assert autostart.command().endswith(" --autostart"), "the logon start opens no window"
+            assert autostart.command().endswith(" --quiet"), "the logon start opens no window"
             assert autostart.apply(True) is False, "nothing to change"
             assert autostart.apply(False) is True and read() is None
             assert autostart.apply(False) is False
@@ -38369,12 +38369,14 @@ def test_the_desk_brings_the_keys_up_without_the_model():
     """His rule (2026-09-18, after the first live try): "even if I did not
     start the model but only opened the desk, every feature that does
     not need the model works." So the desk's entry point starts the app
-    WITHOUT the model when nothing is running — main.py --no-model, the
-    hook and every tap key up in under a second (a real App built that
-    way on the hidden desktop: 0.02 s to build, 0.7 s to start, status
-    model=off, the phone refused, load → fake backend on, unload → off)
-    — and does nothing when it is. Start in the bar still launches the
-    whole app with the model when nothing runs. In the entry point and
+    when nothing is running — main.py --quiet, no second window; the
+    model comes with it by default since 2026-09-20 ([local]
+    load_at_start, his "make that the default, with a way off in
+    Settings"), and a start without it (--no-model, or the setting off)
+    still has the hook and every tap key up in under a second (a real
+    App built that way on the hidden desktop: 0.02 s to build, 0.7 s to
+    start, status model=off, the phone refused, load → fake backend on,
+    unload → off) — and does nothing when it is. In the entry point and
     not in Dashboard.__init__: a window built for a test or a picture
     must never spawn a process."""
     import dashboard as dash
@@ -38383,10 +38385,11 @@ def test_the_desk_brings_the_keys_up_without_the_model():
     started: list = []
     with _patched(singleton, "is_running", lambda *a, **k: False),             _patched(launch, "spawn", lambda args: started.append(list(args)) or True):
         assert dash.bring_up_the_keys() is True
-        assert launch.start_app() is True
+        assert launch.start_app(model=False) is True
     assert len(started) == 2, started
-    assert started[0][0].endswith("main.py") and started[0][-1] == "--no-model", started[0]
-    assert started[1][0].endswith("main.py") and "--no-model" not in started[1], started[1]
+    assert started[0][0].endswith("main.py") and started[0][-1] == "--quiet", started[0]
+    assert "--no-model" not in started[0], "the desk decides the model; the setting does"
+    assert started[1][0].endswith("main.py") and started[1][-1] == "--no-model" and "--quiet" in started[1], started[1]
     with _patched(singleton, "is_running", lambda *a, **k: True),             _patched(launch, "spawn", lambda args: started.append(list(args)) or True):
         assert dash.bring_up_the_keys() is False
     assert len(started) == 2, "the desk started a second copy"
@@ -38394,8 +38397,14 @@ def test_the_desk_brings_the_keys_up_without_the_model():
     assert "bring_up_the_keys" not in inspect.getsource(dash.Dashboard.__init__)
     main_src = (REPO / "main.py").read_text("utf-8")
     assert 'parser.add_argument("--no-model"' in main_src
-    assert "model=not args.no_model" in main_src
-    assert "and not args.no_model" in main_src, "the download offer runs for a --no-model start"
+    assert "model=not no_model" in main_src
+    assert "and not no_model" in main_src, "the download offer runs for a --no-model start"
+    assert 'no_model = args.no_model or not bool(getattr(cfg.local, "load_at_start", True))' in main_src
+    cfg = config_mod.load(REPO / "defaults.toml")
+    assert cfg.local.load_at_start is True, "the model comes with the app by default"
+    import settings as settings_mod
+    rows = [r.path for tab in settings_mod.TABS for g in tab.groups for r in g.rows]
+    assert "local.load_at_start" in rows, "no way off in Settings"
 
 
 def test_the_dev_copy_says_so_in_the_window():

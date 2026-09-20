@@ -114,6 +114,7 @@ beside the app keeps the defaults and the help for every key.
 
 | key | what it does | default | choices |
 |---|---|---|---|
+| `local.load_at_start` — Load the speech model when DeskIT starts | Off, DeskIT starts without it — every key that needs no model works at once, and Start on the desk loads it when you want to dictate. | on | on / off |
 | `awake.hold` — Hold the computer awake | While the app is running the machine will not fall asleep on its own timer. The screens may still go dark. | on | on / off |
 
 ## Keys

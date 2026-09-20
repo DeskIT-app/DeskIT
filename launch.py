@@ -105,15 +105,16 @@ def spawn(args: list[str]) -> bool:
             sink.close()
 
 
-def start_app(config_path: str | None = None, model: bool = True) -> bool:
-    """The app as its own process. model=False starts it without the
-    speech model (main.py --no-model): the desk does that when it opens
-    and nothing is running, so every key that needs no model works at
-    once; Start in the desk then loads the model."""
-    args = [str(APP_DIR / "main.py")]
+def start_app(config_path: str | None = None, model: bool | None = None) -> bool:
+    """The app as its own process, with no window of its own (main.py
+    --quiet: the desk that calls this is the window). model=None lets
+    [local] load_at_start decide — on by default (the owner, 2026-09-20);
+    False starts it without the speech model (--no-model), and Start in
+    the desk loads it; every key that needs no model works either way."""
+    args = [str(APP_DIR / "main.py"), "--quiet"]
     if config_path:
         args += ["--config", config_path]
-    if not model:
+    if model is False:
         args.append("--no-model")
     return spawn(args)
 
