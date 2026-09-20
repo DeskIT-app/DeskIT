@@ -725,13 +725,16 @@ def set_name(name: str) -> str:
     return name
 
 
-def sign_out() -> None:
+def sign_out(everywhere: bool = True) -> None:
     """Sign out everywhere (the refresh tokens are revoked server-side),
-    then forget the session and the cursors here. The local files stay."""
+    then forget the session and the cursors here. The local files stay.
+    ``everywhere=False`` is the wizard's "Not you?": this PC's session
+    only, the person's other PCs keep theirs."""
     session = _load_session()
     if session is not None and configured():
         try:
-            _auth("logout", {}, query="scope=global", bearer=True)
+            _auth("logout", {}, query="scope=global" if everywhere else "scope=local",
+                  bearer=True)
         except Exception as e:                               # noqa: BLE001
             log.info("account: the sign-out did not reach the server (%s) — "
                      "signed out here", e)

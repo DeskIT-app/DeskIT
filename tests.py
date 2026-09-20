@@ -34068,8 +34068,8 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
                 w = wizard(nothing)
                 w.page = firstrun.PAGES.index("account")
                 w._show_page()
-                assert w._road is None and set(w.roads) == {"create", "signin"}
-                w._road_to("signin")
+                assert w._account_step == "choice" and set(w.roads) == {"create", "signin"}
+                w._account_show("signin")
                 assert w.name_box is None and w.signin is not None
                 assert firstrun.WORDS["account.signin.line"] in _wizard_words(w)
                 assert not w._auto_open
@@ -34093,7 +34093,7 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
                 w = wizard(nothing)
                 w.page = firstrun.PAGES.index("account")
                 w._show_page()
-                w._road_to("signin")
+                w._account_show("signin")
                 w._sign_in()
                 settle(w, 3, until=lambda: w._returning_answer is not None)
                 settle(w, 0.3)
@@ -34115,14 +34115,25 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
                 w = wizard(nothing)
                 w.page = firstrun.PAGES.index("account")
                 w._show_page()
-                w._road_to("create")
+                w._account_show("create")
                 assert w.name_box is not None
+                w.name_box.entry.insert(0, "Dana")
                 w._sign_in()
                 settle(w, 3, until=lambda: w._returning)
                 settle(w, 0.3)
                 assert w._returning and answer["synced"] == [] and not w.result.saved
                 assert w.next.itemcget(w.next._label, "text") == firstrun.WORDS["account.open"]
                 assert firstrun.WORDS["account.returning"] in _wizard_words(w)
+                # Not you? on the welcome-back card: the returning answer
+                # is forgotten with the session, every page is back
+                signed_out = []
+                with _patched(sb, "sign_out", lambda everywhere=True: signed_out.append(everywhere)):
+                    w._account_sign_out()
+                    settle(w, 0.5, until=lambda: signed_out)
+                assert signed_out == [False], signed_out
+                assert not w._returning and w._returning_answer is None
+                assert w._account_step == "choice"
+                assert not any(w._hidden(n) for n in ("mic", "say", "keys", "extras", "done"))
                 bury(w)
         finally:
             privacy.withdraw("settings_sync")
@@ -34454,10 +34465,11 @@ def test_the_wizards_microphone_help_is_on_screen_once():
         try:
             w.page = firstrun.PAGES.index("account")
             w._show_page()
-            if getattr(w, "signin", None) is not None:
+            if w.roads:
+                w._account_show("create")
                 assert w.next is w.next_quiet, "Sign in is the page's action; Next is quiet"
                 assert w.signin._primary
-                w._account_said({"email": "person@example.com"})
+                w._account_show("signed", who={"email": "person@example.com"})
                 assert w.next is w.next_loud and w.next._enabled
                 assert "person@example.com" in w.account_line.cget("text")
             w.page = firstrun.PAGES.index("mic")
@@ -38122,11 +38134,34 @@ def test_the_wizard_has_no_way_past_the_account_page_without_a_sign_in():
                 assert word not in words, word    # the choice is plain words
             assert not __import__("privacy").allowed("account"), "a choice is not a consent"
             # Create an account: the name field and Continue with Google
-            w._road_to("create")
+            w._account_show("create")
             assert w.name_box is not None and w.signin is not None and not w.next._enabled
             assert w.signin.itemcget(w.signin._label, "text") == "Continue with Google"
             assert "the name you type" in _wizard_words(w)
+            # the name is required (his rule): the button sleeps until
+            # something is typed, and the press without one does nothing
+            assert not w.signin._enabled, "Continue with Google was awake with no name"
+            w._sign_in()
+            assert w._account_state == "idle" and not __import__("privacy").allowed("account")
+            w.name_box.entry.insert(0, "   ")
+            w._name_typed()
+            assert not w.signin._enabled, "spaces are not a name"
+            w.name_box.entry.delete(0, "end")
+            # Back on a road is the choice, not Welcome; Back on the
+            # choice is Welcome
+            w._back()
+            assert w.name == "account" and w._account_step == "choice" and w.roads
+            w._account_show("signin")
+            w._back()
+            assert w.name == "account" and w._account_step == "choice"
+            w._back()
+            assert w.name == "welcome"
+            w._next()
+            assert w.name == "account" and w._account_step == "choice"
+            w._account_show("create")
             w.name_box.entry.insert(0, "  Yoav gsk_" + "k" * 24 + "  ")
+            w._name_typed()
+            assert w.signin._enabled
             w._sign_in()
             assert w._account_state == "waiting" and not w.signin._enabled
             assert __import__("privacy").allowed("account"), "the press is the consent"
@@ -38148,9 +38183,24 @@ def test_the_wizard_has_no_way_past_the_account_page_without_a_sign_in():
             assert w.name == "mic"
             # back to the page: signed in already, Next open at once, no choice
             w._back()
-            assert w.name == "account" and w.next._enabled
+            assert w.name == "account" and w.next._enabled and w._account_step == "signed"
             assert "person@example.com" in w.account_line.cget("text")
             assert w.signin is None and w.name_box is None
+            assert firstrun.WORDS["account.not_you"] in _wizard_words(w)
+            # Back on the signed card is "not you": this PC's session
+            # goes (scope=local — the other PCs keep theirs), the choice
+            # again, Next shut
+            w._back()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and sb.signed_in():
+                w.root.update()
+                time.sleep(0.03)
+            assert not sb.signed_in(), "the session stayed after Not you"
+            outs = [c for c in fake.calls if c["path"] == "auth/v1/logout"]
+            assert outs and outs[-1]["query"].get("scope") == "local", outs
+            assert w.name == "account" and w._account_step == "choice" and not w.next._enabled
+            assert not w.result.signed_in
+            assert w.note.cget("text") == firstrun.WORDS["account.signed_out"]
         finally:
             try:
                 w.root.destroy()

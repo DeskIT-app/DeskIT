@@ -34,12 +34,12 @@ one folder you can delete, nothing is sent anywhere until you switch it on — a
 
 Two cards, one question each. There is no way past this page without an account.
 
-**New to DeskIT?** — **Create an account**. A field for your name (what DeskIT calls you; you
-can leave it empty), what the account is for (your learned words and settings follow you to
-any PC you sign in on), what is stored (the id and e-mail of the Google account you pick, the
-name you type) and what never is (your voice, what you said, your keys). **Continue with
-Google** opens the browser once; this PC remembers you until you sign out, and the rest of
-the setup follows.
+**New to DeskIT?** — **Create an account**. A field for your name (what DeskIT calls you —
+the account needs one, so **Continue with Google** wakes once you have typed it), what the
+account is for (your learned words and settings follow you to any PC you sign in on), what is
+stored (the id and e-mail of the Google account you pick, the name you type) and what never is
+(your voice, what you said, your keys). **Continue with Google** opens the browser once; this
+PC remembers you until you sign out, and the rest of the setup follows.
 
 **Used DeskIT before?** — **I have an account**. **Sign in with Google** with the account you
 used on the other PC, and that is all: your learned words and settings come down and DeskIT
@@ -48,10 +48,12 @@ this PC still lacks something. The microphone and the keys are the usual ones un
 change them in Settings. Your Groq key is never in the account: paste it once on the new PC
 (Settings > Privacy).
 
-Picked the wrong card? A link under each one leads to the other. Created an account with a
-Google account that already holds DeskIT settings? The page says *Welcome back* and the button
-says **Open DeskIT**. Signed in with one that holds nothing yet? It says so, and **Continue**
-runs the ordinary setup.
+Picked the wrong card? A link under each one leads to the other, and **Back** goes back to
+the two cards, not to Welcome. Signed in as the wrong person? **Not you? Sign out** under the
+signed-in card (or **Back**) signs this PC out — your other PCs stay signed in — and shows the
+two cards again. Created an account with a Google account that already holds DeskIT settings?
+The page says *Welcome back* and the button says **Open DeskIT**. Signed in with one that holds
+nothing yet? It says so, and **Continue** runs the ordinary setup.
 
 ## Microphone
 

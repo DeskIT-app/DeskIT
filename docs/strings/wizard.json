@@ -21,11 +21,13 @@
   "account.create.title": "Create an account",
   "account.create.button": "Continue with Google",
   "account.name.label": "Your name",
-  "account.name.help": "What DeskIT calls you. You can leave it empty.",
+  "account.name.help": "What DeskIT calls you. Needed for the account.",
   "account.signin.title": "I have an account",
   "account.signin.line": "Sign in with the Google account you used before. Your learned words and settings come down and DeskIT opens.",
   "account.other.have": "Not new here? I have an account",
   "account.other.new": "New here? Create an account",
+  "account.not_you": "Not you? Sign out",
+  "account.signed_out": "Signed out on this PC.",
   "account.for": [
     "Your learned words and settings follow you to any PC you sign in on.",
     "One Google sign-in, and this computer remembers you."

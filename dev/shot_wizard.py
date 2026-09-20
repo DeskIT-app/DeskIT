@@ -111,9 +111,9 @@ def _pages(out: Path) -> list[Path]:
     try:
         show("welcome"); shot("01-welcome")
         show("account"); shot("02-account")
-        w._road_to("create"); w.name_box.entry.insert(0, "Dana"); shot("02-account-create")
-        w._road_to("signin"); shot("02-account-signin")
-        w._road = None
+        w._account_show("create"); w.name_box.entry.insert(0, "Dana"); w._name_typed(); shot("02-account-create")
+        w._account_show("signin"); shot("02-account-signin")
+        w._account_step = "choice"
         sb.user = lambda: {"email": "person@example.com", "id": "x", "is_anonymous": False,
                            "name": "Dana"}
         show("account"); shot("02-account-signed-in")
