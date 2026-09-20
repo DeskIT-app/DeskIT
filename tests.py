@@ -33923,6 +33923,339 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
             shutil.rmtree(d, ignore_errors=True)
 
 
+def test_a_returning_account_skips_the_wizard_and_brings_its_words():
+    """The account page of a PC joining an account that already holds
+    settings (the owner, 2026-09-20: "if he has a user he signs in,
+    everything comes down and DeskIT opens; the rest is for someone
+    new"): once the session is there the wizard asks the server ONCE
+    whether settings exist; a yes turns Continue into Open DeskIT with
+    one plain line; the press records the sync consent with the card's
+    text_version, runs the first sync, and — nothing left to download —
+    does Start's work at once (the app, the desk, setup.done), the
+    microphone, sentence, keys, extras and Ready pages never shown; with
+    a download still missing only the computer page stands between the
+    account and the desk. A no, or a server that could not be asked, is
+    the ordinary wizard. Nothing here names the server to the person."""
+    import consent_card as cc
+    import firstrun
+    import privacy
+    import sb
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    person = {"email": "person@example.com", "id": "x", "is_anonymous": False}
+    answer = {"has": True, "asked": 0, "synced": []}
+
+    def has_settings():
+        answer["asked"] += 1
+        return answer["has"]
+
+    def sync_now(vocab=None, reason=""):
+        answer["synced"].append(reason)
+        # the wizard hands the pull a live Vocab on the app's file: a
+        # None here skipped the words on his installed copy
+        assert vocab is not None and vocab.path == paths.VOCAB_FILE, vocab
+        return {"settings": "pulled", "vocab": "pulled 17, pushed 0"}
+
+    def settle(w, seconds=1.5, until=None):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            w.root.update()
+            w._drain()
+            if until is not None and until():
+                return
+            time.sleep(0.02)
+
+    def wizard(offers):
+        try:
+            return firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return None
+
+    def bury(w):
+        try:
+            w._close()
+        except Exception:                                    # noqa: BLE001
+            pass
+        gc.collect()
+
+    nothing = {"portable": True, "model": None, "pack": None, "detector": None,
+               "recording": None, "tier": "gpu"}
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(paths, "VOCAB_FILE", d / "vocab.json"), \
+            _patched(sb, "user", lambda: person), _patched(sb, "configured", lambda: True), \
+            _patched(sb, "has_synced_settings", has_settings), _patched(sb, "sync_now", sync_now):
+        assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
+        privacy.withdraw("settings_sync")
+        card = cc.card_for("settings_sync")
+        try:
+            # 1. a returning person, nothing to download: account -> desk
+            w = wizard(nothing)
+            if w is None:
+                return
+            w.page = firstrun.PAGES.index("account")
+            w._show_page()
+            settle(w, until=lambda: w._returning)
+            assert w._returning and answer["asked"] == 1, answer
+            assert w.next.itemcget(w.next._label, "text") == firstrun.WORDS["account.open"]
+            words = _wizard_words(w)
+            assert firstrun.WORDS["account.returning"] in words
+            assert "Welcome back" in firstrun.WORDS["account.returning"]
+            for word in ("Supabase", "server", "sync_now", "settings_sync"):
+                assert word not in firstrun.WORDS["account.returning"], word
+            assert all(w._hidden(n) for n in ("mic", "say", "keys", "extras", "done"))
+            assert privacy.consent("settings_sync") is None, "granted before the press"
+            w._next()
+            settle(w, until=lambda: w.result.saved)
+            assert answer["synced"] == ["wizard"], answer
+            row = privacy.consent("settings_sync")
+            assert row is not None and row["text_version"] == card["text_version"], row
+            assert w.result.open_desk and w.result.saved
+            assert config_mod.read_state(t).get("setup.done") is True
+            bury(w)
+
+            # 2. a returning person with a download missing: the computer
+            #    page, then the desk — no other page
+            privacy.withdraw("settings_sync")
+            answer.update(has=True, asked=0, synced=[])
+            (t).unlink(missing_ok=True)
+            w = wizard({**nothing, "portable": False, "recording": type("T", (), {"name": "av", "bytes": 27_556_236, "repo": "av"})()})
+            w.page = firstrun.PAGES.index("account")
+            w._show_page()
+            settle(w, until=lambda: w._returning)
+            assert w._returning
+            w._next()
+            settle(w, until=lambda: w.name == "computer")
+            assert w.name == "computer" and not w.result.saved, w.name
+            assert not w._hidden("computer") and w._hidden("say")
+            shown = [n for n in firstrun.PAGES if not w._hidden(n)]
+            assert shown == ["welcome", "account", "computer"], shown
+            w._next()                                        # past the downloads
+            settle(w, until=lambda: w.result.saved)
+            assert w.result.open_desk and w.result.saved, "the desk did not follow the downloads"
+            bury(w)
+
+            # 3. a new person, or a server that could not be asked: the
+            #    ordinary wizard, Continue, every page
+            privacy.withdraw("settings_sync")
+            answer.update(has=False, asked=0, synced=[])
+            w = wizard(nothing)
+            w.page = firstrun.PAGES.index("account")
+            w._show_page()
+            settle(w, 0.6)
+            assert answer["asked"] == 1 and not w._returning
+            assert not any(w._hidden(n) for n in ("mic", "say", "keys", "extras", "done"))
+            assert firstrun.WORDS["account.returning"] not in _wizard_words(w)
+            w._next()
+            assert w.name == "mic" and answer["synced"] == []
+            bury(w)
+
+            # 4. I have an account (the owner: "signs in and is INSIDE the
+            #    app — nothing to press"): the choice, the sign-in road,
+            #    the sign-in comes back, the server says yes, and the
+            #    words are brought and the desk opened with no press
+            signed = {"who": None}
+
+            def sign_in_google(**kw):
+                signed["who"] = dict(person)
+                return dict(person)
+
+            with _patched(sb, "user", lambda: signed["who"]), \
+                    _patched(sb, "sign_in_google", sign_in_google), \
+                    _patched(firstrun.Wizard, "_came_back", lambda self, who: None):
+                privacy.withdraw("settings_sync")
+                privacy.withdraw("account")
+                answer.update(has=True, asked=0, synced=[])
+                t.unlink(missing_ok=True)
+                w = wizard(nothing)
+                w.page = firstrun.PAGES.index("account")
+                w._show_page()
+                assert w._account_step == "choice" and set(w.roads) == {"create", "signin"}
+                w._account_show("signin")
+                assert w.name_box is None and w.signin is not None
+                assert firstrun.WORDS["account.signin.line"] in _wizard_words(w)
+                assert not w._auto_open
+                w._sign_in()
+                settle(w, 3, until=lambda: w.result.saved)
+                assert answer["asked"] == 1 and w._returning, answer
+                assert answer["synced"] == ["wizard"], answer
+                assert w.result.open_desk and w.result.saved, "the desk did not open by itself"
+                assert not w._auto_open
+                row = privacy.consent("settings_sync")
+                assert row is not None and row["text_version"] == card["text_version"], row
+                bury(w)
+
+                # 5. I have an account, but the account holds nothing yet:
+                #    said plainly, Continue, the ordinary wizard
+                signed["who"] = None
+                privacy.withdraw("settings_sync")
+                privacy.withdraw("account")
+                answer.update(has=False, asked=0, synced=[])
+                t.unlink(missing_ok=True)
+                w = wizard(nothing)
+                w.page = firstrun.PAGES.index("account")
+                w._show_page()
+                w._account_show("signin")
+                w._sign_in()
+                settle(w, 3, until=lambda: w._returning_answer is not None)
+                settle(w, 0.3)
+                assert answer["asked"] == 1 and not w._returning and not w.result.saved
+                assert w.account_note.cget("text") == firstrun.WORDS["account.fresh"]
+                assert w.next.itemcget(w.next._label, "text") == firstrun.WORDS["account.continue"]
+                w._next()
+                assert w.name == "mic" and answer["synced"] == []
+                bury(w)
+
+                # 6. Create an account with a Google account that already
+                #    holds settings: the truth is welcome back, and the
+                #    button — the person chose to look, nothing opens alone
+                signed["who"] = None
+                privacy.withdraw("settings_sync")
+                privacy.withdraw("account")
+                answer.update(has=True, asked=0, synced=[])
+                t.unlink(missing_ok=True)
+                w = wizard(nothing)
+                w.page = firstrun.PAGES.index("account")
+                w._show_page()
+                w._account_show("create")
+                assert w.name_box is not None
+                w.name_box.entry.insert(0, "Dana")
+                w._sign_in()
+                settle(w, 3, until=lambda: w._returning)
+                settle(w, 0.3)
+                assert w._returning and answer["synced"] == [] and not w.result.saved
+                assert w.next.itemcget(w.next._label, "text") == firstrun.WORDS["account.open"]
+                assert firstrun.WORDS["account.returning"] in _wizard_words(w)
+                # Not you? on the welcome-back card: the returning answer
+                # is forgotten with the session, every page is back
+                signed_out = []
+                with _patched(sb, "sign_out", lambda everywhere=True: signed_out.append(everywhere)):
+                    w._account_sign_out()
+                    settle(w, 0.5, until=lambda: signed_out)
+                assert signed_out == [False], signed_out
+                assert not w._returning and w._returning_answer is None
+                assert w._account_step == "choice"
+                assert not any(w._hidden(n) for n in ("mic", "say", "keys", "extras", "done"))
+                bury(w)
+        finally:
+            privacy.withdraw("settings_sync")
+            privacy.withdraw("account")      # cases 4-6 pressed the sign-in
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_last_page_keeps_words_and_settings_in_the_account_by_default():
+    """The wizard's last page (the owner, 2026-09-20 — two PCs on one
+    Google account shared not one learned word, the gate being off in
+    both behind a card nobody found: "make it the default, on the last
+    screen, with a line that says what they are ticking and how to turn
+    it off"): signed in, a third switch — Keep my learned words and
+    settings in my account — drawn ON above the two, its help line
+    naming what follows and the way off; Start records the
+    settings_sync consent with the card's own text_version, and nothing
+    before Start does (the extras page's Next writes only its own
+    switches); off, Start writes no row; on a later run with the gate
+    open, off withdraws it. Not signed in, the row is not on the page
+    and Start records nothing — a consent nobody saw is not one."""
+    import consent_card as cc
+    import firstrun
+    import privacy
+    import sb
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    offers = {"portable": True, "model": None, "pack": None, "detector": None, "tier": "gpu"}
+    person = {"email": "person@example.com", "id": "x", "is_anonymous": False}
+    who = {"user": person}
+
+    def wizard():
+        try:
+            return firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return None
+
+    def bury(w):
+        try:
+            w._close()
+        except Exception:                                    # noqa: BLE001
+            pass
+        gc.collect()
+
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(sb, "user", lambda: who["user"]), _patched(sb, "configured", lambda: True):
+        assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
+        privacy.withdraw("settings_sync")
+        card = cc.card_for("settings_sync")
+        try:
+            # 1. drawn on, off by hand, Start writes nothing
+            w = wizard()
+            if w is None:
+                return
+            assert w.sync_wanted is True and w._sync_shown is False
+            w.page = firstrun.PAGES.index("extras")
+            w._show_page()
+            w._next()                                        # the extras page's own writer
+            assert w.name == "done"
+            assert privacy.consent("settings_sync") is None, "granted before the row was seen"
+            assert list(w.switches) == ["sync", "autostart", "phone"], list(w.switches)
+            assert w.switches["sync"].get() is True, "the default is on"
+            words = _wizard_words(w)
+            assert firstrun.WORDS["done.sync"] in words
+            assert "Settings > Privacy > Withdraw" in words, "no way off named on the row"
+            assert "Never your voice" in words, "the row does not say what stays"
+            w.switches["sync"].toggle()
+            assert w.sync_wanted is False
+            w._open_desk()
+            assert w.result.saved and config_mod.read_state(t).get("setup.done") is True
+            assert privacy.consent("settings_sync") is None, "off on Start wrote a row"
+            bury(w)
+
+            # 2. left on, Start records it with the card's version
+            w = wizard()
+            w.page = firstrun.PAGES.index("done")
+            w._show_page()
+            assert w.switches["sync"].get() is True
+            w._open_desk()
+            row = privacy.consent("settings_sync")
+            assert row is not None and row["text_version"] == card["text_version"], row
+            assert privacy.allowed("settings_sync")
+            bury(w)
+
+            # 3. a later run, the gate open: drawn on and quiet; off withdraws
+            w = wizard()
+            assert w._sync_shown is True and w.sync_wanted is True
+            w.page = firstrun.PAGES.index("done")
+            w._show_page()
+            w._open_desk()
+            assert privacy.consent("settings_sync") is row or privacy.consent("settings_sync") == row
+            bury(w)
+            w = wizard()
+            w.page = firstrun.PAGES.index("done")
+            w._show_page()
+            w.switches["sync"].toggle()
+            w._open_desk()
+            assert privacy.consent("settings_sync") is None, "off did not withdraw"
+            assert not privacy.allowed("settings_sync")
+            bury(w)
+
+            # 4. not signed in: no row, and Start records nothing
+            who["user"] = None
+            w = wizard()
+            w.page = firstrun.PAGES.index("done")
+            w._show_page()
+            assert list(w.switches) == ["autostart", "phone"], list(w.switches)
+            assert w.sync_wanted is True                    # the default, unseen
+            w._open_desk()
+            assert privacy.consent("settings_sync") is None, "a consent nobody saw was written"
+            bury(w)
+        finally:
+            privacy.withdraw("settings_sync")
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def test_the_cloud_switch_is_the_consent_and_next_waits_for_a_working_key():
     """The cloud switch on the extras page (the owner, 2026-09-19 evening:
     "whoever turns it on — that is enough; a key must be checked; on with
@@ -34136,10 +34469,11 @@ def test_the_wizards_microphone_help_is_on_screen_once():
         try:
             w.page = firstrun.PAGES.index("account")
             w._show_page()
-            if getattr(w, "signin", None) is not None:
+            if w.roads:
+                w._account_show("create")
                 assert w.next is w.next_quiet, "Sign in is the page's action; Next is quiet"
                 assert w.signin._primary
-                w._account_said({"email": "person@example.com"})
+                w._account_show("signed", who={"email": "person@example.com"})
                 assert w.next is w.next_loud and w.next._enabled
                 assert "person@example.com" in w.account_line.cget("text")
             w.page = firstrun.PAGES.index("mic")
@@ -34303,7 +34637,10 @@ def test_main_hosts_the_steps_in_the_wizard_when_it_is_due():
     assert "not wizard_due" in src.split("models_mod.wanted(cfg)")[0][-200:]
     assert "not wizard_due" in src.split("packs_mod.wanted(cfg, facts)")[0][-200:]
     assert "facts=facts)" in src and "outcome.installed_pack" in src
-    assert src.count("if open_desk:") == 2
+    # the desk after --setup, and after app.start() — where a plain
+    # launch (the shortcut, no flags) opens it too (2026-09-20)
+    assert src.count("if open_desk:") == 1
+    assert src.count("if open_desk or not sys.argv[1:]:") == 1
     wiz = (REPO / "firstrun.py").read_text("utf-8")
     assert "import main" not in wiz, "the wizard must not import main.py"
     assert 'config_mod.save({"setup.done": True})' in wiz
@@ -34988,15 +35325,23 @@ def test_migrations_bring_the_files_forward_and_never_half_way():
             def step_three():
                 """fail, for the test"""
                 raise RuntimeError("the disk said no")
-            with _patched(version, "CONFIG_VERSION", 3),                     _patched(migrations, "STEPS", [(2, step_two), (3, step_three)]):
+            # two made-up steps ABOVE the real version (2 since the sync
+            # followed the account, 2026-09-20): the files stand at the
+            # real number after the first apply, and these are what is
+            # pending
+            here = version.CONFIG_VERSION
+            two, three = here + 1, here + 2
+            with _patched(version, "CONFIG_VERSION", three), \
+                    _patched(migrations, "STEPS", [(two, step_two), (three, step_three)]):
                 problem = migrations.apply()
-                assert problem and "step 3" in problem and "fail, for the test" in problem, problem
+                assert problem and f"step {three}" in problem and "fail, for the test" in problem, problem
                 assert ran == [2]
-                assert config_mod.read_state(t).get("config_version") == 1, "stamped half way"
-                assert migrations.too_old_for(2) and not migrations.too_old_for(1)
-            with _patched(version, "CONFIG_VERSION", 3),                     _patched(migrations, "STEPS", [(2, step_two), (3, lambda: ran.append(3))]):
+                assert config_mod.read_state(t).get("config_version") == here, "stamped half way"
+                assert migrations.too_old_for(two) and not migrations.too_old_for(here)
+            with _patched(version, "CONFIG_VERSION", three), \
+                    _patched(migrations, "STEPS", [(two, step_two), (three, lambda: ran.append(3))]):
                 assert migrations.apply() is None
-                assert ran == [2, 2, 3] and config_mod.read_state(t).get("config_version") == 3
+                assert ran == [2, 2, 3] and config_mod.read_state(t).get("config_version") == three
                 assert migrations.pending() == []
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -35909,6 +36254,7 @@ def test_autostart_run_value():
             assert read() == autostart.command() == autostart.current()
             assert launch.pythonw() in autostart.command() and "deskit.pyw" in autostart.command()
             assert autostart.command().count('"') == 4, "both halves quoted"
+            assert autostart.command().endswith(" --quiet"), "the logon start opens no window"
             assert autostart.apply(True) is False, "nothing to change"
             assert autostart.apply(False) is True and read() is None
             assert autostart.apply(False) is False
@@ -36541,6 +36887,7 @@ class _FakeSupabase:
         self.tables: dict[str, list[dict]] = {}
         self.refreshes = 0
         self.email = ""
+        self.name = ""
         self.deleted = False
 
     def session(self, email: str = "", token: str | None = None) -> dict:
@@ -36548,7 +36895,8 @@ class _FakeSupabase:
                 "expires_in": 3600, "expires_at": int(time.time()) + 3600,
                 "refresh_token": self.REFRESH,
                 "user": {"id": self.UID, "is_anonymous": not email, "email": email,
-                         "created_at": "2026-09-18T10:00:00Z"}}
+                         "created_at": "2026-09-18T10:00:00Z",
+                         "user_metadata": ({"name": self.name} if self.name else {})}}
 
     def __call__(self, method, url, headers, body, timeout_s):
         parts = urllib_parse.urlsplit(url)
@@ -36577,6 +36925,11 @@ class _FakeSupabase:
             return _FakeRaw(json.dumps(self.session(self.email)).encode(), 200)
         if path == "auth/v1/logout":
             return _FakeRaw(b"", 204)
+        if path == "auth/v1/user" and method == "PUT":
+            # the auth user's own metadata (sb.set_name): merged, answered whole
+            assert isinstance(payload, dict) and isinstance(payload.get("data"), dict), payload
+            self.name = str(payload["data"].get("name", self.name))
+            return _FakeRaw(json.dumps(self.session(self.email)["user"]).encode(), 200)
         if path == "auth/v1/user/identities/authorize":
             # the provider URL; the real one carries Supabase's callback, which
             # then redirects to the app's loopback — the fake skips the middle
@@ -36714,6 +37067,61 @@ def test_sb_imports_are_narrow():
         raise AssertionError("net.configure_supabase took a secret key")
     finally:
         sb.configure()
+
+
+def test_the_sync_follows_the_account():
+    """The sign-in press is two consents (the owner, 2026-09-20: "no user
+    should have to press anything — he signs in on the second PC and is
+    inside with all his settings"): privacy.sign_in_grants() records
+    the account AND the words-and-settings sync, each with its card's
+    current text_version, and leaves a row that is already there alone;
+    both sign-in doors — the wizard's and the desk's landing — call it.
+    A copy that signed in before this (his two, 2026-09-20) gets the
+    sync once through migration step 2: granted when the account row is
+    there and the sync row is not, nothing without an account, nothing
+    over a row that exists; a withdraw after the step is never undone,
+    because steps run once. The policy says so in plain words."""
+    import consent_card as cc
+    import migrations
+    import privacy
+
+    assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
+    for kind in ("account", "settings_sync"):
+        privacy.withdraw(kind)
+    try:
+        assert privacy.sign_in_grants() == ["account", "settings_sync"]
+        for kind in ("account", "settings_sync"):
+            row = privacy.consent(kind)
+            assert row is not None and row["text_version"] == cc.card_for(kind)["text_version"], kind
+        assert privacy.sign_in_grants() == [], "a row already there was written again"
+        privacy.withdraw("settings_sync")
+        assert privacy.sign_in_grants() == ["settings_sync"], "a fresh sign-in press is the card's promise again"
+
+        # the migration for copies from before: account yes, sync no -> granted
+        privacy.withdraw("settings_sync")
+        migrations._sync_follows_the_account()
+        assert privacy.consent("settings_sync") is not None
+        stamp = privacy.consent("settings_sync")["when"]
+        migrations._sync_follows_the_account()                   # a row there: untouched
+        assert privacy.consent("settings_sync")["when"] == stamp
+        privacy.withdraw("account")
+        privacy.withdraw("settings_sync")
+        migrations._sync_follows_the_account()                   # no account: nothing
+        assert privacy.consent("settings_sync") is None
+        assert [n for n, _fn in migrations.STEPS] == [2]
+        import version
+        assert version.CONFIG_VERSION == 2
+
+        for name, marker in (("firstrun.py", "def _sign_in"), ("dashboard.py", "def _landing_sign_in")):
+            src = (REPO / name).read_text("utf-8")
+            body = src[src.index(marker):src.index("\n    def ", src.index(marker) + 10)]
+            assert "privacy.sign_in_grants()" in body, f"{name}: the sign-in door grants the account alone"
+            assert 'privacy.grant("account")' not in body, name
+        policy = (REPO / "docs" / "privacy.md").read_text("utf-8")
+        assert "comes with the account" in policy and "Withdraw" in policy
+    finally:
+        for kind in ("account", "settings_sync"):
+            privacy.withdraw(kind)
 
 
 def test_migration_has_no_key_column():
@@ -37677,11 +38085,15 @@ def test_no_account_no_dictation_until_a_sign_in():
 def test_the_wizard_has_no_way_past_the_account_page_without_a_sign_in():
     """The account page (chapter 9 screen 16, the owner's rule): on a
     copy with a project, Next is off until the sign-in thread comes back
-    with a user; [Sign in with Google] records the account consent (the
-    page is the card), opens the browser, and the outcome — polled on the
-    Tk thread — enables Next and says who. A copy with no project says
-    so and lets Next through; a copy already signed in shows the e-mail
-    at once."""
+    with a user. The page opens on the choice (2026-09-20) — Create an
+    account / I have an account — with no sign-in button yet; Create an
+    account is the name field and [Continue with Google], which records
+    the account consent (the card is the consent), opens the browser,
+    and the outcome — polled on the Tk thread — keeps the typed name in
+    the auth user's metadata (one PUT, redacted first), enables Next and
+    says who by name. A copy with no project says so and lets Next
+    through; a copy already signed in shows the e-mail at once, no
+    choice."""
     import firstrun
     import sb
 
@@ -37718,22 +38130,85 @@ def test_the_wizard_has_no_way_past_the_account_page_without_a_sign_in():
             w._next()
             assert w.name == "account" and not w.next._enabled, "Next was open with no session"
             assert not __import__("privacy").allowed("account")
+            # the choice: two roads, no sign-in button, no name field yet
+            assert w.signin is None and w.name_box is None
+            assert set(w.roads) == {"create", "signin"}, w.roads
+            words = _wizard_words(w)
+            assert w.roads["create"].itemcget(w.roads["create"]._label, "text") == "Create an account"
+            assert w.roads["signin"].itemcget(w.roads["signin"]._label, "text") == "I have an account"
+            assert firstrun.WORDS["account.new.title"] in words
+            assert firstrun.WORDS["account.have.title"] in words
+            for word in ("Supabase", "server", "PKCE", "session"):
+                assert word not in words, word    # the choice is plain words
+            assert not __import__("privacy").allowed("account"), "a choice is not a consent"
+            # Create an account: the name field and Continue with Google
+            w._account_show("create")
+            assert w.name_box is not None and w.signin is not None and not w.next._enabled
+            assert w.signin.itemcget(w.signin._label, "text") == "Continue with Google"
+            assert "the name you type" in _wizard_words(w)
+            # the name is required (his rule): the button sleeps until
+            # something is typed, and the press without one does nothing
+            assert not w.signin._enabled, "Continue with Google was awake with no name"
+            w._sign_in()
+            assert w._account_state == "idle" and not __import__("privacy").allowed("account")
+            w.name_box.entry.insert(0, "   ")
+            w._name_typed()
+            assert not w.signin._enabled, "spaces are not a name"
+            w.name_box.entry.delete(0, "end")
+            # Back on a road is the choice, not Welcome; Back on the
+            # choice is Welcome
+            w._back()
+            assert w.name == "account" and w._account_step == "choice" and w.roads
+            w._account_show("signin")
+            w._back()
+            assert w.name == "account" and w._account_step == "choice"
+            w._back()
+            assert w.name == "welcome"
+            w._next()
+            assert w.name == "account" and w._account_step == "choice"
+            w._account_show("create")
+            w.name_box.entry.insert(0, "  Yoav gsk_" + "k" * 24 + "  ")
+            w._name_typed()
+            assert w.signin._enabled
             w._sign_in()
             assert w._account_state == "waiting" and not w.signin._enabled
             assert __import__("privacy").allowed("account"), "the press is the consent"
+            assert w.account_name.startswith("Yoav"), w.account_name
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline and not w.next._enabled:
                 w.root.update()
                 time.sleep(0.03)
             assert w.next._enabled, "Next never opened after the sign-in"
-            assert w.account_line.cget("text") == "Signed in as person@example.com"
+            puts = [c for c in fake.calls if c["path"] == "auth/v1/user" and c["method"] == "PUT"]
+            assert len(puts) == 1, [c["path"] for c in fake.calls]
+            sent = json.loads(puts[0]["body"])["data"]["name"]
+            assert sent.startswith("Yoav") and "gsk_" not in sent, sent   # redacted first
+            assert "Bearer" in str(puts[0]["headers"].get("Authorization", ""))
+            assert sb.user()["name"] == sent, sb.user()
+            assert w.account_line.cget("text") == f"Signed in as {sent} (person@example.com)"
             assert w.result.signed_in and sb.signed_in() and opened
             w._next()
             assert w.name == "mic"
-            # back to the page: signed in already, Next open at once
+            # back to the page: signed in already, Next open at once, no choice
             w._back()
-            assert w.name == "account" and w.next._enabled
+            assert w.name == "account" and w.next._enabled and w._account_step == "signed"
             assert "person@example.com" in w.account_line.cget("text")
+            assert w.signin is None and w.name_box is None
+            assert firstrun.WORDS["account.not_you"] in _wizard_words(w)
+            # Back on the signed card is "not you": this PC's session
+            # goes (scope=local — the other PCs keep theirs), the choice
+            # again, Next shut
+            w._back()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and sb.signed_in():
+                w.root.update()
+                time.sleep(0.03)
+            assert not sb.signed_in(), "the session stayed after Not you"
+            outs = [c for c in fake.calls if c["path"] == "auth/v1/logout"]
+            assert outs and outs[-1]["query"].get("scope") == "local", outs
+            assert w.name == "account" and w._account_step == "choice" and not w.next._enabled
+            assert not w.result.signed_in
+            assert w.note.cget("text") == firstrun.WORDS["account.signed_out"]
         finally:
             try:
                 w.root.destroy()
@@ -37894,12 +38369,14 @@ def test_the_desk_brings_the_keys_up_without_the_model():
     """His rule (2026-09-18, after the first live try): "even if I did not
     start the model but only opened the desk, every feature that does
     not need the model works." So the desk's entry point starts the app
-    WITHOUT the model when nothing is running — main.py --no-model, the
-    hook and every tap key up in under a second (a real App built that
-    way on the hidden desktop: 0.02 s to build, 0.7 s to start, status
-    model=off, the phone refused, load → fake backend on, unload → off)
-    — and does nothing when it is. Start in the bar still launches the
-    whole app with the model when nothing runs. In the entry point and
+    when nothing is running — main.py --quiet, no second window; the
+    model comes with it by default since 2026-09-20 ([local]
+    load_at_start, his "make that the default, with a way off in
+    Settings"), and a start without it (--no-model, or the setting off)
+    still has the hook and every tap key up in under a second (a real
+    App built that way on the hidden desktop: 0.02 s to build, 0.7 s to
+    start, status model=off, the phone refused, load → fake backend on,
+    unload → off) — and does nothing when it is. In the entry point and
     not in Dashboard.__init__: a window built for a test or a picture
     must never spawn a process."""
     import dashboard as dash
@@ -37908,10 +38385,11 @@ def test_the_desk_brings_the_keys_up_without_the_model():
     started: list = []
     with _patched(singleton, "is_running", lambda *a, **k: False),             _patched(launch, "spawn", lambda args: started.append(list(args)) or True):
         assert dash.bring_up_the_keys() is True
-        assert launch.start_app() is True
+        assert launch.start_app(model=False) is True
     assert len(started) == 2, started
-    assert started[0][0].endswith("main.py") and started[0][-1] == "--no-model", started[0]
-    assert started[1][0].endswith("main.py") and "--no-model" not in started[1], started[1]
+    assert started[0][0].endswith("main.py") and started[0][-1] == "--quiet", started[0]
+    assert "--no-model" not in started[0], "the desk decides the model; the setting does"
+    assert started[1][0].endswith("main.py") and started[1][-1] == "--no-model" and "--quiet" in started[1], started[1]
     with _patched(singleton, "is_running", lambda *a, **k: True),             _patched(launch, "spawn", lambda args: started.append(list(args)) or True):
         assert dash.bring_up_the_keys() is False
     assert len(started) == 2, "the desk started a second copy"
@@ -37919,8 +38397,14 @@ def test_the_desk_brings_the_keys_up_without_the_model():
     assert "bring_up_the_keys" not in inspect.getsource(dash.Dashboard.__init__)
     main_src = (REPO / "main.py").read_text("utf-8")
     assert 'parser.add_argument("--no-model"' in main_src
-    assert "model=not args.no_model" in main_src
-    assert "and not args.no_model" in main_src, "the download offer runs for a --no-model start"
+    assert "model=not no_model" in main_src
+    assert "and not no_model" in main_src, "the download offer runs for a --no-model start"
+    assert 'no_model = args.no_model or not bool(getattr(cfg.local, "load_at_start", True))' in main_src
+    cfg = config_mod.load(REPO / "defaults.toml")
+    assert cfg.local.load_at_start is True, "the model comes with the app by default"
+    import settings as settings_mod
+    rows = [r.path for tab in settings_mod.TABS for g in tab.groups for r in g.rows]
+    assert "local.load_at_start" in rows, "no way off in Settings"
 
 
 def test_the_dev_copy_says_so_in_the_window():

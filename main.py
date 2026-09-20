@@ -6668,6 +6668,11 @@ def main() -> int:
                         help="list audio input devices, then exit")
     parser.add_argument("--stop", action="store_true",
                         help="ask a running instance to quit, then exit")
+    parser.add_argument("--quiet", action="store_true",
+                        help="no window of its own: Windows' logon start (the Run "
+                             "value), the relaunch after an update and the desk "
+                             "that is already open pass it; a double-click on the "
+                             "shortcut does not, and opens the desk")
     parser.add_argument("--no-model", action="store_true",
                         help="start without the speech model (the desk does this "
                              "when it opens); Start in the desk loads it")
@@ -6872,7 +6877,7 @@ def main() -> int:
         try:
             import ctypes as _ct
             _ct.windll.kernel32.RegisterApplicationRestart(
-                f'"{paths.APP_DIR / "deskit.pyw"}"', 0)
+                f'"{paths.APP_DIR / "deskit.pyw"}" --quiet', 0)
         except Exception:                     # noqa: BLE001
             log.debug("RegisterApplicationRestart failed", exc_info=True)
     if paths.CHANNEL_NOTE:
@@ -6905,8 +6910,11 @@ def main() -> int:
     # and the pack's as pages of its own (chapter 9.2), so the two
     # standalone windows are for a set-up copy whose model went missing.
     wizard_due = args.setup or (firstrun.needed(cfg) and not args.fake)
+    # The model with the app — [local] load_at_start, on by default —
+    # unless this start said --no-model (the tests, a hand start).
+    no_model = args.no_model or not bool(getattr(cfg.local, "load_at_start", True))
     if args.download_model or (not args.fake and not wizard_due
-                               and not args.no_model
+                               and not no_model
                                and models_mod.wanted(cfg)):
         outcome = models_mod.offer(cfg.local.model)
         log.info("model download step: %s", outcome)
@@ -7182,10 +7190,10 @@ def main() -> int:
     if leftover:
         log.warning("%s", leftover)
     try:
-        splash.status("starting…" if args.no_model else
+        splash.status("starting…" if no_model else
                       "loading the transcription model…")
         app = App(cfg, config_path=Path(args.config) if args.config else None,
-                  model=not args.no_model)
+                  model=not no_model)
     except TranscriptionError as e:   # missing key, stub backend, ...
         return fail(str(e))
     except (ValueError, ConfigError) as e:   # unknown hotkey/chord name
@@ -7215,9 +7223,16 @@ def main() -> int:
         return fail(str(e))
     stage["app"] = app
     stage["stage"] = "running"
-    if open_desk:
-        # [Open the desk] on the wizard's last page: the dashboard, now
-        # that there is an app for it to talk to.
+    # A plain launch — the shortcut, DeskIT.vbs, nothing on the line — is
+    # a person who wants to see the app (the owner on his installed
+    # copy, 2026-09-20: "the first double-click lights the model, the
+    # second opens the app"); the desk opens with it, the app behind.
+    # Windows' logon start and the desk's own start (--quiet), the
+    # tests' --fake and every other flag open no window.
+    if open_desk or not sys.argv[1:]:
+        # [Open the desk] on the wizard's last page, or the plain
+        # launch: the dashboard, now that there is an app for it to
+        # talk to.
         open_dashboard()
     if not args.fake and app.tour_due():
         # The tour (D36): the guide itself, four cards beside the dot,

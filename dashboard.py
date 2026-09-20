@@ -8884,7 +8884,9 @@ class Dashboard:
             said = "waiting for Google's sign-in page in your browser…"
             said_sub = "come back here when it says you are signed in"
         elif info.get("signed_in"):
-            if info.get("email"):
+            if info.get("email") and info.get("name"):
+                said = f"Signed in with Google as {info['name']} ({info['email']})"
+            elif info.get("email"):
                 said = f"Signed in with Google as {info['email']}"
             else:
                 ident = str(info.get("user_id") or "")
@@ -10372,8 +10374,7 @@ class Dashboard:
             try:
                 import privacy
                 import sb
-                if not privacy.allowed("account"):
-                    privacy.grant("account")
+                privacy.sign_in_grants()      # the account, and the sync it promises
                 who = sb.sign_in_google()
                 self._events.put(lambda: self._landing_done(who, None))
             except Exception as e:                             # noqa: BLE001
@@ -10493,19 +10494,19 @@ class Dashboard:
 
 
 def bring_up_the_keys() -> bool:
-    """Nothing running when the desk opens: the app comes up WITHOUT the
-    model (launch.start_app(model=False) → main.py --no-model), so the
-    screenshot, the recording, the camera, translate, lookup, the shelf
-    and every other key that needs no model work from the moment the
-    window is on screen. His rule, 2026-09-18: "even if I did not start
-    the model but only opened the desk, every feature that does not need
-    the model works." Start in the bar then loads the model. Here, in
-    the entry point, and not in Dashboard.__init__: a window built for a
-    test or a picture must never spawn a process."""
+    """Nothing running when the desk opens: the app comes up behind the
+    window (launch.start_app → main.py --quiet), the model with it
+    unless Settings > The app says not to ([local] load_at_start; the
+    owner, 2026-09-20: "no problem with the model loading by itself —
+    make that the default, with a way off in Settings"; until then the
+    desk started it without the model and Start loaded it). Every key
+    that needs no model works from the moment the window is on screen
+    either way. Here, in the entry point, and not in Dashboard.__init__:
+    a window built for a test or a picture must never spawn a process."""
     try:
         if singleton.is_running():
             return False
-        return bool(launch.start_app(model=False))
+        return bool(launch.start_app())
     except Exception:                                    # noqa: BLE001
         return False
 

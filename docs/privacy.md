@@ -76,14 +76,20 @@ you sign out. Signed out, the app's window is a single landing card
 with the sign-in button and nothing else, until you sign in again. (An anonymous account, with no e-mail, exists for people
 who only want to send problem reports; the app offers it on the
 Account block.) Collected on sign-in: a user id; with Google, the e-mail address of the
-Google account you chose (held by the sign-in service, never shown to
+Google account you chose and the name Google gives, or the name you
+typed on the account page (held by the sign-in service, never shown to
 other users); the name of this PC as Windows reports it (or the name
 you typed), the app version, the Windows build, the hardware tier;
 timestamps; and the IP address as the processor sees it, in its logs
 only (kept one day).
 
-**Two syncs, each behind its own consent card, both off until you turn
-them on.** "Settings and words": your changed settings — minus every
+**Two syncs.** "Settings and words" comes with the account: the
+account card says your learned words and settings follow you to any PC
+you sign in on, and the sign-in press records both consents; the
+wizard's last page shows the switch on, and Settings > Privacy >
+Withdraw turns it off at any later time. "What you said" is off until
+you turn it on, on its own card. "Settings and
+words": your changed settings — minus every
 key, hotkey, device, folder, port and position, which never leave the
 PC — and the words the app learned from your corrections. "What you
 said": the text of what you dictated, translated, punctuated and looked

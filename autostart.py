@@ -37,8 +37,10 @@ VALUE = "DeskIT"
 
 def command() -> str:
     """The line Windows runs at logon: the windowless interpreter and the
-    entry beside this file, both quoted."""
-    return f'"{launch.pythonw()}" "{paths.APP_DIR / "deskit.pyw"}"'
+    entry beside this file, both quoted, and `--quiet` — the dot only,
+    no window; a person's own double-click on the shortcut opens the
+    desk as well (main.py, 2026-09-20)."""
+    return f'"{launch.pythonw()}" "{paths.APP_DIR / "deskit.pyw"}" --quiet'
 
 
 def current() -> str | None:

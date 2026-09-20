@@ -378,6 +378,24 @@ def grant(kind: str, text_version: str | None = None) -> dict:
     return row
 
 
+def sign_in_grants() -> list[str]:
+    """The sign-in press is TWO consents (the owner, 2026-09-20: "no
+    user should have to press anything — he signs in on the second PC
+    and is inside with all his settings"): the account, and the words-
+    and-settings sync that the account card itself promises ("your
+    learned words and settings follow you to any PC you sign in on").
+    Recorded with each card's current text_version; a row already there
+    is left alone; Settings > Privacy > Withdraw and the wizard's Ready
+    switch still turn the sync off afterwards. Returns what was granted."""
+    import consent_card as cc
+    granted: list[str] = []
+    for kind in ("account", "settings_sync"):
+        if consent(kind) is None:
+            grant(kind, cc.card_for(kind)["text_version"])
+            granted.append(kind)
+    return granted
+
+
 def withdraw(kind: str) -> bool:
     """Settings > Privacy > Withdraw, or the CLI: the row goes, the gate
     is cleared, every registered tear-down runs. True if there was a row

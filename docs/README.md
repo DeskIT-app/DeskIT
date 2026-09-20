@@ -26,7 +26,7 @@ sentence is the app's, no owner words, every screen name is real).
 
 ## Pictures still to take (chapter 14.2)
 
-Taken on the hidden desktop, 2026-09-18: the seven wizard pages
+Taken on the hidden desktop, 2026-09-18 (the account page 2026-09-20): the eight wizard pages
 (`02-*.png`), the ask card's three-button state
 (`07-ollama-three-buttons.png`), and the twelve screens of the app itself
 — the dot's colours, the hint card, the shelf, Corrections, the offline

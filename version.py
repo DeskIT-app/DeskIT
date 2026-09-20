@@ -97,7 +97,7 @@ BRANCH: str = _branch()
 #: The per-user files' format (11.10): what this build writes to
 #: state.json, and the oldest it can bring forward (migrations.py;
 #: published as min_config_version in latest.json).
-CONFIG_VERSION: int = 1
+CONFIG_VERSION: int = 2       # 2: the sync follows the account (migrations.py)
 MIN_CONFIG_VERSION: int = 1
 
 

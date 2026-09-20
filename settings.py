@@ -555,8 +555,10 @@ TABS: tuple[Tab, ...] = (
             Friendly("privacy.settings_sync", "Syncing settings and words",
                      "Your changed settings and learned words follow you "
                      "to every PC you sign into; never keys, hotkeys, "
-                     "devices, folders or positions. Opens only through "
-                     "its card."),
+                     "devices, folders or positions. Asked on the wizard's "
+                     "last page, on unless you turned it off there; "
+                     "Withdraw turns it off, Sync now under Account asks "
+                     "again."),
             Friendly("privacy.history_sync", "Syncing what you said",
                      "The Said page is the same on every PC you sign "
                      "into. Stored in your account on the developer's "
@@ -580,6 +582,10 @@ TABS: tuple[Tab, ...] = (
     )),
     Tab(APP, (
         Group("THIS COMPUTER", (
+            Friendly("local.load_at_start", "Load the speech model when DeskIT starts",
+                     "Off, DeskIT starts without it — every key that needs "
+                     "no model works at once, and Start on the desk loads "
+                     "it when you want to dictate."),
             Friendly("setup.autostart", "Start with Windows",
                      "Windows starts DeskIT when you sign in. Off, you "
                      "open it from the Start menu."),

@@ -110,6 +110,8 @@ def _signed_out() -> None:
 
 #: Refresh when this little of the access token's hour is left (8.6).
 REFRESH_MARGIN_S = 10
+#: The longest name the account keeps — the devices table's own cap.
+NAME_MAX = 40
 #: How long the browser may take to come back with a code.
 SIGNIN_TIMEOUT_S = 180
 #: The worker: first sync this long after start, then every CADENCE.
@@ -207,6 +209,7 @@ def _store_session(data: dict) -> dict:
     if not expires_at:
         expires_at = now + float(data.get("expires_in") or 3600)
     user = data.get("user") if isinstance(data.get("user"), dict) else {}
+    meta = user.get("user_metadata") if isinstance(user.get("user_metadata"), dict) else {}
     session = {
         "access_token": str(data.get("access_token") or ""),
         "refresh_token": str(data.get("refresh_token") or ""),
@@ -216,6 +219,10 @@ def _store_session(data: dict) -> dict:
             "is_anonymous": bool(user.get("is_anonymous", not user.get("email"))),
             "email": str(user.get("email") or ""),
             "created_at": str(user.get("created_at") or ""),
+            # the name the person typed on the account page (set_name),
+            # or the one Google gave; it rides in the auth user's
+            # metadata, so a second PC has it the moment it signs in
+            "name": str(meta.get("name") or meta.get("full_name") or "")[:NAME_MAX],
         },
     }
     secretstore.set(SESSION_NAME, json.dumps(session))
@@ -238,7 +245,7 @@ def signed_in() -> bool:
 
 
 def user() -> dict | None:
-    """``{"id", "is_anonymous", "email", "created_at"}`` or None."""
+    """``{"id", "is_anonymous", "email", "created_at", "name"}`` or None."""
     session = _load_session()
     return dict(session["user"]) if session else None
 
@@ -694,13 +701,40 @@ def sign_in_anonymous() -> dict:
     return dict(session["user"])
 
 
-def sign_out() -> None:
+def set_name(name: str) -> str:
+    """The name typed on the wizard's account page (the owner,
+    2026-09-20: "Create an account — maybe a field for the name too"):
+    kept in the auth user's own metadata, not a table of ours — one
+    PUT, and every PC that signs in afterwards reads it off the
+    session. The redactor runs first, as on every string that leaves
+    the PC; an empty name changes nothing. Returns what was kept."""
+    import redact
+    name = redact.redact(str(name or "").strip())[:NAME_MAX].strip()
+    if not name:
+        return ""
+    session = _fresh()
+    status, data = _auth("user", {"data": {"name": name}}, bearer=True, method="PUT")
+    if status != 200:
+        raise AccountError(f"the name was refused ({_server_said(status, data if isinstance(data, bytes) else b'')})")
+    session = dict(session)
+    session["user"] = {**session["user"], "name": name}
+    secretstore.set(SESSION_NAME, json.dumps(session))
+    with _lock:
+        _cache.update(loaded=True, session=session)
+    log.info("account: the name is kept")
+    return name
+
+
+def sign_out(everywhere: bool = True) -> None:
     """Sign out everywhere (the refresh tokens are revoked server-side),
-    then forget the session and the cursors here. The local files stay."""
+    then forget the session and the cursors here. The local files stay.
+    ``everywhere=False`` is the wizard's "Not you?": this PC's session
+    only, the person's other PCs keep theirs."""
     session = _load_session()
     if session is not None and configured():
         try:
-            _auth("logout", {}, query="scope=global", bearer=True)
+            _auth("logout", {}, query="scope=global" if everywhere else "scope=local",
+                  bearer=True)
         except Exception as e:                               # noqa: BLE001
             log.info("account: the sign-out did not reach the server (%s) — "
                      "signed out here", e)
@@ -948,6 +982,23 @@ def _sync_history(cursor: dict) -> str:
     return f"pulled {pulled}, pushed {pushed}"
 
 
+def has_synced_settings() -> bool:
+    """Has this account ever pushed its settings — is this a PC joining
+    an account that already has a DeskIT somewhere (the wizard's
+    "welcome back", 2026-09-20)? One GET for the row's timestamp; False
+    on anything but a row, so a road problem only means the ordinary
+    wizard. The words and settings themselves come with sync_now."""
+    try:
+        if not configured() or not signed_in():
+            return False
+        status, data = _rest("GET", "settings_sync", purpose="sync",
+                             query="select=updated_at&limit=1")
+        return status == 200 and isinstance(data, list) and bool(data)
+    except Exception as e:                                   # noqa: BLE001
+        log.info("account: could not ask whether settings exist (%s)", e)
+        return False
+
+
 def sync_now(vocab=None, reason: str = "") -> dict:
     """One pass over everything the gates allow. Never raises: each
     store's outcome (or its error) is a word in the returned dict and
@@ -1175,6 +1226,7 @@ def status() -> dict:
         "user_id": (who or {}).get("id", ""),
         "anonymous": bool((who or {}).get("is_anonymous", True)),
         "email": (who or {}).get("email", ""),
+        "name": (who or {}).get("name", ""),
         "created_at": (who or {}).get("created_at", ""),
         "device_name": device_name(),
         "busy": _status.get("busy", ""),
@@ -1193,7 +1245,7 @@ __all__ = [
     "PROJECT_REF", "PUBLISHABLE_KEY", "configure", "configured", "base_url",
     "AccountError", "NotAllowed", "signed_in", "user", "device_id",
     "device_name", "ensure_profile", "sign_in_google", "sign_in_anonymous",
-    "sign_out", "delete_account", "sync_now", "drain_outbox", "queued",
+    "set_name", "sign_out", "delete_account", "sync_now", "drain_outbox", "queued",
     "start_worker", "nudge", "status", "forget_cache", "REPORT_COLUMNS",
     "REQUIRED", "SIGNED_OUT_HOOKS",
 ]

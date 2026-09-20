@@ -52,7 +52,8 @@ Store build (later) is the way, or Windows lets you turn Smart App Control off o
   one is, its exact size and its licence: [below](#downloads).
 - Puts the program in `%LOCALAPPDATA%\Programs\DeskIT`, the downloads in
   `%LOCALAPPDATA%\DeskIT\models` and `\packs`, and a shortcut in the Start menu and on the
-  desktop.
+  desktop. The shortcut opens the desk, with DeskIT starting behind it (the dot, the model);
+  when DeskIT is already running it only brings the desk up.
 - Starts DeskIT at the end; the first run opens the wizard ([chapter 2](02-first-run)), whose
   computer page is skipped when the downloads all landed.
 - Never bundles a speech model or NVIDIA's libraries: they are downloaded, with your tick,

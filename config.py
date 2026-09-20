@@ -286,6 +286,8 @@ class LocalConfig:
     # always was); the probe writes int8_float16 for a small card (6.3)
     compute_type: str = "auto"
     cpu_threads: int = 0     # 0 = the library's own choice
+    # the model with the app (true), or Start on the desk loads it
+    load_at_start: bool = True
     # Whisper transcribes only; Gemini also cleans. Without this, the local
     # backend regresses output quality on real (hesitant) dictation.
     cleanup: bool = True

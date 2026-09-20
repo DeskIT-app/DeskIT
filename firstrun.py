@@ -47,7 +47,11 @@ The pages, and the ORDER is the point:
      (D34: the defaults are what the owner runs) and written only when
      moved.
   7. Ready — the hotkey named, Start-with-Windows and the phone asked
-     once, the desk one button away
+     once, and — signed in — the words-and-settings sync, ON by
+     default (the owner, 2026-09-20: nobody found the gate in
+     Settings; the row says what leaves and how to turn it off, and
+     Start records the consent — a row nobody saw is never one); the
+     desk one button away
 
 At most four real decisions (arch-A §1 P2): the microphone (only when
 more than one input exists), the downloads, the extras, and nothing
@@ -149,19 +153,53 @@ WORDS = {
     "welcome.privacy": "Privacy policy",
     "account.title": "Your account",
     "account.sub": "Sign in once with Google. This PC remembers you until you sign out.",
+    "account.new.title": "New to DeskIT?",
+    "account.new.line": "Create an account and set DeskIT up once. From then on it follows you.",
+    "account.new.button": "Create an account",
+    "account.have.title": "Used DeskIT before?",
+    "account.have.line": ("Sign in, and DeskIT opens the way you left it — your learned words "
+                          "and settings come along."),
+    "account.have.button": "I have an account",
+    "account.create.title": "Create an account",
+    "account.create.button": "Continue with Google",
+    "account.name.label": "Your name",
+    "account.name.help": "What DeskIT calls you. Needed for the account.",
+    "account.signin.title": "I have an account",
+    "account.signin.line": ("Sign in with the Google account you used before. Your learned "
+                            "words and settings come down and DeskIT opens."),
+    "account.other.have": "Not new here? I have an account",
+    "account.other.new": "New here? Create an account",
+    "account.not_you": "Not you? Sign out",
+    "account.signed_out": "Signed out on this PC.",
     "account.for": ("Your learned words and settings follow you to any PC you sign in on.",
                     "One Google sign-in, and this computer remembers you."),
     "account.stored": ("Stored: the account id and e-mail of the Google account you pick, "
-                       "this PC's name, the app version and the Windows version — on "
-                       "DeskIT's server (Supabase, Frankfurt)."),
-    "account.never": ("Never stored: your voice, what you said, your keys. Every sync "
-                      "stays off until you turn it on, on its own card."),
+                       "the name you type, this PC's name, the app version and the Windows "
+                       "version — on DeskIT's server (Supabase, Frankfurt)."),
+    "account.stored.signin": ("Stored: the account id and e-mail of the Google account you "
+                              "pick, this PC's name, the app version and the Windows "
+                              "version — on DeskIT's server (Supabase, Frankfurt)."),
+    "account.never": ("Never stored: your voice, what you said, your keys. The last page "
+                      "asks whether your learned words and settings stay in the account; "
+                      "what you said is synced only if you turn that on in Settings."),
+    "account.never.signin": ("Never stored: your voice, what you said, your keys. Settings > "
+                             "Privacy > Withdraw stops the sync at any time; what you said "
+                             "is synced only if you turn that on in Settings."),
     "account.none": "This copy has no account server — you can go on.",
     "account.button": "Sign in with Google",
     "account.waiting": "Waiting for Google's sign-in page in your browser…",
     "account.signed": "Signed in as {email}",
+    "account.signed.named": "Signed in as {name} ({email})",
     "account.anonymous": "Signed in (anonymous account)",
+    "account.fresh": "This account has no DeskIT settings yet — let's set it up.",
     "account.remembered": "This PC remembers you until you sign out (Settings > Account).",
+    "account.returning": ("Welcome back — your learned words and settings are in your account "
+                          "and come along now. DeskIT opens with them; the microphone and the "
+                          "keys are the usual ones until you change them in Settings."),
+    "account.open": "Open DeskIT",
+    "account.bringing": "Bringing your words and settings…",
+    "account.bring_failed": ("Could not bring them right now — they arrive the next time the app "
+                             "syncs. Opening DeskIT."),
     "account.failed": "Not signed in: {why}",
     "account.terms": "Terms",
     "account.continue": "Continue",
@@ -280,6 +318,11 @@ WORDS = {
     "done.autostart.help": "A Run entry for your user; Settings > The app turns it off.",
     "done.phone": "Dictate from your phone",
     "done.phone.help": "This PC listens for the DeskIT keyboard on your Tailscale address (Settings > Phone shows how).",
+    "done.sync": "Keep my learned words and settings in my account",
+    "done.sync.help": ("On any PC you sign in on, DeskIT then hears you your way from the first "
+                       "sentence: the words it learned from you and the settings you changed "
+                       "follow you there. Never your voice, your keys or what you said. "
+                       "Settings > Privacy > Withdraw turns it off."),
     "done.title": "DeskIT is ready",
     "done.sub": "Hold the key and talk. The text lands where your cursor is, in any window. Start opens the desk.",
     "done.deferred": ("DeskIT is installed. The Hebrew model can be downloaded from the desk "
@@ -855,6 +898,19 @@ class KeyRefused(Exception):
     """Groq answered, and the answer was no (a 4xx): the key is wrong."""
 
 
+def _live_vocab(cfg):
+    """The vocabulary the wizard's pull writes into — the app's own
+    class on the app's own file, built the way main.App builds it, so
+    what comes down is on disk when the app starts a moment later."""
+    import vocab as vocab_mod
+    v = getattr(cfg, "vocab", None)
+    return vocab_mod.Vocab(
+        paths.VOCAB_FILE, seed_terms=tuple(getattr(v, "terms", ()) or ()),
+        max_terms=int(getattr(v, "max_terms", 40)),
+        replace_after_hits=int(getattr(v, "replace_after_hits", 2)),
+        hebrew_after_hits=int(getattr(v, "hebrew_after_hits", 3)))
+
+
 def looks_like_key(value: str) -> bool:
     """What a Groq key can be: printable ASCII with no spaces. Not a
     check of the key — Groq does that — a check that it CAN be one, so
@@ -1016,6 +1072,44 @@ class Wizard:
         except Exception:                                  # noqa: BLE001
             pass
         self._extras_shown = dict(self.extras)
+        # The last page's sync row (the owner, 2026-09-20: nobody found
+        # the gate in Settings — "make it the default, on the last screen,
+        # with a line that says what they are ticking and how to turn it
+        # off"): drawn ON, recorded on Start only (_save_sync), so a
+        # switch nobody has seen yet is never a consent. Kept apart from
+        # `extras`, which is written on the extras page's Next as well.
+        self.sync_wanted = True
+        self._sync_shown = False
+        # A PC joining an account that already holds settings (the owner,
+        # 2026-09-20: "if he has a user, he signs in, everything comes
+        # down and DeskIT opens; the rest of the wizard is for someone
+        # new"): the account page asks the server once the session is
+        # there, and a yes turns Continue into Open DeskIT, pulls the
+        # words and settings, and skips every page but the downloads.
+        self._returning = False
+        self._returning_state = "idle"     # idle | asking | bringing
+        # The account page is a stack of its own (the owner, 2026-09-20:
+        # "where is the option to create a user?"): the choice, then
+        # Create an account — a name, Google, the whole wizard — or I
+        # have an account — Google, and DeskIT opens with everything as
+        # it was, nothing more to press. `_account_step` is where the
+        # stack stands, `_account_road_taken` which road the sign-in was
+        # pressed on, `_auto_open` that the sign-in road's promise is
+        # still owed, `_returning_answer` the server's word for this
+        # session (None until asked).
+        self._account_step = "choice"
+        self._account_road_taken: str | None = None
+        self._account_required = False
+        self._account_signing_out = False   # Not you? in flight: the page draws no session
+        self._signout_thread: threading.Thread | None = None
+        self._auto_open = False
+        self._returning_answer: bool | None = None
+        self.account_name = ""
+        try:
+            import privacy
+            self._sync_shown = bool(privacy.allowed("settings_sync"))
+        except Exception:                                  # noqa: BLE001
+            pass
 
         _lamplight()
         # A PhotoImage belongs to the interpreter that made it: the step
@@ -1255,54 +1349,182 @@ class Wizard:
                    ).pack(side="left")
 
     # ---------------------------------------------------------------- account
+    # The account page is a small stack of its own (the owner, 2026-09-20,
+    # after walking it on the stranger copy: "Back took me to Welcome — I
+    # want the page with sign in / sign up"; and "it must require a
+    # name"):
+    #
+    #     choice ──► create ──► signed
+    #            └─► signin ─┘
+    #
+    # What the outside world does, and this page copies (a short read
+    # of the login/sign-up guides, 2026-09-20): one screen that asks
+    # new-or-returning with the new person's button as the primary;
+    # "Continue with Google" on the sign-up side; a link under each road
+    # to the other; Back walks the stack one step at a time before it
+    # leaves the page; after the sign-in there is no Back into the
+    # sign-in — there is "Not you? Sign out", which is what Back on the
+    # signed card does too (this PC only), and the choice again. The
+    # name is asked before Google and required (his rule; the guides
+    # call it optional — he wants every account to carry one).
+    #
+    # The steps are drawn by _account_show; _account_back answers the
+    # wizard's Back; the sign-in thread's outcome lands in _account_poll
+    # from _tick; the server's "does the account hold settings" answer
+    # lands in _returning_known.
+    ACCOUNT_STEPS = ("choice", "create", "signin", "signed")
+
     def _page_account(self) -> None:
         """Sign in (chapter 9 screen 16, the owner's rule of 2026-09-18):
         the one page with no way past — Next stays off until a session
-        exists — on a copy whose sb.py names a project. The page carries
-        the account card's own words (what is stored, where), so the
-        press is the consent (privacy.grant) and the sign-in in one; the
-        browser does Google's part and comes back on the app's loopback
-        listener (sb.sign_in_google). A copy without a project says so
-        and lets Next through."""
+        exists — on a copy whose sb.py names a project. A copy already
+        signed in opens on the signed card; a copy without a project
+        says so and lets Next through."""
         self._head(WORDS["account.title"], WORDS["account.sub"])
         self._account_state = "idle"
         try:
             import sb
             configured = sb.configured()
-            signed = sb.user() if configured else None
-            required = bool(sb.REQUIRED)
+            signed = sb.user() if configured and not self._account_signing_out else None
+            self._account_required = bool(sb.REQUIRED)
         except Exception:                                  # noqa: BLE001
-            configured, signed, required = False, None, False
+            configured, signed, self._account_required = False, None, False
         if not configured:
             self._line(WORDS["account.none"], colour=ui.DIM, size=10)
             return
         self.account_holder = tk.Frame(self.body, bg=ui.BG)
         self.account_holder.pack(fill="x")
         if signed:
-            self._account_said(signed)
+            self._account_show("signed", who=signed)
+        elif self._account_step in ("create", "signin"):
+            self._account_show(self._account_step)
         else:
-            self._account_offer(required)
+            self._account_show("choice")
 
-    def _account_offer(self, required: bool = True) -> None:
-        """The card with the sign-in button: what the account is for,
-        what is stored and never stored, [Sign in with Google]. The way
-        on is shut while sb.REQUIRED says no account, no dictation."""
+    def _account_show(self, step: str, who: dict | None = None) -> None:
+        """Draw one step of the stack on the page's holder."""
+        assert step in self.ACCOUNT_STEPS, step
         for child in self.account_holder.winfo_children():
             child.destroy()
+        self._account_step = step
+        self.signin = None
+        self.name_box = None
+        self.roads = {}
+        if step == "choice":
+            self._account_choice()
+        elif step == "create":
+            self._account_road(creating=True)
+        elif step == "signin":
+            self._account_road(creating=False)
+        else:
+            self._account_signed(who or {})
+
+    def _account_back(self) -> bool:
+        """The wizard's Back on this page: a road goes back to the
+        choice; the signed card is "not you" — the session goes (this
+        PC only, the other PCs stay signed in), the choice is drawn
+        again; the choice itself lets the wizard go to Welcome (False)."""
+        step = getattr(self, "_account_step", "choice")
+        if step in ("create", "signin"):
+            self._account_show("choice")
+            return True
+        if step == "signed":
+            self._account_sign_out()
+            return True
+        return False
+
+    def _account_sign_out(self) -> None:
+        """Not you? — the session dropped on this PC (sb.sign_out with
+        everywhere=False: the person's other PCs keep theirs), the
+        returning answer forgotten, the choice again. The server call
+        runs on a thread; the page draws the choice at once and reads
+        no session until the thread is done (a road's sign-in pressed
+        meanwhile waits for it, in its own thread)."""
+        self._returning = False
+        self._returning_answer = None
+        self._auto_open = False
+        self.result.signed_in = False
+        self._account_signing_out = True
+
+        def work() -> None:
+            try:
+                import sb
+                sb.sign_out(everywhere=False)
+            except Exception as e:                         # noqa: BLE001
+                log.info("setup: the sign-out did not finish cleanly (%s)", e)
+            self._later(self._account_signed_out)
+        self._signout_thread = threading.Thread(target=work, daemon=True,
+                                                name="wizard-signout")
+        self._signout_thread.start()
+        self._account_step = "choice"
+        # drawn again whole: the step count in the head comes back to
+        # "of 8" once _returning is off
+        self._show_page()
+        self.note.configure(text=WORDS["account.signed_out"], fg=ui.DIM)
+
+    def _account_signed_out(self) -> None:
+        self._account_signing_out = False
+
+    def _account_choice(self) -> None:
+        """Two cards, one question each — New to DeskIT? / Used DeskIT
+        before? — a line under it saying what the road does, and its
+        button; the new person's is the primary. The way on is shut
+        while sb.REQUIRED says no account, no dictation."""
+        for road, title, line, button in (
+                ("create", "account.new.title", "account.new.line", "account.new.button"),
+                ("signin", "account.have.title", "account.have.line", "account.have.button")):
+            card = self._card(self.account_holder, pad=20)
+            card.pack(fill="x", pady=(0, 12))
+            f, bg = card.body, ui.CARD
+            self._line(WORDS[title], parent=f, bg=bg, colour=ui.FG, size=12,
+                       width=INNER - 40, pady=(0, 4))
+            self._line(WORDS[line], parent=f, bg=bg, colour=ui.DIM, size=10,
+                       width=INNER - 40, pady=(0, 16))
+            self.roads[road] = ui.Button(f, WORDS[button],
+                                         lambda r=road: self._account_show(r),
+                                         bg=bg, primary=(road == "create"), w=210, h=44)
+            self.roads[road].pack(anchor="w")
+            self._fit(card)
+        self._foot(False)
+        self.next.enable(not self._account_required)
+
+    def _account_road(self, creating: bool) -> None:
+        """One road's card. Create an account: the name (required —
+        [Continue with Google] wakes when it is typed), what the account
+        is for, what is stored and never stored. I have an account: one
+        line on what the sign-in brings, what is stored, [Sign in with
+        Google]. Under either, the link to the other road. The way on
+        stays shut while sb.REQUIRED says no account, no dictation."""
         card = self._card(self.account_holder, pad=20)
         card.pack(fill="x")
         f, bg = card.body, ui.CARD
-        for sentence in WORDS["account.for"]:
-            self._line(sentence, parent=f, bg=bg, colour=ui.FG, size=11,
-                       width=INNER - 40, pady=(0, 4))
-        self._line(WORDS["account.stored"], parent=f, bg=bg, colour=ui.DIM,
-                   size=9, width=INNER - 40, pady=(14, 6))
-        self._line(WORDS["account.never"], parent=f, bg=bg, colour=ui.DIM,
-                   size=9, width=INNER - 40, pady=(0, 18))
+        self._line(WORDS["account.create.title" if creating else "account.signin.title"],
+                   parent=f, bg=bg, colour=ui.FG, size=12, width=INNER - 40, pady=(0, 10))
+        if creating:
+            row = tk.Frame(f, bg=bg)
+            row.pack(fill="x", pady=(0, 4))
+            tk.Label(row, text=WORDS["account.name.label"], bg=bg, fg=ui.FG,
+                     font=(ui.UI, 10), anchor="w", width=10).pack(side="left")
+            self.name_box = ui.Field(row, self.account_name, w=INNER - 40 - 100, h=34,
+                                     bg=bg, justify="left", pt=10)
+            self.name_box.pack(side="left")
+            self._line(WORDS["account.name.help"], parent=f, bg=bg, colour=ui.DIM,
+                       size=9, width=INNER - 40, pady=(0, 14))
+            for sentence in WORDS["account.for"]:
+                self._line(sentence, parent=f, bg=bg, colour=ui.FG, size=11,
+                           width=INNER - 40, pady=(0, 4))
+        else:
+            self._line(WORDS["account.signin.line"], parent=f, bg=bg, colour=ui.FG,
+                       size=11, width=INNER - 40, pady=(0, 4))
+        self._line(WORDS["account.stored" if creating else "account.stored.signin"],
+                   parent=f, bg=bg, colour=ui.DIM, size=9, width=INNER - 40, pady=(14, 6))
+        self._line(WORDS["account.never" if creating else "account.never.signin"],
+                   parent=f, bg=bg, colour=ui.DIM, size=9, width=INNER - 40, pady=(0, 18))
         row = tk.Frame(f, bg=bg)
         row.pack(fill="x")
-        self.signin = ui.Button(row, WORDS["account.button"], self._sign_in,
-                                bg=bg, primary=True, w=210, h=44)
+        self.signin = ui.Button(row, WORDS["account.create.button" if creating
+                                           else "account.button"],
+                                self._sign_in, bg=bg, primary=True, w=210, h=44)
         self.signin.pack(side="left")
         self._link(WORDS["welcome.privacy"], PRIVACY_URL, parent=row, bg=bg
                    ).pack(side="right", padx=(14, 0))
@@ -1311,14 +1533,37 @@ class Wizard:
         self.account_line = self._line("", parent=f, bg=bg, colour=ui.DIM,
                                        size=9, width=INNER - 40, pady=(12, 0))
         self._fit(card)
+        other = tk.Label(self.account_holder,
+                         text=WORDS["account.other.have" if creating else "account.other.new"],
+                         bg=ui.BG, fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"),
+                         cursor="hand2", anchor="w")
+        other.bind("<Button-1>", lambda _e, s=("signin" if creating else "create"):
+                   self._account_show(s))
+        other.pack(fill="x", pady=(10, 0))
+        self.other_road = other
         self._foot(False)
-        self.next.enable(not required)
+        self.next.enable(not self._account_required)
+        if creating:
+            self.name_box.bind_entry("<KeyRelease>", lambda _e: self._name_typed())
+            self.name_box.bind_entry("<Return>", lambda _e: self._sign_in())
+            self.name_box.entry.focus_set()
+            self._name_typed()
 
-    def _account_said(self, who: dict) -> None:
-        """Signed in: the card becomes a check mark, the e-mail and one
-        sentence; the way on is the primary again and says Continue."""
-        for child in self.account_holder.winfo_children():
-            child.destroy()
+    def _name_typed(self) -> None:
+        """The name is required: the Google button follows the field."""
+        box = getattr(self, "name_box", None)
+        if box is None or not box.winfo_exists() or self.signin is None:
+            return
+        if getattr(self, "_account_state", "idle") == "waiting":
+            return
+        self.signin.enable(bool(box.entry.get().strip()))
+
+    def _account_signed(self, who: dict) -> None:
+        """Signed in: the card becomes a check mark, the name and e-mail
+        and one line; "Not you? Sign out" under it; the way on is the
+        primary again and says Continue — or Open DeskIT, with the
+        welcome-back line, once the server said the account holds
+        settings."""
         card = self._card(self.account_holder, pad=20)
         card.pack(fill="x")
         f, bg = card.body, ui.CARD
@@ -1328,39 +1573,170 @@ class Wizard:
                  font=(ui.ICONS, 16)).pack(side="left", padx=(0, 14))
         words = tk.Frame(row, bg=bg)
         words.pack(side="left", fill="x", expand=True)
-        self.account_line = self._line(
-            (WORDS["account.signed"].format(email=who["email"]) if who.get("email")
-             else WORDS["account.anonymous"]),
-            parent=words, bg=bg, colour=ui.FG, size=12, width=INNER - 90)
-        self._line(WORDS["account.remembered"], parent=words, bg=bg,
-                   colour=ui.DIM, size=9, width=INNER - 90, pady=(4, 0))
+        if who.get("email") and who.get("name"):
+            said = WORDS["account.signed.named"].format(name=who["name"], email=who["email"])
+        elif who.get("email"):
+            said = WORDS["account.signed"].format(email=who["email"])
+        else:
+            said = WORDS["account.anonymous"]
+        self.account_line = self._line(said, parent=words, bg=bg, colour=ui.FG, size=12,
+                                       width=INNER - 90)
+        if self._returning:
+            note = WORDS["account.returning"]
+        elif self._account_road_taken == "signin" and self._returning_answer is False:
+            # I have an account — but the account holds nothing yet: the
+            # ordinary wizard, said plainly
+            note = WORDS["account.fresh"]
+        else:
+            note = WORDS["account.remembered"]
+        self.account_note = self._line(note, parent=words, bg=bg,
+                                       colour=ui.FG if note != WORDS["account.remembered"] else ui.DIM,
+                                       size=9, width=INNER - 90, pady=(4, 0))
+        self.account_card = card
         self._fit(card)
-        self.signin = None
-        self._foot(True, WORDS["account.continue"])
+        other = tk.Label(self.account_holder, text=WORDS["account.not_you"], bg=ui.BG,
+                         fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"), cursor="hand2",
+                         anchor="w")
+        other.bind("<Button-1>", lambda _e: self._account_sign_out())
+        other.pack(fill="x", pady=(10, 0))
+        self.other_road = other
+        self._foot(True, WORDS["account.open" if self._returning else "account.continue"])
         self.next.enable(True)
+        self._ask_returning()
+
+    def _ask_returning(self) -> None:
+        """Signed in: does the account already hold settings? Asked on a
+        thread, answered through the queue; the page stays usable and a
+        road problem is simply the ordinary wizard."""
+        if self._returning or self._returning_state != "idle":
+            return
+        if self._returning_answer is not None:
+            return                    # asked already for this session
+        self._returning_state = "asking"
+
+        def work() -> None:
+            try:
+                import sb
+                yes = bool(sb.has_synced_settings())
+            except Exception:                              # noqa: BLE001
+                yes = False
+            self._later(lambda: self._returning_known(yes))
+        threading.Thread(target=work, daemon=True, name="wizard-returning").start()
+
+    def _returning_known(self, yes: bool) -> None:
+        self._returning_state = "idle"
+        self._returning_answer = yes
+        if self.name != "account" or self._account_step != "signed":
+            return
+        if not yes:
+            note = getattr(self, "account_note", None)
+            if self._account_road_taken == "signin" and note is not None and note.winfo_exists():
+                note.configure(text=WORDS["account.fresh"], fg=ui.FG)
+                self._fit(self.account_card)
+            return
+        self._returning = True
+        # drawn again whole: the card's line, the button, and the step
+        # count in the head ("of 2" now, the pages behind it gone)
+        self._show_page()
+        if self._auto_open:
+            # I have an account, signed in, and the account holds
+            # settings: the card promised DeskIT opens — nothing to press
+            self._auto_open = False
+            self._returning_go()
+
+    def _returning_go(self) -> None:
+        """[Open DeskIT] on the account page of a returning person: the
+        sync consent is recorded (this card said what is stored, the
+        line said what comes along), the words and settings are pulled
+        now, then the downloads page if anything is left to fetch,
+        otherwise straight to Start's work — the app and the desk."""
+        if self._returning_state == "bringing":
+            return
+        self._returning_state = "bringing"
+        for twin in (self.next_loud, self.next_quiet):
+            twin.enable(False)
+        note = getattr(self, "account_note", None)
+        if note is not None and note.winfo_exists():
+            note.configure(text=WORDS["account.bringing"], fg=ui.DIM)
+        try:
+            import consent_card as cc
+            import privacy
+            if not privacy.allowed("settings_sync"):
+                privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
+            self.sync_wanted = True
+            self._sync_shown = True
+        except Exception as e:                             # noqa: BLE001
+            log.warning("the wizard could not record the sync consent: %s", e)
+
+        def work() -> None:
+            try:
+                import sb
+                # the app's own Vocab on the app's own file: without it
+                # the pull skipped the words, and the desk opened with
+                # none until the worker's first sync 30 s later (his
+                # installed-copy walk, 2026-09-20: "again it did not
+                # sync — I had to press Sync now")
+                out = sb.sync_now(vocab=_live_vocab(self.cfg), reason="wizard")
+                ok = bool(out) and not any(str(v).startswith("error") for v in out.values())
+            except Exception as e:                         # noqa: BLE001
+                log.info("setup: the first sync did not run (%s)", e)
+                ok = False
+            self._later(lambda: self._returning_brought(ok))
+        threading.Thread(target=work, daemon=True, name="wizard-first-sync").start()
+
+    def _returning_brought(self, ok: bool) -> None:
+        self._returning_state = "idle"
+        if self.name != "account":
+            return
+        if not ok:
+            note = getattr(self, "account_note", None)
+            if note is not None and note.winfo_exists():
+                note.configure(text=WORDS["account.bring_failed"], fg=ui.AMBER)
+        if self._hidden("computer"):
+            self._open_desk()
+        else:
+            self._advance()
 
     def _sign_in(self) -> None:
-        """[Sign in with Google]: the consent row first (this page IS the
-        card), then the browser; the outcome is polled by _tick on the
-        Tk thread. Idempotent while one is waiting."""
-        if self._account_state == "waiting":
+        """[Continue with Google] / [Sign in with Google]: the consent
+        rows first (this card IS the consent), then the browser; the
+        outcome is polled by _tick on the Tk thread. Idempotent while
+        one is waiting; on the create road the name must be there."""
+        if self._account_state == "waiting" or self.signin is None:
             return
         import privacy
         import sb
+        box = getattr(self, "name_box", None)
+        name = box.entry.get().strip() if box is not None and box.winfo_exists() else ""
+        if self._account_step == "create" and not name:
+            self._name_typed()
+            return
         try:
-            if not privacy.allowed("account"):
-                privacy.grant("account")
+            privacy.sign_in_grants()      # the account, and the sync it promises
         except Exception as e:                             # noqa: BLE001
             self.account_line.configure(text=WORDS["account.failed"].format(why=e), fg=ui.RED)
             return
         self._account_state = "waiting"
+        self._account_road_taken = self._account_step
         self._account_result: dict | None = None
+        self.account_name = name[:sb.NAME_MAX]
         self.account_line.configure(text=WORDS["account.waiting"], fg=ui.DIM)
         self.signin.enable(False)
 
         def work() -> None:
             try:
-                self._account_result = {"who": sb.sign_in_google()}
+                gone = self._signout_thread
+                if gone is not None and gone.is_alive():
+                    gone.join(15)         # Not you? still revoking: after it
+                who = sb.sign_in_google()
+                if self.account_name:
+                    # the name is a courtesy: a refusal is logged, the
+                    # sign-in stands
+                    try:
+                        who["name"] = sb.set_name(self.account_name) or who.get("name", "")
+                    except Exception as e:                 # noqa: BLE001
+                        log.info("setup: the name was not kept (%s)", e)
+                self._account_result = {"who": who}
             except Exception as e:                         # noqa: BLE001
                 self._account_result = {"error": str(e)}
         threading.Thread(target=work, daemon=True, name="wizard-signin").start()
@@ -1375,13 +1751,18 @@ class Wizard:
         self._account_state = "idle"
         if result.get("who"):
             self.result.signed_in = True
-            self._account_said(result["who"])
+            # the sign-in road owes its promise once the server answers
+            self._auto_open = self._account_road_taken == "signin"
+            self._returning_answer = None
+            if self.name == "account":
+                self._account_show("signed", who=result["who"])
             self._came_back(result["who"])
-        else:
+        elif self.name == "account" and self._account_step in ("create", "signin"):
             self.account_line.configure(
                 text=WORDS["account.failed"].format(why=result.get("error", "?"))[:160],
                 fg=ui.RED)
             self.signin.enable(True)
+            self._name_typed()
 
     def _came_back(self, who: dict) -> None:
         """The browser had the foreground; foreground.py (lane E) brings
@@ -1843,6 +2224,9 @@ class Wizard:
 
     def _extra_flipped(self, key: str) -> None:
         on = self.switches[key].get()
+        if key == "sync":
+            self.sync_wanted = on          # written by Start, _save_sync
+            return
         if key == "cloud":
             # THE SWITCH IS THE CONSENT here (the owner, 2026-09-19 evening:
             # "whoever turns it on — that is enough"): the row's own two
@@ -2047,14 +2431,31 @@ class Wizard:
                  font=(ui.UI, 11), anchor="w").pack(side="left", fill="x", expand=True)
         ui.KeyCap(row, _pretty(self.cfg.hotkey), bg=ui.CARD, w=180).pack(side="right")
         self.switches = {}
-        rows = (("autostart", WORDS["done.autostart"], WORDS["done.autostart.help"]),
-                ("phone", WORDS["done.phone"], WORDS["done.phone.help"]))
+        # The sync row first, and only with an account to sync to: on a
+        # copy without a server, or one that walked past the account
+        # page (sb.REQUIRED off), there is nothing the switch could mean.
+        rows = []
+        if self._signed_in():
+            rows.append(("sync", WORDS["done.sync"], WORDS["done.sync.help"]))
+        rows += [("autostart", WORDS["done.autostart"], WORDS["done.autostart.help"]),
+                 ("phone", WORDS["done.phone"], WORDS["done.phone.help"])]
         for i, (key, label, help_) in enumerate(rows):
             self.switches[key] = self._switch_row(
-                label, help_, self.extras[key],
+                label, help_,
+                self.sync_wanted if key == "sync" else self.extras[key],
                 lambda _v=None, k=key: self._extra_flipped(k), parent=card.body,
                 bg=ui.CARD, last=i == len(rows) - 1)
         self._fit(card)
+
+    @staticmethod
+    def _signed_in() -> bool:
+        """A configured project and a session: the account page's own
+        test, asked again on the last page."""
+        try:
+            import sb
+            return bool(sb.configured() and sb.user())
+        except Exception:                                  # noqa: BLE001
+            return False
 
     def _open_desk(self) -> None:
         """[Start]: the app AND the desk. Until 2026-09-19 evening the desk
@@ -2062,6 +2463,7 @@ class Wizard:
         without it — "the model ran without the app": a dot and nothing
         to look at. One way out of the wizard, and it opens the desk."""
         self.result.open_desk = True
+        self._save_sync()
         self._save_extras()
         self._finish()
 
@@ -2337,6 +2739,8 @@ class Wizard:
         evening: "I do not want the installation page"): the computer
         page when nothing is left to download — a copy whose downloads
         landed, or a portable one."""
+        if self._returning and name in ("mic", "say", "keys", "extras", "done"):
+            return True          # a returning person: only what this PC still lacks
         if name != "computer":
             return False
         offers = self.offers
@@ -2345,6 +2749,8 @@ class Wizard:
     def _back(self) -> None:
         if self.page == 0:
             return
+        if self.name == "account" and self._account_back():
+            return                        # one step down the page's own stack
         if self.name == "mic":
             self.listener.close()
         self.page -= 1
@@ -2357,6 +2763,9 @@ class Wizard:
             self._advance()
 
     def _next(self) -> None:
+        if self.name == "account" and self._returning:
+            self._returning_go()
+            return
         if self.name == "mic":
             self._save_device()
         if self.name == "done":
@@ -2372,6 +2781,10 @@ class Wizard:
         self.page += 1
         while self.page < len(PAGES) - 1 and self._hidden(self.name):
             self.page += 1
+        if self._returning and self.name == "done":
+            # the downloads were the last thing this PC needed
+            self._open_desk()
+            return
         if self.name == "say":
             # the sentence page records: the stream is opened again
             self.listener.listen_to(self.device)
@@ -2450,6 +2863,29 @@ class Wizard:
                                 fg=ui.RED)
             return
         self._extras_shown = dict(want)
+
+    def _save_sync(self) -> None:
+        """The last page's sync row, on Start: THE ROW IS THE CONSENT, as
+        the cloud switch is on the extras page — the account page said
+        what is stored and where, the row's own line says what follows
+        the person and how to stop it — recorded with the card's
+        text_version so Settings > Privacy shows the grant like any
+        other; off on a later run (the gate open) withdraws it. Nothing
+        when the row was not on the page: no account, nothing to sync
+        to, and a consent nobody saw is not one. The sync itself is the
+        app's worker, 30 s after it starts (sb.start_worker)."""
+        if "sync" not in getattr(self, "switches", {}) or self.sync_wanted == self._sync_shown:
+            return
+        try:
+            import privacy
+            if self.sync_wanted:
+                import consent_card as cc
+                privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
+            else:
+                privacy.withdraw("settings_sync")
+            self._sync_shown = self.sync_wanted
+        except Exception as e:                             # noqa: BLE001
+            log.warning("the wizard could not record the sync consent: %s", e)
 
     def _finish(self) -> None:
         self.result.saved = (record_done() if self.path is None

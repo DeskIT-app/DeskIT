@@ -1692,6 +1692,12 @@ compute_type = "auto"        # auto | float16 | int8_float16 | int8
 # library decides; the probe writes the core count on a machine without
 # a card.
 cpu_threads = 0
+# The speech model comes up with the app (the owner, 2026-09-20: "no
+# problem with the model loading by itself — make that the default, and
+# a way to turn it off in Settings"). Off, the app starts without it —
+# every key that needs no model works at once — and Start on the desk
+# loads it. `--no-model` on the command line means off for that start.
+load_at_start = true
 cleanup = true                # strip "אה"/"אמ" and collapse restarted phrases
                               # (Whisper only transcribes; Gemini also cleans)
 extra_fillers = []            # add your own, e.g. ["כאילו"] — only add words you
