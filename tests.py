@@ -33953,7 +33953,10 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
 
     def sync_now(vocab=None, reason=""):
         answer["synced"].append(reason)
-        return {"settings": "pulled", "vocab": "pulled"}
+        # the wizard hands the pull a live Vocab on the app's file: a
+        # None here skipped the words on his installed copy
+        assert vocab is not None and vocab.path == paths.VOCAB_FILE, vocab
+        return {"settings": "pulled", "vocab": "pulled 17, pushed 0"}
 
     def settle(w, seconds=1.5, until=None):
         deadline = time.monotonic() + seconds
@@ -33981,6 +33984,7 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
     nothing = {"portable": True, "model": None, "pack": None, "detector": None,
                "recording": None, "tier": "gpu"}
     with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(paths, "VOCAB_FILE", d / "vocab.json"), \
             _patched(sb, "user", lambda: person), _patched(sb, "configured", lambda: True), \
             _patched(sb, "has_synced_settings", has_settings), _patched(sb, "sync_now", sync_now):
         assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
@@ -34633,7 +34637,10 @@ def test_main_hosts_the_steps_in_the_wizard_when_it_is_due():
     assert "not wizard_due" in src.split("models_mod.wanted(cfg)")[0][-200:]
     assert "not wizard_due" in src.split("packs_mod.wanted(cfg, facts)")[0][-200:]
     assert "facts=facts)" in src and "outcome.installed_pack" in src
-    assert src.count("if open_desk:") == 2
+    # the desk after --setup, and after app.start() — where a plain
+    # launch (the shortcut, no flags) opens it too (2026-09-20)
+    assert src.count("if open_desk:") == 1
+    assert src.count("if open_desk or not sys.argv[1:]:") == 1
     wiz = (REPO / "firstrun.py").read_text("utf-8")
     assert "import main" not in wiz, "the wizard must not import main.py"
     assert 'config_mod.save({"setup.done": True})' in wiz
@@ -36247,6 +36254,7 @@ def test_autostart_run_value():
             assert read() == autostart.command() == autostart.current()
             assert launch.pythonw() in autostart.command() and "deskit.pyw" in autostart.command()
             assert autostart.command().count('"') == 4, "both halves quoted"
+            assert autostart.command().endswith(" --autostart"), "the logon start opens no window"
             assert autostart.apply(True) is False, "nothing to change"
             assert autostart.apply(False) is True and read() is None
             assert autostart.apply(False) is False

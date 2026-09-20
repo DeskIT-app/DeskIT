@@ -137,7 +137,8 @@ title: 2. הפעלה ראשונה
   משלו, כבוי, תחת Settings > Privacy). לכבות אחר כך: Settings > Privacy > **Withdraw**
   בשורה *Syncing settings and words*; **Sync now** תחת Account שואל שוב. השורה מופיעה רק
   אם נכנסת לחשבון בעמוד החשבון.
-- **Start with Windows** — כבוי. רשומת הפעלה למשתמש שלך.
+- **Start with Windows** — כבוי. רשומת הפעלה למשתמש שלך; ההפעלה הזאת לא פותחת חלון, רק
+  את הנקודה.
 - **Dictate from your phone** — כבוי ([פרק 6](06-phone)).
 
 **Start** מפעיל את דסק-איט ופותח את הדסק. אם דילגת על המודל, הדף אומר זאת ול־Home יש את

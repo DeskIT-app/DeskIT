@@ -898,6 +898,19 @@ class KeyRefused(Exception):
     """Groq answered, and the answer was no (a 4xx): the key is wrong."""
 
 
+def _live_vocab(cfg):
+    """The vocabulary the wizard's pull writes into — the app's own
+    class on the app's own file, built the way main.App builds it, so
+    what comes down is on disk when the app starts a moment later."""
+    import vocab as vocab_mod
+    v = getattr(cfg, "vocab", None)
+    return vocab_mod.Vocab(
+        paths.VOCAB_FILE, seed_terms=tuple(getattr(v, "terms", ()) or ()),
+        max_terms=int(getattr(v, "max_terms", 40)),
+        replace_after_hits=int(getattr(v, "replace_after_hits", 2)),
+        hebrew_after_hits=int(getattr(v, "hebrew_after_hits", 3)))
+
+
 def looks_like_key(value: str) -> bool:
     """What a Groq key can be: printable ASCII with no spaces. Not a
     check of the key — Groq does that — a check that it CAN be one, so
@@ -1658,7 +1671,12 @@ class Wizard:
         def work() -> None:
             try:
                 import sb
-                out = sb.sync_now(reason="wizard")
+                # the app's own Vocab on the app's own file: without it
+                # the pull skipped the words, and the desk opened with
+                # none until the worker's first sync 30 s later (his
+                # installed-copy walk, 2026-09-20: "again it did not
+                # sync — I had to press Sync now")
+                out = sb.sync_now(vocab=_live_vocab(self.cfg), reason="wizard")
                 ok = bool(out) and not any(str(v).startswith("error") for v in out.values())
             except Exception as e:                         # noqa: BLE001
                 log.info("setup: the first sync did not run (%s)", e)

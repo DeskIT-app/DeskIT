@@ -6668,6 +6668,11 @@ def main() -> int:
                         help="list audio input devices, then exit")
     parser.add_argument("--stop", action="store_true",
                         help="ask a running instance to quit, then exit")
+    parser.add_argument("--autostart", action="store_true",
+                        help="started by Windows at logon, or relaunched after "
+                             "an update: the dot only, no window (the Run value "
+                             "and the restart registration pass it; a double-click "
+                             "on the shortcut does not, and opens the desk)")
     parser.add_argument("--no-model", action="store_true",
                         help="start without the speech model (the desk does this "
                              "when it opens); Start in the desk loads it")
@@ -6872,7 +6877,7 @@ def main() -> int:
         try:
             import ctypes as _ct
             _ct.windll.kernel32.RegisterApplicationRestart(
-                f'"{paths.APP_DIR / "deskit.pyw"}"', 0)
+                f'"{paths.APP_DIR / "deskit.pyw"}" --autostart', 0)
         except Exception:                     # noqa: BLE001
             log.debug("RegisterApplicationRestart failed", exc_info=True)
     if paths.CHANNEL_NOTE:
@@ -7215,9 +7220,16 @@ def main() -> int:
         return fail(str(e))
     stage["app"] = app
     stage["stage"] = "running"
-    if open_desk:
-        # [Open the desk] on the wizard's last page: the dashboard, now
-        # that there is an app for it to talk to.
+    # A plain launch — the shortcut, DeskIT.vbs, nothing on the line — is
+    # a person who wants to see the app (the owner on his installed
+    # copy, 2026-09-20: "the first double-click lights the model, the
+    # second opens the app"); the desk opens with it, the app behind.
+    # Windows' logon start (--autostart), the desk's own `--no-model`
+    # start, the tests' --fake and every other flag open no window.
+    if open_desk or not sys.argv[1:]:
+        # [Open the desk] on the wizard's last page, or the plain
+        # launch: the dashboard, now that there is an app for it to
+        # talk to.
         open_dashboard()
     if not args.fake and app.tour_due():
         # The tour (D36): the guide itself, four cards beside the dot,

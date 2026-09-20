@@ -12,7 +12,11 @@ paragraph first (the owner's), English second (DISTRIBUTION_PLAN.md
 
 Your learned words follow you: the wizard's last page has a third switch, on by default — "Keep my learned words and settings in my account" — with a line saying what leaves (the words DeskIT learned from you and the settings you changed; never your voice, your keys or what you said) and how to turn it off (Settings > Privacy > Withdraw). Until now the sync was off in every copy, behind a card nobody found — two PCs on the same Google account shared not one word. Start is what records the consent; a switch you never saw is not one.
 
+לחיצה כפולה אחת פותחת את דסק-איט: הקיצור מעלה את השולחן והאפליקציה עולה מאחוריו — עד עכשיו הלחיצה הראשונה הדליקה את הנקודה ורק השנייה הראתה את השולחן; ההפעלה עם ווינדוס עדיין לא פותחת חלון. התחברות של מי שכבר יש לו חשבון מורידה את המילים שלמדת לפני שהשולחן נפתח (המשיכה של האשף דילגה עליהן, והן הגיעו רק עם הסנכרון הראשון של האפליקציה חצי דקה אחר כך).
+
 עמוד החשבון פותח בשאלה: חדש בדסק-איט, או כבר השתמשת? "Create an account" — שם (חובה), גוגל, ושאר ההתקנה. "I have an account" — גוגל, וזה הכול: המילים שלמדת וההגדרות יורדות ודסק-איט נפתח מעצמו, בלי עמוד נוסף ובלי לחיצה נוספת; רק עמוד ההורדות אם למחשב הזה עדיין חסר משהו. Back חוזר לשני הכרטיסים ולא לעמוד הפתיחה; "Not you? Sign out" מתחת לכרטיס המחובר מנתק את המחשב הזה בלבד. השם שהקלדת נשמר בחשבון ומופיע במחשב הבא; המפתחות לא.
+
+One double-click opens DeskIT: the shortcut brings the desk up with the app starting behind it — until now the first click started the dot and only a second one showed the desk; the Windows-logon start still opens no window. A returning sign-in brings the learned words down before the desk opens (the wizard's pull skipped them, and they arrived only with the app's first sync half a minute later).
 
 The account page opens on a question: new to DeskIT, or used it before? "Create an account" — a name (required), Google, and the rest of the setup. "I have an account" — Google, and that is all: your learned words and settings come down and DeskIT opens by itself, no further page and nothing more to press; only the downloads page if this PC still lacks something. Back goes to the two cards, not to Welcome; "Not you? Sign out" under the signed-in card signs out this PC only. The name you type is kept in the account and shows on the next PC; your keys are not.
 

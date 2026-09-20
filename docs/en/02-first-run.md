@@ -143,7 +143,8 @@ The hotkey to hold, and three switches asked once:
   page has its own switch, off, under Settings > Privacy). To turn it off later:
   Settings > Privacy > **Withdraw** on *Syncing settings and words*; **Sync now** under
   Account asks again. The row appears only when you signed in on the account page.
-- **Start with Windows** — off. A Run entry for your user.
+- **Start with Windows** — off. A Run entry for your user; that start opens no window, only
+  the dot.
 - **Dictate from your phone** — off ([chapter 6](06-phone)).
 
 **Start** starts DeskIT and opens the desk. If you skipped the model, this page says so and
