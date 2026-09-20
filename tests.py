@@ -33923,6 +33923,135 @@ def test_the_wizard_hosts_the_downloads_and_keeps_them_running_between_pages():
             shutil.rmtree(d, ignore_errors=True)
 
 
+def test_a_returning_account_skips_the_wizard_and_brings_its_words():
+    """The account page of a PC joining an account that already holds
+    settings (the owner, 2026-09-20: "if he has a user he signs in,
+    everything comes down and DeskIT opens; the rest is for someone
+    new"): once the session is there the wizard asks the server ONCE
+    whether settings exist; a yes turns Continue into Open DeskIT with
+    one plain line; the press records the sync consent with the card's
+    text_version, runs the first sync, and — nothing left to download —
+    does Start's work at once (the app, the desk, setup.done), the
+    microphone, sentence, keys, extras and Ready pages never shown; with
+    a download still missing only the computer page stands between the
+    account and the desk. A no, or a server that could not be asked, is
+    the ordinary wizard. Nothing here names the server to the person."""
+    import consent_card as cc
+    import firstrun
+    import privacy
+    import sb
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    person = {"email": "person@example.com", "id": "x", "is_anonymous": False}
+    answer = {"has": True, "asked": 0, "synced": []}
+
+    def has_settings():
+        answer["asked"] += 1
+        return answer["has"]
+
+    def sync_now(vocab=None, reason=""):
+        answer["synced"].append(reason)
+        return {"settings": "pulled", "vocab": "pulled"}
+
+    def settle(w, seconds=1.5, until=None):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            w.root.update()
+            w._drain()
+            if until is not None and until():
+                return
+            time.sleep(0.02)
+
+    def wizard(offers):
+        try:
+            return firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return None
+
+    def bury(w):
+        try:
+            w._close()
+        except Exception:                                    # noqa: BLE001
+            pass
+        gc.collect()
+
+    nothing = {"portable": True, "model": None, "pack": None, "detector": None,
+               "recording": None, "tier": "gpu"}
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(sb, "user", lambda: person), _patched(sb, "configured", lambda: True), \
+            _patched(sb, "has_synced_settings", has_settings), _patched(sb, "sync_now", sync_now):
+        assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
+        privacy.withdraw("settings_sync")
+        card = cc.card_for("settings_sync")
+        try:
+            # 1. a returning person, nothing to download: account -> desk
+            w = wizard(nothing)
+            if w is None:
+                return
+            w.page = firstrun.PAGES.index("account")
+            w._show_page()
+            settle(w, until=lambda: w._returning)
+            assert w._returning and answer["asked"] == 1, answer
+            assert w.next.itemcget(w.next._label, "text") == firstrun.WORDS["account.open"]
+            words = _wizard_words(w)
+            assert firstrun.WORDS["account.returning"] in words
+            assert "Welcome back" in firstrun.WORDS["account.returning"]
+            for word in ("Supabase", "server", "sync_now", "settings_sync"):
+                assert word not in firstrun.WORDS["account.returning"], word
+            assert all(w._hidden(n) for n in ("mic", "say", "keys", "extras", "done"))
+            assert privacy.consent("settings_sync") is None, "granted before the press"
+            w._next()
+            settle(w, until=lambda: w.result.saved)
+            assert answer["synced"] == ["wizard"], answer
+            row = privacy.consent("settings_sync")
+            assert row is not None and row["text_version"] == card["text_version"], row
+            assert w.result.open_desk and w.result.saved
+            assert config_mod.read_state(t).get("setup.done") is True
+            bury(w)
+
+            # 2. a returning person with a download missing: the computer
+            #    page, then the desk — no other page
+            privacy.withdraw("settings_sync")
+            answer.update(has=True, asked=0, synced=[])
+            (t).unlink(missing_ok=True)
+            w = wizard({**nothing, "portable": False, "recording": type("T", (), {"name": "av", "bytes": 27_556_236, "repo": "av"})()})
+            w.page = firstrun.PAGES.index("account")
+            w._show_page()
+            settle(w, until=lambda: w._returning)
+            assert w._returning
+            w._next()
+            settle(w, until=lambda: w.name == "computer")
+            assert w.name == "computer" and not w.result.saved, w.name
+            assert not w._hidden("computer") and w._hidden("say")
+            shown = [n for n in firstrun.PAGES if not w._hidden(n)]
+            assert shown == ["welcome", "account", "computer"], shown
+            w._next()                                        # past the downloads
+            settle(w, until=lambda: w.result.saved)
+            assert w.result.open_desk and w.result.saved, "the desk did not follow the downloads"
+            bury(w)
+
+            # 3. a new person, or a server that could not be asked: the
+            #    ordinary wizard, Continue, every page
+            privacy.withdraw("settings_sync")
+            answer.update(has=False, asked=0, synced=[])
+            w = wizard(nothing)
+            w.page = firstrun.PAGES.index("account")
+            w._show_page()
+            settle(w, 0.6)
+            assert answer["asked"] == 1 and not w._returning
+            assert not any(w._hidden(n) for n in ("mic", "say", "keys", "extras", "done"))
+            assert firstrun.WORDS["account.returning"] not in _wizard_words(w)
+            w._next()
+            assert w.name == "mic" and answer["synced"] == []
+            bury(w)
+        finally:
+            privacy.withdraw("settings_sync")
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def test_the_last_page_keeps_words_and_settings_in_the_account_by_default():
     """The wizard's last page (the owner, 2026-09-20 — two PCs on one
     Google account shared not one learned word, the gate being off in

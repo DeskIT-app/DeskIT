@@ -272,6 +272,26 @@ exactly what classic did.
    type while he is at the desk: that is still `--no-screen`, every
    time.
 
+9. **How a change travels — the owner's process since 2026-09-20 ("I want
+   to work the way the outside world does").** A change is a BRANCH, not a
+   commit on main. On the branch: the code and its tests, CI green. Then
+   the owner tests it in his Dev copy — he closes the Dev desk (X) and
+   opens it again from the shortcut; that IS the new code, nothing to
+   install; `main.py --setup` shows the wizard again. He says "works" →
+   a pull request → merge to main. A RELEASE is a separate act, on its
+   own rhythm (weekly is the plan): tag `vX.Y.Z` on main, release.yml
+   builds the installer on GitHub — never from this PC, never from
+   unpushed code — and the draft is his to publish. In a week that
+   touched the installer, the wizard or the updater, a pre-release first
+   (`vX.Y.Z-beta.1`, marked Pre-release, `releases/latest` untouched): he
+   installs it over his copy like a customer would, walks it, then the
+   real tag on the same code. The Dev copy is for changes; the installer
+   is for releases; a local build (`packaging\build_local.ps1`) is for
+   looking at the installer's own pages, not for shipping. How to brief a
+   change, in his words: what he saw, what he wants instead, and how he
+   will know it works ("I fix a word on one PC and see it on the other
+   within a minute") — never where in the code.
+
 ## The machine
 
 - Windows 11, Python 3.11 venv at `.venv\` (stdlib-first: cloud APIs go

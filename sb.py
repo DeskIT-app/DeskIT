@@ -948,6 +948,23 @@ def _sync_history(cursor: dict) -> str:
     return f"pulled {pulled}, pushed {pushed}"
 
 
+def has_synced_settings() -> bool:
+    """Has this account ever pushed its settings — is this a PC joining
+    an account that already has a DeskIT somewhere (the wizard's
+    "welcome back", 2026-09-20)? One GET for the row's timestamp; False
+    on anything but a row, so a road problem only means the ordinary
+    wizard. The words and settings themselves come with sync_now."""
+    try:
+        if not configured() or not signed_in():
+            return False
+        status, data = _rest("GET", "settings_sync", purpose="sync",
+                             query="select=updated_at&limit=1")
+        return status == 200 and isinstance(data, list) and bool(data)
+    except Exception as e:                                   # noqa: BLE001
+        log.info("account: could not ask whether settings exist (%s)", e)
+        return False
+
+
 def sync_now(vocab=None, reason: str = "") -> dict:
     """One pass over everything the gates allow. Never raises: each
     store's outcome (or its error) is a word in the returned dict and

@@ -167,6 +167,13 @@ WORDS = {
     "account.signed": "Signed in as {email}",
     "account.anonymous": "Signed in (anonymous account)",
     "account.remembered": "This PC remembers you until you sign out (Settings > Account).",
+    "account.returning": ("Welcome back — your learned words and settings are in your account "
+                          "and come along now. DeskIT opens with them; the microphone and the "
+                          "keys are the usual ones until you change them in Settings."),
+    "account.open": "Open DeskIT",
+    "account.bringing": "Bringing your words and settings…",
+    "account.bring_failed": ("Could not bring them right now — they arrive the next time the app "
+                             "syncs. Opening DeskIT."),
     "account.failed": "Not signed in: {why}",
     "account.terms": "Terms",
     "account.continue": "Continue",
@@ -1034,6 +1041,14 @@ class Wizard:
         # `extras`, which is written on the extras page's Next as well.
         self.sync_wanted = True
         self._sync_shown = False
+        # A PC joining an account that already holds settings (the owner,
+        # 2026-09-20: "if he has a user, he signs in, everything comes
+        # down and DeskIT opens; the rest of the wizard is for someone
+        # new"): the account page asks the server once the session is
+        # there, and a yes turns Continue into Open DeskIT, pulls the
+        # words and settings, and skips every page but the downloads.
+        self._returning = False
+        self._returning_state = "idle"     # idle | asking | bringing
         try:
             import privacy
             self._sync_shown = bool(privacy.allowed("settings_sync"))
@@ -1303,6 +1318,7 @@ class Wizard:
         self.account_holder.pack(fill="x")
         if signed:
             self._account_said(signed)
+            self._ask_returning()
         else:
             self._account_offer(required)
 
@@ -1355,12 +1371,90 @@ class Wizard:
             (WORDS["account.signed"].format(email=who["email"]) if who.get("email")
              else WORDS["account.anonymous"]),
             parent=words, bg=bg, colour=ui.FG, size=12, width=INNER - 90)
-        self._line(WORDS["account.remembered"], parent=words, bg=bg,
-                   colour=ui.DIM, size=9, width=INNER - 90, pady=(4, 0))
+        self.account_note = self._line(WORDS["account.remembered"], parent=words, bg=bg,
+                                       colour=ui.DIM, size=9, width=INNER - 90, pady=(4, 0))
+        self.account_card = card
         self._fit(card)
         self.signin = None
-        self._foot(True, WORDS["account.continue"])
+        self._foot(True, WORDS["account.open" if self._returning else "account.continue"])
         self.next.enable(True)
+        if self._returning:
+            self.account_note.configure(text=WORDS["account.returning"], fg=ui.FG)
+            self._fit(card)
+
+    def _ask_returning(self) -> None:
+        """Signed in: does the account already hold settings? Asked on a
+        thread, answered through the queue; the page stays usable and a
+        road problem is simply the ordinary wizard."""
+        if self._returning or self._returning_state != "idle":
+            return
+        self._returning_state = "asking"
+
+        def work() -> None:
+            try:
+                import sb
+                yes = bool(sb.has_synced_settings())
+            except Exception:                              # noqa: BLE001
+                yes = False
+            self._later(lambda: self._returning_known(yes))
+        threading.Thread(target=work, daemon=True, name="wizard-returning").start()
+
+    def _returning_known(self, yes: bool) -> None:
+        self._returning_state = "idle"
+        if not yes or self.name != "account":
+            return
+        self._returning = True
+        # drawn again whole: the card's line, the button, and the step
+        # count in the head ("of 2" now, the pages behind it gone)
+        self._show_page()
+
+    def _returning_go(self) -> None:
+        """[Open DeskIT] on the account page of a returning person: the
+        sync consent is recorded (this card said what is stored, the
+        line said what comes along), the words and settings are pulled
+        now, then the downloads page if anything is left to fetch,
+        otherwise straight to Start's work — the app and the desk."""
+        if self._returning_state == "bringing":
+            return
+        self._returning_state = "bringing"
+        for twin in (self.next_loud, self.next_quiet):
+            twin.enable(False)
+        note = getattr(self, "account_note", None)
+        if note is not None and note.winfo_exists():
+            note.configure(text=WORDS["account.bringing"], fg=ui.DIM)
+        try:
+            import consent_card as cc
+            import privacy
+            if not privacy.allowed("settings_sync"):
+                privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
+            self.sync_wanted = True
+            self._sync_shown = True
+        except Exception as e:                             # noqa: BLE001
+            log.warning("the wizard could not record the sync consent: %s", e)
+
+        def work() -> None:
+            try:
+                import sb
+                out = sb.sync_now(reason="wizard")
+                ok = bool(out) and not any(str(v).startswith("error") for v in out.values())
+            except Exception as e:                         # noqa: BLE001
+                log.info("setup: the first sync did not run (%s)", e)
+                ok = False
+            self._later(lambda: self._returning_brought(ok))
+        threading.Thread(target=work, daemon=True, name="wizard-first-sync").start()
+
+    def _returning_brought(self, ok: bool) -> None:
+        self._returning_state = "idle"
+        if self.name != "account":
+            return
+        if not ok:
+            note = getattr(self, "account_note", None)
+            if note is not None and note.winfo_exists():
+                note.configure(text=WORDS["account.bring_failed"], fg=ui.AMBER)
+        if self._hidden("computer"):
+            self._open_desk()
+        else:
+            self._advance()
 
     def _sign_in(self) -> None:
         """[Sign in with Google]: the consent row first (this page IS the
@@ -1400,6 +1494,7 @@ class Wizard:
             self.result.signed_in = True
             self._account_said(result["who"])
             self._came_back(result["who"])
+            self._ask_returning()
         else:
             self.account_line.configure(
                 text=WORDS["account.failed"].format(why=result.get("error", "?"))[:160],
@@ -2381,6 +2476,8 @@ class Wizard:
         evening: "I do not want the installation page"): the computer
         page when nothing is left to download — a copy whose downloads
         landed, or a portable one."""
+        if self._returning and name in ("mic", "say", "keys", "extras", "done"):
+            return True          # a returning person: only what this PC still lacks
         if name != "computer":
             return False
         offers = self.offers
@@ -2401,6 +2498,9 @@ class Wizard:
             self._advance()
 
     def _next(self) -> None:
+        if self.name == "account" and self._returning:
+            self._returning_go()
+            return
         if self.name == "mic":
             self._save_device()
         if self.name == "done":
@@ -2416,6 +2516,10 @@ class Wizard:
         self.page += 1
         while self.page < len(PAGES) - 1 and self._hidden(self.name):
             self.page += 1
+        if self._returning and self.name == "done":
+            # the downloads were the last thing this PC needed
+            self._open_desk()
+            return
         if self.name == "say":
             # the sentence page records: the stream is opened again
             self.listener.listen_to(self.device)
