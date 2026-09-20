@@ -153,19 +153,43 @@ WORDS = {
     "welcome.privacy": "Privacy policy",
     "account.title": "Your account",
     "account.sub": "Sign in once with Google. This PC remembers you until you sign out.",
+    "account.new.title": "New to DeskIT?",
+    "account.new.line": "Create an account and set DeskIT up once. From then on it follows you.",
+    "account.new.button": "Create an account",
+    "account.have.title": "Used DeskIT before?",
+    "account.have.line": ("Sign in, and DeskIT opens the way you left it — your learned words "
+                          "and settings come along."),
+    "account.have.button": "I have an account",
+    "account.create.title": "Create an account",
+    "account.create.button": "Continue with Google",
+    "account.name.label": "Your name",
+    "account.name.help": "What DeskIT calls you. You can leave it empty.",
+    "account.signin.title": "I have an account",
+    "account.signin.line": ("Sign in with the Google account you used before. Your learned "
+                            "words and settings come down and DeskIT opens."),
+    "account.other.have": "Not new here? I have an account",
+    "account.other.new": "New here? Create an account",
     "account.for": ("Your learned words and settings follow you to any PC you sign in on.",
                     "One Google sign-in, and this computer remembers you."),
     "account.stored": ("Stored: the account id and e-mail of the Google account you pick, "
-                       "this PC's name, the app version and the Windows version — on "
-                       "DeskIT's server (Supabase, Frankfurt)."),
+                       "the name you type, this PC's name, the app version and the Windows "
+                       "version — on DeskIT's server (Supabase, Frankfurt)."),
+    "account.stored.signin": ("Stored: the account id and e-mail of the Google account you "
+                              "pick, this PC's name, the app version and the Windows "
+                              "version — on DeskIT's server (Supabase, Frankfurt)."),
     "account.never": ("Never stored: your voice, what you said, your keys. The last page "
                       "asks whether your learned words and settings stay in the account; "
                       "what you said is synced only if you turn that on in Settings."),
+    "account.never.signin": ("Never stored: your voice, what you said, your keys. Settings > "
+                             "Privacy > Withdraw stops the sync at any time; what you said "
+                             "is synced only if you turn that on in Settings."),
     "account.none": "This copy has no account server — you can go on.",
     "account.button": "Sign in with Google",
     "account.waiting": "Waiting for Google's sign-in page in your browser…",
     "account.signed": "Signed in as {email}",
+    "account.signed.named": "Signed in as {name} ({email})",
     "account.anonymous": "Signed in (anonymous account)",
+    "account.fresh": "This account has no DeskIT settings yet — let's set it up.",
     "account.remembered": "This PC remembers you until you sign out (Settings > Account).",
     "account.returning": ("Welcome back — your learned words and settings are in your account "
                           "and come along now. DeskIT opens with them; the microphone and the "
@@ -1049,6 +1073,16 @@ class Wizard:
         # words and settings, and skips every page but the downloads.
         self._returning = False
         self._returning_state = "idle"     # idle | asking | bringing
+        # The account page opens on a choice (the owner, 2026-09-20:
+        # "where is the option to create a user?"): Create an account —
+        # a name, Google, the whole wizard — or I have an account —
+        # Google, and DeskIT opens with everything as it was, nothing
+        # more to press. `_road` is the choice made; `_auto_open` says
+        # the sign-in road's promise is still owed.
+        self._road: str | None = None      # None | "create" | "signin"
+        self._auto_open = False
+        self._returning_answer: bool | None = None
+        self.account_name = ""
         try:
             import privacy
             self._sync_shown = bool(privacy.allowed("settings_sync"))
@@ -1296,12 +1330,14 @@ class Wizard:
     def _page_account(self) -> None:
         """Sign in (chapter 9 screen 16, the owner's rule of 2026-09-18):
         the one page with no way past — Next stays off until a session
-        exists — on a copy whose sb.py names a project. The page carries
-        the account card's own words (what is stored, where), so the
-        press is the consent (privacy.grant) and the sign-in in one; the
-        browser does Google's part and comes back on the app's loopback
-        listener (sb.sign_in_google). A copy without a project says so
-        and lets Next through."""
+        exists — on a copy whose sb.py names a project. It opens on a
+        choice (2026-09-20): Create an account, or I have an account;
+        each road is a card that carries the account's own words (what
+        is stored, where), so the press is the consent (privacy.grant)
+        and the sign-in in one; the browser does Google's part and comes
+        back on the app's loopback listener (sb.sign_in_google). A copy
+        already signed in skips the choice; a copy without a project
+        says so and lets Next through."""
         self._head(WORDS["account.title"], WORDS["account.sub"])
         self._account_state = "idle"
         try:
@@ -1319,29 +1355,95 @@ class Wizard:
         if signed:
             self._account_said(signed)
             self._ask_returning()
+        elif self._road is None:
+            self._account_choice(required)
         else:
             self._account_offer(required)
 
-    def _account_offer(self, required: bool = True) -> None:
-        """The card with the sign-in button: what the account is for,
-        what is stored and never stored, [Sign in with Google]. The way
-        on is shut while sb.REQUIRED says no account, no dictation."""
+    def _account_choice(self, required: bool = True) -> None:
+        """Two cards, one question each — New to DeskIT? / Used DeskIT
+        before? — a line under it saying what the road does, and its
+        button. The way on is shut while sb.REQUIRED says no account, no
+        dictation."""
         for child in self.account_holder.winfo_children():
             child.destroy()
+        self.signin = None
+        self.name_box = None
+        self.roads = {}
+        for road, title, line, button in (
+                ("create", "account.new.title", "account.new.line", "account.new.button"),
+                ("signin", "account.have.title", "account.have.line", "account.have.button")):
+            card = self._card(self.account_holder, pad=20)
+            card.pack(fill="x", pady=(0, 12))
+            f, bg = card.body, ui.CARD
+            self._line(WORDS[title], parent=f, bg=bg, colour=ui.FG, size=12,
+                       width=INNER - 40, pady=(0, 4))
+            self._line(WORDS[line], parent=f, bg=bg, colour=ui.DIM, size=10,
+                       width=INNER - 40, pady=(0, 16))
+            self.roads[road] = ui.Button(f, WORDS[button],
+                                         lambda r=road: self._road_to(r),
+                                         bg=bg, primary=(road == "create"), w=210, h=44)
+            self.roads[road].pack(anchor="w")
+            self._fit(card)
+        self._foot(False)
+        self.next.enable(not required)
+
+    def _road_to(self, road: str) -> None:
+        """A choice pressed, or the link at the foot of a road's card
+        that leads to the other one."""
+        if getattr(self, "_account_state", "idle") == "waiting":
+            return
+        self._road = road
+        self._auto_open = False
+        try:
+            import sb
+            required = bool(sb.REQUIRED)
+        except Exception:                                  # noqa: BLE001
+            required = False
+        self._account_offer(required)
+
+    def _account_offer(self, required: bool = True) -> None:
+        """The chosen road's card. Create an account: the name field,
+        what the account is for, what is stored and never stored,
+        [Continue with Google]. I have an account: one line on what the
+        sign-in brings, what is stored, [Sign in with Google]. Under
+        either, the link to the other road. The way on stays shut while
+        sb.REQUIRED says no account, no dictation."""
+        for child in self.account_holder.winfo_children():
+            child.destroy()
+        self.roads = {}
+        creating = self._road == "create"
         card = self._card(self.account_holder, pad=20)
         card.pack(fill="x")
         f, bg = card.body, ui.CARD
-        for sentence in WORDS["account.for"]:
-            self._line(sentence, parent=f, bg=bg, colour=ui.FG, size=11,
-                       width=INNER - 40, pady=(0, 4))
-        self._line(WORDS["account.stored"], parent=f, bg=bg, colour=ui.DIM,
-                   size=9, width=INNER - 40, pady=(14, 6))
-        self._line(WORDS["account.never"], parent=f, bg=bg, colour=ui.DIM,
-                   size=9, width=INNER - 40, pady=(0, 18))
+        self._line(WORDS["account.create.title" if creating else "account.signin.title"],
+                   parent=f, bg=bg, colour=ui.FG, size=12, width=INNER - 40, pady=(0, 10))
+        self.name_box = None
+        if creating:
+            row = tk.Frame(f, bg=bg)
+            row.pack(fill="x", pady=(0, 4))
+            tk.Label(row, text=WORDS["account.name.label"], bg=bg, fg=ui.FG,
+                     font=(ui.UI, 10), anchor="w", width=10).pack(side="left")
+            self.name_box = ui.Field(row, self.account_name, w=INNER - 40 - 100, h=34,
+                                     bg=bg, justify="left", pt=10)
+            self.name_box.pack(side="left")
+            self._line(WORDS["account.name.help"], parent=f, bg=bg, colour=ui.DIM,
+                       size=9, width=INNER - 40, pady=(0, 14))
+            for sentence in WORDS["account.for"]:
+                self._line(sentence, parent=f, bg=bg, colour=ui.FG, size=11,
+                           width=INNER - 40, pady=(0, 4))
+        else:
+            self._line(WORDS["account.signin.line"], parent=f, bg=bg, colour=ui.FG,
+                       size=11, width=INNER - 40, pady=(0, 4))
+        self._line(WORDS["account.stored" if creating else "account.stored.signin"],
+                   parent=f, bg=bg, colour=ui.DIM, size=9, width=INNER - 40, pady=(14, 6))
+        self._line(WORDS["account.never" if creating else "account.never.signin"],
+                   parent=f, bg=bg, colour=ui.DIM, size=9, width=INNER - 40, pady=(0, 18))
         row = tk.Frame(f, bg=bg)
         row.pack(fill="x")
-        self.signin = ui.Button(row, WORDS["account.button"], self._sign_in,
-                                bg=bg, primary=True, w=210, h=44)
+        self.signin = ui.Button(row, WORDS["account.create.button" if creating
+                                           else "account.button"],
+                                self._sign_in, bg=bg, primary=True, w=210, h=44)
         self.signin.pack(side="left")
         self._link(WORDS["welcome.privacy"], PRIVACY_URL, parent=row, bg=bg
                    ).pack(side="right", padx=(14, 0))
@@ -1350,8 +1452,18 @@ class Wizard:
         self.account_line = self._line("", parent=f, bg=bg, colour=ui.DIM,
                                        size=9, width=INNER - 40, pady=(12, 0))
         self._fit(card)
+        other = tk.Label(self.account_holder,
+                         text=WORDS["account.other.have" if creating else "account.other.new"],
+                         bg=ui.BG, fg=ui.ACCENT_TEXT, font=(ui.UI, 9, "underline"),
+                         cursor="hand2", anchor="w")
+        other.bind("<Button-1>", lambda _e, r=("signin" if creating else "create"):
+                   self._road_to(r))
+        other.pack(fill="x", pady=(10, 0))
+        self.other_road = other
         self._foot(False)
         self.next.enable(not required)
+        if self.name_box is not None:
+            self.name_box.entry.focus_set()
 
     def _account_said(self, who: dict) -> None:
         """Signed in: the card becomes a check mark, the e-mail and one
@@ -1367,19 +1479,29 @@ class Wizard:
                  font=(ui.ICONS, 16)).pack(side="left", padx=(0, 14))
         words = tk.Frame(row, bg=bg)
         words.pack(side="left", fill="x", expand=True)
-        self.account_line = self._line(
-            (WORDS["account.signed"].format(email=who["email"]) if who.get("email")
-             else WORDS["account.anonymous"]),
-            parent=words, bg=bg, colour=ui.FG, size=12, width=INNER - 90)
+        if who.get("email") and who.get("name"):
+            said = WORDS["account.signed.named"].format(name=who["name"], email=who["email"])
+        elif who.get("email"):
+            said = WORDS["account.signed"].format(email=who["email"])
+        else:
+            said = WORDS["account.anonymous"]
+        self.account_line = self._line(said, parent=words, bg=bg, colour=ui.FG, size=12,
+                                       width=INNER - 90)
         self.account_note = self._line(WORDS["account.remembered"], parent=words, bg=bg,
                                        colour=ui.DIM, size=9, width=INNER - 90, pady=(4, 0))
         self.account_card = card
         self._fit(card)
         self.signin = None
+        self.name_box = None
         self._foot(True, WORDS["account.open" if self._returning else "account.continue"])
         self.next.enable(True)
         if self._returning:
             self.account_note.configure(text=WORDS["account.returning"], fg=ui.FG)
+            self._fit(card)
+        elif self._road == "signin" and self._returning_answer is False:
+            # I have an account — but the account holds nothing yet: the
+            # ordinary wizard, said plainly
+            self.account_note.configure(text=WORDS["account.fresh"], fg=ui.FG)
             self._fit(card)
 
     def _ask_returning(self) -> None:
@@ -1401,12 +1523,24 @@ class Wizard:
 
     def _returning_known(self, yes: bool) -> None:
         self._returning_state = "idle"
-        if not yes or self.name != "account":
+        self._returning_answer = yes
+        if self.name != "account":
+            return
+        if not yes:
+            note = getattr(self, "account_note", None)
+            if self._road == "signin" and note is not None and note.winfo_exists():
+                note.configure(text=WORDS["account.fresh"], fg=ui.FG)
+                self._fit(self.account_card)
             return
         self._returning = True
         # drawn again whole: the card's line, the button, and the step
         # count in the head ("of 2" now, the pages behind it gone)
         self._show_page()
+        if self._auto_open:
+            # I have an account, signed in, and the account holds
+            # settings: the card promised DeskIT opens — nothing to press
+            self._auto_open = False
+            self._returning_go()
 
     def _returning_go(self) -> None:
         """[Open DeskIT] on the account page of a returning person: the
@@ -1473,10 +1607,21 @@ class Wizard:
         self._account_result: dict | None = None
         self.account_line.configure(text=WORDS["account.waiting"], fg=ui.DIM)
         self.signin.enable(False)
+        box = getattr(self, "name_box", None)
+        name = box.entry.get().strip() if box is not None and box.winfo_exists() else ""
+        self.account_name = name[:sb.NAME_MAX]
 
         def work() -> None:
             try:
-                self._account_result = {"who": sb.sign_in_google()}
+                who = sb.sign_in_google()
+                if self.account_name:
+                    # the name is a courtesy: a refusal is logged, the
+                    # sign-in stands
+                    try:
+                        who["name"] = sb.set_name(self.account_name) or who.get("name", "")
+                    except Exception as e:                 # noqa: BLE001
+                        log.info("setup: the name was not kept (%s)", e)
+                self._account_result = {"who": who}
             except Exception as e:                         # noqa: BLE001
                 self._account_result = {"error": str(e)}
         threading.Thread(target=work, daemon=True, name="wizard-signin").start()
@@ -1491,6 +1636,8 @@ class Wizard:
         self._account_state = "idle"
         if result.get("who"):
             self.result.signed_in = True
+            # the sign-in road owes its promise once the server answers
+            self._auto_open = self._road == "signin"
             self._account_said(result["who"])
             self._came_back(result["who"])
             self._ask_returning()

@@ -8884,7 +8884,9 @@ class Dashboard:
             said = "waiting for Google's sign-in page in your browser…"
             said_sub = "come back here when it says you are signed in"
         elif info.get("signed_in"):
-            if info.get("email"):
+            if info.get("email") and info.get("name"):
+                said = f"Signed in with Google as {info['name']} ({info['email']})"
+            elif info.get("email"):
                 said = f"Signed in with Google as {info['email']}"
             else:
                 ident = str(info.get("user_id") or "")

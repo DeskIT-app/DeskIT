@@ -110,6 +110,8 @@ def _signed_out() -> None:
 
 #: Refresh when this little of the access token's hour is left (8.6).
 REFRESH_MARGIN_S = 10
+#: The longest name the account keeps — the devices table's own cap.
+NAME_MAX = 40
 #: How long the browser may take to come back with a code.
 SIGNIN_TIMEOUT_S = 180
 #: The worker: first sync this long after start, then every CADENCE.
@@ -207,6 +209,7 @@ def _store_session(data: dict) -> dict:
     if not expires_at:
         expires_at = now + float(data.get("expires_in") or 3600)
     user = data.get("user") if isinstance(data.get("user"), dict) else {}
+    meta = user.get("user_metadata") if isinstance(user.get("user_metadata"), dict) else {}
     session = {
         "access_token": str(data.get("access_token") or ""),
         "refresh_token": str(data.get("refresh_token") or ""),
@@ -216,6 +219,10 @@ def _store_session(data: dict) -> dict:
             "is_anonymous": bool(user.get("is_anonymous", not user.get("email"))),
             "email": str(user.get("email") or ""),
             "created_at": str(user.get("created_at") or ""),
+            # the name the person typed on the account page (set_name),
+            # or the one Google gave; it rides in the auth user's
+            # metadata, so a second PC has it the moment it signs in
+            "name": str(meta.get("name") or meta.get("full_name") or "")[:NAME_MAX],
         },
     }
     secretstore.set(SESSION_NAME, json.dumps(session))
@@ -238,7 +245,7 @@ def signed_in() -> bool:
 
 
 def user() -> dict | None:
-    """``{"id", "is_anonymous", "email", "created_at"}`` or None."""
+    """``{"id", "is_anonymous", "email", "created_at", "name"}`` or None."""
     session = _load_session()
     return dict(session["user"]) if session else None
 
@@ -692,6 +699,30 @@ def sign_in_anonymous() -> dict:
         log.warning("account: %s", e)
     _status["last_error"] = ""
     return dict(session["user"])
+
+
+def set_name(name: str) -> str:
+    """The name typed on the wizard's account page (the owner,
+    2026-09-20: "Create an account — maybe a field for the name too"):
+    kept in the auth user's own metadata, not a table of ours — one
+    PUT, and every PC that signs in afterwards reads it off the
+    session. The redactor runs first, as on every string that leaves
+    the PC; an empty name changes nothing. Returns what was kept."""
+    import redact
+    name = redact.redact(str(name or "").strip())[:NAME_MAX].strip()
+    if not name:
+        return ""
+    session = _fresh()
+    status, data = _auth("user", {"data": {"name": name}}, bearer=True, method="PUT")
+    if status != 200:
+        raise AccountError(f"the name was refused ({_server_said(status, data if isinstance(data, bytes) else b'')})")
+    session = dict(session)
+    session["user"] = {**session["user"], "name": name}
+    secretstore.set(SESSION_NAME, json.dumps(session))
+    with _lock:
+        _cache.update(loaded=True, session=session)
+    log.info("account: the name is kept")
+    return name
 
 
 def sign_out() -> None:
@@ -1192,6 +1223,7 @@ def status() -> dict:
         "user_id": (who or {}).get("id", ""),
         "anonymous": bool((who or {}).get("is_anonymous", True)),
         "email": (who or {}).get("email", ""),
+        "name": (who or {}).get("name", ""),
         "created_at": (who or {}).get("created_at", ""),
         "device_name": device_name(),
         "busy": _status.get("busy", ""),
@@ -1210,7 +1242,7 @@ __all__ = [
     "PROJECT_REF", "PUBLISHABLE_KEY", "configure", "configured", "base_url",
     "AccountError", "NotAllowed", "signed_in", "user", "device_id",
     "device_name", "ensure_profile", "sign_in_google", "sign_in_anonymous",
-    "sign_out", "delete_account", "sync_now", "drain_outbox", "queued",
+    "set_name", "sign_out", "delete_account", "sync_now", "drain_outbox", "queued",
     "start_worker", "nudge", "status", "forget_cache", "REPORT_COLUMNS",
     "REQUIRED", "SIGNED_OUT_HOOKS",
 ]

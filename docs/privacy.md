@@ -76,7 +76,8 @@ you sign out. Signed out, the app's window is a single landing card
 with the sign-in button and nothing else, until you sign in again. (An anonymous account, with no e-mail, exists for people
 who only want to send problem reports; the app offers it on the
 Account block.) Collected on sign-in: a user id; with Google, the e-mail address of the
-Google account you chose (held by the sign-in service, never shown to
+Google account you chose and the name Google gives, or the name you
+typed on the account page (held by the sign-in service, never shown to
 other users); the name of this PC as Windows reports it (or the name
 you typed), the app version, the Windows build, the hardware tier;
 timestamps; and the IP address as the processor sees it, in its logs

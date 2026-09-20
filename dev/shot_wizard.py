@@ -2,8 +2,8 @@
 
 Runs ON the hidden desktop (tests_quiet.run_hidden wraps it, and so does
 the driver below): builds firstrun.Wizard in this process against a
-scratch DESKIT_HOME, shows each page in turn — the account page both
-before and after a sign-in, the microphone page with its help shown,
+scratch DESKIT_HOME, shows each page in turn — the account page on its
+choice, on each road and after a sign-in, the microphone page with its help shown,
 the sentence page with a sample, the keys page listening for a key —
 and prints the window to a PNG with the same PrintWindow the installer's
 picture is taken with (shot_installer._shot). Nothing is downloaded,
@@ -111,7 +111,11 @@ def _pages(out: Path) -> list[Path]:
     try:
         show("welcome"); shot("01-welcome")
         show("account"); shot("02-account")
-        sb.user = lambda: {"email": "person@example.com", "id": "x", "is_anonymous": False}
+        w._road_to("create"); w.name_box.entry.insert(0, "Dana"); shot("02-account-create")
+        w._road_to("signin"); shot("02-account-signin")
+        w._road = None
+        sb.user = lambda: {"email": "person@example.com", "id": "x", "is_anonymous": False,
+                           "name": "Dana"}
         show("account"); shot("02-account-signed-in")
         sb.user = lambda: None
         show("mic"); shot("03-microphone")
@@ -144,9 +148,10 @@ def _pages(out: Path) -> list[Path]:
     return shots
 
 
-#: The guide's seven wizard pictures (docs/README.md, chapter 2), by the
+#: The guide's eight wizard pictures (docs/README.md, chapter 2), by the
 #: name each page is taken under here.
-GUIDE = {"02-welcome": "01-welcome", "02-microphone": "03-microphone",
+GUIDE = {"02-welcome": "01-welcome", "02-account": "02-account",
+         "02-microphone": "03-microphone",
          "02-computer": "04-computer-downloading", "02-say": "05-say-heard",
          "02-keys": "06-keys", "02-extras": "07-extras", "02-done": "08-ready"}
 
@@ -164,7 +169,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--hidden", action="store_true",
                     help="run on the hidden desktop (from the owner's shell)")
     ap.add_argument("--guide", action="store_true",
-                    help="also refresh the guide's seven pictures in docs/img")
+                    help="also refresh the guide's eight pictures in docs/img")
     a = ap.parse_args(argv)
     a.out.mkdir(parents=True, exist_ok=True)
     if a.hidden:

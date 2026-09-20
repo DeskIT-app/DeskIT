@@ -12,6 +12,10 @@ paragraph first (the owner's), English second (DISTRIBUTION_PLAN.md
 
 Your learned words follow you: the wizard's last page has a third switch, on by default — "Keep my learned words and settings in my account" — with a line saying what leaves (the words DeskIT learned from you and the settings you changed; never your voice, your keys or what you said) and how to turn it off (Settings > Privacy > Withdraw). Until now the sync was off in every copy, behind a card nobody found — two PCs on the same Google account shared not one word. Start is what records the consent; a switch you never saw is not one.
 
+עמוד החשבון פותח בשאלה: חדש בדסק-איט, או כבר השתמשת? "Create an account" — שדה לשם, גוגל, ושאר ההתקנה. "I have an account" — גוגל, וזה הכול: המילים שלמדת וההגדרות יורדות ודסק-איט נפתח מעצמו, בלי עמוד נוסף ובלי לחיצה נוספת; רק עמוד ההורדות אם למחשב הזה עדיין חסר משהו. השם שהקלדת נשמר בחשבון ומופיע במחשב הבא; המפתחות לא.
+
+The account page opens on a question: new to DeskIT, or used it before? "Create an account" — a field for your name, Google, and the rest of the setup. "I have an account" — Google, and that is all: your learned words and settings come down and DeskIT opens by itself, no further page and nothing more to press; only the downloads page if this PC still lacks something. The name you type is kept in the account and shows on the next PC; your keys are not.
+
 ## 1.0.0
 
 הגרסה הראשונה של DeskIT — הכתבה בעברית שנשארת במחשב שלך. מתקינים בשתי לחיצות, בלי סיסמת מנהל; המתקין מוריד בעצמו את מודל הדיבור העברי (ועם כרטיס NVIDIA גם את מה שעושה את התמלול מהיר), כך שבהפעלה הראשונה אשף קצר רק מגדיר מיקרופון ומקש. מחזיקים מקש, מדברים, הטקסט נכנס איפה שהסמן. כבר התחברת פעם במחשב אחר? ההפעלה הראשונה אומרת ברוך שובך, מורידה את המילים שלמדת ואת ההגדרות ופותחת את DeskIT — בלי אשף. הקול לא יוצא מהמחשב; מה שאמרת נשמר בתיקייה אחת שאפשר למחוק; שום דבר לא נשלח לשום מקום עד שמפעילים זאת בעצמכם, וכל חיבור יוצא רשום במסך אחד. מסך מקשים מצויר, לימוד מילים שתיקנת, הקלטת מסך וצילום, תרגום, חיפוש מילה, וטלפון שמכתיב דרך המחשב שלך.

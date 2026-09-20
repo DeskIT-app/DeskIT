@@ -28,19 +28,30 @@ Three sentences about where your voice goes — it stays on this computer, the w
 one folder you can delete, nothing is sent anywhere until you switch it on — and a link,
 **How to check this yourself**, to [chapter 4](04-privacy). **Next**.
 
+![Your account](../img/02-account.png)
+
 ## Your account
 
-One card: what the account is for (your learned words and settings follow you to any PC you
-sign in on), what is stored (the id and e-mail of the Google account you pick) and what never
-is (your voice, what you said, your keys). **Sign in with Google** opens the browser once;
-this PC remembers you until you sign out. There is no way past this page without an account.
+Two cards, one question each. There is no way past this page without an account.
 
-**Signed in before, on another PC?** DeskIT notices that your account already holds settings:
-the card says *Welcome back*, the button says **Open DeskIT**, and pressing it brings your
-learned words and settings down and opens DeskIT — no microphone, sentence, keys or extras
-pages; only the downloads page, if this PC still lacks something. The microphone and the keys
-are the usual ones until you change them in Settings. Your Groq key is never in the account:
-paste it once on the new PC (Settings > Privacy).
+**New to DeskIT?** — **Create an account**. A field for your name (what DeskIT calls you; you
+can leave it empty), what the account is for (your learned words and settings follow you to
+any PC you sign in on), what is stored (the id and e-mail of the Google account you pick, the
+name you type) and what never is (your voice, what you said, your keys). **Continue with
+Google** opens the browser once; this PC remembers you until you sign out, and the rest of
+the setup follows.
+
+**Used DeskIT before?** — **I have an account**. **Sign in with Google** with the account you
+used on the other PC, and that is all: your learned words and settings come down and DeskIT
+opens by itself — no microphone, sentence, keys or extras pages, only the downloads page if
+this PC still lacks something. The microphone and the keys are the usual ones until you
+change them in Settings. Your Groq key is never in the account: paste it once on the new PC
+(Settings > Privacy).
+
+Picked the wrong card? A link under each one leads to the other. Created an account with a
+Google account that already holds DeskIT settings? The page says *Welcome back* and the button
+says **Open DeskIT**. Signed in with one that holds nothing yet? It says so, and **Continue**
+runs the ordinary setup.
 
 ## Microphone
 

@@ -34047,8 +34047,86 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
             w._next()
             assert w.name == "mic" and answer["synced"] == []
             bury(w)
+
+            # 4. I have an account (the owner: "signs in and is INSIDE the
+            #    app — nothing to press"): the choice, the sign-in road,
+            #    the sign-in comes back, the server says yes, and the
+            #    words are brought and the desk opened with no press
+            signed = {"who": None}
+
+            def sign_in_google(**kw):
+                signed["who"] = dict(person)
+                return dict(person)
+
+            with _patched(sb, "user", lambda: signed["who"]), \
+                    _patched(sb, "sign_in_google", sign_in_google), \
+                    _patched(firstrun.Wizard, "_came_back", lambda self, who: None):
+                privacy.withdraw("settings_sync")
+                privacy.withdraw("account")
+                answer.update(has=True, asked=0, synced=[])
+                t.unlink(missing_ok=True)
+                w = wizard(nothing)
+                w.page = firstrun.PAGES.index("account")
+                w._show_page()
+                assert w._road is None and set(w.roads) == {"create", "signin"}
+                w._road_to("signin")
+                assert w.name_box is None and w.signin is not None
+                assert firstrun.WORDS["account.signin.line"] in _wizard_words(w)
+                assert not w._auto_open
+                w._sign_in()
+                settle(w, 3, until=lambda: w.result.saved)
+                assert answer["asked"] == 1 and w._returning, answer
+                assert answer["synced"] == ["wizard"], answer
+                assert w.result.open_desk and w.result.saved, "the desk did not open by itself"
+                assert not w._auto_open
+                row = privacy.consent("settings_sync")
+                assert row is not None and row["text_version"] == card["text_version"], row
+                bury(w)
+
+                # 5. I have an account, but the account holds nothing yet:
+                #    said plainly, Continue, the ordinary wizard
+                signed["who"] = None
+                privacy.withdraw("settings_sync")
+                privacy.withdraw("account")
+                answer.update(has=False, asked=0, synced=[])
+                t.unlink(missing_ok=True)
+                w = wizard(nothing)
+                w.page = firstrun.PAGES.index("account")
+                w._show_page()
+                w._road_to("signin")
+                w._sign_in()
+                settle(w, 3, until=lambda: w._returning_answer is not None)
+                settle(w, 0.3)
+                assert answer["asked"] == 1 and not w._returning and not w.result.saved
+                assert w.account_note.cget("text") == firstrun.WORDS["account.fresh"]
+                assert w.next.itemcget(w.next._label, "text") == firstrun.WORDS["account.continue"]
+                w._next()
+                assert w.name == "mic" and answer["synced"] == []
+                bury(w)
+
+                # 6. Create an account with a Google account that already
+                #    holds settings: the truth is welcome back, and the
+                #    button — the person chose to look, nothing opens alone
+                signed["who"] = None
+                privacy.withdraw("settings_sync")
+                privacy.withdraw("account")
+                answer.update(has=True, asked=0, synced=[])
+                t.unlink(missing_ok=True)
+                w = wizard(nothing)
+                w.page = firstrun.PAGES.index("account")
+                w._show_page()
+                w._road_to("create")
+                assert w.name_box is not None
+                w._sign_in()
+                settle(w, 3, until=lambda: w._returning)
+                settle(w, 0.3)
+                assert w._returning and answer["synced"] == [] and not w.result.saved
+                assert w.next.itemcget(w.next._label, "text") == firstrun.WORDS["account.open"]
+                assert firstrun.WORDS["account.returning"] in _wizard_words(w)
+                bury(w)
         finally:
             privacy.withdraw("settings_sync")
+            privacy.withdraw("account")      # cases 4-6 pressed the sign-in
             shutil.rmtree(d, ignore_errors=True)
 
 
@@ -36789,6 +36867,7 @@ class _FakeSupabase:
         self.tables: dict[str, list[dict]] = {}
         self.refreshes = 0
         self.email = ""
+        self.name = ""
         self.deleted = False
 
     def session(self, email: str = "", token: str | None = None) -> dict:
@@ -36796,7 +36875,8 @@ class _FakeSupabase:
                 "expires_in": 3600, "expires_at": int(time.time()) + 3600,
                 "refresh_token": self.REFRESH,
                 "user": {"id": self.UID, "is_anonymous": not email, "email": email,
-                         "created_at": "2026-09-18T10:00:00Z"}}
+                         "created_at": "2026-09-18T10:00:00Z",
+                         "user_metadata": ({"name": self.name} if self.name else {})}}
 
     def __call__(self, method, url, headers, body, timeout_s):
         parts = urllib_parse.urlsplit(url)
@@ -36825,6 +36905,11 @@ class _FakeSupabase:
             return _FakeRaw(json.dumps(self.session(self.email)).encode(), 200)
         if path == "auth/v1/logout":
             return _FakeRaw(b"", 204)
+        if path == "auth/v1/user" and method == "PUT":
+            # the auth user's own metadata (sb.set_name): merged, answered whole
+            assert isinstance(payload, dict) and isinstance(payload.get("data"), dict), payload
+            self.name = str(payload["data"].get("name", self.name))
+            return _FakeRaw(json.dumps(self.session(self.email)["user"]).encode(), 200)
         if path == "auth/v1/user/identities/authorize":
             # the provider URL; the real one carries Supabase's callback, which
             # then redirects to the app's loopback — the fake skips the middle
@@ -37980,11 +38065,15 @@ def test_no_account_no_dictation_until_a_sign_in():
 def test_the_wizard_has_no_way_past_the_account_page_without_a_sign_in():
     """The account page (chapter 9 screen 16, the owner's rule): on a
     copy with a project, Next is off until the sign-in thread comes back
-    with a user; [Sign in with Google] records the account consent (the
-    page is the card), opens the browser, and the outcome — polled on the
-    Tk thread — enables Next and says who. A copy with no project says
-    so and lets Next through; a copy already signed in shows the e-mail
-    at once."""
+    with a user. The page opens on the choice (2026-09-20) — Create an
+    account / I have an account — with no sign-in button yet; Create an
+    account is the name field and [Continue with Google], which records
+    the account consent (the card is the consent), opens the browser,
+    and the outcome — polled on the Tk thread — keeps the typed name in
+    the auth user's metadata (one PUT, redacted first), enables Next and
+    says who by name. A copy with no project says so and lets Next
+    through; a copy already signed in shows the e-mail at once, no
+    choice."""
     import firstrun
     import sb
 
@@ -38021,22 +38110,47 @@ def test_the_wizard_has_no_way_past_the_account_page_without_a_sign_in():
             w._next()
             assert w.name == "account" and not w.next._enabled, "Next was open with no session"
             assert not __import__("privacy").allowed("account")
+            # the choice: two roads, no sign-in button, no name field yet
+            assert w.signin is None and w.name_box is None
+            assert set(w.roads) == {"create", "signin"}, w.roads
+            words = _wizard_words(w)
+            assert w.roads["create"].itemcget(w.roads["create"]._label, "text") == "Create an account"
+            assert w.roads["signin"].itemcget(w.roads["signin"]._label, "text") == "I have an account"
+            assert firstrun.WORDS["account.new.title"] in words
+            assert firstrun.WORDS["account.have.title"] in words
+            for word in ("Supabase", "server", "PKCE", "session"):
+                assert word not in words, word    # the choice is plain words
+            assert not __import__("privacy").allowed("account"), "a choice is not a consent"
+            # Create an account: the name field and Continue with Google
+            w._road_to("create")
+            assert w.name_box is not None and w.signin is not None and not w.next._enabled
+            assert w.signin.itemcget(w.signin._label, "text") == "Continue with Google"
+            assert "the name you type" in _wizard_words(w)
+            w.name_box.entry.insert(0, "  Yoav gsk_" + "k" * 24 + "  ")
             w._sign_in()
             assert w._account_state == "waiting" and not w.signin._enabled
             assert __import__("privacy").allowed("account"), "the press is the consent"
+            assert w.account_name.startswith("Yoav"), w.account_name
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline and not w.next._enabled:
                 w.root.update()
                 time.sleep(0.03)
             assert w.next._enabled, "Next never opened after the sign-in"
-            assert w.account_line.cget("text") == "Signed in as person@example.com"
+            puts = [c for c in fake.calls if c["path"] == "auth/v1/user" and c["method"] == "PUT"]
+            assert len(puts) == 1, [c["path"] for c in fake.calls]
+            sent = json.loads(puts[0]["body"])["data"]["name"]
+            assert sent.startswith("Yoav") and "gsk_" not in sent, sent   # redacted first
+            assert "Bearer" in str(puts[0]["headers"].get("Authorization", ""))
+            assert sb.user()["name"] == sent, sb.user()
+            assert w.account_line.cget("text") == f"Signed in as {sent} (person@example.com)"
             assert w.result.signed_in and sb.signed_in() and opened
             w._next()
             assert w.name == "mic"
-            # back to the page: signed in already, Next open at once
+            # back to the page: signed in already, Next open at once, no choice
             w._back()
             assert w.name == "account" and w.next._enabled
             assert "person@example.com" in w.account_line.cget("text")
+            assert w.signin is None and w.name_box is None
         finally:
             try:
                 w.root.destroy()
