@@ -35228,15 +35228,23 @@ def test_migrations_bring_the_files_forward_and_never_half_way():
             def step_three():
                 """fail, for the test"""
                 raise RuntimeError("the disk said no")
-            with _patched(version, "CONFIG_VERSION", 3),                     _patched(migrations, "STEPS", [(2, step_two), (3, step_three)]):
+            # two made-up steps ABOVE the real version (2 since the sync
+            # followed the account, 2026-09-20): the files stand at the
+            # real number after the first apply, and these are what is
+            # pending
+            here = version.CONFIG_VERSION
+            two, three = here + 1, here + 2
+            with _patched(version, "CONFIG_VERSION", three), \
+                    _patched(migrations, "STEPS", [(two, step_two), (three, step_three)]):
                 problem = migrations.apply()
-                assert problem and "step 3" in problem and "fail, for the test" in problem, problem
+                assert problem and f"step {three}" in problem and "fail, for the test" in problem, problem
                 assert ran == [2]
-                assert config_mod.read_state(t).get("config_version") == 1, "stamped half way"
-                assert migrations.too_old_for(2) and not migrations.too_old_for(1)
-            with _patched(version, "CONFIG_VERSION", 3),                     _patched(migrations, "STEPS", [(2, step_two), (3, lambda: ran.append(3))]):
+                assert config_mod.read_state(t).get("config_version") == here, "stamped half way"
+                assert migrations.too_old_for(two) and not migrations.too_old_for(here)
+            with _patched(version, "CONFIG_VERSION", three), \
+                    _patched(migrations, "STEPS", [(two, step_two), (three, lambda: ran.append(3))]):
                 assert migrations.apply() is None
-                assert ran == [2, 2, 3] and config_mod.read_state(t).get("config_version") == 3
+                assert ran == [2, 2, 3] and config_mod.read_state(t).get("config_version") == three
                 assert migrations.pending() == []
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -36954,6 +36962,61 @@ def test_sb_imports_are_narrow():
         raise AssertionError("net.configure_supabase took a secret key")
     finally:
         sb.configure()
+
+
+def test_the_sync_follows_the_account():
+    """The sign-in press is two consents (the owner, 2026-09-20: "no user
+    should have to press anything — he signs in on the second PC and is
+    inside with all his settings"): privacy.sign_in_grants() records
+    the account AND the words-and-settings sync, each with its card's
+    current text_version, and leaves a row that is already there alone;
+    both sign-in doors — the wizard's and the desk's landing — call it.
+    A copy that signed in before this (his two, 2026-09-20) gets the
+    sync once through migration step 2: granted when the account row is
+    there and the sync row is not, nothing without an account, nothing
+    over a row that exists; a withdraw after the step is never undone,
+    because steps run once. The policy says so in plain words."""
+    import consent_card as cc
+    import migrations
+    import privacy
+
+    assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
+    for kind in ("account", "settings_sync"):
+        privacy.withdraw(kind)
+    try:
+        assert privacy.sign_in_grants() == ["account", "settings_sync"]
+        for kind in ("account", "settings_sync"):
+            row = privacy.consent(kind)
+            assert row is not None and row["text_version"] == cc.card_for(kind)["text_version"], kind
+        assert privacy.sign_in_grants() == [], "a row already there was written again"
+        privacy.withdraw("settings_sync")
+        assert privacy.sign_in_grants() == ["settings_sync"], "a fresh sign-in press is the card's promise again"
+
+        # the migration for copies from before: account yes, sync no -> granted
+        privacy.withdraw("settings_sync")
+        migrations._sync_follows_the_account()
+        assert privacy.consent("settings_sync") is not None
+        stamp = privacy.consent("settings_sync")["when"]
+        migrations._sync_follows_the_account()                   # a row there: untouched
+        assert privacy.consent("settings_sync")["when"] == stamp
+        privacy.withdraw("account")
+        privacy.withdraw("settings_sync")
+        migrations._sync_follows_the_account()                   # no account: nothing
+        assert privacy.consent("settings_sync") is None
+        assert [n for n, _fn in migrations.STEPS] == [2]
+        import version
+        assert version.CONFIG_VERSION == 2
+
+        for name, marker in (("firstrun.py", "def _sign_in"), ("dashboard.py", "def _landing_sign_in")):
+            src = (REPO / name).read_text("utf-8")
+            body = src[src.index(marker):src.index("\n    def ", src.index(marker) + 10)]
+            assert "privacy.sign_in_grants()" in body, f"{name}: the sign-in door grants the account alone"
+            assert 'privacy.grant("account")' not in body, name
+        policy = (REPO / "docs" / "privacy.md").read_text("utf-8")
+        assert "comes with the account" in policy and "Withdraw" in policy
+    finally:
+        for kind in ("account", "settings_sync"):
+            privacy.withdraw(kind)
 
 
 def test_migration_has_no_key_column():

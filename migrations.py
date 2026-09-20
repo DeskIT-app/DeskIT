@@ -32,8 +32,22 @@ import version
 
 log = logging.getLogger("app")
 
+def _sync_follows_the_account() -> None:
+    """The words-and-settings sync goes with the account (2026-09-20):
+    a copy that signed in before this build never saw the Ready page's
+    switch and holds no settings_sync row — it is granted now, with
+    the card's current text_version, the way the sign-in press grants
+    it today. Not signed in, or the row already there (granted or since
+    withdrawn and re-granted), nothing happens; a copy that withdrew the
+    sync AFTER this step ran is never touched again — steps run once."""
+    import privacy
+    if privacy.consent("account") is not None and privacy.consent("settings_sync") is None:
+        import consent_card as cc
+        privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
+
+
 #: (config_version this step PRODUCES, the step). Append, never reorder.
-STEPS: list[tuple[int, object]] = []
+STEPS: list[tuple[int, object]] = [(2, _sync_follows_the_account)]
 
 
 def current() -> int:

@@ -82,11 +82,12 @@ you typed), the app version, the Windows build, the hardware tier;
 timestamps; and the IP address as the processor sees it, in its logs
 only (kept one day).
 
-**Two syncs, each a consent you give yourself.** "Settings and words"
-is asked once, on the wizard's last page, as a switch drawn on: leave
-it on and Start records the consent, turn it off and nothing is synced;
-Settings > Privacy > Withdraw turns it off at any later time. "What you
-said" is off until you turn it on, on its own card. "Settings and
+**Two syncs.** "Settings and words" comes with the account: the
+account card says your learned words and settings follow you to any PC
+you sign in on, and the sign-in press records both consents; the
+wizard's last page shows the switch on, and Settings > Privacy >
+Withdraw turns it off at any later time. "What you said" is off until
+you turn it on, on its own card. "Settings and
 words": your changed settings — minus every
 key, hotkey, device, folder, port and position, which never leave the
 PC — and the words the app learned from your corrections. "What you

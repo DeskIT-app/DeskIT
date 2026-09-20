@@ -10372,8 +10372,7 @@ class Dashboard:
             try:
                 import privacy
                 import sb
-                if not privacy.allowed("account"):
-                    privacy.grant("account")
+                privacy.sign_in_grants()      # the account, and the sync it promises
                 who = sb.sign_in_google()
                 self._events.put(lambda: self._landing_done(who, None))
             except Exception as e:                             # noqa: BLE001

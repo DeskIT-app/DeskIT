@@ -1465,8 +1465,7 @@ class Wizard:
         import privacy
         import sb
         try:
-            if not privacy.allowed("account"):
-                privacy.grant("account")
+            privacy.sign_in_grants()      # the account, and the sync it promises
         except Exception as e:                             # noqa: BLE001
             self.account_line.configure(text=WORDS["account.failed"].format(why=e), fg=ui.RED)
             return
