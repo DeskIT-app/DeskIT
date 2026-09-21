@@ -175,14 +175,14 @@ Type: filesandordirs; Name: "{app}\app"
 ; 2026-09-21) moved DeskIT from beside its siblings to the far column. A
 ; shortcut that is there is left where it is (it points at {app}, which
 ; never moves), one the person deleted stays deleted, and the uninstaller
-; takes it through [UninstallDelete] whether or not this run made it.
+; takes it (the UninstallDelete entry) whether or not this run made it.
 Name: "{userprograms}\DeskIT"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\deskit.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\app\icon.ico"; AppUserModelID: "DeskIT.App"
 Name: "{userdesktop}\DeskIT"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\deskit.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\app\icon.ico"; AppUserModelID: "DeskIT.App"; Check: not FileExists(ExpandConstant('{userdesktop}\DeskIT.lnk'))
 
 [Run]
 ; The first-run wizard follows the install. /NOLAUNCH (winget, the smoke
 ; test) leaves the box out; a silent install never launches — except the
-; app's own update (updates.py passes /RELAUNCH=1): the app has already
+; app's own update (it passes /RELAUNCH=1): the app has already
 ; left through its own quit path before Setup starts, so Restart Manager
 ; has nothing of it to restart, and the owner's first update ended with
 ; nothing on the screen (2026-09-21). That entry opens it again when the
@@ -194,8 +194,9 @@ Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\deskit.pyw"""; Wo
 ; The whole folder: CHANNEL, __pycache__ and pack-installed wheels were
 ; not in [Files] and would otherwise stay behind.
 Type: filesandordirs; Name: "{app}"
-; The desktop icon an upgrade did not make (see [Icons]) is not in this
-; install's own uninstall log; it goes with the rest.
+; The desktop icon an upgrade did not make (its Icons entry is skipped
+; when it exists) is not in this install's own uninstall log; it goes
+; with the rest.
 Type: files; Name: "{userdesktop}\DeskIT.lnk"
 
 [Code]
