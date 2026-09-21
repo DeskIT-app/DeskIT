@@ -56,7 +56,8 @@ CRED_NAMES: tuple[str, ...] = ("groq", "gemini")
 
 #: Names kept as DPAPI files under DATA_DIR\secrets\: blobs and tokens.
 FILE_NAMES: tuple[str, ...] = ("phone_token", "hook_token",
-                               "supabase_session", "phone_key", "phone_tokens")
+                               "supabase_session", "phone_key", "phone_tokens",
+                               "account_key")
 
 #: The Credential Manager target is ``<prefix>/<name>``. The test hatch
 #: (DESKIT_HOME) gets its own prefix so a suite can never overwrite the
