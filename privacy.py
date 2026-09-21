@@ -218,6 +218,22 @@ def consent(kind: str) -> dict | None:
     return None
 
 
+def stale() -> list[str]:
+    """The kinds whose consent was given under OLDER words and whose
+    gate is still on: what the person said yes to, and what this
+    version would now send, differ. main asks each of them again at
+    start (2026-09-21) — the card says "asks again when the section it
+    quotes changes", and a press no longer opens a card (2026-09-19), so
+    without this a changed card would switch a cloud feature off in
+    silence and the person would meet Ollama's wait with no word why.
+    Offline mode asks nothing; a gate the person turned off is theirs."""
+    if _gates["offline"]:
+        return []
+    have = {r.get("kind") for r in rows()}
+    return [k for k in KINDS
+            if k in have and _gates[k] and consent(k) is None]
+
+
 def tag(kind: str) -> str | None:
     """``kind@text_version`` for the network log's consent column, or
     None when the gate is not open."""
