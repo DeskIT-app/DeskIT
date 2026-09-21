@@ -370,6 +370,19 @@ def append_remote_history(lines: list[str]) -> int:
     return len(lines)
 
 
+def forget_remote() -> bool:
+    """The other PCs' lines alone (the lock changed: they come down
+    again, sealed under the new key). True if there was a file."""
+    try:
+        remote_history_path().unlink()
+        return True
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        log.warning("sync: could not remove %s (%s)", remote_history_path().name, e)
+        return False
+
+
 def forget_all() -> list[str]:
     """Sign-out / delete-account: the cursors and the other PCs' lines
     go; this PC's own files are untouched. Returns what was removed."""
@@ -389,6 +402,6 @@ __all__ = [
     "syncable", "settings_payload", "merge_settings",
     "vocab_rows", "merge_vocab", "vocab_snapshot", "vocab_changed",
     "history_rows", "remote_line", "HISTORY_KINDS", "HISTORY_BATCH",
-    "read_cursor", "write_cursor", "append_remote_history", "forget_all",
+    "read_cursor", "write_cursor", "append_remote_history", "forget_all", "forget_remote",
     "cursor_path", "remote_history_path",
 ]

@@ -2194,6 +2194,43 @@ class App:
         else:
             privacy.not_now(kind)
 
+    def _pairing_asked(self, request: dict) -> None:
+        """sb.PAIRING_HOOKS: another PC of this account asks to join and
+        this one holds the key. A notification through the app's own
+        door — the card at the edge of the screen, the cue, a row on
+        Home — whose click opens the desk on Home, where Approve and Not
+        now are (the owner, 2026-09-21: not a card beside the dot that
+        asks by itself; "a notification on the right that opens DeskIT,
+        and I press Approve or Not now there"). The desk's Home row and
+        banner carry the same without the notification."""
+        name = request.get("name") or "another PC"
+        self._say(f"{name} asks to join your account — open the desk to approve it")
+        engine = getattr(self, "notify", None)
+        if engine is None:
+            return
+        try:
+            engine.receive({"source": "account", "kind": "input",
+                            "title": f"{name} asks to join your account",
+                            "body": f"Its screen must show {request.get('code') or '?'}. "
+                                    f"Open the desk: Approve or Not now on Home.",
+                            "app": "DeskIT", "link": notify_mod.DESK_LINK})
+        except Exception:                                    # noqa: BLE001
+            log.debug("the join notification did not go out", exc_info=True)
+
+    def _pairing_settled(self) -> None:
+        """sb.LOCK_HOOKS: the lock's state moved — with no request left
+        waiting, the account's notifications come down (answered on the
+        desk, or gone on their own)."""
+        engine = getattr(self, "notify", None)
+        if engine is None:
+            return
+        try:
+            import sb
+            if not sb.lock_status().get("pending"):
+                engine.dismiss_source("account")
+        except Exception:                                    # noqa: BLE001
+            log.debug("the join notification did not come down", exc_info=True)
+
     def _set_auto_pause(self, value: bool) -> str:
         """The one option with a side effect beyond the Config: the
         fullscreen watcher thread, started on demand and never left
@@ -2884,9 +2921,50 @@ class App:
             # The desk queued a report (or pressed Send now): the worker
             # drains the outbox soon; no card, no consent asked here —
             # a shut report_upload gate simply leaves it queued (8.8).
-            sb.nudge()
+            # With a store named (the Keys page saved one: "vault"), that
+            # store alone.
+            sb.nudge(kind or None)
             return {"ok": True, "message": "sending soon",
                     "signed_in": sb.signed_in()}
+        # The account lock (2026-09-21). These four wait on the server —
+        # one or two requests, and half a second of scrypt for the
+        # recovery key — on the pipe's thread: the desk pressed the
+        # button and is looking at this card for the answer.
+        if do == "lock":
+            return {"ok": True, "lock": sb.poll_lock()}
+        if do == "approve":
+            if not kind:
+                return {"ok": False, "error": "which request?"}
+            try:
+                name = sb.approve_pairing(kind)
+            except Exception as e:                           # noqa: BLE001
+                return {"ok": False, "error": str(e)[:200]}
+            self._say(f"{name} is in — your account opens there too")
+            return {"ok": True, "message": f"{name} is in"}
+        if do == "decline":
+            if not kind:
+                return {"ok": False, "error": "which request?"}
+            try:
+                sb.decline_pairing(kind)
+            except Exception as e:                           # noqa: BLE001
+                return {"ok": False, "error": str(e)[:200]}
+            return {"ok": True, "message": "not now"}
+        if do == "recover":
+            try:
+                sb.recover(kind)
+            except Exception as e:                           # noqa: BLE001
+                return {"ok": False, "error": str(e)[:200]}
+            self._say("your account is open on this PC — what you said is on its way")
+            return {"ok": True, "message": "opened — your history and keys are on their way"}
+        if do == "recovery_new":
+            # the one answer that carries a secret: the recovery key,
+            # once, to the desk that asked for it, which shows it once
+            try:
+                recovery = sb.make_recovery()
+            except Exception as e:                           # noqa: BLE001
+                return {"ok": False, "error": str(e)[:200]}
+            return {"ok": True, "recovery": recovery,
+                    "message": "keep this key somewhere safe — it is shown once"}
         return {"ok": False, "error": f"unknown account action {do!r}"}
 
     @staticmethod
@@ -2938,6 +3016,12 @@ class App:
             # account — locks the keys again, from whichever thread saw it
             if self._lock not in sb.SIGNED_OUT_HOOKS:
                 sb.SIGNED_OUT_HOOKS.append(self._lock)
+            # another PC of the account asking to join: a notification
+            # whose click opens the desk on Home; answered, it comes down
+            if self._pairing_asked not in sb.PAIRING_HOOKS:
+                sb.PAIRING_HOOKS.append(self._pairing_asked)
+            if self._pairing_settled not in sb.LOCK_HOOKS:
+                sb.LOCK_HOOKS.append(self._pairing_settled)
         except Exception:                                    # noqa: BLE001
             log.warning("the account worker did not start", exc_info=True)
 

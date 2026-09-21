@@ -203,6 +203,20 @@ WORDS = {
     "account.failed": "Not signed in: {why}",
     "account.terms": "Terms",
     "account.continue": "Continue",
+    "account.link.title": "One more step: approve this PC on your other one",
+    "account.link.line": ("Your other PC holds the key to your account — what you said and "
+                          "your cloud keys are locked with it. Open the desk there: Home "
+                          "shows this code. If it is the same, press Approve."),
+    "account.link.waiting": "Waiting for the approval…",
+    "account.link.approved": "Approved — what you said and your cloud keys are on their way.",
+    "account.link.recovery": "No other PC at hand? Type your recovery key",
+    "account.link.recovery.help": "24 letters and digits in six groups — the key DeskIT showed you once.",
+    "account.link.recovery.button": "Open",
+    "account.link.failed": "Not opened: {why}",
+    "account.link.later": "Later",
+    "account.link.later.line": ("You can do this later from Settings > Privacy > Account, on either PC. "
+                                "Until then DeskIT works here with your words and settings; what "
+                                "you said and your cloud keys stay locked."),
     "mic.title": "Which microphone?",
     "mic.sub": ("Say a few words. The bar below should move — if it does, "
                 "everything else is a detail."),
@@ -321,8 +335,9 @@ WORDS = {
     "done.sync": "Keep my words, settings and what I said in my account",
     "done.sync.help": ("On any PC you sign in on, DeskIT then hears you your way from the first "
                        "sentence, and the Said page is the same page: the words it learned "
-                       "from you, the settings you changed and the text of what you said "
-                       "follow you there. Never your voice or your keys. "
+                       "from you, the settings you changed, the text of what you said and "
+                       "your cloud keys follow you there — what you said and the keys locked "
+                       "with a key only your own PCs hold. Never your voice. "
                        "Settings > Privacy > Withdraw turns it off."),
     "done.title": "DeskIT is ready",
     "done.sub": "Hold the key and talk. The text lands where your cursor is, in any window. Start opens the desk.",
@@ -1373,7 +1388,7 @@ class Wizard:
     # wizard's Back; the sign-in thread's outcome lands in _account_poll
     # from _tick; the server's "does the account hold settings" answer
     # lands in _returning_known.
-    ACCOUNT_STEPS = ("choice", "create", "signin", "signed")
+    ACCOUNT_STEPS = ("choice", "create", "signin", "signed", "link")
 
     def _page_account(self) -> None:
         """Sign in (chapter 9 screen 16, the owner's rule of 2026-09-18):
@@ -1383,6 +1398,7 @@ class Wizard:
         says so and lets Next through."""
         self._head(WORDS["account.title"], WORDS["account.sub"])
         self._account_state = "idle"
+        self._link_state = getattr(self, "_link_state", "idle")
         try:
             import sb
             configured = sb.configured()
@@ -1417,6 +1433,8 @@ class Wizard:
             self._account_road(creating=True)
         elif step == "signin":
             self._account_road(creating=False)
+        elif step == "link":
+            self._account_link()
         else:
             self._account_signed(who or {})
 
@@ -1428,6 +1446,18 @@ class Wizard:
         step = getattr(self, "_account_step", "choice")
         if step in ("create", "signin"):
             self._account_show("choice")
+            return True
+        if step == "link":
+            # back to the signed card; the request stays open on the
+            # server and the Account card carries on with it
+            self._link_state = "idle"
+            self._link_cancel()
+            try:
+                import sb
+                who = sb.user() or {}
+            except Exception:                              # noqa: BLE001
+                who = {}
+            self._account_show("signed", who=who)
             return True
         if step == "signed":
             self._account_sign_out()
@@ -1671,6 +1701,7 @@ class Wizard:
             log.warning("the wizard could not record the sync consent: %s", e)
 
         def work() -> None:
+            lock = {}
             try:
                 import sb
                 # the app's own Vocab on the app's own file: without it
@@ -1680,13 +1711,14 @@ class Wizard:
                 # sync — I had to press Sync now")
                 out = sb.sync_now(vocab=_live_vocab(self.cfg), reason="wizard")
                 ok = bool(out) and not any(str(v).startswith("error") for v in out.values())
+                lock = sb.lock_status()
             except Exception as e:                         # noqa: BLE001
                 log.info("setup: the first sync did not run (%s)", e)
                 ok = False
-            self._later(lambda: self._returning_brought(ok))
+            self._later(lambda: self._returning_brought(ok, lock))
         threading.Thread(target=work, daemon=True, name="wizard-first-sync").start()
 
-    def _returning_brought(self, ok: bool) -> None:
+    def _returning_brought(self, ok: bool, lock: dict | None = None) -> None:
         self._returning_state = "idle"
         if self.name != "account":
             return
@@ -1694,6 +1726,159 @@ class Wizard:
             note = getattr(self, "account_note", None)
             if note is not None and note.winfo_exists():
                 note.configure(text=WORDS["account.bring_failed"], fg=ui.AMBER)
+        if (lock or {}).get("state") == "waiting":
+            # the account's key is on another PC (the lock, 2026-09-21):
+            # the words and settings came; what was said and the cloud
+            # keys wait for that PC's approval — asked for here, now,
+            # with the way to do it later
+            self._link_open()
+            return
+        if self._hidden("computer"):
+            self._open_desk()
+        else:
+            self._advance()
+
+    # ------------------------------------------------------- the link step
+    # The account lock (2026-09-21, what Apple's "approve from another
+    # device" and Bitwarden's log-in-with-device do): this PC asked to
+    # join and shows an eight-character code; the other PC's card shows
+    # the same one and the person presses Approve there. This page waits
+    # (sb.poll_lock every LINK_POLL_S), offers the recovery key for the
+    # day no other PC is at hand, and Later for now — the desk's Account
+    # card carries the request on.
+    LINK_POLL_S = 3.0
+
+    def _link_open(self) -> None:
+        self._link_state = "waiting"
+        self._account_show("link")
+        self._link_poll_later()
+
+    def _account_link(self) -> None:
+        import sb
+        lock = sb.lock_status()
+        card = self._card(self.account_holder, pad=20)
+        card.pack(fill="x")
+        f, bg = card.body, ui.CARD
+        self._line(WORDS["account.link.title"], parent=f, bg=bg, colour=ui.FG, size=12,
+                   width=INNER - 40, pady=(0, 10))
+        self._line(WORDS["account.link.line"], parent=f, bg=bg, colour=ui.FG, size=10,
+                   width=INNER - 40, pady=(0, 12))
+        self.link_code = tk.Label(f, text=lock.get("code") or "…", bg=bg, fg=ui.FG,
+                                  font=(ui.MEDIUM, 26), anchor="w")
+        self.link_code.pack(fill="x", pady=(0, 6))
+        self.link_line = self._line(WORDS["account.link.waiting"], parent=f, bg=bg,
+                                    colour=ui.DIM, size=9, width=INNER - 40, pady=(0, 16))
+        self._line(WORDS["account.link.recovery"], parent=f, bg=bg, colour=ui.FG, size=10,
+                   width=INNER - 40, pady=(0, 6))
+        row = tk.Frame(f, bg=bg)
+        row.pack(fill="x", pady=(0, 4))
+        self.recovery_box = ui.Field(row, w=INNER - 40 - 110, h=34, bg=bg, justify="left", pt=10)
+        self.recovery_box.pack(side="left")
+        self.recovery_button = ui.Button(row, WORDS["account.link.recovery.button"],
+                                         self._link_recover, bg=bg, primary=False, w=96, h=34)
+        self.recovery_button.pack(side="left", padx=(10, 0))
+        self._line(WORDS["account.link.recovery.help"], parent=f, bg=bg, colour=ui.DIM,
+                   size=9, width=INNER - 40, pady=(0, 14))
+        self._line(WORDS["account.link.later.line"], parent=f, bg=bg, colour=ui.DIM,
+                   size=9, width=INNER - 40, pady=(0, 0))
+        self.account_card = card
+        self._fit(card)
+        self.recovery_box.bind_entry("<Return>", lambda _e: self._link_recover())
+        self._foot(False, WORDS["account.link.later"])
+        self.next.enable(True)
+
+    def _link_cancel(self) -> None:
+        """The pending poll, if any, cancelled — Back, Later, the desk
+        opening, the window closing: none may fire it into a destroyed
+        window."""
+        if getattr(self, "_link_after", None) is not None:
+            try:
+                self.root.after_cancel(self._link_after)
+            except Exception:                              # noqa: BLE001
+                pass
+            self._link_after = None
+
+    def _link_poll_later(self) -> None:
+        self._link_cancel()
+        if self._closing or getattr(self, "_link_state", "idle") != "waiting":
+            return
+        self._link_after = self.root.after(int(self.LINK_POLL_S * 1000), self._link_poll)
+
+    def _link_poll(self) -> None:
+        self._link_after = None
+        if getattr(self, "_link_state", "idle") != "waiting" or self.name != "account" \
+                or self._account_step != "link":
+            return
+
+        def work() -> None:
+            try:
+                import sb
+                lock = sb.poll_lock()
+            except Exception as e:                         # noqa: BLE001
+                lock = {"state": "", "error": str(e)}
+            self._later(lambda: self._link_polled(lock))
+        threading.Thread(target=work, daemon=True, name="wizard-link-poll").start()
+
+    def _link_polled(self, lock: dict) -> None:
+        if getattr(self, "_link_state", "idle") != "waiting" or self._account_step != "link":
+            return
+        code = getattr(self, "link_code", None)
+        if code is not None and code.winfo_exists() and lock.get("code"):
+            code.configure(text=lock["code"])
+        if lock.get("state") == "have":
+            self._link_done(approved=True)
+            return
+        line = getattr(self, "link_line", None)
+        if line is not None and line.winfo_exists():
+            if lock.get("error"):
+                line.configure(text=WORDS["account.link.failed"].format(why=lock["error"])[:160], fg=ui.AMBER)
+            else:
+                line.configure(text=WORDS["account.link.waiting"], fg=ui.DIM)
+        self._link_poll_later()
+
+    def _link_recover(self) -> None:
+        """[Open] beside the recovery key: sb.recover on a thread (half
+        a second of scrypt and two requests); the outcome on the line."""
+        box = getattr(self, "recovery_box", None)
+        typed = box.entry.get().strip() if box is not None and box.winfo_exists() else ""
+        if not typed or getattr(self, "_link_state", "idle") == "recovering":
+            return
+        self._link_state = "recovering"
+        self.recovery_button.enable(False)
+        self.link_line.configure(text=WORDS["account.link.waiting"], fg=ui.DIM)
+
+        def work() -> None:
+            try:
+                import sb
+                sb.recover(typed)
+                self._later(lambda: self._link_done(approved=True))
+            except Exception as e:                         # noqa: BLE001
+                why = str(e)
+                self._later(lambda: self._link_refused(why))
+        threading.Thread(target=work, daemon=True, name="wizard-recover").start()
+
+    def _link_refused(self, why: str) -> None:
+        if self._account_step != "link":
+            return
+        self._link_state = "waiting"
+        self.recovery_button.enable(True)
+        self.link_line.configure(text=WORDS["account.link.failed"].format(why=why)[:160], fg=ui.RED)
+        self._link_poll_later()
+
+    def _link_done(self, approved: bool) -> None:
+        """Approved, recovered, or Later: on to the desk (or the
+        downloads page) the way the returning road promised."""
+        self._link_state = "idle"
+        self._link_cancel()
+        if approved:
+            line = getattr(self, "link_line", None)
+            if line is not None and line.winfo_exists():
+                line.configure(text=WORDS["account.link.approved"], fg=ui.GREEN)
+            box = getattr(self, "recovery_box", None)
+            if box is not None and box.winfo_exists():
+                box.set("")
+        if self.name != "account":
+            return
         if self._hidden("computer"):
             self._open_desk()
         else:
@@ -2765,6 +2950,9 @@ class Wizard:
             self._advance()
 
     def _next(self) -> None:
+        if self.name == "account" and getattr(self, "_account_step", "") == "link":
+            self._link_done(approved=False)          # Later
+            return
         if self.name == "account" and self._returning:
             self._returning_go()
             return
@@ -2904,6 +3092,7 @@ class Wizard:
         for run in self.runs.values():
             if run.running:
                 run.pause()           # the part stays; the next start resumes
+        self._link_cancel()
         try:
             self.root.destroy()
         except Exception:

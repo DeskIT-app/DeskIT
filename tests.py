@@ -37183,10 +37183,13 @@ def _sql_block(name: str) -> list[str]:
 
 
 def _sql_tables() -> dict[str, list[str]]:
-    """table name -> its column definitions (one string each), by
-    splitting each `create table public.<t> ( ... );` body on the
-    commas that are not inside parentheses."""
-    text = MIGRATION.read_text("utf-8")
+    """table name -> its column definitions (one string each) as the
+    live project holds them: every `create table public.<t> ( ... );`
+    body of every migration in order, split on the commas that are not
+    inside parentheses, then each `alter table public.<t> add column
+    <def>;` appended and each `drop column <name>;` taken out (0004
+    drops history's text and raw and adds cipher)."""
+    text = _migrations_text()
     out: dict[str, list[str]] = {}
     for m in re.finditer(r"create table public\.(\w+) \((.*?)\n\);", text, re.S):
         body, depth, cur, defs = m.group(2), 0, "", []
@@ -37203,6 +37206,13 @@ def _sql_tables() -> dict[str, list[str]]:
         if cur.strip():
             defs.append(cur.strip())
         out[m.group(1)] = [d for d in defs if not d.startswith("primary key")]
+    for m in re.finditer(r"alter table public\.(\w+)\s+(add column|drop column)\s+(.*?);", text, re.S):
+        table, verb, rest = m.group(1), m.group(2), " ".join(m.group(3).split())
+        assert table in out, f"{verb} on an unknown table {table}"
+        if verb == "add column":
+            out[table].append(rest)
+        else:
+            out[table] = [d for d in out[table] if d.split()[0] != rest.split()[0]]
     return out
 
 
@@ -37227,6 +37237,7 @@ class _FakeSupabase:
         self.script: dict[str, list[tuple[int, bytes]]] = {}
         self.tables: dict[str, list[dict]] = {}
         self.broadcasts: list = []
+        self.clock = 0                     # one tick per table call: updated_at moves
         self.refreshes = 0
         self.email = ""
         self.name = ""
@@ -37285,27 +37296,54 @@ class _FakeSupabase:
         if path.startswith("rest/v1/"):
             table = path[len("rest/v1/"):]
             rows = self.tables.setdefault(table, [])
-            if method == "GET":
-                out = list(rows)
+            prefer = str(headers.get("Prefer", ""))
+            self.clock += 1
+            stamp = f"2026-09-18T12:{self.clock // 60:02d}:{self.clock % 60:02d}+00:00"
+            if method in ("GET", "PATCH", "DELETE"):
+                # PostgREST's filters, the ones the client uses: eq, neq,
+                # gt, is.null — a PATCH and a DELETE act on what matches
+                hit = list(rows)
                 for k, v in query.items():
-                    if k in ("select", "order", "limit") or "." not in v:
+                    if k in ("select", "order", "limit", "on_conflict") or "." not in v:
                         continue
                     op, val = v.split(".", 1)
                     if op == "eq":
-                        out = [r for r in out if str(r.get(k)) == val]
+                        hit = [r for r in hit if str(r.get(k) if r.get(k) is not None else "") == val]
                     elif op == "neq":
-                        out = [r for r in out if str(r.get(k)) != val]
+                        hit = [r for r in hit if str(r.get(k)) != val]
                     elif op == "gt":
-                        out = [r for r in out if str(r.get(k, "")) > val]
-                return _FakeRaw(json.dumps(out).encode(), 200)
+                        hit = [r for r in hit if str(r.get(k, "")) > val]
+                    elif op == "is" and val == "null":
+                        hit = [r for r in hit if r.get(k) is None]
+                if method == "GET":
+                    return _FakeRaw(json.dumps(hit).encode(), 200)
+                if method == "DELETE":
+                    rows[:] = [r for r in rows if not any(r is h for h in hit)]
+                    return _FakeRaw(b"", 204)
+                for r in hit:
+                    r.update(payload or {})
+                    r["updated_at"] = stamp
+                if "return=representation" in prefer:
+                    return _FakeRaw(json.dumps(hit).encode(), 200)
+                return _FakeRaw(b"", 204)
             if method == "POST":
+                # an upsert (on_conflict=a,b) replaces the row with the
+                # same keys the way merge-duplicates does; a plain insert appends
+                keys = [k for k in str(query.get("on_conflict", "")).split(",") if k]
                 items = payload if isinstance(payload, list) else [payload]
                 stamped = []
                 for item in items:
                     item = dict(item)
-                    item["updated_at"] = f"2026-09-18T12:00:{len(rows):02d}+00:00"
-                    rows.append(item)
-                    stamped.append(item)
+                    item["updated_at"] = stamp
+                    had = next((r for r in rows if keys and all(str(r.get(k)) == str(item.get(k)) for k in keys)), None)
+                    if had is not None:
+                        had.update(item)
+                        stamped.append(had)
+                    else:
+                        rows.append(item)
+                        stamped.append(item)
+                if "return=minimal" in prefer:
+                    return _FakeRaw(b"", 201)
                 return _FakeRaw(json.dumps(stamped).encode(), 201)
         if path == "realtime/v1/api/broadcast" and method == "POST":
             self.broadcasts.append(payload)
@@ -37342,15 +37380,24 @@ class _fixture_project:
         sb.configure(self.fake.REF, self.fake.KEY)
         net_mod._connect = self.fake
         sb._back_to_the_app = self.fake.back.append
+        # the keys the vault store seals are read off Credential Manager:
+        # the tests' own prefix for the block, so the owner's real entries
+        # are never read into a fixture (a block that wants keys stores
+        # its own under _test_cred_prefix)
+        import secretstore
+        self._prefix = secretstore.TARGET_PREFIX
+        secretstore.TARGET_PREFIX = "DeskIT.test"
         self._clean()
         return self.fake
 
     def _clean(self):
         import secretstore
         secretstore.delete("supabase_session")
+        secretstore.delete("account_key")
         self.sb.forget_cache()
         self.sb._status.update(busy="", last_error="", last_sync="", signin_url="")
         self.sb._device_names.update(at=0.0, names={})       # the other PCs' names, believed 10 min
+        self.sb._forget_lock_state()
         self.sync.forget_all()
         config_mod.save({"account.device_id": None, "account.device_seen_at": None,
                          "account.device_name": None})
@@ -37364,6 +37411,8 @@ class _fixture_project:
             self.sb.configure(ref, key)
             self.sb.FIRST_DELAY_S = delay
             self.sb._back_to_the_app = back
+            import secretstore
+            secretstore.TARGET_PREFIX = self._prefix
         return False
 
 
@@ -37624,9 +37673,13 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
             fake.tables["devices"] = [{"id": other, "name": "laptop", "user_id": fake.UID}]
 
             # 1. a push broadcasts: the stores and the device, nothing said
-            #    (the settings blob goes up too: the fixture holds none yet)
+            #    (the settings blob goes up too: the fixture holds none yet;
+            #    the first PC of the account makes its lock on the way)
             out = sb.sync_now(vocab, reason="test")
             assert out["history"] == "pulled 0, pushed 1" and out["settings"] == "pushed", out
+            assert sb.status()["lock"]["state"] == "have", sb.status()["lock"]
+            import vault
+            key = vault.key(fake.UID)
             assert len(fake.broadcasts) == 1, fake.broadcasts
             msg = fake.broadcasts[0]["messages"][0]
             assert msg["topic"] == f"user:{fake.UID}" and msg["event"] == "changed", msg
@@ -37668,10 +37721,10 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
                 # on UTC) is in, so the row sits between the two lines
                 between = (datetime.datetime(2026, 9, 20, 10, 5, 0, 250_000).astimezone(datetime.timezone.utc)
                            .isoformat(timespec="milliseconds"))
-                fake.tables["history"].append({"user_id": fake.UID, "device_id": other,
-                                               "ts": between, "kind": "dictation",
-                                               "text": "משם", "raw": None, "engine": "cpu", "seconds": 2.0,
-                                               "updated_at": "2026-09-20T10:05:01+00:00"})
+                fake.tables["history"].append(sb._seal_history(key, fake.UID, {
+                    "user_id": fake.UID, "device_id": other, "ts": between, "kind": "dictation",
+                    "text": "משם", "raw": None, "engine": "cpu", "seconds": 2.0,
+                    "updated_at": "2026-09-20T10:05:01+00:00"}))
                 log_path.write_text(log_path.read_text("utf-8") +
                                     "2026-09-20 10:06:00,000 | OK | 1.0s | local | 0.4s latency | עוד\n", "utf-8")
                 t0 = time.monotonic()
@@ -37738,6 +37791,372 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
         shutil.rmtree(d, ignore_errors=True)
 
 
+class _pc:
+    """One PC of an account inside a test: its own data folders (the
+    session and the account key in secrets\\, the cursors in sync\\, the
+    device id in state.json, the settings), its own Credential Manager
+    prefix, and sb.py's and vault.py's per-process memory swapped in
+    for the block and out again — so two PCs can take turns against
+    one fake project in one process."""
+
+    FIELDS = ("_cache", "_lock_state", "_device_names", "_seen_pairings", "_pending")
+
+    def __init__(self, name: str, prefix: str):
+        import sb
+        import vault
+        self.name, self.prefix = name, prefix
+        self.home = Path(tempfile.mkdtemp(prefix=f"deskit-pc-{name}-"))
+        self.state = {"sb": {"_cache": {"loaded": False, "session": None},
+                             "_lock_state": {"at": 0.0, "state": "", "lock_id": "", "pairing": None,
+                                             "pending": [], "recovery": None, "error": ""},
+                             "_device_names": {"at": 0.0, "names": {}},
+                             "_seen_pairings": set(), "_pending": set()},
+                      "vault": {"_applicants": {}}}
+        self._sb, self._vault = sb, vault
+
+    def __enter__(self):
+        import history as history_mod
+        import secretstore
+        self._saved = {"paths": {k: getattr(paths, k) for k in ("SECRETS_DIR", "SYNC_DIR", "STATE_FILE", "SETTINGS_FILE")},
+                       "prefix": secretstore.TARGET_PREFIX, "log": history_mod.LOG,
+                       "sb": {k: getattr(self._sb, k) for k in self.FIELDS},
+                       "vault": {"_applicants": self._vault._applicants}}
+        paths.SECRETS_DIR = self.home / "secrets"
+        paths.SYNC_DIR = self.home / "sync"
+        paths.STATE_FILE = self.home / "state.json"
+        paths.SETTINGS_FILE = self.home / "settings.toml"
+        history_mod.LOG = self.log = self.home / "transcripts.log"
+        secretstore.TARGET_PREFIX = self.prefix
+        for k, v in self.state["sb"].items():
+            setattr(self._sb, k, v)
+        self._vault._applicants = self.state["vault"]["_applicants"]
+        return self
+
+    def __exit__(self, *exc):
+        import history as history_mod
+        import secretstore
+        for k, v in self._saved["paths"].items():
+            setattr(paths, k, v)
+        secretstore.TARGET_PREFIX = self._saved["prefix"]
+        history_mod.LOG = self._saved["log"]
+        for k, v in self._saved["sb"].items():
+            setattr(self._sb, k, v)
+        self._vault._applicants = self._saved["vault"]["_applicants"]
+        return False
+
+    def gone(self):
+        import secretstore
+        with self:
+            for n in secretstore.CRED_NAMES:
+                secretstore.delete(n)
+        shutil.rmtree(self.home, ignore_errors=True)
+
+
+def test_vault_seals_hands_over_and_recovers_through_cng():
+    """vault.py alone, no network: a value sealed under a key opens with
+    that key and that row's identity and with nothing else (another key,
+    another row, one flipped character); the account key is bound to the
+    uid it was made for; a new PC's request (an ECDH pair) takes exactly
+    what a holder hands over to it and a stranger's pair takes nothing;
+    the recovery key wraps and unwraps it in the person's typing (case,
+    dashes, O for 0 forgiven), the wrong one opens nothing; the codes
+    are the alphabet without I, L, O, U; the cloud keys go out sealed
+    and come back into Credential Manager, an emptied one removes.
+    Everything through Windows' own CNG (bcrypt.dll), no package."""
+    import base64
+    import secretstore
+    import vault
+
+    uid = "11111111-2222-3333-4444-555555555555"
+    with _pc("crypto", "DeskIT.test") as pc:
+        assert vault.key(uid) is None and not vault.have(uid)
+        key = vault.create(uid)
+        assert len(key) == 32 and vault.key(uid) == key and vault.key("other-uid") is None
+        assert (paths.SECRETS_DIR / "account_key.bin").is_file()
+        assert key not in (paths.SECRETS_DIR / "account_key.bin").read_bytes(), "the key file is not DPAPI"
+        assert re.fullmatch(r"[0-9a-f]{16}", vault.fingerprint(key))
+        aad = vault.AAD_HISTORY.format(uid=uid, device_id="d", ts="2026-09-21T10:00:00.000+00:00", kind="dictation")
+        sealed = vault.seal_json(key, {"text": "שלום עולם", "raw": None}, aad)
+        assert sealed.startswith("v1.") and vault.is_sealed(sealed)
+        assert "שלום" not in sealed and "+/" not in sealed[:3]
+        assert vault.open_json(key, sealed, aad) == {"text": "שלום עולם", "raw": None}
+        for label, attempt in (("another key", lambda: vault.open_json(os.urandom(32), sealed, aad)),
+                               ("another row", lambda: vault.open_json(key, sealed, aad.replace("dictation", "learned"))),
+                               ("a flipped character", lambda: vault.open_json(key, sealed[:-6] + ("A" if sealed[-6] != "A" else "B") + sealed[-5:], aad)),
+                               ("not sealed at all", lambda: vault.open_json(key, "hello", aad))):
+            try:
+                attempt()
+            except vault.VaultError:
+                pass
+            else:
+                raise AssertionError(f"{label} opened the value")
+        # two seals of one value differ (a fresh nonce each), both open
+        again = vault.seal_json(key, {"text": "שלום עולם", "raw": None}, aad)
+        assert again != sealed and vault.open_json(key, again, aad)["text"] == "שלום עולם"
+        # the hand-off
+        pub = vault.applicant("req-1")
+        assert pub.startswith("p1.") and vault.is_sealed(pub)
+        paad = vault.AAD_PAIRING.format(uid=uid, pairing_id="req-1")
+        handed = vault.hand_over(key, pub, paad)
+        assert handed.startswith("w1.") and vault.is_sealed(handed) and key not in base64.b64decode(handed[3:])
+        assert vault.take("req-1", handed, paad) == key
+        for label, attempt in (("a second take", lambda: vault.take("req-1", handed, paad)),
+                               ("a stranger's request", lambda: (vault.applicant("req-2"), vault.take("req-2", handed, paad))),
+                               ("another request's aad", lambda: (vault.applicant("req-3"),
+                                                                  vault.take("req-3", vault.hand_over(key, vault.applicant("req-4"), paad), paad)))):
+            try:
+                attempt()
+            except vault.VaultError:
+                pass
+            else:
+                raise AssertionError(f"{label} took the key")
+        # the recovery key
+        recovery = vault.new_recovery()
+        assert re.fullmatch(r"([0-9A-HJKMNP-TV-Z]{4}-){5}[0-9A-HJKMNP-TV-Z]{4}", recovery), recovery
+        code = vault.new_code()
+        assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}", code), code
+        assert vault.normalize("0l1o-abcd", 8) == "0110ABCD" and vault.normalize("ABCD-EFG", 8) is None \
+            and vault.normalize("ABCD-EFGU", 8) is None and vault.pretty("0110ABCD") == "0110-ABCD"
+        raad = vault.AAD_RECOVERY.format(uid=uid)
+        t0 = time.perf_counter()
+        wrapped = vault.wrap_recovery(key, recovery.lower().replace("-", " "), raad)
+        assert time.perf_counter() - t0 < 5.0, "scrypt took too long"
+        assert wrapped.startswith("r1.") and vault.is_sealed(wrapped)
+        assert vault.unwrap_recovery(wrapped, recovery.replace("0", "O").lower(), raad) == key
+        for label, attempt in (("the wrong recovery key", lambda: vault.unwrap_recovery(wrapped, vault.new_recovery(), raad)),
+                               ("not a recovery key", lambda: vault.unwrap_recovery(wrapped, "abc", raad))):
+            try:
+                attempt()
+            except vault.VaultError:
+                pass
+            else:
+                raise AssertionError(f"{label} opened the account")
+        # the cloud keys' narrow door
+        for n in secretstore.CRED_NAMES:
+            secretstore.delete(n)
+        fixture = "gsk_fixture_vault_" + "q" * 30
+        secretstore.set("groq", fixture)
+        digests, present = vault.digest_keys(key)
+        assert present == {"groq"} and set(digests) == set(secretstore.CRED_NAMES)
+        rows = vault.export_keys(key, uid)
+        assert set(rows) == set(secretstore.CRED_NAMES) and all(vault.is_sealed(v) for v in rows.values())
+        assert not any(fixture in v or "gsk_" in v for v in rows.values())
+        assert vault.export_keys(key, uid, only=["groq"]).keys() == {"groq"}
+        secretstore.delete("groq")
+        assert vault.import_keys(key, uid, rows) == ["groq"]
+        assert secretstore.get("groq") == fixture
+        assert vault.digest_keys(key)[0] == digests
+        # an emptied one removes; a value that will not open is skipped
+        assert vault.import_keys(key, uid, {"groq": vault.seal_json(key, {"v": ""}, vault.AAD_VAULT.format(uid=uid, name="groq"))}) == ["groq"]
+        assert secretstore.get("groq") is None
+        assert vault.import_keys(key, uid, {"groq": sealed, "nonsense": sealed}) == []
+        assert vault.forget() and vault.key(uid) is None
+    pc.gone()
+
+
+def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
+    """The lock across three PCs of one account against the fake
+    project, in one process (_pc swaps each PC's folders and memory in).
+
+    A signs in first: its pass makes the account's key, writes the
+    fingerprint on the profile, pushes its history SEALED (the row on
+    the wire has `cipher` and no `text`; the words appear in no request)
+    and its Credential Manager key as a sealed vault row. B signs in:
+    its pass finds the lock taken, opens a request (a `pairings` row with
+    B's public key and an eight-character code), says "waiting", pushes
+    nothing of what was said, and still syncs its words and settings. A
+    sees the request (once, through PAIRING_HOOKS, with B's name and the
+    same code) and approves: the row gets the key wrapped to B's public
+    key and a `paired` broadcast. B's next pass takes the key: the same
+    fingerprint, the request row gone, A's history opened into B's
+    history.log, B's own pushed sealed, A's cloud key in B's Credential
+    Manager. A key removed on A is removed on B. A makes a recovery key
+    (24 characters, the wrap on the server, the string shown once); C
+    signs in, waits, types the wrong one (refused), then the right one
+    (in): its request gone. A profile whose fingerprint changed under A
+    drops A's key and asks to join. Delete my account forgets the key;
+    sign-out keeps it."""
+    import sb
+    import secretstore
+    import sync as sync_mod
+    import vault
+
+    a, b, c = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB"), _pc("C", "DeskIT.testC")
+    asked: list[dict] = []
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), \
+                _patched(sb, "PAIRING_HOOKS", [asked.append]):
+            session = json.dumps(fake.session("p@example.com"))
+
+            def sign_in(pc, name):
+                secretstore.set("supabase_session", session)
+                sb.forget_cache()
+                config_mod.save({"account.device_name": name})
+
+            # ---- A: the first PC makes the lock
+            with a:
+                a.log.write_text("2026-09-21 10:00:00,100 | OK | 1.0s | local | 0.4s latency | מהמחשב הראשון\n", "utf-8")
+                sign_in(a, "desk")
+                for n in secretstore.CRED_NAMES:
+                    secretstore.delete(n)
+                secretstore.set("groq", "gsk_fixture_lock_a_" + "q" * 30)
+                out = sb.sync_now()
+                assert out["history"] == "pulled 0, pushed 1", out
+                assert out["vault"] == "pulled 0, pushed 1", out
+                lock = sb.status()["lock"]
+                assert lock["state"] == "have" and lock["code"] == "" and lock["recovery"] is False, lock
+                a_key = vault.key(fake.UID)
+                fp = vault.fingerprint(a_key)
+                assert fake.tables["profiles"][0]["lock_id"] == fp and lock["id"] == fp[:8]
+                row = fake.tables["history"][0]
+                assert "text" not in row and "raw" not in row and vault.is_sealed(row["cipher"]), row
+                assert vault.open_json(a_key, row["cipher"], sb._history_aad(fake.UID, row))["text"] == "מהמחשב הראשון"
+                vrow = fake.tables["vault"][0]
+                assert vrow["name"] == "groq" and vault.is_sealed(vrow["cipher"]) and set(vrow) == {"user_id", "name", "cipher", "updated_at"}
+                wire = "\n".join(c_["url"] + c_["body"].decode("utf-8", "replace") for c_ in fake.to_project())
+                assert "מהמחשב" not in wire and "gsk_" not in wire, "a word, or a key, left in the clear"
+                assert json.loads(sync_mod.cursor_path().read_text("utf-8"))["lock"] == fp
+                # the same pass again: nothing moves, one GET on the profile at most
+                calls = len(fake.calls)
+                out = sb.sync_now()
+                assert out["history"] == "pulled 0, pushed 0" and out["vault"] == "pulled 0, pushed 0", out
+                assert not [c_ for c_ in fake.calls[calls:] if c_["path"] == "rest/v1/pairings"]
+
+            # ---- B: the lock is taken, B asks to join
+            with b:
+                b.log.write_text("2026-09-21 10:01:00,100 | OK | 1.0s | local | 0.4s latency | מהמחשב השני\n", "utf-8")
+                sign_in(b, "laptop")
+                for n in secretstore.CRED_NAMES:
+                    secretstore.delete(n)
+                out = sb.sync_now()
+                assert out["history"] == "waiting for the lock" and out["vault"] == "waiting for the lock", out
+                assert out["settings"] in ("pulled", "pushed", "same"), out
+                lock = sb.status()["lock"]
+                assert lock["state"] == "waiting" and re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}", lock["code"]), lock
+                assert vault.key(fake.UID) is None
+                assert len(fake.tables["history"]) == 1, "B pushed while waiting"
+                req = fake.tables["pairings"][0]
+                assert req["device_name"] == "laptop" and req["code"] == lock["code"].replace("-", "") \
+                    and req["applicant"].startswith("p1.") and req.get("handed") is None, req
+                assert set(req) == {"id", "user_id", "device_id", "device_name", "code", "applicant", "updated_at"}
+                pairing = [m for m in fake.broadcasts if m["messages"][0]["event"] == "pairing"]
+                assert len(pairing) == 1 and pairing[0]["messages"][0]["payload"]["code"] == lock["code"]
+                assert pairing[0]["messages"][0]["private"] is True
+                # asking again is looking at the same request, not a new one
+                out = sb.sync_now()
+                assert len(fake.tables["pairings"]) == 1 and sb.status()["lock"]["code"] == lock["code"]
+                b_code = lock["code"]
+
+            # ---- A: sees the request, approves it
+            with a:
+                assert asked == [], "a hook before the request was read"
+                pending = sb.pending_pairings()
+                assert [(p["name"], p["code"]) for p in pending] == [("laptop", b_code)], pending
+                assert [p["code"] for p in asked] == [b_code], asked
+                sb.pending_pairings()
+                assert len(asked) == 1, "the hook was called twice for one request"
+                assert sb.status()["lock"]["pending"][0]["name"] == "laptop"
+                name = sb.approve_pairing(pending[0]["id"])
+                assert name == "laptop"
+                req = fake.tables["pairings"][0]
+                assert req["handed"].startswith("w1.") and req["approved_at"], req
+                assert sb.status()["lock"]["pending"] == []
+                paired = [m for m in fake.broadcasts if m["messages"][0]["event"] == "paired"]
+                assert len(paired) == 1 and paired[0]["messages"][0]["payload"]["id"] == req["id"]
+                try:
+                    sb.approve_pairing("00000000-0000-0000-0000-000000000000")
+                except sb.AccountError as e:
+                    assert "gone" in str(e)
+                else:
+                    raise AssertionError("approved a request that is not there")
+
+            # ---- B: takes the key, syncs everything
+            with b:
+                out = sb.sync_now()
+                lock = sb.status()["lock"]
+                assert lock["state"] == "have" and lock["code"] == "", lock
+                assert vault.key(fake.UID) == a_key, "B holds another key than A"
+                assert fake.tables["pairings"] == [], "the request row stayed"
+                assert out["history"] == "pulled 1, pushed 1", out
+                assert out["vault"] == "pulled 1, pushed 0", out
+                lines = sync_mod.remote_history_path().read_text("utf-8").splitlines()
+                assert len(lines) == 1 and " | REMOTE | dictation | desk | " in lines[0] and lines[0].endswith("מהמחשב הראשון"), lines
+                assert secretstore.get("groq") == "gsk_fixture_lock_a_" + "q" * 30, "A's key did not reach B"
+                assert len(fake.tables["history"]) == 2 and all("text" not in r for r in fake.tables["history"])
+                # nothing more on the next pass: what came down is not pushed back
+                out = sb.sync_now()
+                assert out["vault"] == "pulled 0, pushed 0" and out["history"] == "pulled 0, pushed 0", out
+
+            # ---- A: pulls B's row; removes its key, B loses it too
+            with a:
+                out = sb.sync_now()
+                assert out["history"] == "pulled 1, pushed 0", out
+                assert sync_mod.remote_history_path().read_text("utf-8").splitlines()[0].endswith("| laptop |  |  | מהמחשב השני") or \
+                    "מהמחשב השני" in sync_mod.remote_history_path().read_text("utf-8")
+                secretstore.delete("groq")
+                out = sb.sync_now()
+                assert out["vault"] == "pulled 0, pushed 1", out
+                # and the recovery key
+                recovery = sb.make_recovery()
+                assert re.fullmatch(r"([0-9A-HJKMNP-TV-Z]{4}-){5}[0-9A-HJKMNP-TV-Z]{4}", recovery), recovery
+                assert fake.tables["recovery"][0]["wrapped"].startswith("r1.") and sb.status()["lock"]["recovery"] is True
+                assert recovery not in json.dumps(fake.calls, default=str), "the recovery key left the PC"
+            with b:
+                out = sb.sync_now()
+                assert out["vault"] == "pulled 1, pushed 0", out
+                assert secretstore.get("groq") is None, "the key removed on A stayed on B"
+
+            # ---- C: waits, then the recovery key opens the account
+            with c:
+                sign_in(c, "third")
+                out = sb.sync_now()
+                assert sb.status()["lock"]["state"] == "waiting" and len(fake.tables["pairings"]) == 1
+                for wrong, why in (("ABCD", "not a recovery key"), (vault.new_recovery(), "does not open")):
+                    try:
+                        sb.recover(wrong)
+                    except sb.AccountError as e:
+                        assert why in str(e), (why, str(e))
+                    else:
+                        raise AssertionError(f"{wrong!r} opened the account")
+                assert sb.status()["lock"]["state"] == "waiting"
+                sb.recover(recovery.lower())
+                lock = sb.status()["lock"]
+                assert lock["state"] == "have" and lock["recovery"] is True and vault.key(fake.UID) == a_key, lock
+                assert fake.tables["pairings"] == [], "C's request row stayed after the recovery"
+                out = sb.sync_now()
+                assert out["history"] == "pulled 2, pushed 0", out
+                # sign-out keeps the key on this PC; the same account back needs no approval
+                sb.sign_out(everywhere=False)
+                assert vault.key(fake.UID) == a_key and sb.status()["lock"]["state"] == ""
+                sign_in(c, "third")
+                out = sb.sync_now()
+                # the cursors went with the sign-out: the rows come down again, no request is made
+                assert out["history"] == "pulled 2, pushed 0" and sb.status()["lock"]["state"] == "have", out
+                assert fake.tables["pairings"] == []
+
+            # ---- A: a fingerprint that changed under it drops the key and asks
+            with a:
+                fake.tables["profiles"][0]["lock_id"] = "0" * 16
+                # "the last look at the lock was longer ago than LOCK_TTL_S":
+                # not 0.0 — monotonic() is seconds since boot, and GitHub's
+                # runner is up for under ten minutes when this line runs
+                # (the branch's first CI run, 2026-09-21 12:53 UTC: A kept
+                # its key, state "have"); this PC has been up for hours
+                sb._lock_state["at"] = time.monotonic() - sb.LOCK_TTL_S - 1
+                out = sb.sync_now()
+                assert vault.key(fake.UID) is None and sb.status()["lock"]["state"] == "waiting", (out, sb.status()["lock"])
+                assert out["history"] == "waiting for the lock"
+                # delete my account forgets everything of the lock
+                fake.tables["profiles"][0]["lock_id"] = fp
+                vault.keep(fake.UID, a_key)
+                sb.delete_account()
+                assert vault.key(fake.UID) is None and sb.status()["lock"] == {
+                    "state": "", "id": "", "code": "", "pending": [], "recovery": None, "error": ""}
+    finally:
+        for pc in (a, b, c):
+            pc.gone()
+
+
 def test_sb_imports_are_narrow():
     """Static (8.7, D12 lock 2): sb.py and sync.py import none of the
     modules that read a cloud key (apikey, translate, polish, punctuate,
@@ -37764,7 +38183,18 @@ def test_sb_imports_are_narrow():
         assert "groq" not in low and "gemini" not in low, f"{name} names a provider"
         assert "sb_secret" not in low, f"{name} mentions the secret key"
     assert sb.PUBLISHABLE_KEY == "" or sb.PUBLISHABLE_KEY.startswith("sb_publishable_")
+    # vault.py, the lock: the one module besides secretstore that holds a
+    # cloud key's value for a moment — it opens no socket (no net, no
+    # transport), reads no environment, and hands sb.py sealed text only
+    vsrc = (REPO / "vault.py").read_text("utf-8")
+    imported = {m.group(1).split(".")[0] for m in re.finditer(r"^(?:import|from)\s+([\w.]+)", vsrc, re.M)}
+    assert imported <= {"__future__", "base64", "ctypes", "hashlib", "hmac", "json", "logging", "os",
+                        "re", "secrets", "threading", "secretstore"}, imported
+    assert "os.environ" not in vsrc and "net" not in imported
+    assert not re.search(r"log\.\w+\([^)]*\bvalue\b", vsrc), "vault.py logs a value"
     src = (REPO / "sb.py").read_text("utf-8")
+    assert not re.search(r"secretstore\.get\((?!SESSION_NAME)", src), "sb.py reads a secret by another name"
+    assert "vault.export_keys" in src and "vault.import_keys" in src, "the cloud keys must move through vault.py's door"
     for purpose in set(re.findall(r'purpose="(\w+)"', src)) | set(re.findall(r'"(account|sync|history|report)"', src)):
         assert purpose in net_mod.PURPOSES, purpose
     assert not re.search(r"secretstore\.(find_key|_cred_read|read_env_file)", src)
@@ -37840,9 +38270,42 @@ def test_the_sync_follows_the_account():
         assert row is not None and row["text_version"] == cc.card_for("history_sync")["text_version"], row
         migrations._history_follows_the_sync()                   # a row there: untouched
         assert privacy.consent("history_sync")["when"] == row["when"]
-        assert [n for n, _fn in migrations.STEPS] == [2, 3]
+        # ...and step 4, the lock (2026-09-21): a row given under the
+        # 2026-09-19 words — which promised MORE than the new ones (the
+        # admin could technically read a row) — becomes a row of the new
+        # version with the old one remembered, the gate open; a row of
+        # any other version, or none, is left alone
+        old = privacy.CARRIED_FORWARD["history_sync"][0]
+        assert old == "deskit-terms-0+en-2026-09-19" and old != privacy.TEXT_VERSIONS["history_sync"]
+        for kind in privacy.SYNC_KINDS:
+            privacy.withdraw(kind)
+        with _patched(privacy, "TEXT_VERSIONS", {**privacy.TEXT_VERSIONS, "history_sync": old,
+                                                  "settings_sync": old}):
+            privacy.grant("history_sync", old)
+            privacy.grant("settings_sync", old)
+            given = privacy.consent("history_sync")["when"]
+        assert privacy.consent("history_sync") is None and not privacy.allowed("history_sync"), "the old row is not stale"
+        migrations._the_lock_asks_nothing_new()
+        for kind in privacy.SYNC_KINDS:
+            row = privacy.consent(kind)
+            assert row is not None and row["text_version"] == privacy.TEXT_VERSIONS[kind], (kind, row)
+            assert row["carried_from"] == old and row["when"] == given, row
+            assert privacy.allowed(kind), kind
+        migrations._the_lock_asks_nothing_new()                  # already current: untouched
+        assert privacy.consent("history_sync")["when"] == given
+        privacy.withdraw("history_sync")
+        migrations._the_lock_asks_nothing_new()                  # no row: nothing
+        assert privacy.consent("history_sync") is None
+        with _patched(privacy, "TEXT_VERSIONS", {**privacy.TEXT_VERSIONS, "history_sync": "deskit-terms-0+en-2020-01-01"}):
+            privacy.grant("history_sync", "deskit-terms-0+en-2020-01-01")
+        migrations._the_lock_asks_nothing_new()                  # another old version: not carried
+        assert privacy.consent("history_sync") is None
+        assert [n for n, _fn in migrations.STEPS] == [2, 3, 4]
         import version
-        assert version.CONFIG_VERSION == 3
+        assert version.CONFIG_VERSION == 4
+        for kind in privacy.SYNC_KINDS:
+            words = " ".join(t for _l, t in cc.card_for(kind)["blocks"]).lower()
+            assert "technically" not in words and "cannot" in words, (kind, words)
 
         for name, marker in (("firstrun.py", "def _sign_in"), ("dashboard.py", "def _landing_sign_in")):
             src = (REPO / name).read_text("utf-8")
@@ -37865,28 +38328,50 @@ def test_migration_has_no_key_column():
     authenticated`; the revoke-from-anon block is present; the bucket is
     private with the four MIME types; delete_me() is security definer,
     granted to authenticated only; no report_replies table (D33)."""
-    text = MIGRATION.read_text("utf-8")
+    text = _migrations_text()
     tables = _sql_tables()
     assert set(tables) == {"profiles", "devices", "settings_sync", "vocab_sync", "history",
-                           "problem_reports", "deletion_requests"}, set(tables)
+                           "problem_reports", "deletion_requests",
+                           "vault", "recovery", "pairings"}, set(tables)
+    # D12 lock 3 since 0004: "no column the server can READ holds a key".
+    # A column under is_sealed() is opaque text — a version tag and
+    # standard base64 — and the app's own check is the same expression.
+    # ...its LAST definition (0005 moved the length cap out of the regex:
+    # Postgres caps a bound at 255, measured live an hour after 0004 ran)
+    import vault
+    fn_sealed = text[text.rindex("create or replace function public.is_sealed"):]
+    assert re.search(r"char_length\(t\) <= 7603", fn_sealed) and vault.SEALED_MAX == 7603
+    sealed_re = re.search(r"and t ~ '(.*?)'", fn_sealed).group(1)
+    assert sealed_re == r"^[a-z][0-9]\.[A-Za-z0-9+/]{16,}={0,2}$", sealed_re
+    assert not re.search(r"\{\d+,\d{4,}\}", sealed_re), "a repetition bound Postgres refuses (max 255)"
+    assert vault.is_sealed("v1." + "A" * 16) and not vault.is_sealed("v1." + "A" * 15) \
+        and not vault.is_sealed("v1." + "A" * 15 + "_") and not vault.is_sealed("gsk_" + "A" * 30) \
+        and vault.is_sealed("v1." + "A" * 7600) and not vault.is_sealed("v1." + "A" * 7601)
+    sealed_columns = {("vault", "cipher"), ("history", "cipher"), ("recovery", "wrapped"),
+                      ("pairings", "applicant"), ("pairings", "handed")}
     for table, defs in tables.items():
         for d in defs:
             name, typ = d.split()[0], d.split()[1]
             for bad in ("key", "secret", "token", "password", "apikey"):
                 assert bad not in name, f"{table}.{name}"
+            if (table, name) in sealed_columns:
+                assert "is_sealed" in d and "looks_like_key" not in d, f"{table}.{name}"
+                continue
             if typ in ("text", "jsonb", "text[]"):
                 # attachments_under() runs looks_like_key over every element
                 assert "looks_like_key" in d or "attachments_under" in d \
-                    or re.search(r"\bin \(", d), \
+                    or re.search(r"\bin \(", d) or re.search(r"~ '", d), \
                     f"{table}.{name} ({typ}) has no key-shaped check"
                 assert "char_length" in d or "octet_length" in d or re.search(r"\bin \(", d) \
-                    or typ == "text[]", f"{table}.{name} has no length cap"
+                    or re.search(r"~ '\^", d) or typ == "text[]", f"{table}.{name} has no length cap"
+    assert {"text", "raw"}.isdisjoint(d.split()[0] for d in tables["history"]), \
+        "history still has a plaintext column"
     for table in tables:
         assert re.search(rf"alter table public\.{table} +enable row level security;", text), table
         if table != "deletion_requests":
             assert f"on public.{table} for select to authenticated" in text, table
     policies = re.findall(r"create policy \w+ on ([\w.]+) for (\w+)(.*?)\n", text)
-    assert len(policies) >= 24, len(policies)
+    assert len(policies) >= 36, len(policies)
     for target, verb, rest in policies:
         assert "to authenticated" in rest, (target, verb, rest)
         assert "to anon" not in rest
@@ -37901,11 +38386,16 @@ def test_migration_has_no_key_column():
     assert "array['image/jpeg', 'application/json', 'text/plain', 'audio/wav']" in text
     # the RPC as the project holds it: its LAST definition across the
     # migrations (0002 took the storage delete out — Supabase refuses SQL
-    # deletes on storage.objects, measured live 2026-09-18)
+    # deletes on storage.objects, measured live 2026-09-18; 0004 sweeps
+    # the lock's three tables)
     whole = _migrations_text()
     fn = whole[whole.rindex("create or replace function public.delete_me()"):]
     assert "security definer" in fn.split("$$")[0] and "auth.uid()" in fn
     assert "delete from auth.users             where id = uid;" in fn
+    for table in ("vault", "recovery", "pairings", "history"):
+        assert re.search(rf"delete from public\.{table}\s+where user_id = uid;", fn), table
+    # only the wrapped key and the approval may change on a request
+    assert "create trigger pairings_guard before update on public.pairings" in whole
     assert "delete from storage.objects" not in fn.split("$$;")[0],         "delete_me() deletes storage rows in SQL — the Storage API is the only way"
     assert fn.count("grant execute on function public.delete_me() to authenticated;") == 1
     assert fn.count("revoke all on function public.delete_me() from anon;") == 1
@@ -39406,6 +39896,374 @@ def test_account_command_over_the_pipe():
             assert not sb.signed_in()
         with _patched(sb, "PROJECT_REF", ""):
             assert "not configured" in app._account_command("google")["error"]
+
+
+def test_the_lock_over_the_pipe_and_the_join_notification():
+    """main.App._account_command's lock verbs (2026-09-21): `lock` answers
+    sb.poll_lock; `approve` / `decline` need a request id and answer the
+    server's refusal as an error, never a traceback; `recover` with a
+    string that is not a recovery key says so; `recovery_new` on a PC
+    that holds the key answers the key ONCE, in the reply and nowhere
+    else (not in the log, not in status); `nudge` with a store named
+    nudges that store. And sb.PAIRING_HOOKS hands a request to
+    App._pairing_asked, which puts NO card up beside the dot (the owner,
+    meeting one: "still pops on the screen — take it down") but sends
+    one notification through the app's own door — source `account`,
+    the other PC's name and code, a link that opens the desk on Home,
+    where Approve and Not now are — and sb.LOCK_HOOKS takes it down the
+    moment no request waits. notify.open_link("deskit://home") starts
+    the desk and never reaches the shell; the whitelist takes nothing
+    else of that scheme."""
+    import consent_card as cc
+    import launch
+    import notify as notify_mod
+    import sb
+    import vault
+
+    main_mod = __import__("main")
+    app = main_mod.App.__new__(main_mod.App)
+    said: list[str] = []
+    app._say = said.append
+    with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), \
+            _pc("pipe", "DeskIT.test"):
+        import secretstore
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+        reply = app._account_command("lock")
+        assert reply["ok"] and reply["lock"]["state"] == "have", reply
+        assert not app._account_command("approve")["ok"] and not app._account_command("decline")["ok"]
+        reply = app._account_command("approve", kind="00000000-0000-0000-0000-000000000000")
+        assert not reply["ok"] and "gone" in reply["error"], reply
+        reply = app._account_command("recover", kind="not a key")
+        assert not reply["ok"] and "not a recovery key" in reply["error"], reply
+        reply = app._account_command("recovery_new")
+        assert reply["ok"] and vault.normalize(reply["recovery"], vault.RECOVERY_CHARS), reply
+        assert reply["recovery"] not in json.dumps(sb.status())
+        assert sb.status()["lock"]["recovery"] is True
+        sb._pending.clear()
+        assert app._account_command("nudge", kind="vault")["ok"] and sb._pending == {"vault"}
+        sb._pending.clear()
+        assert app._account_command("nudge")["ok"] and sb._pending == {"*"}
+        sb._wake.clear()
+
+        # the hook: no card beside the dot; one notification, then down
+        asked: list = []
+        received: list = []
+        dismissed: list = []
+
+        class Card:
+            def show(self, kind):
+                asked.append(kind)
+
+        class Engine:
+            def receive(self, payload, **kw):
+                received.append(notify_mod.clean(payload))
+                return {"ok": True}
+
+            def dismiss_source(self, source, **kw):
+                dismissed.append(source)
+                return 1
+        app.consent_card = Card()
+        app.notify = Engine()
+        request = {"id": "req-9", "name": "laptop", "code": "H7QM-3K2P", "created_at": ""}
+        app._pairing_asked(request)
+        assert asked == [], "a card went up beside the dot"
+        assert said and "laptop" in said[-1] and "desk" in said[-1], said
+        assert len(received) == 1, received
+        note = received[0]
+        assert note["source"] == "account" and note["kind"] == "input"
+        assert note["title"] == "laptop asks to join your account" and "H7QM-3K2P" in note["body"]
+        assert note["link"] == notify_mod.DESK_LINK == "deskit://home", note
+        assert notify_mod.label_for("account") == "Your account"
+        assert not hasattr(cc, "pairing_card") and not hasattr(cc, "PAIRING")
+        sb._lock_state["pending"] = [dict(request)]
+        app._pairing_settled()
+        assert dismissed == [], "taken down while the request still waits"
+        sb._lock_state["pending"] = []
+        app._pairing_settled()
+        assert dismissed == ["account"]
+        # the App registers both hooks when its worker starts
+        src = (REPO / "main.py").read_text("utf-8")
+        assert "sb.PAIRING_HOOKS.append(self._pairing_asked)" in src
+        assert "sb.LOCK_HOOKS.append(self._pairing_settled)" in src
+    # the desk link: the desk, not the shell; nothing else of the scheme
+    opened: list = []
+    with _patched(launch, "open_dashboard", lambda: opened.append(1) or True), \
+            _patched(notify_mod.os, "startfile", lambda *a, **k: opened.append("shell")):
+        assert notify_mod.open_link("deskit://home") is True and opened == [1]
+        assert notify_mod.open_link("deskit://settings") is False and opened == [1]
+        assert notify_mod.open_link("deskit://home/../x") is False
+        assert notify_mod._link("deskit://home") == "deskit://home"
+        assert notify_mod.clean({"source": "account", "link": "deskit://home"})["link"] == "deskit://home"
+    # a real engine takes the account's cards down by source
+    d = Path(tempfile.mkdtemp(prefix="deskit-notify-account-"))
+    try:
+        engine = notify_mod.Engine(d, None, cue=lambda *a, **k: None, card=notify_mod.NullCard(),
+                                   store_path=d / "notify.json", log_path=d / "notify.log")
+        engine.enabled = True
+        engine.receive({"source": "account", "kind": "input", "title": "laptop asks", "link": "deskit://home"})
+        engine.receive({"source": "claude-code", "kind": "done", "title": "finished"})
+        assert engine.dismiss_source("account") == 1
+        left = [i for i in engine.store.items() if not i.get("seen")]
+        assert [i["source"] for i in left] == ["claude-code"], left
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_wizard_waits_for_the_other_pcs_approval_and_offers_the_recovery_key():
+    """The returning road with the account's key on another PC (the
+    lock, 2026-09-21): the first sync brings the words and settings and
+    says "waiting"; instead of the desk the account page shows the link
+    step — the eight-character code this PC shows, the waiting line, a
+    field for the recovery key, and Next reading Later. The step polls
+    (sb.poll_lock); "have" turns the line green and opens the desk. A
+    wrong recovery key is a red line and the wait goes on; the right one
+    opens the desk. Later opens the desk too. Back walks to the signed
+    card. Nothing here names the server to the person."""
+    import firstrun
+    import privacy
+    import sb
+    import ui as ui_mod
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    person = {"email": "person@example.com", "id": "x", "is_anonymous": False}
+    lock = {"state": "waiting", "id": "", "code": "H7QM-3K2P", "pending": [], "recovery": None, "error": ""}
+    polls: list[int] = []
+    recovered: list[str] = []
+
+    def poll_lock():
+        polls.append(1)
+        return dict(lock)
+
+    def recover(text):
+        recovered.append(text)
+        if text != "GOOD":
+            raise sb.AccountError("the recovery key does not open this account")
+        lock["state"] = "have"
+
+    def settle(w, seconds=1.5, until=None):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            w.root.update()
+            w._drain()
+            if until is not None and until():
+                return
+            time.sleep(0.02)
+
+    def wizard():
+        try:
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"},
+                                offers={"portable": True, "model": None, "pack": None,
+                                        "detector": None, "recording": None, "tier": "gpu"})
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return None
+        w.LINK_POLL_S = 0.2
+        w.page = firstrun.PAGES.index("account")
+        w._show_page()
+        settle(w, until=lambda: w._returning)
+        assert w._returning
+        w._next()                                            # Open DeskIT
+        settle(w, until=lambda: w._account_step == "link")
+        assert w._account_step == "link", w._account_step
+        return w
+
+    def bury(w):
+        try:
+            w._close()
+        except Exception:                                    # noqa: BLE001
+            pass
+        gc.collect()
+
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(paths, "VOCAB_FILE", d / "vocab.json"), \
+            _patched(sb, "user", lambda: person), _patched(sb, "configured", lambda: True), \
+            _patched(sb, "has_synced_settings", lambda: True), \
+            _patched(sb, "sync_now", lambda vocab=None, reason="": {"settings": "pulled", "history": "waiting for the lock"}), \
+            _patched(sb, "lock_status", lambda: dict(lock)), _patched(sb, "poll_lock", poll_lock), \
+            _patched(sb, "recover", recover):
+        for _k in privacy.SYNC_KINDS:
+            privacy.withdraw(_k)
+        try:
+            # 1. approved on the other PC while this page waits
+            w = wizard()
+            if w is None:
+                return
+            words = _wizard_words(w)
+            assert "H7QM-3K2P" in words and firstrun.WORDS["account.link.waiting"] in words
+            assert w.next.itemcget(w.next._label, "text") == firstrun.WORDS["account.link.later"]
+            for word in ("Supabase", "server", "sb.", "pairing", "vault", "scrypt"):
+                assert word not in words, word
+            assert not w.result.saved
+            settle(w, until=lambda: len(polls) >= 2)
+            assert len(polls) >= 2, "the page did not poll"
+            lock["state"] = "have"
+            settle(w, until=lambda: w.result.saved)
+            assert w.result.saved and w.result.open_desk, "the approval did not open the desk"
+            bury(w)
+
+            # 2. the recovery key: wrong, then right
+            lock["state"] = "waiting"
+            polls.clear()
+            t.unlink(missing_ok=True)
+            w = wizard()
+            w.recovery_box.set("bad one")
+            w._link_recover()
+            settle(w, until=lambda: w.link_line.cget("fg") == ui_mod.RED)
+            assert recovered == ["bad one"] and "does not open" in w.link_line.cget("text")
+            assert not w.result.saved and w._link_state == "waiting"
+            w.recovery_box.set("GOOD")
+            w._link_recover()
+            settle(w, until=lambda: w.result.saved)
+            assert recovered == ["bad one", "GOOD"] and w.result.saved and w.result.open_desk
+            bury(w)
+
+            # 3. Later, and Back
+            lock["state"] = "waiting"
+            t.unlink(missing_ok=True)
+            w = wizard()
+            assert w._account_back() and w._account_step == "signed"
+            w._link_open()
+            settle(w, 0.3)
+            w._next()                                        # Later
+            settle(w, until=lambda: w.result.saved)
+            assert w.result.saved and w.result.open_desk
+            bury(w)
+        finally:
+            for _k in privacy.SYNC_KINDS:
+                privacy.withdraw(_k)
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_lock_card_on_the_privacy_tab():
+    """Settings > Privacy carries THE LOCK under the account (2026-09-21):
+    off without the app; "sign in first" signed out; holding the key,
+    one line and [Make a recovery key] ([Replace…] once one exists);
+    waiting, the code this PC shows and [Type the recovery key], which
+    opens a field whose [Open] sends `account` `recover` with the typed
+    text and empties the field; another PC asking, its name and code
+    with [Approve] / [Not now] sending `approve` / `decline` with the
+    request id; a fresh recovery key shown on the card until Done, with
+    Copy. Every press is a command over the pipe."""
+    d = Path(tempfile.mkdtemp(prefix="deskit-lock-card-"))
+    try:
+        with _patched(paths, "SETTINGS_FILE", d / "s.toml"), _patched(paths, "STATE_FILE", d / "t.json"), \
+                _window() as board:
+            if board is None:
+                return
+            board._show("Settings")
+            board._settings_go("Privacy")
+            board._finish_settings()
+            board.root.update_idletasks()
+            line, code, sub = board.parts["lock_line"], board.parts["lock_code"], board.parts["lock_sub"]
+            labels = lambda: [w.itemcget(w._label, "text")  # noqa: E731
+                              for w in board.parts["lock_strip"].winfo_children() if hasattr(w, "_label")]
+            assert "start dictation first" in line.cget("text") and labels() == []
+            account = {"configured": True, "signed_in": False, "user_id": "", "anonymous": True,
+                       "email": "", "device_name": "PC", "busy": "", "last_error": "",
+                       "last_sync": "", "waiting": 0, "region": "Frankfurt (Supabase)", "lock": {}}
+            board.running = True
+            board.status = {"stage": "running", "account": account}
+            board._paint_lock()
+            assert line.cget("text").startswith("sign in first")
+            sent: list = []
+            board._ask = lambda command, then=None, **args: sent.append((command, args, then))
+            account.update(signed_in=True, anonymous=False, email="p@example.com")
+            account["lock"] = {"state": "have", "id": "d8de920c", "code": "", "pending": [], "recovery": False, "error": ""}
+            board._paint_lock()
+            assert "holds your account's key" in line.cget("text") and labels() == ["Make a recovery key"]
+            assert "no recovery key yet" in sub.cget("text") and "d8de920c" in sub.cget("text")
+            account["lock"]["recovery"] = True
+            board._paint_lock()
+            assert labels() == ["Replace the recovery key"] and "recovery key: made" in sub.cget("text")
+            board.parts["lock_strip"].winfo_children()[0]._command()
+            assert sent[-1][0] == "account" and sent[-1][1] == {"do": "recovery_new"}
+            sent[-1][2]({"ok": True, "recovery": "HC6M-FW54-3D62-50DR-69ST-EYQQ"})
+            assert code.cget("text") == "HC6M-FW54-3D62-50DR-69ST-EYQQ" and labels() == ["Copy", "Done"]
+            assert "shown once" in line.cget("text")
+            board.parts["lock_strip"].winfo_children()[1]._command()      # Done
+            assert code.cget("text") == "" and board._lock_fresh == "" and labels() == ["Replace the recovery key"]
+            # waiting: the code, and the recovery field
+            account["lock"] = {"state": "waiting", "id": "", "code": "H7QM-3K2P", "pending": [], "recovery": None, "error": ""}
+            board._paint_lock()
+            assert "Waiting for your other PC" in line.cget("text") and code.cget("text") == "H7QM-3K2P"
+            assert labels() == ["Type the recovery key"]
+            board.parts["lock_strip"].winfo_children()[0]._command()
+            board.root.update_idletasks()
+            assert labels() == ["Open", "Cancel"] and board.parts["lock_field"].winfo_ismapped()
+            field = board.parts["lock_field"]
+            body = field.master
+            assert field.winfo_y() + field.winfo_reqheight() <= body.winfo_height(), "the field is off the card"
+            strip = board.parts["lock_strip"]
+            assert strip.winfo_y() + strip.winfo_reqheight() <= body.winfo_height(), "the buttons are off the card"
+            field.set("hc6m fw54 3d62 50dr 69st eyqq")
+            board.parts["lock_strip"].winfo_children()[0]._command()      # Open
+            assert sent[-1][1] == {"do": "recover", "kind": "hc6m fw54 3d62 50dr 69st eyqq"}, sent[-1]
+            assert field.get() == "" and labels() == ["Type the recovery key"]
+            # another PC asks
+            account["lock"] = {"state": "have", "id": "d8de920c", "code": "", "recovery": True, "error": "",
+                               "pending": [{"id": "req-9", "name": "laptop", "code": "H7QM-3K2P", "created_at": ""}]}
+            board._paint_lock()
+            assert line.cget("text").startswith("laptop signed in") and code.cget("text") == "H7QM-3K2P"
+            assert labels() == ["Approve", "Not now"]
+            board.parts["lock_strip"].winfo_children()[0]._command()
+            assert sent[-1][1] == {"do": "approve", "kind": "req-9"}
+            board.parts["lock_strip"].winfo_children()[1]._command()
+            assert sent[-1][1] == {"do": "decline", "kind": "req-9"}
+            # the Keys page: a saved key nudges the vault store
+            import secretstore
+            with _test_cred_prefix():
+                board.parts["key_fields"]["groq"].set("gsk_fixture_card_" + "q" * 30)
+                board._key_save("groq")
+                assert any(a == {"do": "nudge", "kind": "vault"} for _c, a, _t in sent), sent
+            # HOME carries the same as rows on the pile (the owner, meeting
+            # the card beside the dot: "inside DeskIT — on Home"), and every
+            # OTHER screen a banner at the top while a request waits
+            board._lock_tick()
+            assert board._lock_banner_card is not None and board._lock_banner_card.winfo_exists(), \
+                "no banner on Settings while laptop asks"
+            words = [w.cget("text") for w in board._lock_banner_card.body.winfo_children()
+                     if w.winfo_class() == "Label"]
+            assert any("laptop asks to join" in t and "H7QM-3K2P" in t for t in words), words
+            board._show("Home")
+            board._fill_waiting()
+            board._lock_tick()
+            assert board._lock_banner_card is None, "the banner covers Home's own row"
+            rows = board._waiting_lock()
+            assert [r["eyebrow"] for r in rows] == ["Your account"] and "H7QM-3K2P" in rows[0]["text"]
+            assert [b[0] for b in rows[0]["buttons"]] == ["Approve", "Not now"]
+            rows[0]["buttons"][0][2]()
+            assert sent[-1][1] == {"do": "approve", "kind": "req-9"}
+            assert "want" in board.parts["waiting_head"].cget("text")
+            account["lock"] = {"state": "have", "id": "d8de920c", "code": "", "pending": [], "recovery": False, "error": ""}
+            board._lock_tick()
+            rows = board._waiting_lock()
+            assert len(rows) == 1 and rows[0]["text"].startswith("Make a recovery key"), rows
+            rows[0]["buttons"][0][2]()                                    # Make a recovery key
+            assert sent[-1][1] == {"do": "recovery_new"}
+            sent[-1][2]({"ok": True, "recovery": "HC6M-FW54-3D62-50DR-69ST-EYQQ"})
+            rows = board._waiting_lock()
+            assert len(rows) == 1 and rows[0]["text"].startswith("HC6M-FW54-3D62-50DR-69ST-EYQQ"), rows
+            assert [b[0] for b in rows[0]["buttons"]] == ["Copy", "Done"]
+            rows[0]["buttons"][1][2]()                                    # Done
+            assert board._lock_fresh == "" and board._waiting_lock()[0]["text"].startswith("Make a recovery key")
+            account["lock"]["recovery"] = True
+            assert board._waiting_lock() == [], "a made recovery key still asks"
+            account["lock"] = {"state": "waiting", "id": "", "code": "H7QM-3K2P", "pending": [], "recovery": None, "error": ""}
+            rows = board._waiting_lock()
+            assert len(rows) == 1 and "H7QM-3K2P" in rows[0]["text"] and rows[0]["buttons"][0][0] == "Type the recovery key"
+            board._show("Said")
+            board._lock_tick()
+            words = [w.cget("text") for w in board._lock_banner_card.body.winfo_children()
+                     if w.winfo_class() == "Label"]
+            assert any("Waiting for your other PC" in t and "H7QM-3K2P" in t for t in words), words
+            account["lock"]["state"] = "have"
+            board._lock_tick()
+            assert board._lock_banner_card is None, "the banner stayed after the approval"
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 NEEDS_SCREEN = (
