@@ -834,6 +834,31 @@ class NotifyConfig:
     # click or the key, as they did before 2026-09-05. See notify.py,
     # "knowing he has ARRIVED".
     dismiss_on_arrival: bool = True
+    # A "Claude finished" card says the message in ONE SENTENCE instead
+    # of its first four lines (the owner, 2026-09-21: "sometimes the
+    # messages are long... let it understand the whole message and write
+    # one sentence there, it's much clearer"). The hook sends the whole
+    # message; the app asks Groq for the sentence and holds the card
+    # until it lands — at most `summary_wait_s`, after which the card
+    # comes up as before. Claude's own turn is never touched: the hook
+    # runs after it has finished. Needs the cloud-text consent and a
+    # Groq key; without either the card is the old card and nothing
+    # leaves. False: never asks.
+    summarize: bool = True
+    # The ceiling, in seconds, on how long a finish waits for its
+    # sentence. Measured 2026-09-21 on real messages of 136-3,700
+    # characters: 0.20-0.37 s with the model below — a slow answer, not
+    # the usual one, is what this bounds.
+    summary_wait_s: float = 1.0
+    # Which Groq model writes the sentence. qwen3.8-27b with no thinking
+    # (translate.py's `reasoning`): 0.2-0.4 s, the best Hebrew of the
+    # three on offer, and a bucket of its own — the repair pass's
+    # gpt-oss-120b shares an 8,000-tokens-a-minute limit with nothing
+    # here, so a busy minute of finishes never costs a dictation its
+    # repair (measured: 120b hit that limit on the ninth call).
+    summary_model: str = "qwen/qwen3.8-27b"
+    # The sentence's language: "he" or "en", or any language name.
+    summary_language: str = "he"
     # Where the card appears before it has been dragged, and where it
     # was dragged to — the review card's sentinels, the review card's
     # reasons.
@@ -2024,6 +2049,13 @@ def build(data: dict) -> Config:
             watch=str(notify.get("watch", NotifyConfig.watch)).strip().lower(),
             dismiss_on_arrival=bool(notify.get(
                 "dismiss_on_arrival", NotifyConfig.dismiss_on_arrival)),
+            summarize=bool(notify.get("summarize", NotifyConfig.summarize)),
+            summary_wait_s=float(notify.get("summary_wait_s",
+                                            NotifyConfig.summary_wait_s)),
+            summary_model=str(notify.get("summary_model",
+                                         NotifyConfig.summary_model)).strip(),
+            summary_language=str(notify.get(
+                "summary_language", NotifyConfig.summary_language)).strip(),
             corner=str(notify.get("corner",
                                   NotifyConfig.corner)).strip().lower(),
             anchor=str(notify.get("anchor",
@@ -2369,6 +2401,15 @@ def build(data: dict) -> Config:
     if not (0 <= cfg.notify.quiet_s <= 600):
         raise ConfigError("notify.quiet_s must be 0-600 (0 = every finish "
                           f"lands at once), got {cfg.notify.quiet_s!r}")
+    if not (0.1 <= cfg.notify.summary_wait_s <= 10):
+        raise ConfigError("notify.summary_wait_s must be 0.1-10 (how long a "
+                          "finish waits for its one-line summary), "
+                          f"got {cfg.notify.summary_wait_s!r}")
+    if not cfg.notify.summary_model:
+        raise ConfigError("notify.summary_model must name a Groq model")
+    if not cfg.notify.summary_language:
+        raise ConfigError("notify.summary_language must name a language "
+                          "(he, en, or a name)")
     if not (1 <= cfg.notify.stack_max <= NOTIFY_STACK_MAX):
         raise ConfigError(f"notify.stack_max must be 1-{NOTIFY_STACK_MAX} "
                           "(how many cards may be on screen at once), "

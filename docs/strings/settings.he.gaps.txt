@@ -17,6 +17,7 @@ auto_pause_fullscreen
 notify.enabled
 notify.cue
 notify.interrupt
+notify.summarize
 visual_qa.enabled
 visual_qa.speak
 visual_qa.echo_to_field

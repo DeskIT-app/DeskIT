@@ -50,7 +50,7 @@ Off by default. Each kind has its own consent card and its own row in
 
 | Kind | What is sent | To |
 |---|---|---|
-| cloud text | the dictated text, with the learned word pairs present in it | `api.groq.com` or `generativelanguage.googleapis.com` |
+| cloud text | the dictated text, with the learned word pairs present in it; and, when Claude Code finishes a turn, the head and the tail of the message it finished with (up to 5,000 characters), so the "Claude finished" card can say it in one sentence — Groq only, never stored | `api.groq.com` or `generativelanguage.googleapis.com` |
 | cloud audio | the recording | the same |
 | cloud screenshots | the region of the screen you picked | the same |
 

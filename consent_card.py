@@ -74,13 +74,14 @@ _TERMS = "The one-page terms and the privacy policy."
 #: land in the same file (a test holds the two equal).
 TEXTS: dict[str, dict] = {
     "cloud_text": {
-        "version": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+        "version": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-21",
         "title": "Send text to the cloud?",
         "blocks": (
-            (WHAT, "The text you dictated or selected, up to 5,000 characters a request. "
-                   "Never your voice."),
+            (WHAT, "The text you dictated or selected, up to 5,000 characters a request; "
+                   "and, when Claude finishes, its last message, so the card can say it "
+                   "in one line. Never your voice."),
             (WHOM, "Groq and/or Google — repair, punctuation, translation, lookup, the "
-                   "second reading."),
+                   "second reading, the one-line card."),
             (ACCOUNT, _KEY),
             (TERMS, _GROQ + " " + _GEMINI),
             (OFF, _OFF),

@@ -20,7 +20,13 @@ door (notify.py, `POST /notify`, a cue and a STACK of cards that waits —
 newest on top, anchored by its bottom edge so a long message grows
 upward, nothing times out, a finish HELD until its session has been
 quiet for `[notify] quiet_s` when that is set (it ships at 0 since the
-afternoon of 2026-09-05: the card the moment Claude stops) and only the
+afternoon of 2026-09-05: the card the moment Claude stops), a finish
+said in ONE SENTENCE since 2026-09-21 — the hook sends the whole
+message, Groq writes the sentence (notify.Summary, `[notify]
+summarize`, qwen3.8-27b with no thinking, 0.2-0.5 s measured, the
+head and the tail of a long message, never stored), the card waits for
+it at most `summary_wait_s` and is the old card when the answer is
+late, the key missing or the cloud-text gate shut — and only the
 `[notify] interrupt` kinds ringing — with reminders, `ctrl+alt+m` to
 dismiss them
 all, a × per card and a click on a card to go to whoever sent it — how

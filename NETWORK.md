@@ -20,7 +20,7 @@ line here fails the build.
 |---|---|---|---|---|
 | `127.0.0.1` | `ollama`, `notify` | Ollama on this PC; the app's own phone listener (the Claude Code hook knocks on it) | the phone token, to our own listener only | none — loopback is the one host allowed in Offline mode |
 | `generativelanguage.googleapis.com` | `polish`, `punctuate`, `translate`, `lookup`, `review`, `study`, `reading`, `transcribe`, `ask-screen`, `key-test`, `catalog` | Gemini, with your own key | your Gemini key, in the `x-goog-api-key` header, to this host only | cloud text / cloud audio / cloud screenshots consent |
-| `api.groq.com` | the same words | Groq, with your own key | your Groq key, as a bearer, to this host only | the same consents |
+| `api.groq.com` | the same words, and `summary` — the one sentence a "Claude finished" card says instead of the message's first lines (the head and the tail of the message Claude ended with; Groq only, never Gemini) | Groq, with your own key | your Groq key, as a bearer, to this host only | the same consents (`summary` under cloud text) |
 | `huggingface.co` | `model-download` | the Hebrew model, once, from its model card's repository at a pinned commit | never — the repositories need no token and the app has none | the download step itself is the consent |
 | `cdn-lfs.huggingface.co`, `cas-bridge.xethub.hf.co`, and any host under `.huggingface.co` or `.hf.co` | `model-download` | where huggingface.co redirects a model file to; the CDN hostname changes by region and year (`us.aws.cdn.hf.co` on 2026-09-17) | never | the same |
 | `pypi.org` | `pack-install` | the lock tool's metadata look-up (the owner's checkout only) | never | — |

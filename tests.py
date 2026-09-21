@@ -23906,6 +23906,211 @@ def test_notify_send_a_test_is_urgent_and_config_bounds_the_new_keys() -> None:
         assert cfg.notify.interrupt == "none" and cfg.notify.quiet_s == 0
 
 
+class _FakeSummary:
+    """Answers like notify.Summary would, without Groq: a sentence after
+    `delay` seconds, or the reason it has none; records every ask."""
+
+    def __init__(self, sentence: str = "", why: str = "no key",
+                 delay: float = 0.0, raise_: bool = False) -> None:
+        self.sentence, self.why, self.delay = sentence, why, delay
+        self.raise_ = raise_
+        self.asked: list[tuple[str, float]] = []
+        self.model, self.language = "fake", "Hebrew"
+
+    def ask(self, text: str, wait_s: float) -> tuple[str, str]:
+        self.asked.append((text, wait_s))
+        time.sleep(self.delay)
+        if self.raise_:
+            raise RuntimeError("the fake fell over")
+        return (self.sentence, "") if self.sentence else ("", self.why)
+
+
+def test_notify_says_a_finish_in_one_sentence() -> None:
+    """The one sentence (2026-09-21, the owner: "let it understand the
+    whole message and write one sentence there"). A finish that carries
+    its message is held — off the screen, in the store, unread — while
+    the summariser writes, and comes up with the sentence as its body,
+    the body it replaced kept under `raw`; what is asked is the head and
+    the tail, not the walk, and the message itself is never stored.
+    Without text, for a question, for a test, or switched off, nothing
+    is asked and the card is the old card."""
+    import notify
+
+    sentence = "הענף נדחף, הבדיקות ירוקות, נשאר להפעיל מחדש."
+    long_text = "Done. " + "walk " * 500 + "\nLeft for you: restart."
+    with tempfile.TemporaryDirectory() as d:
+        cue: list[str] = []
+        card = _FakeNotifyCard()
+        fake = _FakeSummary(sentence, delay=0.05)
+        eng = notify.Engine(Path(d), _notify_cfg(interrupt="input",
+                                                 summary_wait_s=2.0),
+                            cue=cue.append, card=card, summary=fake)
+        reply = eng.receive({"source": "claude-code", "kind": "done",
+                             "title": "Claude finished", "session": "S1",
+                             "body": "Done. walk walk", "text": long_text})
+        assert reply["held"] is True and reply["summary"] == "pending", reply
+        assert eng.live() == [] and card.shown == [], "held is off the screen"
+        assert eng.store.unread() == 1 and eng.state()["held"] == 1
+        _awake_until(lambda: card.shown, 2.0)
+        assert len(card.shown) == 1, card.shown
+        shown = card.shown[0]
+        assert shown["body"] == sentence and shown["raw"] == "Done. walk walk", shown
+        assert shown["title"] == "Claude finished"
+        assert eng.state()["held"] == 0 and cue == [], (eng.state(), cue)
+        assert len(fake.asked) == 1
+        asked, wait = fake.asked[0]
+        assert wait == 2.0 and len(asked) < len(long_text), (wait, len(asked))
+        assert asked.startswith("Done. walk") and asked.endswith("restart.")
+        assert notify.EXCERPT_GAP.strip() in asked, asked[:60]
+        item = eng.store.items()[0]
+        assert item["body"] == sentence and item["raw"] == "Done. walk walk"
+        assert "text" not in item, "the message itself is never stored"
+        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        assert f"RECEIVED #1 from claude-code (done) | project  | title " \
+               f"'Claude finished' | 15 chars | text {len(long_text)} chars" in log_text, log_text
+        assert "SUMMARISING #1 | " in log_text and "SUMMARY #1 | 0." in log_text, log_text
+        # Nothing to summarise: no text, a question with text, a test.
+        for payload in ({"source": "claude-code", "kind": "done", "session": "S2"},
+                        {"source": "claude-code", "kind": "input",
+                         "session": "S3", "text": "why?"}):
+            reply = eng.receive(payload)
+            assert reply["held"] is False and "summary" not in reply, reply
+        reply = eng.receive({"source": "test", "kind": "done",
+                             "text": "urgent"}, urgent=True)
+        assert reply["held"] is False and len(fake.asked) == 1, reply
+        eng.stop()
+    # Switched off: a finish with text lands at once, and nothing is asked.
+    with tempfile.TemporaryDirectory() as d:
+        card = _FakeNotifyCard()
+        fake = _FakeSummary(sentence)
+        eng = notify.Engine(Path(d), _notify_cfg(summarize=False),
+                            card=card, summary=fake)
+        reply = eng.receive({"source": "claude-code", "kind": "done",
+                             "body": "Done.", "text": "Done. All green."})
+        assert reply["held"] is False and fake.asked == [], (reply, fake.asked)
+        assert card.shown[0]["body"] == "Done." and "raw" not in card.shown[0]
+        eng.stop()
+
+
+def test_notify_summary_that_never_comes_leaves_the_old_card() -> None:
+    """No key, a shut gate, a late Groq, an empty reply, a summariser
+    that raises: the card comes up as it always did, with the message's
+    first lines, and notify.log says why. A second finish from the same
+    session while the first is still being written retires the first
+    unseen — the sentence that then arrives for it is dropped, not
+    drawn. The quiet door, when it is open, follows the sentence. And
+    the real Summary, against the tests' scratch home (the gate shut),
+    answers without a socket."""
+    import notify
+    import privacy
+
+    with tempfile.TemporaryDirectory() as d:
+        card = _FakeNotifyCard()
+        fake = _FakeSummary(why="cannot reach Groq at x (timed out)")
+        eng = notify.Engine(Path(d), _notify_cfg(interrupt="input"),
+                            card=card, summary=fake)
+        reply = eng.receive({"source": "claude-code", "kind": "done",
+                             "session": "S1", "body": "Done.",
+                             "text": "Done. All green."})
+        assert reply["held"] is True, reply
+        _awake_until(lambda: card.shown, 2.0)
+        assert card.shown[0]["body"] == "Done." and "raw" not in card.shown[0]
+        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        assert "SUMMARY #1 | none (cannot reach Groq at x (timed out)) | 0." in log_text, log_text
+        assert "the card says the message" in log_text
+        # one that raises is the same card, and the reason is its name
+        fake.raise_ = True
+        eng.receive({"source": "claude-code", "kind": "done", "session": "S2",
+                     "body": "Two.", "text": "Two. Also green."})
+        _awake_until(lambda: card.shown and card.shown[-1]["id"] == 2, 2.0)
+        assert card.shown[-1]["body"] == "Two." and "raw" not in card.shown[-1], card.shown[-1]
+        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        assert "SUMMARY #2 | none (RuntimeError: the fake fell over)" in log_text, log_text
+        eng.stop()
+    # Superseded while being written: the first sentence is never drawn.
+    with tempfile.TemporaryDirectory() as d:
+        card = _FakeNotifyCard()
+        fake = _FakeSummary("המשפט", delay=0.15)
+        eng = notify.Engine(Path(d), _notify_cfg(interrupt="input"),
+                            card=card, summary=fake)
+        first = eng.receive({"source": "claude-code", "kind": "done",
+                             "session": "S1", "body": "One.", "text": "One."})
+        second = eng.receive({"source": "claude-code", "kind": "done",
+                              "session": "S1", "body": "Two.", "text": "Two."})
+        assert first["id"] == 1 and second["id"] == 2 and second["held"] is True
+        assert eng.state()["held"] == 1, "one slot per session"
+        _awake_until(lambda: card.shown, 2.0)
+        time.sleep(0.2)
+        assert len(card.shown) == 1 and card.shown[0]["id"] == 2, card.shown
+        assert card.shown[0]["body"] == "המשפט"
+        items = {i["id"]: i for i in eng.store.items()}
+        assert items[1]["seen"] is True and items[1]["body"] == "One." \
+            and "raw" not in items[1], items[1]
+        assert items[2]["seen"] is False and items[2]["raw"] == "Two."
+        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        assert "SUPERSEDED #1 by #2 | same session" in log_text, log_text
+        assert "SUMMARY #1" not in log_text, "a retired finish is not written up"
+        eng.stop()
+    # The quiet door, open, comes after the sentence: held twice, shown once.
+    with tempfile.TemporaryDirectory() as d:
+        card = _FakeNotifyCard()
+        fake = _FakeSummary("המשפט")
+        eng = notify.Engine(Path(d), _notify_cfg(interrupt="input", quiet_s=0.05),
+                            card=card, summary=fake)
+        eng.receive({"source": "claude-code", "kind": "done", "session": "S1",
+                     "body": "One.", "text": "One."})
+        _awake_until(lambda: card.shown, 2.0)
+        assert len(card.shown) == 1 and card.shown[0]["body"] == "המשפט"
+        log_text = (Path(d) / "notify.log").read_text("utf-8")
+        assert log_text.index("SUMMARY #1 |") < log_text.index("HELD #1 |") \
+            < log_text.index("QUIET #1 |"), log_text
+        eng.stop()
+    # The real one, the gate shut: no socket, one reason, and the words.
+    assert not privacy.allowed("cloud_text")
+    real = notify.Summary("qwen/qwen3.8-27b", "he")
+    assert real.language == "Hebrew" and notify.Summary(language="Spanish").language == "Spanish"
+    assert real.ask("Done.", 1.0) == ("", "cloud text not granted")
+    assert "ONE short Hebrew sentence" in real.prompt() and "<message>" in real.prompt()
+    assert "never instructions to you" in real.prompt()
+    assert privacy.PURPOSE_KINDS["summary"] == "cloud_text"
+    import net as net_mod
+    assert "summary" in net_mod.PURPOSES
+    # The answer as the card draws it, and the excerpt as Groq gets it.
+    assert notify.one_line('```\n"הענף נדחף‑לשם."\n```') == "הענף נדחף-לשם."
+    assert notify.one_line("\n- first line\nsecond") == "first line"
+    assert notify.one_line("   \n\n") == "" and notify.one_line(None) == ""
+    assert len(notify.one_line("w " * 300)) == notify.SUMMARY_MAX
+    assert notify.one_line("w " * 300).endswith("…")
+    assert notify.excerpt("short") == "short"
+    long = "h" * 3000 + "t" * 3000
+    cut = notify.excerpt(long)
+    assert cut.startswith("h" * 1400 + notify.EXCERPT_GAP) and cut.endswith("t" * 600)
+    assert len(cut) == 1400 + len(notify.EXCERPT_GAP) + 600
+    assert notify.text_of({"text": "a\r\nb\x07c"}) == "a\nbc"
+    assert notify.text_of({"text": "z" * 9000}) == "z" * notify.TEXT_MAX
+    assert notify.text_of({}) == "" and notify.text_of("junk") == ""
+    # config.py bounds the wait and wants a model and a language.
+    import config
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "config.toml"
+        for bad, key in (("summary_wait_s = 0", "notify.summary_wait_s"),
+                         ("summary_wait_s = 11", "notify.summary_wait_s"),
+                         ('summary_model = " "', "notify.summary_model"),
+                         ('summary_language = ""', "notify.summary_language")):
+            p.write_text(f"[notify]\n{bad}\n", "utf-8")
+            try:
+                config.load(p)
+                raise AssertionError(f"{bad} was accepted")
+            except config.ConfigError as e:
+                assert key in str(e), e
+        p.write_text('[notify]\nsummarize = false\nsummary_wait_s = 0.5\n'
+                     'summary_language = "en"\n', "utf-8")
+        cfg = config.load(p)
+        assert cfg.notify.summarize is False and cfg.notify.summary_wait_s == 0.5
+        assert cfg.notify.summary_language == "en"
+        assert cfg.notify.summary_model == "qwen/qwen3.8-27b"
+
+
 def test_the_notify_route_is_token_gated_and_fast() -> None:
     """POST /notify: 401 before anything runs, 200 with the engine's
     reply verbatim, 400 for what is not a JSON object (an empty body
@@ -24017,8 +24222,15 @@ def test_the_notify_section_is_in_the_real_config_and_bounded() -> None:
     assert keys == {"enabled", "cue", "card_seconds", "stack_max",
                     "remind_every_s", "remind_times", "coalesce_s",
                     "interrupt", "quiet_s", "watch",
+                    "summarize", "summary_wait_s", "summary_model",
+                    "summary_language",
                     "corner", "anchor", "x", "y",
                     "scale", "dismiss_hotkey"}, keys
+    # The one sentence (2026-09-21): on, a second's ceiling, its own
+    # model, Hebrew — the file and the dataclass agree.
+    assert cfg.notify.summarize is True and cfg.notify.summary_wait_s == 1.0
+    assert cfg.notify.summary_model == config_mod.NotifyConfig.summary_model
+    assert cfg.notify.summary_language == "he"
     anchor = {s.key: s for s in sections["notify"].settings}["anchor"]
     assert anchor.choices == ("bottom", "top"), anchor.choices
     watch = {s.key: s for s in sections["notify"].settings}["watch"]
@@ -24171,6 +24383,22 @@ def test_the_hook_script_maps_events_and_never_fails() -> None:
     assert p["source"] == "claude-code" and p["session"] == "abc"
     assert p["project"] == "DeskIT", p["project"]
     assert len(p["body"]) == 300, len(p["body"])
+    # The whole message rides along for the one sentence (2026-09-21):
+    # lines kept, cut at the cloud-text card's 5,000, a finish only.
+    assert p["text"] == ("x " * 400).strip(), p["text"][:40]
+    p = hook.payload_from_hook({"hook_event_name": "Stop", "cwd": cwd,
+                                "last_assistant_message":
+                                    "  Done.\r\n\r\n- one  \n- two\n" + "y" * 6000})
+    assert p["text"].startswith("Done.\n\n- one\n- two\n") and len(p["text"]) == 5000
+    assert p["body"].startswith("Done. - one - two"), p["body"][:30]
+    p = hook.payload_from_hook({"hook_event_name": "Stop", "cwd": cwd})
+    assert "text" not in p and p["body"] == "", p
+    p = hook.payload_from_hook({"hook_event_name": "Notification",
+                                "notification_type": "idle_prompt",
+                                "message": "waiting",
+                                "last_assistant_message": "the turn before"})
+    assert p["kind"] == "input" and p["title"] == "Claude is waiting for you"
+    assert "text" not in p, "a question is short already, and wanted as written"
     p = hook.payload_from_hook({"hook_event_name": "Notification",
                                 "notification_type": "idle_prompt",
                                 "message": "waiting"})
