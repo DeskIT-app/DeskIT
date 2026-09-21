@@ -56,6 +56,7 @@ ACCENT_DOWN = "#c68c28"
 ACCENT_SOFT = "#332711"   # the accent at card weight, for selected states
 ACCENT_TEXT = "#f0ba5c"   # the accent at text weight — 10.66:1
 RED         = "#f1867a"
+RED_SOFT    = "#3d1a16"   # the danger red at card weight — the pill under a misheard word (review_card.RED_SOFT)
 AMBER       = "#e3a63c"   # = ACCENT, deliberately (skin\palette.py, rule 3)
 GREEN       = "#63c88c"
 VIOLET      = "#c3a2ec"

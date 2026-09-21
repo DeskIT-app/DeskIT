@@ -90,6 +90,7 @@ ACCENT_ON = "#1a1409"   # text ON the gold fill — 8.52:1
 GREEN = "#63c88c"       # 9.12:1 — done, learned
 AMBER = ACCENT          # = the accent, deliberately (see the note above)
 RED = "#f1867a"         # 7.56:1 — errors and destructive
+RED_SOFT = "#3d1a16"    # the red at card weight — the pill under a misheard word (review_card.RED_SOFT)
 TEAL = "#7fc8c8"        # 9.86:1 — a history badge, not a state
 VIOLET = "#c3a2ec"      # 8.70:1 — a history badge, and awake-while-dark
 
@@ -203,7 +204,7 @@ UI_NAMES = {
     "ACCENT": ACCENT, "ACCENT_HI": ACCENT_HI, "ACCENT_DOWN": ACCENT_DOWN,
     "ACCENT_SOFT": ACCENT_SOFT, "ACCENT_TEXT": ACCENT_TEXT,
     "ACCENT_ON": ACCENT_ON,
-    "RED": RED, "AMBER": AMBER, "GREEN": GREEN, "VIOLET": VIOLET,
+    "RED": RED, "RED_SOFT": RED_SOFT, "AMBER": AMBER, "GREEN": GREEN, "VIOLET": VIOLET,
     "TEAL": TEAL, "COOL": COOL, "RECORDING": RECORDING,
     "EDGE": EDGE, "EDGE_HI": EDGE_HI, "EDGE_DOWN": EDGE_DOWN,
     "STROKE": STROKE,

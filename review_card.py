@@ -9,12 +9,22 @@ reads identically with the skin folder deleted; only the face under it
 changes.
 
 THE ROW IS THE SENTENCE, NOT THE PAIR. Each proposal is drawn as the
-sentence as it would read after the change — a few words either side,
-the changed word on a pill — with the pasted form and the reason on a
-small line beneath. That is the shape the owner asked for and the one a
-person can answer at a glance: "מטוס -> מנטוס" is a puzzle, "הלכתי לאכול
-[מנטוס] היום" is a sentence you either said or did not. A dropped tail
-is the same row with the words struck through.
+sentence around the change — a few words either side — with the reason
+on a small line beneath. That is the shape the owner asked for and the
+one a person can answer at a glance: "מטוס -> מנטוס" is a puzzle,
+"הלכתי לאכול [מנטוס] היום" is a sentence you either said or did not. A
+dropped tail is the same row with the words struck through.
+
+THE CHANGE IS SAID THE WAY TRACK CHANGES SAYS IT (2026-09-21): what was
+heard on a red-edged pill, IN ITS PLACE in the sentence, an arrow, and
+the proposal on the gold pill with a tick in it. The pill alone ("the
+sentence as it would read after") left the owner guessing where the
+mistake had been — "maybe I meant that" — and a line through the heard
+word made it unreadable ("posh — I could also have said it is a U").
+The arrow points the way the row reads and the tick sits right after
+it, at the proposal's leading edge, so a Hebrew row and an English row
+say the same thing mirrored. widgets.Change draws the same figure on
+the desk.
 
 RIGHT-TO-LEFT, IN THREE PIECES. Every string goes through
 visual_qa.text_pil (DrawTextW + DT_RTLREADING — the one bidi path in this
@@ -43,7 +53,7 @@ from PIL import Image, ImageDraw
 # Win32 hit-test answers, spelled out so this module needs no skin import.
 HTTRANSPARENT, HTCLIENT, HTCAPTION = -1, 1, 2
 
-CARD_W = 400
+CARD_W = 460              # 400 until 2026-09-21: the heard word joined the row
 RADIUS = 20
 PAD = 16
 HEAD_H = 40               # title and sub-line
@@ -89,7 +99,7 @@ CARD = (36, 32, 26)          # CARD
 TITLE = "קריאה שנייה"
 LABELS = {ACCEPT: "נכון", REJECT: "לא", LATER: "אחר כך"}
 MORE = "ועוד {n} בדשבורד"
-NOTE_INSTEAD = "במקום: {was}"
+NOTE_INSTEAD = "במקום: {was}"   # unused since 2026-09-21: the row shows the heard word
 NOTE_DROP = "למחוק"
 NOTE_HEARD_ONE = "גם פענוח נוסף שמע כך"
 NOTE_HEARD = "גם {n} פענוחים שמעו כך"
@@ -129,8 +139,8 @@ def note_for(row: dict) -> str:
     parts = [row.get("why", "").strip()] if row.get("why") else []
     if row.get("kind") == "drop":
         parts.insert(0, NOTE_DROP)
-    else:
-        parts.append(NOTE_INSTEAD.format(was=row.get("was", "")))
+    # A replace row used to add "במקום: <was>" here. The heard word is on
+    # the row itself now, on its red pill, so the note would say it twice.
     support = int(row.get("support", 0))
     if support > 0 and row.get("kind") != "drop":
         parts.append(NOTE_HEARD_ONE if support == 1
@@ -250,23 +260,64 @@ def row_rtl(row: dict) -> bool:
     return bool(row.get("rtl", True))
 
 
-def _fit(cache: dict, row: dict, avail: float, pt: float, s: float):
-    """The three images of a sentence line, trimmed until they fit.
+ARROW_RTL, ARROW_LTR, TICK = "\u2190", "\u2192", "\u2713"
 
-    The pill and the changed word are never trimmed; the contexts lose
-    one word at a time from their FAR ends (the start of `right`, the end
-    of `left`), the longer one first, and grow an ellipsis where they
-    were cut.
 
-    The three pieces are rendered in the ROW'S direction (`row["rtl"]`,
-    which review.snippet decides from the sentence), so an English
-    sentence is shaped left to right and its ellipsis and punctuation
-    stay at the ends they belong to."""
+def _heard_piece(cache: dict, row: dict, pt: float, s: float):
+    """The heard word on its red pill, and the arrow after it, as ONE
+    image in the row's reading order — None for a drop row, which has
+    no proposal to point at (its words are the pill, struck)."""
+    if row.get("kind") == "drop" or not (row.get("was") or "").strip():
+        return None
     rtl = row_rtl(row)
+    txt = _text(cache, row["was"], pt, colour=RED, rtl=rtl)
+    pad = int(8 * s)
+    pill = Image.new("RGBA", (txt.width + 2 * pad, txt.height + int(6 * s)),
+                     (0, 0, 0, 0))
+    pill.alpha_composite(_rr(pill.size, 7 * s, fill=RED_SOFT + (230,),
+                             outline=RED + (150,), width=1))
+    pill.alpha_composite(txt, (pad, int(3 * s)))
+    arrow = _text(cache, ARROW_RTL if rtl else ARROW_LTR, pt + 2,
+                  colour=ACCENT, rtl=False)
+    gap = int(6 * s)
+    out = Image.new("RGBA", (pill.width + gap + arrow.width,
+                             max(pill.height, arrow.height)), (0, 0, 0, 0))
+    h = out.height
+    if rtl:      # read first = on the right: the pill right, the arrow left
+        out.alpha_composite(pill, (gap + arrow.width, (h - pill.height) // 2))
+        out.alpha_composite(arrow, (0, (h - arrow.height) // 2))
+    else:
+        out.alpha_composite(pill, (0, (h - pill.height) // 2))
+        out.alpha_composite(arrow, (pill.width + gap, (h - arrow.height) // 2))
+    return out
+
+
+def _fit(cache: dict, row: dict, avail: float, pt: float, s: float):
+    """The images of a sentence line, trimmed until they fit: the
+    context before, the heard word on its red pill with the arrow (a
+    replace row), the proposal on the gold pill, the context after.
+
+    The pills, the arrow and the changed word are never trimmed; the
+    contexts lose one word at a time from their FAR ends (the start of
+    `right`, the end of `left`), the longer one first, and grow an
+    ellipsis where they were cut.
+
+    Every piece is rendered in the ROW'S direction (`row["rtl"]`, which
+    review.snippet decides from the sentence), so an English sentence is
+    shaped left to right and its ellipsis and punctuation stay at the
+    ends they belong to. Returns (before, heard, word, after, pill_w) —
+    `heard` is None on a drop row."""
+    rtl = row_rtl(row)
+    drop = row.get("kind") == "drop"
     word = _text(cache, row.get("word") or " ", pt, colour=(
-        RED if row.get("kind") == "drop" else ACCENT_TEXT), weight=600,
-        rtl=rtl)
-    pill_w = word.width + 16 * s
+        RED if drop else ACCENT_TEXT), weight=600, rtl=rtl)
+    heard = _heard_piece(cache, row, pt, s)
+    if heard is not None:
+        avail -= heard.width + 8 * s
+    # the tick shares the proposal's pill: its width goes into pill_w
+    tick = None if drop else _text(cache, TICK, pt, colour=ACCENT_TEXT,
+                                   weight=600, rtl=False)
+    pill_w = word.width + 16 * s + (tick.width + 5 * s if tick else 0)
     right_words = (row.get("right") or "").split()
     left_words = (row.get("left") or "").split()
     cut_r = cut_l = False
@@ -294,7 +345,7 @@ def _fit(cache: dict, row: dict, avail: float, pt: float, s: float):
             left_words.pop()
             cut_l = True
         ri, li, total = render()
-    return ri, word, li, pill_w
+    return ri, heard, word, li, pill_w
 
 
 def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
@@ -336,9 +387,10 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
     pt = 11.0 * s
     avail = width - 2 * pad - (PENCIL_W + 8) * s
     for index, row in enumerate(rows):
-        ri, word, li, pill_w = _fit(cache, row, avail, pt, s)
+        ri, heard, word, li, pill_w = _fit(cache, row, avail, pt, s)
         line_h = max(word.height, ri.height if ri else 0,
-                     li.height if li else 0) + 6 * s
+                     li.height if li else 0,
+                     heard.height - 6 * s if heard else 0) + 6 * s
         cy = y + line_h / 2
         # the pencil: type what the word should be
         pen = _text(cache, PENCIL, 12.0 * s, rtl=False,
@@ -364,6 +416,11 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
         if ri is not None:
             img.alpha_composite(ri, (int(place(ri.width)),
                                      int(cy - ri.height / 2)))
+        if heard is not None:
+            # the heard word and the arrow, before the proposal in
+            # reading order — the figure widgets.Change draws on the desk
+            img.alpha_composite(heard, (int(place(heard.width)),
+                                        int(cy - heard.height / 2)))
         pill_h = word.height + 6 * s
         drop = row.get("kind") == "drop"
         pill = _rr((pill_w, pill_h), 7 * s,
@@ -371,8 +428,22 @@ def compose(card: dict, scale: float = 1.0, progress: float = 1.0,
                    outline=(RED if drop else ACCENT_TEXT) + (110,), width=1)
         px = place(pill_w)
         img.alpha_composite(pill, (int(px), int(cy - pill_h / 2)))
-        img.alpha_composite(word, (int(px + 8 * s),
-                                   int(cy - word.height / 2)))
+        if drop:
+            img.alpha_composite(word, (int(px + 8 * s),
+                                       int(cy - word.height / 2)))
+        else:
+            # inside the gold pill, in reading order: the tick, then the
+            # word — the tick at the leading edge, right after the arrow
+            tick = _text(cache, TICK, pt, colour=ACCENT_TEXT, weight=600,
+                         rtl=False)
+            if rtl:
+                tx = px + pill_w - 8 * s - tick.width
+                wx = tx - 5 * s - word.width
+            else:
+                tx = px + 8 * s
+                wx = tx + tick.width + 5 * s
+            img.alpha_composite(tick, (int(tx), int(cy - tick.height / 2)))
+            img.alpha_composite(word, (int(wx), int(cy - word.height / 2)))
         if drop:
             # struck through: the words are the ones to go
             d = ImageDraw.Draw(img)

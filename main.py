@@ -395,7 +395,13 @@ class App:
             max_terms=cfg.vocab.max_terms,
             replace_after_hits=cfg.vocab.replace_after_hits,
             hebrew_after_hits=getattr(cfg.vocab, "hebrew_after_hits", 3))
-        hotwords = self.vocab.hotwords if cfg.vocab.enabled else None
+        # A callable, asked at every decode — and it asks the LIVE config,
+        # so the Words place's "Use them" switch (vocab.enabled, a live
+        # section) empties the prompt at the next dictation rather than
+        # at the next start. It used to be bound once here, which made
+        # the switch honest about apply() and a liar about the prompt.
+        hotwords = (lambda: self.vocab.hotwords()
+                    if self.cfg.vocab.enabled else "")
         if self._model_wanted:
             # fail fast: no key. english_later: usable the moment the
             # Hebrew model is ready; the English detector lands on its
@@ -2826,6 +2832,9 @@ class App:
                             "message": "the consent card is beside the dot"}
                 return {"ok": True, "asked": False,
                         "allowed": privacy.allowed(kind)}
+            if command == "vocab":
+                return self._vocab_command(str(args.get("do", "")).strip().lower(),
+                                           args)
             if command == "quit":
                 singleton.request_quit()
                 return {"ok": True}
@@ -2952,6 +2961,48 @@ class App:
             return {"ok": True, "recovery": recovery,
                     "message": "keep this key somewhere safe — it is shown once"}
         return {"ok": False, "error": f"unknown account action {do!r}"}
+
+    def _vocab_command(self, do: str, args: dict) -> dict:
+        """The Words place's three doors (2026-09-21): ``learn`` a pair
+        typed by hand, ``edit`` one, ``forget`` one. The app owns
+        vocab.json while it runs — Vocab.save() writes the whole list —
+        so the desk asks here rather than writing the file under it;
+        with the app stopped the desk edits the file itself and this
+        copy reads it at the next start. Each door saves, logs the
+        count (never the words — D8), writes the pair to
+        transcripts.log the way a learned correction is written, and
+        nudges the account worker so the other copies see it within
+        the second."""
+        heard = " ".join(str(args.get("heard") or "").split())
+        meant = " ".join(str(args.get("meant") or "").split())
+        try:
+            if do == "learn":
+                entry = self.vocab.learn_by_hand(heard, meant)
+                transcript_log.info("LEARNED | %s || %s", heard, meant)
+                self._bump(learned=1)
+                what = "learned"
+            elif do == "edit":
+                new_heard = " ".join(str(args.get("new_heard") or heard).split())
+                entry = self.vocab.edit(heard, new_heard, meant)
+                transcript_log.info("LEARNED | %s || %s", new_heard, meant)
+                what = "changed"
+            elif do == "forget":
+                if not self.vocab.forget(heard):
+                    return {"ok": False, "error": "that word is not in the list"}
+                entry = None
+                what = "forgotten"
+            else:
+                return {"ok": False, "error": f"unknown vocab action {do!r}"}
+        except KeyError:
+            return {"ok": False, "error": "that word is not in the list"}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        log.info("vocabulary: one pair %s by hand — now %d entries", what,
+                 len(self.vocab))
+        self._nudge_sync("vocab")
+        return {"ok": True, "message": f"{what} — {len(self.vocab)} words",
+                "count": len(self.vocab),
+                "hits": int(entry.get("hits", 0)) if entry else 0}
 
     @staticmethod
     def _report_sent(rid: str) -> None:
