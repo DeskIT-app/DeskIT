@@ -94,12 +94,18 @@ key, hotkey, device, folder, port and position, which never leave the
 PC — and the words the app learned from your corrections. "What you
 said": the text of what you dictated, translated, punctuated and looked
 up, one row per event, so the Said page is the same on every PC you
-sign into. Never audio, screenshots or clips. **Plain statement: the
-rows of the "what you said" sync sit in the developer's database. Its
-security rules separate users from each other; they do not stop the
-project's administrator from reading a row.** If that is not acceptable,
-leave that sync off — dictation and everything else work exactly the
-same.
+sign into. Never audio, screenshots or clips. **Plain statement: what
+you said, and your cloud keys, leave the PC locked with a key that only
+your own PCs hold (the account lock, since 1.0.1). The rows sit in the
+developer's database sealed; its security rules separate users from
+each other, and the lock keeps the project's administrator from reading
+what you said or your keys.** The time and kind of each row stay
+readable so the syncs can order them. A new PC gets the key when a PC
+already signed in approves it (a code compared on both screens), or
+when you type the recovery key the app made for you; the server only
+ever carries the key wrapped. If even that is not acceptable, leave
+the "what you said" sync off — dictation and everything else work
+exactly the same.
 
 Problem reports you chose to send: the report text you typed, only the
 attachments you ticked (a screenshot, a recording, the transcript, a
@@ -119,7 +125,9 @@ everything at once — rows, files and the account — and "Sign out"
 revokes the session everywhere. Rights: access, rectification and
 deletion through the app and by e-mail. The whole database schema is
 published at `supabase/migrations/` in the repository; no table in it
-has a column that could hold an API key.
+has a column the server could read an API key from — the one table that
+carries your cloud keys (`vault`) holds them sealed under your
+account's own key.
 
 ## 5. The phone companion
 

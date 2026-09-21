@@ -62,9 +62,24 @@ def _history_follows_the_sync() -> None:
         privacy.grant("history_sync", cc.card_for("history_sync")["text_version"])
 
 
+def _the_lock_asks_nothing_new() -> None:
+    """The account lock (2026-09-21): the two sync cards say, from this
+    build on, that what was said and the cloud keys leave the PC sealed
+    under a key only the person's own PCs hold — strictly less than the
+    words they replace promised (the old history card said the project's
+    admin could technically read a row). A consent given under the old
+    words is rewritten to the new version rather than going stale and
+    shutting the sync on every copy at once; a row of any other version,
+    or none, is left alone (privacy.CARRIED_FORWARD lists exactly which)."""
+    import privacy
+    for kind, old_versions in privacy.CARRIED_FORWARD.items():
+        privacy.carry_forward(kind, old_versions)
+
+
 #: (config_version this step PRODUCES, the step). Append, never reorder.
 STEPS: list[tuple[int, object]] = [(2, _sync_follows_the_account),
-                                   (3, _history_follows_the_sync)]
+                                   (3, _history_follows_the_sync),
+                                   (4, _the_lock_asks_nothing_new)]
 
 
 def current() -> int:

@@ -28,17 +28,42 @@ one Realtime topic per account that carries nothing but "go and pull".
   travels on it is the names of the stores that just changed and the
   id of the device that changed them; the rows themselves still come
   down through the tables above. No table is published to Realtime.
+- `migrations/0004_account_lock.sql` — the account lock. `history`
+  loses its `text` and `raw` columns and gains `cipher`: what you said
+  arrives sealed under a key only your own PCs hold (AES-256-GCM through
+  Windows' own CNG in the app, `vault.py`). `vault` holds your cloud keys
+  the same way, one sealed row per key name. `profiles.lock_id` is the
+  key's fingerprint (sixteen hex characters of a hash — tells a PC
+  whether it holds the right key, opens nothing). `recovery` is the
+  account key wrapped under a recovery key the app generated and you
+  keep (scrypt, then AES-GCM). `pairings` is a new PC's request to
+  join: its public key, the eight-character code it shows, and — once a
+  PC that holds the key approved it — the key wrapped to that public
+  key; fifteen minutes, one use. Every opaque column carries
+  `is_sealed()` (a version tag and standard base64) in place of
+  `looks_like_key()`. The plaintext history rows that were there were
+  deleted, not converted.
+- `migrations/0005_is_sealed_within_postgres_limits.sql` — the same
+  `is_sealed()` with its length cap in `char_length` instead of the
+  regex bound: Postgres caps a bound at 255, and 0004's `{16,7600}`
+  made the function refuse every call (measured live an hour after it
+  ran, before any row was written).
 
 ## How to read it in ten minutes
 
-1. **No column can hold a key.** Search the file for `key`, `secret`,
-   `token`, `password`: they appear only in comments and in the name of
-   the check function, `looks_like_key()`. Every free-text and jsonb
-   column carries `not public.looks_like_key(...)`, so a pasted API key,
-   a bearer or a JWT is refused by the database itself. The patterns
-   are the same ones the app's redactor uses (`redact.py`) — the block
-   `BEGIN KEY-PATTERNS` at the top of the file is parsed by a test and
-   compared with the code character for character.
+1. **No column the server can read holds a key.** Search the files for
+   `key`, `secret`, `token`, `password`: they appear only in comments
+   and in the name of the check function, `looks_like_key()`. Every
+   free-text and jsonb column carries `not public.looks_like_key(...)`,
+   so a pasted API key, a bearer or a JWT is refused by the database
+   itself. The patterns are the same ones the app's redactor uses
+   (`redact.py`) — the block `BEGIN KEY-PATTERNS` at the top of 0001 is
+   parsed by a test and compared with the code character for character.
+   Since 0004 your cloud keys DO travel — to the `vault` table, sealed
+   under your account's key, which the server never sees; that column
+   and the other opaque ones (`history.cipher`, `recovery.wrapped`,
+   `pairings.applicant` and `handed`) carry `is_sealed()` instead,
+   which admits only a version tag and standard base64.
 2. **Every table has row-level security on, and every policy is
    `to authenticated` with `(select auth.uid()) = user_id`.** You can
    see only your own rows. The `anon` role — what a client holding the
@@ -55,9 +80,10 @@ one Realtime topic per account that carries nothing but "go and pull".
    positions and the privacy gates before it leaves your PC — a test
    holds the list). `vocab_sync` is one row per learned word.
    `history` holds what you dictated only if you turned the history
-   sync on, and its comment says plainly that the developer can
-   technically read it: RLS separates users from each other, not from
-   the project admin. Audio, screenshots and clips have no table.
+   sync on — sealed, since 0004: RLS separates users from each other,
+   and the lock keeps the project admin from reading a row (only `ts`,
+   `kind`, `engine` and `seconds` are plain, for the ordering). Audio,
+   screenshots and clips have no table.
 5. **Delete means delete.** The app removes your files from the bucket
    (it holds the delete policy), then `delete_me()` removes your rows
    and your `auth.users` row — which invalidates every refresh token —
