@@ -1042,6 +1042,32 @@ exactly what classic did.
   see. The dashboard has its own longer backstop (`DOT_WAIT_S`) for an
   app that stops answering mid-drag.
 
+  **Since 2026-09-21 the move is FRAMED, from both doors.** The shelf's
+  head band has a Move button (`shelf_card.MOVE`, its glyph the dot
+  itself — the owner read a four-arrow glyph as "it moves the bar"),
+  and it and the desk's button both land in `main.App._dot_move_begin`:
+  the shelf closes, the dot is armed with `hold=True` (a drop no longer
+  ends the mode — he may drag again; `rest()` is a no-op while the hold
+  stands and `end_move()` clears both), and `dotmove.MoveFrame` puts up
+  one click-through Glass per monitor with `move_card.glow` on it (a
+  warm rim, alpha 0 well inside, ~0.18 of the shorter side in) and the
+  Done card at the top-centre of the monitor the dot is on. Four doors
+  out, all through `MoveFrame.pressed`: Done (a click), Enter, Esc, and
+  `DOT_FRAME_S` (180 s). Done and the deadline keep the dot where the
+  last drop put it (every drop was already written by `placed`); Esc
+  puts it back through the same `placed`. The keys come off the global
+  hook (`_popup_key`, first in line, no pointer gate — the shelf's
+  argument for its Esc). Two z-order facts that cost an evening each
+  elsewhere: every window here is topmost and the NEWEST topmost is on
+  top, so the lights are slipped UNDER the dot (`Glass.under`,
+  `StatusDot.hwnd`) AND the dot's painter raises itself the frame a
+  move begins — whichever is built second, the dot is on top; and the
+  Done card's frost is grabbed BEFORE any light exists, because the
+  card sits inside the top band. `_dot_move_pressed` does its work on a
+  thread of its own: Esc writes config.toml, and the hook is where
+  300 ms is a dropped hook. `dashboard.DOT_WAIT_S` is longer than
+  `DOT_FRAME_S` on purpose.
+
   **NEITHER PAINT PATH'S DRAG CAN BE DRIVEN WITHOUT A REAL MOUSE, and
   the second half of that was measured on 2026-09-08.** The glass path
   is Windows' own modal move loop, which wants real input, and the

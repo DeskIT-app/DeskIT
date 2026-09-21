@@ -39467,6 +39467,538 @@ def test_needs_screen_list_is_complete():
     assert not strays, f"stand up the ask card, not in NEEDS_SCREEN: {strays}"
 
 
+def test_the_shelf_has_a_move_button_with_the_dot_on_it() -> None:
+    """The fourth head button (2026-09-21): Move, left of Pause, the dot
+    itself drawn on it.
+
+    The owner's second correction on the prototype was the glyph: a
+    four-arrow "move" cursor read as "it moves the bar", so the button
+    carries the blue bead with its halo — the picture of the thing it
+    moves. Checked at three scales and with an empty and a full pile:
+    the rectangle sits in the head band left of Pause and right of the
+    title, inside the card; a hit at its centre answers with its name;
+    action_at calls it chrome; it lights on hover and only it does; and
+    the bead is BLUE on the plate — the dot's own cool, not the dim ink
+    the other glyphs use.
+    """
+    import shelf_card as sc
+
+    assert sc.MOVE == "move" and sc.MOVE in sc.CHROME
+    cool = tuple(sc.INK["cool"])
+    for scale in (0.6, 1.0, 1.4):
+        for waiting in (0, 4):
+            card = sc.card_for({"mode": "listening", "uptime_s": 90},
+                               _shelf_pile(waiting), "", False, max_rows=5)
+            boxes = sc.regions(card, scale)
+            x0, y0, x1, y1 = boxes[sc.MOVE]
+            head_top, head_h = sc._bands(card, scale)["head"]
+            assert y0 >= sc.SHADOW + head_top - 1, (scale, y0, head_top)
+            assert y1 <= sc.SHADOW + head_top + head_h + 1, (scale, y1)
+            assert x1 <= boxes[sc.PAUSE][0], "Move is not left of Pause"
+            assert x0 >= sc.SHADOW + sc.PAD * scale, "Move is off the card"
+            assert (y0, y1) == (boxes[sc.PAUSE][1], boxes[sc.PAUSE][3]), \
+                "Move is not on the same line as Pause"
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            assert sc.hit_test(card, scale, cx, cy) == (sc.HTCLIENT, sc.MOVE)
+            assert sc.action_at(card, sc.MOVE) == ("chrome", sc.MOVE)
+            plain = sc.compose(card, scale, None)
+            lit = sc.compose(card, scale, sc.MOVE)
+            other = sc.compose(card, scale, sc.PAUSE)
+            edge = (int(x0 - sc.SHADOW + 2), int(y0 - sc.SHADOW + 2))
+            assert lit.getpixel(edge) != plain.getpixel(edge), \
+                (scale, "hovering Move does not light it")
+            assert other.getpixel(edge) == plain.getpixel(edge), \
+                (scale, "hovering Pause lit Move")
+            # THE BEAD: somewhere in the left part of the plate there is a
+            # pixel that is the dot's blue, opaque — the bead's core.
+            bead_box = (int(x0 - sc.SHADOW), int(y0 - sc.SHADOW),
+                        int(x0 - sc.SHADOW + sc.BEAD_PX * scale + 6),
+                        int(y1 - sc.SHADOW))
+            region = plain.crop(bead_box)
+            blues = [p for p in region.getdata()
+                     if p[3] > 200 and abs(p[0] - cool[0]) < 40
+                     and abs(p[2] - cool[2]) < 40 and p[2] > p[0] + 40]
+            assert blues, (scale, "no blue bead on the Move button")
+            # and the row still fits, at every scale, with the longest
+            # state word and the longest uptime line: the title ends
+            # before Move, and the uptime line is CUT to the room (an
+            # ellipsis, shelf_card._fit) rather than painted under it —
+            # measured 2026-09-21, "Recording" at 0.6 ran 3 px under Move
+            # with 8 px gaps, which is why HEAD_GAP is 6.
+            long_card = sc.card_for({"mode": "recording",
+                                     "uptime_s": 4 * 3600 + 32 * 60,
+                                     "note": "12:34"},
+                                    _shelf_pile(waiting), "", False)
+            boxes2 = sc.regions(long_card, scale)
+            cache: dict = {}
+            title = sc._text(cache, long_card["title"], 13.0 * scale,
+                             colour="ink", weight=700, rtl=False)
+            left = sc.SHADOW + sc.PAD * scale + 17 * scale
+            assert left + title.width < boxes2[sc.MOVE][0], \
+                (scale, "the title runs under the Move button")
+            head_top2, _h = sc._bands(long_card, scale)["head"]
+            painted = sc.compose(long_card, scale, None, cache)
+            mx = int(boxes2[sc.MOVE][0] - sc.SHADOW)
+            # the strip between the text and Move's plate, on the
+            # uptime line, is empty: nothing was painted under the plate
+            strip = painted.crop((mx - 3, int(head_top2 + 22 * scale),
+                                  mx, int(head_top2 + 22 * scale + 9 * scale)))
+            assert all(px[3] == 0 for px in strip.getdata()), \
+                (scale, "the uptime line runs into the Move button")
+
+
+def test_the_halo_is_light_at_the_edge_and_nothing_in_the_middle() -> None:
+    """move_card.glow: the rim round one monitor.
+
+    Alpha 0 across the whole middle of the picture — the light belongs to
+    the edge, and a window whose middle is not alpha 0 would tint every
+    screen; brighter at the edge than a fifth of the way in; the same on
+    all four edges; a corner no brighter than the brighter of its two
+    edges (they are joined with `lighter`, never added); gold, not red
+    (R/(R+G+B) well under the 0.8 that every photosensitivity guideline
+    singles out); and the owner's second picture, not his first — the
+    edge alpha stays under 220 and the reach is 0.18 of the shorter side.
+    """
+    import move_card as mc
+
+    for w, h in ((2560, 1440), (1920, 1080), (800, 600)):
+        img = mc.glow(w, h)
+        assert img.size == (w, h) and img.mode == "RGBA"
+        px = img.load()
+        span = mc.reach(w, h)
+        assert span == max(mc.REACH_MIN, round(min(w, h) * mc.REACH)), span
+        # the middle is dark
+        for x, y in ((w // 2, h // 2), (span + 4, h // 2), (w // 2, span + 4),
+                     (w - span - 5, h // 2), (w // 2, h - span - 5)):
+            assert px[x, y][3] == 0, ((w, h), (x, y), px[x, y])
+        # the edge is lit, and less so a fifth of the way in
+        edge = px[0, h // 2][3]
+        inner = px[span // 5, h // 2][3]
+        assert 120 <= edge <= 220, ((w, h), edge)
+        assert 0 < inner < edge, ((w, h), inner, edge)
+        # four edges alike
+        assert px[w - 1, h // 2][3] == edge, "right differs from left"
+        assert abs(px[w // 2, 0][3] - edge) <= 1, "top differs from left"
+        assert abs(px[w // 2, h - 1][3] - edge) <= 1, "bottom differs"
+        # a corner is the brighter of its edges, not their sum
+        assert px[0, 0][3] <= max(px[0, 8][3], px[8, 0][3]) + 1, px[0, 0]
+        # gold: warm, and nowhere near the red that guidelines single out
+        r, g, b, _a = px[0, h // 2]
+        assert r > g > b, (r, g, b)
+        assert r / (r + g + b) < 0.5, (r, g, b)
+
+
+def test_the_done_card_claims_its_button_and_nothing_else() -> None:
+    """move_card's Done card: the words, the geometry, the picture — and
+    the one rectangle a click can land on.
+
+    The card sits at the top-centre of the monitor the dot is on
+    (`where`), TOP_MARGIN below the top of its work area; the button is
+    inside the face and answers HTCLIENT at its centre; the title, the
+    Esc note, the face and the whole shadow margin answer HTTRANSPARENT,
+    so a click aimed at whatever is under the card lands there; there is
+    no HTCAPTION anywhere — this card is dismissed, not dragged; the
+    button is the accent's gold at rest and brighter under the pointer;
+    and compose() is exactly measure() big at every scale.
+    """
+    import move_card as mc
+
+    card = mc.card_for()
+    assert "dot" in card["title"] and card["done"] == "Done"
+    assert card["enter"] == "Enter" and card["esc"] == "Esc"
+    accent = tuple(mc.sc.INK["accent"])
+    for scale in (0.6, 1.0, 1.4):
+        cache: dict = {}
+        width, height = mc.measure(card, scale, cache)
+        assert width > 0 and height > 0
+        boxes = mc.regions(card, scale, cache)
+        assert list(boxes) == [mc.DONE]
+        x0, y0, x1, y1 = boxes[mc.DONE]
+        assert x0 >= mc.SHADOW and y0 >= mc.SHADOW, (scale, x0, y0)
+        assert x1 <= mc.SHADOW + width and y1 <= mc.SHADOW + height, \
+            (scale, x1, y1)
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        assert mc.hit_test(card, scale, cx, cy, cache) == (mc.HTCLIENT,
+                                                            mc.DONE)
+        for x, y in ((2, 2), (mc.SHADOW + 4, mc.SHADOW + 4),
+                     (x1 + 12, cy), (mc.SHADOW + width - 2, mc.SHADOW + 2),
+                     (mc.SHADOW + width + mc.SHADOW - 2,
+                      mc.SHADOW + height + mc.SHADOW - 2)):
+            code, what = mc.hit_test(card, scale, x, y, cache)
+            assert (code, what) == (mc.HTTRANSPARENT, None), (scale, x, y,
+                                                              code, what)
+        img = mc.compose(card, scale, None, cache)
+        assert img.size == (width, height), (scale, img.size, width, height)
+        lit = mc.compose(card, scale, mc.DONE, cache)
+        # the button's plate: gold at rest, and a different gold lit
+        inside = (int(x0 - mc.SHADOW + 4), int(y0 - mc.SHADOW + 4))
+        rest = img.getpixel(inside)
+        assert rest[3] > 200 and all(abs(rest[i] - accent[i]) < 30
+                                     for i in range(3)), (scale, rest)
+        assert lit.getpixel(inside) != rest, "hover does not light Done"
+        # somewhere in the button the word is drawn in the on-accent ink
+        # (dark on gold)
+        dark = [p for p in img.crop((int(x0 - mc.SHADOW), int(y0 - mc.SHADOW),
+                                     int(x1 - mc.SHADOW), int(y1 - mc.SHADOW))
+                                    ).getdata()
+                if p[3] > 200 and p[0] + p[1] + p[2] < 150]
+        assert dark, (scale, "no word on the button")
+    # where it goes: centred along the top of the field, the face
+    # TOP_MARGIN below the field's top edge, shadow accounted for
+    win = (300 + mc.SHADOW * 2, 100 + mc.SHADOW * 2)
+    x, y = mc.where(win, (-1920, 209, 1920, 1040), mc.SHADOW)
+    assert x == -1920 + (1920 - win[0]) // 2, x
+    assert y + mc.SHADOW == 209 + mc.TOP_MARGIN, y
+
+
+def test_a_held_move_survives_a_drop_and_ends_on_end_move() -> None:
+    """overlay.StatusDot: the framed move's contract with the painter.
+
+    The painter calls rest() on every drop (skin\\dot.py's dropped), and
+    the older door wants exactly that — one move, then the disc is a
+    button again (test_the_real_dot_window_moves_while_the_app_keeps_
+    running asserts it on the live window). The framed move wants the
+    opposite: he may drag again, and again, until Done. So move(hold=True)
+    makes rest() a no-op, end_move() ends both, and a plain move() is
+    untouched. The deadline still wins over the hold — moving() reads the
+    clock alone — which is what lets a frame nobody closed expire.
+    """
+    d = overlay_mod.StatusDot()
+    d._thread = threading.current_thread()
+    assert d.move(10, hold=True) is True
+    assert d.moving() and d.held()
+    d.rest()
+    assert d.moving(), "a drop ended a held move"
+    assert d.state()["moving"] is True
+    d.end_move()
+    assert not d.moving() and not d.held()
+    # the deadline beats the hold
+    assert d.move(10, hold=True)
+    d._move_until = time.monotonic() - 0.01
+    assert not d.moving() and d.held()
+    d.end_move()
+    # a plain move is what it always was: one drop, and it is over
+    assert d.move(10) is True and not d.held()
+    d.rest()
+    assert not d.moving()
+    # and no dot to move says so, hold or not
+    off = overlay_mod.StatusDot.off()
+    assert off.move(10, hold=True) is False and not off.held()
+    assert overlay_mod.DOT_FRAME_S > overlay_mod.DOT_MOVE_S
+
+
+def test_the_move_frame_answers_enter_and_esc_only_while_it_is_up() -> None:
+    """dotmove.MoveFrame, without a window: the keys, the doors and the
+    deadline, on the bare loop a copy with skin\\ deleted would run.
+
+    Off, every key passes and costs nothing. Up, Enter is "done" and Esc
+    is "cancel", both swallowed, any other key passes; the first door
+    out takes the frame down, so a second Enter reports nothing; and a
+    deadline nobody met arrives as "expired" — the door the halo needs
+    so it can never be left burning.
+    """
+    import dotmove
+
+    got: list = []
+    frame = dotmove.MoveFrame(on_press=got.append)
+    had = dotmove.skin
+    dotmove.skin = None                    # the bare loop, on purpose
+    try:
+        frame.start()
+        assert frame._alive.is_set(), "the frame's thread never came up"
+        assert not frame.visible()
+        assert frame.on_key(dotmove.VK_RETURN) is False
+        assert frame.on_key(dotmove.VK_ESCAPE) is False
+        assert got == []
+        # Enter
+        frame.show((10, 10, 48, 48), time.monotonic() + 30)
+        assert frame.visible()
+        assert frame.on_key(0x41) is False, "a letter was eaten"
+        assert frame.on_key(dotmove.VK_RETURN) is True
+        assert got == ["done"] and not frame.visible()
+        assert frame.on_key(dotmove.VK_RETURN) is False, "reported twice"
+        # Esc
+        frame.show((10, 10, 48, 48), time.monotonic() + 30)
+        assert frame.on_key(dotmove.VK_ESCAPE) is True
+        assert got == ["done", "cancel"] and not frame.visible()
+        # the deadline
+        frame.show((10, 10, 48, 48), time.monotonic() + 0.15)
+        deadline = time.monotonic() + 2.0
+        while frame.visible() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert got == ["done", "cancel", "expired"], got
+        assert not frame.visible()
+        # a press with nobody listening is not an error
+        quiet = dotmove.MoveFrame()
+        quiet.show(None, time.monotonic() + 30)
+        assert quiet.on_key(dotmove.VK_RETURN) is True
+    finally:
+        dotmove.skin = had
+        frame.stop()
+
+
+def test_the_move_button_closes_the_shelf_and_frames_the_dot() -> None:
+    """main.App: both doors — the shelf's Move button and the desk's
+    "Move the dot" — open the same framed move, and the four doors out
+    end it the right way.
+
+    Begin: the shelf is hidden, the dot is armed WITH the hold, where it
+    was is remembered, the frame is shown with the dot's rectangle and
+    a deadline DOT_FRAME_S away. Done and expired: the hold is cleared,
+    the frame hidden, nothing written (every drop already was). Esc:
+    the dot goes back where the move began — through placed(), so the
+    same pair of lines is written that a drag writes — and a dot that
+    was in its corner walks home with the sentinel in both. No dot: no
+    frame, and the pipe's reply says so. The keys reach the frame from
+    _popup_key before anything else.
+    """
+    import main as main_mod
+    import shelf_card as sc
+
+    class _Frame:
+        def __init__(self):
+            self.shown: list = []
+            self.hidden = 0
+            self.keys: list = []
+            self.up = False
+
+        def show(self, rect, until):
+            self.shown.append((rect, until))
+            self.up = True
+
+        def hide(self):
+            self.hidden += 1
+            self.up = False
+
+        def on_key(self, vk):
+            self.keys.append(vk)
+            return self.up and vk in (0x0D, 0x1B)
+
+    written: list = []
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg = _hint_cfg()
+    app.hint = _FakeHint()
+    app.notify_card = None
+    app.machine = type("_M", (), {"state": hotkey_mod.IDLE,
+                                  "paused": False})()
+    app._activity = "ready"
+    app._started_at = time.monotonic() - 300
+    app._rec_at = 0.0
+    app._stats_lock = threading.Lock()
+    app._stats = {"dictations": 0}
+    app._last_lock = threading.Lock()
+    app._last = None
+    app._shelf_stop_armed = False
+    app._shelf_stamp = ()
+    app.notify = app._review = app.problems = app.questions = None
+    app.shelf = _FakeShelf(card={"rows": []})
+    app.dot = overlay_mod.StatusDot(x=640, y=200, on_change=written.append)
+    app.dot._thread = threading.current_thread()
+    app.dot.rect = (640, 200, 678, 238)
+    app.move_frame = _Frame()
+    app._dot_move_from = None
+    said: list = []
+    app._say = said.append
+    app._q_last_key = 0.0
+
+    # the shelf's button
+    before = time.monotonic()
+    app._shelf_pressed(("chrome", sc.MOVE))
+    assert not app.shelf.visible(), "the panel stayed up"
+    assert app.dot.moving() and app.dot.held(), "the dot is not held"
+    assert app._dot_move_from == (640, 200)
+    assert len(app.move_frame.shown) == 1
+    rect, until = app.move_frame.shown[0]
+    assert rect == (640, 200, 678, 238)
+    assert abs(until - (before + overlay_mod.DOT_FRAME_S)) < 2.0, until
+    assert any("drag the dot" in s for s in said), said
+    # a drop mid-move is written and does NOT end it
+    app.dot.placed(900, 300)
+    assert written == [{"x": 900, "y": 300}]
+    app.dot.rest()
+    assert app.dot.moving(), "a drop ended the framed move"
+    # Enter, through the hook: the frame is first in line
+    assert app._popup_key(0x0D) is True
+    assert app.move_frame.keys == [0x0D]
+    # ...and what the frame reports lands on a thread; wait for it
+    app._dot_move_pressed("done")
+    deadline = time.monotonic() + 3.0
+    while app.dot.held() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not app.dot.held() and not app.dot.moving()
+    assert app.move_frame.hidden == 1
+    assert (app.dot.x, app.dot.y) == (900, 300), "Done moved the dot"
+    assert written == [{"x": 900, "y": 300}], "Done wrote something"
+    assert app._dot_move_from is None
+
+    # Esc puts it back where the move began
+    app.move_frame.up = False
+    app._shelf_pressed(("chrome", sc.MOVE))
+    assert app._dot_move_from == (900, 300)
+    app.dot.placed(1200, 500)
+    app._dot_move_pressed("cancel")
+    deadline = time.monotonic() + 3.0
+    while app.dot.held() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert (app.dot.x, app.dot.y) == (900, 300), "Esc did not put it back"
+    assert written[-1] == {"x": 900, "y": 300}, written
+    assert app.move_frame.hidden == 2
+    assert any("back where it was" in s for s in said), said
+
+    # a dot that was in its corner goes home on Esc, sentinel and all
+    app.dot.x = app.dot.y = overlay_mod.HINT_UNSET
+    app._shelf_pressed(("chrome", sc.MOVE))
+    app.dot.placed(50, 60)
+    app._dot_move_pressed("cancel")
+    deadline = time.monotonic() + 3.0
+    while app.dot.held() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not app.dot.dragged(), "the corner was not given back"
+    assert written[-1] == {"x": overlay_mod.HINT_UNSET,
+                           "y": overlay_mod.HINT_UNSET}, written[-1]
+
+    # the deadline: kept where it is, frame down, nothing written
+    count = len(written)
+    app._shelf_pressed(("chrome", sc.MOVE))
+    app._dot_move_pressed("expired")
+    deadline = time.monotonic() + 3.0
+    while app.dot.held() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not app.dot.moving() and len(written) == count
+    assert app.move_frame.hidden == 4
+
+    # the desk's door is the same door, and no dot says so
+    reply = app.control_command("dot", {"do": "move"})
+    assert reply["ok"] and reply["dot"]["moving"] is True, reply
+    assert "drag the dot" in reply["message"] and "Enter" in reply["message"]
+    assert len(app.move_frame.shown) == 5
+    app._dot_move_pressed("done")
+    deadline = time.monotonic() + 3.0
+    while app.dot.held() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    app.dot = overlay_mod.StatusDot.off()
+    refused = app.control_command("dot", {"do": "move"})
+    assert refused["ok"] is False and "no dot" in refused["error"], refused
+    assert len(app.move_frame.shown) == 5, "a frame with no dot to move"
+
+    # and main.py wires the key ahead of the cards, the button to the
+    # door, and the frame's thread into start and stop
+    src = (Path(__file__).resolve().parent / "main.py").read_text("utf-8")
+    keys = src[src.index("def _popup_key"):]
+    keys = keys[:keys.index("def _fresh_stats")]
+    assert keys.index("move_frame") < keys.index("review_card.on_key"), \
+        "the frame's keys are not first in line"
+    chrome = src[src.index("def _shelf_chrome"):]
+    chrome = chrome[:chrome.index("def _dot_move_begin")]
+    assert "shelf_card_mod.MOVE" in chrome and "_dot_move_begin()" in chrome
+    assert "self.move_frame.start()" in src and "self.move_frame.stop()" in src
+
+
+def test_the_move_frame_paints_a_light_on_every_monitor() -> None:
+    """The REAL windows, on the hidden desktop: skin\\move.py puts up one
+    click-through light the size of each monitor and a Done card with a
+    hit test, slips them under the dot, fades the light in, and takes
+    every one of them down on Done.
+
+    Counted through EnumWindows in a subprocess, like the dot's own
+    window tests: as many windows of the skin's class as monitors plus
+    one, each light exactly its monitor's rectangle, each light
+    WS_EX_TRANSPARENT (the mouse never sees it) and the card not; the
+    card answers HTCLIENT at its button's centre and HTTRANSPARENT at its
+    corner; a WM_LBUTTONDOWN on the button reports "done"; and nothing of
+    the class is left once it has. The dot's handle is a real Glass so
+    `under` has something to go under.
+    """
+    import subprocess
+    skin = _skin_or_skip()
+    if skin is None or not (skin.on() or skin.lite()):
+        print("        (no glass here — skipping)")
+        return
+    here = Path(__file__).resolve().parent
+    script = r"""
+import ctypes, time, sys
+import capture, dotmove, move_card as mc
+from skin.glass import Glass, CLASS_NAME
+u = ctypes.WinDLL('user32')
+u.SendMessageW.restype = ctypes.c_longlong
+u.SendMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_size_t,
+                           ctypes.c_longlong]
+u.GetWindowLongW.restype = ctypes.c_long
+u.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+u.GetClassNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
+u.GetTopWindow.restype = ctypes.c_void_p
+u.GetTopWindow.argtypes = [ctypes.c_void_p]
+u.GetWindow.restype = ctypes.c_void_p
+u.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+u.IsWindowVisible.argtypes = [ctypes.c_void_p]
+u.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+class R(ctypes.Structure):
+    _fields_ = [('l',ctypes.c_int),('t',ctypes.c_int),
+                ('r',ctypes.c_int),('b',ctypes.c_int)]
+def ours():
+    found = []
+    def cb(h, l):
+        buf = ctypes.create_unicode_buffer(64)
+        u.GetClassNameW(h, buf, 64)
+        if buf.value == CLASS_NAME and u.IsWindowVisible(h):
+            rc = R(); u.GetWindowRect(h, ctypes.byref(rc))
+            found.append((int(h), rc.l, rc.t, rc.r, rc.b,
+                          u.GetWindowLongW(h, -20)))
+        return True
+    u.EnumWindows(ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p,
+                                     ctypes.c_void_p)(cb), None)
+    return found
+dot = Glass(300, 300, 38, 38)        # stands in for the dot's window
+dot.show()
+base = ours()
+assert len(base) == 1, base
+got = []
+frame = dotmove.MoveFrame(on_press=got.append, dot_hwnd=lambda: dot.hwnd)
+frame.start()
+monitors = [tuple(m['rect']) for m in capture.monitors()]
+frame.show((300, 300, 338, 338), time.monotonic() + 30)
+time.sleep(1.2)
+now = [w for w in ours() if w[0] != int(dot.hwnd)]
+assert len(now) == len(monitors) + 1, (len(now), len(monitors), now)
+lights = [w for w in now if (w[1], w[2], w[3], w[4]) in monitors]
+assert len(lights) == len(monitors), ('a light is not its monitor', now)
+for w in lights:
+    assert w[5] & 0x20, ('a light takes the mouse', w)      # WS_EX_TRANSPARENT
+    assert w[5] & 0x8, ('a light is not topmost', w)         # WS_EX_TOPMOST
+card = [w for w in now if w not in lights]
+assert len(card) == 1, card
+h, l, t, r, b, ex = card[0]
+assert not (ex & 0x20), 'the Done card is click-through'
+assert frame.rect is not None, 'the frame does not say where the card is'
+data = mc.card_for(); cache = {}
+box = mc.regions(data, 1.0, cache)[mc.DONE]
+cx, cy = int(l + (box[0] + box[2]) / 2), int(t + (box[1] + box[3]) / 2)
+def lp(x, y): return (int(y) & 0xFFFF) << 16 | (int(x) & 0xFFFF)
+assert u.SendMessageW(h, 0x0084, 0, lp(cx, cy)) == 1, 'Done is not a button'
+assert u.SendMessageW(h, 0x0084, 0, lp(l + 1, t + 1)) == -1, \
+    'the shadow margin takes clicks'
+# the z-order: the dot above every window of ours
+order = []
+w = u.GetTopWindow(None)
+while w:
+    if int(w) in [x[0] for x in now] or int(w) == int(dot.hwnd):
+        order.append(int(w))
+    w = u.GetWindow(w, 2)                 # GW_HWNDNEXT
+assert order and order[0] == int(dot.hwnd), ('the dot is under the light',
+                                             order[:3], int(dot.hwnd))
+u.SendMessageW(h, 0x0201, 1, lp(cx - l, cy - t))
+time.sleep(0.6)
+assert got == ['done'], got
+left = [w for w in ours() if w[0] != int(dot.hwnd)]
+assert not left, ('a window stayed up after Done', left)
+frame.stop(); dot.close()
+print('MOVE FRAME OK')
+"""
+    r = subprocess.run([sys.executable, "-c", script], cwd=str(here),
+                       capture_output=True, text=True, timeout=60)
+    assert "MOVE FRAME OK" in r.stdout, (r.stdout[-2000:], r.stderr[-3000:])
+
+
 if __name__ == "__main__":
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

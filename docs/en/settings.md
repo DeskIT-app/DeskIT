@@ -31,7 +31,7 @@ beside the app keeps the defaults and the help for every key.
 | key | what it does | default | choices |
 |---|---|---|---|
 | `indicator` — Show the dot in the corner | Blue means it is listening, red means it is recording, amber means it is writing your words down. Click it and the panel opens beside it. | on | on / off |
-| `dot.corner` — Which corner the dot sits in | A corner of the main screen above the taskbar — or press Move the dot and put it anywhere you like. The panel and the key card open beside it wherever it ends up. | `top-right` | Bottom right / Top right |
+| `dot.corner` — Which corner the dot sits in | A corner of the main screen above the taskbar — or press Move the dot (here, or on the panel the dot opens), drag it anywhere you like, and press Enter. The panel and the key card open beside it wherever it ends up. | `top-right` | Bottom right / Top right |
 | `feedback.enabled` — Mark the cursor with … while it listens | The marker turns into your words when they arrive. | on | on / off |
 | `hint.enabled` — Show the key card while a key is held | A card that says what the other keys do, once the key has been held for a moment. | on | on / off |
 | `auto_pause_fullscreen` — Pause by itself while a game fills the screen | While a game or a presentation owns the whole screen, the dictation key is left to it, and comes back when it lets go. | off | on / off |

@@ -402,6 +402,20 @@ class Glass:
         except Exception:
             pass
 
+    def under(self, hwnd) -> None:
+        """Slip this window directly BELOW `hwnd` in the z-order, without
+        taking focus. Both are topmost; among topmost windows the newest
+        is on top, and a full-screen light built after the dot would
+        cover the dot — so the move frame asks to go under it. None, or
+        a handle Windows refuses, leaves the order as it is."""
+        if not hwnd:
+            return
+        try:
+            _user32.SetWindowPos(self.hwnd, ctypes.c_void_p(int(hwnd)), 0, 0,
+                                 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+        except Exception:
+            _log.debug("glass: could not go under %r", hwnd, exc_info=True)
+
     def move(self, x: int, y: int) -> None:
         self.x, self.y = int(x), int(y)
         self._dst = _POINT(self.x, self.y)

@@ -153,11 +153,14 @@ LOOKS = {
 POLL_MS = 800
 # How long this window stays hidden waiting for the dot to be dragged
 # before it comes back whether or not anything happened. The APP gives up
-# first — overlay.DOT_MOVE_S is 45 s and its next status says so, which
-# is what normally ends the wait — so this is only the backstop for an
-# app that stops answering mid-drag. A window that hid itself and never
-# came back is a worse bug than a drag that had to be asked for twice.
-DOT_WAIT_S = 75.0
+# first — the framed move ends on Done, Enter, Esc or overlay.DOT_FRAME_S
+# (180 s), and its next status says so, which is what normally ends the
+# wait — so this is only the backstop for an app that stops answering
+# mid-drag. A window that hid itself and never came back is a worse bug
+# than a drag that had to be asked for twice. Longer than the app's own
+# deadline on purpose: shorter, and the desk would come back over a
+# light that is still up.
+DOT_WAIT_S = 210.0
 # THE PILE IS AS TALL AS ITS ROWS. It was a fixed 286 px card with a
 # scroller inside it and "+N more", and the owner's photograph of it
 # on 2026-09-07 was rows in the middle of an empty card: the card grew
