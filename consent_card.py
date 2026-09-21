@@ -135,26 +135,27 @@ TEXTS: dict[str, dict] = {
         ),
     },
     "settings_sync": {
-        "version": "deskit-terms-0+en-2026-09-19",
+        "version": "deskit-terms-0+en-2026-09-21",
         "title": "Sync settings and words?",
         "blocks": (
-            (WHAT, "Your settings changes and the words you taught it — never keys, "
-                   "hotkeys, devices, folders or positions; never audio, history or "
-                   "reports."),
-            (WHOM, _DESKIT + " From there to every PC you sign in on."),
+            (WHAT, "Your settings changes, the words you taught it, and your cloud keys "
+                   "locked with your account's own key — never hotkeys, devices, folders "
+                   "or positions; never audio or reports."),
+            (WHOM, _DESKIT + " From there to every PC you sign in on. The keys arrive "
+                   "sealed; the server cannot open them."),
             (ACCOUNT, _PROJECT),
             (TERMS, _TERMS),
             (OFF, "Settings > Privacy > Withdraw."),
         ),
     },
     "history_sync": {
-        "version": "deskit-terms-0+en-2026-09-19",
+        "version": "deskit-terms-0+en-2026-09-21",
         "title": "Sync what you said?",
         "blocks": (
             (WHAT, "Everything you dictated, translated, punctuated and looked up — the "
                    "text, not the recording — so the Said page is the same on every PC."),
-            (WHOM, _DESKIT + " Kept in your account; DeskIT's key can technically read "
-                   "it — the protection separates users, not the project's admin."),
+            (WHOM, _DESKIT + " Locked before it leaves with a key only your own PCs hold; "
+                   "the server, and DeskIT's developer, cannot read it."),
             (ACCOUNT, _PROJECT),
             (TERMS, _TERMS),
             (OFF, "Settings > Privacy > Withdraw; \"Delete my account\" removes what was "
@@ -180,6 +181,7 @@ def card_for(kind: str) -> dict:
     return {"kind": kind, "text_version": words["version"],
             "title": words["title"], "blocks": list(words["blocks"]),
             "footer": FOOTER}
+
 
 
 # ---------------------------------------------------------------------------

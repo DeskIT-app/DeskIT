@@ -117,6 +117,14 @@ def _pages(out: Path) -> list[Path]:
         sb.user = lambda: {"email": "person@example.com", "id": "x", "is_anonymous": False,
                            "name": "Dana"}
         show("account"); shot("02-account-signed-in")
+        # the account's key is on another PC: the link step (the lock,
+        # 2026-09-21) — the code this PC shows, the recovery key, Later
+        real_lock = sb.lock_status
+        sb.lock_status = lambda: {"state": "waiting", "id": "", "code": "H7QM-3K2P",
+                                  "pending": [], "recovery": None, "error": ""}
+        w._link_state = "idle"
+        w._account_show("link"); shot("02-account-link")
+        sb.lock_status = real_lock
         sb.user = lambda: None
         show("mic"); shot("03-microphone")
         w._warn_silent(); shot("03-microphone-help")

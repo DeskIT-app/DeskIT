@@ -45,8 +45,12 @@ PC remembers you until you sign out, and the rest of the setup follows.
 used on the other PC, and that is all: your learned words, settings and what you said come
 down and DeskIT opens by itself — no microphone, sentence, keys or extras pages, only the downloads page if
 this PC still lacks something. The microphone and the keys are the usual ones until you
-change them in Settings. Your Groq key is never in the account: paste it once on the new PC
-(Settings > Privacy).
+change them in Settings. What you said and your cloud keys are locked with a key only your
+own PCs hold, so one more step: the page shows an eight-character code and waits; open the desk
+on your other PC — Home there shows the same code — and press **Approve**. Everything
+locked then arrives here too. No other PC at hand? Type the recovery key DeskIT made for you
+(Settings > Privacy > The lock, on any PC that is in). Or **Later**: DeskIT works meanwhile
+with your words and settings, and the desk's Account card keeps the code.
 
 Picked the wrong card? A link under each one leads to the other, and **Back** goes back to
 the two cards, not to Welcome. Signed in as the wrong person? **Not you? Sign out** under the
@@ -138,9 +142,10 @@ stand and written only if you move them:
 The hotkey to hold, and three switches asked once:
 
 - **Keep my words, settings and what I said in my account** — on. The words DeskIT
-  learned from you, the settings you changed and the text of what you said follow you to
-  any PC you sign in on, so it hears you your way from the first sentence and the Said page
-  is the same page there. Never your voice or your keys. To turn it off later:
+  learned from you, the settings you changed, the text of what you said and your cloud keys
+  follow you to any PC you sign in on, so it hears you your way from the first sentence and
+  the Said page is the same page there. What you said and the keys leave locked with a key
+  only your own PCs hold; the server cannot read them. Never your voice. To turn it off later:
   Settings > Privacy > **Withdraw** on *Syncing settings and words* and on *Syncing what
   you said* — each has its own row, so the history can go off alone; **Turn on** on the
   same row asks again. The row appears only when you signed in on the account page.

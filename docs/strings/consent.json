@@ -141,16 +141,16 @@
   },
   "settings_sync": {
     "kind": "settings_sync",
-    "text_version": "deskit-terms-0+en-2026-09-19",
+    "text_version": "deskit-terms-0+en-2026-09-21",
     "title": "Sync settings and words?",
     "blocks": [
       [
         "What leaves",
-        "Your settings changes and the words you taught it — never keys, hotkeys, devices, folders or positions; never audio, history or reports."
+        "Your settings changes, the words you taught it, and your cloud keys locked with your account's own key — never hotkeys, devices, folders or positions; never audio or reports."
       ],
       [
         "To whom",
-        "DeskIT's server (Supabase, Frankfurt) — the only server DeskIT has. From there to every PC you sign in on."
+        "DeskIT's server (Supabase, Frankfurt) — the only server DeskIT has. From there to every PC you sign in on. The keys arrive sealed; the server cannot open them."
       ],
       [
         "On whose account",
@@ -169,7 +169,7 @@
   },
   "history_sync": {
     "kind": "history_sync",
-    "text_version": "deskit-terms-0+en-2026-09-19",
+    "text_version": "deskit-terms-0+en-2026-09-21",
     "title": "Sync what you said?",
     "blocks": [
       [
@@ -178,7 +178,7 @@
       ],
       [
         "To whom",
-        "DeskIT's server (Supabase, Frankfurt) — the only server DeskIT has. Kept in your account; DeskIT's key can technically read it — the protection separates users, not the project's admin."
+        "DeskIT's server (Supabase, Frankfurt) — the only server DeskIT has. Locked before it leaves with a key only your own PCs hold; the server, and DeskIT's developer, cannot read it."
       ],
       [
         "On whose account",

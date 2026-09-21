@@ -2905,7 +2905,7 @@ class Dashboard:
             return
         stamp = (self._notify_stat(), self._review_stat(),
                  self._problems_stat(), self._questions_stat(),
-                 self._hardware_stat())
+                 self._hardware_stat(), self._lock_stat())
         if stamp != getattr(self, "_pile_stamp", None):
             self._fill_waiting()
         self._paint_rest()
@@ -2923,6 +2923,7 @@ class Dashboard:
         means.
         """
         items: list[dict] = []
+        items += self._waiting_lock()
         items += self._waiting_update()
         items += self._waiting_hardware()
         items += self._waiting_notify()
@@ -3370,7 +3371,7 @@ class Dashboard:
             return
         self._pile_stamp = (self._notify_stat(), self._review_stat(),
                             self._problems_stat(), self._questions_stat(),
-                            self._hardware_stat())
+                            self._hardware_stat(), self._lock_stat())
         p = self.parts
         items = self._waiting_items()
         count = len(items)
@@ -7989,6 +7990,7 @@ class Dashboard:
             elif name == "Privacy":
                 builders.append(lambda: self._keys_block(scroller))
                 builders.append(lambda: self._account_block(scroller))
+                builders.append(lambda: self._lock_block(scroller))
                 builders.append(lambda: self._connections_block(scroller))
             elif name == "Screen":
                 builders.append(lambda: self._recording_block(scroller))
@@ -8958,6 +8960,351 @@ class Dashboard:
                       ).place(x=x, y=0)
             x += w + 8
 
+    # ------------------------------------------------- the lock (2026-09-21)
+
+    def _lock_info(self) -> dict:
+        """status()["account"]["lock"] of the running app, or {}."""
+        if not self.running:
+            return {}
+        return dict(((self.status.get("account") or {}).get("lock") or {}))
+
+    def _lock_stat(self):
+        """What the pile watches: the lock's state, the requests, and the
+        card's own mode (a recovery key just made is a row until Done)."""
+        lock = self._lock_info()
+        return (repr(sorted(lock.items(), key=lambda kv: kv[0])),
+                getattr(self, "_lock_mode", ""), bool(getattr(self, "_lock_fresh", "")))
+
+    def _waiting_lock(self) -> list[dict]:
+        """The lock on the pile (the owner, 2026-09-21, meeting the
+        approve card beside the dot: "not outside DeskIT — inside, on
+        Home"): another PC asking to join, with its code and Approve /
+        Not now; this PC waiting for its other PC, with the code it
+        shows; a fresh recovery key, until Done; and — while the account
+        has none — the one thing worth doing before a PC is lost."""
+        lock = self._lock_info()
+        if not lock or not (self.status.get("account") or {}).get("signed_in"):
+            return []
+        now = time.time()
+        rows: list[dict] = []
+        if getattr(self, "_lock_mode", "") == "shown" and getattr(self, "_lock_fresh", ""):
+            rows.append({
+                "at": now + 2, "kind": "lock", "mark": "keys", "mark_colour": ui.AMBER,
+                "eyebrow": "Your recovery key", "eyebrow_right": False,
+                "text": f"{self._lock_fresh}  —  keep it somewhere safe, it is shown once",
+                "note": "With it, a PC with no other PC of yours at hand can open your "
+                        "account. Making a new one replaces it.",
+                "buttons": [("Copy", "gold", self._lock_copy), ("Done", "quiet", self._lock_done)],
+            })
+        for ask in lock.get("pending") or []:
+            name = ask.get("name") or "Another PC"
+            rows.append({
+                "at": now + 1, "kind": "lock", "mark": "keys", "mark_colour": ui.AMBER,
+                "eyebrow": "Your account", "eyebrow_right": False,
+                "text": f"{name} asks to join your account — its screen must show "
+                        f"{ask.get('code') or '?'}",
+                "note": "Approve only if the code is exactly that. It then gets your account's "
+                        "key: your cloud keys and what you said open there too, and the key "
+                        "crosses sealed — the server cannot read it.",
+                "buttons": [("Approve", "gold",
+                             lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
+                            ("Not now", "quiet",
+                             lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))],
+            })
+        if lock.get("state") == "waiting":
+            rows.append({
+                "at": now, "kind": "lock", "mark": "keys", "mark_colour": ui.AMBER,
+                "eyebrow": "Your account", "eyebrow_right": False,
+                "text": f"Waiting for your other PC to approve this one — Home there "
+                        f"must show {lock.get('code') or '…'}",
+                "note": "Open the desk on your other PC and press Approve. Until then this PC "
+                        "has your words and settings; what you said and your cloud keys stay "
+                        "locked. No other PC at hand? Type the recovery key DeskIT made for you.",
+                "buttons": [("Type the recovery key", "quiet", self._lock_go_type)],
+            })
+        elif lock.get("state") == "have" and lock.get("recovery") is False \
+                and getattr(self, "_lock_mode", "") != "shown":
+            rows.append({
+                "at": 0.0, "kind": "lock", "mark": "keys", "mark_colour": ui.ACCENT,
+                "eyebrow": "Your account", "eyebrow_right": False,
+                "text": "Make a recovery key — so a new PC of yours can open your account "
+                        "when this one is gone",
+                "note": "DeskIT makes it (24 characters) and shows it once; you keep it. What "
+                        "you said and your cloud keys are locked with a key only your PCs "
+                        "hold — without another PC or the recovery key, a new PC cannot open them.",
+                "buttons": [("Make a recovery key", "gold", self._lock_new_recovery)],
+            })
+        return rows
+
+    def _lock_go_type(self) -> None:
+        """The pile's [Type the recovery key]: the Privacy tab's lock card
+        with its field open and focused — one press, and the caret is
+        in the field."""
+        self._show("Settings")
+        self._settings_go("Privacy")
+        self._finish_settings()
+        self._lock_type()
+
+    def _lock_banner(self, lock: dict) -> None:
+        """One line at the top of every screen while the lock needs the
+        person (the owner, 2026-09-21: "something on every screen, up
+        top"): another PC asking, with Approve / Not now; this PC waiting,
+        with its code. On the pane, above the sheet, like the toast —
+        gone the moment nothing waits."""
+        # kept on self, not in parts: _show() replaces the parts dict on
+        # every screen switch, and the banner lives on the pane across them
+        pending = (lock.get("pending") or []) if self.running else []
+        waiting = self.running and lock.get("state") == "waiting"
+        if self.screen == "Home":
+            pending, waiting = [], False         # Home carries the same as a row
+        if pending:
+            ask = pending[0]
+            text = (f"{ask.get('name') or 'Another PC'} asks to join your account — "
+                    f"its screen must show  {ask.get('code') or '?'}")
+            buttons = [("Approve", lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
+                       ("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
+            key = ("pending", ask.get("id"), ask.get("code"))
+        elif waiting:
+            text = (f"Waiting for your other PC to approve this one — Home there must "
+                    f"show  {lock.get('code') or '…'}")
+            buttons = []
+            key = ("waiting", lock.get("code"))
+        else:
+            text, buttons, key = "", [], None
+        if key == getattr(self, "_lock_banner_key", None):
+            shown = getattr(self, "_lock_banner_card", None)
+            if shown is not None and shown.winfo_exists():
+                tk.Misc.tkraise(shown)       # a screen just slid in under it (a Card is a Canvas: its own lift wants a tag)
+            return
+        self._lock_banner_key = key
+        old = getattr(self, "_lock_banner_card", None)
+        self._lock_banner_card = None
+        if old is not None and old.winfo_exists():
+            old.destroy()
+        if key is None:
+            return
+        card = ui.Card(self.pane, CW, 46, radius=12, bg=ui.BG, fill=ui.QUOTE_BG,
+                       border=ui.AMBER, pad=10)
+        tk.Label(card.body, text=text, bg=ui.QUOTE_BG, fg=ui.FG, font=(ui.UI, 10),
+                 anchor="w").place(x=4, y=3)
+        x = CW - 20
+        for label, command in reversed(buttons):
+            w = widgets.button_width(label)
+            x -= w
+            ui.Button(card.body, label, command, h=26, w=w, quiet=True, bg=ui.QUOTE_BG
+                      ).place(x=x, y=0)
+            x -= 8
+        card.place(x=PAD, y=6)
+        tk.Misc.tkraise(card)
+        self._lock_banner_card = card
+
+    def _lock_block(self, scroller) -> None:
+        """THE LOCK under the account card: one key per account, held by
+        its own PCs, never by the server (vault.py, sb.py's lock). The
+        card says where this PC stands — it holds the key; it waits for
+        another PC to approve it and shows the code that PC must see;
+        another PC asks to join and this one can approve it — and
+        carries the recovery key: made here once, shown once, typed on a
+        PC that has no other PC at hand. Every press is a command to the
+        running app over the pipe, like the account's."""
+        # 22 for the line, 32 for a code, 34 for the sub, 30 for the
+        # recovery field when it is up, 32 for the buttons, 18 of pad
+        # each side: the typing state is the tallest and sets the card
+        card = ui.Card(scroller.inner, CW, 226, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="T H E   L O C K", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        line = tk.Label(body, text="", bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
+                        wraplength=CW - 60, justify="left", anchor="w")
+        line.place(x=0, y=22)
+        code = tk.Label(body, text="", bg=ui.CARD, fg=ui.FG, font=(ui.MEDIUM, 18), anchor="w")
+        code.place(x=0, y=48)
+        sub = tk.Label(body, text="", bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
+                       wraplength=CW - 60, justify="left", anchor="w")
+        sub.place(x=0, y=80)
+        field = ui.Field(body, w=CW - 60 - 110, h=30, bg=ui.CARD, justify="left", pt=9)
+        strip = tk.Frame(body, bg=ui.CARD, height=32, width=CW - 40)
+        strip.place(x=0, y=118)
+        self.parts["lock_line"] = line
+        self.parts["lock_code"] = code
+        self.parts["lock_sub"] = sub
+        self.parts["lock_field"] = field
+        self.parts["lock_strip"] = strip
+        self._lock_seen = None
+        self._lock_mode = ""           # "" | "typing" (the recovery field is up) | "shown" (a fresh recovery key)
+        self._lock_fresh = ""          # the recovery key just made, until Done
+        self._paint_lock(force=True)
+        scroller.bind_wheel(card)
+
+    def _lock_tick(self) -> None:
+        """Every poll, on every screen: the banner, and a note the moment
+        a request lands (the card on Home says the rest)."""
+        lock = self._lock_info()
+        try:
+            self._lock_banner(lock)
+        except Exception:                                    # noqa: BLE001
+            import logging
+            logging.getLogger("app").warning("the lock banner did not paint", exc_info=True)
+        ids = {str(a.get("id")) for a in (lock.get("pending") or [])}
+        fresh = ids - getattr(self, "_lock_noted", set())
+        self._lock_noted = ids
+        if fresh and self.screen != "Home":
+            ask = next(a for a in lock["pending"] if str(a.get("id")) in fresh)
+            self._note(f"{ask.get('name') or 'Another PC'} asks to join your account — "
+                       f"Approve at the top, or on Home")
+
+    def _paint_lock(self, force: bool = False) -> None:
+        p = self.parts
+        info = ((self.status.get("account") or {}) if self.running else None)
+        lock = (info or {}).get("lock") or {}
+        line, code, sub, field, strip = (p.get("lock_line"), p.get("lock_code"), p.get("lock_sub"),
+                                         p.get("lock_field"), p.get("lock_strip"))
+        if line is None or not line.winfo_exists():
+            return
+        key = (repr(sorted(lock.items(), key=lambda kv: kv[0])) if info is not None else "off",
+               bool(info and info.get("signed_in")), self._lock_mode)
+        if not force and key == getattr(self, "_lock_seen", None):
+            return
+        self._lock_seen = key
+        buttons: list[tuple[str, object]] = []
+        colour, said_code, said_sub, typing = ui.FG, "", "", False
+        if info is None or not info.get("configured"):
+            said = "start dictation first — the lock lives in the running app"
+            colour = ui.FAINT
+        elif not info.get("signed_in"):
+            said = "sign in first — the lock is your account's"
+            colour = ui.FAINT
+        elif self._lock_mode == "shown":
+            said = "Your recovery key. Keep it somewhere safe — it is shown once."
+            said_code = self._lock_fresh
+            said_sub = ("With it, a PC with no other PC of yours at hand can open your "
+                        "account. Making a new one replaces it.")
+            colour = ui.AMBER
+            buttons = [("Copy", self._lock_copy), ("Done", self._lock_done)]
+        elif lock.get("pending"):
+            ask = lock["pending"][0]
+            said = f"{ask.get('name') or 'Another PC'} signed in to your account and asks to join."
+            said_code = str(ask.get("code") or "")
+            said_sub = ("Its screen shows a code — approve only if it is exactly this one. "
+                        "It then gets your account's key: your cloud keys and what you "
+                        "said open there too.")
+            buttons = [("Approve", lambda i=ask.get("id"): self._lock_do("approve", "approving", kind=i)),
+                       ("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
+        elif lock.get("state") == "waiting":
+            said = "Waiting for your other PC to approve this one."
+            said_code = str(lock.get("code") or "")
+            typing = self._lock_mode == "typing"
+            if typing:
+                said_sub = "Your recovery key — 24 letters and digits in six groups:"
+                buttons = [("Open", self._lock_recover), ("Cancel", self._lock_done)]
+            else:
+                said_sub = ("Open the desk on your other PC: Home there shows this code — press "
+                            "Approve. Until then this PC has your words and settings; "
+                            "what you said and your cloud keys stay locked.")
+                buttons = [("Type the recovery key", self._lock_type)]
+            if lock.get("error"):
+                said_sub = f"{lock['error']}  ·  {said_sub}"
+        elif lock.get("state") == "have":
+            said = "This PC holds your account's key."
+            bits = ["what you said and your cloud keys leave this PC locked",
+                    "the server cannot read them"]
+            if lock.get("id"):
+                bits.append(f"lock {lock['id']}")
+            if lock.get("recovery"):
+                bits.append("recovery key: made")
+            elif lock.get("recovery") is False:
+                bits.append("no recovery key yet")
+            said_sub = " · ".join(bits)
+            buttons = [("Replace the recovery key" if lock.get("recovery") else "Make a recovery key",
+                        self._lock_new_recovery)]
+        else:
+            said = "Looking at the lock…"
+            said_sub = lock.get("error") or "the next sync says where this PC stands"
+            colour = ui.FAINT
+        line.configure(text=said, fg=colour)
+        if code is not None and code.winfo_exists():
+            code.configure(text=said_code)
+        if sub is not None and sub.winfo_exists():
+            sub.configure(text=said_sub)
+            sub.place(y=80 if said_code else 48)
+        if field is not None and field.winfo_exists():
+            if typing:
+                field.place(x=0, y=100)
+            else:
+                field.place_forget()
+        if strip is None or not strip.winfo_exists():
+            return
+        strip.place(y=138 if typing else (118 if said_code else 96))
+        for child in strip.winfo_children():
+            child.destroy()
+        x = 0
+        for label, command in buttons:
+            w = widgets.button_width(label)
+            ui.Button(strip, label, command, h=30, w=w, quiet=True, bg=ui.CARD
+                      ).place(x=x, y=0)
+            x += w + 8
+
+    def _lock_do(self, do: str, said: str, **args) -> None:
+        if not self.running:
+            self._note("start dictation first — the lock lives in the running app")
+            return
+        self._busy_until = time.monotonic() + 2
+        self._ask("account", then=lambda r: self._announce(r, said), do=do, **args)
+
+    def _lock_type(self) -> None:
+        self._lock_mode = "typing"
+        self._paint_lock(force=True)
+        field = self.parts.get("lock_field")
+        if field is not None and field.winfo_exists():
+            field.entry.focus_set()
+
+    def _lock_recover(self) -> None:
+        """[Open] beside the typed recovery key: the value goes to the
+        app over the pipe and nowhere else; the field is emptied."""
+        field = self.parts.get("lock_field")
+        typed = field.get().strip() if field is not None else ""
+        if field is not None:
+            field.set("")
+        if not typed:
+            self._note("type the recovery key first")
+            return
+        self._lock_mode = ""
+        self._paint_lock(force=True)
+        self._lock_do("recover", "opened", kind=typed)
+        del typed
+
+    def _lock_new_recovery(self) -> None:
+        """[Make / Replace the recovery key]: the app makes it (half a
+        second) and answers with it once; this card shows it until Done."""
+        if not self.running:
+            self._note("start dictation first — the lock lives in the running app")
+            return
+        self._busy_until = time.monotonic() + 2
+
+        def shown(reply) -> None:
+            if not reply or not reply.get("ok") or not reply.get("recovery"):
+                self._announce(reply, "that did not work")
+                return
+            self._lock_fresh = str(reply["recovery"])
+            self._lock_mode = "shown"
+            self._paint_lock(force=True)
+            self._note("your recovery key is on the card — copy it somewhere safe")
+        self._ask("account", then=shown, do="recovery_new")
+
+    def _lock_copy(self) -> None:
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(self._lock_fresh)
+            self._note("copied — paste it somewhere safe, then press Done")
+        except Exception:                                    # noqa: BLE001
+            self._note("could not reach the clipboard — write it down")
+
+    def _lock_done(self) -> None:
+        self._lock_fresh = ""
+        self._lock_mode = ""
+        self._paint_lock(force=True)
+
     def _account_ask(self) -> None:
         self._account_asking = True
         self._paint_account(force=True)
@@ -9000,6 +9347,9 @@ class Dashboard:
         self._key_say(name, f"Stored in Windows Credential Manager as "
                             f"{secretstore.target(name)} — testing…", ui.DIM)
         self._key_test(name)
+        if self.running:
+            # the account's other PCs get it too, sealed (sb._sync_vault)
+            self._ask("account", do="nudge", kind="vault")
 
     def _key_test(self, name: str) -> None:
         """One `key-test` call through net.py, on a thread: the
@@ -9678,6 +10028,7 @@ class Dashboard:
         p = self.parts
         self._paint_dot()
         self._paint_account()
+        self._paint_lock()
         self._paint_connections()
         if "rows" not in p or not self.status:
             return
@@ -10263,6 +10614,7 @@ class Dashboard:
         # decision — the word on the run key is the only thing that tells
         # Start's state from Pause's — so both live in one method.
         self._paint_bar_buttons()
+        self._lock_tick()
         {"Home": self._poll_waiting,
          "Corrections": self._poll_corrections,
          "Problems": self._poll_problems,

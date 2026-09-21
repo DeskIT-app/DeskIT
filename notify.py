@@ -111,7 +111,8 @@ STACK_MAX = 5                  # cards on screen at once when the config
                                # real number and config.py bounds it
 SOURCES = {"claude-code": "Claude Code", "cowork": "Cowork",
            "claude": "Claude", "phone": "Phone",
-           "dashboard": "Dashboard", "test": "Test", "cli": "Command line"}
+           "dashboard": "Dashboard", "test": "Test", "cli": "Command line",
+           "account": "Your account"}
 DEFAULT_TITLE = {"done": "Finished", "input": "Needs your input",
                  "error": "Something went wrong", "info": "Notification"}
 
@@ -144,7 +145,12 @@ _CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 # whatever Windows has registered for it — the desktop app — and
 # everything else is not a link here and reads as none: no file:, no
 # http:, no path, no space, no quote, no backslash, no percent escape.
-_LINK = re.compile(r"^claude://[A-Za-z0-9_\-./?=&:]{1,180}$")
+_LINK = re.compile(r"^(?:claude://[A-Za-z0-9_\-./?=&:]{1,180}|deskit://home)$")
+#: The one link of the app's own: a click opens the desk on Home (the
+#: account lock's "another PC asks to join", 2026-09-21 — the owner
+#: wanted a notification on the right that takes him to Approve / Not
+#: now on Home). Handled here, never handed to the shell.
+DESK_LINK = "deskit://home"
 
 
 def label_for(source: str) -> str:
@@ -640,6 +646,15 @@ def open_link(link) -> bool:
     link = _link(link)
     if not link:
         return False
+    if link == DESK_LINK:
+        # the desk, on Home — a desk already open comes to the front on
+        # its own (its mutex family), a closed one is started
+        try:
+            import launch
+            return bool(launch.open_dashboard())
+        except Exception:                                    # noqa: BLE001
+            log.info("notify: could not open the desk", exc_info=True)
+            return False
     try:
         os.startfile(link)            # noqa: S606 (Windows-only by design)
         return True
@@ -1097,6 +1112,18 @@ class Engine:
         return shown
 
     # -- out --
+
+    def dismiss_source(self, source: str, *, by: str = "answered") -> int:
+        """Every unread card of one source seen — the account's "asks to
+        join" cards the moment the request was answered on the desk (or
+        went away). How many went; the column redrawn without them."""
+        source = str(source or "").lower()
+        with self._lock:
+            ids = [int(i.get("id", 0)) for i in self.store.items()
+                   if not i.get("seen") and str(i.get("source", "")).lower() == source]
+        for ident in ids:
+            self.dismiss(ident, by=by)
+        return len(ids)
 
     def dismiss(self, item_id=None, *, by: str = "key") -> dict:
         """Seen. One card with an id, everything without one.
