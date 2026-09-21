@@ -127,12 +127,14 @@ def configure_supabase(host: str | None, publishable_key: str | None) -> None:
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/"
 
 #: Why a request is made — the closed vocabulary of 5.4, plus ``reading``
-#: (the read-aloud writer, reading.py) and ``notify`` (the Claude Code
-#: hook's knock on our own listener), which the plan's list predates.
+#: (the read-aloud writer, reading.py), ``notify`` (the Claude Code
+#: hook's knock on our own listener) and ``summary`` (the one sentence
+#: a "Claude finished" card carries instead of the message's first
+#: lines, notify.Summary, 2026-09-21), which the plan's list predates.
 PURPOSES: frozenset[str] = frozenset({
     "polish", "punctuate", "translate", "lookup", "review", "study",
     "reading", "ask-screen", "transcribe", "key-test", "catalog", "ollama",
-    "notify", "model-download", "pack-install", "update-check",
+    "notify", "summary", "model-download", "pack-install", "update-check",
     "update-download", "account", "report", "sync", "history",
 })
 

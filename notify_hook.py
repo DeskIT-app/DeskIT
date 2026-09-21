@@ -67,6 +67,11 @@ DEFAULT_SETTINGS = (paths.DATA_DIR / "claude-settings.json" if paths.STRANGER
                     else Path.home() / ".claude" / "settings.json")
 TOKEN_FILE = paths.PHONE_TOKEN     # the pre-2026-09-17 plaintext file
 BODY_MAX = 300
+#: The whole message rides along as `text` (a Stop only), so the app can
+#: say it in one sentence (notify.Summary, 2026-09-21). Cut here at the
+#: cloud-text card's own "up to 5,000 characters a request"; the app
+#: sends less (an excerpt, see notify.excerpt) and stores none of it.
+TEXT_MAX = 5000
 SOURCE = "claude-code"
 
 # notification_type -> title. Everything not here is not for the owner.
@@ -82,6 +87,15 @@ def _collapse(value) -> str:
     if not isinstance(value, str):
         return ""
     return " ".join(value.split())
+
+
+def _text(value) -> str:
+    """The message as written, lines kept, cut at TEXT_MAX — the shape a
+    reader (a model, here) needs to tell a heading from a sentence."""
+    if not isinstance(value, str):
+        return ""
+    return "\n".join(line.rstrip() for line in
+                     value.strip().splitlines())[:TEXT_MAX]
 
 
 # ---------------------------------------------------------------------------
@@ -370,9 +384,16 @@ def payload_from_hook(event: dict, window=None, link=None) -> dict | None:
     session = str(event.get("session_id") or "")
     if link is None:
         link = session_link(session)
-    return {"source": SOURCE, "kind": kind, "title": title, "body": body,
-            "project": project, "session": session,
-            "hwnd": int(hwnd), "app": str(app), "link": str(link or "")}
+    payload = {"source": SOURCE, "kind": kind, "title": title, "body": body,
+               "project": project, "session": session,
+               "hwnd": int(hwnd), "app": str(app), "link": str(link or "")}
+    # The whole message, for the one-line card — a finish only: a
+    # permission or a question is short already, and wanted as written.
+    if kind == "done":
+        text = _text(event.get("last_assistant_message"))
+        if text:
+            payload["text"] = text
+    return payload
 
 
 def server_port() -> int:

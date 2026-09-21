@@ -1,16 +1,16 @@
 {
   "cloud_text": {
     "kind": "cloud_text",
-    "text_version": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+    "text_version": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-21",
     "title": "Send text to the cloud?",
     "blocks": [
       [
         "What leaves",
-        "The text you dictated or selected, up to 5,000 characters a request. Never your voice."
+        "The text you dictated or selected, up to 5,000 characters a request; and, when Claude finishes, its last message, so the card can say it in one line. Never your voice."
       ],
       [
         "To whom",
-        "Groq and/or Google — repair, punctuation, translation, lookup, the second reading."
+        "Groq and/or Google — repair, punctuation, translation, lookup, the second reading, the one-line card."
       ],
       [
         "On whose account",

@@ -43,6 +43,7 @@ beside the app keeps the defaults and the help for every key.
 | `notify.enabled` — Show messages from other programs | Off, nothing is shown, stored or played. | on | on / off |
 | `notify.cue` — Play a sound when one arrives | Off, the card appears in silence. | on | on / off |
 | `notify.interrupt` — Which messages pop up | Every one, only what is waiting on you, or none; the rest wait quietly on the panel beside the dot. | `input` | Every message / Only what needs you / None |
+| `notify.summarize` — Say a finished message in one line | When Claude finishes, the card carries one plain sentence about its message instead of the first lines — written by Groq, with the cloud-text switch on and a Groq key. Off, or without either, the card shows the message's first lines. | on | on / off |
 
 ## Screen
 

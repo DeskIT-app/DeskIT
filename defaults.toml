@@ -1182,6 +1182,26 @@ watch = "cowork"               # off | cowork | all. Which of the Claude
                                # hook installed); "off" never looks. Claude
                                # Chat is in none of them - a finished chat
                                # reply is announced to nothing on this machine
+summarize = true               # a "Claude finished" card says the message
+                               # in ONE SENTENCE instead of its first four
+                               # lines: the hook sends the whole message,
+                               # Groq writes the sentence, the card waits
+                               # for it (at most summary_wait_s) and then
+                               # comes up. Needs the cloud-text consent and
+                               # a Groq key; without either, or when the
+                               # answer is late, the card is the old card.
+                               # Claude's own turn is never slowed: the
+                               # hook runs after it has finished
+summary_wait_s = 1.0           # the ceiling on that wait, in seconds. The
+                               # usual answer is 0.2-0.4 s (measured
+                               # 2026-09-21 on messages of 136-3,700
+                               # characters); this bounds a slow one
+summary_model = "qwen/qwen3.8-27b"  # which Groq model writes the sentence.
+                               # Its own model on purpose: Groq's limits are
+                               # per model, so a busy minute of finishes
+                               # never costs the repair pass (gpt-oss-120b)
+                               # its quota
+summary_language = "he"        # the sentence's language: he | en | a name
 corner = "right"               # right | left | top-right | top-left | bottom-right | bottom-left. Where the card
                                # appears before you have dragged it: "right"
                                # is mid-height on the right edge, like the
