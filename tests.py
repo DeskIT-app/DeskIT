@@ -20162,7 +20162,7 @@ def test_the_screen_draws_the_short_list_and_the_file_keeps_the_rest() -> None:
                  "local.cpu_threads", "setup.offer_gpu_pack",
                  "vocab.max_terms", "vocab.replace_after_hits", "polish.groq_model",
                  "polish.max_wait_s", "polish.prefer", "punctuate.prefer",
-                 "study.idle_minutes", "updates.channel", "updates.skipped",
+                 "study.idle_minutes", "updates.channel",
                  "setup.done", "setup.tour", "splash", "gemini.timeout_s",
                  "notify.stack_max", "notify.corner", "review.corner",
                  "review.scale", "camera.timer", "capture.fps",
@@ -36003,9 +36003,10 @@ def test_a_newer_version_is_a_row_on_the_home_pile():
     """Chapter 9 screen 11 (D21) as a pile row: nothing while no newer
     release is known; with one, a row that names the version, the size
     and the date, with Download and install (gold; the winget one-liner
-    on that channel; neither in the checkout), Release notes and Skip
-    this version; nothing on the Store channel, off, or Offline; Skip
-    takes the row away."""
+    on that channel; neither in the checkout) and nothing else — no
+    Release notes, no Skip this version (the owner, 2026-09-21: "only
+    download — everyone on the same version"); nothing on the Store
+    channel, off, or Offline."""
     import updates
 
     feed = _feed_for(b"x" * 7)
@@ -36021,7 +36022,7 @@ def test_a_newer_version_is_a_row_on_the_home_pile():
             assert len(rows) == 1 and rows[0]["kind"] == "update"
             assert "9.9.9 is available" in rows[0]["text"] and "you have" in rows[0]["text"]
             labels = [b[0] for b in rows[0]["buttons"]]
-            assert labels == ["Download and install", "Release notes", "Skip this version"], labels
+            assert labels == ["Download and install"], labels
             assert rows[0]["buttons"][0][1] == "gold"
             board._show("Home")
             board._fill_waiting()
@@ -36037,11 +36038,8 @@ def test_a_newer_version_is_a_row_on_the_home_pile():
             assert "Download and install" not in labels, "the checkout pulls, it does not install"
         with _patched(updates, "_last", {"release": rel}), _patched(paths, "CHANNEL", "store"):
             assert board._waiting_update() == []
-        with _patched(updates, "_last", {"release": rel}), _patched(paths, "DEVELOPER", False), \
-                _patched(paths, "CHANNEL", "github"), _patched(updates, "skip", lambda r: updates._last.update(release=None)):
-            row = board._waiting_update()[0]
-            next(b for b in row["buttons"] if b[0] == "Skip this version")[2]()
-            assert board._waiting_update() == []
+        assert not hasattr(updates, "skip") and not hasattr(board, "_update_skip"), \
+            "a version can be skipped again"
 
 
 def test_a_consent_whose_words_changed_is_a_row_on_the_home_pile():
@@ -36286,8 +36284,9 @@ def test_update_check_request_shape():
     """Two GETs through net.py — the API with the GitHub Accept header and
     no query string, then the feed behind its redirect — both rows with
     the update-check purpose and no secret; the newer release is
-    remembered, the state stamped, the row says so; Skip hides it and a
-    higher version un-skips."""
+    remembered, the state stamped, the row says so; a cached release
+    that is not newer than the running copy — the one just installed —
+    is dropped, and the first start after an update forgets it."""
     import net as net_mod
     import updates
 
@@ -36313,11 +36312,31 @@ def test_update_check_request_shape():
         assert stamps["updates.latest_seen"] == "9.9.9" and stamps["updates.last_check"]
         assert updates.available() is rel
         assert "9.9.9 is available" in updates.status_line() and "you have" in updates.status_line()
-        # skipped: hidden; a higher version comes through
-        with _patched(updates, "_settings", lambda: config_mod.UpdatesConfig(skipped="9.9.9")):
-            assert updates.check(force=True) is None and updates.available() is None
-        with _patched(updates, "_settings", lambda: config_mod.UpdatesConfig(skipped="9.0.0")):
-            assert updates.check(force=True).version == "9.9.9"
+        # The cache file outlives the installer: the copy after an update
+        # reads the release the copy before it found — its own version —
+        # and must not offer it ("1.0.1 is available — you have 1.0.1",
+        # the owner's first update, 2026-09-21). Not newer: dropped, the
+        # file with it. after_update() forgets it on the first start too.
+        import version as version_mod
+        with tempfile.TemporaryDirectory() as d, _patched(paths, "CACHE_DIR", Path(d)):
+            updates._last.clear()
+            updates._remember(rel)
+            cache = updates._cache_path()
+            assert cache is not None and cache.exists(), "the feed was not cached"
+            updates._last.clear()
+            assert updates.available() == rel, "the cache does not come back"
+            updates._last.clear()
+            with _patched(version_mod, "VERSION", "9.9.9"):
+                assert updates.available() is None and not cache.exists()
+            updates._last.clear()
+            updates._remember(rel)
+            updates._last.clear()
+            with _patched(version_mod, "VERSION", "9.9.9"), \
+                    _patched(updates, "_state", lambda: {"updates.installed_version": "9.9.8"}):
+                assert updates.after_update() == "Updated to DeskIT 9.9.9"
+            assert updates.available() is None and not cache.exists()
+        updates._last.clear()
+        updates._remember(rel)
         # not newer: nothing shown, nothing remembered
         old = _feed_for(b"x", version="0.1.0")
         connect2, _seen2 = _github(old)
@@ -36461,14 +36480,19 @@ def test_inno_script_never_names_data_dir():
     assert "updates.py" not in iss, "the script does not do the app's job"
     for key in ("updates.last_check", "updates.latest_seen", "updates.installed_version"):
         assert key in config_mod.STATE_KEYS, key
-    assert config_mod.UpdatesConfig().channel == "stable" and config_mod.UpdatesConfig().skipped == ""
+    assert config_mod.UpdatesConfig().channel == "stable"
+    assert not hasattr(config_mod.UpdatesConfig(), "skipped"), "a version can be skipped again"
 
 
 def test_the_app_tab_carries_the_updates_row():
     """Settings > The app: the line under the version says what the last
-    look found and Check now is there; with a newer release known the
-    three choices of 11.5 appear — but never Download in the checkout,
-    which pulls. Nothing here touches the wire."""
+    look found and Check now is there; with a newer release known,
+    Download and install appears — nothing else, and never Download in
+    the checkout, which pulls. A Check now that takes the version away
+    redraws the card, so the button goes with the line (the owner's
+    Check now after his first update, 2026-09-21: "up to date" and
+    Download and install still under it). Nothing here touches the
+    wire."""
     import settings as settings_mod
     import updates
 
@@ -36491,16 +36515,34 @@ def test_the_app_tab_carries_the_updates_row():
         with _patched(updates, "_last", {"release": rel}):
             line, buttons = drawn()
         assert "9.9.9 is available" in line and "you have" in line, line
-        assert buttons == ["Check now", "Release notes", "Skip this version"], \
-            "the checkout offered an installer"
+        assert buttons == ["Check now"], "the checkout offered an installer"
         with _patched(updates, "_last", {"release": rel}), _patched(paths, "DEVELOPER", False):
             line, buttons = drawn()
-        assert buttons == ["Check now", "Download and install", "Release notes",
-                           "Skip this version"], buttons
+        assert buttons == ["Check now", "Download and install"], buttons
         with _patched(updates, "_last", {"release": rel}), _patched(paths, "DEVELOPER", False), \
                 _patched(paths, "CHANNEL", "winget"):
             line, buttons = drawn()
-        assert buttons[1] == "Copy the winget command", buttons
+        assert buttons == ["Check now", "Copy the winget command"], buttons
+        # Check now finds nothing newer: the line says so AND the card is
+        # redrawn without the button — before, only the line changed.
+        shown: list = []
+        with _patched(updates, "_last", {"release": rel}), _patched(paths, "DEVELOPER", False), \
+                _patched(paths, "CHANNEL", "github"):
+            line, buttons = drawn()
+            assert buttons == ["Check now", "Download and install"], buttons
+
+            def gone(force=False):
+                updates._last["release"] = None
+                return None
+            with _patched(updates, "check", gone), \
+                    _patched(board, "_show", lambda name: shown.append(name)):
+                board._update_check()
+                t0 = time.time()
+                while len(shown) < 1 and time.time() - t0 < 5:
+                    while not board._events.empty():
+                        board._events.get_nowait()()
+                    time.sleep(0.02)
+        assert shown == ["Settings"], "the card kept the button after the version went"
 
 
 # ------------------------------------------- Gemini over REST (PR 12)

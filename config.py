@@ -270,11 +270,11 @@ class SetupConfig:
 @dataclass(frozen=True)
 class UpdatesConfig:
     """The weekly look at GitHub Releases (updates.py, plan 11.4). The
-    switch itself is [privacy] update_check; these are the channel and
-    the version the person chose to skip. last_check, latest_seen and
-    installed_version are state keys, never settings."""
+    switch itself is [privacy] update_check; this is the channel.
+    last_check, latest_seen and installed_version are state keys, never
+    settings. There is no skipped version: every copy is offered the
+    same, latest one (the owner, 2026-09-21)."""
     channel: str = "stable"
-    skipped: str = ""
 
 
 @dataclass(frozen=True)
@@ -1790,7 +1790,6 @@ def build(data: dict) -> Config:
         updates=UpdatesConfig(
             channel=(str(updates_.get("channel", UpdatesConfig.channel))
                      .strip().lower() or "stable"),
-            skipped=str(updates_.get("skipped", UpdatesConfig.skipped)).strip(),
         ),
         translate=TranslateConfig(
             target=str(translate.get("target",
