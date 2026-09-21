@@ -46,8 +46,25 @@ def _sync_follows_the_account() -> None:
         privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
 
 
+def _history_follows_the_sync() -> None:
+    """The two syncs are one switch (2026-09-20 afternoon): a copy that
+    signed in under the earlier build holds the words-and-settings
+    consent and no history_sync row — the Said page there stayed this
+    PC's own while the account's other PC showed another. Granted now
+    where the sync consent is, with the card's current text_version,
+    the way the sign-in press grants both today (privacy.SYNC_KINDS).
+    No sync consent (withdrawn, or never signed in), or the row already
+    there, nothing happens — and a withdrawal after this step ran is
+    never undone, because steps run once."""
+    import privacy
+    if privacy.consent("settings_sync") is not None and privacy.consent("history_sync") is None:
+        import consent_card as cc
+        privacy.grant("history_sync", cc.card_for("history_sync")["text_version"])
+
+
 #: (config_version this step PRODUCES, the step). Append, never reorder.
-STEPS: list[tuple[int, object]] = [(2, _sync_follows_the_account)]
+STEPS: list[tuple[int, object]] = [(2, _sync_follows_the_account),
+                                   (3, _history_follows_the_sync)]
 
 
 def current() -> int:

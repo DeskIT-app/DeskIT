@@ -8243,10 +8243,14 @@ class Dashboard:
         self.parts["rows"].setdefault(setting.path, []).append((kind, widget))
 
     def _draw_consent_row(self, card, setting, right: int, y: int) -> None:
-        """One of the six [privacy] gates: what the consent file says —
+        """One of the [privacy] gates: what the consent file says —
         open since when, for which words, stale, or never granted — and
         a Withdraw button while it is open. No switch: it opens only
-        through its card, the first time a feature needs it (D7)."""
+        through its card, the first time a feature needs it (D7). The
+        two syncs have no first use of their own — the sign-in and the
+        wizard's switch grant them — so a shut sync row carries [Turn
+        on], which asks the running app for that card (the Account
+        card's "Sync now" did this for both until 2026-09-20)."""
         import privacy
 
         kind = setting.key
@@ -8271,6 +8275,13 @@ class Dashboard:
                                quiet=True)
             card.create_window(right, y - 2, window=button, anchor="ne")
             x = right - widgets.button_width("Withdraw") - 12
+        elif kind in privacy.SYNC_KINDS:
+            button = ui.Button(card, "Turn on",
+                               lambda k=kind: self._account_do("sync", "asking", kind=k),
+                               w=widgets.button_width("Turn on"), h=30,
+                               quiet=True)
+            card.create_window(right, y - 2, window=button, anchor="ne")
+            x = right - widgets.button_width("Turn on") - 12
         # The text is the row's one control — registered so the page
         # counts it like any other line (one widget per line, a test
         # holds), and so a repaint can find it.
@@ -8827,7 +8838,7 @@ class Dashboard:
     def _account_block(self, scroller) -> None:
         """ACCOUNT on Settings > Privacy (chapter 9 screen 16, D17, D31):
         who is signed in, when the last sync ran, and the buttons — Sign
-        in with Google, an anonymous account, Sync now, Sign out, Delete
+        in with Google, an anonymous account, Sign out, Delete
         my account. Every press is a command to the RUNNING app over the
         pipe: this window is another process, and only the app holds the
         session (8.6). The line and the buttons follow status()["account"]
@@ -8896,6 +8907,10 @@ class Dashboard:
                     str(info.get("region") or "Frankfurt (Supabase)")]
             if info.get("last_sync"):
                 bits.append(f"last sync {str(info['last_sync'])[11:16]} UTC")
+            if info.get("live"):
+                # the account's channel is open: a change on another PC
+                # of this account arrives within the second (sb._live_once)
+                bits.append("live")
             if info.get("waiting"):
                 n = int(info["waiting"])
                 bits.append(f"{n} report{'s' if n != 1 else ''} waiting to send")
@@ -8909,7 +8924,11 @@ class Dashboard:
                 buttons = [("Keep it", self._account_keep),
                            ("Delete", lambda: self._account_do("delete", "deleting"))]
             else:
-                buttons = [("Sync now", lambda: self._account_do("sync", "syncing"))]
+                # No "Sync now" since 2026-09-20 (the owner, the day the
+                # live channel landed: "if it syncs all the time there is
+                # no need for a Sync now button"). A withdrawn sync comes
+                # back through its own row's [Turn on] below.
+                buttons = []
                 if info.get("anonymous"):
                     buttons.append(("Sign in with Google",
                                     lambda: self._account_do("google", "opening the browser")))
@@ -8947,13 +8966,13 @@ class Dashboard:
         self._account_asking = False
         self._paint_account(force=True)
 
-    def _account_do(self, do: str, said: str) -> None:
+    def _account_do(self, do: str, said: str, **args) -> None:
         self._account_asking = False
         if not self.running:
             self._note("start dictation first — the account lives in the running app")
             return
         self._busy_until = time.monotonic() + 1
-        self._ask("account", then=lambda r: self._announce(r, said), do=do)
+        self._ask("account", then=lambda r: self._announce(r, said), do=do, **args)
 
     def _key_say(self, name: str, text: str, colour: str | None = None) -> None:
         line = self.parts.get("key_lines", {}).get(name)

@@ -2760,7 +2760,8 @@ class App:
                             "message": "the dot is back in its corner"}
                 return {"ok": False, "error": f"unknown dot action {do!r}"}
             if command == "account":
-                return self._account_command(str(args.get("do", "status")).strip().lower())
+                return self._account_command(str(args.get("do", "status")).strip().lower(),
+                                             kind=str(args.get("kind") or ""))
             if command == "tour":
                 # Show the tour again (Settings > The app, D36): the
                 # same four cards the first start showed, from the top.
@@ -2802,7 +2803,7 @@ class App:
             log.exception("control command %r failed", command)
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
-    def _account_command(self, do: str) -> dict:
+    def _account_command(self, do: str, kind: str = "") -> dict:
         """Settings > Privacy > Account (screen 16), over the pipe: the
         dashboard is another process and only THIS one holds the
         session (8.6). Nothing here waits on the network — a sign-in
@@ -2854,9 +2855,13 @@ class App:
                 daemon=True, name="account-delete").start()
             return {"ok": True, "message": "deleting the account on the server"}
         if do == "sync":
+            # The desk's [Turn on] beside a shut sync row (one kind), or
+            # the old Sync now (both): a shut gate gets its card, and the
+            # worker runs — the card opening nudges it too (privacy.on_change)
             if not sb.signed_in():
                 return {"ok": False, "error": "sign in first"}
-            for kind in ("settings_sync", "history_sync"):
+            kinds = (kind,) if kind in privacy.SYNC_KINDS else privacy.SYNC_KINDS
+            for kind in kinds:
                 if not privacy.allowed(kind):
                     privacy.request(kind)
             sb.nudge()
@@ -2881,12 +2886,16 @@ class App:
                      "be marked", rid, exc_info=True)
 
     @staticmethod
-    def _nudge_sync() -> None:
-        """A dictation just landed in transcripts.log: the account worker
-        pushes it soon (sb.nudge is a flag, never a call on this thread)."""
+    def _nudge_sync(*stores: str) -> None:
+        """Something just landed — a dictation in transcripts.log
+        (``history``), a learned word in vocab.json (``vocab``): the
+        account worker pushes that store within the second and tells
+        the account's other copies (sb.nudge is a flag, never a call on
+        this thread). No store named means everything."""
         try:
             import sb
-            sb.nudge()
+            for store in stores or (None,):
+                sb.nudge(store)
         except Exception:                                    # noqa: BLE001
             pass
 
@@ -5120,6 +5129,7 @@ class App:
                      " | ".join(f"{h} -> {m}" for h, m in proposed
                                 if (h, m) not in pairs))
         transcript_log.info("CORRECTED | %s || %s", shown, fixed)
+        self._nudge_sync("vocab", "history")
         # What is on screen is now what the app believes it produced.
         # Without this, a second press of the key diffs the SAME edit
         # again and counts it as a second, independent correction — which
@@ -6067,7 +6077,7 @@ class App:
         # paste it — this file is the recovery path.
         transcript_log.info("OK | %.1fs | %s | %.1fs latency | %s",
                             seconds, backend, latency, text)
-        self._nudge_sync()
+        self._nudge_sync("history")
         cleaned = text.strip()
         if not cleaned:
             if shown:

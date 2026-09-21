@@ -42,6 +42,18 @@ transcripts.log events as rows and the other PCs' rows into
 ``sync\\history.log``. Each behind its own gate: ``settings_sync`` for
 words and settings, ``history_sync`` for what was said.
 
+Live (the owner, 2026-09-20: "I sync, and not two seconds pass and it
+is on the other app"): every push ends with one broadcast on the
+account's private Realtime topic (``user:<uid>``, a REST POST that
+carries only the store names and this device's id — nothing anyone
+said), and every signed-in copy holds one websocket on that topic
+(``net.websocket``, one row on the Network screen while it is open)
+and pulls the named store the moment a broadcast from another device
+lands. Measured from this PC on the day: broadcast to arrival 0.15 to
+0.30 s. The 15-minute pass stays as the net under it; the row-level
+security on ``realtime.messages`` (migration 0003) is what keeps one
+account's topic from another.
+
 Failure is a log line and a later retry, never a dialog (8.8): a paused
 project, no network and a 5xx all read the same. A 401 is one refresh
 attempt; a second 401 means the account is gone (deleted from another
@@ -57,6 +69,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import threading
 import time
@@ -117,8 +130,26 @@ SIGNIN_TIMEOUT_S = 180
 #: The worker: first sync this long after start, then every CADENCE.
 FIRST_DELAY_S = 30.0
 CADENCE_S = 15 * 60.0
-#: A nudge (a dictation just ended) waits this long for the next one.
-NUDGE_SETTLE_S = 5.0
+#: A nudge (a dictation just ended) waits this long for the next one
+#: — 5 s until 2026-09-20, when the live channel made the wait the
+#: largest part of the two seconds the owner asked for.
+NUDGE_SETTLE_S = 0.5
+#: The live channel: off in a build without a project, and off in
+#: tests.py at import (a fake project has no websocket to hold).
+LIVE_ENABLED: bool = True
+#: Phoenix drops a socket that is quiet for a minute; a heartbeat every
+#: this often keeps it, and is when a refreshed session token is sent.
+LIVE_HEARTBEAT_S = 25.0
+#: After a lost or refused socket: wait this long before the next try,
+#: one step further along the tuple each time, back to the start on a
+#: socket that held.
+LIVE_RETRY_S: tuple[float, ...] = (5.0, 15.0, 60.0, 300.0)
+#: The account's own topic — ``realtime:`` in front of it on the socket,
+#: bare on the REST broadcast.
+LIVE_TOPIC = "user:{uid}"
+#: How long the other PCs' names (the devices table) are believed
+#: before they are asked for again, so a live pull is one request.
+DEVICE_NAMES_TTL_S = 600.0
 #: The device row is refreshed at most this often.
 DEVICE_SEEN_EVERY_S = 24 * 3600.0
 TIMEOUT_S = 20.0
@@ -818,9 +849,10 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _sync_settings(cursor: dict) -> str:
+def _sync_settings(cursor: dict, push: bool = True) -> str:
     """Pull or push the settings blob (last writer wins). Returns one
-    word for the log: pulled, pushed, same."""
+    word for the log: pulled, pushed, same. ``push=False`` is a live
+    pass: only what the other PC just wrote comes down."""
     import config
     overrides = config.read_settings(paths.SETTINGS_FILE)
     payload = sync.settings_payload(overrides)
@@ -857,7 +889,7 @@ def _sync_settings(cursor: dict) -> str:
             json.dumps(sync.settings_payload(merged), sort_keys=True,
                        ensure_ascii=False).encode("utf-8")).hexdigest()
         return "pulled"
-    if local_changed or not remote:
+    if push and (local_changed or not remote):
         uid = _fresh()["user"]["id"]
         status, data = _rest("POST", "settings_sync", purpose="sync",
                              query="on_conflict=user_id",
@@ -881,9 +913,10 @@ def _remote_is_newer(remote_at: str) -> bool:
     return when is not None and when.timestamp() >= mtime
 
 
-def _sync_vocab(cursor: dict, vocab) -> str:
+def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
     """Pull the other PCs' rows into the live vocabulary, push what
-    changed here. ``vocab`` is the app's Vocab (or None to skip)."""
+    changed here. ``vocab`` is the app's Vocab (or None to skip);
+    ``push=False`` is a live pass, the pull alone."""
     if vocab is None:
         return "skipped"
     since = str(cursor.get("vocab_pulled_at") or "")
@@ -910,8 +943,14 @@ def _sync_vocab(cursor: dict, vocab) -> str:
         cursor["vocab_pulled_at"] = str(rows[-1].get("updated_at") or since)
     with vocab._write_lock:
         corrections = [dict(c) for c in vocab.corrections]
-    to_push = sync.vocab_changed(sync.vocab_rows(corrections, snapshot), snapshot)
+    to_push = sync.vocab_changed(sync.vocab_rows(corrections, snapshot), snapshot) if push else []
     pushed = 0
+    if not push:
+        # the snapshot is not moved: what changed here since the last
+        # full pass is still to push, and the next nudge pushes it
+        if rows:
+            cursor["vocab_snapshot"] = snapshot
+        return f"pulled {pulled}, pushed 0"
     if to_push:
         uid = _fresh()["user"]["id"]
         for row in to_push:
@@ -930,16 +969,29 @@ def _sync_vocab(cursor: dict, vocab) -> str:
     return f"pulled {pulled}, pushed {pushed}"
 
 
-def _sync_history(cursor: dict) -> str:
-    """This PC's events up, the other PCs' events down (D31)."""
+_device_names: dict = {"at": 0.0, "names": {}}
+
+
+def _names() -> dict[str, str]:
+    """The other PCs' names, from the devices table, believed for
+    DEVICE_NAMES_TTL_S so a live pull is one request, not two."""
+    if time.monotonic() - _device_names["at"] < DEVICE_NAMES_TTL_S and _device_names["names"]:
+        return dict(_device_names["names"])
+    status, rows = _rest("GET", "devices", purpose="history", query="select=id,name")
+    if status == 200 and isinstance(rows, list):
+        _device_names["names"] = {str(r.get("id")): str(r.get("name") or "") for r in rows}
+        _device_names["at"] = time.monotonic()
+    return dict(_device_names["names"])
+
+
+def _sync_history(cursor: dict, push: bool = True) -> str:
+    """This PC's events up, the other PCs' events down (D31);
+    ``push=False`` is a live pass, the pull alone."""
     import history
     mine = device_id()
     uid = _fresh()["user"]["id"]
     # down
-    names: dict[str, str] = {}
-    status, rows = _rest("GET", "devices", purpose="history", query="select=id,name")
-    if status == 200 and isinstance(rows, list):
-        names = {str(r.get("id")): str(r.get("name") or "") for r in rows}
+    names = _names()
     pulled = 0
     for _round in range(10):
         since = str(cursor.get("history_pulled_at") or "")
@@ -960,7 +1012,7 @@ def _sync_history(cursor: dict) -> str:
         if len(rows) < 500:
             break
     # up
-    events = history.all_events()
+    events = history.all_events() if push else []
     pushed = 0
     for _round in range(10):
         batch = sync.history_rows(events, mine, cursor.get("history_pushed_ts"))
@@ -999,11 +1051,47 @@ def has_synced_settings() -> bool:
         return False
 
 
-def sync_now(vocab=None, reason: str = "") -> dict:
-    """One pass over everything the gates allow. Never raises: each
-    store's outcome (or its error) is a word in the returned dict and
-    a line in the log; ``last_sync``/``last_error`` feed the Account
-    row. Nothing happens without a session or with every gate shut."""
+_sync_lock = threading.Lock()
+STORES: tuple[str, ...] = ("settings", "vocab", "history")
+
+
+def _pushed(name: str, word: str) -> bool:
+    """Did this store's pass push anything — the log word read back."""
+    if name == "settings":
+        return word == "pushed"
+    m = re.search(r"pushed (\d+)", word)
+    return bool(m and int(m.group(1)) > 0)
+
+
+def _broadcast(stores: list[str]) -> None:
+    """Tell the account's other copies which stores just changed: one
+    POST on the private topic, carrying the store names and this
+    device's id and nothing else. A failure is a debug line — the
+    15-minute pass delivers the rows all the same."""
+    try:
+        uid = _fresh()["user"]["id"]
+        status, _h, body = net.post_json(
+            f"{base_url()}/realtime/v1/api/broadcast", "sync",
+            {"messages": [{"topic": LIVE_TOPIC.format(uid=uid), "event": "changed",
+                           "private": True,
+                           "payload": {"stores": sorted(stores), "device": device_id()}}]},
+            secret=SESSION_NAME, timeout_s=TIMEOUT_S)
+        if status not in (200, 202):
+            log.debug("live: the broadcast was answered %s (%s)", status, _server_said(status, body))
+    except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
+        log.debug("live: no broadcast (%s)", e)
+
+
+def sync_now(vocab=None, reason: str = "", only=None, push: bool = True) -> dict:
+    """One pass over everything the gates allow — or, with ``only``, over
+    those stores alone (a nudge names the store that changed; a live
+    broadcast names the store the other PC changed, and ``push=False``
+    then makes it a pull). Never raises: each store's outcome (or its
+    error) is a word in the returned dict and a line in the log;
+    ``last_sync``/``last_error`` feed the Account row. Nothing happens
+    without a session or with every gate shut. Every push ends with a
+    broadcast naming what was pushed. One pass at a time: the worker
+    and the live thread share the cursor file."""
     out: dict[str, str] = {}
     if not configured() or not signed_in():
         return out
@@ -1011,45 +1099,55 @@ def sync_now(vocab=None, reason: str = "") -> dict:
     said = privacy.allowed("history_sync")
     if not words and not said:
         return out
-    with _lock:
-        _status["busy"] = "syncing"
-    try:
-        cursor = sync.read_cursor()
-        try:
-            ensure_profile()
-        except (AccountError, net.EgressRefused, net.NetError) as e:
-            out["profile"] = f"error: {e}"
-        stores = []
-        if words:
-            stores += [("settings", lambda: _sync_settings(cursor)),
-                       ("vocab", lambda: _sync_vocab(cursor, vocab))]
-        if said:
-            stores.append(("history", lambda: _sync_history(cursor)))
-        for name, fn in stores:
-            try:
-                out[name] = fn()
-            except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
-                out[name] = f"error: {e}"
-            if not signed_in():
-                # the account went away under us (a second 401): the
-                # cursors were dropped with it and must not come back
-                break
-            sync.write_cursor(cursor)
-        errors = [f"{k}: {v[7:]}" for k, v in out.items() if v.startswith("error: ")]
-        if errors:
-            _status["last_error"] = "; ".join(errors)[:200]
-            log.info("sync%s: %s", f" ({reason})" if reason else "", "; ".join(errors))
-        else:
-            _status["last_error"] = ""
-            _status["last_sync"] = _now_iso()
-            log.info("sync%s: %s", f" ({reason})" if reason else "",
-                     ", ".join(f"{k} {v}" for k, v in out.items()) or "nothing to do")
-    except Exception as e:                                   # noqa: BLE001
-        _status["last_error"] = str(e)[:200]
-        log.warning("sync: tripped (%s)", e, exc_info=True)
-    finally:
+    wanted = set(STORES) if not only else {s for s in only if s in STORES}
+    if not wanted:
+        return out
+    with _sync_lock:
         with _lock:
-            _status["busy"] = ""
+            _status["busy"] = "syncing"
+        try:
+            cursor = sync.read_cursor()
+            try:
+                ensure_profile()
+            except (AccountError, net.EgressRefused, net.NetError) as e:
+                out["profile"] = f"error: {e}"
+            stores = []
+            if words:
+                stores += [("settings", lambda: _sync_settings(cursor, push=push)),
+                           ("vocab", lambda: _sync_vocab(cursor, vocab, push=push))]
+            if said:
+                stores.append(("history", lambda: _sync_history(cursor, push=push)))
+            stores = [(n, fn) for n, fn in stores if n in wanted]
+            changed: list[str] = []
+            for name, fn in stores:
+                try:
+                    out[name] = fn()
+                    if _pushed(name, out[name]):
+                        changed.append(name)
+                except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
+                    out[name] = f"error: {e}"
+                if not signed_in():
+                    # the account went away under us (a second 401): the
+                    # cursors were dropped with it and must not come back
+                    break
+                sync.write_cursor(cursor)
+            if changed and signed_in():
+                _broadcast(changed)
+            errors = [f"{k}: {v[7:]}" for k, v in out.items() if v.startswith("error: ")]
+            if errors:
+                _status["last_error"] = "; ".join(errors)[:200]
+                log.info("sync%s: %s", f" ({reason})" if reason else "", "; ".join(errors))
+            else:
+                _status["last_error"] = ""
+                _status["last_sync"] = _now_iso()
+                log.info("sync%s: %s", f" ({reason})" if reason else "",
+                         ", ".join(f"{k} {v}" for k, v in out.items()) or "nothing to do")
+        except Exception as e:                                   # noqa: BLE001
+            _status["last_error"] = str(e)[:200]
+            log.warning("sync: tripped (%s)", e, exc_info=True)
+        finally:
+            with _lock:
+                _status["busy"] = ""
     return out
 
 
@@ -1181,24 +1279,44 @@ def _send_report(path, report: dict) -> str:
 
 _wake = threading.Event()
 _worker: threading.Thread | None = None
+_live: threading.Thread | None = None
+_pending: set[str] = set()          # the stores nudged since the last pass
 
 
 def start_worker(vocab=None, on_sent=None) -> threading.Thread | None:
     """The app's background pass: FIRST_DELAY_S after start, then every
     CADENCE_S, and NUDGE_SETTLE_S after a nudge (a dictation ended, a
-    consent opened, the person pressed Sync now). Does nothing without
-    a configured project."""
-    global _worker
+    consent opened, the person pressed Sync now) — over the stores the
+    nudges named, or everything. Starts the live thread beside it. Does
+    nothing without a configured project."""
+    global _worker, _live
     if not configured() or (_worker is not None and _worker.is_alive()):
         return _worker
 
+    def _settings_stamp():
+        try:
+            return paths.SETTINGS_FILE.stat().st_mtime_ns
+        except OSError:
+            return None
+
     def loop() -> None:
         _wake.wait(FIRST_DELAY_S)
+        seen = _settings_stamp()
         while True:
             _wake.clear()
+            with _lock:
+                named = set(_pending)
+                _pending.clear()
+            # a setting saved on the desk (another process) since the
+            # last pass rides along with whatever nudged this one
+            stamp = _settings_stamp()
+            if stamp != seen:
+                seen = stamp
+                named.add("settings")
+            only = None if (not named or "*" in named) else sorted(named)
             try:
                 if signed_in():
-                    sync_now(vocab, reason="worker")
+                    sync_now(vocab, reason="nudge" if only else "worker", only=only)
                     drain_outbox(on_sent)
             except Exception:                                # noqa: BLE001
                 log.debug("account worker tripped", exc_info=True)
@@ -1207,12 +1325,141 @@ def start_worker(vocab=None, on_sent=None) -> threading.Thread | None:
 
     _worker = threading.Thread(target=loop, daemon=True, name="account-sync")
     _worker.start()
+    if LIVE_ENABLED and (_live is None or not _live.is_alive()):
+        _live = threading.Thread(target=_live_loop, args=(vocab,), daemon=True,
+                                 name="account-live")
+        _live.start()
     return _worker
 
 
-def nudge() -> None:
-    """Something changed (a dictation, a learned word): sync soon."""
+def nudge(store: str | None = None) -> None:
+    """Something changed: sync soon — the named store (``history`` after
+    a dictation, ``vocab`` after a learned word, ``settings`` after a
+    save), or everything when nothing is named."""
+    with _lock:
+        _pending.add(store if store in STORES else "*")
     _wake.set()
+
+
+# ------------------------------------------------------------- the live channel
+
+_live_stop = threading.Event()
+_live_state: dict = {"on": False, "error": ""}
+
+
+def _live_purpose() -> str | None:
+    """The purpose the socket is opened under — the gate that is open;
+    None when neither sync is on and there is nothing to listen for."""
+    if privacy.allowed("settings_sync"):
+        return "sync"
+    if privacy.allowed("history_sync"):
+        return "history"
+    return None
+
+
+def _live_loop(vocab) -> None:
+    """Hold the socket for as long as the account and a gate are there;
+    reconnect with LIVE_RETRY_S between tries; never raise."""
+    tries = 0
+    while not _live_stop.is_set():
+        try:
+            if not (configured() and signed_in()) or _live_purpose() is None or net.offline:
+                _live_state["on"] = False
+                if _live_stop.wait(15.0):
+                    return
+                continue
+            _live_once(vocab)
+            tries = 0
+        except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
+            tries += 1
+            why = str(e)[:200]
+            (log.info if why != _live_state["error"] else log.debug)("live: %s", why)
+            _live_state.update(on=False, error=why)
+        except Exception:                                    # noqa: BLE001
+            tries += 1
+            log.debug("live: tripped", exc_info=True)
+            _live_state["on"] = False
+        if _live_stop.wait(LIVE_RETRY_S[min(tries, len(LIVE_RETRY_S) - 1)]):
+            return
+
+
+def _live_once(vocab) -> bool:
+    """One socket: join the account's topic, answer heartbeats, pull the
+    store a broadcast from another device names. Returns when the
+    account, the gate or the network went away; raises when the socket
+    was refused or dropped (the caller waits and tries again)."""
+    purpose = _live_purpose()
+    session = _fresh()
+    uid = session["user"]["id"]
+    token = str(session.get("access_token") or "")
+    topic = "realtime:" + LIVE_TOPIC.format(uid=uid)
+    ws = net.websocket(f"wss://{net.SUPABASE_HOST}/realtime/v1/websocket?vsn=1.0.0",
+                       purpose, timeout_s=TIMEOUT_S)
+    ref = 0
+
+    def send(event: str, payload: dict, *, on_topic: str = topic, secret: str | None = None) -> None:
+        nonlocal ref
+        ref += 1
+        ws.send_text(json.dumps({"topic": on_topic, "event": event, "payload": payload,
+                                 "ref": str(ref)}), secret=secret)
+
+    try:
+        send("phx_join", {"config": {"broadcast": {"self": False}, "presence": {"key": ""},
+                                     "postgres_changes": [], "private": True},
+                          "access_token": "{secret}"}, secret=SESSION_NAME)
+        reply = ws.recv_text(TIMEOUT_S)
+        answer = json.loads(reply) if reply else {}
+        if answer.get("event") != "phx_reply" or (answer.get("payload") or {}).get("status") != "ok":
+            said = json.dumps((answer.get("payload") or {}).get("response") or answer)[:160]
+            raise AccountError(f"the live channel refused the join: {said}")
+        _live_state.update(on=True, error="")
+        log.info("live: listening on the account's channel")
+        beat = time.monotonic()
+        while not _live_stop.is_set():
+            if net.offline or _live_purpose() is None or not signed_in():
+                ws.close("offline" if net.offline else "closed")
+                return
+            if time.monotonic() - beat >= LIVE_HEARTBEAT_S:
+                beat = time.monotonic()
+                send("heartbeat", {}, on_topic="phoenix")
+                fresh = _fresh()
+                if str(fresh.get("access_token") or "") != token:
+                    token = str(fresh.get("access_token") or "")
+                    send("access_token", {"access_token": "{secret}"}, secret=SESSION_NAME)
+            text = ws.recv_text(1.0)
+            if text is None:
+                continue
+            try:
+                msg = json.loads(text)
+            except ValueError:
+                continue
+            event = msg.get("event")
+            if event in ("phx_error", "phx_close"):
+                raise AccountError(f"the live channel dropped ({event})")
+            if event != "broadcast":
+                continue
+            inner = msg.get("payload") or {}
+            if inner.get("event") != "changed":
+                continue
+            what = inner.get("payload") or {}
+            if str(what.get("device") or "") == device_id():
+                continue
+            stores = [s for s in (what.get("stores") or []) if s in STORES]
+            if stores:
+                log.info("live: %s changed on %s — pulling", ", ".join(stores),
+                         _names().get(str(what.get("device") or ""), "another PC") or "another PC")
+                sync_now(vocab, reason="live", only=stores, push=False)
+        ws.close()
+    except Exception:
+        ws.close("dropped")
+        raise
+    finally:
+        _live_state["on"] = False
+
+
+def stop_live() -> None:
+    """Tests, and the app on its way out: the live thread returns."""
+    _live_stop.set()
 
 
 # ------------------------------------------------------------- the status
@@ -1232,6 +1479,7 @@ def status() -> dict:
         "busy": _status.get("busy", ""),
         "last_error": _status.get("last_error", ""),
         "last_sync": _status.get("last_sync", ""),
+        "live": bool(_live_state.get("on")),
         "waiting": queued(),
         "region": "Frankfurt (Supabase)",
         "required": bool(REQUIRED and configured()),
@@ -1247,5 +1495,5 @@ __all__ = [
     "device_name", "ensure_profile", "sign_in_google", "sign_in_anonymous",
     "set_name", "sign_out", "delete_account", "sync_now", "drain_outbox", "queued",
     "start_worker", "nudge", "status", "forget_cache", "REPORT_COLUMNS",
-    "REQUIRED", "SIGNED_OUT_HOOKS",
+    "REQUIRED", "SIGNED_OUT_HOOKS", "LIVE_ENABLED", "STORES", "stop_live",
 ]

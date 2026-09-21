@@ -54,6 +54,9 @@ _paths_mod.SYNC_DIR = _SCRATCH_HOME / "sync"
 # lock's own tests set it back for their block.
 import sb as _sb_mod  # noqa: E402
 _sb_mod.REQUIRED = False
+# ...and the live channel: a fake project has no websocket to hold; the
+# channel's own test stands up a fake server on a socket pair.
+_sb_mod.LIVE_ENABLED = False
 _paths_mod.PHONE_TOKEN = _SCRATCH_HOME / "phone" / "server_token.txt"
 # And the egress log: every net.py row a test provokes lands here, not in
 # the checkout's network.log the owner reads.
@@ -33988,7 +33991,8 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
             _patched(sb, "user", lambda: person), _patched(sb, "configured", lambda: True), \
             _patched(sb, "has_synced_settings", has_settings), _patched(sb, "sync_now", sync_now):
         assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
-        privacy.withdraw("settings_sync")
+        for _k in privacy.SYNC_KINDS:
+            privacy.withdraw(_k)
         card = cc.card_for("settings_sync")
         try:
             # 1. a returning person, nothing to download: account -> desk
@@ -34012,13 +34016,15 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
             assert answer["synced"] == ["wizard"], answer
             row = privacy.consent("settings_sync")
             assert row is not None and row["text_version"] == card["text_version"], row
+            assert privacy.allowed("history_sync"), "the returning road left the history sync shut"
             assert w.result.open_desk and w.result.saved
             assert config_mod.read_state(t).get("setup.done") is True
             bury(w)
 
             # 2. a returning person with a download missing: the computer
             #    page, then the desk — no other page
-            privacy.withdraw("settings_sync")
+            for _k in privacy.SYNC_KINDS:
+                privacy.withdraw(_k)
             answer.update(has=True, asked=0, synced=[])
             (t).unlink(missing_ok=True)
             w = wizard({**nothing, "portable": False, "recording": type("T", (), {"name": "av", "bytes": 27_556_236, "repo": "av"})()})
@@ -34039,7 +34045,8 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
 
             # 3. a new person, or a server that could not be asked: the
             #    ordinary wizard, Continue, every page
-            privacy.withdraw("settings_sync")
+            for _k in privacy.SYNC_KINDS:
+                privacy.withdraw(_k)
             answer.update(has=False, asked=0, synced=[])
             w = wizard(nothing)
             w.page = firstrun.PAGES.index("account")
@@ -34065,7 +34072,8 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
             with _patched(sb, "user", lambda: signed["who"]), \
                     _patched(sb, "sign_in_google", sign_in_google), \
                     _patched(firstrun.Wizard, "_came_back", lambda self, who: None):
-                privacy.withdraw("settings_sync")
+                for _k in privacy.SYNC_KINDS:
+                    privacy.withdraw(_k)
                 privacy.withdraw("account")
                 answer.update(has=True, asked=0, synced=[])
                 t.unlink(missing_ok=True)
@@ -34090,7 +34098,8 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
                 # 5. I have an account, but the account holds nothing yet:
                 #    said plainly, Continue, the ordinary wizard
                 signed["who"] = None
-                privacy.withdraw("settings_sync")
+                for _k in privacy.SYNC_KINDS:
+                    privacy.withdraw(_k)
                 privacy.withdraw("account")
                 answer.update(has=False, asked=0, synced=[])
                 t.unlink(missing_ok=True)
@@ -34112,7 +34121,8 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
                 #    holds settings: the truth is welcome back, and the
                 #    button — the person chose to look, nothing opens alone
                 signed["who"] = None
-                privacy.withdraw("settings_sync")
+                for _k in privacy.SYNC_KINDS:
+                    privacy.withdraw(_k)
                 privacy.withdraw("account")
                 answer.update(has=True, asked=0, synced=[])
                 t.unlink(missing_ok=True)
@@ -34140,7 +34150,8 @@ def test_a_returning_account_skips_the_wizard_and_brings_its_words():
                 assert not any(w._hidden(n) for n in ("mic", "say", "keys", "extras", "done"))
                 bury(w)
         finally:
-            privacy.withdraw("settings_sync")
+            for _k in privacy.SYNC_KINDS:
+                privacy.withdraw(_k)
             privacy.withdraw("account")      # cases 4-6 pressed the sign-in
             shutil.rmtree(d, ignore_errors=True)
 
@@ -34150,14 +34161,17 @@ def test_the_last_page_keeps_words_and_settings_in_the_account_by_default():
     Google account shared not one learned word, the gate being off in
     both behind a card nobody found: "make it the default, on the last
     screen, with a line that says what they are ticking and how to turn
-    it off"): signed in, a third switch — Keep my learned words and
-    settings in my account — drawn ON above the two, its help line
-    naming what follows and the way off; Start records the
-    settings_sync consent with the card's own text_version, and nothing
-    before Start does (the extras page's Next writes only its own
-    switches); off, Start writes no row; on a later run with the gate
-    open, off withdraws it. Not signed in, the row is not on the page
-    and Start records nothing — a consent nobody saw is not one."""
+    it off"): signed in, a third switch — Keep my words, settings and
+    what I said in my account — drawn ON above the two, its help line
+    naming what follows and the way off; Start records BOTH sync
+    consents (privacy.SYNC_KINDS — the owner, 2026-09-20 afternoon:
+    "one switch for everything, the history too, on"), each with its
+    card's own text_version, and nothing before Start does (the extras
+    page's Next writes only its own switches); off, Start writes no
+    row; on a later run with both gates open, off withdraws both, and
+    with only one open the switch is drawn on and Start grants the
+    missing one. Not signed in, the row is not on the page and Start
+    records nothing — a consent nobody saw is not one."""
     import consent_card as cc
     import firstrun
     import privacy
@@ -34187,8 +34201,10 @@ def test_the_last_page_keeps_words_and_settings_in_the_account_by_default():
     with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
             _patched(sb, "user", lambda: who["user"]), _patched(sb, "configured", lambda: True):
         assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
-        privacy.withdraw("settings_sync")
-        card = cc.card_for("settings_sync")
+        assert privacy.SYNC_KINDS == ("settings_sync", "history_sync")
+        for kind in privacy.SYNC_KINDS:
+            privacy.withdraw(kind)
+        cards = {kind: cc.card_for(kind) for kind in privacy.SYNC_KINDS}
         try:
             # 1. drawn on, off by hand, Start writes nothing
             w = wizard()
@@ -34199,47 +34215,70 @@ def test_the_last_page_keeps_words_and_settings_in_the_account_by_default():
             w._show_page()
             w._next()                                        # the extras page's own writer
             assert w.name == "done"
-            assert privacy.consent("settings_sync") is None, "granted before the row was seen"
+            for kind in privacy.SYNC_KINDS:
+                assert privacy.consent(kind) is None, f"{kind} granted before the row was seen"
             assert list(w.switches) == ["sync", "autostart", "phone"], list(w.switches)
             assert w.switches["sync"].get() is True, "the default is on"
             words = _wizard_words(w)
             assert firstrun.WORDS["done.sync"] in words
+            assert "what I said" in firstrun.WORDS["done.sync"], "the row does not name the history"
             assert "Settings > Privacy > Withdraw" in words, "no way off named on the row"
             assert "Never your voice" in words, "the row does not say what stays"
+            assert "the Said page is the same" in words, "the row does not say what the history sync does"
             w.switches["sync"].toggle()
             assert w.sync_wanted is False
             w._open_desk()
             assert w.result.saved and config_mod.read_state(t).get("setup.done") is True
-            assert privacy.consent("settings_sync") is None, "off on Start wrote a row"
+            for kind in privacy.SYNC_KINDS:
+                assert privacy.consent(kind) is None, f"off on Start wrote a {kind} row"
             bury(w)
 
-            # 2. left on, Start records it with the card's version
+            # 2. left on, Start records both with each card's version
             w = wizard()
             w.page = firstrun.PAGES.index("done")
             w._show_page()
             assert w.switches["sync"].get() is True
             w._open_desk()
-            row = privacy.consent("settings_sync")
-            assert row is not None and row["text_version"] == card["text_version"], row
-            assert privacy.allowed("settings_sync")
+            rows = {}
+            for kind in privacy.SYNC_KINDS:
+                rows[kind] = privacy.consent(kind)
+                assert rows[kind] is not None and rows[kind]["text_version"] == cards[kind]["text_version"], (kind, rows[kind])
+                assert privacy.allowed(kind)
             bury(w)
 
-            # 3. a later run, the gate open: drawn on and quiet; off withdraws
+            # 3. a later run, both gates open: drawn on and quiet; off withdraws both
             w = wizard()
             assert w._sync_shown is True and w.sync_wanted is True
             w.page = firstrun.PAGES.index("done")
             w._show_page()
             w._open_desk()
-            assert privacy.consent("settings_sync") is row or privacy.consent("settings_sync") == row
+            for kind in privacy.SYNC_KINDS:
+                assert privacy.consent(kind) == rows[kind], kind
             bury(w)
             w = wizard()
             w.page = firstrun.PAGES.index("done")
             w._show_page()
             w.switches["sync"].toggle()
             w._open_desk()
-            assert privacy.consent("settings_sync") is None, "off did not withdraw"
-            assert not privacy.allowed("settings_sync")
+            for kind in privacy.SYNC_KINDS:
+                assert privacy.consent(kind) is None, f"off did not withdraw {kind}"
+                assert not privacy.allowed(kind)
             bury(w)
+
+            # 3b. only the settings sync open (a copy from before the one
+            # switch): drawn on, and Start grants the history sync too
+            privacy.grant("settings_sync", cards["settings_sync"]["text_version"])
+            w = wizard()
+            assert w._sync_shown is False and w.sync_wanted is True
+            w.page = firstrun.PAGES.index("done")
+            w._show_page()
+            assert w.switches["sync"].get() is True
+            w._open_desk()
+            assert privacy.allowed("history_sync"), "the missing sync was not granted"
+            assert privacy.allowed("settings_sync")
+            bury(w)
+            for kind in privacy.SYNC_KINDS:
+                privacy.withdraw(kind)
 
             # 4. not signed in: no row, and Start records nothing
             who["user"] = None
@@ -34249,10 +34288,12 @@ def test_the_last_page_keeps_words_and_settings_in_the_account_by_default():
             assert list(w.switches) == ["autostart", "phone"], list(w.switches)
             assert w.sync_wanted is True                    # the default, unseen
             w._open_desk()
-            assert privacy.consent("settings_sync") is None, "a consent nobody saw was written"
+            for kind in privacy.SYNC_KINDS:
+                assert privacy.consent(kind) is None, f"a {kind} consent nobody saw was written"
             bury(w)
         finally:
-            privacy.withdraw("settings_sync")
+            for kind in privacy.SYNC_KINDS:
+                privacy.withdraw(kind)
             shutil.rmtree(d, ignore_errors=True)
 
 
@@ -36885,6 +36926,7 @@ class _FakeSupabase:
         self.calls: list[dict] = []
         self.script: dict[str, list[tuple[int, bytes]]] = {}
         self.tables: dict[str, list[dict]] = {}
+        self.broadcasts: list = []
         self.refreshes = 0
         self.email = ""
         self.name = ""
@@ -36965,6 +37007,9 @@ class _FakeSupabase:
                     rows.append(item)
                     stamped.append(item)
                 return _FakeRaw(json.dumps(stamped).encode(), 201)
+        if path == "realtime/v1/api/broadcast" and method == "POST":
+            self.broadcasts.append(payload)
+            return _FakeRaw(b"{}", 202)
         if path.startswith("storage/v1/object/list/"):
             return _FakeRaw(b"[]", 200)
         if path.startswith("storage/v1/object/reports/"):
@@ -37005,6 +37050,7 @@ class _fixture_project:
         secretstore.delete("supabase_session")
         self.sb.forget_cache()
         self.sb._status.update(busy="", last_error="", last_sync="", signin_url="")
+        self.sb._device_names.update(at=0.0, names={})       # the other PCs' names, believed 10 min
         self.sync.forget_all()
         config_mod.save({"account.device_id": None, "account.device_seen_at": None,
                          "account.device_name": None})
@@ -37019,6 +37065,374 @@ class _fixture_project:
             self.sb.FIRST_DELAY_S = delay
             self.sb._back_to_the_app = back
         return False
+
+
+class _FakeRealtime:
+    """The other end of net.websocket: a socket pair, this side played
+    by a thread that answers the handshake, unmasks the client's frames
+    (RFC 6455: every client frame is masked), replies to phx_join and
+    heartbeat the way Phoenix does, pings once, and sends whatever the
+    test queues (`push`). `got` is every message the client sent."""
+
+    def __init__(self, *, refuse_join: str | None = None, http_status: int = 101):
+        import socket as socket_mod
+        self.refuse_join = refuse_join
+        self.http_status = http_status
+        self.client, self.server = socket_mod.socketpair()
+        self.got: list[dict] = []
+        self.handshake = b""
+        self.closed = threading.Event()
+        self.joined = threading.Event()
+        self.pinged = threading.Event()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    # the seam
+    def connect(self, host, port, timeout_s):
+        self.host, self.port = host, port
+        return self.client
+
+    def _frame(self, opcode: int, data: bytes) -> bytes:
+        import struct
+        head = bytes([0x80 | opcode])
+        if len(data) < 126:
+            head += bytes([len(data)])
+        elif len(data) < 65536:
+            head += bytes([126]) + struct.pack("!H", len(data))
+        else:
+            head += bytes([127]) + struct.pack("!Q", len(data))
+        return head + data
+
+    def push(self, message: dict) -> None:
+        self.server.sendall(self._frame(0x1, json.dumps(message).encode("utf-8")))
+
+    def push_split(self, message: dict) -> None:
+        """One text message as two fragments, the second in a
+        continuation frame."""
+        data = json.dumps(message).encode("utf-8")
+        a, b = data[:7], data[7:]
+        self.server.sendall(bytes([0x01, len(a)]) + a)
+        self.server.sendall(bytes([0x80, len(b)]) + b)
+
+    def close(self) -> None:
+        try:
+            self.server.sendall(self._frame(0x8, b"\x03\xe8"))
+        except OSError:
+            pass
+
+    def _serve(self) -> None:
+        import base64 as b64
+        import hashlib as hl
+        import struct
+        try:
+            self.server.settimeout(20)
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = self.server.recv(4096)
+                if not chunk:
+                    return
+                head += chunk
+            self.handshake = head
+            key = re.search(rb"Sec-WebSocket-Key: (\S+)", head).group(1).decode()
+            accept = b64.b64encode(hl.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+            if self.http_status != 101:
+                self.server.sendall(f"HTTP/1.1 {self.http_status} Nope\r\nContent-Length: 0\r\n\r\n".encode())
+                return
+            self.server.sendall(("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                                 "Connection: Upgrade\r\nSec-WebSocket-Accept: " + accept +
+                                 "\r\n\r\n").encode())
+            buf = b""
+            while True:
+                if len(buf) < 2:
+                    chunk = self.server.recv(65536)
+                    if not chunk:
+                        return
+                    buf += chunk
+                    continue
+                opcode = buf[0] & 0x0F
+                masked = bool(buf[1] & 0x80)
+                n = buf[1] & 0x7F
+                pos = 2
+                if n == 126:
+                    n = struct.unpack("!H", buf[2:4])[0]; pos = 4
+                elif n == 127:
+                    n = struct.unpack("!Q", buf[2:10])[0]; pos = 10
+                need = pos + (4 if masked else 0) + n
+                while len(buf) < need:
+                    chunk = self.server.recv(65536)
+                    if not chunk:
+                        return
+                    buf += chunk
+                assert masked, "a client frame arrived unmasked"
+                mask = buf[pos:pos + 4]
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(buf[pos + 4:need]))
+                buf = buf[need:]
+                if opcode == 0x8:
+                    self.closed.set()
+                    return
+                if opcode == 0xA:
+                    self.pinged.set()          # the pong to our ping
+                    continue
+                if opcode != 0x1:
+                    continue
+                msg = json.loads(payload.decode("utf-8"))
+                self.got.append(msg)
+                if msg.get("event") == "phx_join":
+                    if self.refuse_join:
+                        self.push({"ref": msg.get("ref"), "event": "phx_reply", "topic": msg["topic"],
+                                   "payload": {"status": "error", "response": {"reason": self.refuse_join}}})
+                    else:
+                        self.push({"ref": msg.get("ref"), "event": "phx_reply", "topic": msg["topic"],
+                                   "payload": {"status": "ok", "response": {"postgres_changes": []}}})
+                        self.joined.set()
+                        self.server.sendall(self._frame(0x9, b"hi"))       # a ping
+                elif msg.get("event") == "heartbeat":
+                    self.push({"ref": msg.get("ref"), "event": "phx_reply", "topic": "phoenix",
+                               "payload": {"status": "ok", "response": {}}})
+        except Exception:                                    # noqa: BLE001
+            pass
+        finally:
+            try:
+                self.server.close()
+            except OSError:
+                pass
+
+
+def test_net_websocket_is_the_one_door_for_the_live_channel():
+    """net.websocket (2026-09-20): only wss and only an allowed host,
+    refused before any socket — with a row; the handshake carries the
+    publishable key on the project host and the RFC's accept is
+    checked; a secret goes into a message by NAME, replacing the
+    placeholder here, and only to that secret's host; the server's ping
+    is answered; a message split over two frames arrives whole; close
+    writes the row with the bytes each way; an HTTP answer that is not
+    101 is a NetError with its row."""
+    import net as net_mod
+    import sb
+    import secretstore
+
+    with _fixture_project() as fake, _consented("account", "settings_sync"):
+        secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+        sb.forget_cache()
+        host = f"{fake.REF}.supabase.co"
+        before = len(net_mod.rows())
+        # refused at the door
+        for bad in (f"ws://{host}/realtime/v1/websocket", "wss://evil.example.com/x"):
+            try:
+                net_mod.websocket(bad, "sync")
+            except net_mod.EgressRefused:
+                pass
+            else:
+                raise AssertionError(f"{bad} was opened")
+        assert [r.status for r in net_mod.rows()[before:]] == ["refused", "refused"]
+        # the handshake and the frames
+        server = _FakeRealtime()
+        with _patched(net_mod, "_ws_connect", server.connect):
+            ws = net_mod.websocket(f"wss://{host}/realtime/v1/websocket?vsn=1.0.0", "sync", timeout_s=5)
+        assert server.host == host and server.port == 443
+        assert b"apikey: " + fake.KEY.encode() in server.handshake, server.handshake
+        assert b"Sec-WebSocket-Version: 13" in server.handshake
+        assert b"GET /realtime/v1/websocket?vsn=1.0.0 HTTP/1.1" in server.handshake
+        assert net_mod.rows()[-1].status == 101 and net_mod.rows()[-1].purpose == "sync"
+        # the secret, by name, into the message; never to another host
+        ws.send_text(json.dumps({"topic": "realtime:t", "event": "phx_join", "ref": "1",
+                                 "payload": {"access_token": "{secret}"}}), secret="supabase_session")
+        reply = ws.recv_text(5)
+        assert reply and json.loads(reply)["event"] == "phx_reply", reply
+        assert server.got[0]["payload"]["access_token"] == fake.TOKEN, server.got
+        assert ws.recv_text(0.5) is None                      # the ping, answered on the way
+        assert server.pinged.wait(5), "the server's ping was not answered"
+        ws.host = "api.groq.com"                              # pretend
+        try:
+            ws.send_text("{secret}", secret="supabase_session")
+        except net_mod.EgressRefused:
+            pass
+        else:
+            raise AssertionError("the session token was sent to another host")
+        ws.host = host
+        try:
+            ws.send_text("x", secret="nope")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("an unknown secret name was accepted")
+        # a message in two frames; a timeout is None, not an error
+        server.push_split({"event": "broadcast", "payload": {"stores": ["history"]}})
+        got = ws.recv_text(5)
+        assert got and json.loads(got)["payload"]["stores"] == ["history"], got
+        assert ws.recv_text(0.2) is None
+        # close: one row, the bytes
+        n = len(net_mod.rows())
+        ws.close()
+        ws.close()                                            # once
+        assert len(net_mod.rows()) == n + 1
+        row = net_mod.rows()[-1]
+        assert row.status == "closed" and row.up > 0 and row.down > 0 and row.host == host, row
+        assert server.closed.wait(5), "no close frame reached the server"
+        # not 101
+        server = _FakeRealtime(http_status=403)
+        with _patched(net_mod, "_ws_connect", server.connect):
+            try:
+                net_mod.websocket(f"wss://{host}/realtime/v1/websocket", "sync", timeout_s=5)
+            except net_mod.NetError as e:
+                assert "403" in str(e), e
+            else:
+                raise AssertionError("a 403 handshake opened a socket")
+        assert net_mod.rows()[-1].status == 403
+        # the source: the socket is opened in net.py and nowhere else
+        src = (REPO / "sb.py").read_text("utf-8")
+        assert "net.websocket(" in src
+        assert not re.search(r"^\s*(import|from)\s+(socket|ssl|websockets?)", src, re.M)
+
+
+def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
+    """sb's live channel (the owner, 2026-09-20: "I sync, and not two
+    seconds pass and it is on the other app"): the thread joins the
+    account's private topic with the session token by name; a
+    broadcast from ANOTHER device naming a store pulls that store —
+    the other PC's history row lands in sync\\history.log and the Said
+    page — and pulls only (nothing pushed from here on a live pass); a
+    broadcast from THIS device is ignored; a heartbeat goes out on the
+    clock; a refused join is a logged retry, not a crash; a nudge names
+    its store and the worker's pass is that store alone; and every push
+    ends with one REST broadcast that carries the store names and this
+    device's id and NOTHING of what was said."""
+    import history as history_mod
+    import net as net_mod
+    import sb
+    import secretstore
+    import sync as sync_mod
+    import vocab as vocab_mod
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-live-"))
+    log_path = d / "transcripts.log"
+    log_path.write_text("2026-09-20 10:00:00,100 | OK | 1.0s | local | 0.4s latency | מכאן\n", "utf-8")
+    sync_dir = d / "sync"
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), \
+                _patched(history_mod, "LOG", log_path), _patched(paths, "SYNC_DIR", sync_dir), \
+                _patched(sb, "LIVE_HEARTBEAT_S", 0.5), _patched(sb, "LIVE_RETRY_S", (0.2,)), \
+                _patched(sb, "LIVE_ENABLED", True):
+            secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+            sb.forget_cache()
+            sb._live_stop.clear()
+            sb._live_state.update(on=False, error="")
+            vocab = vocab_mod.Vocab(d / "vocab.json")
+            mine = sb.device_id()
+            other = "99999999-8888-7777-6666-555555555555"
+            fake.tables["devices"] = [{"id": other, "name": "laptop", "user_id": fake.UID}]
+
+            # 1. a push broadcasts: the stores and the device, nothing said
+            #    (the settings blob goes up too: the fixture holds none yet)
+            out = sb.sync_now(vocab, reason="test")
+            assert out["history"] == "pulled 0, pushed 1" and out["settings"] == "pushed", out
+            assert len(fake.broadcasts) == 1, fake.broadcasts
+            msg = fake.broadcasts[0]["messages"][0]
+            assert msg["topic"] == f"user:{fake.UID}" and msg["event"] == "changed", msg
+            assert msg["private"] is True, "the broadcast went on the public channel"
+            assert msg["payload"] == {"stores": ["history", "settings"], "device": mine}, msg
+            assert "מכאן" not in json.dumps(fake.broadcasts, ensure_ascii=False)
+            assert sb.sync_now(vocab, reason="test") and len(fake.broadcasts) == 1, "nothing new, a broadcast"
+
+            # 2. the thread: join, heartbeat, a broadcast from the other PC
+            server = _FakeRealtime()
+            with _patched(net_mod, "_ws_connect", server.connect):
+                thread = threading.Thread(target=sb._live_loop, args=(vocab,), daemon=True)
+                thread.start()
+                assert server.joined.wait(5), "no join"
+                join = server.got[0]
+                assert join["topic"] == f"realtime:user:{fake.UID}" and join["event"] == "phx_join"
+                assert join["payload"]["config"]["private"] is True
+                assert join["payload"]["config"]["broadcast"] == {"self": False}
+                assert join["payload"]["access_token"] == fake.TOKEN, "the token did not go by name"
+                deadline = time.monotonic() + 5
+                while not sb.status()["live"] and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                assert sb.status()["live"], "the Account row does not know the channel is up"
+                deadline = time.monotonic() + 5
+                while not any(m.get("event") == "heartbeat" for m in server.got) and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                beat = next(m for m in server.got if m.get("event") == "heartbeat")
+                assert beat["topic"] == "phoenix", beat
+                # this device's own broadcast: nothing happens
+                calls = len(fake.calls)
+                server.push({"event": "broadcast", "topic": f"realtime:user:{fake.UID}",
+                             "payload": {"type": "broadcast", "event": "changed",
+                                         "payload": {"stores": ["history"], "device": mine}}})
+                time.sleep(0.5)
+                assert len(fake.calls) == calls, "our own broadcast started a pull"
+                # the other PC's: the history is pulled, pulled only, and lands
+                # (the log's stamps are local time; the row's is UTC — the
+                # test PC is UTC+3 or thereabouts, so 07:05 UTC sits
+                # between the two local lines whatever the zone east of it)
+                fake.tables["history"].append({"user_id": fake.UID, "device_id": other,
+                                               "ts": "2026-09-20T07:05:00.250+00:00", "kind": "dictation",
+                                               "text": "משם", "raw": None, "engine": "cpu", "seconds": 2.0,
+                                               "updated_at": "2026-09-20T10:05:01+00:00"})
+                log_path.write_text(log_path.read_text("utf-8") +
+                                    "2026-09-20 10:06:00,000 | OK | 1.0s | local | 0.4s latency | עוד\n", "utf-8")
+                t0 = time.monotonic()
+                server.push({"event": "broadcast", "topic": f"realtime:user:{fake.UID}",
+                             "payload": {"type": "broadcast", "event": "changed",
+                                         "payload": {"stores": ["history"], "device": other}}})
+                deadline = time.monotonic() + 5
+                while not (sync_dir / "history.log").exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                took = time.monotonic() - t0
+                assert (sync_dir / "history.log").exists(), "the other PC's row did not land"
+                assert took < 2.0, f"{took:.2f} s from broadcast to file"
+                lines = (sync_dir / "history.log").read_text("utf-8").splitlines()
+                assert len(lines) == 1 and " | REMOTE | dictation | laptop | cpu | 2.0s | משם" in lines[0], lines
+                said = history_mod.load(10)
+                assert [e.text for e in said] == ["עוד", "משם", "מכאן"], [e.text for e in said]
+                assert said[1].note == "from laptop"
+                pushes = [c for c in fake.calls if c["path"] == "rest/v1/history" and c["method"] == "POST"]
+                assert len(pushes) == 1, "a live pass pushed"
+                assert len(fake.broadcasts) == 1, "a live pass broadcast"
+                # a nudge names its store: the worker's pass is that store alone
+                sb._pending.clear()
+                sb.nudge("history")
+                assert sb._pending == {"history"}
+                sb._pending.clear()
+                sb.nudge("nonsense")
+                assert sb._pending == {"*"}
+                sb._pending.clear()
+                calls = len(fake.calls)
+                out = sb.sync_now(vocab, reason="nudge", only=["history"])
+                assert list(out) == ["history"] and out["history"] == "pulled 0, pushed 1", out
+                assert not any(c["path"].startswith("rest/v1/settings_sync") for c in fake.calls[calls:]), \
+                    "a history nudge touched the settings"
+                assert len(fake.broadcasts) == 2
+                # the socket goes when the gate shuts
+                import privacy
+                privacy.withdraw("settings_sync")
+                privacy.withdraw("history_sync")
+                assert server.closed.wait(5), "the socket stayed open with both gates shut"
+                sb._live_stop.set()
+                thread.join(5)
+                assert not thread.is_alive()
+            assert net_mod.rows()[-1].status == "closed"
+
+            # 3. a refused join: logged, retried, never raised
+            sb._live_stop.clear()
+            privacy.grant("settings_sync")
+            privacy.grant("history_sync")
+            refused = _FakeRealtime(refuse_join="Unauthorized")
+            with _patched(net_mod, "_ws_connect", refused.connect):
+                thread = threading.Thread(target=sb._live_loop, args=(vocab,), daemon=True)
+                thread.start()
+                deadline = time.monotonic() + 5
+                while "Unauthorized" not in sb._live_state["error"] and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                assert "Unauthorized" in sb._live_state["error"], sb._live_state
+                assert not sb.status()["live"]
+                sb._live_stop.set()
+                thread.join(5)
+    finally:
+        sb._live_stop.clear()
+        sb._live_state.update(on=False, error="")
+        sb._pending.clear()
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_sb_imports_are_narrow():
@@ -37086,16 +37500,19 @@ def test_the_sync_follows_the_account():
     import privacy
 
     assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
-    for kind in ("account", "settings_sync"):
+    all_three = ("account",) + privacy.SYNC_KINDS
+    for kind in all_three:
         privacy.withdraw(kind)
     try:
-        assert privacy.sign_in_grants() == ["account", "settings_sync"]
-        for kind in ("account", "settings_sync"):
+        assert privacy.sign_in_grants() == ["account", "settings_sync", "history_sync"]
+        for kind in all_three:
             row = privacy.consent(kind)
             assert row is not None and row["text_version"] == cc.card_for(kind)["text_version"], kind
         assert privacy.sign_in_grants() == [], "a row already there was written again"
         privacy.withdraw("settings_sync")
         assert privacy.sign_in_grants() == ["settings_sync"], "a fresh sign-in press is the card's promise again"
+        privacy.withdraw("history_sync")
+        assert privacy.sign_in_grants() == ["history_sync"], "the history sync is part of the press"
 
         # the migration for copies from before: account yes, sync no -> granted
         privacy.withdraw("settings_sync")
@@ -37108,19 +37525,32 @@ def test_the_sync_follows_the_account():
         privacy.withdraw("settings_sync")
         migrations._sync_follows_the_account()                   # no account: nothing
         assert privacy.consent("settings_sync") is None
-        assert [n for n, _fn in migrations.STEPS] == [2]
+        # ...and step 3 for copies from the day the two syncs were two
+        # switches: settings sync yes, history sync no -> granted; no
+        # settings sync (never signed in, or withdrawn): nothing
+        privacy.withdraw("history_sync")
+        migrations._history_follows_the_sync()
+        assert privacy.consent("history_sync") is None, "granted with no settings sync"
+        privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
+        migrations._history_follows_the_sync()
+        row = privacy.consent("history_sync")
+        assert row is not None and row["text_version"] == cc.card_for("history_sync")["text_version"], row
+        migrations._history_follows_the_sync()                   # a row there: untouched
+        assert privacy.consent("history_sync")["when"] == row["when"]
+        assert [n for n, _fn in migrations.STEPS] == [2, 3]
         import version
-        assert version.CONFIG_VERSION == 2
+        assert version.CONFIG_VERSION == 3
 
         for name, marker in (("firstrun.py", "def _sign_in"), ("dashboard.py", "def _landing_sign_in")):
             src = (REPO / name).read_text("utf-8")
             body = src[src.index(marker):src.index("\n    def ", src.index(marker) + 10)]
             assert "privacy.sign_in_grants()" in body, f"{name}: the sign-in door grants the account alone"
             assert 'privacy.grant("account")' not in body, name
-        policy = (REPO / "docs" / "privacy.md").read_text("utf-8")
-        assert "comes with the account" in policy and "Withdraw" in policy
+        policy = " ".join((REPO / "docs" / "privacy.md").read_text("utf-8").split())
+        assert "Both come with the account" in policy and "Withdraw" in policy
+        assert "the two sync consents" in policy, "the policy does not say the press grants both"
     finally:
-        for kind in ("account", "settings_sync"):
+        for kind in all_three:
             privacy.withdraw(kind)
 
 
@@ -37357,10 +37787,18 @@ def test_sync_vocab_merges_as_a_union_with_tombstones():
 
 def test_sync_history_rows_and_remote_lines_round_trip():
     """history_rows takes this PC's events after the cursor, in batches,
-    dictation/translate/punctuate/lookup/learned only; remote_line writes
-    another PC's row as a REMOTE line that history.py folds into the
-    Said page with the machine's name, merged by time with the local
-    file; all_events() never includes the pulled lines."""
+    dictation/translate/punctuate/lookup/learned only, keyed by the
+    log's millisecond stamp — and two events of one kind on the same
+    stamp (two second-reading verdicts accepted in one press, the
+    owner's log of 2026-09-18 16:12:19,327) are one millisecond apart
+    in the rows, deterministically, so no batch ever carries the
+    server's key twice (the 500 that stopped every push for two days);
+    remote_line writes another PC's row as a REMOTE line that
+    history.py folds into the Said page with the machine's name,
+    merged by time with the local file, a learned row with its pair
+    for the Lately list; all_events() never includes the pulled lines;
+    and stamp() changes when the pulled file does, so the desk redraws
+    without waiting for this PC's own next dictation."""
     import history as history_mod
     import sync as sync_mod
 
@@ -37368,37 +37806,65 @@ def test_sync_history_rows_and_remote_lines_round_trip():
     try:
         log_path = d / "transcripts.log"
         log_path.write_text(
-            "2026-09-18 10:00:00,000 | OK | 1.0s | local | 0.4s latency | ראשון\n"
+            "2026-09-18 10:00:00,250 | OK | 1.0s | local | 0.4s latency | ראשון\n"
             "2026-09-18 10:00:01,000 | POLISHED | 0.3s | groq | ראשון!\n"
             "2026-09-18 10:05:00,000 | ERROR | 2.0s | local | boom | kept: x.wav\n"
             "2026-09-18 10:10:00,000 | TRANSLATE-IN | 0.0s | שלום\n"
-            "2026-09-18 10:10:01,000 | TRANSLATE-OUT | 0.5s | groq | hello\n", "utf-8")
+            "2026-09-18 10:10:01,000 | TRANSLATE-OUT | 0.5s | groq | hello\n"
+            "2026-09-18 16:12:19,327 | REVIEW | accepted | הקוד הזה || הקוד\n"
+            "2026-09-18 16:12:19,327 | REVIEW | accepted | שמה מה שנקרא || שמה את מה שנקרא\n"
+            "2026-09-18 16:12:19,328 | REVIEW | accepted | הדב || הדבר\n", "utf-8")
         sync_dir = d / "sync"
         with _patched(history_mod, "LOG", log_path), _patched(paths, "SYNC_DIR", sync_dir):
             events = history_mod.all_events()
-            assert [e.kind for e in events] == ["dictation", "error", "translate"]
+            assert [e.kind for e in events] == ["dictation", "error", "translate",
+                                               "learned", "learned", "learned"]
+            assert events[0].when.microsecond == 250_000, "the stamp's milliseconds are dropped"
             rows = sync_mod.history_rows(events, "dev-1", None)
-            assert [(r["kind"], r["text"], r["raw"]) for r in rows] == \
+            assert [(r["kind"], r["text"], r["raw"]) for r in rows][:2] == \
                 [("dictation", "ראשון!", "ראשון"), ("translate", "hello", "שלום")], rows
             assert rows[0]["engine"] == "local" and rows[0]["seconds"] == 1.0
+            assert rows[0]["ts"].endswith(":00:00.250+00:00"), rows[0]["ts"]
             assert all(r["device_id"] == "dev-1" and r["ts"].endswith("+00:00") for r in rows)
+            learned = [r for r in rows if r["kind"] == "learned"]
+            assert [(r["raw"], r["text"]) for r in learned] == \
+                [("הקוד הזה", "הקוד"), ("שמה מה שנקרא", "שמה את מה שנקרא"), ("הדב", "הדבר")]
+            stamps = [r["ts"] for r in learned]
+            assert len(set(stamps)) == 3, f"two learned rows share a key: {stamps}"
+            assert stamps[0].endswith("19.327+00:00") and stamps[1].endswith("19.328+00:00") \
+                and stamps[2].endswith("19.329+00:00"), stamps
+            keys = [(r["device_id"], r["ts"], r["kind"]) for r in rows]
+            assert len(set(keys)) == len(keys), "a batch carries the server's key twice"
+            assert sync_mod.history_rows(events, "dev-1", None) == rows, "not deterministic"
             assert sync_mod.history_rows(events, "dev-1", rows[-1]["ts"]) == []
             after_first = sync_mod.history_rows(events, "dev-1", rows[0]["ts"])
-            assert [r["kind"] for r in after_first] == ["translate"]
-            # the other PC's rows, pulled
-            line = sync_mod.remote_line({"ts": "2026-09-18T07:02:00+00:00", "kind": "dictation",
+            assert [r["kind"] for r in after_first] == ["translate", "learned", "learned", "learned"]
+            # a cursor inside the bumped run resumes after the bump, not before it
+            assert [r["ts"] for r in sync_mod.history_rows(events, "dev-1", stamps[1])] == [stamps[2]]
+            # the other PC's rows, pulled — a dictation and a learned pair
+            before = history_mod.stamp()
+            line = sync_mod.remote_line({"ts": "2026-09-18T07:02:00.500+00:00", "kind": "dictation",
                                          "text": "מהמחשב | הנייד", "engine": "cpu",
                                          "seconds": 2.5}, "laptop")
             assert line.split(" | ")[1:6] == ["REMOTE", "dictation", "laptop", "cpu", "2.5s"], line
-            assert sync_mod.append_remote_history([line]) == 1
+            assert line.split(" | ")[0].endswith(",500"), line
+            pair = sync_mod.remote_line({"ts": "2026-09-18T07:03:00+00:00", "kind": "learned",
+                                         "text": "הדבר", "raw": "הדב", "engine": ""}, "laptop")
+            assert pair.endswith("| הדב || הדבר"), pair
+            assert sync_mod.append_remote_history([line, pair]) == 2
             assert (sync_dir / "history.log").exists()
+            assert history_mod.stamp() != before, "the pulled file is not in stamp()"
             merged = history_mod.load(50)
             kinds = [(e.kind, e.note) for e in merged]
             assert ("dictation", "from laptop") in kinds, kinds
             remote_ev = next(e for e in merged if e.note == "from laptop")
             assert remote_ev.text == "מהמחשב | הנייד" and remote_ev.engine == "cpu"
+            assert remote_ev.when.microsecond == 500_000
+            remote_pair = next(e for e in merged if e.kind == "learned" and "laptop" in e.note)
+            assert remote_pair.pairs == [("הדב", "הדבר")] and remote_pair.text == "הדבר" \
+                and remote_pair.source == "הדב", (remote_pair.pairs, remote_pair.note)
             assert merged[0].when >= merged[-1].when, "newest first"
-            assert all(e.note != "from laptop" for e in history_mod.all_events())
+            assert all("laptop" not in e.note for e in history_mod.all_events())
             assert sorted(sync_mod.forget_all()) == ["history.log"]
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -38522,9 +38988,13 @@ def test_account_block_on_the_privacy_tab():
     """Settings > Privacy carries the ACCOUNT card (screen 16): "start
     dictation first" with no app; with a status that says signed out,
     Sign in with Google and Anonymous account; signed in with Google,
-    the e-mail and Sync now / Sign out / Delete my account, and Delete
-    asks first — the question grows out of the card with Keep it and
-    Delete, and a press sends `account` with the verb over the pipe."""
+    the e-mail and Sign out / Delete my account (no Sync now since
+    2026-09-20: the sync is live, the owner's word), and Delete asks
+    first — the question grows out of the card with Keep it and Delete,
+    and a press sends `account` with the verb over the pipe. A shut sync
+    row on the same page carries [Turn on], which sends `account`
+    `sync` with its kind; a shut cloud row carries nothing (its card
+    opens on first use)."""
     import settings as settings_mod
 
     d = Path(tempfile.mkdtemp(prefix="deskit-acct-card-"))
@@ -38563,19 +39033,32 @@ def test_account_block_on_the_privacy_tab():
             board._paint_account()
             assert "person@example.com" in line.cget("text")
             assert "2 reports waiting" in board.parts["account_sub"].cget("text")
-            assert labels() == ["Sync now", "Sign out", "Delete my account"], labels()
+            assert labels() == ["Sign out", "Delete my account"], labels()
             sent: list = []
             board._ask = lambda command, then=None, **args: sent.append((command, args))
-            board.parts["account_strip"].winfo_children()[2]._command()
+            board.parts["account_strip"].winfo_children()[1]._command()
             assert board._account_asking and labels() == ["Keep it", "Delete"], labels()
             assert "Delete your account" in line.cget("text") and sent == []
             board.parts["account_strip"].winfo_children()[0]._command()
-            assert not board._account_asking and labels()[0] == "Sync now"
-            board.parts["account_strip"].winfo_children()[0]._command()
-            assert sent == [("account", {"do": "sync"})], sent
+            assert not board._account_asking and labels()[0] == "Sign out"
             board.status["account"].update(anonymous=True, email="")
             board._paint_account()
-            assert labels() == ["Sync now", "Sign in with Google", "Sign out", "Delete my account"]
+            assert labels() == ["Sign in with Google", "Sign out", "Delete my account"]
+            # the shut sync rows: [Turn on] asks the app for that one card
+            import privacy
+            for kind in privacy.SYNC_KINDS + ("cloud_text",):
+                privacy.withdraw(kind)
+            board._draw_settings()
+            board.root.update_idletasks()
+            cards = {widget[0] for rows in board.parts["rows"].values()
+                     for kind_, widget in rows if kind_ == "consent"}
+            turn_on = [w for canvas in cards for w in canvas.winfo_children()
+                       if hasattr(w, "_label") and w.itemcget(w._label, "text") == "Turn on"]
+            assert len(turn_on) == 2, f"{len(turn_on)} Turn on button(s): the two syncs, no more"
+            for w in turn_on:
+                w._command()
+            assert sorted(a.get("kind") for _c, a in sent) == ["history_sync", "settings_sync"], sent
+            assert all(c == "account" and a["do"] == "sync" for c, a in sent), sent
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
