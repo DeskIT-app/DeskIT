@@ -24461,6 +24461,49 @@ def test_the_hook_script_maps_events_and_never_fails() -> None:
     p = hook.payload_from_hook({"hook_event_name": "Notification",
                                 "notification_type": "permission_prompt"})
     assert p["kind"] == "input" and p["title"] == "Claude needs a permission"
+    # A question with choices arrives as a permission for AskUserQuestion
+    # (2026-09-21): the card says it is a question and carries it, read
+    # off the transcript's tail — the newest AskUserQuestion call with
+    # no result yet; an answered newest one means the current call has
+    # not landed on file, and a plain line beats the wrong question.
+    ask = {"hook_event_name": "Notification",
+           "notification_type": "permission_prompt",
+           "message": "Claude needs your permission to use AskUserQuestion"}
+    p = hook.payload_from_hook(dict(ask))
+    assert p["title"] == "Claude asks you a question", p
+    assert p["body"] == "Answer in the Claude window." and p["kind"] == "input"
+    p = hook.payload_from_hook({"hook_event_name": "Notification",
+                                "notification_type": "permission_prompt",
+                                "message": "Claude needs your permission to use Bash"})
+    assert p["title"] == "Claude needs a permission" and "Bash" in p["body"]
+
+    def line(obj):
+        return json.dumps(obj, ensure_ascii=False)
+    older = line({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "toolu_1", "name": "AskUserQuestion",
+         "input": {"questions": [{"question": "ישן?"}]}}]}})
+    answer = line({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_1", "content": "yes"}]}})
+    newest = line({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": "two things:"},
+        {"type": "tool_use", "id": "toolu_2", "name": "AskUserQuestion",
+         "input": {"questions": [{"question": "  מה לסמן  בתיקייה?", "header": "Dev"},
+                                 {"question": "ועכשיו?"}]}}]}})
+    with tempfile.TemporaryDirectory() as d:
+        t = Path(d) / "s.jsonl"
+        t.write_text("x" * 700000 + "\n" + older + "\n" + answer + "\n" + newest + "\n", "utf-8")
+        assert hook.question_of(t) == "מה לסמן בתיקייה?\nועכשיו?"
+        p = hook.payload_from_hook(dict(ask, transcript_path=str(t)))
+        assert p["title"] == "Claude asks you a question"
+        assert p["body"] == "מה לסמן בתיקייה?\nועכשיו?", p["body"]
+        t.write_text(older + "\n" + answer + "\n", "utf-8")
+        assert hook.question_of(t) == "", "an answered question is not the one"
+        p = hook.payload_from_hook(dict(ask, transcript_path=str(t)))
+        assert p["body"] == "Answer in the Claude window."
+        t.write_text("not json\n" + older + "\n{broken\n", "utf-8")
+        assert hook.question_of(t) == "ישן?", "a line that is not JSON is skipped"
+        assert hook.question_of(Path(d) / "missing.jsonl") == ""
+        assert hook.question_of(None) == "" and hook.question_of(d) == ""
     assert hook.payload_from_hook({"hook_event_name": "SubagentStop",
                                    "cwd": cwd}) is None
     assert hook.payload_from_hook({"hook_event_name": "Stop",
@@ -31178,8 +31221,23 @@ def test_privacy_gate_refuses_every_cloud_constructor():
                 assert "words changed" in str(e), e
             else:
                 raise AssertionError("a stale consent opened the gate")
+            # ...and main asks it again at start (2026-09-21): stale()
+            # names the kind — with its gate on and not offline only.
+            assert privacy.stale() == ["cloud_text"], privacy.stale()
+            privacy._gates["cloud_text"] = False
+            assert privacy.stale() == [], "a gate he turned off is his"
+            privacy._gates["cloud_text"] = True
+            privacy._gates["offline"] = True
+            assert privacy.stale() == [], "offline asks nothing"
+            privacy._gates["offline"] = False
+            asked: list[str] = []
+            with _patched(privacy, "_asker", asked.append):
+                assert privacy.request("cloud_text") is True
+            assert asked == ["cloud_text"], asked
+            privacy._asked.discard("cloud_text")
         finally:
             privacy.withdraw("cloud_text")
+        assert privacy.stale() == [], "no row, nothing to ask again"
 
 
 def test_consent_round_trip_and_withdraw_teardown():

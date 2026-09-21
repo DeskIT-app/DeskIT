@@ -81,12 +81,76 @@ INPUT_TITLES = {
     "elicitation_dialog": "Claude needs you",
     "agent_needs_input": "Claude needs you",
 }
+#: A question with choices (Claude Code's AskUserQuestion tool) reaches
+#: this hook as a PERMISSION — "Claude needs your permission to use
+#: AskUserQuestion" — because the tool asks before it draws (the owner,
+#: 2026-09-21, on that card: "it's clearly reading the log, and the log
+#: says AskUserQuestion — fix it"). It is not a permission; it is the
+#: question, so the card says so and, when the transcript already holds
+#: the call, carries the question itself.
+QUESTION_TOOL = "AskUserQuestion"
+QUESTION_TITLE = "Claude asks you a question"
+QUESTION_FALLBACK = "Answer in the Claude window."
+TRANSCRIPT_TAIL = 512 * 1024
 
 
 def _collapse(value) -> str:
     if not isinstance(value, str):
         return ""
     return " ".join(value.split())
+
+
+def question_of(transcript_path) -> str:
+    """The question(s) of the AskUserQuestion call that is waiting for
+    its answer, read off the tail of the session transcript — or "".
+
+    The newest AskUserQuestion tool_use in the file is the one, PROVIDED
+    no tool_result names it yet: the transcript is written behind the
+    conversation, and when the current call has not landed the newest
+    one on file is an earlier, answered question — better a plain line
+    than the wrong question. Every line is read as data; a line that is
+    not JSON (the cut first one, most often) is skipped. Never raises."""
+    try:
+        path = Path(str(transcript_path or ""))
+        if not transcript_path or not path.is_file():
+            return ""
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - TRANSCRIPT_TAIL))
+            tail = f.read().decode("utf-8", "replace")
+        answered: set[str] = set()
+        for line in reversed(tail.splitlines()):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            message = obj.get("message") if isinstance(obj, dict) else None
+            content = message.get("content") if isinstance(message, dict) \
+                else None
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result":
+                    answered.add(str(block.get("tool_use_id") or ""))
+                elif block.get("type") == "tool_use" \
+                        and block.get("name") == QUESTION_TOOL:
+                    if str(block.get("id") or "") in answered:
+                        return ""
+                    questions = (block.get("input") or {}).get("questions")
+                    if not isinstance(questions, list):
+                        return ""
+                    asked = [_collapse(q.get("question"))
+                             for q in questions if isinstance(q, dict)]
+                    return "\n".join(q for q in asked if q)
+    except Exception:                     # noqa: BLE001 — a hook never fails
+        return ""
+    return ""
 
 
 def _text(value) -> str:
@@ -378,6 +442,11 @@ def payload_from_hook(event: dict, window=None, link=None) -> dict | None:
         return None
     body = (_collapse(event.get("last_assistant_message"))
             or _collapse(event.get("message")) or "")[:BODY_MAX]
+    # The question with choices, named as what it is (see QUESTION_TOOL).
+    if kind == "input" and QUESTION_TOOL in body:
+        title = QUESTION_TITLE
+        body = (question_of(event.get("transcript_path"))
+                or QUESTION_FALLBACK)[:BODY_MAX]
     cwd = event.get("cwd")
     project = Path(str(cwd)).name if isinstance(cwd, str) and cwd else ""
     hwnd, app = owner_window() if window is None else window
