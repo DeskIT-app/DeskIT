@@ -76,6 +76,10 @@ TEXTS: dict[str, dict] = {
     "cloud_text": {
         "version": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-21",
         "title": "Send text to the cloud?",
+        # What the LAST change to the words added, in one line: the
+        # desk's Home says it on the row that asks again (2026-09-21).
+        "changed": "It now also sends Claude's last message, so the "
+                   "\"Claude finished\" card can say it in one line.",
         "blocks": (
             (WHAT, "The text you dictated or selected, up to 5,000 characters a request; "
                    "and, when Claude finishes, its last message, so the card can say it "
