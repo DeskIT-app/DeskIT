@@ -282,6 +282,49 @@ class Pair(NamedTuple):
     meant: str
 
 
+class Change(NamedTuple):
+    """One proposed change, said the way Track Changes says it: what was
+    heard on a red-edged pill, an arrow, and what is proposed on the gold
+    one with a tick in it — IN ITS PLACE in the sentence.
+
+    The Pair above says "which word became which" as a chip beside the
+    sentence. The owner, 2026-09-21, on the row drawn that way: "it is
+    really hard to understand where the mistake was — maybe I meant
+    that"; and on a line through the heard word: "hard to read what it
+    wants to fix — posh, I could also have said it is a U". So the heard
+    word is whole and readable on its own pill, the arrow points at the
+    proposal, and the tick says which of the two stays. The arrow points
+    the way the line READS (a Hebrew row: heard on the right, arrow
+    left, proposal on the left; an English row the mirror), and the tick
+    sits at the proposal's leading edge, right after the arrow, in both.
+    """
+
+    heard: str
+    meant: str
+
+
+ARROW_RTL, ARROW_LTR, TICK = "\u2190", "\u2192", "\u2713"
+CHANGE_PAD = 8          # inside a change's pills
+CHANGE_GAP = 6          # pill · arrow · pill
+
+
+def change_size(heard: str, meant: str, pt: int) -> tuple[int, int]:
+    """How wide and how tall one Change is before it is drawn — the two
+    pills, the arrow and the tick, measured with the bitmaps that will
+    draw them (ui.draw_text is cached, so this costs the render once)."""
+    widths, tall = 0, 0
+    for text, is_pill in ((heard, True), (ARROW_LTR, False),
+                          (TICK, False), (meant, True)):
+        photo, height, _ = ui.draw_text(text, pt=pt, width=None, max_lines=1,
+                                        colour=ui.FG, bg=ui.CARD,
+                                        family=ui.TEXT)
+        widths += photo.width() + (CHANGE_PAD * 2 if is_pill else 0)
+        tall = max(tall, height + (6 if is_pill else 0))
+    # the tick shares the proposal's pill (its pad is counted once) and
+    # each of the three joints is a gap
+    return widths + CHANGE_GAP * 3, tall
+
+
 def _piece(piece) -> tuple:
     """(text, colour, pill) out of whatever a caller passed, so a short
     tuple is a missing pill and not a traceback in the middle of a
@@ -303,7 +346,8 @@ def run_is_rtl(pieces) -> bool:
                      if isinstance(t, str))
     if not words.strip():
         words = " ".join(w for t, _c, _p in map(_piece, pieces or ())
-                         if isinstance(t, Pair) for w in (t.heard, t.meant))
+                         if isinstance(t, (Pair, Change))
+                         for w in (t.heard, t.meant))
     return ui.is_rtl(words)
 
 
@@ -350,6 +394,12 @@ def rtl_run(canvas, edge_x: int, y: int, pieces, bg: str, *,
                                        pair_h)
             laid.append(("pair", text, None, width, tall, tall))
             continue
+        if isinstance(text, Change):
+            if not (text.heard and text.meant):
+                continue
+            width, tall = change_size(text.heard, text.meant, pt)
+            laid.append(("change", text, None, width, tall, tall))
+            continue
         if not text:
             continue
         face = pill or bg
@@ -373,6 +423,9 @@ def rtl_run(canvas, edge_x: int, y: int, pieces, bg: str, *,
         if kind == "pair":
             ui.pair_pill(canvas, left + width, box_y, thing.heard,
                          thing.meant, bg, size=pair_size_pt, height=box)
+        elif kind == "change":
+            _draw_change(canvas, left, box_y, width, box, thing, bg, pt,
+                         rtl, keep)
         elif kind == "pill":
             canvas.create_image(left, box_y, anchor="nw",
                                 image=ui.rounded(width, box, radius, fill,
@@ -385,6 +438,81 @@ def rtl_run(canvas, edge_x: int, y: int, pieces, bg: str, *,
                                 anchor="nw", image=thing)
         x += (width + gap) * (-1 if rtl else 1)
     return abs(x - edge_x) - gap
+
+
+def _draw_change(canvas, left: int, top: int, width: int, box: int,
+                 change: Change, bg: str, pt: int, rtl: bool,
+                 keep=None) -> None:
+    """The three parts of a Change, in reading order across
+    `left .. left + width`: the heard pill, the arrow, the proposal pill
+    with its tick. `rtl` is the LINE's direction (the caller's), which is
+    what decides which end is first and which way the arrow points — not
+    the words' own script, so a Latin term in a Hebrew sentence sits
+    where the Hebrew reader meets it, and the arrow still points on.
+
+    Every item is tagged so a test (or a hover) can find the parts:
+    ``change-heard``, ``change-arrow``, ``change-tick``, ``change-meant``.
+    """
+    def bitmap(text, colour, face):
+        photo, height, _ = ui.draw_text(text, pt=pt, width=None, max_lines=1,
+                                        colour=colour, bg=face,
+                                        family=ui.TEXT)
+        if keep is not None:
+            keep.append(photo)
+        return photo, height
+
+    heard, heard_h = bitmap(change.heard, ui.RED, ui.RED_SOFT)
+    arrow, _arrow_h = bitmap(ARROW_RTL if rtl else ARROW_LTR, ui.ACCENT, bg)
+    tick, tick_h = bitmap(TICK, ui.ACCENT_TEXT, ui.ACCENT_SOFT)
+    meant, meant_h = bitmap(change.meant, ui.FG, ui.ACCENT_SOFT)
+    pill_h = min(box, max(heard_h, meant_h, tick_h) + 6)
+    mid = top + box // 2
+
+    # (width, painter) in reading order
+    def pill(photo, fill, edge, tag, lead=None):
+        inner = photo.width() + (lead.width() + CHANGE_GAP if lead else 0)
+        w = inner + CHANGE_PAD * 2
+
+        def paint(x):
+            face = ui.rounded(w, pill_h, 8, fill, bg, edge)
+            if keep is not None:
+                keep.append(face)
+            canvas.create_image(x, mid, anchor="w", image=face, tags=tag)
+            # inside the pill: the lead (the tick) first in reading order
+            parts = ([(lead, "change-tick")] if lead else []) + [(photo, tag)]
+            if rtl:
+                cx = x + w - CHANGE_PAD           # the right edge, inwards
+                for img, t in parts:
+                    canvas.create_image(cx, mid, anchor="e", image=img,
+                                        tags=t)
+                    cx -= img.width() + CHANGE_GAP
+            else:
+                cx = x + CHANGE_PAD
+                for img, t in parts:
+                    canvas.create_image(cx, mid, anchor="w", image=img,
+                                        tags=t)
+                    cx += img.width() + CHANGE_GAP
+        return w, paint
+
+    def glyph(photo, tag):
+        def paint(x):
+            canvas.create_image(x, mid, anchor="w", image=photo, tags=tag)
+        return photo.width(), paint
+
+    order = [pill(heard, ui.RED_SOFT, ui.RED, "change-heard"),
+             glyph(arrow, "change-arrow"),
+             pill(meant, ui.ACCENT_SOFT, ui.CHIP_ON_EDGE, "change-meant",
+                  lead=tick)]
+    # laid from the reading start: the right end of the box for RTL
+    x = left + width if rtl else left
+    for w, paint in order:
+        if rtl:
+            x -= w
+            paint(x)
+            x -= CHANGE_GAP
+        else:
+            paint(x)
+            x += w + CHANGE_GAP
 
 
 # --------------------------------------------------------------- buttons

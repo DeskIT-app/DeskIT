@@ -67,6 +67,11 @@ _paths_mod.SPAWN_LOG = _SCRATCH_HOME / "spawn.log"
 # And the consents: a test that grants one grants it in the scratch file,
 # never in the owner's consent.json (privacy.py reads paths.CONSENT_FILE).
 _paths_mod.CONSENT_FILE = _SCRATCH_HOME / "consent.json"
+# And the learned words: the Words place (dashboard._words_entries) reads
+# paths.VOCAB_FILE on every build and its three doors WRITE it when no app
+# is running — a test that teaches a word must never teach the owner's
+# copy one.
+_paths_mod.VOCAB_FILE = _SCRATCH_HOME / "vocab.json"
 
 import apikey
 import paths
@@ -21810,7 +21815,14 @@ def test_the_review_card_is_measured_from_its_rows_and_pressed_where_drawn(
     assert card["id"] == "s" and len(card["rows"]) == 1 and card["more"] == 0
     row = card["rows"][0]
     assert row["word"] == "מנטוס" and row["was"] == "מטוס", row
-    assert "במקום: מטוס" in rc.note_for(row), rc.note_for(row)
+    # the heard word is ON the row since 2026-09-21 (its red pill), so
+    # the note no longer repeats it; a drop row still says "למחוק"
+    assert "במקום" not in rc.note_for(row), rc.note_for(row)
+    assert rc.note_for(row) == "אוכלים מנטוס · גם פענוח נוסף שמע כך", rc.note_for(row)
+    assert rc.note_for({"kind": "drop", "why": "x"}) == "למחוק · x"
+    before, heard, word, after, pill_w = rc._fit({}, row, 400, 11.0, 1.0)
+    assert heard is not None and heard.width > word.width, "the red pill and its arrow"
+    assert rc._fit({}, dict(row, kind="drop"), 400, 11.0, 1.0)[1] is None
     w, h = rc.measure(card)
     five = rc.card_for(dict(suggestion, changes=suggestion["changes"] * 5),
                        seconds=20)
@@ -21853,22 +21865,29 @@ def test_an_english_row_runs_left_to_right_and_a_hebrew_row_does_not(
     assert en["right"] == "" and en["left"].startswith("send around"), en
     assert rc.row_rtl({}) is True, "a row without the key is the old, RTL one"
 
-    def pill_centre(row):
+    def pill_centre(row, fill=rc.ACCENT_SOFT):
         card = {"title": rc.TITLE, "sub": "", "rows": [row], "more": 0,
                 "keys": {rc.ACCEPT: "V", rc.REJECT: "X", rc.LATER: "L",
                          rc.EDIT: "E"}}
         img = rc.compose(card, 1.0, 1.0, cache={})
-        # the fill is ACCENT_SOFT at alpha 230; compositing onto the
-        # transparent ground rounds each channel by one
+        # the fill is ACCENT_SOFT (the proposal) or RED_SOFT (the heard
+        # word) at alpha 230; compositing onto the transparent ground
+        # rounds each channel by one
         xs = [x for x in range(img.width) for y in range(img.height)
               if (lambda p: p[3] == 230 and all(
-                  abs(a - b) <= 2 for a, b in zip(p[:3], rc.ACCENT_SOFT)))(
+                  abs(a - b) <= 2 for a, b in zip(p[:3], fill)))(
                   img.getpixel((x, y)))]
-        assert xs, "the pill is the only thing painted ACCENT_SOFT"
+        assert xs, "the pills are the only things painted in that fill"
         return (min(xs) + max(xs)) / 2 / img.width
 
-    assert pill_centre(en) < 0.4, "English: the first word is on the left"
-    assert pill_centre(he) > 0.6, "Hebrew: the first word is on the right"
+    # SINCE 2026-09-21 THE HEARD WORD IS ON THE ROW TOO, on a red pill
+    # before the gold one in reading order: left of it in English, right
+    # of it in Hebrew — the arrow between them points the way the row
+    # reads. A change at word 0 still starts at the row's own edge.
+    assert pill_centre(en, rc.RED_SOFT) < pill_centre(en) < 0.5, \
+        "English: heard, then the proposal, from the left"
+    assert 0.5 < pill_centre(he) < pill_centre(he, rc.RED_SOFT), \
+        "Hebrew: heard, then the proposal, from the right"
     # the chrome is Hebrew whatever the row says: the buttons do not move
     assert rc.regions({"rows": [en], "more": 0}) == \
         rc.regions({"rows": [he], "more": 0})
@@ -22111,10 +22130,10 @@ def test_the_waiting_pile_lists_what_the_second_reading_waits_on() -> None:
             # happened in. The old row drew the whole proposal with the
             # new word on a pill and he could not tell what had changed.
             spec = board._waiting_review()[0]
-            first = spec["runs"][0][0]
-            assert isinstance(first, widgets_mod.Pair), spec["runs"]
-            assert (first.heard, first.meant) == ("מטוס", "מנטוס"), first
-            assert spec["runs"][1][0] == "הלכתי לאכול מנטוס", spec["runs"]
+            before, change = spec["runs"][0][0], spec["runs"][1][0]
+            assert isinstance(change, widgets_mod.Change), spec["runs"]
+            assert (change.heard, change.meant) == ("מטוס", "מנטוס"), change
+            assert before == "הלכתי לאכול", spec["runs"]
             assert "one word changed" in spec["eyebrow"], spec["eyebrow"]
             board._review_decide("p", "accepted")
             assert store.pending() == [] and store.get("p")["by"] == "dashboard"
@@ -22257,14 +22276,21 @@ def test_a_second_reading_row_says_which_word_became_which():
                "changes": [{"before": "מכתיר", "after": "מכתיב",
                             "kind": "replace", "why": "הגייה דומה"}]}
         bands = dash.Dashboard._change_bands(dash.Dashboard, one, 800)
-        pair, context = bands["runs"][0][0], bands["runs"][1][0]
-        assert isinstance(pair, widgets_mod.Pair)
-        assert (pair.heard, pair.meant) == ("מכתיר", "מכתיב"), pair
+        # THE CHANGE SITS IN ITS PLACE (2026-09-21): the words before it,
+        # the Change (heard on red, arrow, proposal on gold), the words
+        # after it. "It is really hard to understand where the mistake
+        # was — maybe I meant that" was the owner on a row that led
+        # with a Pair chip and the proposed sentence after it.
+        before, change, after = (piece for piece, _c, _p in bands["runs"])
+        assert isinstance(change, widgets_mod.Change), bands["runs"]
+        assert (change.heard, change.meant) == ("מכתיר", "מכתיב"), change
+        assert before == "כל היום אני", before
         # THE CONTEXT IS A WHOLE SENTENCE — from point to point. The
         # proposal is two sentences and the change is in the first, so
         # the second one is not on the row at all.
-        assert context == "כל היום אני מכתיב את הטקסט הזה.", context
-        assert "זה עובד יפה" not in context
+        assert after == "את הטקסט הזה.", after
+        assert "זה עובד יפה" not in after
+        assert bands["runs"][0][1] == ui_mod.DIM and bands["runs"][2][1] == ui_mod.DIM
         assert bands["eyebrow"].endswith("one word changed"), bands
         assert bands["note"] == "הגייה דומה", bands
 
@@ -22273,10 +22299,38 @@ def test_a_second_reading_row_says_which_word_became_which():
              "why": "איות"}])
         bands = dash.Dashboard._change_bands(dash.Dashboard, two, 800)
         assert bands["eyebrow"].endswith("two words changed"), bands
-        assert "one more change" in bands["note"], bands
-        assert sum(1 for piece, _c, _p in bands["runs"]
-                   if isinstance(piece, widgets_mod.Pair)) == 1, \
-            "two pairs would not fit a 72 px row and the row says so"
+        pieces = [piece for piece, _c, _p in bands["runs"]]
+        changes = [p for p in pieces if isinstance(p, widgets_mod.Change)]
+        assert [(c.heard, c.meant) for c in changes] == \
+            [("מכתיר", "מכתיב"), ("הזה", "ההוא")], changes
+        assert pieces[2] == "את הטקסט", pieces
+        assert "more change" not in bands["note"], bands
+        # a row too narrow for both draws the first and counts the rest
+        narrow = dash.Dashboard._change_bands(dash.Dashboard, two, 220)
+        n_changes = [p for p, _c, _p in narrow["runs"]
+                     if isinstance(p, widgets_mod.Change)]
+        assert len(n_changes) == 1, narrow["runs"]
+        assert "one more change" in narrow["note"], narrow
+
+        # an English sentence: the same pieces, and the row will read LTR
+        en = {"id": "e", "when": "", "text": "run the tests before you posh the branch",
+              "proposed": "run the tests before you push the branch",
+              "changes": [{"before": "posh", "after": "push", "kind": "replace",
+                           "why": "x", "span": [5, 6]}]}
+        bands = dash.Dashboard._change_bands(dash.Dashboard, en, 800)
+        pieces = [piece for piece, _c, _p in bands["runs"]]
+        assert pieces[0] == "run the tests before you" and pieces[2] == "the branch", pieces
+        assert not widgets_mod.run_is_rtl(bands["runs"])
+        # a change at the very start, and one the text does not hold
+        first = dict(en, changes=[{"before": "run", "after": "ran", "kind": "replace"}])
+        pieces = [p for p, _c, _p in dash.Dashboard._change_bands(
+            dash.Dashboard, first, 800)["runs"]]
+        assert isinstance(pieces[0], widgets_mod.Change) and pieces[1] == \
+            "the tests before you posh the branch", pieces
+        lost = dict(en, changes=[{"before": "zzz", "after": "yyy", "kind": "replace"}])
+        pieces = [p for p, _c, _p in dash.Dashboard._change_bands(
+            dash.Dashboard, lost, 800)["runs"]]
+        assert isinstance(pieces[-1], widgets_mod.Change), pieces
 
         # A dropped ending has no pair — nothing became anything — so the
         # words that would go are the chip, in the danger colour.
@@ -27328,6 +27382,20 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
             assert rows[0]["shot"] and rows[0]["dictation"].get("wav"), "the local copy lost a piece"
             preview = toplevels(board, "Preview — what leaves this PC")
             assert preview, "no Preview opened"
+            # THE 600 ms LOOK-ROUND MUST NOT OPEN A SECOND PREVIEW. _build
+            # schedules _preview_if_waiting once the first frame is up, and
+            # the show signal calls it again: on GitHub's runner that timer
+            # fired AFTER the box had filed the row as PREVIEW and opened
+            # its own preview, so a second window for the same row came up
+            # and [Keep] on the first left the second standing (CI
+            # 35581806000 and 35589125950, 2026-09-21, at this line's
+            # "not toplevels"). Here the look-round is called by hand,
+            # which is what the slow runner did by accident.
+            board._preview_if_waiting()
+            spin(board, 5)
+            assert len(toplevels(board, "Preview — what leaves this PC")) == 1, \
+                "a second preview for the same row"
+            assert preview[0].winfo_exists(), "the look-round replaced the open preview"
             texts = [str(w.cget("text")) for w in descendants(preview[0]) if isinstance(w, tk.Label)]
             assert "This is everything that leaves your PC. Nothing else." in texts, texts
             assert any(t.startswith("shot.jpg  ·  ") for t in texts), texts
@@ -27796,9 +27864,10 @@ def test_the_home_fills_its_page_whether_nothing_or_everything_waits():
 
 
 def test_the_corrections_place_holds_every_proposal_and_one_gold() -> None:
-    """The home shows three of them; this place shows all of them, with
-    the vocabulary beside it — "the vocabulary and all the corrections it
+    """The home shows three of them; this place shows all of them, above
+    the list of learned words — "the vocabulary and all the corrections it
     does automatically", in one place because they are one story."""
+    import tkinter as tk
     import ui
     import widgets as widgets_mod
 
@@ -27823,8 +27892,13 @@ def test_the_corrections_place_holds_every_proposal_and_one_gold() -> None:
         rows = [w for w in board.parts["corr_list"].inner.winfo_children()
                 if isinstance(w, ui.Card)]
         assert len(rows) == 5, len(rows)
-        assert "5 proposals" in board.parts["corr_head"].cget("text")
-        assert "vocab_count" in board.parts, "the vocabulary is not here"
+        eyebrows = [w.cget("text") for w in
+                    board.parts["corr_list"].inner.winfo_children()
+                    if isinstance(w, tk.Label)]
+        assert any(e.endswith("5") and "W A I T I N G" in e for e in eyebrows), eyebrows
+        # the list's tools are here — the search, the switch, the button
+        for part in ("words_search", "words_use", "words_teach"):
+            assert part in board.parts, part
         golds = []
         for card in rows:
             for child in card.body.winfo_children():
@@ -27832,13 +27906,305 @@ def test_the_corrections_place_holds_every_proposal_and_one_gold() -> None:
                     golds += [b for b in child.buttons.values()
                               if isinstance(b, widgets_mod.ToneButton)]
         assert len(golds) == 1, f"{len(golds)} lit buttons on one surface"
+        # ...and [Teach a word] stepped down to a quiet button meanwhile
+        assert not isinstance(board.parts["words_teach"], widgets_mod.ToneButton), \
+            "two gold buttons on one surface"
         board._review_store = lambda: Fake([])
         board._corr_stamp = object()
         board._poll_corrections()
         board.root.update_idletasks()
         assert not [w for w in board.parts["corr_list"].inner.winfo_children()
                     if isinstance(w, ui.Card)]
-        assert "Nothing is waiting" in board.parts["corr_head"].cget("text")
+        assert isinstance(board.parts["words_teach"], widgets_mod.ToneButton), \
+            "nothing waits: teaching a word is the primary action again"
+
+
+def test_the_words_list_is_the_whole_vocabulary_with_search_and_three_doors(
+        ) -> None:
+    """Corrections > Words (2026-09-21): every learned pair, newest
+    first; a search over both sides; a pair typed in by hand; a pair
+    changed in place; a pair taken out; and the switch. The owner, on a
+    panel that showed the last six: "a full list anyone can see, a way
+    to add by hand, the search, and the button that turns them on and
+    off". With no app running the three doors write the file; with one
+    running they go through the pipe — the app owns the file then."""
+    import json
+    import ui
+    import widgets as widgets_mod
+    import dashboard as dash
+
+    def write(entries):
+        paths.VOCAB_FILE.write_text(json.dumps(
+            {"version": 1, "corrections": entries}, ensure_ascii=False), "utf-8")
+
+    def read():
+        return json.loads(paths.VOCAB_FILE.read_text("utf-8"))["corrections"]
+
+    write([{"heard": "הדסקי dev", "meant": "ה-Dev", "hits": 1,
+            "last": "2026-09-20 10:00:00"},
+           {"heard": "יכלת", "meant": "יכולת", "hits": 2,
+            "last": "2026-09-21 09:00:00"},
+           {"heard": "סלאש קליר", "meant": "slash clear", "hits": 2,
+            "last": "2026-09-19 08:00:00"}])
+
+    class Fake:
+        def pending(self):
+            return []
+
+    with _window() as board:
+        if board is None:
+            return
+        board._review_store = lambda: Fake()
+        board._show("Corrections")
+        board.root.update_idletasks()
+        # the whole list, newest first, and a head that says how it is used
+        assert list(board.parts["word_rows"]) == ["יכלת", "הדסקי dev", "סלאש קליר"], \
+            list(board.parts["word_rows"])
+        head = board.parts["corr_head"].cget("text")
+        assert head.startswith("3 words") and "2 fixed on every dictation" in head, head
+        # the search looks at both sides of a pair
+        board._words_search("dev")
+        assert list(board.parts["word_rows"]) == ["הדסקי dev"], list(board.parts["word_rows"])
+        assert "1 of 3 words match" in board.parts["corr_head"].cget("text")
+        board._words_search("clear")
+        assert list(board.parts["word_rows"]) == ["סלאש קליר"]
+        board._words_search("zzz")
+        assert board.parts["word_rows"] == {} and \
+            "No learned word" in board.parts["corr_empty"].cget("text")
+        board._words_search("")
+
+        # teach a word by hand: the editor at the top, Save writes the
+        # file (nothing runs), and the pair counts as corrected twice
+        board._words_edit("")
+        assert board._words_editing == "" and "words_heard" in board.parts
+        board._words_save("הדב", "Dev")
+        assert board._words_editing is None
+        got = {c["heard"]: c for c in read()}
+        assert got["הדב"]["meant"] == "Dev" and got["הדב"]["hits"] == 2, got
+        assert list(board.parts["word_rows"])[0] == "הדב", "newest first"
+        # the two refusals never reach the file
+        board._words_edit("")
+        board._words_save("שלום", "שלום")
+        board._words_save("", "x")
+        assert "שלום" not in {c["heard"] for c in read()}
+        board._words_cancel()
+        assert board._words_editing is None and "words_heard" not in board.parts
+
+        # change a pair in place: the row becomes the editor, prefilled;
+        # a new heard form keeps the old hits
+        board._words_edit("יכלת")
+        assert board.parts["words_heard"].get() == "יכלת"
+        assert board.parts["words_meant"].get() == "יכולת"
+        assert "יכלת" not in board.parts["word_rows"], "the row IS the editor"
+        board._words_save("יכלתי", "יכולתי")
+        got = {c["heard"]: c for c in read()}
+        assert "יכלת" not in got and got["יכלתי"]["meant"] == "יכולתי"
+        assert got["יכלתי"]["hits"] == 2, got["יכלתי"]
+
+        # take one out
+        board._words_forget("סלאש קליר")
+        assert "סלאש קליר" not in {c["heard"] for c in read()}
+        assert "סלאש קליר" not in board.parts["word_rows"]
+
+        # the switch, nothing running: the line goes to settings.toml
+        board._words_use(False)
+        assert config_mod.load_layered().vocab.enabled is False
+        board._words_use(True)
+        assert config_mod.load_layered().vocab.enabled is True
+
+        # with an app running, every door is a pipe command — the app
+        # owns vocab.json while it runs
+        sent = []
+        board.running = True
+        board._ask = lambda command, then=None, **args: sent.append((command, args))
+        board._words_edit("")
+        board._words_save("א", "ב")
+        board._words_forget("הדב")
+        board._words_edit("יכלתי")
+        board._words_save("יכלתי", "יכולתי!")
+        board._words_use(False)
+        assert [(c, a.get("do")) for c, a in sent] == [
+            ("vocab", "learn"), ("vocab", "forget"), ("vocab", "edit"),
+            ("option", None)], sent
+        assert sent[0][1] == {"do": "learn", "heard": "א", "meant": "ב"}
+        assert sent[2][1] == {"do": "edit", "heard": "יכלתי", "new_heard": "יכלתי",
+                              "meant": "יכולתי!"}
+        assert sent[3][1] == {"name": "vocab.enabled", "value": False}
+        assert "הדב" in {c["heard"] for c in read()}, "the desk did not touch the file"
+        # the reply redraws off the file at the next poll
+        board._vocab_answered({"ok": True, "message": "learned — 5 words"}, "learn")
+        assert board._corr_stamp is None
+        board._vocab_answered(None, "learn")
+        assert "stopped" in board._toast_text
+
+
+def test_a_change_draws_heard_arrow_and_proposal_in_reading_order() -> None:
+    """widgets.Change on a line: the heard word on its red pill, the
+    arrow, the proposal on the gold pill with the tick at its leading
+    edge — laid in the LINE's direction. A Hebrew line puts the heard
+    word on the right and the arrow points left; an English line the
+    mirror; a Latin term inside a Hebrew sentence goes where the Hebrew
+    reader meets it. The owner's ask of 2026-09-21: "check the arrow's
+    behaviour... if the text is English the red word comes first and the
+    fixed one to its right, not on the left as now"."""
+    import tkinter as tk
+    import ui as ui_mod
+    import widgets as widgets_mod
+
+    root = _tk_or_skip()
+    if root is None:
+        return
+    try:
+        canvas = tk.Canvas(root, width=900, height=60, bg=ui_mod.CARD)
+        canvas.pack()
+
+        def lay(runs, rtl):
+            canvas.delete("all")
+            keep = []
+            used = widgets_mod.rtl_run(canvas, 880 if rtl else 0, 8, runs,
+                                       ui_mod.CARD, pt=12, band=36, rtl=rtl,
+                                       keep=keep)
+            assert used > 0
+            boxes = {}
+            for tag in ("change-heard", "change-arrow", "change-tick",
+                        "change-meant"):
+                items = canvas.find_withtag(tag)
+                assert items, f"no {tag} drawn"
+                xs = [x for i in items for x in canvas.bbox(i)[0::2]]
+                boxes[tag] = (min(xs), max(xs))
+            return boxes
+
+        change = widgets_mod.Change("מטוס", "מנטוס")
+        he = lay([("הלכתי לאכול", ui_mod.DIM, None), (change, None, None),
+                  ("עם החברים", ui_mod.DIM, None)], rtl=True)
+        assert he["change-heard"][0] > he["change-meant"][1], he
+        assert he["change-meant"][1] <= he["change-arrow"][0] <= he["change-heard"][0], he
+        # the tick is the first thing inside the gold pill after the
+        # arrow: at the pill's RIGHT end on a Hebrew line
+        assert he["change-tick"][0] > (he["change-meant"][0] + he["change-meant"][1]) / 2, he
+        assert widgets_mod.run_is_rtl([("הלכתי", None, None), (change, None, None)])
+
+        en = lay([("run the tests before you", ui_mod.DIM, None),
+                  (widgets_mod.Change("posh", "push"), None, None),
+                  ("the branch", ui_mod.DIM, None)], rtl=False)
+        assert en["change-heard"][1] < en["change-meant"][0], en
+        assert en["change-heard"][1] <= en["change-arrow"][0] <= en["change-meant"][0], en
+        assert en["change-tick"][1] < (en["change-meant"][0] + en["change-meant"][1]) / 2, en
+        assert not widgets_mod.run_is_rtl([("run the", None, None),
+                                           (widgets_mod.Change("posh", "push"), None, None)])
+
+        # a Latin term in a Hebrew sentence: the line's direction wins
+        mixed = widgets_mod.Change("סלאש קליר", "slash clear")
+        mx = lay([("תריץ", ui_mod.DIM, None), (mixed, None, None),
+                  ("ותתחיל מהתחלה", ui_mod.DIM, None)], rtl=True)
+        assert mx["change-heard"][0] > mx["change-meant"][1], mx
+        assert mx["change-tick"][0] > (mx["change-meant"][0] + mx["change-meant"][1]) / 2, mx
+        # ...and the other way round, a Hebrew proposal in an English line
+        back = widgets_mod.Change("backcorder muscle", "בקוד או משהו")
+        bx = lay([("I had a", ui_mod.DIM, None), (back, None, None),
+                  ("in the code", ui_mod.DIM, None)], rtl=False)
+        assert bx["change-heard"][1] < bx["change-meant"][0], bx
+        # the piece is measured by what draws it
+        w, h = widgets_mod.change_size("posh", "push", 12)
+        assert w == en["change-meant"][1] - en["change-heard"][0], (w, en)
+        assert h >= ui_mod.PILL_H - 12
+        # an empty side draws nothing rather than half a figure
+        canvas.delete("all")
+        widgets_mod.rtl_run(canvas, 0, 8, [(widgets_mod.Change("", "x"), None, None)],
+                            ui_mod.CARD, rtl=False)
+        assert not canvas.find_withtag("change-heard")
+    finally:
+        root.destroy()
+
+
+def test_the_vocabulary_has_three_hand_doors() -> None:
+    """vocab.Vocab.learn_by_hand / edit / forget — the Words list's
+    doors. A hand-typed pair counts as corrected `replace_after_hits`
+    times (both sides were spelled out on purpose), an edit keeps the
+    hits it had, a forgotten word is a tombstone at the next sync."""
+    import tempfile
+    import sync as sync_mod
+    path = Path(tempfile.mkdtemp(prefix="vocab-hand-")) / "vocab.json"
+    v = vocab_mod.Vocab(path, replace_after_hits=2)
+    entry = v.learn_by_hand(" הדב ", "Dev")
+    assert (entry["heard"], entry["meant"], entry["hits"]) == ("הדב", "Dev", 2), entry
+    assert v.apply("אני על הדב עכשיו")[0] == "אני על Dev עכשיו", "fixed at once"
+    assert vocab_mod.Vocab(path).find("הדב")["hits"] == 2, "saved"
+    v.learn("הדב", "Dev"); v.learn("הדב", "Dev")           # four by now
+    assert v.learn_by_hand("הדב", "the Dev")["hits"] == 5 and \
+        v.find("הדב")["meant"] == "the Dev", "a hand pair keeps higher hits"
+    for bad in (("", "x"), ("x", ""), ("שלום", "שלום"), ("A", "a")):
+        try:
+            v.learn_by_hand(*bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"learned {bad!r}")
+    # edit: in place, and under a new heard form with the old hits
+    v.learn("יכלת", "יכולת")
+    v.learn("יכלת", "יכולת")
+    assert v.edit("יכלת", "יכלת", "יכולת!")["meant"] == "יכולת!"
+    moved = v.edit("יכלת", "יכלתי", "יכולתי")
+    assert v.find("יכלת") is None and moved["hits"] == 2, moved
+    assert v.find("יכלתי") is moved
+    # edit into a pair that exists merges rather than doubles
+    v.learn("טופ", "פופ")
+    merged = v.edit("יכלתי", "טופ", "פופ!")
+    assert [c["heard"] for c in v.corrections].count("טופ") == 1
+    assert merged["hits"] == 2 and merged["meant"] == "פופ!", merged
+    try:
+        v.edit("nowhere", "a", "b")
+    except KeyError:
+        pass
+    else:
+        raise AssertionError("edited a word that is not there")
+    # forget, and the tombstone the sync makes of it
+    snapshot = sync_mod.vocab_snapshot(v.corrections)
+    assert v.forget("הדב") is True and v.forget("הדב") is False
+    assert v.find("הדב") is None and vocab_mod.Vocab(path).find("הדב") is None
+    rows = sync_mod.vocab_rows(v.corrections, snapshot)
+    assert {"heard": "הדב", "meant": "", "hits": 0, "last_used": None,
+            "deleted": True} in rows, rows
+
+
+def test_the_vocab_command_is_the_desk_door_into_the_running_list() -> None:
+    """main.App.control_command("vocab", ...): learn / edit / forget on
+    the app's own Vocab, saved, nudged to the account, counted in the
+    reply — and every refusal an error the desk can show."""
+    import tempfile
+    import main as main_mod
+    d = Path(tempfile.mkdtemp(prefix="vocab-cmd-"))
+    app = main_mod.App.__new__(main_mod.App)
+    app.cfg = config_mod.load(Path(sys.path[0]) / "defaults.toml")
+    app.vocab = vocab_mod.Vocab(d / "vocab.json", replace_after_hits=2)
+    app._say = lambda *a, **k: None
+    bumped, nudged = [], []
+    app._bump = lambda **k: bumped.append(k)
+    app._nudge_sync = lambda *stores: nudged.append(stores)
+    reply = app.control_command("vocab", {"do": "learn", "heard": "הדב ", "meant": " Dev"})
+    assert reply["ok"] and reply["count"] == 1 and reply["hits"] == 2, reply
+    assert "learned" in reply["message"]
+    assert vocab_mod.Vocab(d / "vocab.json").find("הדב")["meant"] == "Dev", "saved"
+    assert nudged == [("vocab",)] and bumped == [{"learned": 1}]
+    reply = app.control_command("vocab", {"do": "edit", "heard": "הדב",
+                                          "new_heard": "הדבב", "meant": "the Dev"})
+    assert reply["ok"] and app.vocab.find("הדבב")["hits"] == 2 and \
+        app.vocab.find("הדב") is None, reply
+    reply = app.control_command("vocab", {"do": "forget", "heard": "הדבב"})
+    assert reply["ok"] and reply["count"] == 0 and len(nudged) == 3, reply
+    for args, words in (({"do": "forget", "heard": "הדבב"}, "not in the list"),
+                        ({"do": "edit", "heard": "x", "meant": "y"}, "not in the list"),
+                        ({"do": "learn", "heard": "a", "meant": "a"}, "same"),
+                        ({"do": "learn", "heard": "", "meant": "a"}, "needed"),
+                        ({"do": "sideways"}, "unknown")):
+        reply = app.control_command("vocab", args)
+        assert reply["ok"] is False and words in reply["error"], (args, reply)
+    assert len(nudged) == 3, "a refusal nudges nothing"
+    # the switch is live for the PROMPT too, not only the repair pass:
+    # the hotwords callable asks the config at every decode
+    src = inspect.getsource(main_mod.App.__init__)
+    assert "lambda: self.vocab.hotwords()" in src and \
+        "if self.cfg.vocab.enabled else \"\"" in src, "hotwords bound once at start"
 
 
 # ----------------------------------------------- read this to me
@@ -29382,9 +29748,10 @@ def test_paths_checkout_is_portable_and_nothing_moved():
         "LOOKUP_CACHE": "lookup_cache.json",
     }
     for name, rel in before.items():
-        # PHONE_TOKEN is one of the attributes the scratch-home guard at
-        # the top of this file repoints; the layout table is the truth.
-        got = paths._rel(name) if name == "PHONE_TOKEN" else getattr(paths, name)
+        # PHONE_TOKEN and VOCAB_FILE are attributes the scratch-home guard
+        # at the top of this file repoints; the layout table is the truth.
+        got = (paths._rel(name) if name in ("PHONE_TOKEN", "VOCAB_FILE")
+               else getattr(paths, name))
         assert got == REPO / rel, (name, got)
     assert paths.LOGS_DIR == REPO and paths.PHONE_DIR == REPO
     # the modules that used to build these themselves now agree with paths
@@ -31389,14 +31756,14 @@ def test_a_strangers_copy_shows_no_owner_surface():
     assert "Privacy" in settings_mod.tab_names()
 
     with _patched(paths, "DEVELOPER", False):
-        assert [k for k, _n in dash.corr_tabs()] == ["waiting"]
+        assert [k for k, _n in dash.corr_tabs()] == ["words"]
 
         class _Board:
             _questions = staticmethod(lambda: object())
             _questions_store = staticmethod(lambda: object())
         assert dash.Dashboard._pending_questions(_Board()) == []
         assert dash.Dashboard._nightly_running(_Board()) is False
-    assert [k for k, _n in dash.corr_tabs()] == ["waiting", "read"]
+    assert [k for k, _n in dash.corr_tabs()] == ["words", "read"]
     src = inspect.getsource(main_mod.main)
     assert "for the developer's checkout only" in src
     assert src.index("not paths.DEVELOPER") < src.index("return benchmark(cfg)")

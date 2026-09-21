@@ -215,17 +215,26 @@ CAPTURE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 # width a sentence needs; the panel takes what is left.
 SAID_W = CW - 320
 
-# THE CORRECTIONS PLACE HAS TWO TABS. Waiting is what it always was —
-# the second reading's proposals, with the vocabulary beside them. Read
-# aloud is reading.py: one of his own sentences on a card, read into
-# the dictation key with this window in front, and kept under the words
-# on the card. It lives here and not as a seventh word in the bar
-# because the bar has no room for one: measured 2026-09-13, seven
-# places at gap 14 run under the state chip by 3 px the moment a nightly
-# run puts Stop tests in the bar. The two are one place because they
-# are one story — the words it learned from him, and the voice it is
-# learning from him.
-CORR_TABS = (("waiting", "Waiting"), ("read", "Read aloud"))
+# THE CORRECTIONS PLACE HAS TWO TABS. Words (Waiting until 2026-09-21)
+# is the whole list of what it has learned — every pair, searchable,
+# each one editable and removable, a pair typed in by hand, and the
+# switch that turns the lot off — with the second reading's proposals
+# ABOVE the list while any wait, pushing it down. The owner, looking
+# at a panel that showed the last six on the right: "a full list that
+# anyone can see; a way to add by hand, because the transcriber writes
+# the same wrong thing every time and the app never proposes it; the
+# search; and the switch". Read aloud is reading.py: one of his own
+# sentences on a card, read into the dictation key with this window in
+# front, and kept under the words on the card. It lives here and not
+# as a seventh word in the bar because the bar has no room for one:
+# measured 2026-09-13, seven places at gap 14 run under the state chip
+# by 3 px the moment a nightly run puts Stop tests in the bar. The two
+# are one place because they are one story — the words it learned from
+# him, and the voice it is learning from him.
+CORR_TABS = (("words", "Words"), ("read", "Read aloud"))
+WORD_ROW_H = 44          # one learned pair in the Words list
+WORD_EDIT_H = 64         # the card a pair is typed or changed on
+WORD_FIELD_W = 300       # each of its two fields
 
 
 def corr_tabs() -> tuple:
@@ -299,11 +308,14 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
 # thing has a place of its own to be read in full:
 #
 #   Home         a summary, and nothing that needs scrolling
-#   Corrections  the second reading's proposals, and the words it has
-#                learned from them (his: "the vocabulary and all the
-#                corrections it does automatically") — and, on a second
-#                tab, Read aloud: his own sentences read to it one at a
-#                time, kept as (voice, text) pairs (CORR_TABS, reading.py)
+#   Corrections  every word it has learned — the whole list, a search,
+#                a pair typed in by hand, the switch — with the second
+#                reading's proposals above the list while any wait
+#                (his: "the vocabulary and all the corrections it does
+#                automatically"; 2026-09-21: "a full list anyone can
+#                see") — and, on a second tab, Read aloud: his own
+#                sentences read to it one at a time, kept as (voice,
+#                text) pairs (CORR_TABS, reading.py)
 #   Problems     what he reported, the routine's questions, what is on
 #                this computer and not on GitHub — everything that needs
 #                more than a line
@@ -1432,7 +1444,10 @@ class Dashboard:
         # The Corrections place: which tab is up, and the reading in
         # hand — see _read_column. The deck is built when the tab opens
         # and popped as he goes; the counts are this session's.
-        self._corr_tab = "waiting"
+        self._corr_tab = "words"
+        self._words_query = ""          # the Words list's search box
+        self._words_search_after = None
+        self._words_editing = None      # None, "" (a new pair) or a heard form
         self._read_deck: list = []
         self._read_current = None
         self._read_drawn = None
@@ -1491,6 +1506,7 @@ class Dashboard:
         # The Preview (plan 7.6): which report's is open, and which rows
         # already had theirs opened by this window — once each.
         self._preview_open = ""
+        self._preview_top = None          # the Toplevel while one is up
         self._previewed: set[str] = set()
         # ANSWERING A QUESTION, held on the window and not in the widgets.
         # The Problems list is rebuilt from scratch whenever either store
@@ -2231,22 +2247,26 @@ class Dashboard:
         chip.place(x=x, y=TOP // 2, anchor="e")
 
     def _screen_corrections(self) -> None:
-        """What the second reading proposes, and what it has learned.
+        """What it has learned, what the second reading proposes, and
+        what he reads to it.
 
-        His words: "all the corrections and stuff, I would like them to be
-        in tabs… and something with the vocabulary and all the corrections
-        it does automatically". They are one place because they are one
-        story: the list on the left is what the app is asking about a
-        dictation it has re-read, and the panel on the right is what
-        saying Yes has taught it.
+        His words, 2026-09-07: "all the corrections and stuff, I would
+        like them to be in tabs… and something with the vocabulary and
+        all the corrections it does automatically". And 2026-09-21,
+        after seeing another app's dictionary page: the whole list, a
+        search, a switch, a way to add a pair by hand, and the proposals
+        pushed to the top of the same list rather than beside it.
 
-        The rows are the pile's rows, with the pile's two answers, so a
-        correction reads the same here as it does on the home.
+        The proposal rows are the pile's rows, with the pile's two
+        answers, so a correction reads the same here as it does on the
+        home. The learned rows are drawn straight onto a canvas each —
+        the way the Said list draws its pills — because a list of forty
+        Canvases is fine and a list of forty Frames of Canvases is not.
         """
-        self._title("Corrections", "the second reading, what it learned, "
-                                   "and what you read to it")
+        self._title("Corrections", "the words it learned, what the second "
+                                   "reading proposes, and what you read to it")
         p = self.parts
-        self._row_w = SAID_W
+        self._row_w = CW
         chips = tk.Frame(self.sheet, bg=ui.BG)
         chips.place(x=PAD, y=CORR_CHIPS_Y)
         p["corr_chips"] = {}
@@ -2259,18 +2279,66 @@ class Dashboard:
             self._read_column()
             self._voice_panel()
             return
+        self._words_editing = None
+
+        # the tools, right of the chips: search · Use them · Teach a word
+        tools = tk.Frame(self.sheet, bg=ui.BG)
+        tools.place(x=PAD + CW, y=CORR_CHIPS_Y, anchor="ne")
+        p["words_tools"] = tools
+        p["words_teach"] = None
+        self._words_teach_button(lit=False)
+        use = tk.Frame(tools, bg=ui.BG)
+        use.pack(side="right", padx=(0, 18))
+        p["words_use"] = ui.Switch(use, self._words_enabled(),
+                                   command=self._words_use, bg=ui.BG)
+        p["words_use"].pack(side="left")
+        tk.Label(use, text="Use them", bg=ui.BG, fg=ui.DIM,
+                 font=(ui.UI, 10)).pack(side="left", padx=(8, 0))
+        box = ui.Field(tools, self._words_query, w=260, h=36, radius=11,
+                       bg=ui.BG, justify="left", icon=ui.ICON["search"],
+                       pad=12, pt=10, placeholder="find a word")
+        box.pack(side="right", padx=(0, 18))
+        box.bind_entry("<KeyRelease>",
+                       lambda _e: self._words_search_soon(box.get()))
+        box.bind_entry("<Escape>", lambda _e: (box.set(""),
+                                               self._words_search("")))
+        p["words_search"] = box
+
         p["corr_head"] = tk.Label(self.sheet, text="", bg=ui.BG, fg=ui.DIM,
                                   font=(ui.UI, 10))
         p["corr_head"].place(x=PAD, y=CORR_HEAD_Y)
-        page = ui.Scroller(self.sheet, SAID_W + 10, H - TOP - CORR_PAGE_Y - 24,
+        page = ui.Scroller(self.sheet, CW + 10, H - TOP - CORR_PAGE_Y - 44,
                            bg=ui.BG)
         page.place(x=PAD, y=CORR_PAGE_Y)
         p["page"] = page
         p["corr_list"] = _Column(page.inner, page)
         p["corr_empty"] = tk.Label(self.sheet, text="", bg=ui.BG,
                                    fg=ui.FAINT, font=(ui.UI, 10),
-                                   wraplength=SAID_W - 40, justify="left")
-        self._vocab_panel()
+                                   wraplength=CW - 40, justify="left")
+
+        # the foot: the teach key, and how the words are used
+        keys = self.status.get("keys") or self._read_keys()
+        teach = pretty_key(keys.get("correct_hotkey", ""))
+        foot = tk.Frame(self.sheet, bg=ui.BG)
+        foot.place(x=PAD, y=H - TOP - 30, anchor="w")
+        if teach:
+            ui.KeyCap(foot, teach, bg=ui.BG,
+                      w=max(56, 26 + ui.text_width(teach, ui.UI, 10)),
+                      h=26).pack(side="left")
+        try:
+            cap = config_mod.load_layered().vocab.max_terms
+        except Exception:                 # noqa: BLE001 — unreadable config
+            cap = None
+        p["vocab_hot"] = tk.Label(
+            foot, bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
+            text=("teaches it a word from what it just wrote  ·  " if teach
+                  else "")
+            + ("the best of them go into the decoder's prompt before it "
+               f"listens — {cap} at a time" if cap else
+               "the best of them go into the decoder's prompt before it "
+               "listens")
+            + "  ·  a word corrected twice is fixed on every dictation")
+        p["vocab_hot"].pack(side="left", padx=(10 if teach else 0, 0))
         self._corr_stamp = None
         self._fill_corrections()
 
@@ -2283,25 +2351,45 @@ class Dashboard:
         self._show("Corrections")
 
     def _poll_corrections(self) -> None:
-        """Once a second from _refresh, and only a stat() unless the file
-        moved — a verdict given at a card is the usual reason it did."""
+        """Once a second from _refresh, and only two stat()s unless a
+        file moved — a verdict given at a card, a word learned from a
+        correction, or another PC's word arriving through the account
+        are the usual reasons one did."""
         if self._corr_tab == "read":
             self._poll_read()
             return
         if "corr_list" not in self.parts:
             return
-        if self._review_stat() != getattr(self, "_corr_stamp", None):
+        if self._words_editing is not None:
+            return          # never rebuild the list under his typing
+        if self._corr_stat() != getattr(self, "_corr_stamp", None):
             self._fill_corrections()
 
+    def _corr_stat(self):
+        return (self._review_stat(), self._vocab_stat())
+
+    @staticmethod
+    def _vocab_stat():
+        try:
+            st = os.stat(paths.VOCAB_FILE)
+            return (st.st_size, st.st_mtime_ns)
+        except OSError:
+            return None
+
     def _fill_corrections(self) -> None:
+        """The Words tab's one column: the proposals that wait, then the
+        editor if one is open, then every learned pair that matches the
+        search — newest first."""
         if "corr_list" not in self.parts:
             return
-        self._corr_stamp = self._review_stat()
+        self._corr_stamp = self._corr_stat()
         p = self.parts
         # ONE GOLD BUTTON PER SURFACE, the same rule the pile keeps: four
         # lit Yes buttons down a list are four primary actions, which is
         # none. Only the newest is the lamp; every later Yes answers the
-        # same way, quietly.
+        # same way, quietly. Teach a word is gold too, so while a proposal
+        # waits the button steps down — the proposal is the thing to
+        # answer.
         items = self._waiting_review()
         lit = False
         for row in items:
@@ -2312,39 +2400,375 @@ class Dashboard:
                     lit = True
                 buttons.append((label, tone, act))
             row["buttons"] = buttons
-        p["corr_head"].config(
-            text="Nothing is waiting on you here." if not items else
-            f"{len(items)} proposal{'' if len(items) == 1 else 's'} from "
-            f"the second reading")
+        self._words_teach_button(lit=lit)
+        entries, hot = self._words_entries()
+        query = self._words_query.strip().lower()
+        shown = [c for c in entries
+                 if not query or query in c["heard"].lower()
+                 or query in c["meant"].lower()]
+        try:
+            ready_at = config_mod.load_layered().vocab.replace_after_hits
+        except Exception:                 # noqa: BLE001 — unreadable config
+            ready_at = 2
+        ready = sum(1 for c in entries if int(c.get("hits", 1)) >= ready_at)
+        if query:
+            head = (f"{len(shown)} of {len(entries)} word"
+                    f"{'' if len(entries) == 1 else 's'} match "
+                    f"\u201c{self._words_query.strip()}\u201d")
+        elif entries:
+            head = (f"{len(entries)} word{'' if len(entries) == 1 else 's'} "
+                    f"it has learned to hear your way  ·  {len(hot)} in the "
+                    f"decoder's prompt  ·  {ready} fixed on every dictation")
+        else:
+            head = "Nothing learned yet."
+        p["corr_head"].config(text=head)
+
         column = p["corr_list"]
         column.clear()
         p["corr_empty"].place_forget()
-        if not items:
+        p["word_rows"] = {}
+        for gone in ("words_heard", "words_meant", "words_save"):
+            p.pop(gone, None)             # the editor, if one was up
+
+        def eyebrow(text: str) -> None:
+            lab = tk.Label(column.inner, text=text, bg=ui.BG, fg=ui.FAINT,
+                           font=(ui.MEDIUM, 8))
+            lab.pack(anchor="w", pady=(4, 8))
+            column.bind_wheel(lab)
+
+        if items:
+            eyebrow(f"W A I T I N G   O N   Y O U  \u00b7  {len(items)}")
+            for spec in items:
+                card = ui.Card(column.inner, CW, PILE_ROW_H + 20,
+                               fill=ui.CARD, bg=ui.BG, pad=10)
+                card.pack(anchor="w", pady=(0, 8))
+                row = widgets.PileRow(
+                    card.body, CW - 20, bg=ui.CARD,
+                    mark=spec.get("mark", ""),
+                    mark_colour=spec.get("mark_colour"),
+                    eyebrow=spec.get("eyebrow", ""),
+                    eyebrow_right=spec.get("eyebrow_right", True),
+                    text=spec.get("text", ""), runs=spec.get("runs"),
+                    note=spec.get("note", ""),
+                    buttons=spec.get("buttons", ()),
+                    height=PILE_ROW_H)
+                row.pack(fill="x")
+                column.bind_wheel(card)
+                column.bind_wheel(row)
+                column.bind_wheel(row.canvas)
+            line = widgets.rule(column.inner, CW - 10, bg=ui.BG,
+                                colour=ui.LINE)
+            line.pack(fill="x", pady=(6, 12))
+            column.bind_wheel(line)
+
+        eyebrow("L E A R N E D")
+        if self._words_editing == "":
+            self._words_editor(column, None)
+        elif self._words_editing and not any(
+                c["heard"].lower() == self._words_editing.lower() for c in shown):
+            # the row he is editing is not in the search's answer (or is
+            # gone from the file): the editor stays, at the top
+            held = next((c for c in entries if c["heard"].lower()
+                         == self._words_editing.lower()), None)
+            if held is not None:
+                self._words_editor(column, held)
+            else:
+                self._words_editing = None
+        if not entries:
             p["corr_empty"].config(
-                text="When a dictation is re-read and a word looks wrong, "
-                     "the proposal waits here — and on a card, for twenty "
-                     "seconds, wherever you are.")
-            p["corr_empty"].place(x=PAD, y=CORR_PAGE_Y + 40)
-        for index, spec in enumerate(items):
-            if index:
-                widgets.rule(column.inner, SAID_W - 28, bg=ui.BG,
-                             colour=ui.LINE).pack(fill="x", pady=6)
-            card = ui.Card(column.inner, SAID_W, PILE_ROW_H + 20,
-                           fill=ui.CARD, bg=ui.BG, pad=10)
-            card.pack(anchor="w", pady=(0, 8))
-            row = widgets.PileRow(
-                card.body, SAID_W - 20, bg=ui.CARD,
-                mark=spec.get("mark", ""),
-                mark_colour=spec.get("mark_colour"),
-                eyebrow=spec.get("eyebrow", ""),
-                eyebrow_right=spec.get("eyebrow_right", True),
-                text=spec.get("text", ""), runs=spec.get("runs"),
-                note=spec.get("note", ""), buttons=spec.get("buttons", ()),
-                height=PILE_ROW_H)
-            row.pack(fill="x")
-            column.bind_wheel(card)
-            column.bind_wheel(row)
-            column.bind_wheel(row.canvas)
+                text="Say Yes to a second reading, press the teach key on a "
+                     "word it got wrong, or teach it one here — the pairs "
+                     "it learns are listed here, newest first.")
+            p["corr_empty"].place(x=PAD, y=CORR_PAGE_Y + (
+                (len(items) * (PILE_ROW_H + 28) + 56) if items else 0) + 40)
+        elif not shown:
+            p["corr_empty"].config(
+                text=f"No learned word has \u201c{self._words_query.strip()}"
+                     "\u201d in it.")
+            p["corr_empty"].place(x=PAD, y=CORR_PAGE_Y + (
+                (len(items) * (PILE_ROW_H + 28) + 56) if items else 0) + 40)
+        for entry in shown:
+            if (self._words_editing and self._words_editing.lower()
+                    == entry["heard"].lower()):
+                self._words_editor(column, entry)
+                continue
+            self._word_row(column, entry, hot, ready_at)
+
+    # ------------------------------------------------------ the Words list
+
+    def _words_teach_button(self, lit: bool) -> None:
+        """[+ Teach a word], gold while nothing waits — the one primary
+        action on the page — and quiet while a proposal holds the gold.
+        Rebuilt only when that flips: a ui.Button bakes its faces."""
+        p = self.parts
+        tools = p.get("words_tools")
+        if tools is None:
+            return
+        old = p.get("words_teach")
+        if old is not None and getattr(old, "_lit", None) == (not lit):
+            return
+        if old is not None:
+            old.destroy()
+        wide = widgets.button_width("Teach a word", icon=True)
+        if lit:
+            button = ui.Button(tools, "Teach a word",
+                               lambda: self._words_edit(""), w=wide, h=36,
+                               quiet=True, bg=ui.BG, icon="")
+        else:
+            button = widgets.gold_button(tools, "Teach a word",
+                                         lambda: self._words_edit(""),
+                                         w=wide, h=36, bg=ui.BG,
+                                         icon="")
+        button._lit = not lit
+        # first in the pack list = the rightmost of the side="right" row
+        packed = [c for c in tools.winfo_children()
+                  if c is not button and c.winfo_manager() == "pack"]
+        if packed:
+            button.pack(side="right", before=packed[0])
+        else:
+            button.pack(side="right")
+        p["words_teach"] = button
+
+    @staticmethod
+    def _words_enabled() -> bool:
+        try:
+            return bool(config_mod.load_layered().vocab.enabled)
+        except Exception:                 # noqa: BLE001 — unreadable config
+            return True
+
+    def _words_entries(self) -> tuple[list, set]:
+        """Every learned pair, newest first, and the lowercased meant forms
+        that are in the decoder's prompt right now — ranked the way the
+        app ranks them (the same Vocab, the same config), off the file,
+        which is the record."""
+        import vocab as vocab_mod
+        try:
+            vcfg = config_mod.load_layered().vocab
+            v = vocab_mod.Vocab(
+                paths.VOCAB_FILE, seed_terms=vcfg.terms,
+                max_terms=vcfg.max_terms,
+                replace_after_hits=vcfg.replace_after_hits,
+                hebrew_after_hits=getattr(vcfg, "hebrew_after_hits", 3))
+        except Exception:                 # noqa: BLE001 — unreadable config
+            v = vocab_mod.Vocab(paths.VOCAB_FILE)
+        entries = [c for c in v.corrections
+                   if str(c.get("heard") or "").strip()
+                   and str(c.get("meant") or "").strip()]
+        entries.sort(key=lambda c: str(c.get("last") or ""), reverse=True)
+        try:
+            hot = {t.lower() for t in v.terms()}
+        except Exception:                 # noqa: BLE001
+            hot = set()
+        return entries, hot
+
+    @staticmethod
+    def _word_meta(entry: dict, ready_at: int) -> str:
+        """One plain line about a pair: how it is used, and when it was
+        last taught. No counters a person has to decode."""
+        hits = int(entry.get("hits", 1) or 0)
+        if hits >= ready_at:
+            state = f"fixed on every dictation  \u00b7  \u00d7{hits}"
+        elif hits >= 1:
+            state = ("corrected once \u2014 fixed after the "
+                     f"{'second' if ready_at == 2 else _count_word(ready_at).lower() + 'th'} time")
+        else:
+            state = "its own guess"
+        when = ago(str(entry.get("last") or "").replace(" ", "T", 1))
+        return state + (f"  \u00b7  {when}" if when else "")
+
+    def _word_row(self, column, entry: dict, hot: set, ready_at: int) -> None:
+        """One learned pair: the pair pill, the meta line, the prompt
+        mark, and — under the pointer — the pencil and the cross."""
+        p = self.parts
+        heard, meant = entry["heard"], entry["meant"]
+        row = tk.Canvas(column.inner, width=CW, height=WORD_ROW_H, bg=ui.BG,
+                        highlightthickness=0, bd=0)
+        row.pack(anchor="w")
+        column.bind_wheel(row)
+        pw, ph = ui.pair_size(heard, meant)
+        ui.pair_pill(row, pw, (WORD_ROW_H - ph) // 2, heard, meant, ui.BG)
+        row.create_text(pw + 16, WORD_ROW_H / 2, anchor="w",
+                        text=self._word_meta(entry, ready_at), fill=ui.FAINT,
+                        font=(ui.UI, 9), tags="meta")
+        if meant.strip().lower() in hot:
+            row.create_oval(CW - 210, WORD_ROW_H / 2 - 3, CW - 204,
+                            WORD_ROW_H / 2 + 3, fill=ui.ACCENT, width=0,
+                            tags="hot")
+            row.create_text(CW - 196, WORD_ROW_H / 2, anchor="w",
+                            text="in the prompt", fill=ui.DIM,
+                            font=(ui.UI, 9), tags="hot")
+        pen = row.create_text(CW - 56, WORD_ROW_H / 2, text="\ue70f",
+                              fill=ui.BG, font=(ui.ICONS, 11), tags="pen")
+        cross = row.create_text(CW - 22, WORD_ROW_H / 2, text="\ue74d",
+                                fill=ui.BG, font=(ui.ICONS, 11), tags="cross")
+        # the pointer lights the two, and the two act
+        row.bind("<Enter>", lambda _e, r=row: (
+            r.itemconfig("pen", fill=ui.DIM), r.itemconfig("cross", fill=ui.DIM)))
+        row.bind("<Leave>", lambda _e, r=row: (
+            r.itemconfig("pen", fill=ui.BG), r.itemconfig("cross", fill=ui.BG)))
+        for tag, colour in (("pen", ui.FG), ("cross", ui.RED)):
+            row.tag_bind(tag, "<Enter>",
+                         lambda _e, r=row, t=tag, c=colour: r.itemconfig(t, fill=c))
+            row.tag_bind(tag, "<Leave>",
+                         lambda _e, r=row, t=tag: r.itemconfig(t, fill=ui.DIM))
+        row.tag_bind("pen", "<Button-1>",
+                     lambda _e, h=heard: self._words_edit(h))
+        row.tag_bind("cross", "<Button-1>",
+                     lambda _e, h=heard: self._words_forget(h))
+        for item in (pen, cross):
+            row.tag_bind(item, "<Enter>", lambda _e, r=row: r.config(cursor="hand2"), add="+")
+            row.tag_bind(item, "<Leave>", lambda _e, r=row: r.config(cursor=""), add="+")
+        line = widgets.rule(column.inner, CW - 10, bg=ui.BG, colour=ui.RULE)
+        line.pack(fill="x")
+        column.bind_wheel(line)
+        p["word_rows"][heard] = row
+
+    def _words_editor(self, column, entry: dict | None) -> None:
+        """The card a pair is typed on — in the list, where the row is
+        (or at its top for a new one): what it hears, an arrow, what you
+        mean, Save and Cancel. Enter saves, Escape cancels."""
+        p = self.parts
+        card = ui.Card(column.inner, CW, WORD_EDIT_H, fill=ui.CARD, bg=ui.BG,
+                       pad=12)
+        card.pack(anchor="w", pady=(0, 10))
+        column.bind_wheel(card)
+        b = card.body
+        heard = ui.Field(b, entry["heard"] if entry else "", w=WORD_FIELD_W,
+                         h=36, radius=10, bg=ui.CARD,
+                         placeholder="what it hears")
+        heard.place(x=0, y=2)
+        tk.Label(b, text="\u27f6", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 14)).place(x=WORD_FIELD_W + 18, y=6)
+        meant = ui.Field(b, entry["meant"] if entry else "", w=WORD_FIELD_W,
+                         h=36, radius=10, bg=ui.CARD,
+                         placeholder="what you mean")
+        meant.place(x=WORD_FIELD_W + 52, y=2)
+        tk.Label(b, text="A word you type here is fixed on every dictation "
+                         "from now on.", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.UI, 8)).place(x=2 * WORD_FIELD_W + 70, y=12)
+        p["words_save"] = widgets.gold_button(
+            b, "Save", lambda: self._words_save(heard.get(), meant.get()),
+            w=80, h=34, bg=ui.CARD)
+        p["words_save"].place(x=CW - 24, y=3, anchor="ne")
+        ui.Button(b, "Cancel", self._words_cancel, w=80, h=34, quiet=True,
+                  bg=ui.CARD).place(x=CW - 112, y=3, anchor="ne")
+        for field in (heard, meant):
+            field.bind_entry("<Return>", lambda _e: self._words_save(
+                heard.get(), meant.get()))
+            field.bind_entry("<Escape>", lambda _e: self._words_cancel())
+        p["words_heard"], p["words_meant"] = heard, meant
+        (meant if entry else heard).take_focus()
+
+    def _words_edit(self, heard: str) -> None:
+        """Open the editor — for a new pair ("") or the named one."""
+        if "corr_list" not in self.parts:
+            return
+        self._words_editing = heard
+        self._fill_corrections()
+        if not heard:
+            try:
+                self.parts["page"].to_top()
+            except Exception:             # noqa: BLE001 — no such method
+                pass
+
+    def _words_cancel(self) -> None:
+        self._words_editing = None
+        self._fill_corrections()
+
+    def _words_save(self, heard: str, meant: str) -> None:
+        heard, meant = " ".join(heard.split()), " ".join(meant.split())
+        if not heard or not meant:
+            self._note("both words are needed")
+            return
+        if heard.lower() == meant.lower():
+            self._note("the two words are the same")
+            return
+        was = self._words_editing
+        if was:
+            self._vocab_change("edit", heard=was, new_heard=heard, meant=meant)
+        else:
+            self._vocab_change("learn", heard=heard, meant=meant)
+        self._words_editing = None
+        self._fill_corrections()
+
+    def _words_forget(self, heard: str) -> None:
+        self._vocab_change("forget", heard=heard)
+        self._fill_corrections()
+
+    def _vocab_change(self, do: str, **args) -> None:
+        """One of the three doors, through the running app — it owns
+        vocab.json while it runs, and its save would overwrite ours —
+        and straight into the file when nothing is running, which the
+        app reads at its next start. The note says what happened."""
+        if self.running:
+            self._ask("vocab", then=lambda r: self._vocab_answered(r, do),
+                      do=do, **args)
+            return
+        import vocab as vocab_mod
+        try:
+            vcfg = config_mod.load_layered().vocab
+            v = vocab_mod.Vocab(paths.VOCAB_FILE,
+                                replace_after_hits=vcfg.replace_after_hits)
+        except Exception:                 # noqa: BLE001 — unreadable config
+            v = vocab_mod.Vocab(paths.VOCAB_FILE)
+        try:
+            if do == "learn":
+                v.learn_by_hand(args["heard"], args["meant"])
+                what = "learned"
+            elif do == "edit":
+                v.edit(args["heard"], args["new_heard"], args["meant"])
+                what = "changed"
+            else:
+                what = "forgotten" if v.forget(args["heard"]) else "not in the list"
+        except KeyError:
+            what = "not in the list"
+        except ValueError as e:
+            what = str(e)
+        self._note(f"{what} — {len(v)} words (the app reads them when it "
+                   "starts)")
+
+    def _vocab_answered(self, reply: dict | None, do: str) -> None:
+        if reply is None:
+            # it stopped between the poll and the click: the file path
+            self._note("dictation stopped — try again")
+        elif not reply.get("ok"):
+            self._note(reply.get("error", "that did not work"))
+        else:
+            self._note(reply.get("message") or do)
+        self._corr_stamp = None       # the next poll redraws off the file
+
+    def _words_use(self, on: bool) -> None:
+        """The switch: vocab.enabled — the same line Settings > Repair
+        shows, written the same way. Off, the app neither repairs a
+        dictation with the list nor puts its words in the decoder's
+        prompt; the list itself stays."""
+        if self.running:
+            self._ask("option", then=lambda r: self._announce(
+                r, "saved"), name="vocab.enabled", value=bool(on))
+            return
+        try:
+            config_mod.save({"vocab.enabled": bool(on)})
+        except Exception as e:            # noqa: BLE001
+            self._note(str(e))
+            self.parts["words_use"].set(not on)
+            return
+        self._note("vocab.enabled saved — it applies the next time it starts")
+
+    def _words_search_soon(self, text: str) -> None:
+        if self._words_search_after is not None:
+            try:
+                self.root.after_cancel(self._words_search_after)
+            except Exception:             # noqa: BLE001
+                pass
+        self._words_search_after = self.root.after(
+            SEARCH_MS, lambda: self._words_search(text))
+
+    def _words_search(self, text: str) -> None:
+        self._words_search_after = None
+        if text == self._words_query:
+            return
+        self._words_query = text
+        self._fill_corrections()
 
     # ---------------------------------------------------------- read aloud
 
@@ -3205,23 +3629,19 @@ class Dashboard:
         first = changes[0]
         heard = " ".join(str(first.get("before") or "").split())
         meant = " ".join(str(first.get("after") or "").split())
-        more = len(changes) - 1
-        # The reason first, then the count: the reason is Hebrew and the
-        # count is English, and a line takes its direction from its first
-        # strong letter — so this way a Hebrew row's note reads the same
-        # way its words do.
-        note = "   ·   ".join(b for b in (
-            " ".join(str(first.get("why") or "").split()),
-            f"and {_count_word(more).lower()} more change"
-            f"{'' if more == 1 else 's'}" if more else "") if b)
         count = (f"{_count_word(len(changes)).lower()} word"
                  f"{'' if len(changes) == 1 else 's'}")
+        why = " ".join(str(first.get("why") or "").split())
 
         if not meant or str(first.get("kind")) == "drop":
             # An ending nobody else heard. Nothing BECAME anything, so
             # there is no pair to draw: the words that would go are the
             # chip, in the danger colour, and the sentence they came out
             # of is what places them.
+            more = len(changes) - 1
+            note = "   ·   ".join(b for b in (
+                why, f"and {_count_word(more).lower()} more change"
+                     f"{'' if more == 1 else 's'}" if more else "") if b)
             goes = _first_words(heard, 5)
             chip = self._measure(goes) + 18 + 7
             where = self._sentence_around(heard_text, goes.split(" …")[0])
@@ -3233,18 +3653,171 @@ class Dashboard:
                           ui.DIM, None)],
                 "text": where, "note": note}
 
-        pair = widgets.Pair(heard, meant)
-        try:
-            chip, _tall = ui.pair_size(heard, meant, ui.PT_LABEL)
-        except Exception:                 # noqa: BLE001 — no window yet
-            chip = self._measure(heard) + self._measure(meant) + 50
-        where = self._sentence_around(proposed, meant)
+        # EVERY CHANGE IN ITS PLACE (2026-09-21). The row used to lead
+        # with one Pair chip and the proposed sentence after it, which
+        # left him guessing where in the sentence the mistake had been —
+        # "maybe I meant that". Now the sentence is cut around the
+        # changes and each one is drawn where it sits, the way Track
+        # Changes draws it: the heard word on a red pill, an arrow, the
+        # proposal on the gold one with a tick (widgets.Change, the same
+        # figure as the card beside the dot). The contexts give way
+        # first — a word at a time from the far ends, then from the
+        # middles — and a change that still does not fit is counted in
+        # the note rather than drawn over the buttons.
+        runs, shown, where = self._change_runs(heard_text, changes, room)
+        left_out = len(changes) - shown
+        note = "   ·   ".join(b for b in (
+            why, f"and {_count_word(left_out).lower()} more change"
+                 f"{'' if left_out == 1 else 's'} in the sentence"
+            if left_out else "") if b)
         return {
             "eyebrow": f"Second reading   ·   {count} changed",
-            "runs": [(pair, None, None),
-                     (summary.one_line(where, max(80, room - chip - 16),
-                                       self._measure).text, ui.DIM, None)],
-            "text": where, "note": note}
+            "runs": runs, "text": where, "note": note}
+
+    @staticmethod
+    def _change_runs(text: str, changes: list, room: int
+                     ) -> tuple[list, int, str]:
+        """The pieces of a proposal row — contexts and Changes in
+        sentence order — trimmed to `room` pixels. Returns (runs, how
+        many changes are drawn, the sentence the row shows).
+
+        Positions come from each change's `span` into vocab.words(text)
+        when it has one (review.py writes it) and from the heard words'
+        first occurrence when it does not (an older row, a test's bare
+        dict). A change the text does not hold at all is drawn at the
+        end, after the words, rather than lost.
+        """
+        import vocab as vocab_mod
+        measure = Dashboard._measure
+        flat = " ".join(str(text or "").split())
+        # the tokens review.py's spans count (no punctuation), and the
+        # same tokens as they READ — each with the marks that follow it,
+        # so a context keeps its comma and a sentence its full stop
+        starts = [m.start() for m in vocab_mod._WORD.finditer(flat)]
+        tw = vocab_mod.words(flat)
+        raw = [flat[s:(starts[k + 1] if k + 1 < len(starts) else len(flat))].strip()
+               for k, s in enumerate(starts)]
+        placed: list = []                 # (i1, i2, heard, meant)
+        low = [w.lower() for w in tw]
+        for c in changes:
+            heard = " ".join(str(c.get("before") or "").split())
+            meant = " ".join(str(c.get("after") or "").split())
+            if not heard or not meant or str(c.get("kind")) == "drop":
+                continue
+            span = c.get("span")
+            i1 = i2 = None
+            if isinstance(span, (list, tuple)) and len(span) == 2:
+                try:
+                    i1, i2 = int(span[0]), int(span[1])
+                except (TypeError, ValueError):
+                    i1 = i2 = None
+                if i1 is not None and not (0 <= i1 < i2 <= len(tw)):
+                    i1 = i2 = None
+            if i1 is None:
+                hw = [w.lower() for w in vocab_mod.words(heard)]
+                for k in range(len(low) - len(hw) + 1):
+                    if hw and low[k:k + len(hw)] == hw:
+                        i1, i2 = k, k + len(hw)
+                        break
+            if i1 is None:
+                i1 = i2 = len(tw)         # not in the text: after the words
+            placed.append((i1, i2, heard, meant))
+        placed.sort(key=lambda t: t[0])
+        # non-overlapping, in order
+        kept: list = []
+        end = 0
+        for i1, i2, heard, meant in placed:
+            if i1 < end:
+                continue
+            kept.append((i1, i2, heard, meant))
+            end = max(end, i2)
+        if not kept:
+            where = summary.first_sentence(text)
+            return ([(summary.one_line(where, room, measure).text,
+                      ui.DIM, None)], 0, where)
+
+        def measure_change(heard: str, meant: str) -> int:
+            try:
+                return widgets.change_size(heard, meant, 12)[0]
+            except Exception:             # noqa: BLE001 — no window yet
+                return measure(heard) + measure(meant) + 70
+
+        gap = 7
+
+        def stop(word: str) -> bool:
+            return bool(word) and word[-1] in summary.STOPS
+
+        while kept:
+            # the contexts between and around the kept changes — the
+            # outer two cut at the sentence's own ends ("from point to
+            # point", his rule of 2026-09-07), never a neighbouring
+            # sentence's words
+            head = raw[:kept[0][0]]
+            for k in range(len(head) - 1, -1, -1):
+                if stop(head[k]):
+                    head = head[k + 1:]
+                    break
+            tail = raw[kept[-1][1]:]
+            for k, word in enumerate(tail):
+                if stop(word):
+                    tail = tail[:k + 1]
+                    break
+            ctx = [head]
+            for a, b in zip(kept, kept[1:]):
+                ctx.append(raw[a[1]:b[0]])
+            ctx.append(tail)
+            cut = [False] * len(ctx)      # trimmed at its far end / middle
+            fixed = sum(measure_change(h, m) for _a, _b, h, m in kept)
+            fixed += gap * (2 * len(kept))
+
+            def width_of() -> int:
+                total = fixed
+                for words_, was_cut in zip(ctx, cut):
+                    if words_:
+                        total += measure(" ".join(words_)
+                                         + (" …" if was_cut else ""))
+                return total
+
+            # the outer contexts first, a word at a time from the far
+            # ends, the longer first; then the inner ones from their
+            # middles
+            while width_of() > room:
+                outer = [(len(ctx[0]), 0), (len(ctx[-1]), len(ctx) - 1)]
+                outer = [o for o in outer if o[0] > 0]
+                if outer:
+                    n, k = max(outer)
+                    if k == 0:
+                        ctx[0] = ctx[0][1:]
+                    else:
+                        ctx[-1] = ctx[-1][:-1]
+                    cut[k] = True
+                    continue
+                inner = [(len(ctx[k]), k) for k in range(1, len(ctx) - 1)
+                         if len(ctx[k]) > 0]
+                if not inner:
+                    break
+                n, k = max(inner)
+                mid = len(ctx[k]) // 2
+                ctx[k] = ctx[k][:mid] + ctx[k][mid + 1:]
+                cut[k] = True
+            if width_of() <= room or len(kept) == 1:
+                break
+            kept.pop()                    # the last change goes to the note
+        runs: list = []
+        for k, (i1, i2, heard, meant) in enumerate(kept):
+            words_ = ctx[k]
+            if words_:
+                piece = " ".join(words_)
+                if cut[k]:
+                    piece = ("… " + piece) if k == 0 else (piece + " …")
+                runs.append((piece, ui.DIM, None))
+            runs.append((widgets.Change(heard, meant), None, None))
+        tail = ctx[-1]
+        if tail:
+            runs.append((" ".join(tail) + (" …" if cut[-1] else ""),
+                         ui.DIM, None))
+        where = " ".join(raw[max(0, kept[0][0] - 8):kept[-1][1] + 8])
+        return runs, len(kept), where
 
     def _waiting_problems(self) -> list[dict]:
         module, store = self._problems(), self._problems_store()
@@ -6785,6 +7358,31 @@ class Dashboard:
         store = self._problems_store()
         if module is None or store is None:
             return
+        # ONE PREVIEW AT A TIME. Two doors open this window: the box's
+        # own [Preview] and the look-round (_preview_if_waiting — 600 ms
+        # after the first frame, and on every show signal) that opens
+        # the newest PREVIEW row for the hotkey card. On a slow machine
+        # the look-round fired after the box had filed its row and opened
+        # its preview, and a second window for the same report came up
+        # under the first; [Keep] closed one and the other stood there
+        # (GitHub's runner, 2026-09-21, twice). Whatever door asks, a
+        # preview that is already up is brought forward, never doubled,
+        # and the look-round's once-per-row memory learns this one too.
+        self._previewed.add(ident)
+        open_top = self._preview_top
+        if open_top is not None:
+            try:
+                alive = bool(open_top.winfo_exists())
+            except Exception:             # noqa: BLE001 — a dead Tcl path
+                alive = False
+            if alive:
+                try:
+                    open_top.lift()
+                    open_top.focus_force()
+                except Exception:         # noqa: BLE001
+                    pass
+                return
+            self._preview_top = None
         item = store.get(ident)
         if not item:
             self._note("that report is not on the list any more")
@@ -6817,6 +7415,9 @@ class Dashboard:
                 return
             done["value"] = True
             keep.clear()
+            if self._preview_top is top:
+                self._preview_top = None
+                self._preview_open = ""
             try:
                 top.grab_release()
                 top.destroy()
@@ -6927,6 +7528,7 @@ class Dashboard:
         top.grab_set()
         top.focus_force()
         self._preview_open = ident
+        self._preview_top = top
 
     @staticmethod
     def _play_wav(path: str) -> None:

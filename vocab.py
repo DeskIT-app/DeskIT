@@ -318,6 +318,91 @@ class Vocab:
         self.corrections.append(entry)
         return entry
 
+    # ---- the hand doors: the Words list on the desk (2026-09-21) ----
+    #
+    # A person can now type a pair in, change one, or take one out,
+    # rather than only teaching by correcting a dictation. The owner's
+    # case: "the transcriber writes the same wrong thing every time and
+    # the app never proposes it — let me add it myself". Each door
+    # SAVES, because the desk's request is the whole transaction.
+
+    def learn_by_hand(self, heard: str, meant: str) -> dict:
+        """A pair typed on purpose counts as `replace_after_hits`
+        corrections at once: both sides were spelled out by a person, so
+        the two-strikes rule that protects against a slip in the edit
+        box has nothing to protect. An existing pair keeps its hits if
+        they are already higher, and takes the new meant form."""
+        heard, meant = heard.strip(), meant.strip()
+        if not heard or not meant:
+            raise ValueError("both words are needed")
+        if heard.lower() == meant.lower():
+            raise ValueError("the two words are the same")
+        with self._write_lock:
+            entry = self._learn(heard, meant)
+            # _learn bumped an existing pair by one (or made one at 1);
+            # a hand-typed pair stands at the replace threshold at least.
+            entry["hits"] = max(int(entry.get("hits", 1)),
+                                self.replace_after_hits)
+            self.save()
+            return entry
+
+    def forget(self, heard: str) -> bool:
+        """Take one pair out. True if there was one. The next sync turns
+        the absence into a tombstone (sync.vocab_rows), so the word goes
+        from the account's other copies too."""
+        key = heard.strip().lower()
+        with self._write_lock:
+            kept = [c for c in self.corrections
+                    if str(c.get("heard", "")).strip().lower() != key]
+            if len(kept) == len(self.corrections):
+                return False
+            self.corrections = kept
+            self.save()
+            return True
+
+    def edit(self, heard: str, new_heard: str, new_meant: str) -> dict:
+        """Change a pair in place. The heard form is the key, so a
+        changed heard form is the old row taken out and a new one put
+        in with the old row's hits — a correction he has made three
+        times is still one he has made three times."""
+        new_heard, new_meant = new_heard.strip(), new_meant.strip()
+        if not new_heard or not new_meant:
+            raise ValueError("both words are needed")
+        if new_heard.lower() == new_meant.lower():
+            raise ValueError("the two words are the same")
+        key = heard.strip().lower()
+        with self._write_lock:
+            old = next((c for c in self.corrections
+                        if str(c.get("heard", "")).strip().lower() == key),
+                       None)
+            if old is None:
+                raise KeyError(heard)
+            hits = max(int(old.get("hits", 1)), self.replace_after_hits)
+            if new_heard.lower() != key:
+                self.corrections = [c for c in self.corrections if c is not old]
+                dup = next((c for c in self.corrections
+                            if str(c.get("heard", "")).strip().lower()
+                            == new_heard.lower()), None)
+                if dup is not None:
+                    old = dup
+                    hits = max(hits, int(dup.get("hits", 1)))
+                else:
+                    old = {"heard": new_heard, "meant": new_meant, "hits": 1,
+                           "last": ""}
+                    self.corrections.append(old)
+            old["heard"] = new_heard
+            old["meant"] = new_meant
+            old["hits"] = hits
+            old["last"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            self.save()
+            return old
+
+    def find(self, heard: str) -> dict | None:
+        key = heard.strip().lower()
+        return next((c for c in self.corrections
+                     if str(c.get("heard", "")).strip().lower() == key),
+                    None)
+
     def learn_from_edit(self, raw: str, fixed: str,
                         heard_in: str | None = None
                         ) -> list[tuple[str, str]]:
