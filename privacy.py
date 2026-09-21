@@ -79,7 +79,11 @@ SWITCHES: tuple[str, ...] = ("update_check", "offline")
 #: every old row goes stale. The four DeskIT-side kinds carry the
 #: version of the one-page terms of chapter 13 (docs/terms.md).
 TEXT_VERSIONS: dict[str, str] = {
-    "cloud_text": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
+    # 2026-09-21: the words now also name the message a "Claude finished"
+    # card summarises (notify.Summary) — MORE leaves than before, so the
+    # old rows go stale and the card asks once more; never carried
+    # forward.
+    "cloud_text": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-21",
     "cloud_audio": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
     "cloud_screenshots": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
     "account": "deskit-terms-0+en-2026-09-19",
@@ -99,11 +103,14 @@ CARRIED_FORWARD: dict[str, tuple[str, ...]] = {
 
 #: net.py's purpose -> the gate it needs. A purpose absent here (key
 #: test, catalog, Ollama, the hook, downloads) needs no consent: it
-#: carries nothing the person dictated.
+#: carries nothing the person dictated. ``summary`` carries the message
+#: Claude finished with (not dictated — but text of his, leaving to the
+#: same provider), and the cloud-text card names it since 2026-09-21.
 PURPOSE_KINDS: dict[str, str] = {
     "polish": "cloud_text", "punctuate": "cloud_text",
     "translate": "cloud_text", "lookup": "cloud_text",
     "review": "cloud_text", "study": "cloud_text", "reading": "cloud_text",
+    "summary": "cloud_text",
     "transcribe": "cloud_audio",
     "ask-screen": "cloud_screenshots",
     "account": "account", "report": "report_upload", "sync": "settings_sync",
@@ -218,6 +225,22 @@ def consent(kind: str) -> dict | None:
                 and row.get("text_version") == TEXT_VERSIONS.get(kind):
             return row
     return None
+
+
+def stale() -> list[str]:
+    """The kinds whose consent was given under OLDER words and whose
+    gate is still on: what the person said yes to, and what this
+    version would now send, differ. main asks each of them again at
+    start (2026-09-21) — the card says "asks again when the section it
+    quotes changes", and a press no longer opens a card (2026-09-19), so
+    without this a changed card would switch a cloud feature off in
+    silence and the person would meet Ollama's wait with no word why.
+    Offline mode asks nothing; a gate the person turned off is theirs."""
+    if _gates["offline"]:
+        return []
+    have = {r.get("kind") for r in rows()}
+    return [k for k in KINDS
+            if k in have and _gates[k] and consent(k) is None]
 
 
 def tag(kind: str) -> str | None:

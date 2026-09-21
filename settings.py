@@ -476,6 +476,12 @@ TABS: tuple[Tab, ...] = (
                      "Every one, only what is waiting on you, or none; "
                      "the rest wait quietly on the panel beside the dot.",
                      _INTERRUPT),
+            Friendly("notify.summarize", "Say a finished message in one line",
+                     "When Claude finishes, the card carries one plain "
+                     "sentence about its message instead of the first "
+                     "lines — written by Groq, with the cloud-text switch "
+                     "on and a Groq key. Off, or without either, the card "
+                     "shows the message's first lines."),
         )),
     )),
     Tab("Screen", (

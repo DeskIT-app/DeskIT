@@ -440,9 +440,9 @@ class CerebrasTranslator:
         from apikey import CEREBRAS_MISSING_KEY_MESSAGE
         return CEREBRAS_MISSING_KEY_MESSAGE
 
-    def __init__(self, model: str, timeout_s: int, target: str = "English",
+    def __init__(self, model: str, timeout_s: float, target: str = "English",
                  system_prompt=None, max_tokens: int | None = None,
-                 purpose: str = "translate"):
+                 purpose: str = "translate", reasoning: str | None = None):
         import apikey
 
         _require_text()
@@ -459,6 +459,12 @@ class CerebrasTranslator:
         self._target = target
         self._system = system_prompt
         self._purpose = purpose
+        # How hard the model may think before it answers, when the caller
+        # knows better than the class: the class default (extra_body
+        # below) is 'low' for gpt-oss, tuned for a repaired sentence; the
+        # one-line card summary (notify.Summary) asks qwen for "none" —
+        # 0.2-0.4 s measured 2026-09-21 against ~0.8 s and a monologue.
+        self._reasoning = reasoning
         # Sized by the caller from the text being repaired: the honest
         # reply is never much longer than its input, so a cap converts a
         # runaway generation into a bounded failure the fallback absorbs —
@@ -486,6 +492,8 @@ class CerebrasTranslator:
             body["max_tokens"] = self._max_tokens
         if type(self).extra_body:
             body.update(type(self).extra_body)
+        if self._reasoning is not None:
+            body["reasoning_effort"] = self._reasoning
         label = type(self).provider_label
         try:
             status, _headers, raw = net.post_json(
