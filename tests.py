@@ -11612,7 +11612,7 @@ def _bare_groq_vision():
     import visual_qa as vq
 
     g = vq.GroqVision.__new__(vq.GroqVision)
-    g._model = "qwen/qwen3.6-27b"
+    g._model = "qwen/qwen3.8-27b"
     g._timeout = 20
     g._num_predict = 300
     g.key_source = "test"
@@ -11620,16 +11620,18 @@ def _bare_groq_vision():
 
 
 def test_groq_vision_request_shape() -> None:
-    """"reasoning_effort 'low' is an HTTP 400" and "Cloudflare eats the
-    default User-Agent" are both measured facts from 2026-08-25; these
-    asserts are where they stay true."""
+    """"reasoning_effort 'none' is the knob that answers without
+    thinking" and "Cloudflare eats the default User-Agent" are both
+    measured facts (2026-08-25 on qwen3.6-27b, 2026-09-21 again on
+    qwen3.8-27b once 3.6 was a 404); these asserts are where they stay
+    true."""
     import visual_qa as vq
 
     g = _bare_groq_vision()
     body = g.request_body("B64IMG==", "מה כתוב כאן?",
                           [{"role": "user", "content": "קודמת"},
                            {"role": "assistant", "content": "תשובה"}])
-    assert body["model"] == "qwen/qwen3.6-27b"
+    assert body["model"] == "qwen/qwen3.8-27b"
     assert body["reasoning_effort"] == "none"
     assert body["max_tokens"] == 300
     parts = body["messages"][1]["content"]
@@ -11762,7 +11764,8 @@ def test_visual_qa_section_parses_with_defaults_and_overrides() -> None:
         assert vq.num_predict == 256
         assert vq.speak == "auto"
         assert vq.voice == "Microsoft Asaf"     # untouched default
-        assert vq.groq_model == "qwen/qwen3.6-27b"
+        # The one vision model Groq lists (2026-09-21; 3.6 is a 404 now).
+        assert vq.groq_model == "qwen/qwen3.8-27b"
 
         defaults = config_mod.VisualQAConfig()
         assert config_mod.PrivacyConfig().cloud_screenshots is False, \

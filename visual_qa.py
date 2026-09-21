@@ -48,6 +48,15 @@ MEASURED ON THIS MACHINE, 2026-08-25 (all of it live, not catalog)
   sending "low" is an HTTP 400. And its endpoint sits behind Cloudflare,
   which 403s Python's default User-Agent (error 1010) — the same trap
   translate.py documents for Cerebras; the same named header answers it.
+- Groq qwen/qwen3.8-27b (2026-09-21, after qwen3.6-27b left the catalog
+  with an HTTP 404 model_not_found): 0.31-0.49 s with reasoning_effort
+  "none", and it read a synthetic screen's text exactly. The ONLY model
+  in that catalog that takes an image — gpt-oss-120b/20b, compound-mini
+  and allam-2-7b each answer "messages[1].content must be a string".
+  The arithmetic is the same: the limiter counts ~2,950 of a 7,000
+  input-tokens-per-minute cap per 896 px screenshot (usage bills 944),
+  so TWO a minute and the third is HTTP 429. "low" is no longer a 400
+  on this one, but it thinks for ~90 tokens first — "none" stays.
 - Gemini gemini-2.5-flash-lite answered an image question in 2.2-2.3 s,
   but the pool is the shared 20 req/day/model bucket of F9/F7 — a key
   pressed this casually must not drain it (same arithmetic that made
@@ -804,12 +813,14 @@ class OllamaVision:
 
 
 class GroqVision:
-    """qwen/qwen3.6-27b — sub-second, and rationed to a fallback by math.
+    """qwen/qwen3.8-27b — sub-second, and rationed to a fallback by math.
 
     llama-4 scout/maverick were the obvious vision picks and are GONE from
-    Groq's catalog (drift, again — list /v1/models before trusting an id).
-    This one answers in ~0.5 s but burns ~830 prompt tokens on a MODEST
-    image against an 8000 TPM cap: 1-2 screenshots a minute before 429.
+    Groq's catalog, and qwen3.6-27b had followed them by 2026-09-21
+    (drift, again — list /v1/models before trusting an id). This is the only
+    model there that takes an image at all; it answers in 0.3-0.5 s but
+    the limiter counts ~2,950 of a 7,000 input-tokens/min cap per MODEST
+    image: two screenshots a minute before 429.
     Behind an explicit upload gate only, and never first unless asked.
     """
 
@@ -879,8 +890,11 @@ class GroqVision:
             "temperature": 0.2,
             "stream": False,
             "max_tokens": self._num_predict,
-            # qwen3.6 is a reasoning model whose knob differs from gpt-oss:
-            # ONLY "none" | "default"; "low" is HTTP 400 (measured live).
+            # qwen3 is a reasoning model whose knob differs from gpt-oss:
+            # "none" answers straight away (0.3-0.5 s); "low" was HTTP
+            # 400 on qwen3.6 and on qwen3.8 thinks for ~90 tokens first
+            # (both measured live). gpt-oss refuses "none" — its floor is
+            # "low" — so this body is qwen's and nobody else's.
             "reasoning_effort": "none",
             "messages": self._messages(image_b64, question, history),
         }
