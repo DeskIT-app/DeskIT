@@ -855,12 +855,35 @@ class App:
                     on_away=self._shelf_close,
                     spare=self._dot_squares,
                     dot_corner=self._dot_corner,
-                    dot_at=self._dot_beside
+                    # The dot's rectangle ALWAYS, dragged or not — the
+                    # panel is a bubble anchored to it (shelf.py); the
+                    # key card keeps _dot_beside and its corner rule.
+                    dot_at=self._dot_rect
                     if getattr(scfg, "follow_dot", True) else None)
             except Exception:                    # noqa: BLE001
                 log.info("the shelf would not build — its key will say so "
                          "and nothing else changes", exc_info=True)
                 self.shelf = None
+        # THE MOVE FRAME (dotmove.MoveFrame, 2026-09-21): the light round
+        # every screen and the Done card while the dot is being dragged.
+        # Opened by the shelf's Move button and by the desk's "Move the
+        # dot" alike (_dot_move_begin); closed by Done, Enter, Esc or
+        # its own deadline (_dot_move_pressed). Its thread starts with
+        # the shelf's. A frame that will not build costs one log line:
+        # the dot is still draggable without the light.
+        self.move_frame = None
+        try:
+            import dotmove as dotmove_mod
+            self.move_frame = dotmove_mod.MoveFrame(
+                on_press=self._dot_move_pressed,
+                dot_hwnd=lambda: getattr(self.dot, "hwnd", None),
+                scale=scfg.scale if scfg is not None else 1.0)
+        except Exception:                        # noqa: BLE001
+            log.info("the move frame would not build — the dot still "
+                     "moves, without the light", exc_info=True)
+        # Where the dot was when the framed move began, (x, y) — what Esc
+        # puts back. None while no move is standing.
+        self._dot_move_from = None
         # Armed by the first press of Stop on the panel and cleared by
         # anything else, so the second press is the one that quits. Read
         # and written only from the shelf's own callbacks.
@@ -1362,6 +1385,16 @@ class App:
         # exception is a dropped hook and a frozen keyboard, and where 300
         # ms of work unhooks the app silently.
         self._q_last_key = time.monotonic()
+        # The move frame before everything: Enter and Esc, and only while
+        # the light round the screens is up (dotmove.MoveFrame.on_key).
+        # No pointer gate, like the shelf's Esc — he asked for this mode
+        # a moment ago and every screen says so. Off, one attribute read.
+        try:
+            frame = getattr(self, "move_frame", None)
+            if frame is not None and frame.on_key(vk):
+                return True
+        except Exception:
+            pass
         # The second reading's card first: its three keys are claimed only
         # while a card is up AND the pointer is on it (overlay.ReviewCard),
         # so this is a rect test and never eats a letter being typed.
@@ -2305,6 +2338,8 @@ class App:
         # there is no object here at all.
         if getattr(self, "shelf", None) is not None:
             self.shelf.start()
+        if getattr(self, "move_frame", None) is not None:
+            self.move_frame.start()
         self.notify.start()
         self.notify_watch.start()
         # The weekly routine's question, WATCHED FOR rather than pushed:
@@ -2597,6 +2632,8 @@ class App:
             self.tour_card.stop()
         if getattr(self, "shelf", None) is not None:
             self.shelf.stop()
+        if getattr(self, "move_frame", None) is not None:
+            self.move_frame.stop()
         # The watcher first — it feeds the engine, and an arrival during
         # the shutdown would arm reminders nobody is left to answer.
         if getattr(self, "notify_watch", None) is not None:
@@ -2798,14 +2835,18 @@ class App:
                 # so the dashboard knows at once whether to hide itself.
                 do = str(args.get("do", "move")).strip().lower()
                 if do == "move":
-                    if not self.dot.move():
+                    # The FRAMED move since 2026-09-21 — the same door the
+                    # shelf's Move button opens: the light round every
+                    # screen, the Done card, Enter and Esc. The dashboard
+                    # hides itself on this reply and comes back when the
+                    # next status says the dot is no longer moving.
+                    if not self._dot_move_begin():
                         return {"ok": False,
                                 "error": "there is no dot to move "
                                          "(indicator = false)"}
-                    self._say("drag the dot where you want it")
-                    log.info("the dot: waiting to be dragged")
                     return {"ok": True, "dot": self.dot.state(),
-                            "message": "drag the dot where you want it"}
+                            "message": "drag the dot where you want it — "
+                                       "Enter when it is there"}
                 if do == "corner":
                     self.dot.to_corner()
                     self._say("the dot is back in its corner")
@@ -3931,6 +3972,16 @@ class App:
             return None
         return getattr(dot, "rect", None)
 
+    def _dot_rect(self):
+        """The dot's own window, (left, top, right, bottom), wherever it
+        is — in its corner or dragged out of it — for the panel that is
+        anchored to it (shelf.ShelfCard.origin, 2026-09-21). None with
+        no dot, or a dot off the screen (the model off: `hidden`)."""
+        dot = getattr(self, "dot", None)
+        if dot is None:
+            return None
+        return getattr(dot, "rect", None)
+
     def _shelf_close(self) -> None:
         """Down, and the corner given back to whoever else wants it.
 
@@ -4291,6 +4342,12 @@ class App:
             # second click on the dot all go through.
             self._shelf_close()
             return
+        if name == shelf_card_mod.MOVE:
+            # The panel closes and the light comes up; _dot_move_begin
+            # does both. Nothing waits: one flag on the dot, one item on
+            # the frame's queue.
+            self._dot_move_begin()
+            return
         if name == shelf_card_mod.PAUSE:
             self.set_paused(not self.machine.paused)
             self._shelf_push()
@@ -4321,6 +4378,133 @@ class App:
         if name in (shelf_card_mod.DOOR, shelf_card_mod.MORE):
             open_dashboard()
             self._shelf_close()
+
+    # ---- the framed move: a light round every screen until Done ----
+
+    def _dot_move_begin(self) -> bool:
+        """Arm the dot and put the frame up. False, and nothing on
+        screen, when there is no dot to move.
+
+        THE OWNER'S ASK, 2026-09-21: "the moment you press it the tab on
+        the right closes, around every connected screen there is a halo
+        in the app's colour, and I can press and hold the dot and move it
+        wherever I want; then a Done button somewhere strategic — Enter
+        finishes, Escape cancels — and when you press it the dot stays
+        where it was dragged." So: the shelf closes, the dot is armed
+        with `hold=True` (a drop no longer ends the mode — he may drag
+        again, and again), where it was is remembered for Esc, and the
+        frame goes up with the same deadline the dot has
+        (overlay.DOT_FRAME_S). Both doors — the shelf's Move button and
+        the desk's "Move the dot" — come here, so there is one way this
+        works and not two.
+
+        Safe from the painter's thread and the control thread alike:
+        one float and one flag on the dot, one Event, one queue item.
+        """
+        dot = self.dot
+        if not dot.move(overlay_mod.DOT_FRAME_S, hold=True):
+            self._say("there is no dot to move")
+            return False
+        self._dot_move_from = (int(dot.x), int(dot.y))
+        self._shelf_close()
+        frame = getattr(self, "move_frame", None)
+        if frame is not None:
+            frame.show(dot.rect, time.monotonic() + overlay_mod.DOT_FRAME_S)
+        self._say("drag the dot where you want it — Enter when it is "
+                  "there, Esc puts it back")
+        log.info("the dot: waiting to be dragged — Done, Enter, Esc, or "
+                 "%.0f s", overlay_mod.DOT_FRAME_S)
+        return True
+
+    def _dot_move_pressed(self, verb: str) -> None:
+        """A door out of the framed move: "done" (the button, or Enter),
+        "cancel" (Esc), "expired" (the deadline), or a bead on the
+        Options map ("corner:<monitor>:<tl|tr|bl|br>" — the dot goes to
+        that corner and the move is over). Arrives on the frame's
+        painter thread or the keyboard hook, so the work goes to a thread
+        of its own — a corner and Esc write config.toml, and 300 ms on
+        the hook is a dropped hook."""
+        threading.Thread(target=self._dot_move_end,
+                         args=(str(verb) != "cancel", str(verb)),
+                         daemon=True, name="dot-move-end").start()
+
+    def _dot_corner_spot(self, index: int, corner: str):
+        """The dot's top-left in `corner` of monitor `index` — the same
+        list and order the map was drawn from (capture.monitors, primary
+        first), that monitor's WORK AREA (above its taskbar), and the
+        glass dot's box and margins (skin\\dot.place's numbers). None
+        when there is no such monitor."""
+        try:
+            import capture as capture_mod
+            rects = [tuple(m["rect"]) for m in capture_mod.monitors()]
+            l, t, r, b = rects[int(index)]
+        except Exception:                        # noqa: BLE001
+            return None
+        work = overlay_mod._monitor_work((l + r) // 2, (t + b) // 2) \
+            or (l, t, r - l, b - t)
+        try:
+            from skin import dot as skin_dot
+            box = (skin_dot.BOX, skin_dot.BOX)
+            margin = (skin_dot.MARGIN_X, skin_dot.MARGIN_Y)
+        except Exception:                        # noqa: BLE001
+            box, margin = (38, 38), (8, 4)
+        name = {"tl": "top-left", "tr": "top-right", "bl": "bottom-left",
+                "br": "bottom-right"}.get(str(corner))
+        if name is None:
+            return None
+        return overlay_mod.corner_spot(name, work, box, margin)
+
+    def _dot_move_end(self, keep: bool, verb: str = "done") -> None:
+        """The framed move is over. `keep` leaves the dot where the last
+        drop put it — every drop was already written down by
+        StatusDot.placed, so Done has nothing to write; Esc puts the dot
+        back where the move began, through the same `placed` (a corner,
+        UNSET in both, walks home the same way); a bead on the map puts
+        it in that corner. The hold is released LAST, in the finally:
+        `held()` going false is what says the move is over, and it must
+        not say so before the dot has been put where the door said."""
+        dot = self.dot
+        origin, self._dot_move_from = self._dot_move_from, None
+        frame = getattr(self, "move_frame", None)
+        if frame is not None:
+            frame.hide()
+        try:
+            if str(verb).startswith("corner:"):
+                # A bead on the map: the dot goes to that corner of that
+                # screen, through the same placed() a drag ends in, and
+                # that is the answer — nothing left to confirm.
+                try:
+                    import move_card as move_card_mod
+                    picked = move_card_mod.parse_corner(verb)
+                except Exception:                # noqa: BLE001
+                    picked = None
+                spot = self._dot_corner_spot(*picked) if picked else None
+                if spot is not None:
+                    dot.placed(*spot)
+                    self._say(f"the dot is in the corner — {spot[0]}, "
+                              f"{spot[1]}")
+                    log.info("the dot: put in a corner from the map (%s) at "
+                             "%s, %s", verb, spot[0], spot[1])
+                    return
+                log.info("the dot: the map named a corner that is not there "
+                         "(%s) — kept where it is", verb)
+            if keep:
+                if dot.dragged():
+                    self._say(f"the dot stays at {dot.x}, {dot.y}")
+                else:
+                    self._say("the dot stays in its corner")
+                log.info("the dot: move over (%s) at %s, %s", verb, dot.x,
+                         dot.y)
+                return
+            if origin is not None and (dot.x, dot.y) != tuple(origin):
+                dot.placed(*origin)
+                log.info("the dot: put back at %s, %s (%s)", origin[0],
+                         origin[1], verb)
+            else:
+                log.info("the dot: move cancelled, nothing moved")
+            self._say("the dot is back where it was")
+        finally:
+            dot.end_move()
 
     def _shelf_screens(self) -> None:
         """The screens off or back, then the row says which. Own thread:
@@ -4411,7 +4595,9 @@ class App:
                         spare=self._dot_squares,
                         dot_corner=getattr(self, "_dot_corner",
                                            "bottom-right"),
-                        dot_at=self._dot_beside
+                        # the rectangle always, as at startup: the
+                        # panel is a bubble anchored to the dot
+                        dot_at=self._dot_rect
                         if getattr(scfg, "follow_dot", True) else None)
                 except Exception:                # noqa: BLE001
                     log.info("the shelf would not rebuild", exc_info=True)

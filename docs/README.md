@@ -34,7 +34,11 @@ switch with its refused row, YOUR CLOUD KEYS, the consent card, Settings >
 Phone / Screen, the picker, the ask card, the report box (`03-*`, `04-offline-
 refused-row`, `05-*`, `06-settings-phone`, `07-*`, `09-report-card`) — every
 one from a temporary `DESKIT_HOME` with invented content: no transcript,
-no vocabulary and no key of anyone's. Not yet — they need a real screen,
+no vocabulary and no key of anyone's. The shelf and the move frame
+(`03-shelf`, `03-move`, 2026-09-21) are their own painters on a drawn
+desktop corner — a layered window has nothing to photograph on a desktop
+nobody is looking at — and were redrawn when Move joined the panel. Not
+yet — they need a real screen,
 an installer, a phone, Explorer, Credential Manager or a provider's
 console: `01-smartscreen-more-info`, `01-smartscreen-run-anyway`,
 `01-installer-language`, `01-installer-finish`, `04-credential-manager`,

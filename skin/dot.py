@@ -392,6 +392,9 @@ def run(status_dot) -> None:
                       moved=dropped)
     else:
         glass = Glass(*dot.placement())
+    # The handle, for the move frame to slip its light UNDER (see
+    # `under` below); None again in the finally, like `rect`.
+    status_dot.hwnd = glass.hwnd
     hidden = bool(getattr(status_dot, "hidden", False))
     if hidden:                          # a start without the model
         status_dot.rect = None
@@ -435,8 +438,17 @@ def run(status_dot) -> None:
                 continue
             # Move mode is a DEADLINE the StatusDot keeps, so this only
             # reads it — which is what makes it expire on its own if he
-            # presses the button and then walks away.
+            # presses the button and then walks away. The frame a move
+            # begins, the window climbs to the top of the topmost band:
+            # the framed move (skin\move.py) puts a light the size of
+            # every screen up a moment before or after this, and the dot
+            # has to be dragged OVER that light, not under it. Belt and
+            # braces with Glass.under — whichever of the two is built
+            # second, the dot ends up on top.
+            was_moving = dot.moving
             dot.moving = status_dot.moving()
+            if dot.moving and not was_moving:
+                glass.raise_()
             if status_dot._replace.is_set():
                 # A drop that had to be clamped, or "Back to the corner"
                 # from the dashboard. UpdateLayeredWindow moves the
@@ -477,7 +489,8 @@ def run(status_dot) -> None:
         _log.info("skin status dot stopped early", exc_info=True)
     finally:
         status_dot.rect = None          # nothing on screen to spare
-        status_dot.rest()
+        status_dot.hwnd = None
+        status_dot.end_move()
         glass.close()
         status_dot._closing.set()
 

@@ -118,9 +118,11 @@ class Sim:
         # A second of load is what gives the person time to press.
         real_get = main_mod.get_transcriber
 
-        def slow_get(cfg, hotwords=None):
+        def slow_get(cfg, hotwords=None, **kw):
+            # **kw: main.py passes english_later= since 3f57289; a fake
+            # that refused it made every Start scenario fail (2026-09-21)
             time.sleep(LOAD_S)
-            return real_get(cfg, hotwords)
+            return real_get(cfg, hotwords, **kw)
 
         main_mod.get_transcriber = slow_get
         self.app: main_mod.App | None = None
