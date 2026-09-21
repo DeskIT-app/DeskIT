@@ -12920,14 +12920,14 @@ def test_closing_the_card_mid_answer_does_not_hand_it_to_the_ask_thread() -> Non
     """
     _run_window_script('''
 import gc, threading, time
-from pathlib import Path
 from PIL import Image
 import config
+import paths
 import visual_qa as vq
 
 gc.disable()
 
-cfg = config.load(Path("config.toml"))
+cfg = config.load(paths.DEFAULTS_FILE)
 ctrl = vq.Controller(lambda: cfg)
 img = Image.new("RGB", (320, 160), (30, 30, 30))
 ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
@@ -13214,14 +13214,14 @@ def test_a_closed_card_leaves_no_interpreter_for_another_thread_to_free() -> Non
     """
     _run_window_script('''
 import gc, sys, time
-from pathlib import Path
 from PIL import Image
 import config
+import paths
 import visual_qa as vq
 
 gc.disable()                 # only explicit collects: we choose the thread
 
-cfg = config.load(Path("config.toml"))
+cfg = config.load(paths.DEFAULTS_FILE)
 ctrl = vq.Controller(lambda: cfg)
 img = Image.new("RGB", (320, 160), (30, 30, 30))
 ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
@@ -13273,14 +13273,14 @@ def test_no_global_keeps_a_card_interpreter_alive_past_its_thread() -> None:
     """
     _run_window_script('''
 import gc, threading, time
-from pathlib import Path
 from PIL import Image
 import config
+import paths
 import visual_qa as vq
 
 gc.disable()                 # only explicit collects: we choose the thread
 
-cfg = config.load(Path("config.toml"))
+cfg = config.load(paths.DEFAULTS_FILE)
 ctrl = vq.Controller(lambda: cfg, recording_now=lambda: True)
 img = Image.new("RGB", (320, 160), (30, 30, 30))
 ctrl._grab_selection = lambda: (img, (100, 100, 420, 260))
@@ -29947,13 +29947,29 @@ class _consented:
 class _test_cred_prefix:
     """Point secretstore's Credential Manager entries at ``DeskIT.test/``
     for the block, and leave none of them behind. The real ``DeskIT/``
-    entries are the owner's keys and no test may touch them."""
+    entries are the owner's keys and no test may touch them.
+
+    The two other places a developer copy reads a key from are hidden
+    for the block as well — the ``DESKIT_*_API_KEY`` / ``*_API_KEY``
+    variables and the ``.env`` beside main.py — so the store sees only
+    what the block puts in it. A ``.env`` written on 2026-09-19 made
+    the Privacy tab say "Stored in .env file (developer copy)" where
+    the keys test expected "no key": every night on this PC, never on
+    CI, and the FAIL line carried no message. A test that wants a
+    variable or a file read sets it INSIDE the block."""
 
     def __enter__(self):
         import secretstore
         self._mod = secretstore
         self._old = secretstore.TARGET_PREFIX
         secretstore.TARGET_PREFIX = "DeskIT.test"
+        self._env: dict[str, str | None] = {}
+        for name in secretstore.CRED_NAMES:
+            for var in (secretstore.ENV_VARS[name],
+                        secretstore.LEGACY_ENV_VARS[name]):
+                self._env[var] = os.environ.pop(var, None)
+        self._old_file = secretstore.ENV_FILE
+        secretstore.ENV_FILE = _SCRATCH_HOME / "no.env"
         for name in secretstore.CRED_NAMES:
             secretstore.delete(name)
         return secretstore
@@ -29962,6 +29978,12 @@ class _test_cred_prefix:
         for name in self._mod.CRED_NAMES:
             self._mod.delete(name)
         self._mod.TARGET_PREFIX = self._old
+        self._mod.ENV_FILE = self._old_file
+        for var, value in self._env.items():
+            if value is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = value
         return False
 
 
@@ -30015,9 +30037,9 @@ def test_secrets_lookup_order():
     try:
         for k in saved_env:
             os.environ.pop(k, None)
-        secretstore.ENV_FILE = env_file
         paths.PORTABLE = True
         with _test_cred_prefix() as store:
+            secretstore.ENV_FILE = env_file      # the block hid the real one
             assert store.find_key("groq") == ("from-dot-env", ".env.lookup-test file (developer copy)")
             os.environ["GROQ_API_KEY"] = "from-bare-env-var"
             assert store.find_key("groq") == ("from-bare-env-var", "environment variable GROQ_API_KEY")
