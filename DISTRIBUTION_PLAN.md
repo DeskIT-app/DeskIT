@@ -2916,7 +2916,9 @@ while a recording is running; it waits for idle.
 The update is a re-run of the same per-user installer chapter 10 ships (`PrivilegesRequired=lowest`,
 `CloseApplications=yes`). The app starts it with exactly:
 
-`/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /NORESTART /LOG="<DATA_DIR>\logs\setup-<version>.log"`
+`/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /NORESTART /LOG=<DATA_DIR>\logs\setup-<version>.log`
+
+(No quotes of the app's own around the log path: `Popen` quotes an argument that needs it, and a quote written into the argument reached Inno as `\"` — a path it refused with "Error creating log file" on the first live press, 2026-09-21.)
 
 | Switch | Effect | Evidence |
 |---|---|---|

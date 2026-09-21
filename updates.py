@@ -379,9 +379,15 @@ def download(release: Release, on_progress=None, cancel=None,
 # ------------------------------------------------------------ the install
 
 def install_command(installer: Path, release_version: str) -> list[str]:
-    """The exact argument list of 11.6."""
+    """The exact argument list of 11.6. The log path carries no quotes
+    of its own: Popen quotes an argument that needs it, and a quote
+    written into the argument reaches Inno as a literal backslash-quote
+    — `/LOG=\\"C:\\...\\setup-1.0.1.log\\"` — which Inno's own parser
+    turns into the path `\\C:\\...\\setup-1.0.1.log\\` and refuses with
+    "Error creating log file" before installing anything (the owner's
+    first press of Download and install, 1.0.0 -> 1.0.1, 2026-09-21)."""
     log_path = paths.LOGS_DIR / f"setup-{release_version}.log"
-    return [str(installer), *INSTALL_SWITCHES, f'/LOG="{log_path}"']
+    return [str(installer), *INSTALL_SWITCHES, f"/LOG={log_path}"]
 
 
 def install(installer: Path, release: Release, quit_app=None) -> list[str]:
