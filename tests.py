@@ -27382,6 +27382,20 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
             assert rows[0]["shot"] and rows[0]["dictation"].get("wav"), "the local copy lost a piece"
             preview = toplevels(board, "Preview — what leaves this PC")
             assert preview, "no Preview opened"
+            # THE 600 ms LOOK-ROUND MUST NOT OPEN A SECOND PREVIEW. _build
+            # schedules _preview_if_waiting once the first frame is up, and
+            # the show signal calls it again: on GitHub's runner that timer
+            # fired AFTER the box had filed the row as PREVIEW and opened
+            # its own preview, so a second window for the same row came up
+            # and [Keep] on the first left the second standing (CI
+            # 35581806000 and 35589125950, 2026-09-21, at this line's
+            # "not toplevels"). Here the look-round is called by hand,
+            # which is what the slow runner did by accident.
+            board._preview_if_waiting()
+            spin(board, 5)
+            assert len(toplevels(board, "Preview — what leaves this PC")) == 1, \
+                "a second preview for the same row"
+            assert preview[0].winfo_exists(), "the look-round replaced the open preview"
             texts = [str(w.cget("text")) for w in descendants(preview[0]) if isinstance(w, tk.Label)]
             assert "This is everything that leaves your PC. Nothing else." in texts, texts
             assert any(t.startswith("shot.jpg  ·  ") for t in texts), texts

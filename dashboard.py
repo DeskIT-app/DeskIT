@@ -1506,6 +1506,7 @@ class Dashboard:
         # The Preview (plan 7.6): which report's is open, and which rows
         # already had theirs opened by this window — once each.
         self._preview_open = ""
+        self._preview_top = None          # the Toplevel while one is up
         self._previewed: set[str] = set()
         # ANSWERING A QUESTION, held on the window and not in the widgets.
         # The Problems list is rebuilt from scratch whenever either store
@@ -7356,6 +7357,31 @@ class Dashboard:
         store = self._problems_store()
         if module is None or store is None:
             return
+        # ONE PREVIEW AT A TIME. Two doors open this window: the box's
+        # own [Preview] and the look-round (_preview_if_waiting — 600 ms
+        # after the first frame, and on every show signal) that opens
+        # the newest PREVIEW row for the hotkey card. On a slow machine
+        # the look-round fired after the box had filed its row and opened
+        # its preview, and a second window for the same report came up
+        # under the first; [Keep] closed one and the other stood there
+        # (GitHub's runner, 2026-09-21, twice). Whatever door asks, a
+        # preview that is already up is brought forward, never doubled,
+        # and the look-round's once-per-row memory learns this one too.
+        self._previewed.add(ident)
+        open_top = self._preview_top
+        if open_top is not None:
+            try:
+                alive = bool(open_top.winfo_exists())
+            except Exception:             # noqa: BLE001 — a dead Tcl path
+                alive = False
+            if alive:
+                try:
+                    open_top.lift()
+                    open_top.focus_force()
+                except Exception:         # noqa: BLE001
+                    pass
+                return
+            self._preview_top = None
         item = store.get(ident)
         if not item:
             self._note("that report is not on the list any more")
@@ -7388,6 +7414,9 @@ class Dashboard:
                 return
             done["value"] = True
             keep.clear()
+            if self._preview_top is top:
+                self._preview_top = None
+                self._preview_open = ""
             try:
                 top.grab_release()
                 top.destroy()
@@ -7498,6 +7527,7 @@ class Dashboard:
         top.grab_set()
         top.focus_force()
         self._preview_open = ident
+        self._preview_top = top
 
     @staticmethod
     def _play_wav(path: str) -> None:
