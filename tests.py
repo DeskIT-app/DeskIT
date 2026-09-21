@@ -37851,7 +37851,12 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
             # ---- A: a fingerprint that changed under it drops the key and asks
             with a:
                 fake.tables["profiles"][0]["lock_id"] = "0" * 16
-                sb._lock_state["at"] = 0.0
+                # "the last look at the lock was longer ago than LOCK_TTL_S":
+                # not 0.0 — monotonic() is seconds since boot, and GitHub's
+                # runner is up for under ten minutes when this line runs
+                # (the branch's first CI run, 2026-09-21 12:53 UTC: A kept
+                # its key, state "have"); this PC has been up for hours
+                sb._lock_state["at"] = time.monotonic() - sb.LOCK_TTL_S - 1
                 out = sb.sync_now()
                 assert vault.key(fake.UID) is None and sb.status()["lock"]["state"] == "waiting", (out, sb.status()["lock"])
                 assert out["history"] == "waiting for the lock"
