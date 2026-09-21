@@ -27,6 +27,19 @@ WHAT IS ON IT:
      edge — which is what "somewhere strategic" asked for. Enter and
      Esc do the same two things from the keyboard, so even a dot dropped
      ON the card is no problem.
+  3. OPTIONS, at the right end of the button row (his second ask, the
+     same evening: "an option — when I hover it, a little screen opens
+     with my screen in it and four dots where it makes sense to put it,
+     each corner; I click one and it puts the dot there"). Under the
+     pointer the card grows downward by a MAP: every monitor drawn to
+     scale in one row, a bead in each of its four corners; the bead
+     under the pointer lights. A click on a bead is
+     `corner:<monitor index>:<tl|tr|bl|br>`, and main.py puts the dot in
+     that corner of that monitor's work area and ENDS the move — the
+     one decision left to the builder ("if you think it disappears at
+     that second, or I need to press Done too"): a corner is an answer,
+     not a drag, so nothing is left to confirm. The pointer leaving the
+     card folds the map away again.
 
 Split the way every card here is split (shelf_card.py / shelf.py /
 skin\\shelf.py): this half owns the WORDS, the GEOMETRY and the PICTURE —
@@ -61,7 +74,14 @@ RIM = ((255, 226, 150), 0.06, 96, 1.2)
 LAYERS = (WASH, BAND, RIM)
 
 # --------------------------------------------------------------- the card
-DONE = "done"             # the one region a click can land on
+DONE = "done"             # the button
+OPTIONS = "options"       # the link that opens the map under the pointer
+CORNERS = ("tl", "tr", "bl", "br")
+MAP_MARGIN = 9            # a bead's centre, in from the drawn screen's corner
+BEAD_PX = 16              # a bead at rest; lit, it is BEAD_PX + 6
+BEAD_HIT = 13             # half the square a click on a bead may land in
+SCREEN_GAP = 6            # between two drawn screens
+LABEL_PT = 7.5
 SHADOW = sc.SHADOW        # the room a glass window leaves around the card
 RADIUS = 18
 PAD = 18
@@ -138,27 +158,59 @@ def glow(w: int, h: int) -> Image.Image:
 # the words
 # ---------------------------------------------------------------------------
 
-def card_for() -> dict:
-    """The Done card as data. Fixed words: there is one such card and it
-    says one thing. Kept as a dict all the same, so the painter and the
-    tests read it the way they read every other card here."""
+def card_for(monitors=None) -> dict:
+    """The Done card as data. Fixed words — there is one such card and it
+    says one thing — plus the screens the map draws: `monitors` is a
+    list of (left, top, right, bottom), primary first, the order
+    capture.monitors() answers in and the order main.py resolves a
+    bead's index against. Kept as a dict all the same, so the painter
+    and the tests read it the way they read every other card here."""
+    rects = []
+    for m in monitors or []:
+        l, t, r, b = (int(v) for v in (m["rect"] if isinstance(m, dict) else m))
+        if r > l and b > t:
+            rects.append((l, t, r, b))
     return {
         "title": "Drag the dot where you want it",
         "done": "Done",
         "enter": "Enter",
         "esc": "Esc",
         "back": "puts it back",
+        "options": "Options",
+        "corners": "OR PUT IT IN A CORNER",
+        "monitors": rects,
     }
+
+
+def corner_name(index: int, corner: str) -> str:
+    """The region name of one bead: "corner:0:tr"."""
+    return f"corner:{int(index)}:{corner}"
+
+
+def parse_corner(name: str):
+    """(index, corner) for a bead's name, None for anything else."""
+    try:
+        head, index, corner = str(name).split(":")
+    except ValueError:
+        return None
+    if head != "corner" or corner not in CORNERS:
+        return None
+    try:
+        return int(index), corner
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
 # the geometry
 # ---------------------------------------------------------------------------
 
-def _layout(card: dict, scale: float, cache: dict) -> dict:
+def _layout(card: dict, scale: float, cache: dict, open: bool = False) -> dict:
     """Every measured thing on the card, in CARD coordinates (the face's
     own top-left is 0, 0): the images and where they go. One function,
-    read by measure(), regions() and compose(), so the three agree."""
+    read by measure(), regions() and compose(), so the three agree.
+    `open` is the map unfolded under the row; the card is taller then
+    and no wider, so the window keeps its place along the top."""
     s = clamp_scale(scale)
     title = sc._text(cache, card.get("title") or "", TITLE_PT * s,
                      colour="ink", weight=600, rtl=False)
@@ -170,18 +222,23 @@ def _layout(card: dict, scale: float, cache: dict) -> dict:
                    weight=700, rtl=False)
     back = sc._text(cache, card.get("back") or "", NOTE_PT * s, colour="dim",
                     weight=400, rtl=False)
+    opt = sc._text(cache, card.get("options") or "", NOTE_PT * s,
+                   colour="dim", weight=600, rtl=False)
+    chev = sc._glyph(cache, "chevron", 11 * s, colour="faint")
     pad = PAD * s
     key_w = key.width + 12 * s
     btn_w = 14 * s + done.width + 10 * s + key_w + 10 * s
     btn_h = BTN_H * s
     esc_w = esc.width + 12 * s
     note_w = esc_w + 8 * s + back.width
-    width = int(round(pad + max(title.width, btn_w + GAP_ESC * s + note_w)
-                      + pad))
+    opt_w = opt.width + 6 * s + chev.width
+    row_w = btn_w + GAP_ESC * s + note_w + GAP_ESC * s + 4 * s + opt_w
+    width = int(round(pad + max(title.width, row_w) + pad))
     height = int(round(pad + title.height + GAP_TITLE * s + btn_h + pad))
     bx, by = pad, pad + title.height + GAP_TITLE * s
-    return {
-        "s": s, "width": width, "height": height,
+    ox = width - pad - opt_w
+    out = {
+        "s": s, "width": width, "height": height, "closed": height,
         "title": (title, pad, pad),
         "button": (bx, by, bx + btn_w, by + btn_h),
         "done": (done, bx + 14 * s, by + (btn_h - done.height) / 2),
@@ -191,35 +248,82 @@ def _layout(card: dict, scale: float, cache: dict) -> dict:
                 esc_w, KEY_H * s),
         "back": (back, bx + btn_w + GAP_ESC * s + esc_w + 8 * s,
                  by + (btn_h - back.height) / 2),
+        # the Options link, and the whole row-high box a hover lands in
+        "options": (opt, chev, ox, by + (btn_h - opt.height) / 2),
+        "options_box": (ox - 6 * s, by, width - pad + 6 * s, by + btn_h),
+        "screens": [], "beads": [],
     }
+    if not open:
+        return out
+    # THE MAP: every screen in one row, to one scale, the row as wide as
+    # the card allows. A bead sits MAP_MARGIN in from each drawn corner.
+    rects = card.get("monitors") or []
+    label = sc._text(cache, card.get("corners") or "", LABEL_PT * s,
+                     colour="faint", weight=700, rtl=False)
+    y = height - pad + 8 * s
+    out["rule"] = (pad, y, width - pad)
+    y += 9 * s
+    out["label"] = (label, pad, y)
+    y += label.height + 8 * s
+    if rects:
+        ux0, uy0 = min(r[0] for r in rects), min(r[1] for r in rects)
+        ux1, uy1 = max(r[2] for r in rects), max(r[3] for r in rects)
+        k = (width - 2 * pad) / max(1, ux1 - ux0)
+        map_h = int(round((uy1 - uy0) * k))
+        for i, (l, t, r, b) in enumerate(rects):
+            x0, y0 = pad + (l - ux0) * k, y + (t - uy0) * k
+            x1, y1 = pad + (r - ux0) * k, y + (b - uy0) * k
+            # a screen keeps a gap from its neighbour: shaved off its
+            # right and bottom, never its origin
+            x1, y1 = x1 - SCREEN_GAP * s, y1 - SCREEN_GAP * s * 0.5
+            out["screens"].append((x0, y0, x1, y1))
+            m_ = MAP_MARGIN * s
+            for corner, (cx, cy) in (("tl", (x0 + m_, y0 + m_)),
+                                     ("tr", (x1 - m_, y0 + m_)),
+                                     ("bl", (x0 + m_, y1 - m_)),
+                                     ("br", (x1 - m_, y1 - m_))):
+                out["beads"].append((corner_name(i, corner), cx, cy))
+        y += map_h
+    out["height"] = int(round(y + pad))
+    return out
 
 
 def measure(card: dict, scale: float = 1.0,
-            cache: dict | None = None) -> tuple[int, int]:
+            cache: dict | None = None, open: bool = False) -> tuple[int, int]:
     """The card's face at `scale`, (w, h). Text, so it needs the cache
-    the painter uses — or its own, at the cost of five short words."""
-    lay = _layout(card, scale, cache if cache is not None else {})
+    the painter uses — or its own, at the cost of a few short words."""
+    lay = _layout(card, scale, cache if cache is not None else {}, open)
     return lay["width"], lay["height"]
 
 
 def regions(card: dict, scale: float = 1.0,
-            cache: dict | None = None) -> dict:
-    """The one button as a named rectangle, WINDOW-relative (the window is
+            cache: dict | None = None, open: bool = False) -> dict:
+    """Every button as a named rectangle, WINDOW-relative (the window is
     the card plus SHADOW on each side) — the same contract as
-    shelf_card.regions, so a test can check it without a window."""
-    lay = _layout(card, scale, cache if cache is not None else {})
+    shelf_card.regions, so a test can check it without a window. Done
+    and Options always; a bead per screen corner while the map is
+    open."""
+    lay = _layout(card, scale, cache if cache is not None else {}, open)
+    s = lay["s"]
     x0, y0, x1, y1 = lay["button"]
-    return {DONE: (x0 + SHADOW, y0 + SHADOW, x1 + SHADOW, y1 + SHADOW)}
+    out = {DONE: (x0 + SHADOW, y0 + SHADOW, x1 + SHADOW, y1 + SHADOW)}
+    x0, y0, x1, y1 = lay["options_box"]
+    out[OPTIONS] = (x0 + SHADOW, y0 + SHADOW, x1 + SHADOW, y1 + SHADOW)
+    for name, cx, cy in lay["beads"]:
+        h = BEAD_HIT * s
+        out[name] = (cx - h + SHADOW, cy - h + SHADOW, cx + h + SHADOW,
+                     cy + h + SHADOW)
+    return out
 
 
 def hit_test(card: dict, scale: float, x: int, y: int,
-             cache: dict | None = None):
+             cache: dict | None = None, open: bool = False):
     """(HT code, what) for a point in window coordinates: HTCLIENT on the
-    button, HTTRANSPARENT everywhere else — including the words, the face
-    and the whole shadow margin, so a click aimed at whatever is under
-    the card still lands there. Not HTCAPTION anywhere: this card is not
-    dragged, it is dismissed."""
-    for name, box in regions(card, scale, cache).items():
+    button, on Options and on a bead, HTTRANSPARENT everywhere else —
+    including the words, the face and the whole shadow margin, so a
+    click aimed at whatever is under the card still lands there. Not
+    HTCAPTION anywhere: this card is not dragged, it is dismissed."""
+    for name, box in regions(card, scale, cache, open).items():
         if box[0] <= x <= box[2] and box[1] <= y <= box[3]:
             return HTCLIENT, name
     return HTTRANSPARENT, None
@@ -243,15 +347,16 @@ def where(size: tuple[int, int], field: tuple[int, int, int, int],
 # ---------------------------------------------------------------------------
 
 def compose(card: dict, scale: float = 1.0, hover: str | None = None,
-            cache: dict | None = None) -> Image.Image:
+            cache: dict | None = None, open: bool = False) -> Image.Image:
     """The card's CONTENT as one RGBA image the size of measure(), on a
     TRANSPARENT ground — the face belongs to the presenter, exactly as
     shelf_card.compose hands its content to skin\\shelf.py.
 
-    `hover` is a region name; the button under the pointer brightens.
+    `hover` is a region name; the button, the link or the bead under the
+    pointer brightens. `open` draws the map under the row.
     """
     cache = cache if cache is not None else {}
-    lay = _layout(card, scale, cache)
+    lay = _layout(card, scale, cache, open)
     s = lay["s"]
     img = Image.new("RGBA", (lay["width"], lay["height"]), (0, 0, 0, 0))
 
@@ -284,10 +389,51 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     place(esc, ex + (ew - esc.width) / 2, ey + (eh - esc.height) / 2)
     back, bx, by = lay["back"]
     place(back, bx, by)
+
+    # Options: a quiet word and a chevron, brighter under the pointer or
+    # while the map it opens is showing
+    opt, chev, ox, oy = lay["options"]
+    lit_opt = hover == OPTIONS or open
+    if lit_opt:
+        opt = sc._text(cache, card.get("options") or "", NOTE_PT * s,
+                       colour="ink", weight=600, rtl=False)
+        chev = sc._glyph(cache, "chevron", 11 * s, colour="dim")
+    place(opt, ox, oy)
+    # the chevron points DOWN — at the map — and UP once it is out
+    place(chev.rotate(90 if open else -90), ox + opt.width + 6 * s, oy + 1)
+    if not open:
+        return img
+
+    # THE MAP. A hairline, the label, every screen as a plate the shape
+    # of the real one, a taskbar strip along its foot so it reads as a
+    # screen, and a bead in each corner: the dot's own picture, bigger
+    # and ringed in gold under the pointer.
+    rx, ry, rx1 = lay["rule"]
+    place(sc._rr((rx1 - rx, 1), 0, fill=tuple(ink["line"]) + (170,)), rx, ry)
+    label, lx, ly = lay["label"]
+    place(label, lx, ly)
+    for x0, y0, x1, y1 in lay["screens"]:
+        place(sc._rr((x1 - x0, y1 - y0), 6 * s,
+                     fill=tuple(ink["plate"]) + (255,),
+                     outline=tuple(ink["plate_edge"]) + (255,), width=1),
+              x0, y0)
+        place(sc._rr((max(1, x1 - x0 - 2), 3 * s), 1 * s,
+                     fill=tuple(ink["line"]) + (255,)), x0 + 1, y1 - 4 * s)
+    for name, cx, cy in lay["beads"]:
+        on = hover == name
+        bead = sc._glyph(cache, "dot", (BEAD_PX + 6 if on else BEAD_PX) * s,
+                         colour="cool")
+        place(bead, cx - bead.width / 2, cy - bead.height / 2)
+        if on:
+            ring = BEAD_PX * s + 10 * s
+            place(sc._rr((ring, ring), ring / 2, fill=None,
+                         outline=tuple(ink["accent"]) + (230,), width=1.5),
+                  cx - ring / 2, cy - ring / 2)
     return img
 
 
-__all__ = ["DONE", "SHADOW", "RADIUS", "PAD", "REACH", "REACH_MIN", "LAYERS",
-           "TOP_MARGIN", "HTTRANSPARENT", "HTCLIENT", "clamp_scale", "reach",
-           "glow", "card_for", "measure", "regions", "hit_test", "where",
+__all__ = ["DONE", "OPTIONS", "CORNERS", "SHADOW", "RADIUS", "PAD", "REACH",
+           "REACH_MIN", "LAYERS", "TOP_MARGIN", "HTTRANSPARENT", "HTCLIENT",
+           "clamp_scale", "reach", "glow", "card_for", "corner_name",
+           "parse_corner", "measure", "regions", "hit_test", "where",
            "compose"]

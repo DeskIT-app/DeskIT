@@ -44,6 +44,22 @@ squares a press may land on without closing anything, and main.py points
 it at the status dot's window. The panel's OWN buttons need no such
 exception — they are inside its rect.
 
+AND IT IS ANCHORED TO THE DOT, since 2026-09-21. The owner, with the dot
+dragged to the middle of the screen and the panel still opening in a
+corner: "I want the tab to move with it together." Three rules used to
+decide where it opened (overlay.HintCard.origin: his own drag of the
+panel, then the dot if dragged, then the corner), and the first of them
+was what he was looking at — a drag from a fortnight ago (`[shelf] x/y`)
+pinned the panel to the top-right while the dot went wherever it went.
+So this panel's `origin` asks the dot FIRST and ALWAYS when it follows
+one (main.App._dot_rect hands it the dot's rectangle whether or not the
+dot has been dragged), `beside_dot` puts it above or below the dot, and
+skin\\shelf.py draws the face as a bubble whose tail sweeps out toward
+the dot (skin\\bubble.py). A drag of the panel moves it for that opening
+and is NOT remembered (`placed` below): a bubble that stayed where it
+was dragged while the dot moved on would point at nothing. `[shelf]
+x/y` still apply to a panel whose file names a corner of its own.
+
 WHAT IT IS. A panel beside the status dot listing everything waiting for
 an answer, with the owner's rule for it, verbatim: **it opens only on the
 key press; the same press or Esc closes it; never on hover, never on
@@ -157,6 +173,10 @@ class ShelfCard(overlay.HintCard):
     """
 
     CORNERS = ("top-right", "top-left", "bottom-right", "bottom-left")
+    # The face's distance from the dot's window: the tail's length plus a
+    # little daylight, so the tip stops just short of the halo
+    # (skin\bubble). overlay.DOT_GAP is the key card's 18.
+    DOT_GAP = 30
 
     def __init__(self, corner: str = "bottom-right", margin: int = 14,
                  x: int = overlay.HINT_UNSET, y: int = overlay.HINT_UNSET,
@@ -195,6 +215,42 @@ class ShelfCard(overlay.HintCard):
         self._state_lock = threading.Lock()
         self._refresher: threading.Thread | None = None
         self._watcher: threading.Thread | None = None
+
+    # -- where it opens --
+
+    def origin(self, width: int, height: int, screen, inset: int = 0,
+               bounds=None, work=None) -> tuple[int, int]:
+        """Beside the dot, first and always, when this panel follows one
+        — see the module docstring. The field is the work area of the
+        monitor the dot is on, inset by the panel's own margin so the
+        face keeps its distance from the screen's edge the way the
+        corner rule always kept it; the gap is the tail's. Without a dot
+        to follow (no `dot_at`, no dot, a dot that will not say where it
+        is) the base class's three rules apply as before."""
+        dot = self.dot_now()
+        if dot is None:
+            return super().origin(width, height, screen, inset, bounds, work)
+        sw, sh = screen
+        m = self._margin
+        card_w, card_h = width - inset * 2, height - inset * 2
+        fx, fy, fw, fh = (overlay._monitor_work((dot[0] + dot[2]) // 2,
+                                                (dot[1] + dot[3]) // 2)
+                          or work or bounds or (0, 0, sw, sh))
+        field = (fx + m, fy + m, max(1, fw - 2 * m), max(1, fh - 2 * m))
+        x, y = overlay.beside_dot(dot, (card_w, card_h), field,
+                                  self.DOT_GAP, bounds)
+        return int(x - inset), int(y - inset)
+
+    def placed(self, x: int, y: int) -> None:
+        """A drag moved the panel for THIS opening and nothing is written:
+        a follower is anchored to the dot and opens beside it next time.
+        A panel whose file names a corner of its own is remembered as
+        every card is (HintCard.placed)."""
+        if self._dot_at is not None:
+            _log.debug("shelf: dragged aside for now — it opens beside the "
+                       "dot again next time")
+            return
+        super().placed(x, y)
 
     # -- caller's thread --
 

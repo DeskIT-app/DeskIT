@@ -774,6 +774,21 @@ def beside_dot(dot, size, field, gap: int = DOT_GAP,
     return int(x), int(y)
 
 
+def corner_spot(corner: str, work, box, margin) -> tuple[int, int]:
+    """The dot's top-left in ANY corner of a work area — the four the
+    move frame's Options map offers (move_card, 2026-09-21), not only
+    the two `[dot] corner` may name. `work` is (x, y, w, h), `box` the
+    dot's window, `margin` its (x, y) distance from the edges. Pure
+    arithmetic; what is saved is what `placed` gets."""
+    wx, wy, ww, wh = (int(v) for v in work)
+    bw, bh = (int(v) for v in box)
+    mx, my = (int(v) for v in margin)
+    name = str(corner)
+    x = wx + mx if name.endswith("left") else wx + ww - bw - mx
+    y = wy + my if name.startswith("top") else wy + wh - bh - my
+    return int(x), int(y)
+
+
 def dot_spot(corner: str, work, box, margin,
              x: int = HINT_UNSET, y: int = HINT_UNSET,
              bounds=None) -> tuple[int, int]:

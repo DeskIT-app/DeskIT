@@ -18516,14 +18516,21 @@ def test_the_panel_opens_beside_the_dot_wherever_he_dragged_it() -> None:
     real_monitor_work = overlay_mod._monitor_work
     overlay_mod._monitor_work = lambda x, y: work
     try:
-        for card in (overlay_mod.HintCard(corner="bottom-right", margin=m,
-                                          dot_corner="bottom-right",
-                                          dot_at=here),
-                     shelf_mod.ShelfCard(corner="bottom-right", margin=m,
-                                         dot_corner="bottom-right",
-                                         dot_at=here)):
-            at = card.origin(win_w, win_h, screen, inset, desktop, work)
-            assert (at[0] + inset, at[1] + inset) == beside, (type(card), at)
+        card = overlay_mod.HintCard(corner="bottom-right", margin=m,
+                                    dot_corner="bottom-right", dot_at=here)
+        at = card.origin(win_w, win_h, screen, inset, desktop, work)
+        assert (at[0] + inset, at[1] + inset) == beside, at
+        # The shelf is a BUBBLE since 2026-09-21 (shelf.ShelfCard.origin):
+        # the same beside_dot, with its own gap (the tail's length) and a
+        # field inset by its margin — see
+        # test_the_shelf_is_anchored_to_the_dot_and_forgets_a_drag.
+        shelf = shelf_mod.ShelfCard(corner="bottom-right", margin=m,
+                                    dot_corner="bottom-right", dot_at=here)
+        at = shelf.origin(win_w, win_h, screen, inset, desktop, work)
+        want = overlay_mod.beside_dot(here(), (w, h),
+                                      (m, m, 2560 - 2 * m, 1392 - 2 * m),
+                                      shelf.DOT_GAP, desktop)
+        assert (at[0] + inset, at[1] + inset) == want, at
     finally:
         overlay_mod._monitor_work = real_monitor_work
 
@@ -19333,10 +19340,16 @@ def test_the_dot_section_decides_the_corner_for_every_card_beside_it(
         assert cfg.hint.corner == cfg.shelf.corner == "top-right"
         assert cfg.hint.follow_dot is False, "a named corner is not a follow"
         assert cfg.shelf.follow_dot is True
-        # and main.py only hands the live dot to the cards that follow it
+        # and main.py only hands the live dot to the cards that follow it:
+        # the key card gets _dot_beside (the corner rule while the dot is
+        # in its corner), the shelf gets _dot_rect (the dot's rectangle
+        # always — it is a bubble anchored to the dot, 2026-09-21), at
+        # startup and when the dot's section is edited live
         src = (Path(__file__).resolve().parent / "main.py").read_text("utf-8")
-        assert src.count("dot_at=self._dot_beside") == 4, \
-            "a card is built without the live dot"
+        assert src.count("dot_at=self._dot_beside") == 2, \
+            "a key card is built without the live dot"
+        assert src.count("dot_at=self._dot_rect") == 2, \
+            "a shelf is built without the dot's rectangle"
         assert 'if getattr(cfg.hint, "follow_dot", True) else None' in src
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -39612,7 +39625,10 @@ def test_the_done_card_claims_its_button_and_nothing_else() -> None:
         width, height = mc.measure(card, scale, cache)
         assert width > 0 and height > 0
         boxes = mc.regions(card, scale, cache)
-        assert list(boxes) == [mc.DONE]
+        # Done, and Options (the map's link, since the same evening —
+        # test_the_done_card_unfolds_a_map_of_the_screens); closed, no
+        # bead answers anywhere
+        assert set(boxes) == {mc.DONE, mc.OPTIONS}, set(boxes)
         x0, y0, x1, y1 = boxes[mc.DONE]
         assert x0 >= mc.SHADOW and y0 >= mc.SHADOW, (scale, x0, y0)
         assert x1 <= mc.SHADOW + width and y1 <= mc.SHADOW + height, \
@@ -39997,6 +40013,352 @@ print('MOVE FRAME OK')
     r = subprocess.run([sys.executable, "-c", script], cwd=str(here),
                        capture_output=True, text=True, timeout=60)
     assert "MOVE FRAME OK" in r.stdout, (r.stdout[-2000:], r.stderr[-3000:])
+
+
+def test_the_bubble_is_one_curve_on_every_edge_and_out_of_every_corner() -> None:
+    """skin\\bubble: the shelf's outline with its tail written into the
+    edge — the owner's four pictures of 2026-09-21 in arithmetic.
+
+    On each of the four sides: the apex is TAIL_L outside the face and
+    at the dot's place along the edge; TAIL_L fits inside the window's
+    shadow margin (or the tip would be cut flat); a leg that leaves a
+    flat edge leaves it TANGENTIALLY — its first control point lies on
+    the edge — which is what "no break" means; the outline is closed
+    and every command is one of the four kinds. A base on a corner takes
+    off from the corner's ARC: the command before the leg ends exactly
+    where the leg begins, on the arc, so the corner itself sweeps out.
+    `tail_for` names the side that faces the dot, leans toward it, and
+    answers None when the two overlap. And with skia here, the path's
+    bounds are the face plus the tail and nothing more.
+    """
+    import shelf_card as sc
+    from skin import bubble
+
+    assert bubble.reach() < sc.SHADOW, (bubble.reach(), sc.SHADOW)
+    W, H, R = 400, 318, 22
+    for side in bubble.SIDES:
+        along = H if side in ("left", "right") else W
+        for at in (60, along / 2, along - 60):
+            tail = (side, at, 0.0)
+            cmds = bubble.outline(W, H, R, tail)
+            kinds = {c[0] for c in cmds}
+            assert kinds <= {"move", "line", "cubic", "close"}, kinds
+            assert cmds[0][0] == "move" and cmds[-1][0] == "close"
+            ax, ay = bubble.apex(W, H, tail)
+            # the apex is TAIL_L out, on the right side, at the dot
+            if side == "top":
+                assert ay == -bubble.TAIL_L and abs(ax - at) < 1e-6, (ax, ay)
+            elif side == "bottom":
+                assert ay == H + bubble.TAIL_L and abs(ax - at) < 1e-6
+            elif side == "left":
+                assert ax == -bubble.TAIL_L and abs(ay - at) < 1e-6
+            else:
+                assert ax == W + bubble.TAIL_L and abs(ay - at) < 1e-6
+            # the apex is a point ON the outline: some cubic ends within
+            # TIP_R of it
+            ends = [c[3] for c in cmds if c[0] == "cubic"]
+            near = min(abs(ex - ax) + abs(ey - ay) for ex, ey in ends)
+            assert near <= bubble.TIP_R * 2 + 0.01, (side, at, near)
+            # every point stays within the face grown by the tail
+            for c in cmds:
+                for px, py in c[1:]:
+                    assert -bubble.TAIL_L - 1 <= px <= W + bubble.TAIL_L + 1
+                    assert -bubble.TAIL_L - 1 <= py <= H + bubble.TAIL_L + 1
+        # a leg off a FLAT edge leaves tangentially: the first control
+        # point of the leg's cubic is on the edge line
+        tail = (side, along / 2, 0.0)
+        cmds = bubble.outline(W, H, R, tail)
+        edge = {"top": 0.0, "bottom": float(H), "left": 0.0,
+                "right": float(W)}[side]
+        axis = 1 if side in ("top", "bottom") else 0
+        legs = [c for c in cmds if c[0] == "cubic"
+                and abs(c[1][axis] - edge) < 1e-6]
+        assert legs, (side, "no leg leaves the edge tangentially")
+    # the corner: the base within the arc — the leg starts where the
+    # partial arc ends, ON the arc (R from the corner's centre)
+    import math
+    cmds = bubble.outline(W, H, R, ("bottom", bubble.TAIL_W, 0.0))
+    cubics = [c for c in cmds if c[0] == "cubic"]
+    # find the cubic that ends at the bottom-left landing point J: it is
+    # followed by the remaining arc that ends at (0, H - R)
+    landing = None
+    for a, b in zip(cubics, cubics[1:]):
+        if abs(b[3][0]) < 1e-6 and abs(b[3][1] - (H - R)) < 1e-6:
+            landing = a[3]
+    assert landing is not None, "the leg does not land on the corner arc"
+    dist = math.hypot(landing[0] - R, landing[1] - (H - R))
+    assert abs(dist - R) < 1e-6, (landing, dist)
+    assert landing[0] < R, "the landing is not inside the corner's curve"
+
+    # tail_for: the side that faces the dot, and the lean
+    face = (2146, 85, 2546, 403)
+    assert bubble.tail_for(face, (2503, 17, 2541, 55))[0] == "top"
+    side, at, lean = bubble.tail_for(face, (2503, 17, 2541, 55))
+    assert at == 400 - bubble.TAIL_W and lean > 0, (at, lean)
+    assert bubble.tail_for(face, (2300, 500, 2338, 538)) == ("bottom", 173.0, 0.0)
+    assert bubble.tail_for(face, (2000, 200, 2038, 238))[0] == "left"
+    assert bubble.tail_for(face, (2600, 200, 2638, 238))[0] == "right"
+    assert bubble.tail_for(face, (2300, 200, 2338, 238)) is None
+    # a plain rounded rectangle without a tail
+    plain = bubble.outline(W, H, R, None)
+    for c in plain:
+        for px, py in c[1:]:
+            assert -1e-6 <= px <= W + 1e-6 and -1e-6 <= py <= H + 1e-6, c
+    assert bubble.apex(W, H, None) is None
+
+    skin = _skin_or_skip()
+    if skin is None or not skin.on():
+        return
+    import skia
+    path = bubble.skia_path(W, H, R, ("top", 200, 0.0), 26, 26)
+    b = path.getBounds()
+    assert abs(b.top() - (26 - bubble.TAIL_L)) < 0.5, b.top()
+    assert abs(b.bottom() - (26 + H)) < 0.5 and abs(b.left() - 26) < 0.5
+    assert abs(b.right() - (26 + W)) < 0.5, b.right()
+    assert isinstance(path, skia.Path)
+
+
+def test_the_shelf_is_anchored_to_the_dot_and_forgets_a_drag() -> None:
+    """shelf.ShelfCard since 2026-09-21: the dot first and always.
+
+    His words, with the dot dragged to the middle of the screen and the
+    panel opening in its old corner: "I want the tab to move with it
+    together." The cause was the first of HintCard.origin's three rules
+    — a drag of the panel from days before (`shelf.x/y` in state.json)
+    beat the dot. So: a panel that follows a dot opens beside it whether
+    or not the dot was dragged, whether or not the panel was; its field
+    is the monitor's work area inset by its margin; its gap is the
+    tail's (DOT_GAP = TAIL_L + TAIL_CLEAR); a drag of the panel is NOT
+    remembered (placed writes nothing) — and a panel whose file names a
+    corner keeps every old rule, drag included. main.App._dot_rect hands
+    the shelf the dot's rectangle in its corner too, and the key card
+    still gets _dot_beside.
+    """
+    import shelf as shelf_mod
+    from skin import bubble
+
+    assert shelf_mod.ShelfCard.DOT_GAP == bubble.TAIL_L + bubble.TAIL_CLEAR
+    screen, inset, m = (2560, 1440), 26, 14
+    work, desktop = (0, 0, 2560, 1392), (-1920, 0, 4480, 1440)
+    w, h = 400, 318
+    win_w, win_h = w + inset * 2, h + inset * 2
+    real = overlay_mod._monitor_work
+    overlay_mod._monitor_work = lambda x, y: work
+    try:
+        for dot in ((2514, 1350, 2552, 1388),     # in its corner
+                    (743, 420, 781, 458),         # dragged to the middle
+                    (2503, 17, 2541, 55)):        # top-right
+            here = lambda d=dot: d                                # noqa: E731
+            # dragged panel or not, the answer is beside the dot
+            for x, y in ((overlay_mod.HINT_UNSET, overlay_mod.HINT_UNSET),
+                         (2068, 82)):
+                card = shelf_mod.ShelfCard(corner="bottom-right", margin=m,
+                                           x=x, y=y, dot_corner="bottom-right",
+                                           dot_at=here)
+                at = card.origin(win_w, win_h, screen, inset, desktop, work)
+                want = overlay_mod.beside_dot(
+                    dot, (w, h), (m, m, 2560 - 2 * m, 1392 - 2 * m),
+                    card.DOT_GAP, desktop)
+                assert (at[0] + inset, at[1] + inset) == want, (dot, x, at)
+                face = (at[0] + inset, at[1] + inset, at[0] + inset + w,
+                        at[1] + inset + h)
+                assert not overlay_mod._overlaps(face, dot), (dot, face)
+                assert m <= face[0] and face[2] <= 2560 - m, face
+                # and the bubble has a tail toward this dot
+                assert bubble.tail_for(face, dot) is not None, (dot, face)
+        # a drag is not remembered while following
+        wrote: list = []
+        card = shelf_mod.ShelfCard(corner="bottom-right", margin=m,
+                                   dot_corner="bottom-right",
+                                   dot_at=lambda: (743, 420, 781, 458),
+                                   on_change=wrote.append)
+        card.placed(500, 300)
+        assert wrote == [] and not card.moved(), (wrote, card.moved())
+        # ...and is, for a panel with a corner of its own
+        pinned = shelf_mod.ShelfCard(corner="top-left", margin=m,
+                                     on_change=wrote.append)
+        pinned.placed(500, 300)
+        assert wrote == [{"x": 500, "y": 300}] and pinned.moved()
+        # without a dot to follow, the old rules exactly
+        plain = overlay_mod.HintCard(corner="bottom-right", margin=m,
+                                     dot_corner="bottom-right")
+        alone = shelf_mod.ShelfCard(corner="bottom-right", margin=m,
+                                    dot_corner="bottom-right")
+        assert alone.origin(win_w, win_h, screen, inset, desktop, work) == \
+            plain.origin(win_w, win_h, screen, inset, desktop, work)
+    finally:
+        overlay_mod._monitor_work = real
+
+    # main.py: the shelf gets the dot's rectangle wherever the dot is
+    import main as main_mod
+    app = main_mod.App.__new__(main_mod.App)
+    app.dot = overlay_mod.StatusDot()
+    app.dot.rect = (2514, 1350, 2552, 1388)
+    assert app._dot_rect() == (2514, 1350, 2552, 1388), "the corner too"
+    assert app._dot_beside() is None, "the key card keeps its corner rule"
+    app.dot.rect = None
+    assert app._dot_rect() is None
+    app.dot = None
+    assert app._dot_rect() is None
+    src = (Path(__file__).resolve().parent / "main.py").read_text("utf-8")
+    block = src[src.index("self.shelf = shelf_mod.ShelfCard("):]
+    block = block[:block.index("except Exception")]
+    assert "dot_at=self._dot_rect" in block, "the shelf is not handed the dot"
+
+
+def test_the_done_card_unfolds_a_map_of_the_screens() -> None:
+    """move_card's Options: closed, the card has Done and Options and
+    nothing else; open, it is taller by the map and no wider, every
+    screen is drawn to one scale in one row, and each has four beads —
+    one per corner, inside its drawn plate, named corner:<i>:<corner>,
+    and answering HTCLIENT at its centre. compose() is exactly measure()
+    big in both states; the bead under the pointer is painted bigger;
+    parse_corner reads a bead's name back and refuses anything else.
+    """
+    import move_card as mc
+
+    mons = [(0, 0, 2560, 1440), (-1920, 209, 0, 1289)]
+    card = mc.card_for(mons)
+    assert card["monitors"] == mons and card["options"] == "Options"
+    for scale in (0.6, 1.0, 1.4):
+        cache: dict = {}
+        cw, ch = mc.measure(card, scale, cache)
+        ow, oh = mc.measure(card, scale, cache, True)
+        assert ow == cw and oh > ch, (scale, (cw, ch), (ow, oh))
+        closed = mc.regions(card, scale, cache)
+        assert set(closed) == {mc.DONE, mc.OPTIONS}, set(closed)
+        opened = mc.regions(card, scale, cache, True)
+        beads = [n for n in opened if n.startswith("corner:")]
+        assert len(beads) == 4 * len(mons), beads
+        for i in range(len(mons)):
+            for corner in mc.CORNERS:
+                name = mc.corner_name(i, corner)
+                assert name in opened, name
+                x0, y0, x1, y1 = opened[name]
+                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                assert mc.hit_test(card, scale, cx, cy, cache, True) == \
+                    (mc.HTCLIENT, name)
+                # closed, the same point is nothing
+                code, _what = mc.hit_test(card, scale, cx, cy, cache)
+                assert code == mc.HTTRANSPARENT, (scale, name)
+                # inside the open face
+                assert mc.SHADOW <= cx <= mc.SHADOW + ow, (name, cx)
+                assert mc.SHADOW + ch <= cy <= mc.SHADOW + oh, (name, cy)
+        # the two screens do not overlap on the map, and keep their
+        # proportions to within a pixel
+        lay = mc._layout(card, scale, cache, True)
+        (a0, b0, a1, b1), (c0, d0, c1, d1) = lay["screens"]
+        assert not overlay_mod._overlaps((a0, b0, a1, b1), (c0, d0, c1, d1))
+        ratio_real = 2560 / 1440
+        ratio_map = (a1 - a0 + mc.SCREEN_GAP * scale) / \
+            (b1 - b0 + mc.SCREEN_GAP * scale * 0.5)
+        assert abs(ratio_real - ratio_map) < 0.05, (ratio_real, ratio_map)
+        # Options answers at its centre
+        x0, y0, x1, y1 = closed[mc.OPTIONS]
+        assert mc.hit_test(card, scale, (x0 + x1) / 2, (y0 + y1) / 2,
+                           cache) == (mc.HTCLIENT, mc.OPTIONS)
+        # the pictures are their measured sizes, and a lit bead is bigger
+        assert mc.compose(card, scale, None, cache).size == (cw, ch)
+        img = mc.compose(card, scale, None, cache, True)
+        assert img.size == (ow, oh)
+        name = mc.corner_name(0, "tr")
+        lit = mc.compose(card, scale, name, cache, True)
+        x0, y0, x1, y1 = (v - mc.SHADOW for v in opened[name])
+        box = (int(x0), int(y0), int(x1), int(y1))
+        plain_px = sum(1 for p in img.crop(box).getdata() if p[3] > 60)
+        lit_px = sum(1 for p in lit.crop(box).getdata() if p[3] > 60)
+        assert lit_px > plain_px, (scale, plain_px, lit_px)
+    assert mc.parse_corner("corner:1:bl") == (1, "bl")
+    for bad in ("done", "corner:x:tl", "corner:0:xx", "corner:0", ""):
+        assert mc.parse_corner(bad) is None, bad
+    # no monitors: still a card, still Options, no beads
+    bare = mc.card_for()
+    assert bare["monitors"] == []
+    assert not [n for n in mc.regions(bare, 1.0, {}, True)
+                if n.startswith("corner:")]
+
+
+def test_a_bead_on_the_map_puts_the_dot_in_that_corner_and_ends_the_move() -> None:
+    """main.py: "corner:<i>:<corner>" from the frame is the dot placed in
+    that corner of that monitor's work area — through placed(), so the
+    same pair of lines a drag writes — and the move over, with nothing
+    left to confirm. overlay.corner_spot is the four-corner arithmetic
+    (dot_spot knows two); a monitor the map never had keeps the dot
+    where it is and still ends the move.
+    """
+    import main as main_mod
+
+    work = (0, 0, 2560, 1392)
+    assert overlay_mod.corner_spot("top-left", work, (38, 38), (8, 4)) == (8, 4)
+    assert overlay_mod.corner_spot("top-right", work, (38, 38), (8, 4)) == \
+        (2560 - 38 - 8, 4)
+    assert overlay_mod.corner_spot("bottom-left", work, (38, 38), (8, 4)) == \
+        (8, 1392 - 38 - 4)
+    assert overlay_mod.corner_spot("bottom-right", work, (38, 38), (8, 4)) == \
+        (2560 - 38 - 8, 1392 - 38 - 4)
+    # the two corners dot_spot knows agree with it
+    for corner in ("top-right", "bottom-right"):
+        assert overlay_mod.corner_spot(corner, work, (38, 38), (8, 4)) == \
+            overlay_mod.dot_spot(corner, work, (38, 38), (8, 4))
+
+    class _Frame:
+        def __init__(self):
+            self.hidden = 0
+
+        def show(self, rect, until):
+            pass
+
+        def hide(self):
+            self.hidden += 1
+
+    written: list = []
+    app = main_mod.App.__new__(main_mod.App)
+    app.dot = overlay_mod.StatusDot(x=640, y=200, on_change=written.append)
+    app.dot._thread = threading.current_thread()
+    app.move_frame = _Frame()
+    app._dot_move_from = (640, 200)
+    said: list = []
+    app._say = said.append
+    # the monitors and their work areas, decided here
+    import capture as capture_mod
+    real_mons, real_work = capture_mod.monitors, overlay_mod._monitor_work
+    capture_mod.monitors = lambda: [
+        {"rect": (0, 0, 2560, 1440), "primary": True, "label": "Screen 1"},
+        {"rect": (-1920, 209, 0, 1289), "primary": False, "label": "Screen 2"}]
+    overlay_mod._monitor_work = lambda x, y: (0, 0, 2560, 1392) if x >= 0 \
+        else (-1920, 209, 1920, 1040)
+    try:
+        assert app.dot.move(10, hold=True)
+        app._dot_move_pressed("corner:0:tr")
+        deadline = time.monotonic() + 3.0
+        while app.dot.held() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not app.dot.held() and not app.dot.moving()
+        assert (app.dot.x, app.dot.y) == (2560 - 38 - 8, 4), (app.dot.x, app.dot.y)
+        assert written[-1] == {"x": 2560 - 38 - 8, "y": 4}, written
+        assert app.move_frame.hidden == 1
+        assert any("corner" in s for s in said), said
+        # the second screen's bottom-left, above its own taskbar
+        app._dot_move_from = (app.dot.x, app.dot.y)
+        assert app.dot.move(10, hold=True)
+        app._dot_move_pressed("corner:1:bl")
+        deadline = time.monotonic() + 3.0
+        while app.dot.held() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert (app.dot.x, app.dot.y) == (-1920 + 8, 209 + 1040 - 38 - 4), \
+            (app.dot.x, app.dot.y)
+        # a corner that is not there: the move ends, the dot stays
+        before = (app.dot.x, app.dot.y)
+        count = len(written)
+        assert app.dot.move(10, hold=True)
+        app._dot_move_pressed("corner:7:tl")
+        deadline = time.monotonic() + 3.0
+        while app.dot.held() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not app.dot.held()
+        assert (app.dot.x, app.dot.y) == before and len(written) == count
+    finally:
+        capture_mod.monitors, overlay_mod._monitor_work = real_mons, real_work
 
 
 if __name__ == "__main__":
