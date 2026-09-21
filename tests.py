@@ -36028,6 +36028,65 @@ def test_a_newer_version_is_a_row_on_the_home_pile():
             assert board._waiting_update() == []
 
 
+def test_a_consent_whose_words_changed_is_a_row_on_the_home_pile():
+    """A consent given under older words asks again on Home, not on a
+    card (the owner, 2026-09-21: "I want every message inside the
+    app"): nothing while every row is current; with a stale cloud_text
+    row and its gate on, one row — the card's title and "the words
+    changed" as the eyebrow, the one line the card added, where it goes
+    and how to turn it off, Turn on (gold) and Not now; Turn on writes
+    the row at the current version and the row is gone; Not now keeps it
+    off this desk and the stale row on file; a gate he turned off asks
+    nothing. The desk process reads the gates itself."""
+    import json as json_mod
+
+    import consent_card as cc
+    import privacy
+
+    with _window() as board:
+        if board is None:
+            return
+        board._privacy_configured = True
+        privacy.withdraw("cloud_text")
+        assert board._waiting_consent() == []
+        stale = {"consents": [{"kind": "cloud_text", "text_version": "groq-2020-01-01",
+                               "when": "2026-01-01T00:00:00", "app_version": "dev"}]}
+        paths.CONSENT_FILE.write_text(json_mod.dumps(stale), "utf-8")
+        privacy._gates["cloud_text"] = True
+        try:
+            rows = board._waiting_consent()
+            assert len(rows) == 1 and rows[0]["kind"] == "consent", rows
+            row = rows[0]
+            assert row["eyebrow"] == "Send text to the cloud?   ·   the words changed", row["eyebrow"]
+            assert row["text"] == "Say yes again? " + cc.TEXTS["cloud_text"]["changed"], row["text"]
+            assert row["note"] == ("To Groq and/or Google, on your own key. Off again: "
+                                   "Settings > Privacy, or remove the key."), row["note"]
+            assert [(b[0], b[1]) for b in row["buttons"]] == [("Turn on", "gold"), ("Not now", "quiet")]
+            assert row["mark"] == "globe"
+            board._show("Home")
+            board._fill_waiting()
+            board.root.update_idletasks()
+            assert any(i.get("kind") == "consent" for i in board._waiting_items()), \
+                "the row is not in the pile"
+            # Not now: off this desk, still stale on file.
+            next(b for b in row["buttons"] if b[0] == "Not now")[2]()
+            assert board._waiting_consent() == [] and privacy.stale() == ["cloud_text"]
+            board._consent_later.clear()
+            # Turn on: the row at the current version, nothing to ask.
+            row = board._waiting_consent()[0]
+            next(b for b in row["buttons"] if b[0] == "Turn on")[2]()
+            assert board._waiting_consent() == [] and privacy.stale() == []
+            assert privacy.consent("cloud_text")["text_version"] == privacy.TEXT_VERSIONS["cloud_text"]
+            # A gate he turned off is his: stale on file, no row.
+            paths.CONSENT_FILE.write_text(json_mod.dumps(stale), "utf-8")
+            privacy._gates["cloud_text"] = False
+            assert board._waiting_consent() == []
+        finally:
+            privacy._gates["cloud_text"] = True
+            privacy.withdraw("cloud_text")
+            board._consent_later = set()
+
+
 # ------------------------------------- config_version and migrations (11.10)
 
 def test_migrations_bring_the_files_forward_and_never_half_way():

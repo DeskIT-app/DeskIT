@@ -2289,20 +2289,16 @@ class App:
                     privacy.require("cloud_audio")
                 except privacy.ConsentRequired:
                     pass
-        # A consent given under older words is asked again HERE, once per
-        # start, one card behind the other (2026-09-21, the first time a
-        # card's words changed on a copy already running: the cloud-text
-        # card now names the message a "Claude finished" card summarises,
-        # and the owner's Dev met "SUMMARY | none (cloud text not
-        # granted)" with nothing on screen to say why — and every
-        # dictation's repair had fallen to Ollama the same way). A press
-        # opens no card since 2026-09-19 evening, so the start is the one
-        # moment left that can; the policy promises exactly this ("a
-        # consent card asks again when the section it quotes changes").
+        # A consent given under older words is NOT asked here, and not by
+        # a card at all (2026-09-21 afternoon, the owner, on the card
+        # that came up at start: "I really don't like these messages
+        # that appear on the screen... I want every message inside the
+        # app"): it is a row on the desk's Home, with Turn on and Not
+        # now (dashboard._waiting_consent, privacy.stale). This process
+        # only says so once, so app.log tells why a cloud pass ran local.
         for kind in privacy.stale():
-            if privacy.request(kind):
-                log.info("%s: the card's words changed — asking again",
-                         kind)
+            log.info("%s: its card's words changed — the desk's Home asks "
+                     "again; until then this feature runs local", kind)
         # The shelf's thread, up before the key is ever pressed: the
         # panel is built when it opens, but the presenter has to be
         # waiting for it. Off with [shelf] enabled = false, in which case

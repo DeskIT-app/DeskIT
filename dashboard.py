@@ -3329,7 +3329,8 @@ class Dashboard:
             return
         stamp = (self._notify_stat(), self._review_stat(),
                  self._problems_stat(), self._questions_stat(),
-                 self._hardware_stat(), self._lock_stat())
+                 self._hardware_stat(), self._lock_stat(),
+                 self._consent_stat())
         if stamp != getattr(self, "_pile_stamp", None):
             self._fill_waiting()
         self._paint_rest()
@@ -3347,6 +3348,7 @@ class Dashboard:
         means.
         """
         items: list[dict] = []
+        items += self._waiting_consent()
         items += self._waiting_lock()
         items += self._waiting_update()
         items += self._waiting_hardware()
@@ -3944,7 +3946,8 @@ class Dashboard:
             return
         self._pile_stamp = (self._notify_stat(), self._review_stat(),
                             self._problems_stat(), self._questions_stat(),
-                            self._hardware_stat(), self._lock_stat())
+                            self._hardware_stat(), self._lock_stat(),
+                            self._consent_stat())
         p = self.parts
         items = self._waiting_items()
         count = len(items)
@@ -8866,7 +8869,7 @@ class Dashboard:
             when = str(row.get("when", ""))[:10]
             text, colour = f"On since {when}", ui.FG
         elif row.get("stale"):
-            text, colour = "Its card changed — it will ask again", ui.FAINT
+            text, colour = "Its words changed — Home asks again", ui.FAINT
         elif row.get("when"):
             text, colour = "Off", ui.FAINT
         else:
@@ -8886,12 +8889,28 @@ class Dashboard:
                                quiet=True)
             card.create_window(right, y - 2, window=button, anchor="ne")
             x = right - widgets.button_width("Turn on") - 12
+        elif row.get("stale"):
+            # The same yes Home's row gives (_consent_do), here too.
+            button = ui.Button(card, "Turn on",
+                               lambda k=kind, s=setting: self._turn_on(k, s),
+                               w=widgets.button_width("Turn on"), h=30,
+                               quiet=True)
+            card.create_window(right, y - 2, window=button, anchor="ne")
+            x = right - widgets.button_width("Turn on") - 12
         # The text is the row's one control — registered so the page
         # counts it like any other line (one widget per line, a test
         # holds), and so a repaint can find it.
         item = card.create_text(x, y + 13, text=text, anchor="e",
                                 font=(ui.UI, 10), fill=colour)
         self._register_row(setting, "consent", (card, item))
+
+    def _turn_on(self, kind: str, setting) -> None:
+        """Settings > Privacy > Turn on on a row whose words changed: the
+        yes Home's row gives (_consent_do), then this page redrawn."""
+        self._consent_do(kind, True)
+        self.parts["values"][setting.path] = True
+        self._note(f"{kind}: on — from the next press")
+        self._draw_settings()
 
     def _withdraw(self, kind: str, setting) -> None:
         """Settings > Privacy > Withdraw. privacy.withdraw writes the
@@ -9576,6 +9595,87 @@ class Dashboard:
         lock = self._lock_info()
         return (repr(sorted(lock.items(), key=lambda kv: kv[0])),
                 getattr(self, "_lock_mode", ""), bool(getattr(self, "_lock_fresh", "")))
+
+    # -- a consent whose words changed: asked again HERE, on Home
+
+    def _consent_stale(self) -> list[str]:
+        """The kinds privacy.stale() names, less the ones he said Not
+        now to in this desk (asked again at its next opening, the way
+        the card used to be until the next start)."""
+        try:
+            import privacy
+            if not getattr(self, "_privacy_configured", False):
+                privacy.configure(config_mod.load_layered())
+                self._privacy_configured = True
+            stale = privacy.stale()
+        except Exception:                 # noqa: BLE001
+            return []
+        later = getattr(self, "_consent_later", set())
+        return [k for k in stale if k not in later]
+
+    def _consent_stat(self):
+        return tuple(self._consent_stale())
+
+    def _waiting_consent(self) -> list[dict]:
+        """A consent given under OLDER words, on the pile (the owner,
+        2026-09-21 afternoon, meeting the consent card at start: "I
+        really don't like these messages that appear on the screen...
+        I want every message inside the app" — the third time: the card
+        mid-dictation on 2026-09-19, the approve card beside the dot
+        that morning). The card's words are the row's words, said in
+        one line each; Turn on is privacy.grant, the same row the card
+        wrote; Not now keeps the row down until the desk opens again.
+        Until he answers, the feature the words cover runs local — the
+        repair pass to Ollama, the one-line card as the old card — and
+        this row is the one place that says so."""
+        import consent_card as cc
+
+        rows: list[dict] = []
+        now = time.time()
+        for kind in self._consent_stale():
+            words = cc.TEXTS.get(kind) or {}
+            blocks = dict(words.get("blocks") or ())
+            what = str(blocks.get(cc.WHAT, "")).rstrip(".")
+            # The receiver alone ("Groq and/or Google"), not the list of
+            # features after the dash: a note is one line.
+            whom = str(blocks.get(cc.WHOM, "")).split(" — ")[0].rstrip(".")
+            off = str(blocks.get(cc.OFF, "")).rstrip(".")
+            changed = str(words.get("changed") or "")
+            rows.append({
+                "at": now + 3, "kind": "consent", "mark": "globe",
+                "mark_colour": ui.AMBER,
+                "eyebrow": f"{words.get('title', kind)}   ·   the words changed",
+                "eyebrow_right": False,
+                "text": f"Say yes again? {changed}" if changed
+                        else f"Say yes again? What leaves: {what}.",
+                "note": f"To {whom}, on your own key. Off again: {off}.",
+                "buttons": [("Turn on", "gold",
+                             lambda k=kind: self._consent_do(k, True)),
+                            ("Not now", "quiet",
+                             lambda k=kind: self._consent_do(k, False))],
+            })
+        return rows
+
+    def _consent_do(self, kind: str, yes: bool) -> None:
+        """Turn on writes the row (privacy.grant: the consent file and
+        the settings mirror — the running app sees the file's mtime on
+        its next gate check, no pipe message needed); Not now keeps the
+        row off this desk until it opens again."""
+        import privacy
+
+        if yes:
+            try:
+                privacy.grant(kind)
+            except Exception as e:        # noqa: BLE001
+                logging.getLogger("app").warning(
+                    "could not record the consent for %s: %s", kind, e)
+                return
+        else:
+            later = getattr(self, "_consent_later", None)
+            if later is None:
+                later = self._consent_later = set()
+            later.add(kind)
+        self._fill_waiting()
 
     def _waiting_lock(self) -> list[dict]:
         """The lock on the pile (the owner, 2026-09-21, meeting the
