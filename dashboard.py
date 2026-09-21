@@ -3400,10 +3400,12 @@ class Dashboard:
     def _waiting_update(self) -> list[dict]:
         """Chapter 9 screen 11 (D21) as a pile row, not a card of its own:
         when the weekly check found a newer release, one row on Home —
-        the version, the size, the date — with the same three buttons
-        the row on Settings > The app carries (Download and install, or
-        the winget one-liner; Release notes; Skip this version). Nothing
-        on the Store channel, while the check is off, or Offline."""
+        the version, the size, the date — with the one button the row
+        on Settings > The app carries (Download and install, or the
+        winget one-liner; no notes link and no Skip since 2026-09-21,
+        the owner: "only download — everyone on the same version").
+        Nothing on the Store channel, while the check is off, or
+        Offline."""
         try:
             s = updates.status()
         except Exception:                 # noqa: BLE001
@@ -3431,8 +3433,6 @@ class Dashboard:
         elif not paths.DEVELOPER:
             buttons.append(("Download and install", "gold",
                             lambda r=rel: self._update_install(r)))
-        buttons.append(("Release notes", "quiet", lambda r=rel: self._open_url(r.notes_url)))
-        buttons.append(("Skip this version", "quiet", lambda r=rel: self._update_skip(r)))
         return [{
             "at": time.time(), "kind": "update", "mark": "version",
             "mark_colour": ui.ACCENT, "eyebrow": "A newer version",
@@ -10439,8 +10439,8 @@ class Dashboard:
                  font=(ui.UI, 8)).place(x=0, y=50)
         # UPDATES (plan 11.4-11.5): what the last weekly look found, a
         # Check now that ignores the cadence, and — only when a newer
-        # version exists — the three choices. Nothing downloads before
-        # the first button; the checkout's row checks but never installs.
+        # version exists — Download and install. Nothing downloads before
+        # that button; the checkout's row checks but never installs.
         line = tk.Label(body, text=updates.status_line(), bg=ui.CARD,
                         fg=ui.DIM, font=(ui.UI, 9), anchor="w")
         line.place(x=0, y=74)
@@ -10501,8 +10501,14 @@ class Dashboard:
 
     def _update_buttons(self) -> list:
         """Check now always (the checkout too — it pulls, but it can look);
-        the three of plan 11.5 only when a newer version is known; on
-        winget the download button is the one-liner to copy."""
+        with a newer version known, the one way to it: Download and
+        install (the winget one-liner on that channel; nothing in the
+        checkout). Release notes and Skip this version went on
+        2026-09-21, the owner's first update: "only download — I want
+        everyone on the same version; we are not at the stage of letting
+        people choose". The one release that cannot be installed
+        straight (11.10, too old) keeps its notes link: that is the door
+        to the intermediate version, not a choice."""
         s = updates.status()
         rows = [("Check now", self._update_check)]
         rel = s["available"]
@@ -10517,9 +10523,6 @@ class Dashboard:
         elif not paths.DEVELOPER:
             rows.append(("Download and install",
                          lambda r=rel: self._update_install(r)))
-        rows.append(("Release notes",
-                     lambda r=rel: self._open_url(r.notes_url)))
-        rows.append(("Skip this version", lambda r=rel: self._update_skip(r)))
         return rows
 
     @staticmethod
@@ -10554,27 +10557,24 @@ class Dashboard:
 
     def _update_check(self) -> None:
         self._updates_say("checking GitHub for a newer version…")
+        drawn = list(self.parts.get("updates_buttons") or [])
 
         def work() -> None:
             try:
-                rel = updates.check(force=True)
+                updates.check(force=True)
             except Exception as e:                       # noqa: BLE001
                 self._events.put(lambda: self._updates_say(f"the check failed ({e})"))
                 return
             self._events.put(lambda: self._updates_say(updates.status_line()))
-            if rel is not None and self.screen == "Settings":
+            # The buttons are drawn with the card, not with the line: a
+            # check that changed the answer either way — a version turned
+            # up, or the one on the card is gone (the owner's Check now
+            # after his first update, 2026-09-21: "up to date", and
+            # Download and install still under it) — redraws the screen.
+            if self.screen == "Settings" and \
+                    [label for label, _c in self._update_buttons()] != drawn:
                 self._events.put(lambda: self._show("Settings"))
         threading.Thread(target=work, daemon=True, name="update-check").start()
-
-    def _update_skip(self, release) -> None:
-        try:
-            updates.skip(release)
-        except Exception as e:                           # noqa: BLE001
-            self._note(str(e))
-            return
-        self._updates_say(f"DeskIT {release.version} skipped — a newer one is offered again")
-        if self.screen == "Settings":
-            self._show("Settings")
 
     def _update_install(self, release) -> None:
         """Download, verify, start the installer, and ask the app to
