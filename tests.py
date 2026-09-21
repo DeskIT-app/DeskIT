@@ -36373,7 +36373,12 @@ def test_update_download_sha_match_runs_inno():
         assert spawned and spawned[0][0] == argv
         assert argv[0] == str(got)
         assert argv[1:5] == ["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART"]
-        assert argv[5] == f'/LOG="{Path(d) / "logs" / "setup-9.9.9.log"}"' and len(argv) == 6
+        assert argv[5] == f"/LOG={Path(d) / 'logs' / 'setup-9.9.9.log'}" and len(argv) == 6
+        # No quote inside any argument: Popen's own quoting turned a
+        # quoted /LOG path into \"...\" on the command line, and Inno
+        # refused it before installing (2026-09-21, the first live press).
+        assert not any('"' in a for a in argv), argv
+        assert '\\"' not in sp.list2cmdline(argv)
         assert "/VERYSILENT" not in argv
         assert spawned[0][1]["creationflags"] == 0x00000008 | 0x00000200
         assert settings.with_suffix(".toml.bak").read_text("utf-8") == "punctuate_hotkey = \"f9\"\n"
