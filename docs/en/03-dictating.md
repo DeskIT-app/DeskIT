@@ -59,11 +59,19 @@ the cursor; the clipboard is then restored. Two consequences worth knowing:
 
 Tap **Ctrl+F9** right after a dictation with a misheard word: a card shows the sentence, pick
 the wrong word and type the right one. DeskIT learns the pair and applies it to later
-dictations; the **Corrections** place lists every pair it knows and lets you forget one.
+dictations.
+
+The **Corrections** place lists every pair it knows, newest first, with a search over them.
+**Teach a word** adds a pair by hand — for a word it keeps getting wrong the same way — and it
+is fixed on every dictation from then on; the pencil on a row changes a pair, the cross takes
+it out (on every PC of your account). The **Use them** switch turns the whole list off without
+losing it.
 
 DeskIT also reads each dictation a second time on its own (the second reading) and proposes a
-correction when two readings disagree; the proposal is a card with **Yes** and **No**. On a
-PC without an NVIDIA card the second reading is off.
+correction when two readings disagree; the proposal is a card with **Yes** and **No**, and it
+waits at the top of the Corrections place too. The sentence is shown around the change: what
+it heard on a red pill, an arrow, and what it proposes on a gold one with a tick. On a PC
+without an NVIDIA card the second reading is off.
 
 ![The Corrections place](../img/03-corrections.png)
 
