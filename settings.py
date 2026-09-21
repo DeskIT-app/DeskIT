@@ -393,8 +393,9 @@ _INTERRUPT = (("all", "Every message"),
 DOT_CORNER = Friendly(
     "dot.corner", "Which corner the dot sits in",
     "A corner of the main screen above the taskbar — or press Move the dot "
-    "and put it anywhere you like. The panel and the key card open beside "
-    "it wherever it ends up.", _DOT_CORNERS)
+    "(here, or on the panel the dot opens), drag it anywhere you like, and "
+    "press Enter. The panel and the key card open beside it wherever it "
+    "ends up.", _DOT_CORNERS)
 
 # ONE LINE, ONE PLACE. The owner, 2026-09-07, on tabs that repeated a
 # setting and a last tab that repeated them all: "if there is

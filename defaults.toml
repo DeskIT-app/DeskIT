@@ -227,10 +227,15 @@ indicator = true              # small dot in the corner ([dot] below): blue = ru
 # mouse through to whatever is underneath, so it never blocks anything.
 #
 # YOU CAN PUT IT WHERE YOU LIKE, without stopping and starting the app.
-# "Move the dot", on the Cards page of Settings, hides this window, waits
-# for you to drag the disc anywhere on any screen, and writes where you
-# dropped it into `x` and `y` below. "Back to the corner" clears them
-# again. Both happen while the app is running; nothing has to restart.
+# "Move" on the panel the dot opens - or "Move the dot" on the Cards page
+# of Settings - closes the panel, lights a warm rim round every screen and
+# lets you press and hold the disc and drag it anywhere on any screen, as
+# many times as you like. Done (the small card at the top of the screen)
+# or Enter keeps it there and writes where you dropped it into `x` and `y`
+# below; Esc puts it back where it was. Left alone, the light goes out
+# after three minutes and the dot stays where it is. "Back to the corner"
+# clears `x` and `y` again. All of it happens while the app is running;
+# nothing has to restart.
 corner = "top-right"          # bottom-right | top-right. Which corner of the
                               # main screen's work area the dot sits in, until
                               # you drag it somewhere else. The shelf and the
@@ -1303,7 +1308,8 @@ card_y = -100000               # the top edge of the dashboard's report
 # the weekly review - each with its own two answers, the last thing you
 # said with a Copy button, the screens, and one door to the control
 # window. The same key closes it again, and so do Esc, the X at the top
-# of the panel and a second click on the dot.
+# of the panel and a second click on the dot. Move, at the top of the
+# panel, closes it and lets you drag the dot (see [dot]).
 #
 # It never opens on its own and never on hover. Nothing arrives here; you
 # ask for it, you answer what is on it, and it goes away. Settings, the

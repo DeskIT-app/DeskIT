@@ -282,6 +282,33 @@ def shelf_run(card) -> bool:
         return False
 
 
+def move_run(frame) -> bool:
+    """The move frame — the halo round every screen and the Done card
+    while the dot is being dragged (dotmove.MoveFrame, 2026-09-21).
+
+    Pillow pictures on layered windows (skin\\glass.Glass.present), so it
+    is taken without skia too (`lite()`), like the hint card: a fresh
+    install has no skin pack and the owner asked for this light on every
+    copy. The queue, the deadline and the keys stay in dotmove.MoveFrame;
+    this only paints. Falling back is a downgrade in looks and nothing
+    else — with skin\\ deleted the dot is still draggable (the Tk dot has
+    its own drag), Enter and Esc still end it, and there is simply no
+    light and no card.
+
+    NAMED move_run AND NOT move, for the reason paint_wave spells out
+    below: skin\\move.py exists.
+    """
+    if not (on() or lite()):
+        return False
+    try:
+        from .move import run
+        run(frame)
+        return True
+    except Exception:
+        _log.info("skin move frame failed, falling back", exc_info=True)
+        return False
+
+
 def paint_wave(card) -> bool:
     """The microphone wave in the ask-the-screen card.
 

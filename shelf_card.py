@@ -16,12 +16,16 @@ decision.
 WHAT IS ON IT, in this order and no other:
 
   1. THE STATE. A dot, one word for what the app is doing, and how long
-     it has been up. Pause, and Stop. Stop ARMS on the first press and
-     quits on the second (`stop_armed`): the door out of the app must not
-     be one keystroke away from a live dictation, and there is no undo
-     for a quit. And an X at the far right of the band (`CLOSE`), which
-     closes the panel — the same thing the key and Esc do, for the hand
-     that is already on the mouse.
+     it has been up. Move, Pause, and Stop. Stop ARMS on the first press
+     and quits on the second (`stop_armed`): the door out of the app must
+     not be one keystroke away from a live dictation, and there is no
+     undo for a quit. And an X at the far right of the band (`CLOSE`),
+     which closes the panel — the same thing the key and Esc do, for the
+     hand that is already on the mouse. Move (`MOVE`, 2026-09-21) closes
+     the panel and lets the dot be dragged: its glyph is THE DOT ITSELF,
+     the blue bead with its halo, because the owner's first reading of a
+     four-arrow glyph was "it moves the bar" — the button moves the
+     dot, and the picture on it has to be the dot.
   2. THE PILE — one merged list of everything waiting for an answer:
      unread notifications, second-reading proposals, open problems,
      pending questions. ONE list, not four sections, because the question
@@ -214,6 +218,7 @@ LAST_H = 26               # the Hebrew line he last said
 SCREENS_H = 34
 DOOR_H = 46
 BTN_H = 24                # a head button
+HEAD_GAP = 6              # between two head buttons (8 until Move arrived)
 ANSWER_H = 20             # a row's answer button
 ANSWER_GAP = 6
 PILE_MAX = 5              # rows shown; the rest become "+N more"
@@ -221,10 +226,14 @@ ROWS_MIN, ROWS_MAX = 1, 8  # what `[shelf] rows` may be set to
 
 # What a hit landed on. The chrome's names are fixed strings; a pile row's
 # are built by `row_name` so one scheme covers however many rows there are.
-PAUSE, STOP, COPY, SCREENS, DOOR, MORE, DRAG, CLOSE = (
-    "pause", "stop", "copy", "screens", "door", "more", "drag", "close")
-CHROME = (PAUSE, STOP, COPY, SCREENS, DOOR, MORE, DRAG, CLOSE)
+PAUSE, STOP, COPY, SCREENS, DOOR, MORE, DRAG, CLOSE, MOVE = (
+    "pause", "stop", "copy", "screens", "door", "more", "drag", "close",
+    "move")
+CHROME = (PAUSE, STOP, COPY, SCREENS, DOOR, MORE, DRAG, CLOSE, MOVE)
 CLOSE_W = BTN_H           # the X is a square the height of a head button
+# The bead on the Move button: the dot's own picture at this size, drawn
+# larger than the other head glyphs because most of it is halo.
+BEAD_PX = 18
 
 
 def row_name(index: int, slot: str) -> str:
@@ -519,6 +528,24 @@ def _glyph(cache: dict, kind: str, size: float, colour="dim", weight=1.6):
         # middle 44% of the box so it reads as a mark and not a hole.
         d.line([(m * .28, m * .28), (m * .72, m * .72)], fill=c, width=lw)
         d.line([(m * .72, m * .28), (m * .28, m * .72)], fill=c, width=lw)
+    elif kind == "dot":
+        # THE DOT, as it sits in the corner while the app listens: the
+        # cool bead with its halo. Not a four-arrow "move" cursor — the
+        # owner read that as "it moves the bar". The halo is a disc
+        # blurred, so the light falls off the way skin\dot.py's does;
+        # the bead's highlight sits up and left like the real one's.
+        # `colour` is ignored on purpose: the icon means the dot, and the
+        # dot that opens this panel is the listening one.
+        from PIL import ImageFilter
+        c = tuple(INK["cool"])
+        halo = Image.new("RGBA", (m, m), c + (0,))
+        ImageDraw.Draw(halo).ellipse((m * .14, m * .14, m * .86, m * .86),
+                                     fill=c + (150,))
+        halo = halo.filter(ImageFilter.GaussianBlur(m * 0.11))
+        img.alpha_composite(halo)
+        d.ellipse((m * .32, m * .32, m * .68, m * .68), fill=c + (255,))
+        d.ellipse((m * .38, m * .37, m * .49, m * .48),
+                  fill=(255, 255, 255, 110))
     elif kind == "desk":
         # ד as a desk: the bar, the leg, the lamp.
         d.line([(m * .16, m * .34), (m * .84, m * .34)], fill=c,
@@ -647,12 +674,24 @@ def regions(card: dict, scale: float = 1.0,
                  BTN_H * s, 7 * s, weight=600, rtl=False)
     pause = _chip(cache, "Pause", 8.5 * s, "dim", "card", "line", 11 * s,
                   BTN_H * s, 7 * s, weight=600, rtl=False)
-    # a glyph rides in front of each label; the box grows by its room
-    glyph_room = 16 * s
-    px = out[CLOSE][0] - 8 * s
+    # a glyph rides in front of each label; the box grows by its room.
+    # FOUR BUTTONS SHARE THIS ROW WITH THE STATE since Move arrived
+    # (2026-09-21), so the gaps are HEAD_GAP and not the 8 px they were:
+    # at scale 0.6 the word "Recording" ran 3 px under Move with the old
+    # numbers, measured. The uptime line, the one thing here that can be
+    # any length, is cut to the room that is left (compose).
+    glyph_room = 14 * s
+    px = out[CLOSE][0] - HEAD_GAP * s
     out[STOP] = (px - stop.width - glyph_room, y, px, y + BTN_H * s)
-    px = out[STOP][0] - 8 * s
+    px = out[STOP][0] - HEAD_GAP * s
     out[PAUSE] = (px - pause.width - glyph_room, y, px, y + BTN_H * s)
+    # Move, at the left end of the row — the bead takes more room than a
+    # line glyph and sits closer to the plate's edge, so the button is no
+    # taller than its neighbours and no wider than its word needs.
+    move = _chip(cache, "Move", 8.5 * s, "dim", "card", "line", 11 * s,
+                 BTN_H * s, 7 * s, weight=600, rtl=False)
+    px = out[PAUSE][0] - HEAD_GAP * s
+    out[MOVE] = (px - move.width - BEAD_PX * s + 4 * s, y, px, y + BTN_H * s)
 
     # -- the pile. A row is a HEADER LINE and a SENTENCE. The header runs
     # right to left, which is the order it is read in: the kind's colour
@@ -775,10 +814,12 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     def place(image, x, y):
         img.alpha_composite(image, (int(round(x)), int(round(y))))
 
-    def button(name, label, ink, glyph=None, fill="card", edge="line"):
+    def button(name, label, ink, glyph=None, fill="card", edge="line",
+               glyph_px: float = 12, inset: float = 9, gap: float = 5):
         """One head button, drawn inside the rectangle `regions` claimed
         for it — so a button can never be pressed anywhere but where it
-        is painted."""
+        is painted. `glyph_px`, `inset` and `gap` are the Move button's:
+        its bead is mostly halo, so it is drawn bigger and closer in."""
         x0, y0, x1, y1 = boxes[name]
         x0, y0, x1, y1 = x0 - SHADOW, y0 - SHADOW, x1 - SHADOW, y1 - SHADOW
         lit = hover == name
@@ -788,11 +829,11 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
                     + (255,), width=1)
         place(plate, x0, y0)
         text = _text(cache, label, 8.5 * s, colour=ink, weight=600, rtl=False)
-        gx = x0 + 9 * s
+        gx = x0 + inset * s
         if glyph is not None:
-            g = _glyph(cache, glyph, 12 * s, colour=ink)
+            g = _glyph(cache, glyph, glyph_px * s, colour=ink)
             place(g, gx, y0 + ((y1 - y0) - g.height) / 2)
-            gx += g.width + 5 * s
+            gx += g.width + gap * s
         place(text, gx, y0 + ((y1 - y0) - text.height) / 2)
 
     # ---- 1. the state -----------------------------------------------------
@@ -804,8 +845,16 @@ def compose(card: dict, scale: float = 1.0, hover: str | None = None,
     place(title, left + 17 * s, top + 2 * s)
     sub = card.get("uptime") or ""
     if sub:
+        # Cut to the room before the first button, with an ellipsis: "up
+        # 4h 32m · 12:34" is the longest this line gets and at scale 0.6
+        # it is wider than the room. The title is never cut — the state
+        # words are short and the row is measured for the longest.
         sub_img = _text(cache, sub, 8.5 * s, colour="faint", rtl=False)
+        room = boxes[MOVE][0] - SHADOW - (left + 17 * s) - 6 * s
+        sub_img = _fit(cache, sub_img, room, False, 8.5 * s, colour="faint")
         place(sub_img, left + 17 * s, top + 22 * s)
+    # Move first, at the left of the row: the bead, then the word.
+    button(MOVE, "Move", "dim", "dot", glyph_px=BEAD_PX, inset=5, gap=3)
     button(PAUSE, "Pause" if card.get("mode") != "paused" else "Resume",
            "dim", "pause" if card.get("mode") != "paused" else "play")
     # ARMED, not confirmed: the first press turns the word into a question
@@ -1029,4 +1078,5 @@ __all__ = ["INK", "INK_FALLBACKS", "KIND", "STATE_WORD", "STATE_COLOUR",
            "clamp_scale", "row_name", "CARD_W", "SHADOW", "PAD", "RADIUS",
            "PILE_MAX", "ROWS_MIN", "ROWS_MAX", "SCALE_MIN", "SCALE_MAX",
            "HTTRANSPARENT", "HTCLIENT", "HTCAPTION", "PAUSE", "STOP", "COPY",
-           "SCREENS", "DOOR", "MORE", "DRAG", "CLOSE", "CHROME"]
+           "SCREENS", "DOOR", "MORE", "DRAG", "CLOSE", "MOVE", "CHROME",
+           "BEAD_PX", "HEAD_GAP"]

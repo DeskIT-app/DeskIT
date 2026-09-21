@@ -24,8 +24,8 @@ that one movement.
 
 ## The dot
 
-A small dot sits in a corner of your main screen (**Settings > General** chooses the corner,
-or press **Move the dot**). Its colour is the state:
+A small dot sits in a corner of your main screen (**Settings > General** chooses the corner).
+Its colour is the state:
 
 | colour | meaning |
 |---|---|
@@ -41,6 +41,14 @@ Click the dot and a panel (the shelf) opens beside it: what the app is doing, wh
 for you, and the last things you said.
 
 ![The shelf](../img/03-shelf.png)
+
+**Move**, at the top of the panel, puts the dot where you like: the panel closes, a warm light
+comes up round every screen, and you press and hold the dot and drag it anywhere — on any
+screen, as many times as you want. **Done** (the small card at the top of the screen) or
+**Enter** keeps it there; **Esc** puts it back. The same thing is on **Settings > General**
+as **Move the dot**.
+
+![Moving the dot](../img/03-move.png)
 
 ## Where the text goes
 

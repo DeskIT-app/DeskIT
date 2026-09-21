@@ -550,6 +550,15 @@ HINT_UNSET = -100000
 # would leave a dot that no longer opens the shelf and a control window
 # nobody can see.
 DOT_MOVE_S = 45.0
+# How long the FRAMED move waits — the halo round every screen and the
+# Done card (dotmove.MoveFrame, since 2026-09-21). Longer than
+# DOT_MOVE_S because this one has three doors of its own: Done, Enter
+# and Esc end it the moment he is finished, and a drop does NOT (he may
+# drag again). The deadline is only for the button pressed and walked
+# away from — a halo that never went out would be worse than a dot that
+# had to be asked for twice. The dashboard's own backstop
+# (dashboard.DOT_WAIT_S) is longer than this on purpose.
+DOT_FRAME_S = 180.0
 # A release that travelled less than this is a click, not a drag —
 # NotifyCard's rule and its number, kept the same everywhere.
 DOT_CLICK_PX = 4
@@ -877,6 +886,15 @@ class StatusDot:
         # Move mode's deadline on the monotonic clock. 0.0 is "not
         # moving", which is also what it reads as before the app starts.
         self._move_until = 0.0
+        # A HELD move survives a drop: the framed move (main._dot_move_begin)
+        # lets him drag as many times as he likes until Done, Enter, Esc
+        # or the deadline. `rest()` — what the painter calls on every drop
+        # — is a no-op while this stands; `end_move()` clears both.
+        self._move_hold = False
+        # The window's own handle, set by the glass painter and None on
+        # the Tk fallback: what the move frame slips its windows UNDER,
+        # so the dot stays on top of the light it is dragged across.
+        self.hwnd = None
         # The alarm's start on the monotonic clock, or 0.0 for "no
         # alarm". One float, written from the PortAudio callback and read
         # by the painter's next frame — see alarm().
@@ -907,23 +925,44 @@ class StatusDot:
         the class docstring."""
         return time.monotonic() < self._move_until
 
-    def move(self, seconds: float = DOT_MOVE_S) -> bool:
+    def move(self, seconds: float = DOT_MOVE_S, hold: bool = False) -> bool:
         """Make the disc draggable for the next `seconds`. False if there
         is no dot to drag, so the dashboard can say so instead of hiding
         itself in front of nothing.
 
-        Safe from the control thread: it writes one float, and the
-        painter reads it on its own next frame.
+        `hold=True` is the framed move: the disc stays draggable after a
+        drop, until `end_move()` or the deadline. Without it one drop
+        ends the mode — "he asked for ONE move" — which is what the
+        older door and its tests still expect.
+
+        Safe from the control thread: it writes one float and one flag,
+        and the painter reads them on its own next frame.
         """
         if self._thread is None or not self._enabled:
             return False
         self._move_until = time.monotonic() + max(1.0, float(seconds))
+        self._move_hold = bool(hold)
         return True
 
     def rest(self) -> None:
         """Move mode over — because it was dropped, or because it ran
-        out. Idempotent; the painter and the clock both call it."""
+        out. Idempotent; the painter and the clock both call it. A HELD
+        move ignores it: a drop is not the end of a framed move, Done
+        is, and that arrives as `end_move()`."""
+        if self._move_hold:
+            return
         self._move_until = 0.0
+
+    def end_move(self) -> None:
+        """The framed move is over — Done, Enter, Esc, or the deadline
+        found by the frame. Clears the hold and the deadline together."""
+        self._move_hold = False
+        self._move_until = 0.0
+
+    def held(self) -> bool:
+        """Is a framed move standing? The painter does not read this —
+        it reads `moving()` — but the tests and main.py do."""
+        return bool(self._move_hold)
 
     # -- the dead-microphone alarm --
 
