@@ -159,15 +159,23 @@ def _remember(release: Release | None) -> None:
 
 def available() -> Release | None:
     """The newer release the last check found, if any — from this
-    process's memory or the cache file, never from the network."""
+    process's memory or the cache file, never from the network. A cached
+    release that is not newer than the copy running now is the one the
+    copy before the update found — the file outlives the installer —
+    and is dropped rather than shown (the owner's first update, 1.0.0
+    -> 1.0.1, 2026-09-21: "1.0.1 is available — you have 1.0.1")."""
     if "release" in _last:
         return _last["release"]
     path = _cache_path()
     if path and path.exists():
         try:
-            return Release.parse(json.loads(path.read_text("utf-8")))
+            rel = Release.parse(json.loads(path.read_text("utf-8")))
         except (OSError, ValueError):
             return None
+        if not rel.newer_than(version.VERSION):
+            _remember(None)
+            return None
+        return rel
     return None
 
 
@@ -249,10 +257,13 @@ def _fetch_feed(url: str) -> Release:
 
 
 def check(*, force: bool = False, now: float | None = None) -> Release | None:
-    """One look. Returns the newer release when there is one and it is
-    not the skipped version; None otherwise. Quiet on every failure —
-    one debug line — because the next try is a week away and nothing
-    the person can do about GitHub being slow belongs on a card."""
+    """One look. Returns the newer release when there is one; None
+    otherwise. Quiet on every failure — one debug line — because the
+    next try is a week away and nothing the person can do about GitHub
+    being slow belongs on a card. No version is ever skipped by choice:
+    every copy is offered the same, latest one (the owner, 2026-09-21:
+    "everyone on the same version — we are not at the stage of letting
+    people choose")."""
     m = mode()
     if m in ("store", "off", "offline"):
         return None
@@ -269,10 +280,6 @@ def check(*, force: bool = False, now: float | None = None) -> Release | None:
     _record(**{"updates.last_check": _now_iso(),
                "updates.latest_seen": release.version if release else ""})
     if release is None or not release.newer_than(version.VERSION):
-        _remember(None)
-        return None
-    if settings.skipped and version.key(settings.skipped) >= version.key(release.version):
-        log.info("updates: %s is available and skipped by choice", release.version)
         _remember(None)
         return None
     log.info("updates: DeskIT %s is available (running %s)", release.version,
@@ -307,12 +314,6 @@ def status_line() -> str:
     if s["last_check"]:
         return f"Updates: up to date, checked {s['last_check'][:10]}"
     return "Updates: not checked yet"
-
-
-def skip(release: Release) -> None:
-    """"Skip this version": a later one un-skips by comparing higher."""
-    config_mod.save({"updates.skipped": release.version})
-    _remember(None)
 
 
 # ---------------------------------------------------------- the download
@@ -422,12 +423,15 @@ def install(installer: Path, release: Release, quit_app=None) -> list[str]:
 
 
 def after_update() -> str | None:
-    """At start: the first run after an update says so once."""
+    """At start: the first run after an update says so once, and the
+    release the copy before it found — the one just installed — is
+    forgotten, so no row offers it again."""
     state = _state()
     before = str(state.get("updates.installed_version") or "")
     if not before or before == version.VERSION:
         return None
     _record(**{"updates.installed_version": version.VERSION})
+    _remember(None)
     if version.key(version.VERSION) > version.key(before):
         return f"Updated to DeskIT {version.VERSION}"
     return None
