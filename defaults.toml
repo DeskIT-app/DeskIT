@@ -616,6 +616,10 @@ skip_consoles = true
 #   Groq qwen/qwen3.6-27b                       0.48-0.51 s, but ~830
 #     prompt tokens for one modest image against an 8000 tokens/min cap:
 #     real screenshots are 1-2 requests a MINUTE before HTTP 429
+#   Groq qwen/qwen3.8-27b (2026-09-21, the      0.31-0.49 s; 944 prompt
+#     model above is gone)                      tokens for an 896 px image,
+#     but the limiter counts ~2,950 of a 7,000 input-tokens/min cap per
+#     request: TWO screenshots a minute, the third is HTTP 429
 #   Gemini 2.5-flash-lite                       2.2-2.3 s, from the shared
 #     20 req/day/model pool that F9 and F7 also drink from
 enabled = true                 # false unregisters the hotkey entirely
@@ -643,18 +647,24 @@ ollama_model = "gemma3:12b"    # the repair model this app already keeps
                                # evicted. Do NOT put qwen2.5:7b here
                                # without measuring: lookup.model tried it
                                # for text and got '?");' for "brittle".
-groq_model = "qwen/qwen3.6-27b"
+groq_model = "qwen/qwen3.8-27b"
                                # llama-4 scout/maverick were the obvious
-                               # picks and are GONE from Groq's catalog
-                               # (their catalog drifts; list /v1/models
-                               # before trusting a name). This one is a
-                               # reasoning model whose knob differs from
-                               # gpt-oss: reasoning_effort takes ONLY
-                               # "none"/"default" — "low" is HTTP 400 — and
-                               # its endpoint sits behind Cloudflare, which
-                               # 403s Python's default User-Agent (error
-                               # 1010); translate.py::USER_AGENT answers
-                               # that. Handled inside visual_qa.py.
+                               # picks and are GONE from Groq's catalog,
+                               # and by 2026-09-21 qwen3.6-27b had followed
+                               # them (HTTP 404 model_not_found; the
+                               # catalog drifts; list /v1/models before
+                               # trusting a name). This is the ONE model
+                               # there that takes an image — gpt-oss,
+                               # compound and allam all answer "content
+                               # must be a string". A reasoning model
+                               # whose knob differs from gpt-oss:
+                               # reasoning_effort "none" (0.3-0.5 s, no
+                               # thinking; "low" thinks for ~90 tokens
+                               # first) — and its endpoint sits behind
+                               # Cloudflare, which 403s Python's default
+                               # User-Agent (error 1010);
+                               # translate.py::USER_AGENT answers that.
+                               # Handled inside visual_qa.py.
 gemini_fallback = true         # include the shared pool after Groq when
                                # uploading is allowed. It answered an image
                                # question in 2.2-2.3 s, but it drinks from

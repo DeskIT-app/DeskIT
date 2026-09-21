@@ -1872,7 +1872,7 @@ local-preferred**:
 | a follow-up on the same screenshot | ~1.45 s |
 | talking over an answer → the reply to both sentences | **2.86 s** from the interruption; the abandoned request hangs up 0.98 s in rather than finishing |
 | gemma3:12b vision, first image after idle | ~23 s **once** — the vision projector loads; `warmup = true` pays it at startup |
-| Groq `qwen/qwen3.6-27b` (upload on) | 0.5 s, but ~830 prompt tokens/image against an 8,000 tokens/min cap — 1–2 screenshots a minute before 429, so it is the fallback, never the primary |
+| Groq `qwen/qwen3.8-27b` (upload on) | 0.3–0.5 s (2026-09-21; `qwen3.6-27b` left the catalog that day with a 404, and 3.8 is the one model there that takes an image), but the limiter counts ~2,950 of a 7,000 input-tokens/min cap per screenshot — two a minute before 429, so it is the fallback, never the primary |
 | Gemini flash-lite (upload on) | 2.2 s, from the shared 20 req/day/model pool F9/F7 drink from |
 
 Interrupting costs almost nothing because the abandoned answer is

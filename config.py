@@ -514,7 +514,11 @@ class VisualQAConfig:
     # (gemma3:12b reports capabilities ['completion', 'vision']) — no new
     # pull, no new VRAM residency.
     ollama_model: str = "gemma3:12b"
-    groq_model: str = "qwen/qwen3.6-27b"
+    # The one vision model in Groq's catalog (2026-09-21: every other chat
+    # model there refuses an image part). qwen3.6-27b was gone by
+    # 2026-09-21 — HTTP 404 model_not_found; the catalog drifts, list
+    # /v1/models before trusting a name.
+    groq_model: str = "qwen/qwen3.8-27b"
     # Include the shared Gemini pool after Groq when uploading is allowed.
     gemini_fallback: bool = True
     max_side_px: int = 1344
