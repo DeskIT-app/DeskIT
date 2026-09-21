@@ -2916,7 +2916,9 @@ while a recording is running; it waits for idle.
 The update is a re-run of the same per-user installer chapter 10 ships (`PrivilegesRequired=lowest`,
 `CloseApplications=yes`). The app starts it with exactly:
 
-`/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /NORESTART /LOG=<DATA_DIR>\logs\setup-<version>.log`
+`/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /NORESTART /RELAUNCH=1 /LOG=<DATA_DIR>\logs\setup-<version>.log`
+
+(`/RELAUNCH=1` is the script's own switch, 2026-09-21: the app leaves through its quit path before Setup starts, so Restart Manager has nothing of it to restart and `/RESTARTAPPLICATIONS` alone left the owner's first update with no window; a `[Run]` entry behind the switch opens the app when the files are in place. The same day: the desktop icon is created only when it is not there — Inno recreates icons on an upgrade and Explorer moved it to its next free cell — and `[UninstallDelete]` takes it.)
 
 (No quotes of the app's own around the log path: `Popen` quotes an argument that needs it, and a quote written into the argument reached Inno as `\"` — a path it refused with "Error creating log file" on the first live press, 2026-09-21.)
 
