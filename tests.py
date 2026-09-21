@@ -36391,8 +36391,11 @@ def test_update_download_sha_match_runs_inno():
             argv = updates.install(got, rel, quit_app=lambda: quit_calls.append(1))
         assert spawned and spawned[0][0] == argv
         assert argv[0] == str(got)
-        assert argv[1:5] == ["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS", "/NORESTART"]
-        assert argv[5] == f"/LOG={Path(d) / 'logs' / 'setup-9.9.9.log'}" and len(argv) == 6
+        # /RELAUNCH=1 since 2026-09-21: the app quits before Setup starts,
+        # so Restart Manager has nothing to reopen — Setup opens it.
+        assert argv[1:6] == ["/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS",
+                             "/NORESTART", "/RELAUNCH=1"]
+        assert argv[6] == f"/LOG={Path(d) / 'logs' / 'setup-9.9.9.log'}" and len(argv) == 7
         # No quote inside any argument: Popen's own quoting turned a
         # quoted /LOG path into \"...\" on the command line, and Inno
         # refused it before installing (2026-09-21, the first live press).
@@ -36771,11 +36774,28 @@ def test_iss_settings():
     assert [e.split('"')[1] for e in entries] == ["{userprograms}\\DeskIT", "{userdesktop}\\DeskIT"], entries
     for entry in entries:
         assert 'AppUserModelID: "DeskIT.App"' in entry and "pythonw.exe" in entry and "deskit.pyw" in entry, entry
+    # The desktop icon is made once: an upgrade that recreated it lost
+    # its place on the desktop (the owner's first update, 2026-09-21);
+    # one this run did not make is still the uninstaller's to take.
+    assert "Check: not FileExists(ExpandConstant('{userdesktop}\\DeskIT.lnk'))" in entries[1], entries[1]
+    assert "Check:" not in entries[0], "the Start-menu entry has no place to lose"
+    undel = iss[iss.index("[UninstallDelete]"):iss.index("[Code]")]
+    assert 'Type: files; Name: "{userdesktop}\\DeskIT.lnk"' in undel, undel
     assert "{commondesktop}" not in iss and "{userstartup}" not in iss
     assert "[Registry]" not in iss, "the Run value is the app's (autostart.py)"
     code = iss[iss.index("[Code]"):]
     assert "{param:CHANNEL|github}" in code and "{param:NOLAUNCH|no}" in code
     assert "Check: not NoLaunch" in iss and "skipifsilent" in iss
+    # The app's own update reopens it: Setup's [Run] entry behind
+    # /RELAUNCH=1 (updates.INSTALL_SWITCHES), silent install or not —
+    # the app quit before Setup started, so Restart Manager cannot.
+    run = iss[iss.index("[Run]"):iss.index("[UninstallDelete]")]
+    runs = [ln for ln in run.splitlines() if ln.startswith("Filename:")]
+    assert len(runs) == 2 and "Check: Relaunch" in runs[1] and "skipifsilent" not in runs[1], runs
+    assert "postinstall" not in runs[1] and "nowait" in runs[1], runs[1]
+    assert "{param:RELAUNCH|no}" in code
+    import updates as updates_mod
+    assert "/RELAUNCH=1" in updates_mod.INSTALL_SWITCHES
     assert "SuppressibleTaskDialogMsgBox" in code and "IDNO, IDNO" in code, \
         "the uninstall question must default to Keep, silently too"
     assert "--reset-data --yes --everything" in code, "the uninstaller's Delete must take everything (D9)"

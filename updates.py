@@ -55,9 +55,14 @@ CADENCE_S = 7 * 24 * 3600
 #: dictating first, early enough to be the same day.
 FIRST_DELAY_S = 10 * 60
 FEED_NAME = "latest.json"
-#: 11.6, exactly; /VERYSILENT is winget's.
+#: 11.6, exactly; /VERYSILENT is winget's. /RELAUNCH=1 is the script's
+#: own switch ([Run] in DeskIT.iss): the app has left through its quit
+#: path before Setup starts, so /RESTARTAPPLICATIONS — Restart Manager
+#: reopening what it closed — has nothing of it to reopen, and the
+#: owner's first update ended with no window (2026-09-21). Setup opens
+#: the app itself when the files are in place.
 INSTALL_SWITCHES = ("/SILENT", "/CLOSEAPPLICATIONS", "/RESTARTAPPLICATIONS",
-                    "/NORESTART")
+                    "/NORESTART", "/RELAUNCH=1")
 _CHUNK = 256 * 1024
 _MAX_HOPS = 3
 

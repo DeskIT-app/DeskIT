@@ -169,19 +169,34 @@ Type: filesandordirs; Name: "{app}\app"
 ; than pythonw. The desktop icon since 1.1.1: the owner closed the 1.1.0
 ; install and could not find it again (2026-09-19) — the Start menu alone
 ; is not where people look. No Startup-folder entry: "Start with Windows"
-; is the app's own switch.
+; is the app's own switch. The desktop icon is made once: Inno deletes and
+; recreates every icon on an upgrade, and Explorer then drops the new file
+; on its next free cell — the owner's first update (1.0.1 -> 1.0.2,
+; 2026-09-21) moved DeskIT from beside its siblings to the far column. A
+; shortcut that is there is left where it is (it points at {app}, which
+; never moves), one the person deleted stays deleted, and the uninstaller
+; takes it through [UninstallDelete] whether or not this run made it.
 Name: "{userprograms}\DeskIT"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\deskit.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\app\icon.ico"; AppUserModelID: "DeskIT.App"
-Name: "{userdesktop}\DeskIT"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\deskit.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\app\icon.ico"; AppUserModelID: "DeskIT.App"
+Name: "{userdesktop}\DeskIT"; Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\deskit.pyw"""; WorkingDir: "{app}"; IconFilename: "{app}\app\icon.ico"; AppUserModelID: "DeskIT.App"; Check: not FileExists(ExpandConstant('{userdesktop}\DeskIT.lnk'))
 
 [Run]
 ; The first-run wizard follows the install. /NOLAUNCH (winget, the smoke
-; test) leaves the box out; a silent install never launches.
+; test) leaves the box out; a silent install never launches — except the
+; app's own update (updates.py passes /RELAUNCH=1): the app has already
+; left through its own quit path before Setup starts, so Restart Manager
+; has nothing of it to restart, and the owner's first update ended with
+; nothing on the screen (2026-09-21). That entry opens it again when the
+; files are in place; the first start after says "Updated to DeskIT x".
 Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\deskit.pyw"""; WorkingDir: "{app}"; Description: "{cm:LaunchNow}"; Flags: postinstall nowait skipifsilent; Check: not NoLaunch
+Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\app\deskit.pyw"""; WorkingDir: "{app}"; Flags: nowait; Check: Relaunch
 
 [UninstallDelete]
 ; The whole folder: CHANNEL, __pycache__ and pack-installed wheels were
 ; not in [Files] and would otherwise stay behind.
 Type: filesandordirs; Name: "{app}"
+; The desktop icon an upgrade did not make (see [Icons]) is not in this
+; install's own uninstall log; it goes with the rest.
+Type: files; Name: "{userdesktop}\DeskIT.lnk"
 
 [Code]
 const
@@ -203,6 +218,13 @@ var
 function NoLaunch: Boolean;
 begin
   Result := ExpandConstant('{param:NOLAUNCH|no}') <> 'no';
+end;
+
+{ /RELAUNCH=1: the app's own update asks to be opened again at the end
+  (see [Run]); nobody else passes it. }
+function Relaunch: Boolean;
+begin
+  Result := ExpandConstant('{param:RELAUNCH|no}') <> 'no';
 end;
 
 function NoDownload: Boolean;
