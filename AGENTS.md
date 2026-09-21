@@ -1068,6 +1068,39 @@ exactly what classic did.
   300 ms is a dropped hook. `dashboard.DOT_WAIT_S` is longer than
   `DOT_FRAME_S` on purpose.
 
+  **The same evening, the shelf became a BUBBLE and the Done card grew
+  a map.** Three more asks after his first try: "the tab opens very far
+  from the dot" and, with the dot dragged to the middle, "the tab should
+  move with it"; "a speech bubble — the corner nearest the dot sharpens
+  into it"; and "Options — hover it and a little screen opens with my
+  screens and four dots, each corner; click one and the dot goes there".
+  The first had a cause: `[shelf] x/y` from a drag days before beat the
+  dot (HintCard.origin's first rule). `shelf.ShelfCard.origin` now asks
+  the dot FIRST and ALWAYS when it follows one — `main._dot_rect` hands
+  it the rectangle in the corner too (the key card keeps `_dot_beside`)
+  — with a field inset by the margin and `DOT_GAP` = the tail's length
+  plus daylight; `placed` writes nothing for a follower. The face is
+  `skin\bubble.py`'s outline: ONE path walked round the whole shape
+  with the tail written into the edge that faces the dot, each leg
+  leaving the edge — or the corner ARC, when the base sits on the
+  corner — with its tangent, bowing in, meeting a near-point apex;
+  four drafts died before it ("a triangle glued on has a break"; a round
+  tongue was "too delicate"; the last word was "a triangle whose legs
+  were cut with a circle, a relatively sharp tip"). The shelf's shadow
+  is gone at his word ("the greyish-black transparent thing around it").
+  The tail lives in the window's SHADOW margin (`bubble.reach()` <
+  `shelf_card.SHADOW`, asserted) and takes no clicks. The map:
+  `move_card.OPTIONS` opens it on hover (`open=` on measure/regions/
+  compose; the card grows downward, same width), skin\move.py rebuilds
+  the window taller in place and folds it when GetCursorPos leaves the
+  window — the hit test's transparent pixels cannot say "still on the
+  card". A bead is `corner:<i>:<tl|tr|bl|br>`, main resolves it against
+  `capture.monitors()` (the order the map drew) and `_monitor_work`,
+  `overlay.corner_spot` does the four corners `dot_spot` never learned,
+  and the move ENDS on it — a corner is an answer. `_dot_move_end`
+  releases the hold in its finally, LAST: `held()` is what says the
+  move is over.
+
   **NEITHER PAINT PATH'S DRAG CAN BE DRIVEN WITHOUT A REAL MOUSE, and
   the second half of that was measured on 2026-09-08.** The glass path
   is Windows' own modal move loop, which wants real input, and the

@@ -11,17 +11,21 @@ is never used on this path — painting it here would put a square corner
 back under the curve, which is the defect skin\\notify.py exists to
 remove.
 
-THE ONE DELIBERATE DIFFERENCE FROM skin\\notify.py IS THE SHADOW, AND IT
-COMES BACK. The notify column's drop shadow was removed on 2026-09-04 at
-the owner's request — "I want without, only like the box, the message.
-Without the shadow that it's outside the box" — and that was about a card
-that ARRIVES: an uninvited thing should sit flat and quiet. The shelf is
-the opposite case. It is asked for, it is the only thing on screen for as
-long as it is up, and it has to read as lifted off whatever it opened
-over. So skin\\hint.py's shadow is used: six offset round-rects with
-geometrically decaying alpha rather than a MaskFilter blur, because a
-blur is a separate rasterise-and-convolve and stacked hard shapes are
-indistinguishable from one at this radius.
+THE SHADOW IS GONE AND THE FACE IS A BUBBLE, since 2026-09-21. This
+docstring used to argue the shelf's shadow back in (the notify column
+lost its own on 2026-09-04) — the panel "has to read as lifted off
+whatever it opened over". The owner, looking at it over a bright video:
+"there is this greyish-black transparent thing around the tab — remove
+it". So `face` draws no shadow (the `shadow` argument stays for a
+caller that wants one; nothing here passes it). What says "this belongs
+to the dot" now is the SHAPE: the face is skin\\bubble.py's outline, a
+rounded rectangle whose tail sweeps out of the edge — or the corner —
+that faces the dot, in one continuous curve, and `run` works out which
+edge and where from the panel's rectangle and the dot's
+(`bubble.tail_for`). The tail lives in the SHADOW margin the window
+already leaves, so the window is no bigger than before, and it takes no
+clicks: shelf_card.hit_test knows the card's rectangle alone, and the
+tail answers HTTRANSPARENT like the margin around it.
 
 IT IS PAINTED WHEN SOMETHING CHANGED AND NEVER OTHERWISE. Nothing on this
 panel animates. The uptime line is the only thing that moves at all, and
@@ -85,28 +89,31 @@ def _frost(x: int, y: int, width: int, height: int):
 
 
 def face(canvas, width: int, height: int, scale: float, backdrop=None,
-         x0: int = SHADOW, y0: int = SHADOW, shadow: bool = True) -> None:
-    """The glass under the words: shadow, frost, face, rim, hairline.
+         x0: int = SHADOW, y0: int = SHADOW, shadow: bool = False,
+         tail=None) -> None:
+    """The glass under the words: frost, face, rim, hairline — on the
+    bubble's path.
 
-    skin\\notify.py's `face` with the shadow put back (see the module
-    docstring). Every corner is an antialiased RRect on a canvas the
-    caller cleared to 0x00000000, so the pixels outside the curve keep
-    alpha 0 all the way to UpdateLayeredWindow — which is the entire
-    reason this window exists rather than a Tk one. Nothing here ever
-    draws a plain Rect; one would put the square straight back.
+    `tail` is skin\\bubble.tail_for's (side, at, lean), or None for the
+    plain rounded rectangle. Every edge is an antialiased path on a
+    canvas the caller cleared to 0x00000000, so the pixels outside the
+    curve keep alpha 0 all the way to UpdateLayeredWindow — which is the
+    entire reason this window exists rather than a Tk one. Nothing here
+    ever draws a plain Rect; one would put the square straight back.
+    `shadow` is off (see the module docstring) and kept for a caller
+    that wants skin\\hint.py's six round-rects under the face.
     """
     import skia
 
+    from . import bubble
     from .palette import BG, CARD, LINE, FG, argb
 
     s = sc.clamp_scale(scale)
-    rect = skia.Rect.MakeXYWH(x0, y0, width, height)
     radius = RADIUS * s
-    rrect = skia.RRect.MakeRectXY(rect, radius, radius)
+    path = bubble.skia_path(width, height, radius, tail, x0, y0)
 
     if shadow:
-        # boot.py's recipe and skin\hint.py's numbers, drawn OUTSIDE the
-        # face in the SHADOW margin.
+        rect = skia.Rect.MakeXYWH(x0, y0, width, height)
         for i in range(6, 0, -1):
             grow = i * 3.4
             a = 17 * (0.62 ** (6 - i))
@@ -119,26 +126,26 @@ def face(canvas, width: int, height: int, scale: float, backdrop=None,
                     radius + grow, radius + grow),
                 skia.Paint(AntiAlias=True, Color=argb(a, (0, 0, 0))))
 
-    # The frost, clipped to the rounded face with doAntiAlias=True. Without
+    # The frost, clipped to the bubble with doAntiAlias=True. Without
     # that flag the clip is a hard 1-bit mask and the blurred desktop would
     # stair-case out to the corner of the image — a square edge again, made
     # of the backdrop this time instead of the face.
     if backdrop is not None:
         canvas.save()
-        canvas.clipRRect(rrect, doAntiAlias=True)
+        canvas.clipPath(path, doAntiAlias=True)
         canvas.drawImage(_to_skia(backdrop), 0, 0)
         canvas.restore()
 
     # The face: a hair lighter at the top the way a surface lit from above
     # actually is, and translucent (FACE_A of 255) so the frost behind it
     # still reads as the desktop rather than as a texture.
-    canvas.drawRRect(rrect, skia.Paint(
+    canvas.drawPath(path, skia.Paint(
         AntiAlias=True, Dither=True,
         Shader=skia.GradientShader.MakeLinear(
             points=[(x0, y0), (x0, y0 + height)],
             colors=[argb(FACE_A, CARD), argb(FACE_A + 14, BG)],
             positions=[0.0, 1.0])))
-    canvas.drawRRect(rrect, skia.Paint(
+    canvas.drawPath(path, skia.Paint(
         AntiAlias=True, Style=skia.Paint.kStroke_Style, StrokeWidth=1.0,
         Color=argb(180, LINE)))
     # A specular hairline on the top edge only, 60% of the width, fading at
@@ -273,6 +280,22 @@ def run(shelf) -> None:
         finally:
             pressing = False
 
+    def tail_now(width, height):
+        """Which edge sweeps out toward the dot, and where — from the
+        window's place and the dot's rectangle, asked on every paint so
+        a dot dragged while the panel is up is still pointed at. None
+        without a dot, and the face is the plain rounded rectangle."""
+        from . import bubble
+        try:
+            dot = shelf.dot_now()
+        except Exception:
+            dot = None
+        if dot is None or glass is None:
+            return None
+        x, y = glass.where()
+        return bubble.tail_for((x + SHADOW, y + SHADOW,
+                                x + SHADOW + width, y + SHADOW + height), dot)
+
     def paint():
         nonlocal last_paint, dirty, picture, picture_for
         if glass is None or shown is None:
@@ -286,7 +309,8 @@ def run(shelf) -> None:
         canvas = glass.canvas
         canvas.clear(0x00000000)
         width, height = sc.measure(shown, shelf.scale)
-        face(canvas, width, height, shelf.scale, frost, SHADOW, SHADOW)
+        face(canvas, width, height, shelf.scale, frost, SHADOW, SHADOW,
+             tail=tail_now(width, height))
         canvas.drawImage(_to_skia(picture), SHADOW, SHADOW)
         glass.flush()
         last_paint = time.monotonic()
