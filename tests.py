@@ -98,16 +98,30 @@ VK_V = 0x56
 VK_SHIFT = 0x10
 
 
+def _where(e: BaseException) -> str:
+    """The failing line of THIS file, for a FAIL line read off a CI log
+    where no traceback follows it: the innermost frame in tests.py.
+    A bare assert with no message used to leave "FAIL name: " and
+    nothing to go on (2026-09-21)."""
+    line = None
+    tb = e.__traceback__
+    while tb is not None:
+        if tb.tb_frame.f_code.co_filename == __file__:
+            line = tb.tb_lineno
+        tb = tb.tb_next
+    return f"  (tests.py:{line})" if line else ""
+
+
 def check(name: str, fn) -> None:
     try:
         fn()
         print(f"  PASS  {name}")
     except AssertionError as e:
         FAILURES.append(name)
-        print(f"  FAIL  {name}: {e}")
+        print(f"  FAIL  {name}: {e}{_where(e)}")
     except Exception as e:  # noqa: BLE001
         FAILURES.append(name)
-        print(f"  FAIL  {name}: unexpected {type(e).__name__}: {e}")
+        print(f"  FAIL  {name}: unexpected {type(e).__name__}: {e}{_where(e)}")
 
 
 class Spy:
@@ -37297,6 +37311,7 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
     its store and the worker's pass is that store alone; and every push
     ends with one REST broadcast that carries the store names and this
     device's id and NOTHING of what was said."""
+    import datetime
     import history as history_mod
     import net as net_mod
     import sb
@@ -37362,11 +37377,13 @@ def test_the_live_channel_pulls_what_the_other_pc_pushed_within_the_second():
                 time.sleep(0.5)
                 assert len(fake.calls) == calls, "our own broadcast started a pull"
                 # the other PC's: the history is pulled, pulled only, and lands
-                # (the log's stamps are local time; the row's is UTC — the
-                # test PC is UTC+3 or thereabouts, so 07:05 UTC sits
-                # between the two local lines whatever the zone east of it)
+                # the log's stamps are local time and the row's is UTC:
+                # 10:05 local, whatever zone this PC (or GitHub's runner,
+                # on UTC) is in, so the row sits between the two lines
+                between = (datetime.datetime(2026, 9, 20, 10, 5, 0, 250_000).astimezone(datetime.timezone.utc)
+                           .isoformat(timespec="milliseconds"))
                 fake.tables["history"].append({"user_id": fake.UID, "device_id": other,
-                                               "ts": "2026-09-20T07:05:00.250+00:00", "kind": "dictation",
+                                               "ts": between, "kind": "dictation",
                                                "text": "משם", "raw": None, "engine": "cpu", "seconds": 2.0,
                                                "updated_at": "2026-09-20T10:05:01+00:00"})
                 log_path.write_text(log_path.read_text("utf-8") +
