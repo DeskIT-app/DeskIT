@@ -1227,6 +1227,15 @@ class Engine:
                 learned.append((heard, meant))
         if learned:
             self._vocab.save()
+        try:
+            # the learned pair and the accepted line reach the account's
+            # other copies within the second (sb.nudge is a flag)
+            import sb
+            sb.nudge("history")
+            if learned:
+                sb.nudge("vocab")
+        except Exception:                                    # noqa: BLE001
+            pass
         log.info("review %s accepted (%s): learned %d pair(s)",
                  item.get("id"), by, len(learned))
         # The approved reading is the owner's word on this clip — gold,

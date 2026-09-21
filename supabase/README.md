@@ -8,8 +8,8 @@ changed settings, syncing what you said. A copy of DeskIT with no account
 never contacts it (the weekly update check goes to GitHub).
 
 This folder is the whole of that server's shape. There is nothing else:
-no edge function, no realtime channel, no dashboard setting the file does
-not mention.
+no edge function, no dashboard setting the files do not mention, and
+one Realtime topic per account that carries nothing but "go and pull".
 
 ## What is in here
 
@@ -22,6 +22,12 @@ not mention.
   (measured on the first live "Delete my account"): the app removes its
   own files through the Storage API first, the RPC removes the rows and
   the account.
+- `migrations/0003_live_channel.sql` — two policies on
+  `realtime.messages`, so that a signed-in copy may listen and send on
+  the one topic named after its own account, `user:<uid>`. What
+  travels on it is the names of the stores that just changed and the
+  id of the device that changed them; the rows themselves still come
+  down through the tables above. No table is published to Realtime.
 
 ## How to read it in ten minutes
 

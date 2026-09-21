@@ -193,11 +193,11 @@ WORDS = {
     "account.anonymous": "Signed in (anonymous account)",
     "account.fresh": "This account has no DeskIT settings yet — let's set it up.",
     "account.remembered": "This PC remembers you until you sign out (Settings > Account).",
-    "account.returning": ("Welcome back — your learned words and settings are in your account "
+    "account.returning": ("Welcome back — your learned words, settings and what you said are in your account "
                           "and come along now. DeskIT opens with them; the microphone and the "
                           "keys are the usual ones until you change them in Settings."),
     "account.open": "Open DeskIT",
-    "account.bringing": "Bringing your words and settings…",
+    "account.bringing": "Bringing your words, settings and what you said…",
     "account.bring_failed": ("Could not bring them right now — they arrive the next time the app "
                              "syncs. Opening DeskIT."),
     "account.failed": "Not signed in: {why}",
@@ -318,10 +318,11 @@ WORDS = {
     "done.autostart.help": "A Run entry for your user; Settings > The app turns it off.",
     "done.phone": "Dictate from your phone",
     "done.phone.help": "This PC listens for the DeskIT keyboard on your Tailscale address (Settings > Phone shows how).",
-    "done.sync": "Keep my learned words and settings in my account",
+    "done.sync": "Keep my words, settings and what I said in my account",
     "done.sync.help": ("On any PC you sign in on, DeskIT then hears you your way from the first "
-                       "sentence: the words it learned from you and the settings you changed "
-                       "follow you there. Never your voice, your keys or what you said. "
+                       "sentence, and the Said page is the same page: the words it learned "
+                       "from you, the settings you changed and the text of what you said "
+                       "follow you there. Never your voice or your keys. "
                        "Settings > Privacy > Withdraw turns it off."),
     "done.title": "DeskIT is ready",
     "done.sub": "Hold the key and talk. The text lands where your cursor is, in any window. Start opens the desk.",
@@ -1107,7 +1108,7 @@ class Wizard:
         self.account_name = ""
         try:
             import privacy
-            self._sync_shown = bool(privacy.allowed("settings_sync"))
+            self._sync_shown = all(privacy.allowed(k) for k in privacy.SYNC_KINDS)
         except Exception:                                  # noqa: BLE001
             pass
 
@@ -1661,8 +1662,9 @@ class Wizard:
         try:
             import consent_card as cc
             import privacy
-            if not privacy.allowed("settings_sync"):
-                privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
+            for kind in privacy.SYNC_KINDS:
+                if not privacy.allowed(kind):
+                    privacy.grant(kind, cc.card_for(kind)["text_version"])
             self.sync_wanted = True
             self._sync_shown = True
         except Exception as e:                             # noqa: BLE001
@@ -2880,9 +2882,11 @@ class Wizard:
             import privacy
             if self.sync_wanted:
                 import consent_card as cc
-                privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
+                for kind in privacy.SYNC_KINDS:
+                    privacy.grant(kind, cc.card_for(kind)["text_version"])
             else:
-                privacy.withdraw("settings_sync")
+                for kind in privacy.SYNC_KINDS:
+                    privacy.withdraw(kind)
             self._sync_shown = self.sync_wanted
         except Exception as e:                             # noqa: BLE001
             log.warning("the wizard could not record the sync consent: %s", e)

@@ -42,8 +42,8 @@ stored (the id and e-mail of the Google account you pick, the name you type) and
 PC remembers you until you sign out, and the rest of the setup follows.
 
 **Used DeskIT before?** — **I have an account**. **Sign in with Google** with the account you
-used on the other PC, and that is all: your learned words and settings come down and DeskIT
-opens by itself — no microphone, sentence, keys or extras pages, only the downloads page if
+used on the other PC, and that is all: your learned words, settings and what you said come
+down and DeskIT opens by itself — no microphone, sentence, keys or extras pages, only the downloads page if
 this PC still lacks something. The microphone and the keys are the usual ones until you
 change them in Settings. Your Groq key is never in the account: paste it once on the new PC
 (Settings > Privacy).
@@ -137,12 +137,13 @@ stand and written only if you move them:
 
 The hotkey to hold, and three switches asked once:
 
-- **Keep my learned words and settings in my account** — on. The words DeskIT learned from
-  you and the settings you changed follow you to any PC you sign in on, so it hears you
-  your way from the first sentence. Never your voice, your keys or what you said (the Said
-  page has its own switch, off, under Settings > Privacy). To turn it off later:
-  Settings > Privacy > **Withdraw** on *Syncing settings and words*; **Sync now** under
-  Account asks again. The row appears only when you signed in on the account page.
+- **Keep my words, settings and what I said in my account** — on. The words DeskIT
+  learned from you, the settings you changed and the text of what you said follow you to
+  any PC you sign in on, so it hears you your way from the first sentence and the Said page
+  is the same page there. Never your voice or your keys. To turn it off later:
+  Settings > Privacy > **Withdraw** on *Syncing settings and words* and on *Syncing what
+  you said* — each has its own row, so the history can go off alone; **Turn on** on the
+  same row asks again. The row appears only when you signed in on the account page.
 - **Start with Windows** — off. A Run entry for your user; that start opens no window, only
   the dot.
 - **Dictate from your phone** — off ([chapter 6](06-phone)).

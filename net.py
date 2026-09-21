@@ -35,6 +35,12 @@ it. The rules, each of which a test in tests.py holds:
 the Network window shows beside the host, and what the privacy gates of
 chapter 5 (PR 5) will consult.
 
+The one long-lived connection — the account's live channel, a websocket
+(``websocket()`` below, 2026-09-20) — leaves through the same door
+under the same five rules: admitted like a request, the publishable key
+attached here, the session token injected by name into the one message
+that carries it, and two rows in the table (opened, closed).
+
 Gemini speaks REST through here too (gemini_pool.Client, plan 5.6): the
 google-genai SDK, which owned its own httpx client and read the key from
 the environment on its own, is gone, and with it the transport this
@@ -563,6 +569,285 @@ def post_json(url: str, purpose: str, payload: dict, *,
     return request("POST", url, purpose, secret=secret, headers=hdrs,
                    body=json.dumps(payload).encode("utf-8"),
                    timeout_s=timeout_s, consent=consent)
+
+
+# -------------------------------------------------------------- websocket
+# One long-lived connection, for the account's live channel (sb.py, the
+# owner's ask of 2026-09-20: "I sync and within two seconds it is on the
+# other PC"): Supabase Realtime is a websocket, and a websocket is a
+# socket, so it is opened HERE and nowhere else (rule 1). The same
+# admission as a request (rule 2: the host, the scheme, offline, the
+# gate for the purpose), the publishable key attached here (rule 3), the
+# session token injected here by NAME into the one message the protocol
+# wants it in, and two rows in the table (rule 5): one when the
+# connection opens (status 101) and one when it closes, with the bytes
+# that went each way. RFC 6455 client side is a hundred lines of
+# stdlib; a websocket package would be a transport of its own.
+
+WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+WS_MAX_FRAME = 4 * 1024 * 1024
+
+
+def _ws_connect(host: str, port: int, timeout_s: float):
+    """The TLS socket, connected — the one seam a test replaces with a
+    socket of its own (the fake server sits on the other end)."""
+    import ssl
+
+    raw = socket.create_connection((host, port), timeout=timeout_s)
+    try:
+        return ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+    except Exception:
+        raw.close()
+        raise
+
+
+def _ws_frame(opcode: int, data: bytes) -> bytes:
+    """One masked client frame (the RFC's rule: every client frame is
+    masked, with a fresh mask)."""
+    import os
+    import struct
+
+    head = bytes([0x80 | opcode])
+    n = len(data)
+    if n < 126:
+        head += bytes([0x80 | n])
+    elif n < 65536:
+        head += bytes([0x80 | 126]) + struct.pack("!H", n)
+    else:
+        head += bytes([0x80 | 127]) + struct.pack("!Q", n)
+    mask = os.urandom(4)
+    return head + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+
+
+class Socket:
+    """An open websocket. ``send_text`` and ``recv_text`` carry whole
+    text messages; a ping from the server is answered here; ``close``
+    sends the close frame, closes the socket and writes the row."""
+
+    def __init__(self, sock, host: str, purpose: str, consent: str | None):
+        self._sock = sock
+        self.host = host
+        self.purpose = purpose
+        self.consent = consent
+        self.up = 0
+        self.down = 0
+        self._buf = b""
+        self._parts: list[bytes] = []
+        self._closed = False
+        self._send_lock = threading.Lock()
+
+    # -- out
+    def _send(self, opcode: int, data: bytes) -> None:
+        frame = _ws_frame(opcode, data)
+        with self._send_lock:
+            if self._closed:
+                raise NetError("the websocket is closed")
+            try:
+                self._sock.sendall(frame)
+            except OSError as e:
+                raise NetError(str(e) or type(e).__name__) from e
+            self.up += len(frame)
+
+    def send_text(self, text: str, *, secret: str | None = None,
+                  placeholder: str = "{secret}") -> None:
+        """Send one text message. With ``secret``, the stored value of
+        that NAME replaces ``placeholder`` in the text here, on the way
+        out — the caller never holds it — and only when the secret's
+        one host is this socket's host (rule 3, as for a header)."""
+        if secret is not None:
+            if secret not in SECRET_HOSTS:
+                raise ValueError(f"unknown secret name {secret!r}")
+            allowed = SECRET_HOSTS[secret][0]
+            if allowed == _SUPABASE:
+                allowed = SUPABASE_HOST
+            if allowed is None or self.host != allowed:
+                raise EgressRefused(self.host, f"the {secret} secret may only go to "
+                                    f"{allowed or 'a host not yet configured'}", self.purpose)
+            text = text.replace(placeholder, _resolve(secret))
+        self._send(0x1, text.encode("utf-8"))
+
+    # -- in
+    def _read_more(self, timeout_s: float) -> bool:
+        """More bytes into the buffer; False on a timeout."""
+        self._sock.settimeout(timeout_s)
+        try:
+            chunk = self._sock.recv(65536)
+        except socket.timeout:
+            return False
+        except OSError as e:
+            raise NetError(str(e) or type(e).__name__) from e
+        if not chunk:
+            raise NetError("the server closed the websocket")
+        self._buf += chunk
+        self.down += len(chunk)
+        return True
+
+    def _frame(self):
+        """One complete frame off the buffer as (fin, opcode, payload),
+        or None when the buffer holds less than a frame."""
+        import struct
+
+        buf = self._buf
+        if len(buf) < 2:
+            return None
+        fin = bool(buf[0] & 0x80)
+        opcode = buf[0] & 0x0F
+        masked = bool(buf[1] & 0x80)
+        n = buf[1] & 0x7F
+        pos = 2
+        if n == 126:
+            if len(buf) < 4:
+                return None
+            n = struct.unpack("!H", buf[2:4])[0]
+            pos = 4
+        elif n == 127:
+            if len(buf) < 10:
+                return None
+            n = struct.unpack("!Q", buf[2:10])[0]
+            pos = 10
+        if n > WS_MAX_FRAME:
+            raise NetError(f"a websocket frame of {n} bytes")
+        if masked:
+            pos += 4                        # a server never masks; tolerated
+        if len(buf) < pos + n:
+            return None
+        payload = buf[pos:pos + n]
+        if masked:
+            mask = buf[pos - 4:pos]
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        self._buf = buf[pos + n:]
+        return fin, opcode, payload
+
+    def recv_text(self, timeout_s: float) -> str | None:
+        """The next text message, or None when ``timeout_s`` passes
+        without one. Pings are answered, a close frame raises
+        ``NetError`` after the socket is closed."""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            frame = self._frame()
+            if frame is None:
+                left = deadline - time.monotonic()
+                if left <= 0 or not self._read_more(max(left, 0.01)):
+                    return None
+                continue
+            fin, opcode, payload = frame
+            if opcode == 0x8:                                # close
+                self.close("closed by the server")
+                raise NetError("the server closed the websocket")
+            if opcode == 0x9:                                # ping
+                self._send(0xA, payload)
+                continue
+            if opcode == 0xA:                                # pong
+                continue
+            if opcode in (0x1, 0x2, 0x0):
+                self._parts.append(payload)
+                if not fin:
+                    continue
+                whole = b"".join(self._parts)
+                self._parts = []
+                if opcode == 0x2:
+                    continue                                 # binary: not spoken here
+                return whole.decode("utf-8", errors="replace")
+
+    def close(self, status: str = "closed") -> None:
+        """Best-effort close frame, the socket shut, the row written —
+        once, whichever side asked first."""
+        with self._send_lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self._sock.sendall(_ws_frame(0x8, b"\x03\xe8"))
+            except OSError:
+                pass
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+        _record(self.host, self.purpose, self.up, self.down, status, None, self.consent)
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+        return False
+
+
+def websocket(url: str, purpose: str, *, headers: dict | None = None,
+              timeout_s: float = DEFAULT_TIMEOUT_S) -> Socket:
+    """Admit, attach, connect, upgrade: an open ``Socket`` for a
+    ``wss://`` URL, or ``EgressRefused`` / ``NetError`` — the same
+    answers as ``open()``. Only ``wss``: a websocket that is not TLS
+    does not leave this PC."""
+    import base64
+    import hashlib
+    import os
+
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "wss":
+        _record((parts.hostname or "?").lower(), purpose, 0, 0, "refused", None, None)
+        raise EgressRefused((parts.hostname or "?").lower(),
+                            f"{parts.scheme or 'no'} scheme; a websocket leaves only as wss",
+                            purpose)
+    host, consent = _admit(urllib.parse.urlunsplit(("https",) + tuple(parts[1:])),
+                           purpose, None, headers)
+    port = parts.port or 443
+    hdrs = {str(k): str(v) for k, v in (headers or {}).items()}
+    hdrs.setdefault("User-Agent", USER_AGENT)
+    if SUPABASE_HOST is not None and host == SUPABASE_HOST and SUPABASE_KEY:
+        hdrs["apikey"] = SUPABASE_KEY
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    target = (parts.path or "/") + (f"?{parts.query}" if parts.query else "")
+    lines = [f"GET {target} HTTP/1.1", f"Host: {host}", "Upgrade: websocket",
+             "Connection: Upgrade", f"Sec-WebSocket-Key: {key}",
+             "Sec-WebSocket-Version: 13"]
+    lines += [f"{k}: {v}" for k, v in hdrs.items()]
+    request_bytes = ("\r\n".join(lines) + "\r\n\r\n").encode("utf-8")
+    try:
+        sock = _ws_connect(host, port, timeout_s)
+    except OSError as e:
+        _record(host, purpose, 0, 0, type(e).__name__, None, consent)
+        raise NetError(str(e) or type(e).__name__) from e
+    try:
+        sock.sendall(request_bytes)
+        sock.settimeout(timeout_s)
+        head = b""
+        while b"\r\n\r\n" not in head:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise NetError("the server hung up during the websocket handshake")
+            head += chunk
+            if len(head) > 65536:
+                raise NetError("a websocket handshake answer over 64 KB")
+        head, _, rest = head.partition(b"\r\n\r\n")
+        status_line, *header_lines = head.decode("latin-1").split("\r\n")
+        status = int(status_line.split(" ", 2)[1]) if len(status_line.split(" ")) > 1 else 0
+        if status != 101:
+            _record(host, purpose, len(request_bytes), len(head), status, None, consent)
+            sock.close()
+            raise NetError(f"the websocket was refused: HTTP {status}")
+        got = {k.strip().lower(): v.strip() for k, _, v in
+               (line.partition(":") for line in header_lines)}
+        want = base64.b64encode(hashlib.sha1((key + WS_GUID).encode("ascii")).digest()).decode("ascii")
+        if got.get("sec-websocket-accept") != want:
+            _record(host, purpose, len(request_bytes), len(head), "bad-accept", None, consent)
+            sock.close()
+            raise NetError("the websocket handshake did not check out")
+    except (OSError, socket.timeout) as e:
+        sock.close()
+        _record(host, purpose, len(request_bytes), 0, type(e).__name__, None, consent)
+        raise NetError(str(e) or type(e).__name__) from e
+    ws = Socket(sock, host, purpose, consent)
+    ws.up = len(request_bytes)
+    ws.down = len(head) + 4
+    ws._buf = rest
+    _record(host, purpose, ws.up, ws.down, 101, None, consent)
+    return ws
 
 
 # --------------------------------------------------------------- download

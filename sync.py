@@ -41,7 +41,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import paths
@@ -256,18 +256,36 @@ TEXT_MAX = 4000
 
 def history_rows(events, device_id: str, after: str | None) -> list[dict]:
     """The rows this PC pushes: every event newer than ``after`` (an ISO
-    stamp, or None for all of them), oldest first, at most one batch."""
+    stamp, or None for all of them), oldest first, at most one batch.
+
+    A row is keyed on the server by (device, ts, kind), so two events
+    of one kind must never share a ``ts``. The log's milliseconds are
+    kept, and an event stamped like the one before it (two second-
+    reading verdicts accepted in one press land in the same
+    millisecond) is moved one millisecond later — deterministically,
+    from the file's order, so a re-push after a lost cursor lands on
+    the same rows. Until 2026-09-20 the stamp was whole seconds and
+    every batch with such a pair was refused as a whole ("ON CONFLICT
+    DO UPDATE command cannot affect row a second time"): the owner's
+    Dev copy pushed nothing for two days.
+    """
     rows: list[dict] = []
     since = _parse_iso(after)
+    last: dict[str, datetime] = {}                     # kind -> the ts just used
     for ev in sorted(events, key=lambda e: e.when):
         if ev.kind not in HISTORY_KINDS or not (ev.text or "").strip():
             continue
-        when = ev.when.astimezone(timezone.utc)
+        when = ev.when.astimezone(timezone.utc).replace(
+            microsecond=ev.when.microsecond // 1000 * 1000)
+        prev = last.get(ev.kind)
+        if prev is not None and when <= prev:
+            when = prev + timedelta(milliseconds=1)
+        last[ev.kind] = when
         if since is not None and when <= since:
             continue
         rows.append({
             "device_id": device_id,
-            "ts": when.isoformat(timespec="seconds"),
+            "ts": when.isoformat(timespec="milliseconds"),
             "kind": ev.kind,
             "text": str(ev.text)[:TEXT_MAX],
             "raw": (str(ev.source)[:TEXT_MAX] if ev.source and ev.source != ev.text
@@ -295,15 +313,21 @@ def _parse_iso(text: str | None) -> datetime | None:
 def remote_line(row: dict, device_name: str) -> str:
     """One row of another PC as a transcripts.log line history.py reads:
     ``<local stamp> | REMOTE | <kind> | <device> | <engine> | <seconds>s | <text>``,
-    the text's newlines kept (a continuation line is the format's own)."""
+    the text's newlines kept (a continuation line is the format's own).
+    A learned row's text is written ``<raw> || <text>`` — what was shown
+    and what it was fixed to, the CORRECTED line's shape — so the pair
+    reaches the Corrections page's Lately list on this PC too."""
     when = _parse_iso(row.get("ts")) or datetime.now(timezone.utc)
-    stamp = when.astimezone().strftime("%Y-%m-%d %H:%M:%S") + ",000"
+    local = when.astimezone()
+    stamp = local.strftime("%Y-%m-%d %H:%M:%S") + f",{local.microsecond // 1000:03d}"
     kind = str(row.get("kind") or "dictation")
     device = re.sub(r"\s*\|\s*", " ", str(device_name or "another PC")).strip()[:40]
     engine = re.sub(r"\s*\|\s*", " ", str(row.get("engine") or "")).strip()
     seconds = row.get("seconds")
     secs = f"{float(seconds):.1f}s" if seconds is not None else ""
     text = str(row.get("text") or "")
+    if kind == "learned" and row.get("raw") and " || " not in text:
+        text = f"{row['raw']} || {text}"
     return f"{stamp} | REMOTE | {kind} | {device} | {engine} | {secs} | {text}"
 
 

@@ -34,9 +34,11 @@ import paths
 APP_DIR = Path(__file__).resolve().parent
 LOG = paths.TRANSCRIPTS_LOG
 
-# "2026-08-20 20:55:13,139 | OK | ..."  — the ",139" is milliseconds, which
-# nothing here shows and everything here ignores.
-STAMP = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d{3} \| (.*)$")
+# "2026-08-20 20:55:13,139 | OK | ..."  — the ",139" is milliseconds. No
+# row shows them, but the event keeps them: they are what tells two
+# second-reading verdicts accepted in the same second apart when the
+# account sync keys a row by its time (sync.history_rows, 2026-09-20).
+STAMP = re.compile(r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),(\d{3}) \| (.*)$")
 
 # kind -> (what to call it, which glyph, which colour name in ui.py)
 KINDS: dict[str, tuple[str, str, str]] = {
@@ -145,7 +147,8 @@ def _records(path: Path) -> list[tuple[datetime, list[str]]]:
             when = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
         except ValueError:
             continue
-        out.append((when, match.group(2).split(" | ")))
+        when = when.replace(microsecond=int(match.group(2)) * 1000)
+        out.append((when, match.group(3).split(" | ")))
     return out
 
 
@@ -236,16 +239,26 @@ def _events_in(path: Path) -> list[Event]:
             # REMOTE | kind | device | engine | 3.1s | text — what another
             # PC of the same account said, pulled by sb.py into
             # sync\history.log (sync.remote_line, D31). The row shows the
-            # machine's name where a phone row says "from the phone".
+            # machine's name where a phone row says "from the phone". A
+            # learned row's text is "shown || fixed", the CORRECTED
+            # line's own shape, so the pair reaches the Corrections
+            # page's Lately list from the other PC too (2026-09-20).
             kind = parts[1].strip().lower() if len(parts) > 1 else ""
             if kind not in KINDS:
                 continue
+            text = _tail(parts, 5)
+            source, pairs, note = "", [], ""
+            if kind == "learned" and " || " in text:
+                source, _, text = text.partition(" || ")
+                pairs = changed_words(source, text)
+                note = "1 word" if len(pairs) == 1 else f"{len(pairs)} words"
+            where = (f"from {parts[2].strip()}" if len(parts) > 2 and parts[2].strip()
+                     else "from another PC")
             events.append(Event(
-                when, kind, text=_tail(parts, 5),
+                when, kind, text=text, source=source, pairs=pairs,
                 engine=parts[3].strip() if len(parts) > 3 else "",
                 seconds=_seconds(parts[4]) if len(parts) > 4 else None,
-                note=f"from {parts[2].strip()}" if len(parts) > 2 and parts[2].strip()
-                else "from another PC"))
+                note=f"{note}   ·   {where}" if note else where))
 
         elif head.endswith("-IN"):
             waiting[head[:-3].lower()] = (when, _tail(parts, 2))
@@ -409,11 +422,17 @@ def filtered(events: list[Event], kind: str | None,
     return out
 
 
-def stamp() -> tuple[int, float]:
-    """Size and mtime of the live log, to notice it changed without
-    reading it. Called from the status poller every 800 ms."""
-    try:
-        info = LOG.stat()
-        return info.st_size, info.st_mtime
-    except OSError:
-        return 0, 0.0
+def stamp() -> tuple:
+    """Size and mtime of the live log AND of the other PCs' pulled file,
+    to notice either changed without reading it. Called from the status
+    poller every 800 ms. The pulled file is in it since 2026-09-20: a
+    row that arrived from the other PC used to wait on the desk until
+    this PC's own next dictation touched transcripts.log."""
+    out: list = []
+    for path in (LOG, paths.SYNC_DIR / "history.log"):
+        try:
+            info = path.stat()
+            out += [info.st_size, info.st_mtime]
+        except OSError:
+            out += [0, 0.0]
+    return tuple(out)

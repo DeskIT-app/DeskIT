@@ -92,8 +92,8 @@ beside the app keeps the defaults and the help for every key.
 | `privacy.cloud_screenshots` — Screen pictures to the cloud | The part of the screen you asked about may go to Groq or Google. Opens only through its card. | off | on / off |
 | `privacy.account` — An account | Anonymous, or your Google sign-in: for problem reports you choose to send and for the two syncs. Opens only through its card. | off | on / off |
 | `privacy.report_upload` — Sending problem reports | Only what the preview showed. Opens only through its card. | off | on / off |
-| `privacy.settings_sync` — Syncing settings and words | Your changed settings and learned words follow you to every PC you sign into; never keys, hotkeys, devices, folders or positions. Asked on the wizard's last page, on unless you turned it off there; Withdraw turns it off, Sync now under Account asks again. | off | on / off |
-| `privacy.history_sync` — Syncing what you said | The Said page is the same on every PC you sign into. Stored in your account on the developer's server, where he could technically read it. Opens only through its card. | off | on / off |
+| `privacy.settings_sync` — Syncing settings and words | Your changed settings and learned words follow you to every PC you sign into; never keys, hotkeys, devices, folders or positions. Comes with the sign-in and the wizard's one sync switch; Withdraw turns it off, Turn on here asks again. | off | on / off |
+| `privacy.history_sync` — Syncing what you said | The Said page is the same on every PC you sign into. Stored in your account on the developer's server, where he could technically read it. Comes with the sign-in and the wizard's one sync switch, like the settings; Withdraw turns it off on its own, Turn on here asks again. | off | on / off |
 
 ### Switches
 
