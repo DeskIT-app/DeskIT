@@ -6,6 +6,12 @@ attestation, the previous version) — do not write those here. Hebrew
 paragraph first (the owner's), English second (DISTRIBUTION_PLAN.md
 11.11 step 2).
 
+## 1.0.3
+
+אחרי עדכון האפליקציה נפתחת מחדש, והאייקון על שולחן העבודה נשאר במקומו (21.9.2026, העדכון הראשון של הבעלים שעבר: "האפליקציה נסגרה ולא נפתחה מחדש", ו"היא עכשיו במקום אחר במסך שלי"). האפליקציה יוצאת בעצמה לפני שהמתקין רץ, ולכן למנגנון של Windows שמחזיר תוכניות שהוא סגר לא היה מה להחזיר — עכשיו המתקין פותח אותה בעצמו כשהקבצים במקום, וההפעלה הראשונה אומרת "Updated to DeskIT x". והאייקון: המתקין מחק ויצר אותו מחדש בכל שדרוג, ו-Windows שם את החדש במשבצת הפנויה הבאה — מעכשיו אייקון שקיים נשאר איפה שהוא, אייקון שמחקת לא חוזר, והמסיר לוקח אותו בכל מקרה.
+
+After an update the app opens again, and the desktop icon stays where it was (2026-09-21, the owner's first update that went through: "the app closed and did not reopen", and "it is somewhere else on my desktop now"). The app leaves by itself before the installer runs, so Windows' way of bringing back what it closed had nothing to bring back — the installer now opens the app itself once the files are in place, and the first start says "Updated to DeskIT x". And the icon: the installer deleted and recreated it on every upgrade, and Windows put the new one in its next free cell — from now on an icon that is there stays put, one you deleted does not come back, and the uninstaller takes it either way.
+
 ## 1.0.2
 
 עדכון הוא כפתור אחד (21.9.2026, הבעלים אחרי העדכון הראשון שלו: "רק Download — אני רוצה שכולם יהיו באותה גרסה, אנחנו עדיין לא בשלב שנותנים לאנשים לבחור"). השורה בבית והכרטיס ב-Settings > The app מציעים Download and install ולא יותר — Release notes ו-Skip this version ירדו, וגם ההגדרה של גרסה שדילגו עליה. ואחרי עדכון האפליקציה לא מציעה את עצמה: העותק שמר את תוצאת הבדיקה של העותק הקודם ("1.0.1 is available — you have 1.0.1"), ועכשיו תוצאה שאינה חדשה מהגרסה שרצה נזרקת, וגם ההפעלה הראשונה אחרי עדכון שוכחת אותה. Check now שמוצא שאתה מעודכן מוריד גם את הכפתור, לא רק את השורה.
