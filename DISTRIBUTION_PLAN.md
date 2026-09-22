@@ -3028,9 +3028,12 @@ in order.
 
 1. Edit `VERSION` (and only `VERSION`); commit "Release x.y.z"; the Android `versionCode` follows by
    itself (11.2).
-2. Write the release notes in `CHANGELOG.md` under the new heading — Hebrew paragraph first, English
-   second (the guide's language rule, D26); the fixed "Previous version" block is inserted by the
-   workflow, do not write it.
+2. Write the release notes in `CHANGELOG.md` under the new heading — **English only, not a word of
+   Hebrew** (the owner, 2026-09-22: "change all the releases so they are only in English"; the
+   Hebrew paragraph every section opened with until then was removed from the file and from every
+   published release page that day). This is the one place the guide's language rule of D26 does
+   NOT apply: the guide stays Hebrew-first, the release notes are English. The fixed "Previous
+   version" block is inserted by the workflow, do not write it.
 3. `git tag vx.y.z` and push the tag. The workflow refuses a tag that does not equal `VERSION`, a
    `VERSION` that is not greater than the last release, or a `-beta` tag on a non-pre-release.
 4. Wait for the workflow: wheelhouse with `--require-hashes`, embeddable Python, `git archive`,
@@ -3731,7 +3734,7 @@ Implements **D26** (guide, support, first-user channels, positioning). It reuses
 | `docs\_config.yml` | the Pages site configuration: the site title, the two language trees, the theme; no build step other than Pages' own Jekyll |
 | `docs\strings\` | the string tables exported from the app's modules (chapter 9 §9.1: one string table per module) so the guide quotes consent-card and key-field wording *verbatim* rather than retyping it |
 
-**Language rule.** Hebrew pages are the primary text; the English mirror is written second and may lag by one release (chapter 11 §11.11 already applies the same rule to release notes). Chapter titles, screen names and settings keys stay in English inside the Hebrew text because the app's chrome is English (chapter 9 §9.1) — the guide names what the user actually sees on screen: "Settings > Privacy", "YOUR CLOUD KEYS", "Dashboard > Network", "Home", "Keys" (the *hotkeys* place; chapter 9 open point 2 fixes these two names and this chapter uses them the same way).
+**Language rule.** Hebrew pages are the primary text; the English mirror is written second and may lag by one release. The guide alone: since 2026-09-22 the release notes are English only and carry no Hebrew at all (chapter 11 §11.11 step 2), so they are the one exception to this rule, not an example of it. Chapter titles, screen names and settings keys stay in English inside the Hebrew text because the app's chrome is English (chapter 9 §9.1) — the guide names what the user actually sees on screen: "Settings > Privacy", "YOUR CLOUD KEYS", "Dashboard > Network", "Home", "Keys" (the *hotkeys* place; chapter 9 open point 2 fixes these two names and this chapter uses them the same way).
 
 **Versioning.** The guide is published from `main` at each release tag; the page footer prints the `VERSION` it documents (chapter 11) and the Settings chapter is regenerated at the same time (§14.6). Screenshots are retaken only when the screen changed (the screenshot list in §14.2 names the chapter that owns each screen, so a change there is the trigger).
 
