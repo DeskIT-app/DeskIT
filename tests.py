@@ -36005,6 +36005,24 @@ def test_the_two_d33_switches_live_on_their_tabs():
         return [c.itemcget(c._label, "text") for c in board.parts["claude_strip"].winfo_children()
                 if isinstance(c, ui.Button)]
 
+    def to_claude(board):
+        """The tab that draws the card, whichever it is: the card has
+        moved between tabs once already (The app -> Messages & sounds,
+        2026-09-22) and a test that names the tab breaks on the move
+        rather than on the thing it is testing. `parts` keeps what the
+        LAST tab registered, so the key is dropped before each tab is
+        drawn — otherwise the walk stops at the first tab and reads
+        widgets that tab has already destroyed."""
+        for tab in settings_mod.tab_names():
+            board.parts.pop("claude_switch", None)
+            board._settings_go(tab)
+            board._finish_settings()
+            board.root.update_idletasks()
+            switch = board.parts.get("claude_switch")
+            if switch is not None and switch.winfo_exists():
+                return
+        raise AssertionError("no Settings tab draws the Connect Claude Code card")
+
     try:
         with _patched(notify_hook, "DEFAULT_SETTINGS", claude_settings), \
                 _patched(paths, "SETTINGS_FILE", d / "s.toml"), _patched(paths, "STATE_FILE", d / "t.json"), \
@@ -36012,9 +36030,7 @@ def test_the_two_d33_switches_live_on_their_tabs():
             if board is None:
                 return
             board._show("Settings")
-            board._settings_go(settings_mod.APP)
-            board._finish_settings()
-            board.root.update_idletasks()
+            to_claude(board)
             switch = board.parts["claude_switch"]
             assert switch.get() is False, "no hook in the scratch settings.json"
             assert board.parts["claude_line"].cget("fg") == ui.FAINT
@@ -36028,9 +36044,7 @@ def test_the_two_d33_switches_live_on_their_tabs():
 
             # another DeskIT copy holds the door
             notify_hook.install_hook(claude_settings, python=r"C:\py\pythonw.exe", script=other)
-            board._settings_go(settings_mod.APP)
-            board._finish_settings()
-            board.root.update_idletasks()
+            to_claude(board)
             switch = board.parts["claude_switch"]
             line = board.parts["claude_line"]
             assert switch.get() is False, "another copy's lines are not this switch's on"
