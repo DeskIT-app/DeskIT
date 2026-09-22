@@ -379,8 +379,15 @@ def delete_everything(*, yes: bool, out=print) -> int:
         problems += 1
         out(f"  could not remove the Run value: {e}")
     try:
-        if notify_hook.uninstall_hook():
+        # Only if the lines name THIS copy: one settings.json serves
+        # every DeskIT copy on the PC (notify_hook.hook_state), and
+        # deleting this copy is no reason to disconnect another's.
+        state, other = notify_hook.hook_state()
+        if state == "mine" and notify_hook.uninstall_hook():
             out("Claude Code hook lines removed")
+        elif state == "other":
+            out(f"Claude Code's hook lines name another DeskIT copy ({other}) "
+                "— left alone")
     except Exception as e:                                   # noqa: BLE001
         problems += 1
         out(f"  could not remove the hook lines: {e}")

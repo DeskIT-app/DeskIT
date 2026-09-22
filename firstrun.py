@@ -326,6 +326,11 @@ WORDS = {
     "extras.updates.help": "One request to github.com, no identifier sent.",
     "extras.claude": "Connect Claude Code",
     "extras.claude.help": "Two hook lines in ~/.claude/settings.json: when Claude Code finishes or asks, DeskIT shows a card.",
+    "extras.claude.other": "Claude Code is connected to another DeskIT copy ({folder}). Turn this on to move it here.",
+    "extras.claude.ask": "Disconnect it and connect this one? Claude Code's cards stop there and start here.",
+    "extras.claude.keep": "Keep it",
+    "extras.claude.take": "Yes, connect this one",
+    "extras.claude.taking": "On Next, the other copy is disconnected and this one connected.",
     "extras.snip": "Take over Win+Shift+S for DeskIT's screenshot key",
     "extras.snip.help": "Windows' own Snipping Tool stops answering that shortcut while DeskIT runs; off, the key is Ctrl+F11.",
     "done.autostart": "Start with Windows",
@@ -1082,11 +1087,18 @@ class Wizard:
             self.extras["cloud"] = bool(privacy.allowed("cloud_text"))
         except Exception:                                  # noqa: BLE001
             pass
+        # Whose hook lines Claude Code's settings.json holds: this copy's
+        # (the switch on), another DeskIT copy's (off, with the other's
+        # folder on the row and a question before it is taken over — see
+        # _claude_ask), or nobody's.
+        self._claude_state, self._claude_other = "none", None
         try:
             import notify_hook
-            self.extras["claude"] = notify_hook.hook_installed()
+            self._claude_state, self._claude_other = notify_hook.hook_state(
+                script=str(APP_DIR / "notify_hook.py"))
         except Exception:                                  # noqa: BLE001
             pass
+        self.extras["claude"] = self._claude_state == "mine"
         self._extras_shown = dict(self.extras)
         # The last page's sync row (the owner, 2026-09-20: nobody found
         # the gate in Settings — "make it the default, on the last screen,
@@ -1297,9 +1309,13 @@ class Wizard:
         card.resize(card.body.winfo_reqheight() + 2 * card.pad)
 
     def _switch_row(self, label: str, help_: str, value: bool, command,
-                    parent=None, bg: str | None = None, last: bool = False) -> ui.Switch:
+                    parent=None, bg: str | None = None, last: bool = False,
+                    help_fg: str | None = None, name: str | None = None) -> ui.Switch:
         """A switch, its label and one help line — the Settings page's
-        row shape, on whatever face it is put on."""
+        row shape, on whatever face it is put on. `help_fg` colours the
+        line when it is a warning rather than help (the Claude row while
+        another copy holds the door), and `name` keeps the line in
+        `self.help_lines` for a row whose words change under it."""
         parent = parent or self.body
         bg = bg or ui.BG
         row = tk.Frame(parent, bg=bg)
@@ -1310,9 +1326,11 @@ class Wizard:
         words.pack(side="left", fill="x", expand=True)
         tk.Label(words, text=label, bg=bg, fg=ui.FG, font=(ui.UI, 10),
                  anchor="w").pack(fill="x")
-        tk.Label(words, text=help_, bg=bg, fg=ui.DIM, font=(ui.UI, 8),
-                 anchor="w", justify="left", wraplength=INNER - 110
-                 ).pack(fill="x")
+        line = tk.Label(words, text=help_, bg=bg, fg=help_fg or ui.DIM, font=(ui.UI, 8),
+                        anchor="w", justify="left", wraplength=INNER - 110)
+        line.pack(fill="x")
+        if name:
+            self.help_lines[name] = line
         return switch
 
     # ---------------------------------------------------------------- pages
@@ -2382,6 +2400,7 @@ class Wizard:
     def _page_extras(self) -> None:
         self._head(WORDS["extras.title"], WORDS["extras.sub"])
         self.switches: dict[str, ui.Switch] = {}
+        self.help_lines: dict[str, tk.Label] = {}
         card = self._card(pad=18)
         card.pack(fill="x")
         rows = [("cloud", WORDS["extras.cloud"], WORDS["extras.cloud.help"]),
@@ -2391,11 +2410,19 @@ class Wizard:
                 ("snip", WORDS["extras.snip"], WORDS["extras.snip.help"])]
         self.extras_card = card
         self.cloud_slot = None
+        self.claude_slot = None
         for i, (key, label, help_) in enumerate(rows):
+            help_fg = None
+            if key == "claude" and self._claude_state == "other":
+                # Another DeskIT copy holds the door: the row says so,
+                # in amber, and turning it on asks first (_claude_ask).
+                help_ = WORDS["extras.claude.other"].format(folder=self._claude_other)
+                help_fg = ui.AMBER
             self.switches[key] = self._switch_row(
                 label, help_, self.extras[key],
                 lambda _v=None, k=key: self._extra_flipped(k),
-                parent=card.body, bg=ui.CARD, last=i == len(rows) - 1)
+                parent=card.body, bg=ui.CARD, last=i == len(rows) - 1,
+                help_fg=help_fg, name=key)
             if key == "cloud":
                 # What the cloud row opens — the consent, then the key —
                 # opens HERE, under the row, inside the card (the owner's
@@ -2403,6 +2430,9 @@ class Wizard:
                 # square field under the card).
                 self.cloud_slot = tk.Frame(card.body, bg=ui.CARD)
                 self.cloud_slot.pack(fill="x")
+            if key == "claude":
+                self.claude_slot = tk.Frame(card.body, bg=ui.CARD)
+                self.claude_slot.pack(fill="x")
         self._fit(card)
         self.key_panel = None
         self._key_state = "none"      # none | testing | ok | bad — Next waits for ok
@@ -2444,7 +2474,89 @@ class Wizard:
                 except Exception:                          # noqa: BLE001
                     log.info("the cloud gate was not withdrawn", exc_info=True)
             return
+        if key == "claude" and self._claude_state == "other":
+            # Another copy's lines are in the file: on only ASKS, under
+            # the row (the knob goes back until the answer); off after a
+            # Yes calls the takeover off, and the other copy keeps the
+            # door — the extras are written on Next, _save_extras.
+            if on and not self.extras["claude"]:
+                self.switches[key].set(False)
+                self._claude_ask()
+                return
+            self._claude_slot_clear()
+            self._claude_row_line(taking=on)
         self.extras[key] = on
+
+    # ------------------------------------------- the Claude row's question
+    def _claude_ask(self) -> None:
+        """Under the Claude row, inside the card: the question in amber
+        and its two answers, the way the cloud row opens its key panel —
+        never a window somewhere else (the owner's rule for every
+        yes/no, 2026-09-21)."""
+        slot = getattr(self, "claude_slot", None)
+        if slot is None or not slot.winfo_exists():
+            return
+        self._claude_slot_clear()
+        panel = tk.Frame(slot, bg=ui.CARD)
+        panel.pack(fill="x", padx=(54, 0), pady=(2, 10))    # under the words, past the switch
+        # The row above already names the copy — the question does not
+        # say the path a second time.
+        tk.Label(panel, text=WORDS["extras.claude.ask"],
+                 bg=ui.CARD, fg=ui.AMBER, font=(ui.UI, 9), anchor="nw",
+                 justify="left", wraplength=INNER - 110).pack(fill="x")
+        row = tk.Frame(panel, bg=ui.CARD)
+        row.pack(fill="x", pady=(6, 0))
+        ui.Button(row, WORDS["extras.claude.keep"], self._claude_keep,
+                  bg=ui.CARD, quiet=True, w=100, h=34).pack(side="left", padx=(0, 10))
+        ui.Button(row, WORDS["extras.claude.take"], self._claude_take,
+                  bg=ui.CARD, primary=True, w=190, h=34).pack(side="left")
+        self._fit(self.extras_card)
+
+    def _claude_keep(self) -> None:
+        self._claude_slot_clear()
+        self.extras["claude"] = False
+        self.switches["claude"].set(False)
+        self._claude_row_line(taking=False)
+
+    def _claude_take(self) -> None:
+        """Yes: the knob goes on and one line says what Next will do —
+        install_hook sweeps the other copy's lines before it writes."""
+        self._claude_slot_clear()
+        self.extras["claude"] = True
+        self.switches["claude"].set(True)
+        self._claude_row_line(taking=True)
+        slot = getattr(self, "claude_slot", None)
+        if slot is None or not slot.winfo_exists():
+            return
+        tk.Label(slot, text=WORDS["extras.claude.taking"], bg=ui.CARD, fg=ui.DIM,
+                 font=(ui.UI, 9), anchor="nw", justify="left", wraplength=INNER - 110
+                 ).pack(fill="x", padx=(54, 0), pady=(2, 10))
+        self._fit(self.extras_card)
+
+    def _claude_row_line(self, taking: bool) -> None:
+        """The row's own line: the amber warning while the other copy
+        still holds the door, the plain help once the answer is Yes —
+        a line that went on saying "connected to another copy" under a
+        switch that was now ON would be the same lie the whole branch
+        is about."""
+        line = getattr(self, "help_lines", {}).get("claude")
+        if line is None or not line.winfo_exists():
+            return
+        if taking:
+            line.configure(text=WORDS["extras.claude.help"], fg=ui.DIM)
+        else:
+            line.configure(text=WORDS["extras.claude.other"].format(folder=self._claude_other),
+                           fg=ui.AMBER)
+        self._fit(self.extras_card)
+
+    def _claude_slot_clear(self) -> None:
+        slot = getattr(self, "claude_slot", None)
+        if slot is None or not slot.winfo_exists():
+            return
+        for child in slot.winfo_children():
+            child.destroy()
+        slot.configure(height=1)          # see _clear_slot: an emptied frame keeps its size
+        self._fit(self.extras_card)
 
     def _clear_slot(self) -> None:
         """Whatever the cloud row had opened under it, gone; the card
@@ -3033,12 +3145,20 @@ class Wizard:
                 import launch
                 import notify_hook
                 if want["claude"]:
+                    # install_hook sweeps every DeskIT copy's lines first:
+                    # a Yes on the row's question ends here, the other
+                    # copy disconnected in the same write.
+                    if self._claude_state == "other":
+                        log.info("the Claude Code door moves here from %s",
+                                 self._claude_other)
                     notify_hook.install_hook(notify_hook.DEFAULT_SETTINGS,
                                              python=launch.pythonw(),
                                              script=str(APP_DIR / "notify_hook.py"))
                     updates["notify.enabled"] = True
+                    self._claude_state, self._claude_other = "mine", None
                 else:
                     notify_hook.uninstall_hook(notify_hook.DEFAULT_SETTINGS)
+                    self._claude_state, self._claude_other = "none", None
             except Exception as e:                         # noqa: BLE001
                 log.info("the Claude Code door was not written: %r", e)
         try:

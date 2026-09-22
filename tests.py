@@ -30525,7 +30525,9 @@ def test_reset_data_everything_is_the_uninstallers_delete():
     the test build kept 4.6 GB of models under a question that promised
     to take them). Without --yes it only says what it would do; on a
     portable or developer copy it refuses, because there the data folder
-    is the app folder."""
+    is the app folder. The hook lines go only when they name THIS copy
+    (2026-09-22): one settings.json serves every DeskIT copy on the PC,
+    and deleting this one is no reason to disconnect another."""
     import autostart
     import migrate
     import notify_hook
@@ -30545,6 +30547,7 @@ def test_reset_data_everything_is_the_uninstallers_delete():
                 _patched(secretstore, "present", lambda: {"groq": "Credential Manager"}), \
                 _patched(secretstore, "delete_all", lambda: calls.append("secrets") or ["groq"]), \
                 _patched(autostart, "apply", lambda on: calls.append(("run", on)) or True), \
+                _patched(notify_hook, "hook_state", lambda *a, **k: ("mine", None)), \
                 _patched(notify_hook, "uninstall_hook", lambda *a, **k: calls.append("hooks") or True):
             assert migrate.reset_data(yes=False, out=said.append, everything=True) == 1
             assert calls == [] and (home / "models" / "x" / "model.bin").exists()
@@ -30555,6 +30558,21 @@ def test_reset_data_everything_is_the_uninstallers_delete():
             assert calls == ["secrets", ("run", False), "hooks"], calls
             assert not home.exists(), "the folder stayed"
             assert any(l.startswith("secrets removed: groq") for l in said), said
+        # another DeskIT copy's lines: left where they are, and said so
+        for rel in ("settings.toml",):
+            (home / rel).parent.mkdir(parents=True, exist_ok=True)
+            (home / rel).write_text("x", "utf-8")
+        with _patched(paths, "DATA_DIR", home), _patched(paths, "PORTABLE", False), \
+                _patched(migrate, "_running", lambda: False), \
+                _patched(secretstore, "present", lambda: {}), \
+                _patched(secretstore, "delete_all", lambda: []), \
+                _patched(autostart, "apply", lambda on: True), \
+                _patched(notify_hook, "hook_state", lambda *a, **k: ("other", r"C:\other\DeskIT")), \
+                _patched(notify_hook, "uninstall_hook", lambda *a, **k: calls.append("hooks") or True):
+            calls.clear(); said.clear()
+            assert migrate.reset_data(yes=True, out=said.append, everything=True) == 0
+            assert calls == [], "another copy's hook lines were removed"
+            assert any(r"C:\other\DeskIT" in l and "left alone" in l for l in said), said
         with _patched(paths, "DATA_DIR", home), _patched(paths, "PORTABLE", True), \
                 _patched(migrate, "_running", lambda: False):
             calls.clear(); said.clear()
@@ -35133,6 +35151,116 @@ def test_the_cloud_switch_is_the_consent_and_next_waits_for_a_working_key():
             shutil.rmtree(d, ignore_errors=True)
 
 
+def test_the_extras_page_asks_before_taking_the_claude_door():
+    """The Connect Claude Code row when another DeskIT copy's lines are
+    in Claude Code's settings.json (2026-09-22): drawn OFF with the
+    other's folder in amber; a flip opens the question under the row,
+    inside the card, and the knob goes back until the answer. Keep it
+    leaves the switch off and the file alone; Yes puts the knob on with
+    one line about Next, and Next writes this copy's lines over the
+    other's in one install. Off after a Yes calls it off, and the other
+    copy keeps the door."""
+    import firstrun
+    import notify_hook
+    import tkinter as tk
+    import ui
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    offers = {"portable": True, "model": None, "pack": None, "detector": None, "tier": "gpu"}
+    claude_settings = d / "claude-settings.json"
+    other = r"C:\Users\x\Desktop\Projects\DeskIT\notify_hook.py"
+    mine = str(firstrun.APP_DIR / "notify_hook.py")
+    notify_hook.install_hook(claude_settings, python=r"C:\py\pythonw.exe", script=other)
+
+    def slot_texts(w):
+        out = []
+
+        def walk(c):                      # in drawing order, top to bottom
+            if isinstance(c, tk.Label):
+                out.append(("label", c.cget("text"), c.cget("fg")))
+            elif isinstance(c, ui.Button):
+                out.append(("button", c.itemcget(c._label, "text"), ""))
+            for k in c.winfo_children():
+                walk(k)
+        for child in w.claude_slot.winfo_children():
+            walk(child)
+        return out
+
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(notify_hook, "DEFAULT_SETTINGS", claude_settings):
+        try:
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            assert (w._claude_state, w._claude_other) == ("other", r"C:\Users\x\Desktop\Projects\DeskIT")
+            assert w.extras["claude"] is False, "another copy's lines drew the switch on"
+            w.page = firstrun.PAGES.index("extras")
+            w._show_page()
+            w.root.update()
+            switch = w.switches["claude"]
+            assert switch.get() is False
+            rows_only = w.extras_card.h
+            help_lines = [c for c in w.extras_card.body.winfo_children()]
+            amber = [lab for row in help_lines for words in row.winfo_children()
+                     for lab in words.winfo_children()
+                     if isinstance(lab, tk.Label) and lab.cget("fg") == ui.AMBER]
+            assert len(amber) == 1 and r"C:\Users\x\Desktop\Projects\DeskIT" in amber[0].cget("text"), \
+                [a.cget("text") for a in amber]
+
+            switch.toggle()                                  # on: asks, the knob goes back
+            w.root.update()
+            assert switch.get() is False and w.extras["claude"] is False
+            texts = slot_texts(w)
+            assert [k for k, _t, _c in texts] == ["label", "button", "button"], texts
+            assert texts[0][1].startswith("Disconnect it and connect this one?") and texts[0][2] == ui.AMBER
+            assert r"C:\Users\x" not in texts[0][1], "the row already names the copy"
+            assert [t_ for k, t_, _c in texts if k == "button"] == ["Keep it", "Yes, connect this one"]
+            assert w.extras_card.h > rows_only, "the card did not grow around the question"
+
+            w._claude_keep()
+            w.root.update()
+            assert slot_texts(w) == [] and switch.get() is False and w.extras["claude"] is False
+            assert w.extras_card.h == rows_only
+            assert notify_hook.hook_script(claude_settings) == other, "Keep it touched the file"
+            assert w.help_lines["claude"].cget("fg") == ui.AMBER
+
+            switch.toggle()
+            w._claude_take()
+            w.root.update()
+            assert switch.get() is True and w.extras["claude"] is True
+            texts = slot_texts(w)
+            assert len(texts) == 1 and "On Next" in texts[0][1], texts
+            # the row's own line stops warning once the switch is on
+            assert w.help_lines["claude"].cget("fg") == ui.DIM
+            assert "another DeskIT copy" not in w.help_lines["claude"].cget("text")
+            assert notify_hook.hook_script(claude_settings) == other, "written before Next"
+
+            switch.toggle()                                  # off after a Yes: called off
+            w.root.update()
+            assert switch.get() is False and w.extras["claude"] is False and slot_texts(w) == []
+            assert w.help_lines["claude"].cget("fg") == ui.AMBER, "the warning did not come back"
+            switch.toggle()
+            w._claude_take()
+            w._next()
+            assert w.name == "done"
+            assert notify_hook.hook_state(claude_settings, script=mine) == ("mine", None)
+            data = json.loads(claude_settings.read_text("utf-8"))
+            assert all(len(data["hooks"][ev]) == 1 for ev in ("Stop", "Notification")), \
+                "the other copy's lines stayed beside ours"
+            assert (w._claude_state, w._claude_other) == ("mine", None)
+            assert config_mod.read_settings(s).get("notify.enabled") in (None, True)
+        finally:
+            try:
+                w.root.destroy()
+            except Exception:                                # noqa: BLE001
+                pass
+            shutil.rmtree(d, ignore_errors=True)
+
+
 def test_the_wizard_shows_one_row_per_microphone():
     """firstrun.one_per_device (2026-09-19, the owner's screen: five rows
     for two microphones): the same name under MME, WASAPI, WDM-KS and
@@ -35367,6 +35495,56 @@ def test_the_claude_code_door_is_installed_and_removed_cleanly():
         assert notify_hook.hook_installed(path) is False
         assert json.loads(path.read_text("utf-8")) == theirs
         assert notify_hook.uninstall_hook(path) is False
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_claude_door_says_whose_it_is():
+    """notify_hook.hook_state (2026-09-22): one settings.json serves
+    every DeskIT copy on the PC, and the switch used to stand on for
+    ANY copy's lines — the installed copy said "connected" while the
+    lines named the checkout and its cards went to the checkout's port.
+    The state names the copy: none / mine / other (with the other's
+    folder), paths compared the way Windows does; install sweeps the
+    other copy's lines, so one copy holds the door at a time."""
+    import notify_hook
+
+    mine = r"C:\Users\x\AppData\Local\Programs\DeskIT\app\notify_hook.py"
+    other = r"C:\Users\x\Desktop\Projects\DeskIT\notify_hook.py"
+    d = Path(tempfile.mkdtemp(prefix="deskit-hook-"))
+    try:
+        path = d / "settings.json"
+        assert notify_hook.hook_state(path, script=mine) == ("none", None)
+        assert notify_hook.hook_script(path) is None
+        theirs = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo hi"}]}]}}
+        path.write_text(json.dumps(theirs), "utf-8")
+        assert notify_hook.hook_state(path, script=mine) == ("none", None), "a foreign hook is nobody's"
+
+        assert notify_hook.install_hook(path, python=r"C:\py\pythonw.exe", script=other)
+        assert notify_hook.hook_script(path) == other
+        state = notify_hook.hook_state(path, script=mine)
+        assert state == ("other", r"C:\Users\x\Desktop\Projects\DeskIT"), state
+        assert notify_hook.hook_state(path, script=other) == ("mine", None)
+        assert notify_hook.hook_state(path, script=other.upper()) == ("mine", None), "case is not a difference"
+        assert notify_hook.hook_state(path, script=other.replace("\\", "/")) == ("mine", None), "nor the slash"
+        assert notify_hook.hook_installed(path) is True, "any copy's lines: migrate's question"
+
+        assert notify_hook.install_hook(path, python=r"C:\py\pythonw.exe", script=mine)
+        assert notify_hook.hook_state(path, script=mine) == ("mine", None)
+        assert notify_hook.hook_state(path, script=other) == ("other", r"C:\Users\x\AppData\Local\Programs\DeskIT\app")
+        data = json.loads(path.read_text("utf-8"))
+        for event in ("Stop", "Notification"):
+            ours = [e for e in data["hooks"][event] if notify_hook._is_ours(e)]
+            assert len(ours) == 1, (event, ours)
+            assert notify_hook._script_of(ours[0]) == mine, "the other copy's lines were not swept"
+        assert data["hooks"]["Stop"][0]["hooks"][0]["command"] == "echo hi", "the foreign hook stays first"
+
+        assert notify_hook.uninstall_hook(path) is True
+        assert notify_hook.hook_state(path, script=mine) == ("none", None)
+        assert notify_hook.hook_state(path, script=other) == ("none", None)
+        assert notify_hook._script_of({"hooks": [{"type": "command", "command": "python notify_hook.py"}]}) \
+            == "python notify_hook.py", "an unquoted command is still a DeskIT hook"
+        assert notify_hook._script_of("junk") is None and notify_hook._script_of({}) is None
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -35804,17 +35982,31 @@ def test_the_two_d33_switches_live_on_their_tabs():
     """Connect Claude Code on The app (notify_hook.install_hook /
     uninstall_hook, notify.enabled) and the Snipping-Tool key on Screen
     (capture_hotkey = win+shift+s / ctrl+f11 through _apply_key, the
-    Keys place's own road), each drawn as it stands."""
+    Keys place's own road), each drawn as it stands.
+
+    The Claude switch writes a scratch settings.json for real, because
+    what it shows is read back from the file (hook_state): on for this
+    copy's lines only. Another copy's lines draw it OFF with an amber
+    line naming the other's folder, and a flip then asks in the card —
+    Keep it changes nothing; Yes sweeps the other copy's lines and
+    writes this copy's in one install (the owner, 2026-09-22: the
+    installed copy's switch stood on while the checkout held the door)."""
     import notify_hook
     import settings as settings_mod
     import dashboard as dash
+    import ui
 
-    hooked: list[str] = []
     d = Path(tempfile.mkdtemp(prefix="deskit-d33-"))
+    claude_settings = d / "settings.json"
+    mine = str(dash.APP_DIR / "notify_hook.py")
+    other = r"C:\Users\x\Desktop\Projects\DeskIT\notify_hook.py"
+
+    def strip_buttons(board):
+        return [c.itemcget(c._label, "text") for c in board.parts["claude_strip"].winfo_children()
+                if isinstance(c, ui.Button)]
+
     try:
-        with _patched(notify_hook, "DEFAULT_SETTINGS", d / "settings.json"), \
-                _patched(notify_hook, "install_hook", lambda *a, **k: hooked.append("install")), \
-                _patched(notify_hook, "uninstall_hook", lambda *a, **k: hooked.append("uninstall")), \
+        with _patched(notify_hook, "DEFAULT_SETTINGS", claude_settings), \
                 _patched(paths, "SETTINGS_FILE", d / "s.toml"), _patched(paths, "STATE_FILE", d / "t.json"), \
                 _window() as board:
             if board is None:
@@ -35825,11 +36017,48 @@ def test_the_two_d33_switches_live_on_their_tabs():
             board.root.update_idletasks()
             switch = board.parts["claude_switch"]
             assert switch.get() is False, "no hook in the scratch settings.json"
+            assert board.parts["claude_line"].cget("fg") == ui.FAINT
             switch.toggle()
-            assert hooked == ["install"]
+            assert notify_hook.hook_state(claude_settings, script=mine) == ("mine", None)
+            assert switch.get() is True and "this copy" in board.parts["claude_line"].cget("text")
             assert config_mod.read_settings(d / "s.toml").get("notify.enabled") in (None, True)
             switch.toggle()
-            assert hooked == ["install", "uninstall"]
+            assert notify_hook.hook_state(claude_settings, script=mine) == ("none", None)
+            assert switch.get() is False
+
+            # another DeskIT copy holds the door
+            notify_hook.install_hook(claude_settings, python=r"C:\py\pythonw.exe", script=other)
+            board._settings_go(settings_mod.APP)
+            board._finish_settings()
+            board.root.update_idletasks()
+            switch = board.parts["claude_switch"]
+            line = board.parts["claude_line"]
+            assert switch.get() is False, "another copy's lines are not this switch's on"
+            assert line.cget("fg") == ui.AMBER and r"C:\Users\x\Desktop\Projects\DeskIT" in line.cget("text")
+            assert strip_buttons(board) == []
+            quiet = board.parts["claude_card"].h
+            switch.toggle()                                     # on: only asks
+            assert switch.get() is False, "the knob went on before the answer"
+            assert strip_buttons(board) == ["Keep it", "Yes, connect this one"], strip_buttons(board)
+            assert "Disconnect the other DeskIT copy" in line.cget("text")
+            assert board.parts["claude_card"].h > quiet, "the card did not grow for its buttons"
+            assert notify_hook.hook_script(claude_settings) == other, "asking wrote the file"
+            board._claude_keep()
+            assert strip_buttons(board) == [] and switch.get() is False
+            assert notify_hook.hook_script(claude_settings) == other, "Keep it changed the file"
+            assert board.parts["claude_card"].h == quiet
+            switch.toggle()
+            assert strip_buttons(board) == ["Keep it", "Yes, connect this one"]
+            board._claude_take()
+            assert notify_hook.hook_state(claude_settings, script=mine) == ("mine", None)
+            data = json.loads(claude_settings.read_text("utf-8"))
+            assert all(len(data["hooks"][ev]) == 1 for ev in ("Stop", "Notification")), \
+                "the other copy's lines stayed beside ours"
+            assert switch.get() is True and strip_buttons(board) == []
+            assert line.cget("fg") == ui.FAINT and "this copy" in line.cget("text")
+            assert "is disconnected" in board._toast_text, board._toast_text
+            switch.toggle()                                     # off again: ours go
+            assert notify_hook.hook_state(claude_settings, script=mine) == ("none", None)
 
             applied: list = []
             board._apply_key = lambda field, key: applied.append((field, key))

@@ -10127,19 +10127,124 @@ class Dashboard:
     def _claude_block(self, scroller) -> None:
         """Connect Claude Code on Settings > The app (D15, D33): the
         switch the wizard's extras page asked once — two hook lines in
-        ~/.claude/settings.json, written and removed through notify_hook."""
+        ~/.claude/settings.json, written and removed through notify_hook.
+
+        One settings.json serves every DeskIT copy on the PC, so the
+        switch says WHOSE lines are there (notify_hook.hook_state): on
+        for this copy's; off with an amber line when another copy holds
+        the door (the owner, 2026-09-22 — the installed copy's switch
+        stood on while the lines named the checkout, and its cards went
+        to the wrong port); and a flip then asks in the card, the way
+        Delete my account does, before the other copy is disconnected.
+        The switch-and-sentence shape is _switch_card's, drawn here by
+        hand because the sentence and the two buttons change."""
+        card = ui.Card(scroller.inner, CW, 36 + 46 + 3 * LINE + 6,
+                       bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="C L A U D E   C O D E", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        switch = ui.Switch(body, False, self._claude_flip, bg=ui.CARD)
+        switch.place(x=0, y=26)
+        tk.Label(body, text="Connect Claude Code", bg=ui.CARD, fg=ui.FG,
+                 font=(ui.UI, 10)).place(x=60, y=24)
+        line = tk.Label(body, text="", bg=ui.CARD, fg=ui.FAINT,
+                        font=(ui.UI, 8), justify="left")
+        line.place(x=60, y=46)
+        strip = tk.Frame(body, bg=ui.CARD, height=30, width=CW - 100)
+        self.parts["claude_switch"] = switch
+        self.parts["claude_card"] = card
+        self.parts["claude_line"] = line
+        self.parts["claude_strip"] = strip
+        self._claude_asking = False
+        self._claude_state = "none"
+        self._claude_other = None
+        self._paint_claude()
+        scroller.bind_wheel(card)
+
+    def _paint_claude(self) -> None:
+        """The card as the file stands: the switch, one sentence, and —
+        while it asks — the two answers under the sentence, the card
+        grown to hold them (ui.Card.resize, the home pile's way)."""
         import notify_hook
-        on = False
+        p = self.parts
+        card, switch, line, strip = (p.get("claude_card"), p.get("claude_switch"),
+                                     p.get("claude_line"), p.get("claude_strip"))
+        if line is None or not line.winfo_exists():
+            return
+        state, other = "none", None
         try:
-            on = notify_hook.hook_installed()
+            state, other = notify_hook.hook_state(
+                script=str(APP_DIR / "notify_hook.py"))
         except Exception:                 # noqa: BLE001
             pass
-        self.parts["claude_switch"] = self._switch_card(
-            scroller, "C L A U D E   C O D E", on, self._claude_flip,
-            "Connect Claude Code",
-            "Two hook lines in ~/.claude/settings.json: when Claude Code "
-            "finishes or asks, DeskIT shows a card and plays a cue. Off "
-            "removes the lines.")
+        self._claude_state, self._claude_other = state, other
+        if state != "other":
+            self._claude_asking = False   # nothing left to take over
+        colour = ui.FAINT
+        buttons: list[tuple[str, object]] = []
+        on = state == "mine"
+        if self._claude_asking:
+            said = (f"Disconnect the other DeskIT copy ({other}) and connect "
+                    "this one? Claude Code's cards stop there and start here.")
+            colour = ui.AMBER
+            buttons = [("Keep it", self._claude_keep),
+                       ("Yes, connect this one", self._claude_take)]
+        elif state == "other":
+            said = (f"Claude Code is connected to another DeskIT copy "
+                    f"({other}). Turn this on to move it here.")
+            colour = ui.AMBER
+        elif state == "mine":
+            said = ("Connected: two hook lines in ~/.claude/settings.json "
+                    "name this copy — when Claude Code finishes or asks, "
+                    "DeskIT shows a card and plays a cue. Off removes the lines.")
+        else:
+            said = ("Two hook lines in ~/.claude/settings.json: when Claude "
+                    "Code finishes or asks, DeskIT shows a card and plays a "
+                    "cue. Off removes the lines.")
+        switch.set(on)
+        text, lines = ui.clamp(said, ui.UI, 8, CW - 100, 3)
+        line.configure(text=text, fg=colour)
+        for child in strip.winfo_children():
+            child.destroy()
+        height = 36 + 46 + lines * LINE + 6
+        if buttons:
+            strip.place(x=60, y=46 + lines * LINE + 8)
+            x = 0
+            for label, command in buttons:
+                w = widgets.button_width(label)
+                ui.Button(strip, label, command, h=30, w=w, quiet=True,
+                          bg=ui.CARD).place(x=x, y=0)
+                x += w + 8
+            height += 30 + 8
+        else:
+            strip.place_forget()
+        card.resize(height)
+
+    def _claude_keep(self) -> None:
+        self._claude_asking = False
+        self._paint_claude()
+
+    def _claude_take(self) -> None:
+        """Yes: the other copy's lines go, this copy's are written — one
+        install_hook, which sweeps every DeskIT entry before it adds."""
+        self._claude_asking = False
+        other = self._claude_other
+        try:
+            self._claude_connect()
+            self._note(f"Claude Code connected — the other copy ({other}) "
+                       "is disconnected")
+        except Exception as e:                                # noqa: BLE001
+            self._note(f"could not write the hook: {e}")
+        self._paint_claude()
+
+    def _claude_connect(self) -> None:
+        import launch
+        import notify_hook
+        notify_hook.install_hook(notify_hook.DEFAULT_SETTINGS,
+                                 python=launch.pythonw(),
+                                 script=str(APP_DIR / "notify_hook.py"))
+        config_mod.save({"notify.enabled": True})
 
     def _switch_card(self, scroller, title: str, on: bool, command,
                      label: str, help_text: str):
@@ -10168,14 +10273,19 @@ class Dashboard:
         return switch
 
     def _claude_flip(self, on: bool) -> None:
-        import launch
+        """The switch: on writes this copy's lines, off removes them —
+        unless another copy holds the door, when on only ASKS (the knob
+        goes back until the answer) and off touches nothing, since
+        uninstall_hook sweeps every copy's lines and the other copy's
+        are not this switch's to remove."""
         import notify_hook
+        if self._claude_state == "other":
+            self._claude_asking = bool(on)
+            self._paint_claude()
+            return
         try:
             if on:
-                notify_hook.install_hook(notify_hook.DEFAULT_SETTINGS,
-                                         python=launch.pythonw(),
-                                         script=str(APP_DIR / "notify_hook.py"))
-                config_mod.save({"notify.enabled": True})
+                self._claude_connect()
                 self._note("Claude Code connected — the hook lines are in "
                            "~/.claude/settings.json")
             else:
@@ -10183,6 +10293,7 @@ class Dashboard:
                 self._note("Claude Code disconnected — the hook lines are gone")
         except Exception as e:                                # noqa: BLE001
             self._note(f"could not write the hook: {e}")
+        self._paint_claude()
 
     def _recording_block(self, scroller) -> None:
         """The Recording pack on Settings > Screen (13.4, D24): PyAV with
