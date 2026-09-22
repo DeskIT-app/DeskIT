@@ -126,7 +126,7 @@ The lock, בכל מחשב שכבר בפנים). או **Later**: בינתיים �
 | Fix misheard words with a free cloud model (text only) | כבוי. ההדלקה היא ההסכמה ([פרק 5](05-cloud) אומר מה יוצא ולאן) ופותחת מתחת לשורה שדה למפתח Groq חינמי משלך, שנבדק מול Groq ברגע השמירה. Next מחכה עד שמפתח עובד — או עד שהמתג כבוי שוב. |
 | Keep this PC awake while DeskIT runs | דלוק. חלונות לא נרדם כל עוד דסק-איט רץ; **Settings > General** מכבה. |
 | Check for updates weekly | דלוק. בקשה אחת ל־github.com, בלי מזהה. |
-| Connect Claude Code | כבוי. שתי שורות ב־`~/.claude/settings.json`: כש־Claude Code מסיים או שואל, דסק-איט מציג כרטיס ומשמיע צליל. |
+| Connect Claude Code | כבוי. שתי שורות ב־`~/.claude/settings.json`: כש־Claude Code מסיים או שואל, דסק-איט מציג כרטיס ומשמיע צליל. עותק אחד של דסק-איט בכל פעם: אם עותק אחר במחשב הזה מחובר, השורה אומרת זאת וההדלקה שואלת קודם — עונים *Yes, connect this one* והעותק האחר מתנתק. |
 | Take over Win+Shift+S for DeskIT's screenshot key | דלוק. כלי החיתוך של חלונות מפסיק לענות לקיצור הזה כל עוד דסק-איט רץ; כבוי — המקש הוא Ctrl+F11. |
 
 ## מוכן

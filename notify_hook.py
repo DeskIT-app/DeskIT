@@ -29,9 +29,12 @@ and raising it lands wherever the app happened to be; see
 bolted.
 
 `--install-hook` writes the two entries into ~/.claude/settings.json,
-replacing any earlier entry that names this script and leaving every
-other key and every foreign hook alone, so it can be run again after a
-move or a python <-> pythonw change. The default interpreter is
+replacing any earlier entry that names a notify_hook.py — this copy's
+or another DeskIT copy's, since one settings.json serves every copy on
+the PC and only one may hold the door — and leaving every other key
+and every foreign hook alone, so it can be run again after a move or a
+python <-> pythonw change. `hook_state` says which copy holds it; the
+Connect switches ask before taking it from another (2026-09-22). The default interpreter is
 launch.pythonw() — the installed copy's python\\pythonw.exe when there
 is one, else the venv's: Claude Code runs hooks through a shell, and a
 console-subsystem python would flash a window on every turn.
@@ -546,13 +549,40 @@ def hook_entries(python: str, script: str) -> dict:
 
 
 def _is_ours(entry) -> bool:
+    """Is this entry ANY DeskIT copy's — the checkout's, the installed
+    one's, the stranger's? Install and uninstall sweep with this, so two
+    copies never hold the door at once (two running = two cards and two
+    cues on every turn). Which copy it is, _script_of says."""
+    return _script_of(entry) is not None
+
+
+def _script_of(entry) -> str | None:
+    """The notify_hook.py an entry runs, as written in its command
+    (`"python" "…\\notify_hook.py"`), or None when the entry is not a
+    DeskIT hook at all."""
     if not isinstance(entry, dict):
-        return False
+        return None
     for hook in entry.get("hooks") or []:
-        if isinstance(hook, dict) and "notify_hook.py" in str(
-                hook.get("command", "")):
-            return True
-    return False
+        if not isinstance(hook, dict):
+            continue
+        command = str(hook.get("command", ""))
+        if "notify_hook.py" not in command:
+            continue
+        for arg in reversed(re.findall(r'"([^"]*)"', command)):
+            if arg.lower().endswith("notify_hook.py"):
+                return arg
+        return command                 # unquoted, or some older shape
+    return None
+
+
+def _same_file(a: str, b: str) -> bool:
+    """Two paths naming one file, the way Windows sees them: case and
+    the slash's direction do not count, `..` is folded."""
+    try:
+        return os.path.normcase(os.path.normpath(a)) == \
+            os.path.normcase(os.path.normpath(b))
+    except (TypeError, ValueError):
+        return False
 
 
 def install_hook(settings_path, python: str | None = None,
@@ -597,18 +627,47 @@ def install_hook(settings_path, python: str | None = None,
 
 
 def hook_installed(settings_path=None) -> bool:
-    """Is one of our entries in Claude Code's settings.json? What the
-    wizard's and the Settings page's "Connect Claude Code" switch shows."""
+    """Is ANY DeskIT copy's entry in Claude Code's settings.json? What
+    migrate's uninstall asks. The switches ask hook_state instead: this
+    answered True on the installed copy while the lines named the
+    checkout, and the switch stood on for a door that led elsewhere
+    (the owner, 2026-09-22: "I think only DeskIT Dev is connected")."""
+    return hook_script(settings_path) is not None
+
+
+def hook_script(settings_path=None) -> str | None:
+    """The notify_hook.py Claude Code's settings.json runs — whichever
+    DeskIT copy's — or None when no copy is connected."""
     settings_path = Path(settings_path or DEFAULT_SETTINGS)
     try:
         data = json.loads(settings_path.read_text("utf-8"))
     except (OSError, ValueError):
-        return False
+        return None
     hooks = data.get("hooks") if isinstance(data, dict) else None
     if not isinstance(hooks, dict):
-        return False
-    return any(_is_ours(e) for entries in hooks.values()
-               if isinstance(entries, list) for e in entries)
+        return None
+    for entries in hooks.values():
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            script = _script_of(entry)
+            if script is not None:
+                return script
+    return None
+
+
+def hook_state(settings_path=None, script: str | None = None) -> tuple[str, str | None]:
+    """Who holds the door: ("none", None), ("mine", None) when the lines
+    name THIS copy's script, or ("other", folder) when they name another
+    DeskIT copy — the folder is the one to show, the checkout's or the
+    installed one's. `script` is this copy's, left unsaid HERE's."""
+    found = hook_script(settings_path)
+    if found is None:
+        return "none", None
+    mine = script or str(HERE / "notify_hook.py")
+    if _same_file(found, mine):
+        return "mine", None
+    return "other", os.path.dirname(found) or found
 
 
 def uninstall_hook(settings_path=None) -> bool:
