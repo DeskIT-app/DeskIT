@@ -971,6 +971,64 @@ def test_the_nightly_runner_really_starts_and_really_stops_a_suite() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_a_suite_that_died_mid_run_is_not_a_clean_run() -> None:
+    """The worst thing a test runner can do, and it did it (2026-09-22).
+
+    The product suite ABORTED two thirds of the way through — 680 of 945,
+    twice in three runs that evening — on Tcl_AsyncDelete, which does not
+    raise: it kills the interpreter where it stands. tests_quiet.py looks
+    for FAIL lines, a dead run prints none, so none were found; it
+    printed "all tests passed (quietly)" and exited 0. The nightly reads
+    that exit code, so a night that never ran 265 of its tests would have
+    filed nothing and told him it was clean.
+
+    A run is finished only when it says so — "all tests passed", or
+    "N FAILED: …" — and _died() reads that last line and nothing else. It
+    names where the run stopped and why, and the exit code that follows
+    it is the whole reason nightly.verdict calls the night FAILED."""
+    import nightly as nightly_mod
+    import tests_quiet as tq
+
+    done = "running 945 tests\n  PASS  test_a\n  PASS  test_b\n\nall tests passed\n"
+    assert tq._died(done, 0, "tests.py") == "", "a finished run is not a death"
+    lost = ("running 945 tests\n  PASS  test_a\n  FAIL  test_b: no\n"
+            "\n1 FAILED: test_b\n")
+    assert tq._died(lost, 1, "tests.py") == "", \
+        "a run that FAILED still reached its own last line"
+
+    # the real shape: it spoke, it died, it never gave a verdict
+    dead = ("running 945 tests\n  PASS  test_a\n"
+            "  PASS  test_the_local_repair_no_longer_holds_the_paste\n"
+            "Tcl_AsyncDelete: async handler deleted by the wrong thread\n")
+    said = tq._died(dead, 3, "tests.py")
+    assert said, "the run that died was read as a clean one"
+    assert "test_the_local_repair_no_longer_holds_the_paste" in said, said
+    assert "Tcl_AsyncDelete" in said and "never ran" in said, said
+    assert "2 test(s)" in said, said
+    # one that died before opening its mouth still says so, by exit code
+    early = tq._died("running 945 tests\n", 1, "tests.py")
+    assert "before the first test" in early and "exit code 1" in early, early
+
+    # and what the night makes of it. The transcript is no help — the
+    # ops half that ran after it ends with "all tests passed" — so the
+    # EXIT CODE is the only thing standing between this and a clean night.
+    whole = dead + "\n---- dev\\tests_ops.py ----\nall tests passed\n"
+    assert nightly_mod.verdict(transcript=whole, code=1)["result"] \
+        == nightly_mod.FAILED, "a dead run has to be a failed night"
+    assert nightly_mod.verdict(transcript=whole, code=0)["result"] \
+        == nightly_mod.CLEAN, \
+        "this is what it looked like before: exit 0 and nobody the wiser"
+
+    # the wiring, which no fixture can reach without four minutes and a
+    # hidden desktop: the code comes back from run_hidden and gates the
+    # one line that says the run was clean.
+    src = (REPO / "tests_quiet.py").read_text("utf-8")
+    assert "product_code = run_hidden(" in src and "ops_code = run_hidden(" in src, \
+        "the exit code of a hidden run must never be thrown away again"
+    assert "elif died:" in src, \
+        "nothing stops a dead run from printing that all tests passed"
+
+
 def test_the_nightly_setting_turns_the_whole_thing_off() -> None:
     """One line in config.toml, and the scheduled task still fires, reads
     it and goes back to sleep — no card, no run, no report. And the wait
