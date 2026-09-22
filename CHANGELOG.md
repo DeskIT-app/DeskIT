@@ -12,6 +12,10 @@ owner speaking ("on my first update", "I asked"), never "the owner" or
 "his" (his word, 2026-09-21, on reading 1.0.2's notes on GitHub).
 `test_the_release_notes_are_english_only` holds both rules.
 
+## 1.0.5
+
+The desk no longer jumps when I change place. The words along the top bar used to slide sideways every time I clicked one: the lit word is bold, bold is wider, and every word after it moved over by a few pixels. Each word now keeps the room its bold form needs, lit or not, so nothing on the bar moves. And a new page used to arrive in pieces — a blank pane, then a half-built one, then the whole page, all while it slid into place. Now the old page stays on the screen until the new one is completely drawn, and the new one then slides in finished, with the word in the bar changing at the same moment. A Settings tab arrives with its first screenful of cards already there, and clicking the place I am already on does nothing instead of drawing it again.
+
 ## 1.0.4
 
 Settings is rearranged, and every tab is named for what you came looking for. I went looking for where my recordings and screenshots are saved and could not find them — they were under Screen, and they belong in General. There are eight tabs now: General (the dot and its corner, what is drawn on the screen, the microphone, Start with Windows, where files are saved, updates), Dictation (the speech model, what it learns, the translate key), Screen (screenshots, recordings, the camera), Messages & sounds, Phone, Account, Privacy and About. The words changed too: instead of library and code names it says what a thing does and how much room it takes — "Screen recording and the webcam need one extra download (28 MB)" instead of a library's name — all twenty sounds have human names ("Nothing to do", not "noop"), and facts about this computer and the model moved to About, where a fact belongs.

@@ -862,6 +862,32 @@ exactly what classic did.
   (Keys 0.45 s, Settings 0.35 s click-to-settled) is the first map of
   90-odd widgets; the road below that is keeping the screens built and
   remapping (10 ms), not another language.
+- **A switch is paint-held, and the cover has to be a WINDOW OF ITS OWN,
+  not a widget.** His 1.0.3 clip still jumped with the sheet unmapped:
+  putting it back started Tk's map-and-paint cascade in the open, racing
+  the slide, and the bold word in the bar shoved its neighbours first.
+  Since 2026-09-22 `_show` lays a photograph of the pane over it
+  (`widgets.PaintHold`: BitBlt from the pane's own DC, 1-2 ms; a layered
+  "Static" popup owned by the desk's frame, click-through, never
+  activating, directly above the frame in the z-order), builds unmapped
+  as before, puts the sheet back and `_settle`s it (idle work + WINDOW
+  events only, two rounds on every screen) UNDER the photograph, then
+  changes the bar's word and slides the new screen's own finished
+  picture in on the cover. The compositor keeps every top-level's surface
+  whole, so the desk paints completely under a popup; a Tk CHILD laid over
+  the pane cannot do that — children share the frame's surface and clip
+  one another, so nothing under it paints until it goes. Measured with a
+  sampler BitBlt-ing the window every 8 ms (PrintWindow blocks 574 ms
+  behind a busy Tk thread; BitBlt from the DC does not): distinct blank
+  or half-built frames per place switch, before 1-7, a child Label cover
+  0-9, the popup 0 on every switch; the bar's word 16-80 ms ahead of the
+  page before, 0-8 after. The price is the paint moving in front of the
+  reveal: frozen time Keys 58 -> 243 ms under the sampler (131-153 ms
+  without it, 83 of them the settle), and the arrival's 96 ms now follows
+  the paint instead of overlapping it. `_settle` takes window events, so
+  a click can land mid-switch: `_switching` makes `_show` keep the newest
+  wish for after. The bar's command ignores the lit place (`_nav_go`);
+  `_show` itself still rebuilds on purpose.
 - **A Windows-key chord IS takeable, and the code used to say it was not.**
   `parse_binding` refused Win as a modifier on the reasoning that "a tap of
   it that nothing consumed opens Start". That reasoning is about Win
@@ -1345,7 +1371,7 @@ ightly\` — an OS-held byte lock so two runs cannot overlap and a dead one wedg
 | `hint.py` | what the hint card says while the key is held: one row per bound key, read off the live Config under the same condition `main.App._bindings` registers it under, so a rebind moves the row and a feature switched off takes its row away. Pure Python, no Tk — the tests read every row |
 | `dashboard.py` + `ui.py` | the control window: four places along a top bar (Waiting, Said, Keys, Settings), the merged Waiting pile and "the whole list" behind it that answers the bug list and the routine's questions, the generated Settings place with Stop / cue sounds in it, and the frameless **Report a problem** card the button beside the Waiting title opens; YOUR CLOUD KEYS on Settings > Privacy (screen 3): a masked field per provider that takes a paste and never shows it, [Save and test] (secretstore, then one `key-test` GET through net.py by NAME — the value never touches the window), [Remove], `secretstore.storage_sentence` under each; the two D33 switches as blocks — Connect Claude Code on The app (`notify_hook.install_hook`/`uninstall_hook`), the Snipping-Tool key on Screen (`capture_hotkey` = win+shift+s / ctrl+f11 through `_apply_key`) |
 | `net.py` (the window) | The Network screen — D12's window, chapter 9 screen 6; the seventh place on the bar until 2026-09-18, now behind the EVERY CONNECTION card on Settings > Privacy (the bar lights Settings while it is up; `dashboard.SCREENS` lists it beside the six of `NAV`): every outbound request newest first, read from `network.log` through `net.read_log()` — the dashboard is its own process, so the file is the record it shares with the app — a chip per host seen, loopback (the phone, the hook) hidden until its button, the Offline banner, [Open network.log], and the sentence when the table is empty: during plain dictation it stays empty, that is the proof. the card on Privacy counts today's requests; Home's band is five doors again. The table is ONE canvas of text items, not a Label per cell — 2,800 Labels rebuilt on every write to network.log froze the window for 5 s at a time (2026-09-18) |
-| `widgets.py` | the pieces the window needs that `ui.py` does not have: the tab strip, a hairline, the state chip, an icon-in-a-label, a row whose text stops where its buttons start, `rtl_run()` for a pill inside a Hebrew sentence — and, since 2026-09-21, a `Change` piece in it: the heard word on a red-edged pill IN ITS PLACE in the sentence, an arrow, the proposal on the gold pill with a tick, laid in the LINE's direction (a Hebrew row: heard right, arrow left; an English row the mirror; the tick always beside the arrow) — the figure the second reading's rows on Home and Corrections and `review_card.py` beside the dot all draw (the owner: a Pair beside the sentence left him guessing where the mistake was; a strike-through was unreadable) — and a toned Button. Every colour is read as `ui.NAME` INSIDE the call, so a repainted palette lands on the next screen drawn |
+| `widgets.py` | the pieces the window needs that `ui.py` does not have: the tab strip (every word at its bold width, so lighting one moves nothing), `PaintHold` (the photograph of the pane a switch holds over it, a layered popup of its own — see the trap on paint holding), a hairline, the state chip, an icon-in-a-label, a row whose text stops where its buttons start, `rtl_run()` for a pill inside a Hebrew sentence — and, since 2026-09-21, a `Change` piece in it: the heard word on a red-edged pill IN ITS PLACE in the sentence, an arrow, the proposal on the gold pill with a tick, laid in the LINE's direction (a Hebrew row: heard right, arrow left; an English row the mirror; the tick always beside the arrow) — the figure the second reading's rows on Home and Corrections and `review_card.py` beside the dot all draw (the owner: a Pair beside the sentence left him guessing where the mistake was; a strike-through was unreadable) — and a toned Button. Every colour is read as `ui.NAME` INSIDE the call, so a repainted palette lands on the next screen drawn |
 | `keycaps.py` | the Keys place's board (keyboard.py until PR 10 — the PyPI package of that name shadowed it): 87 caps, one Pillow image and one hit table, everything measured from a single cap unit; the bindings are read from `config.HOTKEY_FIELDS` + `hotkey.parse_binding` and lit on it |
 | `prose.py` | the settings said as sentences with the controls inside the words — a hand-flowed Canvas at a fixed 34 px line. Every `Bit` names a real path in `config.toml` and a test walks them |
 | `settings.py` | defaults.toml as data: every key, its comment as help, `a \| b \| c` as choices — and `TABS`, the short list of lines the Settings place draws, with their plain words (everything else is the developer's, 2026-09-18) |

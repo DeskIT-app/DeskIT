@@ -11182,37 +11182,88 @@ def test_every_screen_of_the_window_builds() -> None:
             assert board.pane.winfo_children(), f"{name} drew nothing"
 
 
-def test_the_sheet_is_off_the_window_while_a_screen_is_built() -> None:
-    """The desk builds a new screen with the sheet UNMAPPED and puts it
-    back with the slide (2026-09-19): built in the open, each
-    update_idletasks() a builder needs also painted the half-built page
-    — seven visible frames on a switch to Home, his "everything jumps on
-    top of each other". Measured on the hidden desktop that night: the
-    pixels of every screen identical, Home's frozen time 0.34 -> 0.22 s.
-    A builder that dies puts the sheet back rather than leave a blank
-    window; the slide ends with the sheet at y 0."""
-    import dashboard as dash
+def _pictures_differ(one, two) -> float:
+    """The share of pixels two (width, height, BGRA bytes) pictures of the
+    same size disagree on by more than a hair — PaintHold's pictures."""
+    assert one is not None and two is not None, (one is None, two is None)
+    assert one[:2] == two[:2], (one[:2], two[:2])
+    a = np.frombuffer(one[2], dtype=np.uint8).reshape(one[1], one[0], 4)
+    b = np.frombuffer(two[2], dtype=np.uint8).reshape(two[1], two[0], 4)
+    return float((np.abs(a[..., :3].astype(np.int16)
+                         - b[..., :3].astype(np.int16)) > 10).any(-1).mean())
+
+
+def _let_the_switch_land(board) -> None:
+    """Pump until the arrival (or the old slide) is over — CI's clock,
+    not a count of frames."""
+    deadline = time.monotonic() + 3
+    while (board._slide_after is not None or board._hold.up) \
+            and time.monotonic() < deadline:
+        board.root.update()
+        time.sleep(0.02)
+    assert board._slide_after is None and not board._hold.up, \
+        "the switch never finished arriving"
+
+
+def test_a_builder_never_draws_where_it_can_be_seen() -> None:
+    """His clip of 1.0.3 (2026-09-22): a change of place painted a blank
+    pane, then a half-built one, then the whole one, while it slid, and
+    the lit word in the bar moved first. The rule now: the old screen
+    stays on the glass until the new one is FINISHED, and the word in
+    the bar changes with the page.
+
+    So a builder runs with the sheet off the window (the 2026-09-19 rule,
+    kept: unmapped, a builder's update_idletasks lays out and paints
+    nothing) AND — on a window that is on a screen — under a photograph
+    of the old screen, laid over the pane in a window of its own
+    (widgets.PaintHold). The new screen is painted in full under it; the
+    picture it arrives with is the finished screen, pixel for pixel what
+    is there once it has landed; and the bar still names the old place
+    while the new one is being built. Measured on the hidden desktop with
+    a sampler photographing the window every 8 ms: 1-7 distinct blank or
+    half-built frames per switch before, none after.
+
+    A builder that dies leaves a usable window: the sheet back at its
+    place, the cover off, the next switch working. A window on no screen
+    (GitHub's runner never maps it) switches the old way, sheet unmapped
+    then the slide, and must still end at y 0."""
     with _window() as board:
         if board is None:
             return
+        hold = board._hold
+        _let_the_switch_land(board)
+        covered = hold._where() is not None     # on a screen: the cover path
+        old = hold.surface() if covered else None
         seen: list = []
         real = board._screen_keys
 
         def spy() -> None:
-            seen.append((dict(board.sheet.place_info()), board.sheet.winfo_ismapped()))
+            seen.append({"placed": dict(board.sheet.place_info()),
+                         "covered": hold.up,
+                         "word": board.nav.selected,
+                         "cover": hold.picture(0) if hold.up else None})
             real()
         board._screen_keys = spy
         board._show("Keys")
+        assert len(seen) == 1, seen
         # placed or not is the fact; mapped-ness is the runner's (CI's
         # desktop never maps the window, 35467636557)
-        assert [placed for placed, _mapped in seen] == [{}], seen
-        assert board.sheet.place_info(), "the slide did not put the sheet back"
-        deadline = time.monotonic() + 3                # six 18 ms frames; CI's clock, not a count
-        while board._slide_after is not None and time.monotonic() < deadline:
-            board.root.update()
-            time.sleep(0.02)
-        assert board._slide_after is None, "the slide never finished"
+        assert seen[0]["placed"] == {}, seen[0]["placed"]
+        assert seen[0]["word"] == "Home", \
+            "the bar's word changed before the page did"
+        assert board.nav.selected == "Keys"
+        assert board.sheet.place_info(), "the sheet was never put back"
+        if covered:
+            assert seen[0]["covered"], "the builder ran with nothing over the pane"
+            assert _pictures_differ(seen[0]["cover"], old) < 0.004, \
+                "the cover did not show the old screen"
+            arrived = hold.picture(1)
+        _let_the_switch_land(board)
         assert int(board.sheet.place_info()["y"]) == 0, board.sheet.place_info()
+        if covered:
+            landed = hold.surface()
+            assert _pictures_differ(arrived, landed) < 0.004, \
+                "the new screen arrived unfinished"
 
         def dies() -> None:
             raise RuntimeError("the builder is having a day")
@@ -11224,6 +11275,230 @@ def test_the_sheet_is_off_the_window_while_a_screen_is_built() -> None:
         else:
             raise AssertionError("the builder's error was swallowed")
         assert board.sheet.place_info() and int(board.sheet.place_info()["y"]) == 0
+        assert not hold.up, "a dead builder left the old picture standing"
+        assert not board._switching
+        board._show("Home")
+        assert board.screen == "Home" and board.nav.selected == "Home"
+        assert board.sheet.winfo_children(), "the window did not recover"
+        _let_the_switch_land(board)
+
+
+def test_the_cover_is_a_window_that_takes_nothing() -> None:
+    """The picture a switch holds over the pane is a window of its own
+    (PaintHold's docstring says why a Tk child cannot do it: children
+    clip one another, so nothing under a child cover paints). A window
+    of its own must cost the desk nothing: it never takes the focus or
+    the foreground, it lets every click through, it is never in the
+    taskbar, it sits directly above the desk's own frame — never above a
+    window of anyone else's that was above the desk — and it goes with
+    the pane."""
+    import ctypes
+
+    import widgets as widgets_mod
+    with _window() as board:
+        if board is None:
+            return
+        hold = board._hold
+        _let_the_switch_land(board)
+        if hold._where() is None:
+            print("    (skipped: the window is on no screen here)")
+            return
+        user32 = ctypes.WinDLL("user32")
+        user32.GetForegroundWindow.restype = ctypes.c_void_p
+        user32.GetFocus.restype = ctypes.c_void_p
+        user32.GetWindow.restype = ctypes.c_void_p
+        user32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        user32.IsWindow.argtypes = [ctypes.c_void_p]
+        user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        foreground, focus = user32.GetForegroundWindow(), user32.GetFocus()
+        assert hold.cover(), "no cover on a window that is on a screen"
+        try:
+            assert hold.up and hold.hwnd
+            assert user32.GetForegroundWindow() == foreground, "it took the foreground"
+            assert user32.GetFocus() == focus, "it took the focus"
+            style = user32.GetWindowLongPtrW(hold.hwnd, -20)        # GWL_EXSTYLE
+            for bit, what in ((widgets_mod.PaintHold.WS_EX_NOACTIVATE, "never activates"),
+                              (widgets_mod.PaintHold.WS_EX_TRANSPARENT, "clicks go through"),
+                              (widgets_mod.PaintHold.WS_EX_TOOLWINDOW, "no taskbar button"),
+                              (widgets_mod.PaintHold.WS_EX_LAYERED, "a picture, not a painter")):
+                assert style & bit, what
+            assert not style & widgets_mod.PaintHold.WS_EX_TOPMOST, "it went topmost"
+            frame = int(board.root.wm_frame(), 16)
+            assert user32.GetWindow(hold.hwnd, 4) == frame, "not owned by the desk"   # GW_OWNER
+            assert user32.GetWindow(hold.hwnd, 2) == frame, \
+                "not directly above the desk's frame"                              # GW_HWNDNEXT
+            # A cover that cannot be laid (the window left the screen
+            # mid-arrival, say) must not leave the last one standing over
+            # a window that is being rebuilt the old way underneath.
+            user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
+            hold._where = lambda: None
+            try:
+                assert not hold.cover()
+            finally:
+                del hold._where
+            assert not hold.up and not user32.IsWindowVisible(hold.hwnd), \
+                "a failed cover left the old one up"
+        finally:
+            hold.lift()
+        assert not hold.up
+        assert user32.GetForegroundWindow() == foreground
+        cover = hold.hwnd
+        board.pane.destroy()
+        assert hold.hwnd is None and not user32.IsWindow(cover), \
+            "the cover outlived the pane"
+        assert hold.picture(0) is None, "its pictures outlived the pane"
+
+
+def test_a_place_asked_for_mid_switch_comes_after_it() -> None:
+    """_settle takes window events so the new screen can paint under its
+    cover, which means a click can land while a switch is still being
+    built. It must not start a second build inside the first: the newest
+    place asked for is kept and shown once the first is finished, and
+    the ones before it are dropped."""
+    with _window() as board:
+        if board is None:
+            return
+        _let_the_switch_land(board)
+        order: list = []
+        real_keys, real_said = board._screen_keys, board._screen_said
+        real_problems = board._screen_problems
+
+        def keys() -> None:
+            order.append("keys")
+            real_keys()
+            board._show("Problems")      # a click that lands mid-switch
+            board._show("Said")          # and another: the newest wins
+            order.append("keys built")
+        board._screen_keys = keys
+        board._screen_said = lambda: (order.append("said"), real_said())
+        board._screen_problems = lambda: (order.append("problems"),
+                                          real_problems())
+        board._show("Keys")
+        assert order == ["keys", "keys built", "said"], order
+        assert board.screen == "Said" and board.nav.selected == "Said"
+        assert not board._switching and board._show_next is None
+        _let_the_switch_land(board)
+
+
+def test_a_click_on_the_place_that_is_up_does_nothing() -> None:
+    """A click on the lit word used to tear the screen down, build it
+    again and slide it in: a blank pane and a rebuild for a click that
+    asked for what was already there. The bar's command ignores it now.
+    _show itself still rebuilds the place that is up when it is asked
+    to — the Corrections chips and the report's Preview do that on
+    purpose — so the guard is the bar's and nowhere else. Settings is
+    the way back from Network, which lights it."""
+    with _window() as board:
+        if board is None:
+            return
+        board.nav._hit("Keys")
+        assert board.screen == "Keys"
+        _let_the_switch_land(board)
+        built: list = []
+        real = board._screen_keys
+        board._screen_keys = lambda: (built.append(1), real())
+        children = board.sheet.winfo_children()
+        board.nav._hit("Keys")
+        assert not built, "a click on the lit place rebuilt it"
+        assert board.sheet.winfo_children() == children
+        assert not board._hold.up and board._slide_after is None
+        board._show("Keys")
+        assert built == [1], "_show no longer rebuilds the place that is up"
+        _let_the_switch_land(board)
+        board._show("Network")
+        assert board.nav.selected == "Settings"
+        board.nav._hit("Settings")
+        assert board.screen == "Settings", "Settings is no way back from Network"
+        _let_the_switch_land(board)
+
+
+def test_the_bars_words_stay_put_when_the_lit_one_changes() -> None:
+    """The lit place is bold, and bold is wider. Each word used to sit
+    in a holder as wide as the word, so lighting one pushed every word to
+    its right along the bar — the sideways jump in his clip, on every
+    change of place. Every word's room is its BOLD width now, lit or not:
+    no word's place or width moves whichever is lit, the underline is the
+    same width under every word it lights, and the bar still ends before
+    the state chip in the state that pushes the chip furthest left."""
+    import dashboard as dash
+    import ui
+    with _window() as board:
+        if board is None:
+            return
+        board._refresh(BAR_ON)
+        board.root.update_idletasks()
+
+        def geometry():
+            rows = []
+            for _name, (word, underline) in board.nav.items.items():
+                holder = word.master
+                rows.append((holder.winfo_reqwidth(), holder.winfo_reqheight(),
+                             word.winfo_reqwidth() <= holder.winfo_reqwidth()))
+            return rows, board.nav.winfo_reqwidth()
+
+        def placed():
+            return [(word.master.winfo_x(), word.master.winfo_width(),
+                     underline.winfo_x(), underline.winfo_width())
+                    for _name, (word, underline) in board.nav.items.items()]
+
+        first, width = geometry()
+        mapped = board.nav.winfo_ismapped()
+        where = placed() if mapped else None
+        for _key, name in dash.NAV:
+            board.nav.select(name)
+            board.root.update_idletasks()
+            rows, now = geometry()
+            assert rows == first and now == width, (name, rows, first)
+            assert all(fits for _w, _h, fits in rows), \
+                f"a word is wider than its room when {name} is lit"
+            word, underline = board.nav.items[name]
+            assert underline.cget("bg") == ui.ACCENT
+            if mapped:
+                assert placed() == where, (name, placed(), where)
+                assert underline.winfo_width() == word.master.winfo_width()
+            chip = board.parts["chip"]
+            chip.update_idletasks()
+            assert board.nav.winfo_x() + board.nav.winfo_reqwidth() \
+                <= chip.winfo_x(), f"the places run under the state chip ({name})"
+
+
+def test_a_settings_tab_arrives_with_its_first_screenful_built() -> None:
+    """Settings builds its cards one per tick so a click is answered at
+    once — and that used to happen in the open: the list cleared, then
+    card after card appeared, 3-7 half-built frames per tab in the
+    census. Now the place, and every tab of it, arrives with the cards
+    that fill its first screenful already built; the rest follow one per
+    tick below the fold. The lit chip changes with the cards, and the
+    tab's cover comes off when they are painted."""
+    import settings as settings_mod
+    with _window() as board:
+        if board is None:
+            return
+
+        def first_screen_built() -> bool:
+            scroller = board.parts["settings_list"]
+            scroller.inner.update_idletasks()
+            view = int(scroller.canvas.cget("height"))
+            return (not board._settings_left
+                    or scroller.inner.winfo_reqheight() >= view)
+
+        board._show("Settings")
+        assert first_screen_built(), "Settings arrived with its first screenful unbuilt"
+        _let_the_switch_land(board)
+        for tab in (settings_mod.DICTATION, settings_mod.PRIVACY,
+                    settings_mod.GENERAL):
+            board._settings_go(tab)
+            assert board._settings_tab == tab
+            assert first_screen_built(), f"{tab} arrived with its first screenful unbuilt"
+            assert not board._hold.up and not board._switching, tab
+            chips = board.parts["settings_tabs"]
+            assert [n for n, c in chips.items() if c._active] == [tab], tab
+        board._settings_open_search()
+        assert board._settings_searching and not board._hold.up
+        board._settings_close_search()
+        assert not board._settings_searching and not board._hold.up
+        board._finish_settings()
 
 
 def test_no_button_draws_its_label_past_its_own_face() -> None:

@@ -14,7 +14,8 @@ was built against the real ui.py (r3/spikes/spikes.md §1):
 * `rule` — a hairline. `ui.LINE` and `ui.RULE` are colours; nothing drew
   one.
 * `Tabs` — the four places along the top. The old window's only
-  navigation was a rail of nine rows, built inline.
+  navigation was a rail of nine rows, built inline. Each word keeps its
+  bold width, lit or not, so lighting one moves nothing (2026-09-22).
 * `StateChip` — lamp + word + a quiet number, on no face at all.
 * `icon` — `ui.ICON` holds the codepoints and `ui.ICONS` the family;
   every caller wrote the `tk.Label(font=(ui.ICONS, n))` by hand.
@@ -26,6 +27,11 @@ was built against the real ui.py (r3/spikes/spikes.md §1):
   unaskable. Asked for as a `tone=` keyword on `ui.Button` in NOTES.md;
   this subclass is what stands in until that exists, and it goes away
   the day it does.
+
+And one found missing later (2026-09-22): `PaintHold`, the photograph
+of the pane a change of place holds over it while the new screen is
+built and painted underneath, so the old screen stays on the glass
+until the new one is finished.
 """
 from __future__ import annotations
 
@@ -137,6 +143,16 @@ class Tabs(tk.Frame):
     one card the screen is about. The underline is a Frame of the
     accent, which is the only thing on this bar that is allowed to be
     gold — the state button beside it is quiet on purpose.
+
+    EVERY WORD'S ROOM IS ITS BOLD WIDTH, kept whether it is lit or not.
+    The one you are on is bold, and bold is wider: each holder used to
+    be packed at its label's natural width, so selecting a place grew
+    that word by a few pixels and pushed every word to its right along
+    the bar — the sideways jump in the owner's clip of 1.0.3, on every
+    change of place. The holder is now fixed at what the label asks for
+    in bold, measured once off the label itself before anything is
+    mapped, and the word is centred in it; the underline spans the
+    holder, which is the bold word's width, as it always was.
     """
 
     def __init__(self, parent, names, *, bg: str | None = None,
@@ -150,7 +166,17 @@ class Tabs(tk.Frame):
             holder = tk.Frame(self, bg=bg)
             holder.pack(side="left", padx=(0, gap))
             label = tk.Label(holder, text=name, bg=bg, fg=ui.DIM,
-                             font=(ui.UI, 11), cursor="hand2")
+                             font=(ui.UI, 11, "bold"), cursor="hand2")
+            # A Label computes its geometry when it is configured, so the
+            # two requests are real numbers here, before any mapping.
+            wide, tall = label.winfo_reqwidth(), label.winfo_reqheight()
+            label.configure(font=(ui.UI, 11))
+            wide = max(wide, label.winfo_reqwidth())
+            tall = max(tall, label.winfo_reqheight())
+            # pady (0, 7) under the word and the 2 px underline: the same
+            # height the holder used to take from its children.
+            holder.configure(width=wide, height=tall + 7 + 2)
+            holder.pack_propagate(False)
             label.pack(pady=(0, 7))
             bar = tk.Frame(holder, height=2, bg=bg)
             bar.pack(fill="x")
@@ -809,3 +835,374 @@ def quiet_row(parent, width: int, *, bg: str, label: str, when: str,
     if command is not None:
         row.bind("<Button-1>", lambda _e: command())
     return row
+
+
+# -------------------------------------------------------- paint holding
+
+# The Win32 half of PaintHold, declared on first use and on PRIVATE
+# handles: ctypes.windll is process-global, and a restype declared on it
+# changes that function for every module in the process (capture.py
+# paid for that once — AGENTS.md). Nothing is declared at import.
+_API = None
+
+
+def _win32():
+    global _API
+    if _API is not None:
+        return _API
+    import ctypes
+    import ctypes.wintypes as wt
+    from types import SimpleNamespace
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    vp, num, unum = ctypes.c_void_p, ctypes.c_int, ctypes.c_uint
+    for lib, table in (
+            (user32, (("GetDC", vp, [vp]),
+                      ("ReleaseDC", num, [vp, vp]),
+                      ("GetAncestor", vp, [vp, unum]),
+                      ("GetWindow", vp, [vp, unum]),
+                      ("ClientToScreen", wt.BOOL, [vp, vp]),
+                      ("GetClientRect", wt.BOOL, [vp, vp]),
+                      ("IsWindowVisible", wt.BOOL, [vp]),
+                      ("IsIconic", wt.BOOL, [vp]),
+                      ("GetWindowLongPtrW", ctypes.c_ssize_t, [vp, num]),
+                      ("CreateWindowExW", vp, [wt.DWORD, wt.LPCWSTR,
+                                               wt.LPCWSTR, wt.DWORD, num,
+                                               num, num, num, vp, vp, vp,
+                                               vp]),
+                      ("DestroyWindow", wt.BOOL, [vp]),
+                      ("ShowWindow", wt.BOOL, [vp, num]),
+                      ("SetWindowPos", wt.BOOL, [vp, vp, num, num, num,
+                                                 num, unum]),
+                      ("UpdateLayeredWindow", wt.BOOL,
+                       [vp, vp, vp, vp, vp, vp, wt.DWORD, vp, wt.DWORD]),
+                      ("FillRect", num, [vp, vp, vp]))),
+            (gdi32, (("CreateCompatibleDC", vp, [vp]),
+                     ("CreateDIBSection", vp, [vp, vp, unum,
+                                               ctypes.POINTER(vp), vp,
+                                               wt.DWORD]),
+                     ("SelectObject", vp, [vp, vp]),
+                     ("DeleteObject", wt.BOOL, [vp]),
+                     ("DeleteDC", wt.BOOL, [vp]),
+                     ("BitBlt", wt.BOOL, [vp, num, num, num, num, vp, num,
+                                          num, wt.DWORD]),
+                     ("CreateSolidBrush", vp, [wt.DWORD]),
+                     ("GdiFlush", wt.BOOL, [])))):
+        for fname, res, args in table:
+            fn = getattr(lib, fname)
+            fn.restype, fn.argtypes = res, args
+
+    class Header(ctypes.Structure):
+        _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG),
+                    ("biHeight", wt.LONG), ("biPlanes", wt.WORD),
+                    ("biBitCount", wt.WORD), ("biCompression", wt.DWORD),
+                    ("biSizeImage", wt.DWORD), ("biXPelsPerMeter", wt.LONG),
+                    ("biYPelsPerMeter", wt.LONG), ("biClrUsed", wt.DWORD),
+                    ("biClrImportant", wt.DWORD)]
+
+    _API = SimpleNamespace(user32=user32, gdi32=gdi32, ctypes=ctypes,
+                           wt=wt, Header=Header)
+    return _API
+
+
+class PaintHold:
+    """A picture of a widget, held over it while it is rebuilt underneath.
+
+    What browsers call paint holding: the old page stays on the screen
+    until the new one is ready, and then the new one is there in one
+    step. The desk used to build a screen and let the eye watch it
+    happen — a blank pane, then a half-built one, then the whole one,
+    all while it slid (the owner's clip of 1.0.3, 2026-09-22).
+
+    THE COVER IS A WINDOW OF ITS OWN, NOT A WIDGET ON THE PANE. Under the
+    compositor every top-level window paints into a surface of its own,
+    and a window lying over another does not stop that one painting —
+    so the new screen draws itself completely, in the desk's own
+    surface, while the picture of the old one lies on top. A Tk child
+    laid over the pane could not do that: children share their window's
+    surface and clip one another, so everything under a child cover
+    stays unpainted until the cover goes, and the new screen then paints
+    in the open, which is the very thing this is for. Measured both ways
+    on 2026-09-22 with a sampler photographing the window every 8 ms: a
+    Label cover left 0-9 half-built frames per switch (Settings 7-9),
+    this window none on any switch — AGENTS.md's trap on paint holding.
+
+    It is a layered popup of the system's "Static" class, owned by the
+    desk's frame so that it always sits just above it and never above
+    anyone else, never activating (WS_EX_NOACTIVATE, SWP_NOACTIVATE) and
+    click-through (WS_EX_TRANSPARENT): a click during a switch lands on
+    the new screen underneath, which is where the one after the switch
+    would have landed anyway. Its pixels are handed over whole with
+    UpdateLayeredWindow, so it has nothing to paint and no message to
+    wait for.
+
+    Everything here answers False or does nothing when it cannot — a
+    window that is not on the screen, a Windows that refuses — and the
+    caller then builds the way it did before this existed.
+    """
+
+    GA_ROOT = 2
+    GW_HWNDPREV = 3
+    SRCCOPY = 0x00CC0020
+    ULW_OPAQUE = 0x00000004
+    SW_HIDE = 0
+    SWP_NOSIZE, SWP_NOMOVE, SWP_NOZORDER = 0x0001, 0x0002, 0x0004
+    SWP_NOACTIVATE, SWP_SHOWWINDOW = 0x0010, 0x0040
+    SWP_NOOWNERZORDER = 0x0200
+    WS_POPUP = 0x80000000
+    WS_EX_LAYERED, WS_EX_TRANSPARENT = 0x00080000, 0x00000020
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW = 0x08000000, 0x00000080
+    WS_EX_TOPMOST, GWL_EXSTYLE = 0x00000008, -20
+
+    def __init__(self, widget, bg: str) -> None:
+        self.widget = widget
+        self._bg = bg
+        self.hwnd = None          # the cover window, once one was needed
+        self._owner = None
+        self.up = False           # the cover is on the screen
+        self._size = (0, 0)
+        self._at = (0, 0)
+        # [0] what the cover shows, [1] the new screen's picture: each a
+        # (memory DC, DIB section, the bitmap it replaced, its bits)
+        self._buffers: list = []
+
+    # -- where the widget is
+
+    def _where(self):
+        """(hwnd, owner, x, y, w, h) of the widget on the screen, or None
+        when it is not there to be seen — withdrawn, minimised, not yet
+        mapped, or a desktop that never maps it (GitHub's runner)."""
+        try:
+            if not self.widget.winfo_viewable():
+                return None
+            hwnd = int(self.widget.winfo_id())
+        except tk.TclError:
+            return None
+        api = _win32()
+        owner = api.user32.GetAncestor(hwnd, self.GA_ROOT)
+        if not owner or api.user32.IsIconic(owner) \
+                or not api.user32.IsWindowVisible(owner):
+            return None
+        rect = api.wt.RECT()
+        point = api.wt.POINT(0, 0)
+        if not api.user32.GetClientRect(hwnd, api.ctypes.byref(rect)) \
+                or not api.user32.ClientToScreen(hwnd,
+                                                 api.ctypes.byref(point)):
+            return None
+        if rect.right <= 0 or rect.bottom <= 0:
+            return None
+        return hwnd, owner, point.x, point.y, rect.right, rect.bottom
+
+    def _ready(self, width: int, height: int) -> bool:
+        if self._size == (width, height) and len(self._buffers) == 2:
+            return True
+        self._free()
+        api = _win32()
+        head = api.Header()
+        head.biSize = api.ctypes.sizeof(head)
+        head.biWidth, head.biHeight = width, -height      # top-down rows
+        head.biPlanes, head.biBitCount = 1, 32
+        for _ in range(2):
+            dc = api.gdi32.CreateCompatibleDC(None)
+            bits = api.ctypes.c_void_p()
+            dib = api.gdi32.CreateDIBSection(dc, api.ctypes.byref(head), 0,
+                                             api.ctypes.byref(bits), None, 0)
+            if not dc or not dib:
+                if dib:
+                    api.gdi32.DeleteObject(dib)
+                if dc:
+                    api.gdi32.DeleteDC(dc)
+                self._free()
+                return False
+            old = api.gdi32.SelectObject(dc, dib)
+            self._buffers.append((dc, dib, old, bits))
+        self._size = (width, height)
+        return True
+
+    def _grab(self, hwnd, index: int) -> bool:
+        """The widget's own surface, as it stands, into buffer `index`.
+        Read from the window's DC, which the compositor keeps whole even
+        where another window lies over it — 1-2 ms at the pane's size."""
+        api = _win32()
+        width, height = self._size
+        api.gdi32.GdiFlush()      # this thread's queued drawing, landed
+        dc = api.user32.GetDC(hwnd)
+        if not dc:
+            return False
+        try:
+            return bool(api.gdi32.BitBlt(self._buffers[index][0], 0, 0,
+                                         width, height, dc, 0, 0,
+                                         self.SRCCOPY))
+        finally:
+            api.user32.ReleaseDC(hwnd, dc)
+
+    def _present(self) -> bool:
+        api = _win32()
+        point = api.wt.POINT(*self._at)
+        size = api.wt.SIZE(*self._size)
+        origin = api.wt.POINT(0, 0)
+        return bool(api.user32.UpdateLayeredWindow(
+            self.hwnd, None, api.ctypes.byref(point), api.ctypes.byref(size),
+            self._buffers[0][0], api.ctypes.byref(origin), 0, None,
+            self.ULW_OPAQUE))
+
+    # -- the three moves
+
+    def cover(self) -> bool:
+        """Photograph the widget as it stands and lay the picture exactly
+        over it. False when that cannot be done — and then nothing is
+        left up, not even a cover still standing from the last switch."""
+        if not self._cover():
+            self.lift()
+            return False
+        return True
+
+    def _cover(self) -> bool:
+        try:
+            where = self._where()
+            if where is None:
+                return False
+            hwnd, owner, x, y, width, height = where
+            if not self._ready(width, height) or not self._grab(hwnd, 0):
+                return False
+            api = _win32()
+            if self.hwnd is not None and self._owner != owner:
+                self._destroy_window()
+            if self.hwnd is None:
+                self.hwnd = api.user32.CreateWindowExW(
+                    self.WS_EX_LAYERED | self.WS_EX_TRANSPARENT
+                    | self.WS_EX_NOACTIVATE | self.WS_EX_TOOLWINDOW,
+                    "Static", "", self.WS_POPUP, x, y, width, height,
+                    owner, None, None, None)
+                if not self.hwnd:
+                    self.hwnd = None
+                    return False
+                self._owner = owner
+            self._at = (x, y)
+            if not self._present():
+                self.lift()
+                return False
+            # Just above the desk's own frame in the z-order: never above
+            # a window that was above the desk, whichever app it is. A
+            # topmost one just above it (the status dot) means the desk
+            # leads the ordinary windows, and the top of those is right.
+            above = api.user32.GetWindow(owner, self.GW_HWNDPREV)
+            if above and api.user32.GetWindowLongPtrW(
+                    above, self.GWL_EXSTYLE) & self.WS_EX_TOPMOST:
+                above = None
+            flags = (self.SWP_NOMOVE | self.SWP_NOSIZE | self.SWP_NOACTIVATE
+                     | self.SWP_SHOWWINDOW | self.SWP_NOOWNERZORDER)
+            if above == self.hwnd:
+                flags |= self.SWP_NOZORDER
+            api.user32.SetWindowPos(self.hwnd, above or None, 0, 0, 0, 0,
+                                    flags)
+            self.up = True
+            return True
+        except Exception:                 # noqa: BLE001 — never fatal
+            self.lift()
+            return False
+
+    def take(self) -> bool:
+        """Photograph the widget again, under the cover: the finished new
+        screen, which the arrival frames are cut from."""
+        if not self.up:
+            return False
+        try:
+            where = self._where()
+            if where is None or (where[4], where[5]) != self._size:
+                return False
+            return self._grab(where[0], 1)
+        except Exception:                 # noqa: BLE001
+            return False
+
+    def show(self, offset: int) -> bool:
+        """The new picture on the cover, `offset` px low, the ground
+        above it: one frame of the new screen arriving. A frame is two
+        GDI copies and one UpdateLayeredWindow — nothing Tk draws."""
+        if not self.up:
+            return False
+        try:
+            api = _win32()
+            width, height = self._size
+            offset = max(0, min(int(offset), height))
+            front, new = self._buffers[0][0], self._buffers[1][0]
+            if offset:
+                colour = _rgb(self._bg)
+                brush = api.gdi32.CreateSolidBrush(
+                    colour[0] | (colour[1] << 8) | (colour[2] << 16))
+                try:
+                    band = api.wt.RECT(0, 0, width, offset)
+                    api.user32.FillRect(front, api.ctypes.byref(band), brush)
+                finally:
+                    api.gdi32.DeleteObject(brush)
+            api.gdi32.BitBlt(front, 0, offset, width, height - offset, new,
+                             0, 0, self.SRCCOPY)
+            return self._present()
+        except Exception:                 # noqa: BLE001
+            return False
+
+    def lift(self) -> None:
+        """Take the cover away. What lies under it is what it showed."""
+        self.up = False
+        if self.hwnd is not None:
+            try:
+                _win32().user32.ShowWindow(self.hwnd, self.SW_HIDE)
+            except Exception:             # noqa: BLE001
+                pass
+
+    # -- for a test, or a measurement
+
+    def picture(self, index: int = 0):
+        """(width, height, BGRA bytes) of buffer `index` — what the cover
+        shows, or the new screen's picture — or None."""
+        if len(self._buffers) != 2:
+            return None
+        width, height = self._size
+        bits = self._buffers[index][3]
+        return width, height, _win32().ctypes.string_at(bits.value,
+                                                        width * height * 4)
+
+    def surface(self):
+        """(width, height, BGRA bytes) of the widget's own surface right
+        now, under the cover or not — or None."""
+        try:
+            where = self._where()
+            if where is None or not self._ready(where[4], where[5]):
+                return None
+            # buffer 1 is scratch outside a switch; inside one it is the
+            # picture of the new screen, which is what the surface holds
+            return self.picture(1) if self._grab(where[0], 1) else None
+        except Exception:                 # noqa: BLE001
+            return None
+
+    # -- the end
+
+    def _destroy_window(self) -> None:
+        if self.hwnd is not None:
+            try:
+                _win32().user32.DestroyWindow(self.hwnd)
+            except Exception:             # noqa: BLE001
+                pass
+        self.hwnd = None
+        self._owner = None
+        self.up = False
+
+    def _free(self) -> None:
+        if not self._buffers:
+            return
+        api = _win32()
+        for dc, dib, old, _bits in self._buffers:
+            try:
+                api.gdi32.SelectObject(dc, old)
+                api.gdi32.DeleteObject(dib)
+                api.gdi32.DeleteDC(dc)
+            except Exception:             # noqa: BLE001
+                pass
+        self._buffers = []
+        self._size = (0, 0)
+
+    def close(self) -> None:
+        """The window and the two pictures, released; safe twice."""
+        self._destroy_window()
+        self._free()
