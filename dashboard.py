@@ -69,6 +69,8 @@ import time
 import tkinter as tk
 from pathlib import Path
 
+import _tkinter
+
 APP_DIR = Path(__file__).resolve().parent
 
 # Started BY PATH by an installed copy (launch.open_dashboard →
@@ -1517,6 +1519,17 @@ class Dashboard:
         # than the sheet; every other list is the full width.
         self._row_w = CW
         self._slide_after = None
+        # The frame of the arrival that _slide_after will show while that
+        # is an arrival on the cover (None for the old slide, or nothing
+        # pending) — what a switch or a tab asked for mid-arrival folds
+        # into (_hold_for) instead of photographing a third picture.
+        self._arrival_next = None
+        # The picture of the pane a switch holds over it (_show), built in
+        # _build once the pane exists; a switch in progress; and the place
+        # asked for while it was, with its `then` — (name, then) (_show).
+        self._hold = None
+        self._switching = False
+        self._show_next = None
         self._breath_after = None
         self._stats_shown = False   # the count-up runs once per screen visit
         self._activity = "stopped"  # what the breathing loop reads
@@ -1670,6 +1683,12 @@ class Dashboard:
         self.sheet = tk.Frame(self.pane, bg=ui.BG, width=W, height=H - TOP)
         self.sheet.place(x=0, y=0)
         self.sheet.pack_propagate(False)
+        # The cover a switch holds over the pane (_show). Its window and
+        # its two pictures go with the pane — a test's window is destroyed
+        # without _close — and the binding holds the hold, not self,
+        # because _bury empties self.
+        hold = self._hold = widgets.PaintHold(self.pane, ui.BG)
+        self.pane.bind("<Destroy>", lambda _e, h=hold: h.close())
         self._show("Home")
         # No account on this PC: the landing from the first frame, not
         # after the first poll's flash of Home (Q1). The poll re-decides
@@ -1721,15 +1740,18 @@ class Dashboard:
                      font=(ui.MEDIUM, 6)).place(x=PAD + 13, y=43, anchor="n")
 
         self.nav = widgets.Tabs(bar, [name for _key, name in NAV], bg=ui.BG,
-                                selected="Home", command=self._show, gap=10)
+                                selected="Home", command=self._nav_go, gap=10)
         # The bar is measured rather than guessed: the places start
         # after the mark and have to end before the state chip in EVERY
         # state — the fullest is the owner's, with Stop tests in the bar
         # during a nightly run and "Transcribing" on the chip, where the
         # chip's left edge is 548 (BAR_GAP 8). 24 + 26 mark + 6 air = 56;
         # the seven words of 2026-09-17 ended at 544 at gap 10, and the
-        # six since Network left the bar end sooner. Two tests hold the
-        # two states (tests.py, tests_ops.py).
+        # six since Network left the bar end sooner. Since every word
+        # keeps its BOLD width (widgets.Tabs, 2026-09-22) the six end at
+        # 488 whichever is lit, against a chip edge of 544 with Stop
+        # tests up and "Transcribing" on it (measured on the hidden
+        # desktop). Three tests hold it (tests.py twice, tests_ops.py).
         self.nav.place(x=PAD + 32, y=17)
 
         # The state chip and the buttons are placed from the RIGHT edge, so
@@ -1786,71 +1808,339 @@ class Dashboard:
     def _nav_hover(self, name: str, over: bool) -> None:
         self.nav._hover(name, over)
 
-    def _paint_nav(self) -> None:
+    def _paint_nav(self, paint: bool = True) -> None:
         # Network is behind Settings > Privacy, so Settings is the word
         # that lights while it is up — and the way back. The landing has
-        # no word: the places are off the bar while it is up.
+        # no word: the places are off the bar while it is up. `paint`
+        # False sets the word and leaves the pixels to nav.paint() — the
+        # arrival's first frame (_reveal).
         self.nav.select("Settings" if self.screen == "Network"
-                        else None if self.screen == "Landing" else self.screen)
+                        else None if self.screen == "Landing" else self.screen,
+                        paint=paint)
 
-    def _show(self, name: str) -> None:
+    def _nav_go(self, name: str) -> None:
+        """A click on a place in the bar. On the place that is already up
+        it does NOTHING: it used to tear the screen down, build it again
+        and slide it in — a blank pane and a rebuild for a click that
+        asked for what was already there. The guard is here and not in
+        _show, which rebuilds the place that is up ON PURPOSE for the
+        Corrections chips and the report's Preview. Network lights
+        Settings, and Settings is the way back from it, so a click on
+        Settings there is a switch like any other."""
+        if name == self.screen:
+            return
+        self._show(name)
+
+    def _show(self, name: str, then=None) -> None:
         """Swap screens. Everything the old one registered goes with it, so
         _refresh has to ask for a widget rather than assume one.
 
-        THE SHEET IS OFF THE WINDOW while the old screen is torn down and
-        the new one built, and comes back whole with the slide. Built in
-        the open, every `update_idletasks()` a builder needs for its
-        arithmetic (_settle_page, _paint_doors, the scrollers) also
-        PAINTED the half-built page — Home showed seven of those frames
-        per switch, which is the "everything jumps on top of each other"
-        he saw on 2026-09-19. Unmapped, the same calls lay out and paint
-        nothing; the pixels of all seven screens came out identical
-        (measured that night), and Home's switch went from 0.34 s to
-        0.22 s of frozen window because the paints were most of it.
-        The floor under that is Tk's own: one OS window per widget,
-        1-2 ms each on this PC to create — 92 of them on Keys.
+        `then` runs once the new screen is built, under the same cover,
+        before it is painted and photographed: for a door that lands on a
+        place AND changes something there (the pile's [Type the recovery
+        key] opens the lock card's field). Done after _show came back,
+        that change is a second rebuild inside the first one's arrival.
+
+        THE OLD SCREEN STAYS ON THE GLASS UNTIL THE NEW ONE IS FINISHED
+        (2026-09-22). His clip of 1.0.3: a switch painted a blank pane,
+        then a half-built one, then the whole one, all while it slid,
+        and the lit word in the bar moved first. So a picture of the
+        pane is laid over it (widgets.PaintHold, a window of its own —
+        its docstring says why it cannot be a widget), the new screen is
+        built with the sheet off the window as before, put back and
+        painted in full underneath the picture (_settle), and only then
+        does the bar's word change and the new screen arrive — its own
+        finished picture, sliding the same six frames the sheet used
+        to. Measured on the hidden desktop with a sampler photographing
+        the window every 8 ms: before, 1-7 distinct blank or half-built
+        frames per change of place and the bar's word 16-80 ms ahead of
+        the page; after, none, and the word in the same 8 ms as the page
+        — the old screen, then the new one sliding in whole. The price
+        is the paint moving in front of the reveal (AGENTS.md, the trap
+        on paint holding, has the numbers).
+
+        THE SHEET IS STILL OFF THE WINDOW while the old screen is torn
+        down and the new one built. Built in the open, every
+        `update_idletasks()` a builder needs for its arithmetic
+        (_settle_page, _paint_doors, the scrollers) also PAINTED the
+        half-built page — Home showed seven of those frames per switch
+        on 2026-09-19. Unmapped, the same calls lay out and paint
+        nothing, and Home's switch went from 0.34 s to 0.22 s of frozen
+        window because the paints were most of it. The floor under that
+        is Tk's own: one OS window per widget, 1-2 ms each on this PC to
+        create — 92 of them on Keys.
+
+        A window that is not on the screen (withdrawn for the dot, not
+        mapped yet, GitHub's runner) gets no cover and switches the way
+        it did before: the sheet unmapped for the build, then the slide.
         """
         if self._landing_up and name != "Landing":
             # Nothing but the landing until a sign-in: not a door on
             # Home, not a link in a note, not a stale `after`.
             return
+        if self._switching:
+            # A click or a poll that arrived while the last switch was
+            # still being painted under its cover (_settle takes window
+            # events): the newest wish, once that one is on the screen.
+            self._show_next = (name, then)
+            return
         if (self.screen == "Corrections" and name != "Corrections"
                 and self._corr_tab == "read"):
             self._read_leave()
         self.screen = name
-        self._paint_nav()
         self._stop_rows()
+        held, _step = self._hold_for()
+        self._switching = True
+        try:
+            self.sheet.place_forget()
+            try:
+                for child in self.sheet.winfo_children():
+                    child.destroy()
+                keep = {k: self.parts[k] for k in
+                        ("hint", "lamp", "state", "uptime", "chip", "run",
+                         "bar_screens", "stop_bar", "tests_stop")
+                        if k in self.parts}
+                self.parts = keep
+                self._hide_toast()
+                {"Home": self._screen_home,
+                 "Corrections": self._screen_corrections,
+                 "Problems": self._screen_problems,
+                 "Said": self._screen_said,
+                 "Keys": self._screen_keys,
+                 "Settings": self._screen_settings,
+                 "Network": self._screen_network,
+                 "Landing": self._screen_landing}[name]()
+                self._refresh(self.status or None)
+                # The first screenful of Settings' cards, before the
+                # reveal; the rest one per tick below the fold.
+                self._settings_first_view()
+                if then is not None:
+                    then()
+            except BaseException:
+                # A builder that died must not leave a blank window behind,
+                # nor a picture of the old one standing over a window that
+                # no longer holds it: whatever it managed to draw goes back
+                # on, in place, and the cover comes off.
+                self._show_next = None
+                self.sheet.place(x=0, y=0)
+                self._paint_nav()
+                if self._hold is not None:
+                    self._hold.lift()
+                raise
+            if held:
+                self._reveal()
+            else:
+                self._paint_nav()
+                self._slide_in()
+        finally:
+            self._switching = False
+        if self.closing:
+            # The X was pressed while the new screen settled (_settle
+            # takes window events): the window is gone, and so may be
+            # everything this method would touch next.
+            return
+        # Even when it names the place that is up: a Corrections chip
+        # pressed mid-switch changed _corr_tab and asked for Corrections.
+        wish, self._show_next = self._show_next, None
+        if wish is not None:
+            self._show(*wish)
+
+    #: The arrival: how far below its place the new screen is on each
+    #: frame, 18 ms apart — a cubic ease-out baked into a table, because
+    #: computing an easing curve for six integers is showing off.
+    SLIDE = (16, 10, 6, 3, 1, 0)
+    SLIDE_MS = 18
+    #: How many rounds of window events and idle work _settle may take.
+    #: Measured 2026-09-22 on the hidden desktop: on every screen one
+    #: round had events to handle and the second found none — two
+    #: rounds, 12-40 ms, Keys 82-105 ms (its 90-odd first maps).
+    SETTLE_PASSES = 6
+
+    def _settle(self) -> int:
+        """Map and paint the new screen in full, under the cover.
+
+        A packed or placed child is only mapped once its container is,
+        and then at idle, one level at a time; each newly mapped window
+        is an Expose event on Tk's queue, and a widget paints when its
+        Expose is handled and the idle work after it runs. So: the idle
+        work, then every WINDOW event that is waiting, and again, until
+        a round finds none. Window events only — not the timers, so no
+        poll, no breath and no `after` of the old screen runs in the
+        middle of a switch; a click that lands here is a window event and
+        runs, and if it asks for another place _show keeps it for after
+        (`_switching`). Returns the rounds it took.
+
+        The X is a window event too. Pressed here, it runs _close in the
+        middle of the loop — the root destroyed, and a window no mainloop
+        owns buried (_bury empties this object) — so the loop stops the
+        moment `closing` is set and touches nothing after it, and every
+        caller asks `closing` before going on. (No local holds the
+        interpreter across the loop, either: one that did would keep a
+        buried window's Tcl alive past _bury's collect, for some other
+        thread's collector to free — the Tcl_AsyncDelete abort.)
+        """
+        rounds = 0
+        for rounds in range(1, self.SETTLE_PASSES + 1):
+            self.root.update_idletasks()
+            handled = 0
+            while handled < 5000 and self.root.tk.dooneevent(
+                    _tkinter.WINDOW_EVENTS | _tkinter.DONT_WAIT):
+                handled += 1
+                if self.closing:
+                    return rounds
+            if not handled:
+                break
+        self.root.update_idletasks()
+        return rounds
+
+    def _reveal(self, step: int = 0) -> None:
+        """The new screen, finished under the cover, arrives: the sheet
+        back at its place, everything painted, and the cover showing the
+        new screen's own picture as it slides up — then gone, with the
+        same pixels underneath it. `step` is the frame to go on from when
+        this finishes an arrival that a tab interrupted (_held).
+
+        THE FIRST FRAME, AND THE BAR'S WORD WITH IT, IS THE LOOP'S NEXT
+        TURN (`after(0)`), not this call's. Shown here, it was on the
+        glass for whatever the same callback did next: _show and then
+        _settings_go — the pile's recovery-key door did exactly that —
+        held the place as built, 16 px low, for the ~85 ms the tab took
+        to build, then snapped it up and swapped the tab in: Home, then
+        General, then Privacy, when only the last was asked for (review
+        of 2026-09-22). Deferred, the cover still shows the old screen
+        when the next rebuild starts, and that one folds into this
+        arrival (_hold_for). The word is SET here — `nav.selected` names
+        the place the moment _show returns — and painted with the frame,
+        so it cannot lead the page either."""
+        try:
+            self.sheet.place(x=0, y=0)
+            self._settle()
+            if self.closing:
+                return
+            taken = self._hold.take()
+            self._paint_nav(paint=False)
+        except BaseException:
+            if not self.closing:
+                self._paint_nav()
+                self._hold.lift()
+            raise
+        if not taken:
+            self._paint_nav()
+            self._hold.lift()
+            return
+        self._arrival_next = step
+        self._slide_after = self.root.after(0, lambda: self._arrive(step))
+
+    def _arrive(self, step: int) -> None:
+        """One frame of the arrival, on the cover. Nothing Tk draws: the
+        real screen is finished and at its place underneath. The first
+        frame brings the bar's word: painted before the photograph, the
+        census caught one 8 ms sample of the new word over the old page."""
+        self._slide_after = None
+        self._arrival_next = None
+        if self.closing:
+            return
+        hold = self._hold
+        if not step:
+            self.nav.paint()
+            self.nav.update_idletasks()
+        offset = self.SLIDE[step] if step < len(self.SLIDE) else 0
+        if hold is None or not hold.up or not offset or not hold.show(offset):
+            if hold is not None:
+                hold.lift()
+            return
+        self._arrival_next = step + 1
+        self._slide_after = self.root.after(
+            self.SLIDE_MS, lambda: self._arrive(step + 1))
+
+    def _cancel_slide(self) -> None:
+        """The pending frame of the arrival or of the old slide, gone —
+        and nothing else done about it (_end_slide finishes one)."""
         if self._slide_after is not None:
             try:
                 self.root.after_cancel(self._slide_after)
             except Exception:
                 pass
-            self._slide_after = None
-        self.sheet.place_forget()
-        try:
-            for child in self.sheet.winfo_children():
-                child.destroy()
-            keep = {k: self.parts[k] for k in
-                    ("hint", "lamp", "state", "uptime", "chip", "run",
-                     "bar_screens", "stop_bar", "tests_stop")
-                    if k in self.parts}
-            self.parts = keep
-            self._hide_toast()
-            {"Home": self._screen_home,
-             "Corrections": self._screen_corrections,
-             "Problems": self._screen_problems,
-             "Said": self._screen_said,
-             "Keys": self._screen_keys,
-             "Settings": self._screen_settings,
-             "Network": self._screen_network,
-             "Landing": self._screen_landing}[name]()
-            self._refresh(self.status or None)
-        except BaseException:
-            # A builder that died must not leave a blank window behind:
-            # whatever it managed to draw goes back on, in place.
+        self._slide_after = None
+        self._arrival_next = None
+
+    def _end_slide(self) -> None:
+        """Whatever is still moving, finished NOW. The old slide ends
+        where it belongs, at y 0: cancelled mid-way, the sheet stayed
+        16 px low for as long as the screen was up (the review of
+        2026-09-22 caught it on the path a window with no cover takes, a
+        Settings tab asked for inside the slide). An arrival with no
+        cover left to show it paints the bar's word it was carrying."""
+        pending, step = self._slide_after, self._arrival_next
+        self._cancel_slide()
+        if pending is None:
+            return
+        if step is None:
             self.sheet.place(x=0, y=0)
-            raise
-        self._slide_in()
+            return
+        if not step:
+            self.nav.paint()
+        if self._hold is not None:
+            self._hold.lift()
+
+    def _hold_for(self) -> tuple[bool, int | None]:
+        """Cover the pane for a switch or an in-place rebuild. Returns
+        (covered, the frame of an arrival this interrupts, or None).
+
+        MID-ARRIVAL THE COVER STAYS AS IT IS. It is up, and it shows
+        exactly what is on the glass: the old screen while the first
+        frame is still to come, or the arriving one a few pixels low.
+        Photographing the pane there — what this did until the review of
+        2026-09-22 — laid the FINISHED new screen over it at y 0: a jump
+        up, and, for a rebuild asked for in the same callback as the
+        switch, a picture of a place or a tab the person had not asked
+        for. So the pending frame is cancelled, nothing is photographed,
+        and the caller rebuilds under what is already there and goes on
+        with the arrival from its picture (_reveal). Otherwise whatever
+        is pending is finished (the old slide at y 0) and the pane is
+        photographed as it stands."""
+        hold, step = self._hold, self._arrival_next
+        if step is not None and hold is not None and hold.up:
+            self._cancel_slide()
+            return True, step
+        self._end_slide()
+        return (hold.cover() if hold is not None else False), None
+
+    def _held(self, rebuild) -> None:
+        """An in-place rebuild of part of a screen — a Settings tab, the
+        search opening or closing — under the same cover, lifted once
+        everything it drew is painted. No slide: the place did not
+        change. Asked for while a place is still arriving, it is part of
+        that arrival: built under the cover as it stands, and the
+        arrival goes on with the finished picture (_hold_for)."""
+        if self._switching:
+            rebuild()
+            return
+        held, step = self._hold_for()
+        self._switching = True
+        try:
+            try:
+                rebuild()
+                self._settings_first_view()
+            except BaseException:
+                if not self.closing:
+                    self._paint_nav()
+                    if held:
+                        self._hold.lift()
+                raise
+            if step is not None:
+                self._reveal(step)
+            elif held:
+                self._settle()
+                if not self.closing:
+                    self._hold.lift()
+        finally:
+            self._switching = False
+        if self.closing:
+            return
+        wish, self._show_next = self._show_next, None
+        if wish is not None:
+            self._show(*wish)
 
     def _slide_in(self, step: int = 0) -> None:
         """The new screen eases up into place — six frames, ~100 ms.
@@ -8553,23 +8843,52 @@ class Dashboard:
 
     def _settings_go(self, name: str) -> None:
         """Another tab. The values cache stays, so a switch flipped on
-        Common is already flipped where the same line is drawn again."""
-        self._settings_tab = name
-        for tab_name, chip in (self.parts.get("settings_tabs") or {}).items():
-            chip.set(tab_name == name)
-        self._fill_settings()
+        Common is already flipped where the same line is drawn again.
+
+        Under the cover (_held): the lit chip and the tab's first
+        screenful of cards change in one step. Before, the list was
+        cleared and the cards built one per 16 ms tick in the open — the
+        census counted 3-7 half-built frames per tab over 50-80 ms."""
+        def rebuild() -> None:
+            self._settings_tab = name
+            for tab_name, chip in (self.parts.get("settings_tabs")
+                                   or {}).items():
+                chip.set(tab_name == name)
+            self._fill_settings()
+        self._held(rebuild)
 
     def _settings_open_search(self) -> None:
-        self._settings_searching = True
-        self._settings_query = ""
-        self._settings_bar()
-        self._fill_settings()
+        def rebuild() -> None:
+            self._settings_searching = True
+            self._settings_query = ""
+            self._settings_bar()
+            self._fill_settings()
+        self._held(rebuild)
 
     def _settings_close_search(self) -> None:
-        self._settings_searching = False
-        self._settings_query = ""
-        self._settings_bar()
-        self._fill_settings()
+        def rebuild() -> None:
+            self._settings_searching = False
+            self._settings_query = ""
+            self._settings_bar()
+            self._fill_settings()
+        self._held(rebuild)
+
+    def _settings_first_view(self) -> None:
+        """Build the queued Settings cards until the list's first
+        screenful is full — before a reveal, so the tab arrives with its
+        viewport finished. The rest stay one per tick, below the fold."""
+        scroller = self.parts.get("settings_list")
+        if scroller is None or not self._settings_left:
+            return
+        try:
+            view = int(scroller.canvas.cget("height"))
+        except Exception:                 # noqa: BLE001
+            return
+        while self._settings_left:
+            scroller.inner.update_idletasks()
+            if scroller.inner.winfo_reqheight() >= view:
+                break
+            self._settings_left.pop(0)()
 
     def _fill_settings(self) -> None:
         """The cards for the tab that is up — or, while searching, every
@@ -9802,13 +10121,23 @@ class Dashboard:
         return rows
 
     def _lock_go_type(self) -> None:
-        """The pile's [Type the recovery key]: the Privacy tab's lock card
-        with its field open and focused — one press, and the caret is
-        in the field."""
-        self._show("Settings")
-        self._settings_go("Privacy")
-        self._finish_settings()
-        self._lock_type()
+        """The pile's [Type the recovery key]: the lock card with its
+        field open and focused — one press, and the caret is in the field.
+
+        ONE switch, to the tab the card is on. It was _show("Settings"),
+        then _settings_go("Privacy"): two rebuilds in one press, and the
+        person saw Home, then the General tab for the ~85 ms the second
+        one took, then Privacy (review of 2026-09-22) — which, since the
+        eight tabs, is not where the lock is at all (LAYOUT: Account), so
+        the field it opened did not exist. The tab is set before the
+        switch, and the rest of the tab and the open field are built
+        under the switch's own cover (`then`)."""
+        self._settings_tab = settings_mod.ACCOUNT
+
+        def then() -> None:
+            self._finish_settings()
+            self._lock_type()
+        self._show("Settings", then=then)
 
     def _lock_banner(self, lock: dict) -> None:
         """One line at the top of every screen while the lock needs the
@@ -11804,6 +12133,8 @@ class Dashboard:
                     self.root.after_cancel(pending)
             except Exception:
                 pass
+        if getattr(self, "_hold", None) is not None:
+            self._hold.close()
         try:
             self.root.destroy()
         except Exception:
