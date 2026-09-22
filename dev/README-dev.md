@@ -4495,7 +4495,9 @@ one block for a bug report with no transcripts and no keys in it.
 ## Releasing
 
 One tag does it all (`DISTRIBUTION_PLAN.md` 10.3, 11.11): edit `VERSION`,
-write the section in `CHANGELOG.md` under `## x.y.z`, push `vx.y.z`.
+write the section in `CHANGELOG.md` under `## x.y.z` — **English only,
+no Hebrew** (his word, 2026-09-22), in the first person — and push
+`vx.y.z`.
 The workflow builds the installer from the tag on GitHub's runner
 (hashed wheelhouse, SHA-verified embeddable Python, `git archive`,
 `MANIFEST.sha256`, the notices file), installs and uninstalls it there,
