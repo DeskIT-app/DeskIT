@@ -2857,7 +2857,7 @@ class App:
                 return self._account_command(str(args.get("do", "status")).strip().lower(),
                                              kind=str(args.get("kind") or ""))
             if command == "tour":
-                # Show the tour again (Settings > The app, D36): the
+                # Show the tour again (Settings > About, D36): the
                 # same four cards the first start showed, from the top.
                 # Enqueued only; the card's thread paints it.
                 card = getattr(self, "tour_card", None)

@@ -124,7 +124,7 @@ The lock, בכל מחשב שכבר בפנים). או **Later**: בינתיים �
 | מתג | מה הוא עושה |
 |---|---|
 | Fix misheard words with a free cloud model (text only) | כבוי. ההדלקה היא ההסכמה ([פרק 5](05-cloud) אומר מה יוצא ולאן) ופותחת מתחת לשורה שדה למפתח Groq חינמי משלך, שנבדק מול Groq ברגע השמירה. Next מחכה עד שמפתח עובד — או עד שהמתג כבוי שוב. |
-| Keep this PC awake while DeskIT runs | דלוק. חלונות לא נרדם כל עוד דסק-איט רץ; **Settings > The app** מכבה. |
+| Keep this PC awake while DeskIT runs | דלוק. חלונות לא נרדם כל עוד דסק-איט רץ; **Settings > General** מכבה. |
 | Check for updates weekly | דלוק. בקשה אחת ל־github.com, בלי מזהה. |
 | Connect Claude Code | כבוי. שתי שורות ב־`~/.claude/settings.json`: כש־Claude Code מסיים או שואל, דסק-איט מציג כרטיס ומשמיע צליל. |
 | Take over Win+Shift+S for DeskIT's screenshot key | דלוק. כלי החיתוך של חלונות מפסיק לענות לקיצור הזה כל עוד דסק-איט רץ; כבוי — המקש הוא Ctrl+F11. |
@@ -139,7 +139,7 @@ The lock, בכל מחשב שכבר בפנים). או **Later**: בינתיים �
   ממך, ההגדרות ששינית, הטקסט של מה שאמרת ומפתחות הענן הולכים איתך לכל מחשב שתיכנס אליו עם
   החשבון, כך שהוא שומע אותך בדרך שלך כבר מהמשפט הראשון ועמוד Said הוא אותו עמוד גם שם. מה
   שאמרת והמפתחות יוצאים נעולים במפתח שרק המחשבים שלך מחזיקים; השרת לא יכול לקרוא אותם.
-  אף פעם לא הקול. לכבות אחר כך: Settings > Privacy > **Withdraw** בשורה *Syncing settings
+  אף פעם לא הקול. לכבות אחר כך: Settings > Account > **Withdraw** בשורה *Syncing settings
   and words* ובשורה *Syncing what you said* — לכל אחת שורה משלה, אז אפשר לכבות רק את
   ההיסטוריה; **Turn on** באותה שורה שואל שוב. השורה מופיעה רק אם נכנסת לחשבון בעמוד
   החשבון.

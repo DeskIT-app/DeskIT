@@ -75,7 +75,7 @@ your PC**. לוחצים **More info** ואז **Run anyway**.
 ## עדכון
 
 דסק-איט בודק אם יש גרסה חדשה פעם בשבוע (בקשה אחת ל־github.com, בלי מזהה; המתג תחת
-**Settings > Privacy**). כשיש, **Settings > The app** מציג אותה עם כפתור **Download and
+**Settings > Privacy**). כשיש, **Settings > General** מציג אותה עם כפתור **Download and
 install**; ההורדה נבדקת מול ה־SHA-256 שלה לפני שהמתקין רץ. משתמשי winget יכולים גם
 להריץ `winget upgrade YoavShimron.DeskIT`.
 

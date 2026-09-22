@@ -46,7 +46,7 @@ sending the same report twice cannot make two.
 
 **GitHub Issues** — [the bug template](https://github.com/DeskIT-app/DeskIT/issues/new/choose)
 asks what you did, what happened, what you expected, how you installed, and the diagnostics
-block. Get the block with **Settings > The app > Copy diagnostics**, or from the install
+block. Get the block with **Settings > About > Copy diagnostics**, or from the install
 folder:
 
 ```

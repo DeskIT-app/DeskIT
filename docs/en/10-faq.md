@@ -21,7 +21,7 @@ turn Smart App Control off — Windows lets you do that once.
 
 **The model download is stuck or failed.**
 Home shows the model's row with its button; a download resumes on the next start from where
-it stopped. If it never finishes, **Settings > The app > Delete and re-download** removes the
+it stopped. If it never finishes, **Settings > Dictation > Delete and re-download** removes the
 partial folder — DeskIT never loads a partial model. A managed or filtered network may block
 huggingface.co; the **Network** place shows the refused host. This is the top issue of every
 comparable app, which is why the download asks first, shows bytes, and resumes.

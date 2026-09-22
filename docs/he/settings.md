@@ -13,19 +13,6 @@ title: הגדרות
 
 ## General
 
-| מפתח | מה זה | ברירת מחדל | אפשרויות |
-|---|---|---|---|
-| `backend` — Where your speech is turned into words | On this computer is faster and better at Hebrew, and nothing leaves the machine. | `local` | On this computer / In Google's cloud |
-| `auto_language` — Also understand English | The app decides for each recording; off, everything you say is taken as Hebrew. | on | on / off |
-| `punctuate.auto` — Punctuate every dictation | Commas, full stops and question marks go in on the way to the cursor, which costs about a second each time. | off | on / off |
-| `punctuate.nikud` — Add vowel points as well | The Hebrew vowel marks go in along with the punctuation. | off | on / off |
-| `polish.when` — Fix misheard words with a model | With a cloud key the fix goes in before the text is pasted (a third of a second); without one the model on this PC takes 5-7 s, so the text is pasted at once and its fix arrives as a card you can accept. Or always before the paste, only for words you have corrected before, or never. (per tier — cpu: `never`) | `cloud` | Before the paste with a key, as a card without one / Always before the paste / Only taught words / Never |
-| `vocab.enabled` — Use the words it has learned | Corrections you taught it with the correction key are applied to new dictations. | on | on / off |
-| `local.cleanup` — Take out the ums and the false starts | The sounds you make while thinking, and a phrase you began again, are dropped. | on | on / off |
-| `review.enabled` — Suggest a better word after a dictation | A small card offers the word it thinks you meant; yes teaches it, no is remembered. Off, it learns quietly instead. (per tier — cpu: off) | on | on / off |
-| `study.enabled` — Keep learning while the computer is idle | After a few quiet minutes it listens again to what you dictated and learns from what it got wrong. Nothing leaves this PC. (per tier — cpu: off) | on | on / off |
-| `translate.target` — Translate into | The language the translate key writes in. | `English` | text |
-
 ### On The Screen
 
 | מפתח | מה זה | ברירת מחדל | אפשרויות |
@@ -36,16 +23,71 @@ title: הגדרות
 | `hint.enabled` — Show the key card while a key is held | A card that says what the other keys do, once the key has been held for a moment. | on | on / off |
 | `auto_pause_fullscreen` — Pause by itself while a game fills the screen | While a game or a presentation owns the whole screen, the dictation key is left to it, and comes back when it lets go. | off | on / off |
 
-### Messages From Other Programs
+### This Computer
 
 | מפתח | מה זה | ברירת מחדל | אפשרויות |
 |---|---|---|---|
-| `notify.enabled` — Show messages from other programs | Off, nothing is shown, stored or played. | on | on / off |
-| `notify.cue` — Play a sound when one arrives | Off, the card appears in silence. | on | on / off |
-| `notify.interrupt` — Which messages pop up | Every one, only what is waiting on you, or none; the rest wait quietly on the panel beside the dot. | `input` | Every message / Only what needs you / None |
-| `notify.summarize` — Say a finished message in one line | When Claude finishes, the card carries one plain sentence about its message instead of the first lines — written by Groq, with the cloud-text switch on and a Groq key. Off, or without either, the card shows the message's first lines. | on | on / off |
+| `local.load_at_start` — Have it ready to dictate the moment it starts | Off, DeskIT starts light — every key that does not need the speech model works at once, and Start on the desk gets it ready when you want to dictate. | on | on / off |
+| `awake.hold` — Keep the computer awake while DeskIT runs | The machine will not fall asleep on its own timer while the app is running. The screens may still go dark. | on | on / off |
+| `privacy.update_check` — Look for a newer version every week | Once a week DeskIT asks GitHub whether a newer version is out. Nothing about you is sent, and nothing is installed without your press. | on | on / off |
+
+### Where Files Are Saved
+
+| מפתח | מה זה | ברירת מחדל | אפשרויות |
+|---|---|---|---|
+| `capture.folder` — Where pictures are saved | Screenshots and webcam photos both land here. | `captures` | text |
+| `capture.clip_folder` — Where recordings are saved | Empty means the same folder as the pictures. | (empty) | text |
+
+## Dictation
+
+### Where Your Speech Becomes Words
+
+| מפתח | מה זה | ברירת מחדל | אפשרויות |
+|---|---|---|---|
+| `backend` — Where your speech is turned into words | On this computer is faster and better at Hebrew, and nothing leaves the machine. | `local` | On this computer / In Google's cloud |
+
+### When You Dictate
+
+| מפתח | מה זה | ברירת מחדל | אפשרויות |
+|---|---|---|---|
+| `auto_language` — Also understand English | The app decides for each recording; off, everything you say is taken as Hebrew. | on | on / off |
+| `punctuate.auto` — Punctuate every dictation | Commas, full stops and question marks go in on the way to the cursor, which costs about a second each time. | off | on / off |
+| `punctuate.nikud` — Add vowel points as well | The Hebrew vowel marks go in along with the punctuation. | off | on / off |
+| `local.cleanup` — Take out the ums and the false starts | The sounds you make while thinking, and a phrase you began again, are dropped. | on | on / off |
+| `polish.when` — Fix misheard words with a model | With a cloud key the fix goes in before the text is pasted (a third of a second); without one the model on this PC takes 5-7 s, so the text is pasted at once and its fix arrives as a card you can accept. Or always before the paste, only for words you have corrected before, or never. (per tier — cpu: `never`) | `cloud` | Before the paste with a key, as a card without one / Always before the paste / Only taught words / Never |
+
+### Words It Learns
+
+| מפתח | מה זה | ברירת מחדל | אפשרויות |
+|---|---|---|---|
+| `vocab.enabled` — Use the words it has learned | Corrections you taught it with the correction key are applied to new dictations. | on | on / off |
+| `review.enabled` — Suggest a better word after a dictation | A small card offers the word it thinks you meant; yes teaches it, no is remembered. Off, it learns quietly instead. (per tier — cpu: off) | on | on / off |
+| `study.enabled` — Keep learning while the computer is idle | After a few quiet minutes it listens again to what you dictated and learns from what it got wrong. Nothing leaves this PC. (per tier — cpu: off) | on | on / off |
+
+### The Translate Key
+
+| מפתח | מה זה | ברירת מחדל | אפשרויות |
+|---|---|---|---|
+| `translate.target` — Translate into | The language the translate key writes in. | `English` | text |
 
 ## Screen
+
+### Screenshots And Recordings
+
+| מפתח | מה זה | ברירת מחדל | אפשרויות |
+|---|---|---|---|
+| `capture.enabled` — Screenshots and screen recording | Off, both keys stop working and nothing is taken. | on | on / off |
+| `capture.after_shot` — After a screenshot | What happens the moment you let go: a small card, the editor, or nothing at all. | `toast` | Show a small card / Open the editor / Nothing |
+| `capture.always_save` — Always save the file as well | Off, the picture is on the clipboard and nowhere else until you press Save. Where both land: General. | off | on / off |
+| `capture.quality` — Recording quality | How much detail a recording keeps, against how large the file is. | `balanced` | Small file / Balanced / Sharp |
+| `capture.audio` — Record the microphone too | Off to start with: a recorder that quietly opens the microphone is a surprise. | `off` | No / Yes |
+
+### The Camera
+
+| מפתח | מה זה | ברירת מחדל | אפשרויות |
+|---|---|---|---|
+| `camera.enabled` — Take a photo with the webcam | Off, the key does nothing and the camera is never opened. | on | on / off |
+| `camera.mirror` — Mirror the picture | Off, because writing held up to a webcam reads backwards mirrored. | off | on / off |
 
 ### Ask About The Screen
 
@@ -55,24 +97,16 @@ title: הגדרות
 | `visual_qa.speak` — Read the answer aloud | Whether the card offers to say the answer, says every answer as it lands, or never speaks. | `button` | Never / With a button / Always |
 | `visual_qa.echo_to_field` — Type what you asked into the field you were in | Once the card closes, so the question becomes part of what you were writing. | on | on / off |
 
-### Screenshots And Recordings
+## Messages & sounds
+
+### Messages From Other Programs
 
 | מפתח | מה זה | ברירת מחדל | אפשרויות |
 |---|---|---|---|
-| `capture.enabled` — Screenshots and screen recording | Off, both keys stop working and nothing is taken. | on | on / off |
-| `capture.after_shot` — After a screenshot | What happens the moment you let go: a small card, the editor, or nothing at all. | `toast` | Show a small card / Open the editor / Nothing |
-| `capture.always_save` — Always save the file as well | Off, the picture is on the clipboard and nowhere else until you press Save. | off | on / off |
-| `capture.folder` — Where pictures are saved | Screenshots and webcam photos both land here. A plain name means a folder beside the app. | `captures` | text |
-| `capture.clip_folder` — Where recordings are saved | Empty means the same folder as the pictures. | (empty) | text |
-| `capture.quality` — Recording quality | How much detail a recording keeps, against how large the file is. | `balanced` | Small file / Balanced / Sharp |
-| `capture.audio` — Record the microphone too | Off to start with: a recorder that quietly opens the microphone is a surprise. | `off` | No / Yes |
-
-### Camera
-
-| מפתח | מה זה | ברירת מחדל | אפשרויות |
-|---|---|---|---|
-| `camera.enabled` — Take a photo with the webcam | Off, the key does nothing and the camera is never opened. | on | on / off |
-| `camera.mirror` — Mirror the picture | Off, because writing held up to a webcam reads backwards mirrored. | off | on / off |
+| `notify.enabled` — Show messages from other programs | Off, nothing is shown, stored or played. | on | on / off |
+| `notify.interrupt` — Which messages pop up | Every one, only what is waiting on you, or none; the rest wait quietly on the panel beside the dot. | `input` | Every message / Only what needs you / None |
+| `notify.summarize` — Say a finished message in one line | When Claude finishes, the card carries one plain sentence about its message instead of the first lines — written by Groq, with the cloud-text switch on and a Groq key. Off, or without either, the card shows the message's first lines. | on | on / off |
+| `notify.cue` — Play a sound when one arrives | Off, the card appears in silence. | on | on / off |
 
 ## Phone
 
@@ -82,41 +116,33 @@ title: הגדרות
 |---|---|---|---|
 | `server.enabled` — Dictate from the phone | The phone keyboard sends its recordings here, over your own private network. | off | on / off |
 
+## Account
+
+### What The Account May Do
+
+| מפתח | מה זה | ברירת מחדל | אפשרויות |
+|---|---|---|---|
+| `privacy.account` — An account | Anonymous, or your Google sign-in: for problem reports you choose to send and for the two syncs. Opens only through its card. | off | on / off |
+| `privacy.settings_sync` — Syncing settings and words | Your changed settings, learned words and cloud keys follow you to every PC you sign into — the keys locked with your account's own key; never hotkeys, devices, folders or positions. Comes with the sign-in and the wizard's one sync switch; Withdraw turns it off, Turn on here asks again. | off | on / off |
+| `privacy.history_sync` — Syncing what you said | The Said page is the same on every PC you sign into. Locked before it leaves with a key only your own PCs hold: the server cannot read it (The lock, below). Comes with the sign-in and the wizard's one sync switch, like the settings; Withdraw turns it off on its own, Turn on here asks again. | off | on / off |
+
 ## Privacy
 
 ### What May Leave This Pc
 
 | מפתח | מה זה | ברירת מחדל | אפשרויות |
 |---|---|---|---|
+| `privacy.offline` — Offline mode | Nothing leaves this computer. Dictation keeps working; cloud fixes, translation and updates pause. | off | on / off |
 | `privacy.cloud_text` — Text to the cloud | What you dictated or selected may go to Groq or Google under your own key, for the repair pass, punctuation, translation, lookup and the second reading. Opens only through its card, the first time a feature needs it. | off | on / off |
 | `privacy.cloud_audio` — Recordings to the cloud | What you said, as audio, may go to Google or Groq for transcription. Opens only through its card. | off | on / off |
 | `privacy.cloud_screenshots` — Screen pictures to the cloud | The part of the screen you asked about may go to Groq or Google. Opens only through its card. | off | on / off |
-| `privacy.account` — An account | Anonymous, or your Google sign-in: for problem reports you choose to send and for the two syncs. Opens only through its card. | off | on / off |
 | `privacy.report_upload` — Sending problem reports | Only what the preview showed. Opens only through its card. | off | on / off |
-| `privacy.settings_sync` — Syncing settings and words | Your changed settings, learned words and cloud keys follow you to every PC you sign into — the keys locked with your account's own key; never hotkeys, devices, folders or positions. Comes with the sign-in and the wizard's one sync switch; Withdraw turns it off, Turn on here asks again. | off | on / off |
-| `privacy.history_sync` — Syncing what you said | The Said page is the same on every PC you sign into. Locked before it leaves with a key only your own PCs hold: the server cannot read it (The lock, below). Comes with the sign-in and the wizard's one sync switch, like the settings; Withdraw turns it off on its own, Turn on here asks again. | off | on / off |
-
-### Switches
-
-| מפתח | מה זה | ברירת מחדל | אפשרויות |
-|---|---|---|---|
-| `privacy.update_check` — Look for a newer version weekly | One request to GitHub, carrying no identifier. | on | on / off |
-| `privacy.offline` — Offline mode | Nothing leaves this computer. Dictation keeps working; cloud fixes, translation and updates pause. | off | on / off |
 
 ### Kept On This Pc
 
 | מפתח | מה זה | ברירת מחדל | אפשרויות |
 |---|---|---|---|
 | `history.keep_days` — How long what you said is kept, in days | The Said page reads it; older lines are dropped. 0 keeps no history at all. | `30` | a number |
-
-## The app
-
-### This Computer
-
-| מפתח | מה זה | ברירת מחדל | אפשרויות |
-|---|---|---|---|
-| `local.load_at_start` — Load the speech model when DeskIT starts | Off, DeskIT starts without it — every key that needs no model works at once, and Start on the desk loads it when you want to dictate. | on | on / off |
-| `awake.hold` — Hold the computer awake | While the app is running the machine will not fall asleep on its own timer. The screens may still go dark. | on | on / off |
 
 ## Keys — המקשים
 

@@ -205,7 +205,7 @@ def tier_for(facts: dict) -> str:
     if (pack in ("missing", "unknown") or pack.startswith("failed:")) and not paths.DEVELOPER:
         # the wheels are not there yet, or are there and do not run: the
         # card exists, the tier does not — the pack step (packs.py) or
-        # Settings > The app is where it becomes gpu
+        # Settings > Dictation is where it becomes gpu
         return "cpu"
     vram = int(facts.get("vram_mb") or 0)
     if vram and vram < GPU_SMALL_MB:
@@ -283,6 +283,17 @@ def clear_change() -> None:
 
 TIER_WORDS = {"gpu": "on the graphics card", "gpu-small": "on a small graphics card",
               "cpu": "on the processor"}
+
+
+def machine_line(facts: dict | None = None) -> str:
+    """What this PC IS, with no tier word in front: the line Settings >
+    About shows. The tier is a decision the app made about the machine
+    and it is said in plain words where that decision can be changed
+    (Settings > Dictation, "Faster dictation"); About is for the facts
+    a report needs."""
+    said = summary(facts)
+    rest = said.split(" · ")[1:]
+    return " · ".join(rest) if rest else said
 
 
 def summary(facts: dict | None = None) -> str:

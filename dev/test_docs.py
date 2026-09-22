@@ -190,7 +190,8 @@ def test_guide_uses_screen_names():
     nav = re.findall(r'\("([a-z]+)", "([A-Za-z]+)"\)', src.split("NAV = (")[1].split(")\n")[0])
     places = {label for _key, label in nav}
     tabs = {tab.name for tab in settings_mod.TABS}
-    blocks = {"YOUR CLOUD KEYS", "WHAT MAY LEAVE THIS PC", "SWITCHES"}
+    blocks = {g.title for tab in settings_mod.TABS for g in tab.groups}
+    blocks |= {"YOUR CLOUD KEYS", "EVERY CONNECTION", "THE LOCK"}
     for lang in ("he", "en"):
         for name, text in _pages(lang).items():
             # Windows' own Settings pages the guide sends people to
