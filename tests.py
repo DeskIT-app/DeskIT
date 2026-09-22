@@ -11501,6 +11501,292 @@ def test_a_settings_tab_arrives_with_its_first_screenful_built() -> None:
         board._finish_settings()
 
 
+def _pane_now(hold):
+    """The desk's pane as it stands under or without the cover, as an
+    H x W x 3 array."""
+    width, height, data = hold.surface()
+    return np.frombuffer(data, np.uint8).reshape(height, width, 4)[..., :3].copy()
+
+
+def _share_differing(one, two) -> float:
+    return float((np.abs(one.astype(np.int16) - two.astype(np.int16)) > 10).any(-1).mean())
+
+
+def _tape_the_cover(board) -> list:
+    """Every picture the switch cover PRESENTS, the moment it presents
+    it: (the offset it was shown at, or None for a photograph of the pane
+    as it stood; the pixels; the words painted bold in the bar). Wrapped
+    on the instance, so the window's own calls go through it."""
+    hold = board._hold
+    tape: list = []
+    offset: list = [None]
+    real_present, real_show, real_cover = hold._present, hold.show, hold.cover
+
+    def cover():
+        offset[0] = None
+        return real_cover()
+
+    def show(k):
+        offset[0] = int(k)
+        return real_show(k)
+
+    def present():
+        ok = real_present()
+        width, height, data = hold.picture(0)
+        lit = [name for name, (label, _bar) in board.nav.items.items()
+               if "bold" in str(label.cget("font"))]
+        tape.append((offset[0], np.frombuffer(data, np.uint8)
+                     .reshape(height, width, 4)[..., :3].copy(), lit))
+        return ok
+    hold._present, hold.show, hold.cover = present, show, cover
+    return tape
+
+
+def test_a_door_that_lands_on_a_tab_shows_nothing_but_the_old_screen_and_the_new() -> None:
+    """The review of 2026-09-22: Home's [Type the recovery key] ran
+    _show("Settings") and then _settings_go in the same press. The first
+    frame of the arrival was already on the cover, and the tab laid a
+    fresh photograph of the finished General tab over it at y 0 — so the
+    person saw Home, then General for ~85 ms (a tab nobody asked for,
+    16 px higher than it had just been), then the tab they had asked
+    for. And since the eight tabs the door named Privacy, where the lock
+    no longer is: the field it opened did not exist.
+
+    Now the door is ONE switch to the Account tab, the lock card's field
+    open, built under the switch's own cover (`then`) — and anything
+    that still rebuilds in the middle of an arrival FOLDS into it
+    (_hold_for): nothing is re-photographed, and the arrival goes on
+    from where it was with the finished picture. Every picture the cover
+    presents is either the old screen, with the old place lit in the bar,
+    or the new one sliding up, with the new place lit; and a tab asked
+    for two frames into an arrival carries it on downwards, never back
+    up."""
+    import control as control_mod
+    import dashboard as dash
+    import settings as settings_mod
+    with _window() as board:
+        if board is None:
+            return
+        hold = board._hold
+        account = {"configured": True, "signed_in": True, "user_id": "u", "anonymous": False,
+                   "email": "p@example.com", "device_name": "PC", "busy": "", "last_error": "",
+                   "last_sync": "", "waiting": 0, "region": "Frankfurt (Supabase)",
+                   "lock": {"state": "waiting", "id": "", "code": "H7QM-3K2P", "pending": [],
+                            "recovery": None, "error": ""}}
+        reply = {"ok": True, "stage": "running", "account": account}
+        # the poll answers the same as the page, or it repaints the lock
+        # "not running" under the arrival and the pictures disagree
+        with _patched(control_mod, "send",
+                      lambda command, *a, **k: dict(reply) if command == "status" else None):
+            board._ask = lambda *a, **k: None
+            # an answer of None the poll had in flight before the patch
+            # must have landed and been overtaken
+            deadline = time.monotonic() + 2 * dash.POLL_MS / 1000
+            while time.monotonic() < deadline:
+                board.root.update()
+                time.sleep(0.02)
+            assert board.running and board._waiting_lock(), "the poll never answered running"
+            _let_the_switch_land(board)
+            covered = hold._where() is not None
+            tape = _tape_the_cover(board) if covered else []
+            fills: list = []
+            real_fill = board._fill_settings
+
+            def fill() -> None:
+                fills.append(board._settings_tab)
+                real_fill()
+            board._fill_settings = fill
+
+            def press(act) -> None:
+                _let_the_switch_land(board)
+                fills.clear()
+                tape.clear()
+                old = _pane_now(hold) if covered else None
+                was = board.nav.selected
+                act()
+                _let_the_switch_land(board)
+                if not covered:
+                    return
+                new = _pane_now(hold)
+                assert tape, "the switch never covered the pane"
+                for offset, picture, lit in tape:
+                    if offset is None:
+                        assert _share_differing(picture, old) < 0.004, \
+                            "the cover showed a picture that is not the old screen"
+                        assert lit == [was], ("the bar's word moved before the page", lit)
+                    else:
+                        assert _share_differing(picture[offset:], new[:-offset]) < 0.004, \
+                            f"frame {offset} px low is not the new screen"
+                        assert lit == [board.nav.selected], lit
+
+            rows = board._waiting_lock()
+            assert rows and rows[0]["buttons"][0][0] == "Type the recovery key", rows
+            door = rows[0]["buttons"][0][2]
+            assert door == board._lock_go_type
+            press(door)
+            assert board.screen == "Settings" and board._settings_tab == settings_mod.ACCOUNT, \
+                ("the lock is on Account", board.screen, board._settings_tab)
+            assert fills == [settings_mod.ACCOUNT], ("one press, one build", fills)
+            labels = [w.itemcget(w._label, "text")
+                      for w in board.parts["lock_strip"].winfo_children() if hasattr(w, "_label")]
+            assert board._lock_mode == "typing" and labels == ["Open", "Cancel"], labels
+            if covered:
+                assert [o for o, _p, _l in tape][:2] == [None, 16], [o for o, _p, _l in tape]
+                field = board.parts["lock_field"]
+                assert field.winfo_ismapped(), "the field is not open on the screen"
+                assert board.root.focus_lastfor() == field.entry, "the caret is not in the field"
+
+            # the same two calls anyone might still make in one callback
+            board.nav._hit("Home")
+            board._settings_tab = settings_mod.GENERAL
+            press(lambda: (board._show("Settings"),
+                           board._settings_go(settings_mod.PRIVACY)))
+            assert board._settings_tab == settings_mod.PRIVACY
+            assert fills == [settings_mod.GENERAL, settings_mod.PRIVACY], fills
+            if covered:
+                assert [o for o, _p, _l in tape].count(None) == 1, "photographed twice"
+
+            if not covered:
+                print("    (the cover's pictures skipped: the window is on no screen here)")
+                return
+            # a tab two frames into an arrival carries it on, downwards
+            board.nav._hit("Home")
+            _let_the_switch_land(board)
+            tape.clear()
+            board._show("Settings")
+            deadline = time.monotonic() + 3
+            while sum(1 for o, _p, _l in tape if o) < 2 and board._arrival_next is not None \
+                    and time.monotonic() < deadline:
+                board.root.update()
+            if board._arrival_next is None:
+                print("    (the fold mid-arrival skipped: the arrival ended before a tab could land)")
+                return
+            before = [o for o, _p, _l in tape]
+            board._settings_go(settings_mod.DICTATION)
+            _let_the_switch_land(board)
+            new = _pane_now(hold)
+            after = [o for o, _p, _l in tape][len(before):]
+            assert None not in after, "a tab mid-arrival photographed the pane again"
+            assert after and after[0] < before[-1] and after == sorted(after, reverse=True), \
+                ("the arrival jumped", before, after)
+            for offset, picture, _lit in tape[len(before):]:
+                assert _share_differing(picture[offset:], new[:-offset]) < 0.004, \
+                    "the arrival went on with a picture that is not the tab asked for"
+
+
+def test_a_tab_asked_for_inside_the_old_slide_leaves_the_page_in_place() -> None:
+    """A window with no cover (withdrawn while the dot moves, not mapped
+    yet, GitHub's runner) switches the old way: sheet unmapped, then the
+    six-frame slide. A Settings tab asked for inside that slide
+    cancelled it — and the sheet stayed where the slide had it, 16 px
+    low, for as long as the page was up (review of 2026-09-22). Whatever
+    a rebuild stops is finished, at y 0."""
+    import settings as settings_mod
+    with _window() as board:
+        if board is None:
+            return
+        _let_the_switch_land(board)
+        board.root.withdraw()
+        board.root.update()
+        assert board._hold._where() is None
+        board._show("Settings")
+        assert board._slide_after is not None and board._arrival_next is None, \
+            "no old slide to stop"
+        assert int(board.sheet.place_info()["y"]) == 16, board.sheet.place_info()
+        board._settings_go(settings_mod.PRIVACY)
+        assert board._slide_after is None
+        assert int(board.sheet.place_info()["y"]) == 0, board.sheet.place_info()
+        board.root.update()
+        assert int(board.sheet.place_info()["y"]) == 0 and not board._hold.up
+
+
+def test_the_x_pressed_while_a_switch_settles_ends_it_quietly() -> None:
+    """_settle hands out WINDOW events so the new screen can paint under
+    its cover, and the X is one: pressed there, it closes the window in
+    the middle of _show — the root destroyed and, for a window no
+    mainloop owns, everything on the object buried — and the next line
+    used to call update_idletasks on a dead interpreter. The switch now
+    stops the moment the window is closing and comes back without a
+    word. (The X here runs what _close does to the window — closing,
+    destroy, _bury — and none of its doors to the app.)"""
+    import ctypes
+    with _window() as board:
+        if board is None:
+            return
+        _let_the_switch_land(board)
+        if board._hold._where() is None:
+            print("    (skipped: the window is on no screen here, so nothing settles)")
+            return
+        user32 = ctypes.WinDLL("user32")
+        user32.PostMessageW.argtypes = [ctypes.c_void_p, ctypes.c_uint,
+                                        ctypes.c_void_p, ctypes.c_void_p]
+        frame = int(board.root.wm_frame(), 16)
+        closed: list = []
+
+        def the_x() -> None:
+            closed.append(1)
+            board.closing = True
+            board.root.destroy()
+            board._bury()
+        board.root.protocol("WM_DELETE_WINDOW", the_x)
+        real = board._screen_keys
+
+        def keys() -> None:
+            real()
+            user32.PostMessageW(frame, 0x0010, None, None)       # WM_CLOSE
+        board._screen_keys = keys
+        board._show("Keys")                     # must not raise
+        assert closed == [1], "the X never landed inside the switch"
+        assert board.closing and not hasattr(board, "root")
+        del real, keys, the_x
+        # Bury the interpreter HERE, on its own thread (see _bury).
+        gc.collect()
+
+
+def test_the_cover_is_cut_round_where_the_desk_is_round() -> None:
+    """The pane runs to the bottom of the desk's client area, and Windows
+    11 rounds a framed window's corners (8 px at 96 DPI). A square cover
+    would stand a sharp corner of the old screen over whatever is behind
+    the desk for the length of a switch, so the cover's two BOTTOM
+    corners are cut round with the window's radius — its top corners sit
+    under the bar and stay square — and on Windows 10 it is a plain
+    rectangle."""
+    from types import SimpleNamespace
+
+    import widgets as widgets_mod
+    with _window() as board:
+        if board is None:
+            return
+        hold = board._hold
+        _let_the_switch_land(board)
+        if hold._where() is None:
+            print("    (skipped: the window is on no screen here)")
+            return
+        assert hold.cover()
+        try:
+            width, height = hold._size
+            radius = hold.corner_radius(hold._owner)
+            if sys.getwindowsversion().build >= widgets_mod.PaintHold.ROUNDED_FROM_BUILD:
+                assert radius >= widgets_mod.PaintHold.CORNER_R, radius
+                for x, y in ((0, height - 1), (width - 1, height - 1)):
+                    assert hold.holds(x, y) is False, ("a bottom corner is square", x, y)
+                for x, y in ((0, 0), (width - 1, 0), (radius, height - 1),
+                             (width - 1 - radius, height - 1), (0, height - 1 - radius),
+                             (width // 2, height - 1), (width // 2, height // 2)):
+                    assert hold.holds(x, y), ("the cut takes more than the corners", x, y)
+            else:
+                assert radius == 0 and hold.holds(0, height - 1) is None
+        finally:
+            hold.lift()
+        with _patched(sys, "getwindowsversion", lambda: SimpleNamespace(build=19045)):
+            assert hold.corner_radius(hold._owner) == 0
+            assert hold.cover()
+            try:
+                assert hold.holds(0, height - 1) is None, "a square desk got a round cover"
+            finally:
+                hold.lift()
+
+
 def test_no_button_draws_its_label_past_its_own_face() -> None:
     """A `ui.Button` is a Canvas and a Canvas item is NOT clipped: a
     width too small for the label does not cut the text, it draws it over

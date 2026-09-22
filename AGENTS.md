@@ -888,6 +888,30 @@ exactly what classic did.
   a click can land mid-switch: `_switching` makes `_show` keep the newest
   wish for after. The bar's command ignores the lit place (`_nav_go`);
   `_show` itself still rebuilds on purpose.
+  **Three more things the review of that change found, all held by
+  tests.** (1) A second rebuild in the same press must not photograph a
+  third picture. The pile's [Type the recovery key] ran `_show("Settings")`
+  and then `_settings_go`: the first frame of the arrival was already on
+  the cover, and the tab's `cover()` re-photographed the FINISHED General
+  tab at y 0 — Home, then General for ~85 ms, then the tab asked for. So
+  the arrival's first frame, and the bar's word with it, is the loop's
+  next turn (`after(0)`; `nav.selected` is set at once, the pixels come
+  with the frame), and a switch or a tab that starts while an arrival is
+  pending FOLDS into it (`_hold_for`): the cover stays as it is — it
+  shows exactly what is on the glass — nothing is photographed, and the
+  arrival goes on from its step with the new finished picture. A door
+  that lands on a place and changes something there passes `then=` to
+  `_show` and does it under the same cover. Counted off every picture
+  the cover presented: 0 intermediate pictures on the recovery-key door
+  and on `_show` + `_settings_go` in one callback (1 before). (2) On the
+  path with no cover, a rebuild inside the old slide cancelled it and
+  left the sheet 16 px low for good: `_end_slide` FINISHES what it stops
+  (y 0). (3) The X is a window event, so `_settle` can run `_close`,
+  which destroys the root and buries a window no mainloop owns; the loop
+  stops the moment `closing` is set and every caller asks before going
+  on. The cover's two bottom corners are cut round (`SetWindowRgn`, 8 px
+  at 96 DPI) on Windows 11, where the desk's own corners are round —
+  looked at through the region, not yet on a real screen.
 - **A Windows-key chord IS takeable, and the code used to say it was not.**
   `parse_binding` refused Win as a modifier on the reasoning that "a tap of
   it that nothing consumed opens Start". That reasoning is about Win

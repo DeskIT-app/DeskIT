@@ -35,6 +35,7 @@ until the new one is finished.
 """
 from __future__ import annotations
 
+import sys
 import tkinter as tk
 from typing import NamedTuple
 
@@ -198,8 +199,18 @@ class Tabs(tk.Frame):
         label, _bar = self.items[name]
         label.configure(fg=ui.FG if over else ui.DIM)
 
-    def select(self, name: str | None) -> None:
+    def select(self, name: str | None, *, paint: bool = True) -> None:
+        """Light `name`. With `paint` False only the word is set — what
+        `selected` says — and the labels keep what they show until
+        paint(): the desk sets the new place's word when its screen is
+        ready and paints it with the first frame of its arrival."""
         self.selected = name
+        if paint:
+            self.paint()
+
+    def paint(self) -> None:
+        """The labels and the underline as `selected` says."""
+        name = self.selected
         for other, (label, bar) in self.items.items():
             on = other == name
             label.configure(fg=ui.FG if on else ui.DIM,
@@ -877,8 +888,16 @@ def _win32():
                                                  num, unum]),
                       ("UpdateLayeredWindow", wt.BOOL,
                        [vp, vp, vp, vp, vp, vp, wt.DWORD, vp, wt.DWORD]),
-                      ("FillRect", num, [vp, vp, vp]))),
-            (gdi32, (("CreateCompatibleDC", vp, [vp]),
+                      ("FillRect", num, [vp, vp, vp]),
+                      ("IsZoomed", wt.BOOL, [vp]),
+                      ("SetWindowRgn", num, [vp, vp, wt.BOOL]),
+                      ("GetWindowRgn", num, [vp, vp]))),
+            (gdi32, (("CreateRectRgn", vp, [num, num, num, num]),
+                     ("CreateRoundRectRgn", vp, [num, num, num, num, num,
+                                                 num]),
+                     ("CombineRgn", num, [vp, vp, vp, num]),
+                     ("PtInRegion", wt.BOOL, [vp, num, num]),
+                     ("CreateCompatibleDC", vp, [vp]),
                      ("CreateDIBSection", vp, [vp, vp, unum,
                                                ctypes.POINTER(vp), vp,
                                                wt.DWORD]),
@@ -892,6 +911,10 @@ def _win32():
         for fname, res, args in table:
             fn = getattr(lib, fname)
             fn.restype, fn.argtypes = res, args
+    # Windows 10 1607 and later; before it every window is 96 DPI to us.
+    dpi_for = getattr(user32, "GetDpiForWindow", None)
+    if dpi_for is not None:
+        dpi_for.restype, dpi_for.argtypes = unum, [vp]
 
     class Header(ctypes.Structure):
         _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG),
@@ -902,7 +925,7 @@ def _win32():
                     ("biClrImportant", wt.DWORD)]
 
     _API = SimpleNamespace(user32=user32, gdi32=gdi32, ctypes=ctypes,
-                           wt=wt, Header=Header)
+                           wt=wt, Header=Header, dpi_for=dpi_for)
     return _API
 
 
@@ -937,10 +960,28 @@ class PaintHold:
     UpdateLayeredWindow, so it has nothing to paint and no message to
     wait for.
 
+    ITS TWO BOTTOM CORNERS ARE ROUNDED ON WINDOWS 11. The pane runs to
+    the bottom of the desk's client area, and Windows 11 rounds a framed
+    window's corners (8 px at 96 DPI) — a square cover there would stand
+    a pixel-sharp corner of the old screen over whatever lies behind the
+    desk for as long as a switch takes. So the cover is cut with
+    SetWindowRgn to the pane's rectangle with those two corners rounded
+    by the window's radius, scaled by the window's DPI; square on
+    Windows 10, and on a maximised desk, whose corners Windows leaves
+    square. A region is not antialiased and the frame's own curve is:
+    at worst a pixel of the old picture on the curve. Not yet looked at
+    on a real screen — a hidden desktop has no composed picture to grab.
+
     Everything here answers False or does nothing when it cannot — a
     window that is not on the screen, a Windows that refuses — and the
     caller then builds the way it did before this existed.
     """
+
+    #: Windows 11's corner radius for a framed window, at 96 DPI
+    #: (DWMWCP_ROUND). Windows 11 is build 22000 and up.
+    CORNER_R = 8
+    ROUNDED_FROM_BUILD = 22000
+    RGN_OR = 2
 
     GA_ROOT = 2
     GW_HWNDPREV = 3
@@ -963,6 +1004,8 @@ class PaintHold:
         self.up = False           # the cover is on the screen
         self._size = (0, 0)
         self._at = (0, 0)
+        # the (size, radius) the cover window's region was last cut for
+        self._shaped = None
         # [0] what the cover shows, [1] the new screen's picture: each a
         # (memory DC, DIB section, the bitmap it replaced, its bits)
         self._buffers: list = []
@@ -1037,6 +1080,45 @@ class PaintHold:
         finally:
             api.user32.ReleaseDC(hwnd, dc)
 
+    def corner_radius(self, owner) -> int:
+        """The radius of the desk's own bottom corners, in the pixels the
+        cover is laid in: 0 where Windows leaves them square."""
+        try:
+            if sys.getwindowsversion().build < self.ROUNDED_FROM_BUILD:
+                return 0
+            api = _win32()
+            if api.user32.IsZoomed(owner):
+                return 0
+            dpi = api.dpi_for(owner) if api.dpi_for is not None else 96
+            return max(1, round(self.CORNER_R * (dpi or 96) / 96))
+        except Exception:                 # noqa: BLE001
+            return 0
+
+    def _shape(self, radius: int) -> None:
+        """Cut the cover window to the pane, its two bottom corners
+        rounded by `radius` (none: the whole rectangle). Once per size
+        and radius; Windows owns the region once it is set."""
+        if self._shaped == (self._size, radius):
+            return
+        api = _win32()
+        width, height = self._size
+        region = None
+        if radius:
+            region = api.gdi32.CreateRectRgn(0, 0, width, max(0, height - radius))
+            curve = api.gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1,
+                                                 2 * radius, 2 * radius)
+            if not region or not curve:
+                for handle in (region, curve):
+                    if handle:
+                        api.gdi32.DeleteObject(handle)
+                return
+            api.gdi32.CombineRgn(region, region, curve, self.RGN_OR)
+            api.gdi32.DeleteObject(curve)
+        if api.user32.SetWindowRgn(self.hwnd, region, False):
+            self._shaped = (self._size, radius)
+        elif region:
+            api.gdi32.DeleteObject(region)
+
     def _present(self) -> bool:
         api = _win32()
         point = api.wt.POINT(*self._at)
@@ -1080,6 +1162,7 @@ class PaintHold:
                     return False
                 self._owner = owner
             self._at = (x, y)
+            self._shape(self.corner_radius(owner))
             if not self._present():
                 self.lift()
                 return False
@@ -1153,6 +1236,20 @@ class PaintHold:
 
     # -- for a test, or a measurement
 
+    def holds(self, x: int, y: int):
+        """Whether the cover window's region holds its own pixel (x, y);
+        None while it has no window or no region (the whole rectangle)."""
+        if self.hwnd is None:
+            return None
+        api = _win32()
+        region = api.gdi32.CreateRectRgn(0, 0, 0, 0)
+        try:
+            if api.user32.GetWindowRgn(self.hwnd, region) < 2:  # ERROR, NULLREGION
+                return None
+            return bool(api.gdi32.PtInRegion(region, x, y))
+        finally:
+            api.gdi32.DeleteObject(region)
+
     def picture(self, index: int = 0):
         """(width, height, BGRA bytes) of buffer `index` — what the cover
         shows, or the new screen's picture — or None."""
@@ -1186,6 +1283,7 @@ class PaintHold:
                 pass
         self.hwnd = None
         self._owner = None
+        self._shaped = None
         self.up = False
 
     def _free(self) -> None:
