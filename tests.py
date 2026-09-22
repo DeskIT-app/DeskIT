@@ -22894,7 +22894,7 @@ def test_the_awake_section_is_in_the_real_config_and_bounded() -> None:
                     "screens_off_again_s", "keep_screens_off_s",
                     "vitals_minutes"}, keys
     assert sections["awake"].help, "the section has no help text"
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         p = Path(d) / "config.toml"
         p.write_text('[awake]\nscreens_off_again_s = 999\n', "utf-8")
         try:
@@ -22960,7 +22960,7 @@ def test_the_hold_goes_up_on_a_thread_and_comes_down_on_release() -> None:
         calls.append((flags, threading.current_thread().name))
         return 0x80000000            # "previously: continuous only"
     sent: list[int] = []
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(setter=setter),
                                sender=lambda s: sent.append(s) or True,
@@ -23003,7 +23003,7 @@ def test_the_screens_go_off_and_come_back_without_touching_the_hold() -> None:
 
     calls: list[int] = []
     sent: list[int] = []
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda f: calls.append(f) or 0x80000000),
@@ -23127,7 +23127,7 @@ def test_the_screens_off_write_the_vitals_on_the_way_in_and_out() -> None:
     def fake_vitals() -> str:
         reads.append(time.monotonic())
         return f"fake vitals {len(reads)}"
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 0x80000000),
@@ -23202,7 +23202,7 @@ def test_the_vitals_watch_spans_the_hold_and_the_alarms_shout() -> None:
     def fake_vitals() -> str:
         reads.append(len(reads))
         return "fake vitals"
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 0x80000000),
@@ -23242,7 +23242,7 @@ def test_the_screens_stay_off_after_input_lights_them() -> None:
     def sender(state: int) -> bool:
         sent.append((state, time.monotonic()))
         return True
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 0x80000000),
@@ -23302,7 +23302,7 @@ def test_a_hold_refused_by_windows_is_reported_not_pretended() -> None:
 
     import awake as awake_mod
 
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 0),
@@ -23334,7 +23334,7 @@ def test_the_hold_pins_the_timers_and_puts_them_back() -> None:
     cfg = dataclasses.replace(config_mod.AwakeConfig(), pin_timeouts=True,
                               screens_off_again_s=0)
     fake = _FakePowercfg(standby=30, hibernate=0)
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), cfg,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 1),
@@ -23359,7 +23359,7 @@ def test_a_leftover_awake_marker_is_recovered_at_the_next_start() -> None:
     the marker, removes it, and writes what it did."""
     import awake as awake_mod
 
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         assert awake_mod.recover(Path(d)) is None, "nothing to recover"
         fake = _FakePowercfg(standby=0, hibernate=0)      # as it was left
         (Path(d) / awake_mod.STATE_NAME).write_text(json.dumps(
@@ -23391,7 +23391,7 @@ def test_the_screens_command_goes_through_the_control_channel() -> None:
 
     assert 'self.awake.hold(by="start")' in inspect.getsource(main_mod.App.start)
     assert "self.awake.release()" in inspect.getsource(main_mod.App.stop)
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         app = main_mod.App.__new__(main_mod.App)
         app._note = ""
         sent: list[int] = []
