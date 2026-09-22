@@ -4488,7 +4488,7 @@ Rubik, Skia, PortAudio, Ollama, the Llama and Gemma lines). Every host
 the app may talk to is `NETWORK.md`; how to report a security issue is
 `SECURITY.md`; the privacy policy and the account terms are
 `docs/privacy.md` and `docs/terms.md` (drafts — the Hebrew column and
-the contact address are the owner's). Settings > The app > About has
+the contact address are the owner's). Settings > About has
 a button for each, plus **Copy diagnostics** (`main.py --diagnose`):
 one block for a bug report with no transcripts and no keys in it.
 

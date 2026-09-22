@@ -281,7 +281,36 @@ KEY_BOARD_Y = 100
 KEY_FOOT_GAP = 22        # ground under the last line, so it is not flush
 KEY_FOOT_LINE = 17       # one line of the 8 pt foot, measured
 KEY_ROW_H = 40           # a 30 px cap at y 4, or the cap and a note under it
-SOUND_COLUMNS = 5
+SOUND_COLUMNS = 4
+
+#: What each cue is FOR, in the words of the thing that plays it. The
+#: list itself is cues.CUES, whose keys are code names — "noop",
+#: "latch", "repaired" — and a Play button beside a code name tells a
+#: person nothing (2026-09-22, the owner on names that come from the
+#: code rather than from what a person sees). A cue with no line here
+#: falls back to its key, and a test names that as a gap.
+SOUND_WORDS: dict[str, str] = {
+    "ready": "Ready to dictate",
+    "start": "Recording started",
+    "stop": "Recording ended",
+    "latch": "The key locked on",
+    "error": "Something went wrong",
+    "bye": "The app stopped",
+    "translating": "Translating",
+    "translated": "Translation in place",
+    "punctuating": "Punctuating",
+    "punctuated": "Punctuation in place",
+    "looking": "Looking a word up",
+    "looked": "The answer is here",
+    "repaired": "A word was fixed for you",
+    "noop": "Nothing to do",
+    "paused": "The keys are paused",
+    "resumed": "The keys are back",
+    "shot": "Screenshot taken",
+    "recording": "Screen recording started",
+    "recorded": "Screen recording saved",
+    "notify": "A message arrived",
+}
 KEY_LEGEND = (
     ("held", "down the whole time it works", "hold"),
     ("tapped", "fires and still reaches the app underneath", "tap"),
@@ -1708,7 +1737,7 @@ class Dashboard:
         # rather than pushing a button off the window.
         # STOP IS IN THE BAR because he asked for it there ("I don't have
         # a button to shut down the model, I only have a button to pause
-        # it"), and it does the same thing Settings › The app's Stop does,
+        # it"), and it does the same thing Settings › About's Quit does,
         # in one press.
         self.parts["stop_bar"] = ui.Button(
             bar, "Stop", self._stop, w=BAR_STOP_W, h=32, bg=ui.BG,
@@ -2231,7 +2260,7 @@ class Dashboard:
         # HIS RULE AGAIN with the model off and the process up: one
         # button, Start. Stop has nothing left to unload, and Screens off
         # goes with it so the bar reads the same way it does with nothing
-        # running — the key still works, and Settings > The app has it.
+        # running — the key still works, and Settings > General has it.
         if self.status and model not in ("off", "unloading"):
             screens.place(x=x, y=12, anchor="ne")
             x -= self._screens_w + BAR_KEEP
@@ -3401,7 +3430,7 @@ class Dashboard:
         """Chapter 9 screen 11 (D21) as a pile row, not a card of its own:
         when the weekly check found a newer release, one row on Home —
         the version, the size, the date — with the one button the row
-        on Settings > The app carries (Download and install, or the
+        on Settings > General carries (Download and install, or the
         winget one-liner; no notes link and no Skip since 2026-09-21,
         the owner: "only download — everyone on the same version").
         Nothing on the Store channel, while the check is off, or
@@ -3515,7 +3544,7 @@ class Dashboard:
 
     def _hardware_remove(self) -> None:
         packs_mod.remove("gpu")
-        self._note("the GPU pack was removed — Settings > The app offers it again")
+        self._note("faster dictation is off — Settings > Dictation offers it again")
         self._fill_waiting()
 
     def _hardware_seen(self) -> None:
@@ -7812,7 +7841,7 @@ class Dashboard:
     # notification is a thing waiting for an answer, so it is a row in
     # the Waiting pile (_waiting_notify) rather than a hero, a strip and
     # a list of its own. Dismiss all kept its place beside the title;
-    # "Send a test" moved to Settings > The app, next to the cue sounds
+    # "Send a test" moved to Settings > Messages & sounds, with the cues
     # it is a test OF.
 
     def _notify(self, do: str) -> None:
@@ -8413,17 +8442,21 @@ class Dashboard:
 
     def _screen_settings(self) -> None:
         """The forty-odd lines of defaults.toml a person changes, on
-        five tabs, each said in plain words.
+        eight tabs, each said in plain words.
 
         settings.py reads the file for the values, the choices and the
         help; settings.TABS says which lines are drawn at all, with what
         label, what sentence and what names on the menu — and every
         other line of the file is a measurement the developer edits in
         the file (the owner, 2026-09-18: "I am the user; you are the
-        developer"). General is dictation and the screen; Screen is the
-        pictures; Phone, Privacy and The app carry the blocks that used
-        to be screens of their own above their few rows. A test holds
-        every drawn line to being named by exactly one tab.
+        developer"). LAYOUT below says what each tab draws and in what
+        order, cards and rows together: General is this computer and
+        this screen, Dictation is the words, Screen is the pictures,
+        Messages & sounds is what other programs say here, and Account,
+        Privacy and About are their own pages (2026-09-22, the owner:
+        "either put them all in General, or make more tabs at the top").
+        A test holds every drawn line to being named by exactly one
+        tab.
 
         Writes go through config.set_values, the line editor that keeps
         the comments, and through the running app when there is one, so
@@ -8578,43 +8611,22 @@ class Dashboard:
                     builders.append(lambda t=name.upper(), pr=pairs:
                                     self._friendly_card(scroller, t, pr))
         else:
+            # A TAB IS AN ORDERED PAGE, not blocks-then-rows. LAYOUT
+            # names what the tab draws in the order it draws it: a name
+            # in capitals is one of settings.TABS' groups, anything else
+            # is a card (_settings_block). That is what lets the updates
+            # card sit between "This computer" and Awake on General
+            # rather than above both of them.
             name = self._settings_tab
-            # The blocks that used to be screens sit above the rows of
-            # the tab they belong to: the phone's link on Phone; awake,
-            # the version, the sounds and the files on The app.
-            if name == settings_mod.APP:
-                # This PC — the model and the GPU pack — sits with the
-                # rest of what the app does to the machine; the Speed
-                # tab that held it alone went on 2026-09-18 with its
-                # four knobs (the probe's numbers are the file's).
-                builders.append(lambda: self._speed_block(scroller))
-                builders.append(lambda: self._awake_block(scroller))
-                builders.append(lambda: self._claude_block(scroller))
-                builders.append(lambda: self._app_block(scroller))
-                builders.append(lambda: self._about_card(scroller))
-                builders.append(lambda: self._files_card(scroller))
-            elif name == "Phone":
-                builders.append(lambda: self._phone_block(scroller))
-            elif name == "Privacy":
-                builders.append(lambda: self._keys_block(scroller))
-                builders.append(lambda: self._account_block(scroller))
-                builders.append(lambda: self._lock_block(scroller))
-                builders.append(lambda: self._connections_block(scroller))
-            elif name == "Screen":
-                builders.append(lambda: self._recording_block(scroller))
-                builders.append(lambda: self._snip_block(scroller, sections))
-                if hardware_mod.no_voice():
-                    builders.append(lambda: self._voice_block(scroller))
-            elif name == settings_mod.GENERAL:
-                # FIRST ON GENERAL, because that is where he went looking
-                # for it: "I'm going to General and then 'which corner the
-                # dot sits' — there is only bottom right or top right. So
-                # please solve the problem that I cannot move the dot"
-                # (2026-09-08). The corner menu and the button are one
-                # card now, side by side, and Cards has no dot on it at
-                # all — see settings.TABS.
-                builders.append(lambda: self._dot_block(scroller))
-            for group in settings_mod.groups_for(name):
+            groups = {g.title: g for g in settings_mod.groups_for(name)}
+            for entry in self.LAYOUT.get(name, ()):
+                if not entry.isupper():
+                    builders.append(lambda e=entry:
+                                    self._settings_block(e, scroller))
+                    continue
+                group = groups.get(entry)
+                if group is None:
+                    continue
                 pairs = [(row, s) for row in group.rows
                          if (s := settings_mod.find(sections, row.path))
                          is not None
@@ -8634,6 +8646,32 @@ class Dashboard:
         self._draw_settings()
         scroller.to_top()
 
+    # WHAT EACH TAB DRAWS, IN ORDER. A name in capitals is a group of
+    # settings.TABS, drawn as a card of rows; anything else is a card
+    # of its own, built by _settings_block. Eight tabs since 2026-09-22
+    # (the owner: "it is really hard to understand where each thing is
+    # … either put them all in General, or make more tabs at the top"):
+    # General is this computer and this screen, Dictation is the words,
+    # and About is the end of the road — see the table in settings.py
+    # for what fifty other apps do with the same list.
+    LAYOUT: dict[str, tuple[str, ...]] = {
+        settings_mod.GENERAL: ("dot", "ON THE SCREEN", "THIS COMPUTER",
+                               "WHERE FILES ARE SAVED", "updates", "awake"),
+        settings_mod.DICTATION: ("WHERE YOUR SPEECH BECOMES WORDS", "model",
+                                 "WHEN YOU DICTATE", "WORDS IT LEARNS",
+                                 "THE TRANSLATE KEY"),
+        settings_mod.SCREEN: ("recording", "SCREENSHOTS AND RECORDINGS",
+                              "snip", "THE CAMERA", "ASK ABOUT THE SCREEN",
+                              "voice"),
+        settings_mod.MESSAGES: ("MESSAGES FROM OTHER PROGRAMS", "claude",
+                                "sounds"),
+        settings_mod.PHONE: ("phone", "DICTATING FROM THE PHONE"),
+        settings_mod.ACCOUNT: ("account", "WHAT THE ACCOUNT MAY DO", "lock"),
+        settings_mod.PRIVACY: ("keys", "WHAT MAY LEAVE THIS PC",
+                               "connections", "said_file", "KEPT ON THIS PC"),
+        settings_mod.ABOUT: ("version", "about", "files"),
+    }
+
     # What a block ABOVE the rows already draws for itself, per tab, so
     # the rows below it do not draw it a second time. The one rule of
     # this screen is that every line of config.toml is reachable exactly
@@ -8641,10 +8679,28 @@ class Dashboard:
     # exception to it: `dot.corner` is a real settings row with a real
     # menu, registered in parts["rows"] like any other — it is simply
     # drawn beside the button that goes with it instead of ten rows above
-    # it. `_keys_screen_paths` is the same idea for another SCREEN.
+    # it, and `privacy.update_check` sits on the updates card the same
+    # way. `_keys_screen_paths` is the same idea for another SCREEN.
     BLOCK_PATHS: dict[str, frozenset] = {
-        settings_mod.GENERAL: frozenset({"dot.corner"}),
+        settings_mod.GENERAL: frozenset({"dot.corner",
+                                         "privacy.update_check"}),
     }
+
+    def _settings_block(self, key: str, scroller) -> None:
+        """One card of a tab, by the name LAYOUT gives it. The three
+        that do not take the scroller alone are spelled out; the rest
+        are `_<key>_block`."""
+        if key == "snip":
+            self._snip_block(scroller, self.parts["sections"])
+        elif key == "voice":
+            if hardware_mod.no_voice():
+                self._voice_block(scroller)
+        elif key == "about":
+            self._about_card(scroller)
+        elif key == "files":
+            self._files_card(scroller)
+        else:
+            getattr(self, f"_{key}_block")(scroller)
 
     def _block_paths(self, tab: str) -> frozenset:
         return self.BLOCK_PATHS.get(tab, frozenset())
@@ -9022,6 +9078,8 @@ class Dashboard:
         tk.Label(body, text=f"DeskIT {version.VERSION} · Apache License 2.0 · "
                             "Copyright 2026 Yoav Shimron",
                  bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10)).place(x=0, y=22)
+        # The licence line carries the version as well: this card can be
+        # read on its own in a photograph of a report.
         line = ("Transcribes Hebrew with ivrit.ai's whisper-large-v3-turbo "
                 "(Apache-2.0)" + (" · Built with Llama" if self.built_with_llama() else ""))
         model = tk.Label(body, text=line, bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9),
@@ -9040,10 +9098,10 @@ class Dashboard:
         # Named for what they ARE, not what they are called on disk — the
         # filename is the small print. "What is transcripts.log" was a
         # question this screen used to make the owner ask.
+        # Everything you said left this card on 2026-09-22 for Settings >
+        # Privacy, where the line that says how long it is kept already
+        # was: a file and the setting that governs it belong together.
         openers = (
-            ("file", "Everything you said",
-             "transcripts.log — every dictation, translation and lookup",
-             paths.TRANSCRIPTS_LOG),
             ("page", "The app's diary",
              "app.log — what it did and why, for when something looks off",
              paths.APP_LOG),
@@ -9321,16 +9379,18 @@ class Dashboard:
                  font=(ui.MEDIUM, 8)).place(x=0, y=0)
         url = (self.status or {}).get("phone", "")
         self.parts["phone_url"] = tk.Label(
-            body, text=url or "not running, or [server] enabled = false",
+            body, text=url or "DeskIT is not running, or the switch below "
+                              "is off",
             bg=ui.CARD, fg=ui.FG if url else ui.DIM,
             font=(ui.UI, 12 if url else 10))
         self.parts["phone_url"].place(x=0, y=24)
         tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
                  wraplength=CW - 200, justify="left",
-                 text="Open it on the phone over Tailscale and the keyboard "
-                      "there dictates into this machine. The same address "
-                      "takes a POST to /notify, which is how a finish "
-                      "becomes a card on this desk."
+                 text="Put the DeskIT keyboard on your phone, give it this "
+                      "address once, and the phone dictates into this "
+                      "computer over your own private network. It is also "
+                      "how a message from another program reaches this "
+                      "desk."
                  ).place(x=0, y=54)
         ui.Button(body, "Copy link", self._copy_phone, h=32, quiet=True,
                   w=widgets.button_width("Copy link", icon=True),
@@ -9432,7 +9492,7 @@ class Dashboard:
         x = 0
         for text, command in (("Open the Network screen",
                                lambda: self._show("Network")),
-                              ("Open network.log", self._net_open_log)):
+                              ("Open the log file", self._net_open_log)):
             w = widgets.button_width(text)
             ui.Button(body, text, command, h=30, w=w, quiet=True,
                       bg=ui.CARD).place(x=x, y=52)
@@ -10125,7 +10185,7 @@ class Dashboard:
     # ------------------------------------------------ the two D33 switches
 
     def _claude_block(self, scroller) -> None:
-        """Connect Claude Code on Settings > The app (D15, D33): the
+        """Connect Claude Code on Settings > Messages & sounds (D15, D33):
         switch the wizard's extras page asked once — two hook lines in
         ~/.claude/settings.json, written and removed through notify_hook."""
         import notify_hook
@@ -10189,27 +10249,44 @@ class Dashboard:
         its FFmpeg — screen recording, the camera, non-WAV uploads. The
         installer never carries it (a GPL FFmpeg build); the person's
         own download from PyPI through the pack's step window, the
-        licence on the card. The checkout has it in its venv."""
+        licence on the card. The checkout has it in its venv.
+
+        AND IT SAYS WHAT IT IS FOR, NOT WHAT IT IS MADE OF. The owner,
+        2026-09-22, reading this card: "here I am looking now at
+        Recording, PyAV FFmpeg is installed — I don't think anyone has
+        the faintest idea what that is". So the line names the two keys
+        it unlocks and how large the download is; the library and its
+        licence are the small print under it, and only while there is
+        something to press. Every capture app that ever showed this line
+        does the same — "Models library", "language files", "476 MB" —
+        and ShareX, which used to show an FFmpeg path with a Download
+        button, now bundles it and shows nothing at all."""
         buttons: list = []
+        small = ""
         if paths.PORTABLE:
-            said = "PyAV (FFmpeg) comes with this checkout's venv — recording and the camera work"
+            said = "Screen recording and the webcam are ready."
         else:
             state = packs_mod.state("recording")
             rp = packs_mod.pack("recording")
             size = f" ({packs_mod.human(rp.bytes)})" if rp else ""
             if state == "ok":
-                said = "PyAV (FFmpeg) is installed — screen recording and the camera work"
-                buttons.append(("Remove the Recording pack",
+                said = "Screen recording and the webcam are ready."
+                buttons.append(("Remove it",
                                 lambda: self._pack_remove("recording")))
             elif state == "stale":
-                said = "PyAV is installed from an older release — update it"
-                buttons.append((f"Update the Recording pack{size}",
+                said = ("Screen recording and the webcam work, and there is "
+                        f"a newer download for them{size}.")
+                small = ("A free video toolkit (FFmpeg) that the installer "
+                         "cannot carry, because of its licence.")
+                buttons.append((f"Update{size}",
                                 lambda: self._hardware_step("--install-pack", "recording")))
             else:
-                said = (f"not installed — screen recording, the camera and non-WAV phone "
-                        f"uploads need PyAV's FFmpeg{size}, a GPL build the installer does "
-                        f"not carry; dictation works without it")
-                buttons.append((f"Install the Recording pack{size}",
+                said = ("Screen recording and the webcam need one extra "
+                        f"download{size}. Dictation, screenshots and asking "
+                        "about the screen all work without it.")
+                small = ("It is a free video toolkit (FFmpeg) that the "
+                         "installer cannot carry, because of its licence.")
+                buttons.append((f"Download{size}",
                                 lambda: self._hardware_step("--install-pack", "recording")))
         self.parts["recording_line"] = said
         # The sentence stops short of the buttons instead of running
@@ -10218,14 +10295,21 @@ class Dashboard:
         # 270 px button, and a 96 px card cut the second line's tail.
         taken = sum(widgets.button_width(label) + 8 for label, _c in buttons)
         text, lines = ui.clamp(said, ui.UI, 10, CW - 36 - taken - 12, 3)
-        card = ui.Card(scroller.inner, CW, 36 + 22 + lines * 20 + 8,
+        note, note_lines = ui.clamp(small, ui.UI, 8, CW - 36 - taken - 12, 2) \
+            if small else ("", 0)
+        card = ui.Card(scroller.inner, CW,
+                       36 + 22 + lines * 20 + note_lines * LINE + 8,
                        bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
-        tk.Label(body, text="R E C O R D I N G", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        tk.Label(body, text="S C R E E N   R E C O R D I N G", bg=ui.CARD,
+                 fg=ui.FAINT, font=(ui.MEDIUM, 8)).place(x=0, y=0)
         tk.Label(body, text=text, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
                  justify="left").place(x=0, y=22)
+        if note_lines:
+            tk.Label(body, text=note, bg=ui.CARD, fg=ui.FAINT,
+                     font=(ui.UI, 8), justify="left").place(
+                x=0, y=22 + lines * 20 + 2)
         x = CW - 36
         for label, command in buttons:
             w = widgets.button_width(label)
@@ -10268,29 +10352,42 @@ class Dashboard:
         self.parts["values"][setting.path] = value
         self._apply_key("capture_hotkey", value)
 
-    def _speed_block(self, scroller) -> None:
-        """This PC, the model and the GPU pack, each with its standing
-        and its buttons (plan 6.4-6.5, 6.9; chapter 9 Settings > Speed).
-        In the checkout the model and the pack are the venv's own and
-        the lines say so with no buttons; on an installed copy every
-        button runs the step in a process of its own (launch.run_step)
-        or removes a folder, and the row says what happens next."""
-        card = ui.Card(scroller.inner, CW, 214, bg=ui.BG, pad=18)
+    def _model_block(self, scroller) -> None:
+        """The speech model and the card that runs it, on Settings >
+        Dictation, right under the line that chooses where speech
+        becomes words (plan 6.4-6.5, 6.9). In the checkout both are the
+        venv's own and the lines say so with no buttons; on an installed
+        copy every button runs the step in a process of its own
+        (launch.run_step) or removes a folder, and the row says what
+        happens next.
+
+        It sat on "The app" as THIS PC until 2026-09-22, under a line of
+        hardware — "gpu (NVIDIA card, 16 GB, driver 596.49 · 12 cores)"
+        — which is a fact about the machine and not a decision. The
+        hardware line is on About now, and what is left here is the two
+        things a person can do something about: the model that turns
+        speech into words, and whether the graphics card does the work.
+        Every local-model app that was read puts the download beside the
+        engine it feeds, and none of them on an About page."""
+        lines, buttons = self._model_lines()
+        # As tall as what is on it: two lines and, in a checkout, no
+        # buttons at all — a flat height left a hand's width of empty
+        # card under them.
+        card = ui.Card(scroller.inner, CW,
+                       36 + 26 + 40 * len(lines) + (34 if buttons else 0),
+                       bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
-        tk.Label(body, text="T H I S   P C", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
-        tk.Label(body, text=hardware_mod.summary(), bg=ui.CARD, fg=ui.FG,
-                 font=(ui.UI, 10)).place(x=0, y=22)
-        lines, buttons = self._speed_lines()
-        self.parts["speed_lines"] = [t for _n, t in lines]
-        self.parts["speed_buttons"] = [label for label, _c in buttons]
-        y = 56
+        tk.Label(body, text="T H E   S P E E C H   M O D E L", bg=ui.CARD,
+                 fg=ui.FAINT, font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        self.parts["model_lines"] = [t for _n, t in lines]
+        self.parts["model_buttons"] = [label for label, _c in buttons]
+        y = 26
         for name, text in lines:
             tk.Label(body, text=name, bg=ui.CARD, fg=ui.DIM,
                      font=(ui.UI, 9)).place(x=0, y=y)
             tk.Label(body, text=text, bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
-                     wraplength=CW - 60, justify="left").place(x=110, y=y - 1)
+                     wraplength=CW - 60, justify="left").place(x=140, y=y - 1)
             y += 40
         x = 0
         for label, command in buttons:
@@ -10324,8 +10421,14 @@ class Dashboard:
         except OSError as e:
             self._note(f"could not open the Speech settings ({e})")
 
-    def _speed_lines(self) -> tuple[list, list]:
-        """The two lines under the summary and the buttons under them."""
+    def _model_lines(self) -> tuple[list, list]:
+        """The two lines of the card and the buttons under them.
+
+        Plain words on both (2026-09-22): the model is "the Hebrew
+        model", named by what it does and how large it is — the repo
+        name is on About, with the licence it belongs to — and the GPU
+        pack is "faster dictation", which is the only thing about it a
+        person can judge."""
         model, pack, _changed = self._hardware_words()
         lines: list[tuple[str, str]] = []
         buttons: list = []
@@ -10334,20 +10437,22 @@ class Dashboard:
         except Exception:                 # noqa: BLE001
             repo = ""
         if paths.PORTABLE:
-            lines.append(("The model", f"{repo} — from this checkout's own cache"))
-            lines.append(("GPU speed", "the CUDA libraries in this checkout's venv"
-                          if pack == "venv" else "no CUDA libraries in this venv"))
+            lines.append(("The Hebrew model", "ready — this checkout's own"))
+            lines.append(("Faster dictation",
+                          "on — the work runs on your NVIDIA card"
+                          if pack == "venv" else
+                          "off — dictation runs on the processor"))
             return lines, buttons
         e = models_mod.entry(repo)
         size = f" ({models_mod.human(e.bytes)})" if e else ""
         model_said = {
-            "ready": f"ready — {repo}{size}",
+            "ready": f"ready{size}",
             "absent": f"not downloaded yet{size}",
-            "incomplete": "download did not finish — continue it",
-            "stale": "from an older release — download the new one",
-            "unknown": f"{repo} is not in models.lock",
+            "incomplete": "the download did not finish — continue it",
+            "stale": "there is a newer one to download",
+            "unknown": "this copy asks for a model nobody knows",
         }[model]
-        lines.append(("The model", model_said))
+        lines.append(("The Hebrew model", model_said))
         if model == "ready":
             buttons.append(("Delete and re-download the model", self._speed_redownload))
             buttons.append(("Delete the model", self._speed_delete_model))
@@ -10359,25 +10464,28 @@ class Dashboard:
         gp = packs_mod.pack("gpu")
         psize = f" ({packs_mod.human(gp.bytes)})" if gp else ""
         if pack.startswith("failed:"):
-            pack_said = f"installed but could not start ({pack[7:]}) — dictating on the processor"
-            buttons.append(("Retry GPU speed", self._hardware_retry))
-            buttons.append(("Reinstall the GPU pack", lambda: self._hardware_step("--install-pack", "gpu")))
-            buttons.append(("Remove the GPU pack", self._hardware_remove))
+            pack_said = f"it will not start on this PC ({pack[7:]}) — dictation runs on the processor"
+            buttons.append(("Try it again", self._hardware_retry))
+            buttons.append((f"Download it again{psize}",
+                            lambda: self._hardware_step("--install-pack", "gpu")))
+            buttons.append(("Turn off faster dictation", self._hardware_remove))
         elif pack == "ok":
-            pack_said = "NVIDIA's libraries are installed — dictation runs on the card"
-            buttons.append(("Remove the GPU pack", self._hardware_remove))
+            pack_said = "on — the work runs on your NVIDIA card"
+            buttons.append(("Turn off faster dictation", self._hardware_remove))
         elif pack == "stale":
-            pack_said = "installed from an older release — update it"
-            buttons.append((f"Update the GPU pack{psize}", lambda: self._hardware_step("--install-pack", "gpu")))
-            buttons.append(("Remove the GPU pack", self._hardware_remove))
+            pack_said = "on, and there is a newer download for it"
+            buttons.append((f"Update faster dictation{psize}",
+                            lambda: self._hardware_step("--install-pack", "gpu")))
+            buttons.append(("Turn off faster dictation", self._hardware_remove))
         elif not has_card:
-            pack_said = "no NVIDIA card — dictation runs on the processor"
+            pack_said = "no NVIDIA card in this PC — dictation runs on the processor"
         elif not facts.get("driver_ok", True):
-            pack_said = "the NVIDIA driver is too old for CUDA 12.3 — update it, then come back"
+            pack_said = "your NVIDIA driver is too old for it — update it, then come back"
         else:
-            pack_said = f"off — NVIDIA's libraries are not installed{psize}"
-            buttons.append((f"Turn on GPU speed{psize}", lambda: self._hardware_step("--install-pack", "gpu")))
-        lines.append(("GPU speed", pack_said))
+            pack_said = f"off — it needs one extra download{psize}"
+            buttons.append((f"Turn on faster dictation{psize}",
+                            lambda: self._hardware_step("--install-pack", "gpu")))
+        lines.append(("Faster dictation", pack_said))
         return lines, buttons
 
     def _speed_redownload(self) -> None:
@@ -10399,36 +10507,33 @@ class Dashboard:
         if self.screen == "Settings":
             self._show("Settings")
 
-    def _app_block(self, scroller) -> None:
-        """The app itself: which version is running, how to stop it, and
-        the twenty sounds it makes.
+    def _version_block(self, scroller) -> None:
+        """Which code is running, what this PC is, and the two doors
+        that belong to the app itself: Quit, and the tour again.
+        Settings > About.
 
-        THE SOUNDS ARE HERE BECAUSE HE COULD NOT TELL THEM APART. That is
-        a filed complaint, and the answer to it is not a louder cue, it
-        is a Play button next to the name of the thing the cue is FOR.
+        It was the top half of THE APP until 2026-09-22, on a card that
+        also held the update check, twenty sounds and a test
+        notification — four unrelated things under a title that said
+        nothing ("The app"). The updates went to General, where a person
+        looks for them; the sounds went to the messages they belong to;
+        and what is left here is the plain fact of which code is
+        running, because that is the line he needs when he files a
+        report against it.
+
+        ONE VERSION, AND NOTHING HERE THAT CHANGES IT. There were two —
+        classic and fast — and a row of "Switch to ..." buttons sat on
+        this card to flip between them. He closed it on 2026-09-08: "I
+        want only to be on this version that is already running." By
+        then the second version had stopped existing on this machine
+        anyway, so the only trip the button still offered was one
+        backwards, into code older than what he was looking at.
         """
-        try:
-            import cues as cues_mod
-        except Exception:                 # noqa: BLE001 — no cues here
-            cues_mod = None
-        kinds = list(getattr(cues_mod, "CUES", {})) if cues_mod else []
-        sound_rows = (len(kinds) + SOUND_COLUMNS - 1) // SOUND_COLUMNS
-        height = 190 + (30 + sound_rows * 30 if kinds else 0)
-        card = ui.Card(scroller.inner, CW, height, bg=ui.BG, pad=18)
+        card = ui.Card(scroller.inner, CW, 146, bg=ui.BG, pad=18)
         card.pack(anchor="w", pady=(0, 14))
         body = card.body
-        tk.Label(body, text="T H E   A P P", bg=ui.CARD, fg=ui.FAINT,
+        tk.Label(body, text="D E S K I T", bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.MEDIUM, 8)).place(x=0, y=0)
-
-        # ONE VERSION, AND NOTHING HERE THAT CHANGES IT. There were two -
-        # classic and fast - and a row of "Switch to ..." buttons sat on
-        # this card to flip between them. He closed it on 2026-09-08: "I
-        # want only to be on this version that is already running." By
-        # then the second version had stopped existing on this machine
-        # anyway, so the only trip the button still offered was one
-        # backwards, into code older than what he was looking at. What is
-        # left is the plain fact of which code is running, because that is
-        # the line he needs when he files a report against it.
         tk.Label(body, text="DeskIT", bg=ui.CARD,
                  fg=getattr(ui, "ACCENT_TEXT", ui.ACCENT),
                  font=(ui.DISPLAY, 17, "bold")).place(x=0, y=20)
@@ -10437,22 +10542,12 @@ class Dashboard:
                      if self.branch else ""),
                  bg=ui.CARD, fg=ui.FAINT,
                  font=(ui.UI, 8)).place(x=0, y=50)
-        # UPDATES (plan 11.4-11.5): what the last weekly look found, a
-        # Check now that ignores the cadence, and — only when a newer
-        # version exists — Download and install. Nothing downloads before
-        # that button; the checkout's row checks but never installs.
-        line = tk.Label(body, text=updates.status_line(), bg=ui.CARD,
-                        fg=ui.DIM, font=(ui.UI, 9), anchor="w")
-        line.place(x=0, y=74)
-        self.parts["updates_line"] = line
-        x = 0
-        buttons = self._update_buttons()
-        self.parts["updates_buttons"] = [label for label, _c in buttons]
-        for label, command in buttons:
-            w = widgets.button_width(label)
-            ui.Button(body, label, command, h=28, w=w, quiet=True,
-                      bg=ui.CARD).place(x=x, y=100)
-            x += w + 8
+        # THIS PC, as a fact and not a decision: it was the first line
+        # of the model card until the model card became a place to press
+        # things. Nobody sets their own number of cores.
+        tk.Label(body, text=hardware_mod.machine_line(), bg=ui.CARD,
+                 fg=ui.DIM, font=(ui.UI, 9), wraplength=CW - 260,
+                 justify="left").place(x=0, y=74)
 
         # THE SAME DOOR AS THE BAR'S STOP, in one press, and it is here
         # as well because this is where the 25 seconds are written down —
@@ -10465,38 +10560,134 @@ class Dashboard:
                          quiet=True, icon=ui.ICON["stop"])
         stop.place(x=CW - 36, y=20, anchor="ne")
         self.parts["stop"] = stop
-        ui.Button(body, "Send a test notification",
-                  lambda: self._notify("test"), h=32, quiet=True,
-                  w=widgets.button_width("Send a test notification",
-                                         icon=True),
-                  icon=ui.ICON["notify"]).place(x=CW - 36, y=60, anchor="ne")
+        tk.Label(body, text="the whole app, keys included — the bar's Stop "
+                            "only unloads the model",
+                 bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8)).place(
+            x=CW - 36, y=56, anchor="ne")
         # The tour again (D36): the four cards beside the dot that the
         # first start showed. Down the control pipe — the dot and the
         # card live in the running app.
         ui.Button(body, "Show the tour", self._show_tour, h=32, quiet=True,
                   w=widgets.button_width("Show the tour")).place(
-            x=CW - 36, y=100, anchor="ne")
-        tk.Label(body, text="the whole app, keys included — the bar's Stop "
-                            "only unloads the model",
-                 bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8)).place(
-            x=CW - 36, y=140, anchor="ne")
+            x=CW - 36, y=76, anchor="ne")
+        scroller.bind_wheel(card)
 
+    def _updates_block(self, scroller) -> None:
+        """UPDATES on Settings > General (plan 11.4-11.5): what the last
+        weekly look found, a Check now that ignores the cadence, and —
+        only when a newer version exists — Download and install. Nothing
+        downloads before that button; the checkout's row checks but never
+        installs. The weekly switch is the real `privacy.update_check`
+        settings row, drawn here beside the line it governs the way
+        `dot.corner` is drawn beside Move the dot (BLOCK_PATHS).
+
+        On General since 2026-09-22, his own list of what belongs there
+        — and the mainstream one too: Windows, macOS, PowerToys, Zoom,
+        Krisp and Signal all keep "check for updates" on the first page,
+        not behind a page called About.
+        """
+        setting = settings_mod.find(self.parts.get("sections") or [],
+                                    "privacy.update_check")
+        tall = 36 + 26 + (44 if setting is not None else 0) + 36
+        card = ui.Card(scroller.inner, CW, tall, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="U P D A T E S", bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        line = tk.Label(body, text=updates.status_line(), bg=ui.CARD,
+                        fg=ui.FG, font=(ui.UI, 10), anchor="w",
+                        wraplength=CW - 60, justify="left")
+        line.place(x=0, y=22)
+        self.parts["updates_line"] = line
+        buttons = self._update_buttons()
+        self.parts["updates_buttons"] = [label for label, _c in buttons]
+        x = CW - 36
+        for label, command in buttons:
+            w = widgets.button_width(label)
+            ui.Button(body, label, command, h=30, w=w, quiet=True,
+                      bg=ui.CARD).place(x=x, y=18, anchor="ne")
+            x -= w + 8
+        if setting is not None:
+            y = 56
+            row = settings_mod.words_for(setting)
+            tk.Label(body, text=row.label, bg=ui.CARD, fg=ui.FG,
+                     font=(ui.UI, 10)).place(x=0, y=y)
+            text, _lines = ui.clamp(row.help, ui.UI, 8,
+                                    CW - 36 - CONTROL_W - 12, 2)
+            tk.Label(body, text=text, bg=ui.CARD, fg=ui.FAINT,
+                     font=(ui.UI, 8), justify="left").place(x=0, y=y + 21)
+            value = self.parts["values"].setdefault(setting.path,
+                                                    setting.value)
+            switch = ui.Switch(body, bool(value),
+                               lambda v, s=setting: self._apply_setting(s, v),
+                               bg=ui.CARD)
+            switch.place(x=CW - 36, y=y + 2, anchor="ne")
+            self._register_row(setting, "switch", switch)
+        scroller.bind_wheel(card)
+
+    def _sounds_block(self, scroller) -> None:
+        """Every cue the app makes, each with a Play button and the name
+        of the thing it is FOR, plus the one button that puts a real
+        card on the screen. Settings > Messages & sounds.
+
+        THE SOUNDS ARE HERE BECAUSE HE COULD NOT TELL THEM APART. That is
+        a filed complaint, and the answer to it is not a louder cue, it
+        is a Play button next to the name of the thing the cue is for.
+        They sat on "The app" until 2026-09-22; every app that was read
+        keeps its sounds on the page of the messages they announce.
+        """
+        try:
+            import cues as cues_mod
+        except Exception:                 # noqa: BLE001 — no cues here
+            cues_mod = None
+        kinds = list(getattr(cues_mod, "CUES", {})) if cues_mod else []
+        sound_rows = (len(kinds) + SOUND_COLUMNS - 1) // SOUND_COLUMNS
+        card = ui.Card(scroller.inner, CW,
+                       72 + (sound_rows * 30 + 8 if kinds else 0),
+                       bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="E V E R Y   S O U N D   I T   M A K E S",
+                 bg=ui.CARD, fg=ui.FAINT,
+                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        ui.Button(body, "Send a test notification",
+                  lambda: self._notify("test"), h=32, quiet=True,
+                  w=widgets.button_width("Send a test notification",
+                                         icon=True),
+                  icon=ui.ICON["notify"]).place(x=CW - 36, y=0, anchor="ne")
         if kinds:
-            widgets.rule(body, CW - 36, bg=ui.CARD, colour=ui.LINE, x=0,
-                         y=180)
-            tk.Label(body, text="S O U N D S", bg=ui.CARD, fg=ui.FAINT,
-                     font=(ui.MEDIUM, 8)).place(x=0, y=192)
             column = (CW - 36) // SOUND_COLUMNS
             for index, kind in enumerate(kinds):
                 cx = (index % SOUND_COLUMNS) * column
-                cy = 216 + (index // SOUND_COLUMNS) * 30
+                cy = 44 + (index // SOUND_COLUMNS) * 30
                 ui.Button(body, "▶", lambda k=kind: self._play_cue(k),
                           w=30, h=24, quiet=True, bg=ui.CARD).place(x=cx,
                                                                     y=cy)
-                tk.Label(body, text=kind, bg=ui.CARD, fg=ui.DIM,
-                         font=(ui.UI, 9)).place(x=cx + 38, y=cy + 4)
+                tk.Label(body, text=SOUND_WORDS.get(kind, kind), bg=ui.CARD,
+                         fg=ui.DIM, font=(ui.UI, 9)).place(x=cx + 38,
+                                                           y=cy + 4)
         scroller.bind_wheel(card)
 
+    def _said_file_block(self, scroller) -> None:
+        """WHAT YOU SAID on Settings > Privacy, right above the line that
+        says how long it is kept: the file itself, one button away. It
+        was a row on the FILES card two tabs away from its own setting
+        (2026-09-22)."""
+        card = ui.Card(scroller.inner, CW, 104, bg=ui.BG, pad=18)
+        card.pack(anchor="w", pady=(0, 14))
+        body = card.body
+        tk.Label(body, text="W H A T   Y O U   S A I D", bg=ui.CARD,
+                 fg=ui.FAINT, font=(ui.MEDIUM, 8)).place(x=0, y=0)
+        tk.Label(body, text="Every dictation, translation and lookup, on "
+                            "this PC only, in a file you can open and "
+                            "delete yourself.",
+                 bg=ui.CARD, fg=ui.FG, font=(ui.UI, 10),
+                 wraplength=CW - 240, justify="left").place(x=0, y=22)
+        ui.Button(body, "Open the file",
+                  lambda: launch.open_path(paths.TRANSCRIPTS_LOG), h=30,
+                  quiet=True, w=widgets.button_width("Open the file")
+                  ).place(x=CW - 36, y=20, anchor="ne")
+        scroller.bind_wheel(card)
     # ------------------------------------------------------------ updates
 
     def _update_buttons(self) -> list:
@@ -10861,7 +11052,7 @@ class Dashboard:
         microphone stream unload (main.py unload_model), the process,
         the hook, the dot and every feature that needs no model stay up,
         and Start loads the model again in ~25 s. Quitting the process
-        is Settings > The app > Quit DeskIT (_quit), or the shelf.
+        is Settings > About > Quit DeskIT (_quit), or the shelf.
 
         ONE press, still: it used to take two from the bar, the first
         turning the word into "Stop again"; he read that word, could not
@@ -10883,7 +11074,7 @@ class Dashboard:
                "working"))
 
     def _quit(self) -> None:
-        """The whole process, in ONE press: Settings > The app > Quit
+        """The whole process, in ONE press: Settings > About > Quit
         DeskIT. The named event, not the pipe: this has to work even if
         the control channel never came up, and during a start-up — the
         one place a quit is wanted before the models finish loading."""
@@ -11479,7 +11670,7 @@ class Dashboard:
         # copy, closed the desk, and the screenshot key still answered:
         # "make sure the X closes completely everything it runs in the
         # background". So the desk's X is Quit DeskIT (the same named
-        # event as Settings > The app > Quit) — only for the desk a person
+        # event as Settings > About > Quit) — only for the desk a person
         # opened (`_looping`: the entry point's run), never for a window a
         # test or a picture built, and never on Restart, whose new copy is
         # already on its way. It must not leave the app PAUSED either,
@@ -11572,7 +11763,7 @@ class Dashboard:
 def bring_up_the_keys() -> bool:
     """Nothing running when the desk opens: the app comes up behind the
     window (launch.start_app → main.py --quiet), the model with it
-    unless Settings > The app says not to ([local] load_at_start; the
+    unless Settings > General says not to ([local] load_at_start; the
     owner, 2026-09-20: "no problem with the model loading by itself —
     make that the default, with a way off in Settings"; until then the
     desk started it without the model and Start loaded it). Every key

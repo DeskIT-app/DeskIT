@@ -40,7 +40,7 @@ this PC**. סגירת החלון היא שמירה כאן.
 ## לספר לנו
 
 **GitHub Issues** — [תבנית הבאג](https://github.com/DeskIT-app/DeskIT/issues/new/choose) שואלת
-מה עשית, מה קרה, למה ציפית, איך התקנת, ובלוק האבחון. מקבלים את הבלוק ב־**Settings > The app > Copy diagnostics**, או מתיקיית ההתקנה:
+מה עשית, מה קרה, למה ציפית, איך התקנת, ובלוק האבחון. מקבלים את הבלוק ב־**Settings > About > Copy diagnostics**, או מתיקיית ההתקנה:
 
 ```
 python\python.exe app\main.py --diagnose

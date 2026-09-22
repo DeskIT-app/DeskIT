@@ -257,7 +257,7 @@ class SetupConfig:
 
     offer_gpu_pack is the person's answer to the GPU pack step at start
     (packs.py, plan 6.5): [Not now] writes false to settings.toml and the
-    start stops asking; Settings > The app keeps a one-line offer.
+    start stops asking; Settings > Dictation keeps a one-line offer.
     """
     done: bool = False
     # The tour after the wizard (D36; overlay.TourCard): a STATE key,
