@@ -132,7 +132,7 @@ stand and written only if you move them:
 | Fix misheard words with a free cloud model (text only) | Off. Turning it on is the consent ([chapter 5](05-cloud) says what leaves and to whom) and opens a field under the row for your own free Groq key, checked with Groq the moment you save it. Next waits until a key works — or the switch is off again. |
 | Keep this PC awake while DeskIT runs | On. Windows does not sleep while DeskIT runs; Settings > General turns it off. |
 | Check for updates weekly | On. One request to github.com, no identifier. |
-| Connect Claude Code | Off. Two hook lines in `~/.claude/settings.json`: when Claude Code finishes or asks, DeskIT shows a card and plays a cue. |
+| Connect Claude Code | Off. Two hook lines in `~/.claude/settings.json`: when Claude Code finishes or asks, DeskIT shows a card and plays a cue. One copy of DeskIT at a time: if another copy on this PC is connected, the row says so and turning it on asks first — answer *Yes, connect this one* and the other is disconnected. |
 | Take over Win+Shift+S for DeskIT's screenshot key | On. Windows' own Snipping Tool stops answering that shortcut while DeskIT runs; off, the key is Ctrl+F11. |
 
 ## Ready
