@@ -10,7 +10,7 @@ title: 2. First run
 of the screen, with a beak pointing at it. Four cards, one sentence each: the dot and its
 colours, the key (drawn, with the binding you chose), what a click on the dot opens, and
 done. **הבא** (next) moves on, **דלג** (skip) closes it — and a skipped tour does not come
-back by itself. To see it again: Settings > The app > **Show the tour**. This page is the
+back by itself. To see it again: Settings > About > **Show the tour**. This page is the
 long version of those four cards.
 
 **The two-sentence version.** The first start opens a seven-page wizard; only three pages ask
@@ -49,7 +49,7 @@ change them in Settings. What you said and your cloud keys are locked with a key
 own PCs hold, so one more step: the page shows an eight-character code and waits; open the desk
 on your other PC — Home there shows the same code — and press **Approve**. Everything
 locked then arrives here too. No other PC at hand? Type the recovery key DeskIT made for you
-(Settings > Privacy > The lock, on any PC that is in). Or **Later**: DeskIT works meanwhile
+(Settings > Account > The lock, on any PC that is in). Or **Later**: DeskIT works meanwhile
 with your words and settings, and the desk's Account card keeps the code.
 
 Picked the wrong card? A link under each one leads to the other, and **Back** goes back to
@@ -130,7 +130,7 @@ stand and written only if you move them:
 | switch | what it does |
 |---|---|
 | Fix misheard words with a free cloud model (text only) | Off. Turning it on is the consent ([chapter 5](05-cloud) says what leaves and to whom) and opens a field under the row for your own free Groq key, checked with Groq the moment you save it. Next waits until a key works — or the switch is off again. |
-| Keep this PC awake while DeskIT runs | On. Windows does not sleep while DeskIT runs; Settings > The app turns it off. |
+| Keep this PC awake while DeskIT runs | On. Windows does not sleep while DeskIT runs; Settings > General turns it off. |
 | Check for updates weekly | On. One request to github.com, no identifier. |
 | Connect Claude Code | Off. Two hook lines in `~/.claude/settings.json`: when Claude Code finishes or asks, DeskIT shows a card and plays a cue. |
 | Take over Win+Shift+S for DeskIT's screenshot key | On. Windows' own Snipping Tool stops answering that shortcut while DeskIT runs; off, the key is Ctrl+F11. |
@@ -146,7 +146,7 @@ The hotkey to hold, and three switches asked once:
   follow you to any PC you sign in on, so it hears you your way from the first sentence and
   the Said page is the same page there. What you said and the keys leave locked with a key
   only your own PCs hold; the server cannot read them. Never your voice. To turn it off later:
-  Settings > Privacy > **Withdraw** on *Syncing settings and words* and on *Syncing what
+  Settings > Account > **Withdraw** on *Syncing settings and words* and on *Syncing what
   you said* — each has its own row, so the history can go off alone; **Turn on** on the
   same row asks again. The row appears only when you signed in on the account page.
 - **Start with Windows** — off. A Run entry for your user; that start opens no window, only

@@ -12,7 +12,7 @@ title: 8. הנתונים שלך
 
 ## התיקייה
 
-מדביקים `%LOCALAPPDATA%\DeskIT` בשורת הכתובת של סייר הקבצים. **Settings > The app** פותח
+מדביקים `%LOCALAPPDATA%\DeskIT` בשורת הכתובת של סייר הקבצים. **Settings > About** פותח
 כל אחד מאלה בכפתור:
 
 | מה | איפה | הערות |
@@ -43,9 +43,9 @@ title: 8. הנתונים שלך
 
 ## מחיקה
 
-- **דבר אחד:** פותחים את התיקייה מ־**Settings > The app** ומוחקים את הקובץ — דסק-איט יוצר
+- **דבר אחד:** פותחים את התיקייה מ־**Settings > About** ומוחקים את הקובץ — דסק-איט יוצר
   חדש וריק. המודל: מוחקים את `models\` כשדסק-איט סגור, או **Delete the model** ב־
-  **Settings > The app**.
+  **Settings > About**.
 - **הכול:** סוגרים את דסק-איט ומריצים, מתיקיית ההתקנה (`%LOCALAPPDATA%\Programs\DeskIT`):
 
   ```
@@ -58,7 +58,7 @@ title: 8. הנתונים שלך
   חלונות; ברירת המחדל לשמור.
 - **מפתחות:** **Settings > Privacy > YOUR CLOUD KEYS > Remove**, או מוחקים `DeskIT/groq`
   ו־`DeskIT/gemini` בעצמכם בלוח הבקרה > מנהל האישורים.
-- **שורות ה־hook של Claude Code:** המתג תחת **Settings > The app** מסיר את שתי השורות מ־
+- **שורות ה־hook של Claude Code:** המתג תחת **Settings > About** מסיר את שתי השורות מ־
   `~/.claude/settings.json`.
 
 ## מעבר למחשב אחר

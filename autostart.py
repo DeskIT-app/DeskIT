@@ -3,7 +3,7 @@
 
 One value, `DeskIT`, under HKCU\\Software\\Microsoft\\Windows\\CurrentVersion
 \\Run, holding the installed launcher command — `python\\pythonw.exe
-"app\\deskit.pyw"`. Settings > The app > "Start with Windows" writes or
+"app\\deskit.pyw"`. Settings > General > "Start with Windows" writes or
 removes it (`setup.autostart`, a state.json key: a fact about this
 installation, never a setting a fresh copy inherits), and the app
 re-asserts it at every start, so an install that moved or was upgraded

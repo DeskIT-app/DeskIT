@@ -370,8 +370,14 @@ class Tab:
     groups: tuple[Group, ...]
 
 
-GENERAL = "General"
-APP = "The app"           # the blocks that used to be screens, and [awake]
+GENERAL = "General"       # this computer and this screen
+DICTATION = "Dictation"   # everything that happens to the words
+SCREEN = "Screen"         # pictures, recordings, the camera, the ask key
+MESSAGES = "Messages & sounds"   # what other programs say here, every cue
+PHONE = "Phone"
+ACCOUNT = "Account"       # who is signed in, what follows them, the lock
+PRIVACY = "Privacy"       # keys, what may leave, what is kept
+ABOUT = "About"           # version, licence, the app's own files
 
 _ENGINES = (("local", "On this computer"),
             ("gemini", "In Google's cloud"))
@@ -404,53 +410,47 @@ DOT_CORNER = Friendly(
 # no need to be clever". And 2026-09-18, on a screen of two hundred
 # lines: "a huge number of settings a simple user never needs; things
 # like 'how many corrections before a word fixes itself' are things I
-# change in development, not decisions a user should make." So: General
-# is what a person changes about dictation and the screen, Screen is
-# the pictures, Phone and Privacy are their own pages, and The app is
-# the machine. Everything else in defaults.toml is a measurement the
-# developer edits in the file, and the screen never draws it.
+# change in development, not decisions a user should make."
+#
+# EIGHT TABS SINCE 2026-09-22, and the reason is that he went looking
+# and did not find. Verbatim: "I was looking for where the videos and
+# the pictures are saved and I could not find it, and then I worked out
+# it is under Screen — but it would make more sense in General." And
+# then the list he wants in General: where the dot is, where pictures
+# are saved, which microphone, the account, the update check, Awake —
+# "either put them all in General, or make more tabs at the top,
+# because that would be clearer".
+#
+# Fifty comparable apps were read before this table was rewritten
+# (dictation apps, capture apps, tray companions, assistants, and the
+# settings guidance of Apple, Microsoft, Android and Nielsen Norman).
+# What they agree on, and what this table now does:
+#
+#   * The first tab is the machine and the screen — Windows' own first
+#     section is display, sound, storage and power, and macOS General
+#     holds About, Software Update, Storage and Login Items. So General
+#     is the dot, the microphone, where files land, what starts with
+#     Windows, the awake hold and the update check. Not dictation.
+#   * The core feature earns its own tab: Dictation carries the engine,
+#     the model and everything that happens to the words.
+#   * An account is never inside General — 19 of the 21 apps with one
+#     give it a tab of its own, and ours also carries the lock and the
+#     two syncs.
+#   * Sounds sit with the notifications they belong to (5 of 5).
+#   * A downloadable part is named by what it unlocks and how big it is,
+#     never by the library inside it ("Models library", "language files",
+#     "476 MB") — which is the answer to his other complaint, "Recording:
+#     PyAV (FFmpeg) is installed — nobody has any idea what that is".
+#   * Information only — version, licence, the app's own files — is one
+#     About page at the end.
+#
+# Everything else in defaults.toml is still a measurement the developer
+# edits in the file, and the screen never draws it. Two lines below are
+# named by a tab but drawn by a card above the rows, so the row is not
+# drawn twice: `dot.corner` sits on the dot's own card, and
+# `privacy.update_check` on the updates card (dashboard.BLOCK_PATHS).
 TABS: tuple[Tab, ...] = (
     Tab(GENERAL, (
-        Group("", (
-            Friendly("backend", "Where your speech is turned into words",
-                     "On this computer is faster and better at Hebrew, and "
-                     "nothing leaves the machine.", _ENGINES),
-            Friendly("audio.device", "Microphone",
-                     "Which microphone it listens to."),
-            Friendly("auto_language", "Also understand English",
-                     "The app decides for each recording; off, everything "
-                     "you say is taken as Hebrew."),
-            Friendly("punctuate.auto", "Punctuate every dictation",
-                     "Commas, full stops and question marks go in on the "
-                     "way to the cursor, which costs about a second each "
-                     "time."),
-            Friendly("punctuate.nikud", "Add vowel points as well",
-                     "The Hebrew vowel marks go in along with the "
-                     "punctuation."),
-            Friendly("polish.when", "Fix misheard words with a model",
-                     "With a cloud key the fix goes in before the text is "
-                     "pasted (a third of a second); without one the model "
-                     "on this PC takes 5-7 s, so the text is pasted at "
-                     "once and its fix arrives as a card you can accept. "
-                     "Or always before the paste, only for words you have "
-                     "corrected before, or never.", _REPAIR),
-            Friendly("vocab.enabled", "Use the words it has learned",
-                     "Corrections you taught it with the correction key "
-                     "are applied to new dictations."),
-            Friendly("local.cleanup", "Take out the ums and the false starts",
-                     "The sounds you make while thinking, and a phrase you "
-                     "began again, are dropped."),
-            Friendly("review.enabled", "Suggest a better word after a dictation",
-                     "A small card offers the word it thinks you meant; "
-                     "yes teaches it, no is remembered. Off, it learns "
-                     "quietly instead."),
-            Friendly("study.enabled", "Keep learning while the computer is idle",
-                     "After a few quiet minutes it listens again to what "
-                     "you dictated and learns from what it got wrong. "
-                     "Nothing leaves this PC."),
-            Friendly("translate.target", "Translate into",
-                     "The language the translate key writes in."),
-        )),
         Group("ON THE SCREEN", (
             Friendly("indicator", "Show the dot in the corner",
                      "Blue means it is listening, red means it is "
@@ -468,24 +468,107 @@ TABS: tuple[Tab, ...] = (
                      "screen, the dictation key is left to it, and comes "
                      "back when it lets go."),
         )),
-        Group("MESSAGES FROM OTHER PROGRAMS", (
-            Friendly("notify.enabled", "Show messages from other programs",
-                     "Off, nothing is shown, stored or played."),
-            Friendly("notify.cue", "Play a sound when one arrives",
-                     "Off, the card appears in silence."),
-            Friendly("notify.interrupt", "Which messages pop up",
-                     "Every one, only what is waiting on you, or none; "
-                     "the rest wait quietly on the panel beside the dot.",
-                     _INTERRUPT),
-            Friendly("notify.summarize", "Say a finished message in one line",
-                     "When Claude finishes, the card carries one plain "
-                     "sentence about its message instead of the first "
-                     "lines — written by Groq, with the cloud-text switch "
-                     "on and a Groq key. Off, or without either, the card "
-                     "shows the message's first lines."),
+        Group("THIS COMPUTER", (
+            Friendly("audio.device", "Microphone",
+                     "Which microphone it listens to."),
+            Friendly("setup.autostart", "Start with Windows",
+                     "Windows starts DeskIT when you sign in. Off, you "
+                     "open it from the Start menu."),
+            Friendly("local.load_at_start", "Have it ready to dictate the moment it starts",
+                     "Off, DeskIT starts light — every key that does not "
+                     "need the speech model works at once, and Start on "
+                     "the desk gets it ready when you want to dictate."),
+            Friendly("awake.hold", "Keep the computer awake while DeskIT runs",
+                     "The machine will not fall asleep on its own timer "
+                     "while the app is running. The screens may still go "
+                     "dark."),
+            # drawn on the updates card above these rows
+            Friendly("privacy.update_check", "Look for a newer version every week",
+                     "Once a week DeskIT asks GitHub whether a newer "
+                     "version is out. Nothing about you is sent, and "
+                     "nothing is installed without your press."),
+        )),
+        Group("WHERE FILES ARE SAVED", (
+            Friendly("capture.folder", "Where pictures are saved",
+                     "Screenshots and webcam photos both land here."),
+            Friendly("capture.clip_folder", "Where recordings are saved",
+                     "Empty means the same folder as the pictures."),
         )),
     )),
-    Tab("Screen", (
+    Tab(DICTATION, (
+        Group("WHERE YOUR SPEECH BECOMES WORDS", (
+            Friendly("backend", "Where your speech is turned into words",
+                     "On this computer is faster and better at Hebrew, and "
+                     "nothing leaves the machine.", _ENGINES),
+        )),
+        Group("WHEN YOU DICTATE", (
+            Friendly("auto_language", "Also understand English",
+                     "The app decides for each recording; off, everything "
+                     "you say is taken as Hebrew."),
+            Friendly("punctuate.auto", "Punctuate every dictation",
+                     "Commas, full stops and question marks go in on the "
+                     "way to the cursor, which costs about a second each "
+                     "time."),
+            Friendly("punctuate.nikud", "Add vowel points as well",
+                     "The Hebrew vowel marks go in along with the "
+                     "punctuation."),
+            Friendly("local.cleanup", "Take out the ums and the false starts",
+                     "The sounds you make while thinking, and a phrase you "
+                     "began again, are dropped."),
+            Friendly("polish.when", "Fix misheard words with a model",
+                     "With a cloud key the fix goes in before the text is "
+                     "pasted (a third of a second); without one the model "
+                     "on this PC takes 5-7 s, so the text is pasted at "
+                     "once and its fix arrives as a card you can accept. "
+                     "Or always before the paste, only for words you have "
+                     "corrected before, or never.", _REPAIR),
+        )),
+        Group("WORDS IT LEARNS", (
+            Friendly("vocab.enabled", "Use the words it has learned",
+                     "Corrections you taught it with the correction key "
+                     "are applied to new dictations."),
+            Friendly("review.enabled", "Suggest a better word after a dictation",
+                     "A small card offers the word it thinks you meant; "
+                     "yes teaches it, no is remembered. Off, it learns "
+                     "quietly instead."),
+            Friendly("study.enabled", "Keep learning while the computer is idle",
+                     "After a few quiet minutes it listens again to what "
+                     "you dictated and learns from what it got wrong. "
+                     "Nothing leaves this PC."),
+        )),
+        Group("THE TRANSLATE KEY", (
+            Friendly("translate.target", "Translate into",
+                     "The language the translate key writes in."),
+        )),
+    )),
+    Tab(SCREEN, (
+        Group("SCREENSHOTS AND RECORDINGS", (
+            Friendly("capture.enabled", "Screenshots and screen recording",
+                     "Off, both keys stop working and nothing is taken."),
+            Friendly("capture.after_shot", "After a screenshot",
+                     "What happens the moment you let go: a small card, the "
+                     "editor, or nothing at all.", _AFTER_SHOT),
+            Friendly("capture.always_save", "Always save the file as well",
+                     "Off, the picture is on the clipboard and nowhere else "
+                     "until you press Save. Where both land: General."),
+            Friendly("capture.quality", "Recording quality",
+                     "How much detail a recording keeps, against how large "
+                     "the file is.", _QUALITY),
+            Friendly("capture.audio", "Record the microphone too",
+                     "Off to start with: a recorder that quietly opens the "
+                     "microphone is a surprise.", _MIC_TOO),
+        )),
+        Group("THE CAMERA", (
+            Friendly("camera.enabled", "Take a photo with the webcam",
+                     "Off, the key does nothing and the camera is never "
+                     "opened."),
+            Friendly("camera.device", "Which camera",
+                     "Part of its name is enough. Empty means the first "
+                     "real camera Windows lists."),
+            Friendly("camera.mirror", "Mirror the picture",
+                     "Off, because writing held up to a webcam reads "
+                     "backwards mirrored."),
+        )),
         Group("ASK ABOUT THE SCREEN", (
             Friendly("visual_qa.enabled", "Ask about the screen",
                      "Hold the key, drag a box, ask; the answer comes back "
@@ -498,67 +581,38 @@ TABS: tuple[Tab, ...] = (
                      "Once the card closes, so the question becomes part of "
                      "what you were writing."),
         )),
-        Group("SCREENSHOTS AND RECORDINGS", (
-            Friendly("capture.enabled", "Screenshots and screen recording",
-                     "Off, both keys stop working and nothing is taken."),
-            Friendly("capture.after_shot", "After a screenshot",
-                     "What happens the moment you let go: a small card, the "
-                     "editor, or nothing at all.", _AFTER_SHOT),
-            Friendly("capture.always_save", "Always save the file as well",
-                     "Off, the picture is on the clipboard and nowhere else "
-                     "until you press Save."),
-            Friendly("capture.folder", "Where pictures are saved",
-                     "Screenshots and webcam photos both land here. A plain "
-                     "name means a folder beside the app."),
-            Friendly("capture.clip_folder", "Where recordings are saved",
-                     "Empty means the same folder as the pictures."),
-            Friendly("capture.quality", "Recording quality",
-                     "How much detail a recording keeps, against how large "
-                     "the file is.", _QUALITY),
-            Friendly("capture.audio", "Record the microphone too",
-                     "Off to start with: a recorder that quietly opens the "
-                     "microphone is a surprise.", _MIC_TOO),
-        )),
-        Group("CAMERA", (
-            Friendly("camera.enabled", "Take a photo with the webcam",
-                     "Off, the key does nothing and the camera is never "
-                     "opened."),
-            Friendly("camera.device", "Which camera",
-                     "Part of its name is enough. Empty means the first "
-                     "real camera Windows lists."),
-            Friendly("camera.mirror", "Mirror the picture",
-                     "Off, because writing held up to a webcam reads "
-                     "backwards mirrored."),
+    )),
+    Tab(MESSAGES, (
+        Group("MESSAGES FROM OTHER PROGRAMS", (
+            Friendly("notify.enabled", "Show messages from other programs",
+                     "Off, nothing is shown, stored or played."),
+            Friendly("notify.interrupt", "Which messages pop up",
+                     "Every one, only what is waiting on you, or none; "
+                     "the rest wait quietly on the panel beside the dot.",
+                     _INTERRUPT),
+            Friendly("notify.summarize", "Say a finished message in one line",
+                     "When Claude finishes, the card carries one plain "
+                     "sentence about its message instead of the first "
+                     "lines — written by Groq, with the cloud-text switch "
+                     "on and a Groq key. Off, or without either, the card "
+                     "shows the message's first lines."),
+            Friendly("notify.cue", "Play a sound when one arrives",
+                     "Off, the card appears in silence."),
         )),
     )),
-    Tab("Phone", (
+    Tab(PHONE, (
         Group("DICTATING FROM THE PHONE", (
             Friendly("server.enabled", "Dictate from the phone",
                      "The phone keyboard sends its recordings here, over "
                      "your own private network."),
         )),
     )),
-    Tab("Privacy", (
-        Group("WHAT MAY LEAVE THIS PC", (
-            Friendly("privacy.cloud_text", "Text to the cloud",
-                     "What you dictated or selected may go to Groq or "
-                     "Google under your own key, for the repair pass, "
-                     "punctuation, translation, lookup and the second "
-                     "reading. Opens only through its card, the first time "
-                     "a feature needs it."),
-            Friendly("privacy.cloud_audio", "Recordings to the cloud",
-                     "What you said, as audio, may go to Google or Groq "
-                     "for transcription. Opens only through its card."),
-            Friendly("privacy.cloud_screenshots", "Screen pictures to the cloud",
-                     "The part of the screen you asked about may go to "
-                     "Groq or Google. Opens only through its card."),
+    Tab(ACCOUNT, (
+        Group("WHAT THE ACCOUNT MAY DO", (
             Friendly("privacy.account", "An account",
                      "Anonymous, or your Google sign-in: for problem "
                      "reports you choose to send and for the two syncs. "
                      "Opens only through its card."),
-            Friendly("privacy.report_upload", "Sending problem reports",
-                     "Only what the preview showed. Opens only through its "
-                     "card."),
             Friendly("privacy.settings_sync", "Syncing settings and words",
                      "Your changed settings, learned words and cloud keys "
                      "follow you to every PC you sign into — the keys "
@@ -574,13 +628,28 @@ TABS: tuple[Tab, ...] = (
                      "sync switch, like the settings; Withdraw turns it "
                      "off on its own, Turn on here asks again."),
         )),
-        Group("SWITCHES", (
-            Friendly("privacy.update_check", "Look for a newer version weekly",
-                     "One request to GitHub, carrying no identifier."),
+    )),
+    Tab(PRIVACY, (
+        Group("WHAT MAY LEAVE THIS PC", (
             Friendly("privacy.offline", "Offline mode",
                      "Nothing leaves this computer. Dictation keeps "
                      "working; cloud fixes, translation and updates "
                      "pause."),
+            Friendly("privacy.cloud_text", "Text to the cloud",
+                     "What you dictated or selected may go to Groq or "
+                     "Google under your own key, for the repair pass, "
+                     "punctuation, translation, lookup and the second "
+                     "reading. Opens only through its card, the first time "
+                     "a feature needs it."),
+            Friendly("privacy.cloud_audio", "Recordings to the cloud",
+                     "What you said, as audio, may go to Google or Groq "
+                     "for transcription. Opens only through its card."),
+            Friendly("privacy.cloud_screenshots", "Screen pictures to the cloud",
+                     "The part of the screen you asked about may go to "
+                     "Groq or Google. Opens only through its card."),
+            Friendly("privacy.report_upload", "Sending problem reports",
+                     "Only what the preview showed. Opens only through its "
+                     "card."),
         )),
         Group("KEPT ON THIS PC", (
             Friendly("history.keep_days",
@@ -589,21 +658,9 @@ TABS: tuple[Tab, ...] = (
                      "keeps no history at all."),
         )),
     )),
-    Tab(APP, (
-        Group("THIS COMPUTER", (
-            Friendly("local.load_at_start", "Load the speech model when DeskIT starts",
-                     "Off, DeskIT starts without it — every key that needs "
-                     "no model works at once, and Start on the desk loads "
-                     "it when you want to dictate."),
-            Friendly("setup.autostart", "Start with Windows",
-                     "Windows starts DeskIT when you sign in. Off, you "
-                     "open it from the Start menu."),
-            Friendly("awake.hold", "Hold the computer awake",
-                     "While the app is running the machine will not fall "
-                     "asleep on its own timer. The screens may still go "
-                     "dark."),
-        )),
-    )),
+    # About draws no line of the file: the version, the licence, the
+    # papers and the app's own files, and nothing to set.
+    Tab(ABOUT, ()),
 )
 
 

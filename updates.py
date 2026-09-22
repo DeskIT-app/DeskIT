@@ -308,17 +308,17 @@ def status_line() -> str:
     if s["mode"] == "store":
         return "Updates come from the Microsoft Store"
     if s["mode"] == "off":
-        return "Updates: the weekly check is off (Settings > Privacy)"
+        return "The weekly check is off"
     if s["mode"] == "offline":
-        return "Updates: off while Offline"
+        return "Paused while Offline mode is on"
     rel = s["available"]
     if rel is not None:
         mb = rel.size / 1_048_576
         when = f", {rel.published[:10]}" if rel.published else ""
-        return f"DeskIT {rel.version} is available ({mb:.0f} MB{when}) — you have {s['running']}"
+        return f"DeskIT {rel.version} is out ({mb:.0f} MB{when}) — you have {s['running']}"
     if s["last_check"]:
-        return f"Updates: up to date, checked {s['last_check'][:10]}"
-    return "Updates: not checked yet"
+        return f"You have the newest version. Last looked {s['last_check'][:10]}."
+    return "Not looked yet"
 
 
 # ---------------------------------------------------------- the download

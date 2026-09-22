@@ -80,7 +80,7 @@ The files land in `%LOCALAPPDATA%\DeskIT\models` and `\packs`. A silent install 
 ## Updating
 
 DeskIT looks for a newer version once a week (one request to github.com, no identifier; the
-switch is under **Settings > Privacy**). When there is one, **Settings > The app** shows it with
+switch is under **Settings > Privacy**). When there is one, **Settings > General** shows it with
 a **Download and install** button; the download is checked against its SHA-256 before the
 installer runs. winget users can also run `winget upgrade YoavShimron.DeskIT`.
 

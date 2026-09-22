@@ -22,15 +22,15 @@ with your clipboard that DeskIT does not.
 
 ![The picker](../img/07-picker.png)
 
-**Screen recording and the camera need the Recording pack**: PyAV with its FFmpeg, 28 MB from
-PyPI, installed from **Settings > Screen** with one button. The installer does not carry it
-because that FFmpeg build is GPL (x264, x265); the card shows the licences before the download,
-and dictation works without it.
+**Screen recording and the webcam need one extra download**: 28 MB, one button at the top of
+**Settings > Screen**. It is a free video toolkit (PyAV with its FFmpeg) that the installer
+cannot carry because that FFmpeg build is GPL (x264, x265); the card shows the licences before
+the download, and dictation, screenshots and asking about the screen all work without it.
 
-**Settings > Screen** changes the folders, the recorder's frame rate, whether recordings
-include computer sound (then the microphone is opened when audio is "mic"), and the
-Snipping-Tool switch: while DeskIT runs and the switch is on, Windows' own Snipping Tool stops
-answering Win+Shift+S.
+Where pictures and recordings are saved is on **Settings > General**. **Settings > Screen**
+holds the recording quality, whether recordings include computer sound (then the microphone is
+opened when audio is "mic"), and the Snipping-Tool switch: while DeskIT runs and the switch is
+on, Windows' own Snipping Tool stops answering Win+Shift+S.
 
 ![Settings > Screen](../img/07-settings-screen.png)
 

@@ -13,7 +13,7 @@ DeskIT has forgotten you.
 
 ## The folder
 
-Paste `%LOCALAPPDATA%\DeskIT` into the File Explorer address bar. **Settings > The app**
+Paste `%LOCALAPPDATA%\DeskIT` into the File Explorer address bar. **Settings > About**
 opens each of these with a button:
 
 | what | where | notes |
@@ -42,9 +42,9 @@ on the Settings page, and `history.keep_days = 0` turns the history off.
 
 ## Deleting
 
-- **One thing:** open the folder from **Settings > The app** and delete the file — DeskIT
+- **One thing:** open the folder from **Settings > About** and delete the file — DeskIT
   makes a new, empty one. The model: delete `models\` while DeskIT is closed, or use
-  **Delete the model** on **Settings > The app**.
+  **Delete the model** on **Settings > Dictation**.
 - **Everything:** close DeskIT and run, from the install folder
   (`%LOCALAPPDATA%\Programs\DeskIT`):
 
@@ -58,7 +58,7 @@ on the Settings page, and `history.keep_days = 0` turns the history off.
   Start-with-Windows entry; the default is to keep.
 - **Keys:** **Settings > Privacy > YOUR CLOUD KEYS > Remove**, or delete `DeskIT/groq` and
   `DeskIT/gemini` yourself in Control Panel > Credential Manager.
-- **Claude Code's hook lines:** the switch under **Settings > The app** removes the two lines
+- **Claude Code's hook lines:** the switch under **Settings > Messages & sounds** removes the two lines
   from `~/.claude/settings.json`.
 
 ## Moving to another PC

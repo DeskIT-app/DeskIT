@@ -20102,7 +20102,7 @@ def test_the_plain_words_name_lines_the_file_has() -> None:
         Path(__file__).resolve().parent / "defaults.toml")
     paths = _config_paths()
     assert settings_mod.TABS[0].name == settings_mod.GENERAL
-    assert settings_mod.TABS[-1].name == settings_mod.APP
+    assert settings_mod.TABS[-1].name == settings_mod.ABOUT
     assert settings_mod.tab_names() == [t.name for t in settings_mod.TABS]
     seen: list = []
     for tab in settings_mod.TABS:
@@ -20272,18 +20272,35 @@ def test_the_two_screens_draw_the_short_list_between_them() -> None:
         assert set(drawn) == set(settings_mod.friendly_paths()), \
             sorted(set(drawn) ^ set(settings_mod.friendly_paths()))
         assert set(drawn) | keys < _config_paths()
-        assert drawn["backend"] == settings_mod.GENERAL
+        # HIS LIST OF 2026-09-22, held here line by line: the dot, the
+        # microphone, where files are saved, the update check and the
+        # awake hold are all on the first tab, because that is where he
+        # went looking for them.
         assert drawn["dot.corner"] == settings_mod.GENERAL
-        assert drawn["capture.folder"] == "Screen"
-        assert drawn["server.enabled"] == "Phone"
-        assert drawn["privacy.offline"] == "Privacy"
-        assert drawn["awake.hold"] == settings_mod.APP
-        # the blocks that used to be tabs of their own still stand: This
-        # PC on The app, the phone's link on Phone
-        board._settings_go(settings_mod.APP)
+        assert drawn["audio.device"] == settings_mod.GENERAL
+        assert drawn["capture.folder"] == settings_mod.GENERAL
+        assert drawn["capture.clip_folder"] == settings_mod.GENERAL
+        assert drawn["privacy.update_check"] == settings_mod.GENERAL
+        assert drawn["awake.hold"] == settings_mod.GENERAL
+        assert drawn["setup.autostart"] == settings_mod.GENERAL
+        assert drawn["backend"] == settings_mod.DICTATION
+        assert drawn["punctuate.auto"] == settings_mod.DICTATION
+        assert drawn["capture.quality"] == settings_mod.SCREEN
+        assert drawn["notify.cue"] == settings_mod.MESSAGES
+        assert drawn["server.enabled"] == settings_mod.PHONE
+        assert drawn["privacy.settings_sync"] == settings_mod.ACCOUNT
+        assert drawn["privacy.offline"] == settings_mod.PRIVACY
+        # the speech model sits with the line that chooses the engine,
+        # and About draws no line of the file at all
+        board._settings_go(settings_mod.DICTATION)
         board._finish_settings()
-        assert board.parts.get("speed_lines"), "This PC is not on The app"
-        assert "Dictation" not in settings_mod.tab_names()
+        assert board.parts.get("model_lines"), \
+            "the speech model is not on Dictation"
+        board._settings_go(settings_mod.ABOUT)
+        board._finish_settings()
+        assert not board.parts["rows"], sorted(board.parts["rows"])
+        assert board.parts.get("stop") is not None, "no Quit on About"
+        assert "The app" not in settings_mod.tab_names()
         assert "Speed" not in settings_mod.tab_names()
         assert "Cards" not in settings_mod.tab_names()
 
@@ -20350,6 +20367,117 @@ def test_no_field_on_the_settings_place_is_a_square_one() -> None:
         assert box.get() == "hello"
 
 
+def test_the_layout_names_every_card_of_every_tab_once() -> None:
+    """dashboard.LAYOUT is the second hand-written thing on this screen
+    (settings.TABS is the first), so it is the second that can go stale:
+    every group of every tab is named by its tab's layout exactly once,
+    every other name is a card that exists, and no layout names a tab
+    that is not there. Eight tabs since 2026-09-22, General first and
+    About last."""
+    import settings as settings_mod
+
+    import dashboard as dash
+
+    assert settings_mod.tab_names() == [
+        "General", "Dictation", "Screen", "Messages & sounds", "Phone",
+        "Account", "Privacy", "About"], settings_mod.tab_names()
+    assert set(dash.Dashboard.LAYOUT) == set(settings_mod.tab_names())
+    spelled = {"snip", "voice", "about", "files"}
+    for name, entries in dash.Dashboard.LAYOUT.items():
+        assert len(set(entries)) == len(entries), (name, entries)
+        titles = [g.title for g in settings_mod.groups_for(name)]
+        assert all(t.isupper() for t in titles), titles
+        assert [e for e in entries if e.isupper()] == titles, (name, entries)
+        for key in entries:
+            if key.isupper() or key in spelled:
+                continue
+            assert hasattr(dash.Dashboard, f"_{key}_block"), (name, key)
+
+
+def test_a_card_says_what_a_download_is_FOR_not_what_it_is_made_of() -> None:
+    """The owner, 2026-09-22, reading the Screen tab: "here I am looking
+    now at Recording, PyAV FFmpeg is installed — I don't think anyone
+    has the faintest idea what that is." So the line a person meets
+    names the two keys the download unlocks and how big it is; the
+    library is small print under it, and only while there is something
+    to press. The speech model and the graphics card are the same rule:
+    "The Hebrew model", "Faster dictation", never a repository name or
+    the word CUDA."""
+    import settings as settings_mod
+
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Settings")
+        board._settings_go(settings_mod.SCREEN)
+        board._finish_settings()
+        said = board.parts["recording_line"]
+        for word in ("PyAV", "FFmpeg", "GPL", "WAV", "pack"):
+            assert word not in said, (word, said)
+        assert "Screen recording" in said and "webcam" in said
+        board._settings_go(settings_mod.DICTATION)
+        board._finish_settings()
+        lines = board.parts["model_lines"]
+        buttons = board.parts["model_buttons"]
+        for text in list(lines) + list(buttons):
+            for word in ("CUDA", "cuBLAS", "GPU pack", "ivrit", "ct2",
+                         "whisper", "libraries"):
+                assert word not in text, (word, text)
+
+
+def test_every_sound_is_named_for_the_thing_it_announces() -> None:
+    """A Play button beside "noop" tells nobody anything. cues.CUES is
+    keyed by code names, and the card draws dashboard.SOUND_WORDS for
+    every one of them (2026-09-22)."""
+    import cues as cues_mod
+    import settings as settings_mod
+
+    import dashboard as dash
+
+    missing = [k for k in cues_mod.CUES if k not in dash.SOUND_WORDS]
+    assert not missing, f"sounds with no plain name: {missing}"
+    for key, said in dash.SOUND_WORDS.items():
+        assert key in cues_mod.CUES, f"{key} is not a cue any more"
+        assert said[:1].isupper() and "_" not in said, said
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Settings")
+        board._settings_go(settings_mod.MESSAGES)
+        board._finish_settings()
+        board.root.update_idletasks()
+        drawn = {w.cget("text") for card in
+                 board.parts["settings_list"].inner.winfo_children()
+                 for w in _labels(card)}
+        assert "Recording started" in drawn, sorted(drawn)[:20]
+        assert "noop" not in drawn and "latch" not in drawn
+
+
+def _labels(widget) -> list:
+    """Every tk.Label under `widget`, however deep."""
+    import tkinter as tk
+    out = []
+    for child in widget.winfo_children():
+        if isinstance(child, tk.Label):
+            out.append(child)
+        out.extend(_labels(child))
+    return out
+
+
+def test_the_eight_tabs_fit_the_strip_with_the_magnifier() -> None:
+    """Eight chips and the search glass on one row, inside the page's
+    width — a ninth tab, or a long name on one of them, has to be
+    measured before it ships."""
+    with _window() as board:
+        if board is None:
+            return
+        board._show("Settings")
+        board.root.update_idletasks()
+        chips = board.parts["settings_tabs"]
+        glass = board.parts["settings_glass"]
+        right = max(c.winfo_x() + c.winfo_reqwidth() for c in chips.values())
+        assert right + 20 <= glass.winfo_x(), \
+            f"the tabs reach {right} and the magnifier starts at {glass.winfo_x()}"
 def _settings_words(board) -> str:
     """Every word DRAWN on the dense settings cards. They are canvas
     items rather than widgets (dashboard._new_card says why), so reading
@@ -20391,9 +20519,17 @@ def test_every_tab_says_it_in_plain_words() -> None:
         board._settings_go(settings_mod.GENERAL)
         board._finish_settings()
         plain = _settings_words(board)
-        assert "Take out the ums and the false starts" in plain
         assert "ON THE SCREEN" in plain, "the group's plain title"
-        assert "MESSAGES FROM OTHER PROGRAMS" in plain
+        assert "WHERE FILES ARE SAVED" in plain
+        board._settings_go(settings_mod.DICTATION)
+        board._finish_settings()
+        plain = _settings_words(board)
+        assert "Take out the ums and the false starts" in plain
+        board._settings_go(settings_mod.MESSAGES)
+        board._finish_settings()
+        assert "MESSAGES FROM OTHER PROGRAMS" in _settings_words(board)
+        board._settings_go(settings_mod.GENERAL)
+        board._finish_settings()
         # the search reads the file's own words as well as the plain
         # ones: "restarted phrases" is the comment on local.cleanup
         board._settings_open_search()
@@ -20401,7 +20537,7 @@ def test_every_tab_says_it_in_plain_words() -> None:
         board._finish_settings()
         assert set(board.parts["rows"]) == {"local.cleanup"}, \
             "the search no longer reads the file's own words"
-        assert "GENERAL" in _settings_words(board), \
+        assert "DICTATION" in _settings_words(board), \
             "a search says which tab a line lives on"
 
 
@@ -20577,7 +20713,8 @@ def test_the_settings_screen_can_reach_its_last_row() -> None:
     try:
         board.closing = True
         board._show("Settings")
-        owner = settings_mod.tab_names()[-1]
+        owner = next(name for name in reversed(settings_mod.tab_names())
+                     if settings_mod.groups_for(name))
         last = settings_mod.find(board.parts["sections"],
                                  settings_mod.groups_for(owner)[-1].rows[-1].path)
         board._settings_go(owner)
@@ -20981,6 +21118,7 @@ def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
         if board is None:
             return
         board._show("Settings")                 # opens on General
+        board._settings_go(settings_mod.DICTATION)
         board._finish_settings()
         written: list = []
         real = config_mod.save
@@ -20999,10 +21137,10 @@ def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
             board._finish_settings()
             assert "punctuate.auto" not in board.parts["rows"], \
                 "one line, one place"
-            board._settings_go(settings_mod.GENERAL)
+            board._settings_go(settings_mod.DICTATION)
             board._finish_settings()
             [(kind, again)] = board.parts["rows"]["punctuate.auto"]
-            assert again.get() is True, "General did not follow"
+            assert again.get() is True, "Dictation did not follow"
 
             def refuse(updates, **kw):
                 raise config_mod.ConfigError("punctuate.auto must be a bool")
@@ -21042,6 +21180,8 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
         real = config_mod.set_values
         config_mod.set_values = never
         try:
+            board._settings_go(settings_mod.DICTATION)
+            board._finish_settings()
             sections = board.parts["sections"]
             when = settings_mod.find(sections, "polish.when")
             [(kind, menu)] = board.parts["rows"]["polish.when"]
@@ -23307,7 +23447,7 @@ def test_the_dashboard_has_an_awake_block_that_waits_for_the_app() -> None:
             if board is None:
                 return
             board._show("Settings")
-            board._settings_go(settings_mod.APP)   # the blocks live there
+            board._settings_go(settings_mod.GENERAL)  # awake lives there
             board._finish_settings()
             p = board.parts
             for name in ("awake_toggle", "awake_screen", "awake_check",
@@ -29232,7 +29372,7 @@ def test_stop_in_the_bar_unloads_the_model_and_start_loads_it() -> None:
             assert quit_asked == [1]
         finally:
             control_mod.send, singleton.request_quit = saved_send, saved_quit
-    source = inspect.getsource(dash.Dashboard._app_block)
+    source = inspect.getsource(dash.Dashboard._version_block)
     assert '"Quit DeskIT"' in source and '"Stop the app"' not in source
 
 
@@ -33763,15 +33903,15 @@ def test_the_speed_page_and_the_home_rows():
 
         def drawn():
             board._show("Settings")
-            board._settings_go(settings_mod.APP)
+            board._settings_go(settings_mod.DICTATION)
             board._finish_settings()
             board.root.update_idletasks()
-            return list(board.parts["speed_lines"]), list(board.parts["speed_buttons"])
+            return list(board.parts["model_lines"]), list(board.parts["model_buttons"])
 
         # the checkout: two lines, no buttons
         lines, buttons = drawn()
         assert "checkout" in lines[0] and buttons == [], (lines, buttons)
-        assert len(lines) == 2 and "venv" in lines[1]
+        assert len(lines) == 2 and "NVIDIA" in lines[1]
         assert board._waiting_hardware() == []
         # an installed copy, nothing there yet, a card with a good driver
         words = {"model": "absent", "pack": "missing", "changed": ""}
@@ -33782,8 +33922,9 @@ def test_the_speed_page_and_the_home_rows():
                 _patched(dash.hardware_mod, "recorded", lambda: dict(facts, tier_changed=words["changed"])):
             lines, buttons = drawn()
             assert lines[0].startswith("not downloaded yet (1.62 GB)"), lines
-            assert lines[1].startswith("off — NVIDIA's libraries are not installed (1.37 GB)"), lines
-            assert buttons == ["Download the model", "Turn on GPU speed (1.37 GB)"], buttons
+            assert lines[1] == "off — it needs one extra download (1.37 GB)", lines
+            assert buttons == ["Download the model",
+                               "Turn on faster dictation (1.37 GB)"], buttons
             rows = board._waiting_hardware()
             assert len(rows) == 1 and rows[0]["kind"] == "hardware", rows
             assert "not on this PC yet (1.62 GB)" in rows[0]["text"]
@@ -33792,9 +33933,12 @@ def test_the_speed_page_and_the_home_rows():
             words.update(model="ready", pack="failed:Library cudnn64_9.dll is not found",
                          changed="gpu → cpu")
             lines, buttons = drawn()
-            assert lines[0].startswith("ready — ivrit-ai/") and "could not start (Library cudnn64_9" in lines[1]
+            assert lines[0].startswith("ready (1.62 GB)"), lines
+            assert "ivrit" not in lines[0], "the repository name is on About, not here"
+            assert "will not start on this PC (Library cudnn64_9" in lines[1]
             assert buttons == ["Delete and re-download the model", "Delete the model",
-                               "Retry GPU speed", "Reinstall the GPU pack", "Remove the GPU pack"], buttons
+                               "Try it again", "Download it again (1.37 GB)",
+                               "Turn off faster dictation"], buttons
             rows = board._waiting_hardware()
             assert [r["mark"] for r in rows] == ["alert", "engine"], rows
             assert "GPU speed could not start (Library cudnn64_9.dll is not found)" in rows[0]["text"]
@@ -33803,18 +33947,21 @@ def test_the_speed_page_and_the_home_rows():
             # a stale pack and an incomplete model
             words.update(model="incomplete", pack="stale", changed="")
             lines, buttons = drawn()
-            assert lines[0].startswith("download did not finish") and lines[1].startswith("installed from an older release")
-            assert buttons == ["Continue the download", "Update the GPU pack (1.37 GB)", "Remove the GPU pack"], buttons
+            assert lines[0].startswith("the download did not finish")
+            assert lines[1] == "on, and there is a newer download for it", lines
+            assert buttons == ["Continue the download",
+                               "Update faster dictation (1.37 GB)",
+                               "Turn off faster dictation"], buttons
             assert [b[0] for b in board._waiting_hardware()[0]["buttons"]] == ["Continue"]
             # no card at all: no pack button, no pack row
             words.update(model="ready", pack="missing")
             facts.update(cuda_devices=0)
             lines, buttons = drawn()
-            assert lines[1] == "no NVIDIA card — dictation runs on the processor", lines
+            assert lines[1] == "no NVIDIA card in this PC — dictation runs on the processor", lines
             assert buttons == ["Delete and re-download the model", "Delete the model"]
             facts.update(cuda_devices=1, driver_ok=False)
             lines, buttons = drawn()
-            assert lines[1].startswith("the NVIDIA driver is too old"), lines
+            assert lines[1].startswith("your NVIDIA driver is too old"), lines
             # the buttons that act here and now
             cleared: list = []
             with _patched(dash.packs_mod, "clear_failure", lambda n: cleared.append(("clear", n))), \
@@ -34040,6 +34187,8 @@ def test_diagnose_block_is_safe_to_paste():
         assert "transcripts" not in block.split("--- app.log")[1].lower()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+    import settings as settings_mod
+
     import dashboard as dash
     assert dash.Dashboard.built_with_llama() is True, "translate.ollama_model is llama3.1:8b"
     with _patched(config_mod, "defaults_flat", lambda: {"a": "gemma3:4b"}):
@@ -34047,7 +34196,7 @@ def test_diagnose_block_is_safe_to_paste():
     with _window() as board:
         if board is None:
             return
-        board._settings_tab = settings_mod_name = "The app"
+        board._settings_tab = settings_mod.ABOUT
         board._show("Settings")
         board._finish_settings()
         board.root.update_idletasks()
@@ -35779,7 +35928,7 @@ def test_the_folder_settings_have_a_picker_beside_the_field():
             if board is None:
                 return
             board._show("Settings")
-            board._settings_go("Screen")
+            board._settings_go(settings_mod.GENERAL)
             board._finish_settings()
             board.root.update_idletasks()
             rows = board.parts["rows"]
@@ -35820,7 +35969,7 @@ def test_the_two_d33_switches_live_on_their_tabs():
             if board is None:
                 return
             board._show("Settings")
-            board._settings_go(settings_mod.APP)
+            board._settings_go(settings_mod.MESSAGES)
             board._finish_settings()
             board.root.update_idletasks()
             switch = board.parts["claude_switch"]
@@ -36311,7 +36460,7 @@ def test_update_check_request_shape():
         assert all(r.secret == "-" for r in rows)
         assert stamps["updates.latest_seen"] == "9.9.9" and stamps["updates.last_check"]
         assert updates.available() is rel
-        assert "9.9.9 is available" in updates.status_line() and "you have" in updates.status_line()
+        assert "9.9.9 is out" in updates.status_line() and "you have" in updates.status_line()
         # The cache file outlives the installer: the copy after an update
         # reads the release the copy before it found — its own version —
         # and must not offer it ("1.0.1 is available — you have 1.0.1",
@@ -36506,18 +36655,18 @@ def test_the_app_tab_carries_the_updates_row():
             return
         def drawn():
             board._show("Settings")
-            board._settings_go(settings_mod.APP)
+            board._settings_go(settings_mod.GENERAL)
             board._finish_settings()
             board.root.update_idletasks()
             return (board.parts["updates_line"].cget("text"),
                     list(board.parts["updates_buttons"]))
         with _patched(updates, "_last", {"release": None}):
             line, buttons = drawn()
-        assert line.startswith("Updates:"), line
+        assert "newest version" in line or "Not looked" in line, line
         assert buttons == ["Check now"], buttons
         with _patched(updates, "_last", {"release": rel}):
             line, buttons = drawn()
-        assert "9.9.9 is available" in line and "you have" in line, line
+        assert "9.9.9 is out" in line and "you have" in line, line
         assert buttons == ["Check now"], "the checkout offered an installer"
         with _patched(updates, "_last", {"release": rel}), _patched(paths, "DEVELOPER", False):
             line, buttons = drawn()
@@ -38814,16 +38963,19 @@ def test_the_sync_follows_the_account():
                                                   "settings_sync": old}):
             privacy.grant("history_sync", old)
             privacy.grant("settings_sync", old)
-            given = privacy.consent("history_sync")["when"]
+            # each kind's own moment: the two grants can land either side
+            # of a second, and a carried row keeps the time it was given
+            given = {kind: privacy.consent(kind)["when"]
+                     for kind in privacy.SYNC_KINDS}
         assert privacy.consent("history_sync") is None and not privacy.allowed("history_sync"), "the old row is not stale"
         migrations._the_lock_asks_nothing_new()
         for kind in privacy.SYNC_KINDS:
             row = privacy.consent(kind)
             assert row is not None and row["text_version"] == privacy.TEXT_VERSIONS[kind], (kind, row)
-            assert row["carried_from"] == old and row["when"] == given, row
+            assert row["carried_from"] == old and row["when"] == given[kind], row
             assert privacy.allowed(kind), kind
         migrations._the_lock_asks_nothing_new()                  # already current: untouched
-        assert privacy.consent("history_sync")["when"] == given
+        assert privacy.consent("history_sync")["when"] == given["history_sync"]
         privacy.withdraw("history_sync")
         migrations._the_lock_asks_nothing_new()                  # no row: nothing
         assert privacy.consent("history_sync") is None
@@ -40328,7 +40480,7 @@ def test_account_block_on_the_privacy_tab():
             if board is None:
                 return
             board._show("Settings")
-            board._settings_go("Privacy")
+            board._settings_go("Account")
             board._finish_settings()
             board.root.update_idletasks()
             line = board.parts["account_line"]
@@ -40685,7 +40837,7 @@ def test_the_lock_card_on_the_privacy_tab():
             if board is None:
                 return
             board._show("Settings")
-            board._settings_go("Privacy")
+            board._settings_go("Account")
             board._finish_settings()
             board.root.update_idletasks()
             line, code, sub = board.parts["lock_line"], board.parts["lock_code"], board.parts["lock_sub"]
@@ -40743,7 +40895,12 @@ def test_the_lock_card_on_the_privacy_tab():
             assert sent[-1][1] == {"do": "approve", "kind": "req-9"}
             board.parts["lock_strip"].winfo_children()[1]._command()
             assert sent[-1][1] == {"do": "decline", "kind": "req-9"}
-            # the Keys page: a saved key nudges the vault store
+            # the Keys page: a saved key nudges the vault store. It is
+            # on Privacy since 2026-09-22 — the lock and the account are
+            # a page of their own.
+            board._settings_go("Privacy")
+            board._finish_settings()
+            board.root.update_idletasks()
             import secretstore
             with _test_cred_prefix():
                 board.parts["key_fields"]["groq"].set("gsk_fixture_card_" + "q" * 30)
