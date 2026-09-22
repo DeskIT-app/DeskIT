@@ -923,6 +923,80 @@ def _patched(module, name, replacement):
         setattr(module, name, real)
 
 
+def _until(ready, seconds: float = 10.0, pump=None) -> bool:
+    """Wait for a background thread to get there — a DEADLINE, not a
+    count of turns.
+
+    `for _ in range(100): time.sleep(0.02)` reads like two seconds and is
+    two seconds on an idle machine. It is not two seconds while seven
+    hundred other tests are on the same four cores: the model unload
+    (test_unload_model_keeps_the_process_and_load_model_brings_it_back)
+    missed that budget once in the 1.0.4 run on 2026-09-22 and then
+    passed three times out of three when it was run on its own. A
+    generous deadline costs nothing when the thread is quick — the fast
+    path is still the first millisecond — and when it does run out the
+    failure is about the code, not about what else the machine was doing.
+
+    `ready` is asked about the LAST thing the thread does, not the first,
+    so that everything the test is about to assert has already landed;
+    `pump` is for the waits that have to keep a Tk window turning while
+    they wait. Answers whether it got there, for the assert to say so."""
+    end = time.monotonic() + seconds
+    while True:
+        if pump is not None:
+            pump()
+        if ready():
+            return True
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.01)
+
+
+class _StoppedClock:
+    """`time`, with monotonic() standing still — for the product's own
+    throttles.
+
+    Some of what the app does is "once per N seconds of wall clock", and
+    a test that presses twice in a row and expects ONE answer is racing
+    the scheduler: two calls a microsecond apart in the open can be two
+    seconds apart inside a suite of seven hundred, and then the throttle
+    has expired and the test is measuring the machine. Patched over a
+    module's `time` for the few lines that matter, this holds the clock
+    where it was; everything else on the module still reaches the real
+    one. The throttle's own number is never touched — a throttle forced
+    to 0.0 to make a test pass is not the same feature."""
+
+    def __init__(self, now: float | None = None) -> None:
+        self._now = time.monotonic() if now is None else now
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+def _threads_now() -> str:
+    """Where every other live thread is standing right now, in one line.
+
+    For a wait that gave up: the deadline says WHAT did not happen, this
+    says where the thread that owed it to us had got to. Without it a
+    timeout inside a suite of seven hundred is a name and nothing else —
+    which is exactly what the model unload left behind on 2026-09-22."""
+    import traceback
+    frames = sys._current_frames()
+    here = threading.current_thread().ident
+    out = []
+    for t in threading.enumerate():
+        if t.ident == here or t.ident not in frames:
+            continue
+        stack = traceback.extract_stack(frames[t.ident])
+        where = " < ".join(f"{Path(f.filename).name}:{f.lineno} {f.name}"
+                           for f in reversed(stack[-4:]))
+        out.append(f"{t.name} @ {where}")
+    return " || ".join(out) or "(no other threads)"
+
+
 class _FakeRaw:
     """What net._connect hands back when a test stands in for the wire:
     the shape of an http.client response — status, headers, read(),
@@ -3843,9 +3917,8 @@ saved = []
 d = overlay.StatusDot(x=430, y=260, on_change=saved.append)
 d.on_click = lambda: clicks.append(1)
 d.start()
-for _ in range(150):
-    if d.rect is not None:
-        break
+end = time.monotonic() + 10          # a deadline, not 150 turns: the dot
+while d.rect is None and time.monotonic() < end:   # maps on its own thread
     time.sleep(0.02)
 assert d.rect is not None, "the flat dot never mapped"
 assert d.rect[:2] == (430, 260), ("a saved position was ignored", d.rect)
@@ -3853,9 +3926,8 @@ box = d.rect[2] - d.rect[0]
 assert 10 < box < 40, ("the fallback dot changed size", box)
 # and home again, live, with no restart
 d.to_corner()
-for _ in range(150):
-    if d.rect[:2] != (430, 260):
-        break
+end = time.monotonic() + 10
+while d.rect[:2] == (430, 260) and time.monotonic() < end:
     time.sleep(0.02)
 assert d.rect[:2] != (430, 260), "Back to the corner did not move it"
 assert saved == [{"x": -100000, "y": -100000}], saved
@@ -7556,10 +7628,10 @@ def test_a_crash_takes_the_box_down_with_it() -> None:
         worker.start()
         app._looking_up.set()
         app.lookup_queue.put((fake.focus, (700, 400)))
-        for _ in range(300):
-            if app.popup.hidden:
-                break
-            time.sleep(0.01)
+        # _looking_up is cleared in the worker's finally, after the box is
+        # down and the cue has played: the end of the whole turn
+        assert _until(lambda: not app._looking_up.is_set()), \
+            "the lookup worker never came back from the crash"
 
         assert app.popup.hidden, \
             "the box was left up saying it was still thinking"
@@ -12850,7 +12922,8 @@ import visual_qa as vq
 
 def settle(win):
     """The copy is on a thread and reports through the card's queue."""
-    for _ in range(200):
+    end = time.monotonic() + 10          # a deadline, not 200 turns
+    while time.monotonic() < end:
         win._drain()
         win.root.update()
         if win.status.cget("text"):
@@ -20669,17 +20742,13 @@ def test_the_general_page_holds_the_two_corners_and_the_button_together(
             assert "bottom-right corner" in board.parts["dot_where"].cget(
                 "text")
             board._move_dot()
-            for _ in range(60):
-                board.root.update()
-                if sent:
-                    break
-                time.sleep(0.02)
+            assert _until(lambda: bool(sent), pump=board.root.update), \
+                "the window never sent the move"
             assert sent == [("dot", {"do": "move"})], sent
-            for _ in range(60):               # the reply comes back on the
-                board.root.update()           # pump, 80 ms at a time
-                if board._dot_waiting:
-                    break
-                time.sleep(0.02)
+            # the reply comes back on the pump, 80 ms at a time
+            assert _until(lambda: bool(board._dot_waiting),
+                          pump=board.root.update), \
+                "the window is not waiting"
             assert board._dot_waiting > 0, "the window is not waiting"
             assert board.root.state() == "withdrawn", \
                 "the desk did not disappear"
@@ -20810,12 +20879,9 @@ def test_restart_stops_the_app_waits_for_it_to_go_starts_it_and_then_reopens_the
             assert board._pushing == "restart"
             assert board._push_said[dash.TRUNK] == \
                 "Restarting — the app takes about 25 seconds to load."
-            for _ in range(60):
-                board.root.update()
-                if board._pushing is None:
-                    break
-                time.sleep(0.02)
-            assert board._pushing is None, "the restart never came back"
+            assert _until(lambda: board._pushing is None,
+                          pump=board.root.update), \
+                "the restart never came back"
             assert board._push_said[dash.TRUNK] == "It would not stop."
             assert not board.closing and board.root.winfo_exists(), \
                 "a failed restart took the window away"
@@ -20823,7 +20889,8 @@ def test_restart_stops_the_app_waits_for_it_to_go_starts_it_and_then_reopens_the
 
             dash.restart_app = lambda *a, **k: {"ok": True, "said": ""}
             board._restart_all()
-            for _ in range(60):
+            end = time.monotonic() + 10.0     # not _until: the pump itself
+            while time.monotonic() < end:     # dies here, and that is the point
                 try:
                     board.root.update()
                 except Exception:         # the root is gone: that is the
@@ -22827,7 +22894,7 @@ def test_the_awake_section_is_in_the_real_config_and_bounded() -> None:
                     "screens_off_again_s", "keep_screens_off_s",
                     "vitals_minutes"}, keys
     assert sections["awake"].help, "the section has no help text"
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         p = Path(d) / "config.toml"
         p.write_text('[awake]\nscreens_off_again_s = 999\n', "utf-8")
         try:
@@ -22867,8 +22934,13 @@ class _FakePowercfg:
         return 1, "unknown"
 
 
-def _awake_until(cond, timeout: float = 2.0) -> None:
-    """The engine hands its broadcasts to threads; wait for one, briefly."""
+def _awake_until(cond, timeout: float = 10.0) -> None:
+    """The engine hands its broadcasts to threads; wait for one. The
+    deadline was two seconds until 2026-09-22 — the same budget the model
+    unload missed in the 1.0.4 run — and every caller here waits for
+    something to ARRIVE and then asserts that it did, so a longer one is
+    not a longer run, only a failure that means what it says. See
+    _until()."""
     deadline = time.monotonic() + timeout
     while not cond() and time.monotonic() < deadline:
         time.sleep(0.02)
@@ -22888,7 +22960,7 @@ def test_the_hold_goes_up_on_a_thread_and_comes_down_on_release() -> None:
         calls.append((flags, threading.current_thread().name))
         return 0x80000000            # "previously: continuous only"
     sent: list[int] = []
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(setter=setter),
                                sender=lambda s: sent.append(s) or True,
@@ -22931,7 +23003,7 @@ def test_the_screens_go_off_and_come_back_without_touching_the_hold() -> None:
 
     calls: list[int] = []
     sent: list[int] = []
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda f: calls.append(f) or 0x80000000),
@@ -23055,7 +23127,7 @@ def test_the_screens_off_write_the_vitals_on_the_way_in_and_out() -> None:
     def fake_vitals() -> str:
         reads.append(time.monotonic())
         return f"fake vitals {len(reads)}"
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 0x80000000),
@@ -23130,7 +23202,7 @@ def test_the_vitals_watch_spans_the_hold_and_the_alarms_shout() -> None:
     def fake_vitals() -> str:
         reads.append(len(reads))
         return "fake vitals"
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 0x80000000),
@@ -23170,7 +23242,7 @@ def test_the_screens_stay_off_after_input_lights_them() -> None:
     def sender(state: int) -> bool:
         sent.append((state, time.monotonic()))
         return True
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 0x80000000),
@@ -23230,7 +23302,7 @@ def test_a_hold_refused_by_windows_is_reported_not_pretended() -> None:
 
     import awake as awake_mod
 
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), None,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 0),
@@ -23262,7 +23334,7 @@ def test_the_hold_pins_the_timers_and_puts_them_back() -> None:
     cfg = dataclasses.replace(config_mod.AwakeConfig(), pin_timeouts=True,
                               screens_off_again_s=0)
     fake = _FakePowercfg(standby=30, hibernate=0)
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         eng = awake_mod.Engine(Path(d), cfg,
                                hold_factory=lambda: awake_mod.Hold(
                                    setter=lambda flags: 1),
@@ -23287,7 +23359,7 @@ def test_a_leftover_awake_marker_is_recovered_at_the_next_start() -> None:
     the marker, removes it, and writes what it did."""
     import awake as awake_mod
 
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         assert awake_mod.recover(Path(d)) is None, "nothing to recover"
         fake = _FakePowercfg(standby=0, hibernate=0)      # as it was left
         (Path(d) / awake_mod.STATE_NAME).write_text(json.dumps(
@@ -23319,7 +23391,7 @@ def test_the_screens_command_goes_through_the_control_channel() -> None:
 
     assert 'self.awake.hold(by="start")' in inspect.getsource(main_mod.App.start)
     assert "self.awake.release()" in inspect.getsource(main_mod.App.stop)
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
         app = main_mod.App.__new__(main_mod.App)
         app._note = ""
         sent: list[int] = []
@@ -23910,7 +23982,7 @@ def test_reminders_repeat_while_unread_and_stop_at_dismiss() -> None:
                                                  coalesce_s=0),
                             cue=cue.append, card=card)
         eng.receive({"source": "claude-code", "title": "one"})
-        _awake_until(lambda: len(cue) == 3, 2.0)
+        _awake_until(lambda: len(cue) == 3)
         assert len(cue) == 3, cue
         time.sleep(0.2)
         assert len(cue) == 3, "no fourth reminder"
@@ -23963,7 +24035,7 @@ def test_notify_holds_a_finish_until_its_session_goes_quiet() -> None:
         assert eng.state()["held"] == 1 and eng.state()["unread"] == 1
         log_text = (Path(d) / "notify.log").read_text("utf-8")
         assert "HELD #1" in log_text, log_text
-        _awake_until(lambda: card.shown, 2.0)
+        _awake_until(lambda: card.shown)
         assert len(card.shown) == 1, card.shown
         assert card.shown[0]["title"] == "Claude finished"
         assert cue == [], "a finish never rings under interrupt = input"
@@ -24059,7 +24131,7 @@ def test_notify_interrupt_decides_who_may_ring_and_who_is_reminded() -> None:
         assert cue == [], "a quiet finish is never reminded"
         eng.receive({"source": "claude-code", "kind": "input"})
         assert cue == ["notify"], cue
-        _awake_until(lambda: len(cue) == 3, 2.0)
+        _awake_until(lambda: len(cue) == 3)
         assert len(cue) == 3, cue
         log_text = (Path(d) / "notify.log").read_text("utf-8")
         assert "REMINDED 2/2" in log_text, log_text
@@ -24161,7 +24233,7 @@ def test_notify_says_a_finish_in_one_sentence() -> None:
         assert reply["held"] is True and reply["summary"] == "pending", reply
         assert eng.live() == [] and card.shown == [], "held is off the screen"
         assert eng.store.unread() == 1 and eng.state()["held"] == 1
-        _awake_until(lambda: card.shown, 2.0)
+        _awake_until(lambda: card.shown)
         assert len(card.shown) == 1, card.shown
         shown = card.shown[0]
         assert shown["body"] == sentence and shown["raw"] == "Done. walk walk", shown
@@ -24223,7 +24295,7 @@ def test_notify_summary_that_never_comes_leaves_the_old_card() -> None:
                              "session": "S1", "body": "Done.",
                              "text": "Done. All green."})
         assert reply["held"] is True, reply
-        _awake_until(lambda: card.shown, 2.0)
+        _awake_until(lambda: card.shown)
         assert card.shown[0]["body"] == "Done." and "raw" not in card.shown[0]
         log_text = (Path(d) / "notify.log").read_text("utf-8")
         assert "SUMMARY #1 | none (cannot reach Groq at x (timed out)) | 0." in log_text, log_text
@@ -24232,7 +24304,7 @@ def test_notify_summary_that_never_comes_leaves_the_old_card() -> None:
         fake.raise_ = True
         eng.receive({"source": "claude-code", "kind": "done", "session": "S2",
                      "body": "Two.", "text": "Two. Also green."})
-        _awake_until(lambda: card.shown and card.shown[-1]["id"] == 2, 2.0)
+        _awake_until(lambda: card.shown and card.shown[-1]["id"] == 2)
         assert card.shown[-1]["body"] == "Two." and "raw" not in card.shown[-1], card.shown[-1]
         log_text = (Path(d) / "notify.log").read_text("utf-8")
         assert "SUMMARY #2 | none (RuntimeError: the fake fell over)" in log_text, log_text
@@ -24249,7 +24321,7 @@ def test_notify_summary_that_never_comes_leaves_the_old_card() -> None:
                               "session": "S1", "body": "Two.", "text": "Two."})
         assert first["id"] == 1 and second["id"] == 2 and second["held"] is True
         assert eng.state()["held"] == 1, "one slot per session"
-        _awake_until(lambda: card.shown, 2.0)
+        _awake_until(lambda: card.shown)
         time.sleep(0.2)
         assert len(card.shown) == 1 and card.shown[0]["id"] == 2, card.shown
         assert card.shown[0]["body"] == "המשפט"
@@ -24269,7 +24341,7 @@ def test_notify_summary_that_never_comes_leaves_the_old_card() -> None:
                             card=card, summary=fake)
         eng.receive({"source": "claude-code", "kind": "done", "session": "S1",
                      "body": "One.", "text": "One."})
-        _awake_until(lambda: card.shown, 2.0)
+        _awake_until(lambda: card.shown)
         assert len(card.shown) == 1 and card.shown[0]["body"] == "המשפט"
         log_text = (Path(d) / "notify.log").read_text("utf-8")
         assert log_text.index("SUMMARY #1 |") < log_text.index("HELD #1 |") \
@@ -40250,10 +40322,9 @@ def test_no_account_no_dictation_until_a_sign_in():
         assert app._lock in sb.SIGNED_OUT_HOOKS
         n = len(said)
         assert app._account_command("anonymous")["ok"]
-        for _ in range(60):
-            if not app.machine.paused:
-                break
-            time.sleep(0.05)
+        assert _until(lambda: not app.machine.paused
+                      and "listening again" in said[n:]), \
+            ("the sign-in thread never finished", app.machine.paused, said[n:])
         assert not app.machine.paused and not app.locked()
         assert any(s.startswith("signed in") for s in said[n:]) and "listening again" in said
         sb.sign_out()
@@ -40474,10 +40545,18 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
         app.machine.handle("up", VK_RCTRL, injected=False)
         reply = app.control_command("unload", {})
         assert reply["ok"], reply
-        for _ in range(100):
-            if app._model_state == "off":
-                break
-            time.sleep(0.02)
+        # the sentence is the last thing _unload_work does: waiting for
+        # it means the state, the stub and the cards are all in already
+        # Sixty seconds and not the usual ten: measured 2026-09-22, this
+        # thread takes 0.02 s inside a full run — and once in ten runs the
+        # whole process stalls for longer than ten seconds at a time (the
+        # same process that sometimes dies of Tcl_AsyncDelete around test
+        # 680). A wait that gives up here is saying the machine is ill,
+        # so it gives it room and then says where the thread was standing.
+        assert _until(lambda: bool(said) and said[-1].startswith("model off"),
+                      60.0), \
+            ("the unload thread never finished", app._model_state,
+             said[-1:], _threads_now())
         assert app._model_state == "off"
         assert isinstance(app.transcriber, OffTranscriber) and app.transcriber.name == "off"
         assert calls == ["study.stop", "review.stop"], calls
@@ -40486,10 +40565,16 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
         assert app._study is None and app._review is None
         assert states[-1] == "paused" and said[-1].startswith("model off")
         assert app.machine.dictation_off and not app.machine.paused
-        # the hold key: the sentence, once per press
-        app.machine.handle("down", VK_RCTRL, injected=False)
-        app.machine.handle("down", VK_RCTRL, injected=False)     # auto-repeat
-        app.machine.handle("up", VK_RCTRL, injected=False)
+        # the hold key: the sentence, once per press. _on_dictation_refused
+        # keeps it quiet for two seconds of WALL CLOCK, so the clock is held
+        # still across the press rather than raced against: inside a suite
+        # of seven hundred, two key-downs written one after the other can
+        # land further apart than that, and then the auto-repeat gets a
+        # sentence of its own and the count is 2.
+        with _patched(main_mod, "time", _StoppedClock()):
+            app.machine.handle("down", VK_RCTRL, injected=False)
+            app.machine.handle("down", VK_RCTRL, injected=False)  # auto-repeat
+            app.machine.handle("up", VK_RCTRL, injected=False)
         assert said.count(App.MODEL_OFF_WORDS) == 1, said
         # the phone
         try:
@@ -40509,10 +40594,9 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
         # and back
         reply = app.control_command("load", {})
         assert reply["ok"] and "25" in reply["message"], reply
-        for _ in range(100):
-            if app._model_state == "on":
-                break
-            time.sleep(0.02)
+        assert _until(lambda: said[-1] == "listening again", 60.0), \
+            ("the load thread never finished", app._model_state, said[-1],
+             _threads_now())
         assert app._model_state == "on" and app.transcriber.name == "local"
         assert calls[-2:] == ["build", "dot:show"] and "start" not in calls, calls
         # Start loads like a process start: usable when the Hebrew model
@@ -40526,10 +40610,10 @@ def test_unload_model_keeps_the_process_and_load_model_brings_it_back():
     with _patched(main_mod, "get_transcriber",
                   lambda cfg, hotwords=None, **kw: (_ for _ in ()).throw(RuntimeError("no GPU today"))):
         assert app.control_command("load", {})["ok"]
-        for _ in range(100):
-            if app._model_state == "off" and "did not load" in said[-1]:
-                break
-            time.sleep(0.02)
+        assert _until(lambda: app._model_state == "off"
+                      and "did not load" in said[-1], 60.0), \
+            ("the failed load never finished", app._model_state, said[-1],
+             _threads_now())
         assert app._model_state == "off" and "no GPU today" in said[-1], said[-1]
     # NO dot while the model is off, whatever asks for "ready" (a pause
     # ending, a worker finishing) — his rule: "no dot in the corner if
@@ -40805,21 +40889,14 @@ def test_account_command_over_the_pipe():
         with _consented("account"):
             reply = app._account_command("anonymous")
             assert reply["ok"], reply
-            for _ in range(50):
-                if sb.signed_in():
-                    break
-                time.sleep(0.05)
-            assert sb.signed_in(), "the sign-in thread did not finish"
+            assert _until(sb.signed_in), "the sign-in thread did not finish"
             assert app._account_command("sync")["ok"]
             assert sb._wake.is_set()
             sb._wake.clear()
             reply = app._account_command("signout")
             assert reply["ok"]
-            for _ in range(50):
-                if not sb.signed_in():
-                    break
-                time.sleep(0.05)
-            assert not sb.signed_in()
+            assert _until(lambda: not sb.signed_in()), \
+                "the sign-out thread did not finish"
         with _patched(sb, "PROJECT_REF", ""):
             assert "not configured" in app._account_command("google")["error"]
 

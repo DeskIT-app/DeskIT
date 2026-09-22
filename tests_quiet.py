@@ -135,6 +135,11 @@ def run_hidden(command: str, cwd: Path, desktop: str = DESKTOP) -> int:
 
 
 _FAIL = re.compile(r"^  FAIL  (test_\w+)", re.M)
+#: every test that got as far as saying what it did, in order
+_REPORTED = re.compile(r"^  (?:PASS|FAIL)  (test_\w+)", re.M)
+#: the last words of tests.py and of dev\tests_ops.py — one or the other
+#: ends every run that ended at all
+_VERDICT = re.compile(r"^(?:all tests passed|\d+ FAILED: )", re.M)
 
 
 def _read(path: Path) -> str:
@@ -142,6 +147,35 @@ def _read(path: Path) -> str:
         return path.read_text("utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _died(text: str, code: int, what: str) -> str:
+    """The sentence for a run that never reached its own last line — or
+    "" for one that did.
+
+    A suite ends by saying so: "all tests passed", or "N FAILED: …".
+    A transcript with neither is a process that DIED mid-run, and the
+    tests after it did not fail — they never ran at all. The one that
+    does this here is Tcl_AsyncDelete ("async handler deleted by the
+    wrong thread"), which does not raise: it aborts the interpreter where
+    it stands.
+
+    Until 2026-09-22 this file read such a run as a CLEAN one. It looks
+    for FAIL lines, a dead run prints none, so none were found — and it
+    said "all tests passed (quietly)" and exited 0 over a suite that had
+    got two thirds of the way (680 of 945, twice in three runs that
+    evening). The nightly believed it and filed nothing. A filter nobody
+    can see is a lie, which is what nightly.py says about KNOWN_FLAKES
+    and is just as true here."""
+    if _VERDICT.search(text):
+        return ""
+    ran = _REPORTED.findall(text)
+    where = (f"after {len(ran)} test(s), the last to speak was {ran[-1]}"
+             if ran else "before the first test said anything")
+    why = ("Tcl_AsyncDelete: a Tk interpreter buried by the wrong thread"
+           if "Tcl_AsyncDelete" in text else f"exit code {code}")
+    return (f"{what} DIED {where} — {why}. The tests after it did not "
+            f"fail; they never ran.")
 
 
 def main(argv=None) -> int:
@@ -167,10 +201,14 @@ def main(argv=None) -> int:
     # 1. everything that can run unseen, unseen: the product suite without
     #    the sixteen, then the owner's suite (all of it — nothing there
     #    needs the screen), each in a process of its own
-    run_hidden(f'"{python}" tests.py --no-screen > "{hidden_out}" 2>&1',
-               HERE)
-    run_hidden(f'"{python}" {OPS} > "{ops_out}" 2>&1', HERE)
+    product_code = run_hidden(
+        f'"{python}" tests.py --no-screen > "{hidden_out}" 2>&1', HERE)
+    ops_code = run_hidden(f'"{python}" {OPS} > "{ops_out}" 2>&1', HERE)
     product_text, ops_text = _read(hidden_out), _read(ops_out)
+    # Before anything is counted: did each of them get to the end at all?
+    died = [line for line in (_died(product_text, product_code, "tests.py"),
+                              _died(ops_text, ops_code, str(OPS)))
+            if line]
     hidden_text = product_text + f"\n---- {OPS} ----\n" + ops_text
     product_failed = _FAIL.findall(product_text)
     ops_failed = _FAIL.findall(ops_text)
@@ -218,8 +256,13 @@ def main(argv=None) -> int:
     if hidden_only:
         print(f"passed in the open after failing hidden — they need the "
               f"screen, add them to NEEDS_SCREEN: {', '.join(hidden_only)}")
+    for line in died:
+        print(f"\n{line}")
     if open_failed:
         print(f"\n{len(open_failed)} FAILED: {', '.join(open_failed)}")
+        code = 1
+    elif died:
+        print("\nNOT a clean run: it never finished (see above)")
         code = 1
     else:
         print("\nall tests passed (quietly)")
