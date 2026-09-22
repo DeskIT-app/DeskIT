@@ -34301,6 +34301,33 @@ def test_winget_manifest_fields():
     assert "SHA-256" not in log.split(f"## {version.VERSION}")[1], "the fixed block is the workflow's"
 
 
+def test_the_release_notes_are_english_only():
+    """CHANGELOG.md carries no Hebrew, in any section (the owner,
+    2026-09-22: "change all the releases so they are only in English, I
+    don't want any Hebrew in them").
+
+    Until that day every section opened with his Hebrew paragraph and
+    repeated it in English, and the workflow copied the pair onto the
+    release page. The Hebrew was removed from this file and from the
+    five pages already on GitHub, and the plan's 11.11 step 2 says
+    English only. The guide is NOT covered by this — docs\\he is still
+    the primary text; it is the release notes alone that are one
+    language. The first person is the other half of the rule (his word
+    on 1.0.2's notes, 2026-09-21), and a section that says "the owner"
+    is writing about him rather than as him."""
+    log = (REPO / "CHANGELOG.md").read_text("utf-8")
+    hebrew = {c for c in log if "֐" <= c <= "׿"}
+    assert not hebrew, \
+        f"CHANGELOG.md has Hebrew in it: {''.join(sorted(hebrew))}"
+    for section in log.split("\n## ")[1:]:
+        heading, body = section.split("\n", 1)
+        if not re.match(r"^\d+\.\d+\.\d+\s*$", heading):
+            continue        # "The builds of 2026-09-19", not a release
+        for word in ("the owner", "his word", "he asked"):
+            assert word not in body.lower(), \
+                f"{heading.strip()} writes about the owner instead of as him: {word!r}"
+
+
 # ------------------------------------------- the wizard's pages (PR 20)
 #
 # DISTRIBUTION_PLAN.md 9.2 and docs/distplan/research-onboarding.md: seven
