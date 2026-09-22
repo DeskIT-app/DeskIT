@@ -37928,7 +37928,7 @@ def test_entry_points_put_their_own_folder_on_sys_path():
     names = sorted(p.name for p in points)
     assert names == ["dashboard.py", "deskit.pyw", "firstrun.py", "lookup.py",
                      "main.py", "migrate.py", "models.py", "notify_hook.py",
-                     "packs.py"], names
+                     "packs.py", "webdesk.py"], names
     offenders = []
     for path in points:
         if path.name in _ENTRY_POINT_EXCUSED:
@@ -42239,6 +42239,72 @@ def test_a_bead_on_the_map_puts_the_dot_in_that_corner_and_ends_the_move() -> No
         assert (app.dot.x, app.dot.y) == before and len(written) == count
     finally:
         capture_mod.monitors, overlay_mod._monitor_work = real_mons, real_work
+
+
+# ------------------------------------------------ the web desk (webdesk.py)
+# The spike of 2026-09-22. The venv this suite runs in has no pywebview —
+# on purpose — so these are the parts that must hold without it; the
+# window itself is proved by dev\web_shot.py under the embeddable python.
+
+
+def test_webdesk_imports_nothing_of_webview_and_guards_its_doors():
+    """Importing webdesk.py pulls in nothing of pywebview, pythonnet or
+    their chain (every product module is imported by the suite, and the
+    MSHTML fallback happens AT the import of pywebview's winforms half);
+    precheck() answers from the registry without raising; scrub_env()
+    takes every WEBVIEW2_/PYWEBVIEW_/PYTHONNET_ name — any case — and
+    pins netfx; the page may call three names and the Api has no other
+    public attribute (pywebview's dispatcher getattr's dotted paths);
+    status() never hands a page the phone link; send() refuses a verb
+    outside its allowlist before the pipe is asked; every start carries
+    the four flags the netlog proved (0 external hosts, 0 sockets), and
+    never --allow-file-access-from-files."""
+    import subprocess
+    probe = ("import sys, webdesk; print(sorted(m for m in sys.modules if "
+             "m.split('.')[0] in ('webview', 'clr', 'pythonnet', 'clr_loader', "
+             "'bottle', 'proxy_tools', 'System')))")
+    out = subprocess.run([sys.executable, "-c", probe], cwd=str(REPO),
+                         capture_output=True, text=True, timeout=120,
+                         creationflags=0x08000000)
+    assert out.returncode == 0 and out.stdout.strip() == "[]", \
+        (out.stdout, out.stderr[-600:])
+    import webdesk
+    pre = webdesk.precheck()
+    assert isinstance(pre.ok, bool) and isinstance(pre.netfx_release, int)
+    assert pre.ok == (not pre.why), pre
+    env = {"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS": "--remote-debugging-port=9222",
+           "webview2_user_data_folder": "x", "PYWEBVIEW_GUI": "mshtml",
+           "PYTHONNET_RUNTIME": "coreclr", "PATH": "kept"}
+    gone = webdesk.scrub_env(env)
+    assert gone == sorted(["WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "PYTHONNET_RUNTIME",
+                           "PYWEBVIEW_GUI", "webview2_user_data_folder"]), gone
+    assert env == {"PATH": "kept", "PYTHONNET_RUNTIME": "netfx"}, env
+    assert webdesk.CALLS == ("send", "status", "ping")
+    public = sorted(n for n in dir(webdesk.Api) if not n.startswith("_"))
+    assert public == ["ping", "send", "status"], public
+    import control
+    asked: list = []
+
+    def fake_send(command, timeout_ms=2000, **args):
+        asked.append(command)
+        return {"ok": True, "state": "idle", "phone": {"url": "http://x/?t=secret"}}
+
+    with _patched(control, "send", fake_send):
+        api = webdesk.Api(allow={"status"})
+        assert "phone" not in api.status()
+        assert "phone" not in api.send("status")
+        refused = api.send("quit")
+        assert refused["ok"] is False and "quit" in refused["error"], refused
+        assert asked == ["status", "status"], asked
+        assert api.ping() == {"ok": True}
+    args = webdesk.browser_args()
+    for flag in ("msSmartScreenProtection", "--disable-background-networking",
+                 "--disable-component-update", '--host-resolver-rules="MAP * ~NOTFOUND"',
+                 "--no-proxy-server"):
+        assert flag in args, (flag, args)
+    assert "--allow-file-access-from-files" not in args
+    assert paths._LAYOUTS["WEBVIEW_DIR"] == ("cache/webview", "cache/webview")
+    assert webdesk.ORIGIN == "https://deskit.example"
 
 
 if __name__ == "__main__":

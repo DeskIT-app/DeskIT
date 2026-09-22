@@ -11,6 +11,9 @@ supabase/               export-ignore
 packaging/              export-ignore
 android/                export-ignore
 .github/                export-ignore
+# the web desk's page sources, npm lock and toolchain: the product gets
+# the BUILT pages (paths.WEB_DIST), never the tree that makes them
+web/                    export-ignore
 .claude/                export-ignore
 .agents/                export-ignore
 tests*.py               export-ignore

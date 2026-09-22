@@ -1,0 +1,104 @@
+/* The four Rubik files in the repo's fonts\ folder are ONE variable font
+   (AGENTS.md: they all report weight 300); the browser pins the wght
+   axis itself from font-weight, so one face covers every weight. Vite
+   copies it into dist/assets at build time — nothing is fetched. */
+@font-face {
+  font-family: "Rubik";
+  src: url("../../fonts/Rubik.ttf") format("truetype");
+  font-weight: 300 900;
+  font-style: normal;
+  font-display: block;
+}
+
+/* LAMPLIGHT, from skin/palette.py — the same numbers, not a new palette. */
+:root {
+  --bg: #14110c;
+  --pane: #1c1813;
+  --card: #24201a;
+  --line: #3a342a;
+  --fg: #f1ece2;
+  --dim: #b2a896;
+  --faint: #7e7564;
+  --accent: #e3a63c;
+  --accent-soft: #332711;
+  --accent-text: #f0ba5c;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: "Rubik", "Segoe UI", sans-serif;
+  font-size: 15px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+.desk { display: flex; flex-direction: column; height: 100%; }
+
+.bar {
+  height: 56px;
+  flex: 0 0 56px;
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--line);
+  background: var(--pane);
+}
+
+.title { margin: 0; font-size: 18px; font-weight: 600; color: var(--accent-text); }
+
+.places { display: flex; gap: 18px; }
+
+/* The same weight whether on or off: a bold word is wider, and a bar
+   whose words change width is the jump the Tk bar has. */
+.place {
+  color: var(--dim);
+  text-decoration: none;
+  font-weight: 500;
+  padding: 6px 2px;
+  border-bottom: 2px solid transparent;
+}
+.place.on { color: var(--fg); border-bottom-color: var(--accent); }
+
+main { flex: 1; overflow: auto; }
+
+.view { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px 20px;
+}
+.label { color: var(--faint); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+.value { font-size: 22px; font-weight: 500; margin-top: 6px; }
+.detail { color: var(--dim); font-size: 13px; margin-top: 4px; }
+
+.lines { display: flex; gap: 16px; }
+.line {
+  flex: 1;
+  margin: 0;
+  padding: 14px 16px;
+  background: var(--accent-soft);
+  border-radius: 10px;
+  line-height: 1.5;
+}
+.line.he { font-size: 17px; }
+
+.said { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.row {
+  display: flex;
+  gap: 16px;
+  padding: 10px 14px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.at { color: var(--faint); font-variant-numeric: tabular-nums; }
+.text { flex: 1; }

@@ -154,3 +154,9 @@ questions.lock
 
 # the installer's pictures, drawn at build time (dev/make_wizard_images.py)
 packaging/wizard/
+
+# The web desk (webdesk.py, 2026-09-22): web\ holds the page SOURCES and
+# the npm lock; what npm installs and what `npm run build` makes are
+# rebuilt from those two, never committed.
+/web/node_modules/
+/web/dist/
