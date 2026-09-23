@@ -73,9 +73,14 @@ jobs:
           python -m pip install requests
           python -m pip check
 
+      # tests.py --no-screen through dev/ci_suite.py: a test that fails and
+      # then passes on ONE second try in a fresh process is a timing loss
+      # on this shared VM, and becomes a "Flaky on the CI runner" warning on
+      # the run instead of a failure e-mail (14 of the last 100 runs failed,
+      # nearly each on a different timing test). Failing twice stays red.
       - name: Product suite
         shell: pwsh
-        run: python tests.py --no-screen
+        run: python dev/ci_suite.py
 
       # The guide (chapter 14): the generated pages are fresh for this
       # defaults.toml, the trees are complete, every picture exists, the
