@@ -347,6 +347,217 @@ def test_the_rate_ladder_asks_wasapi_before_giving_up_on_16_khz() -> None:
     assert r.sample_rate == 16000, "the recording fell to the device's rate"
 
 
+def _dying_streams():
+    """Fake input streams that can die the way a WASAPI stream does:
+    `active` stays whatever it was and the callbacks simply stop. `gone`
+    set makes every open refuse, the headset unplugged."""
+    import recorder as rec
+
+    state = {"gone": False, "opened": [], "closed": 0}
+
+    class Stream:
+        device = 0
+
+        def __init__(self, **kw):
+            if state["gone"]:
+                _refuse(rec, "Device unavailable")
+            self.samplerate = kw.get("samplerate") or 16000
+            self.callback = kw["callback"]
+            self.active = False
+            state["opened"].append(self)
+
+        def start(self):
+            self.active = True
+
+        def stop(self):
+            self.active = False
+
+        def close(self):
+            state["closed"] += 1
+
+    return rec, state, Stream
+
+
+def test_a_dead_microphone_stream_says_so_and_opens_again() -> None:
+    """Audit 2026-09-23, A5. The stream died (2026-09-18 22:36, the
+    headset refusing its format after a restart) and PortAudio's WASAPI
+    host said nothing: no callback came, so every recording after it was
+    ACTIVE with zero chunks, end_pieces handed back None and main logged
+    "discarded: hit the inf s cap" — 23 times in three minutes, no cue, no
+    card, until the app was restarted. The recorder must say WHY a
+    recording is empty, notice the stream has stopped, and open it again
+    through the same ladder."""
+    rec, state, Stream = _dying_streams()
+    real = rec.sd.InputStream
+    rec.sd.InputStream = Stream
+    try:
+        r = rec.Recorder(16000, None, 400, lambda: None)
+        r.start_stream()
+        first = state["opened"][-1]
+        assert not r.stalled(), "a stream that has just started is alive"
+
+        # A live stream: a buffer arrives, the recording has it.
+        r.begin()
+        first.callback(np.full((1600, 1), 900, dtype=np.int16), 1600,
+                       None, None)
+        wav, pieces, seconds = r.end_pieces()
+        assert wav is not None and r.last_empty is None, r.last_empty
+
+        # A tap too short for a buffer is a tap, not a dead microphone.
+        r.begin()
+        assert r.end_pieces()[0] is None
+        assert r.last_empty == rec.EMPTY_TAP, r.last_empty
+
+        # The stream dies silently: no more callbacks, `active` unchanged.
+        r._last_callback -= rec.STALL_S + 1
+        assert r.stalled(), "no buffer for longer than STALL_S"
+        r.begin()
+        r._began_at -= 1.0                   # the key held for a second
+        wav, pieces, seconds = r.end_pieces()
+        assert wav is None and pieces == [], (wav, pieces)
+        assert r.last_empty == rec.EMPTY_NO_AUDIO, \
+            f"a dead stream was reported as {r.last_empty!r}"
+
+        # PortAudio saying the stream stopped counts at once.
+        r._last_callback = time.monotonic()
+        first.active = False
+        assert r.stalled()
+
+        # Opened again through the same ladder, on the same callback: a
+        # recording that is running receives sound again.
+        r.begin()
+        r.reopen()
+        second = state["opened"][-1]
+        assert second is not first and second.active, state["opened"]
+        assert state["closed"] >= 1, "the dead stream was not closed"
+        assert not r.stalled()
+        second.callback(np.full((1600, 1), 900, dtype=np.int16), 1600,
+                        None, None)
+        wav, pieces, seconds = r.end_pieces()
+        assert wav is not None and abs(seconds - 0.1) < 0.01, seconds
+
+        # Nothing to open while the headset is out: reopen raises (the
+        # app retries on a timer), and works once it is back.
+        state["gone"] = True
+        try:
+            r.reopen()
+        except rec.sd.PortAudioError:
+            pass
+        else:
+            raise AssertionError("reopen with no device did not raise")
+        state["gone"] = False
+        r.reopen()
+        assert state["opened"][-1].active
+
+        # The overflow still says overflow, and a closed recorder is
+        # never reopened behind the app's back.
+        r._state = rec.OVERFLOWED
+        assert r.end_pieces()[0] is None
+        assert r.last_empty == rec.EMPTY_OVERFLOWED
+        r.close()
+        count = len(state["opened"])
+        r.reopen()
+        assert len(state["opened"]) == count and not r.stalled()
+    finally:
+        rec.sd.InputStream = real
+
+
+def test_a_dictation_lost_to_a_dead_stream_is_cued_carded_and_recovered(
+) -> None:
+    """The App's half of A5: a release with no audio in it plays the
+    error cue, leaves ONE card in plain words, and the stream is opened
+    again — on a timer while no input can be opened, and the card says
+    so; when it comes back, the card says that instead."""
+    import main as main_mod
+
+    rec, state, Stream = _dying_streams()
+
+    class Engine:
+        def __init__(self):
+            self.cards, self.dismissed = [], []
+
+        def receive(self, payload, **_kw):
+            self.cards.append(dict(payload))
+            return {}
+
+        def dismiss_source(self, source, **_kw):
+            self.dismissed.append(source)
+            return 1
+
+    cues: list[str] = []
+    real, was_beep, was_retry = (rec.sd.InputStream, main_mod.beep,
+                                 main_mod.MIC_RETRY_S)
+    rec.sd.InputStream = Stream
+    main_mod.beep = cues.append
+    main_mod.MIC_RETRY_S = 0.05
+    try:
+        r = rec.Recorder(16000, None, 400, lambda: None)
+        r.start_stream()
+        app = main_mod.App.__new__(main_mod.App)
+        app.recorder = r
+        app.notify = Engine()
+        app._roller = None
+        app._cap = 400.0
+        app._rec_at = time.monotonic() - 1.0
+        app._set_state = lambda *_a, **_k: None
+        app.dot = type("D", (), {"alarm": lambda s, v: None})()
+
+        # The stream dies; he holds the key for a second and lets go.
+        r._last_callback -= rec.STALL_S + 1
+        r.begin()
+        r._began_at -= 1.0
+        app._on_stop(None)
+        assert cues == ["error"], cues
+        assert _until(lambda: app.notify.cards and not app._mic_busy), \
+            "no card, or the reopen never finished"
+        (card,) = app.notify.cards
+        assert card["title"] == main_mod.MIC_WORDS["lost"][0], card
+        assert main_mod.MIC_BACK in card["body"], card
+        assert card["source"] == "microphone", card
+        assert len(state["opened"]) == 2 and not r.stalled(), \
+            "the stream was not opened again"
+
+        # Now the headset is OUT: the card says DeskIT keeps trying, and
+        # when it comes back that card is replaced by one that says so.
+        app.notify.cards.clear()
+        state["gone"] = True
+        r._last_callback -= rec.STALL_S + 1
+        r.begin()
+        r._began_at -= 1.0
+        app._on_stop(None)
+        assert _until(lambda: app.notify.cards), "no card while it is gone"
+        assert main_mod.MIC_TRYING in app.notify.cards[0]["body"], \
+            app.notify.cards
+        state["gone"] = False
+        assert _until(lambda: len(app.notify.cards) == 2
+                      and not app._mic_busy), app.notify.cards
+        assert app.notify.dismissed == ["microphone"], app.notify.dismissed
+        assert app.notify.cards[1]["title"] == \
+            "The microphone is connected again", app.notify.cards
+        assert state["opened"][-1].active and not r.stalled()
+
+        # A press on a stream that has stopped opens it again at once,
+        # quietly: the start cue and nothing else, no card — the
+        # release decides whether anything was lost.
+        cues.clear()
+        app.notify.cards.clear()
+        before = len(state["opened"])
+        r._last_callback -= rec.STALL_S + 1
+        app.cfg = type("C", (), {"max_seconds": 400.0,
+                                 "latch_hotkey": "", "local": None})()
+        app._vqa = app._problem_card = None
+        app._on_start(None)
+        assert _until(lambda: len(state["opened"]) > before
+                      and not app._mic_busy)
+        assert cues == ["start"] and app.notify.cards == [], \
+            (cues, app.notify.cards)
+        r.abort()
+    finally:
+        rec.sd.InputStream = real
+        main_mod.beep = was_beep
+        main_mod.MIC_RETRY_S = was_retry
+
+
 def test_config_loads_and_validates() -> None:
     cfg = config_mod.load(Path(__file__).parent / "defaults.toml")
     assert cfg.hotkey == "right ctrl"
@@ -1712,6 +1923,41 @@ def test_cleanup_collapses_restarted_phrases() -> None:
     # no repetition -> untouched
     assert clean("הוא אמר לי ש הוא בא") == "הוא אמר לי ש הוא בא"
     assert clean("זה בית ספר טוב") == "זה בית ספר טוב"
+
+
+def test_cleanup_keeps_phrases_that_say_a_word_twice_on_purpose() -> None:
+    """The stutter collapse swallowed ANY one- or two-character token
+    between two copies of a word and collapsed every exact pair, so real
+    phrases lost words before the repair pass or the sidecar saw them
+    (audit 2026-09-23, A4). Only a real stutter goes now: a Hebrew prefix
+    letter, or the start of the repeated word."""
+    from cleanup import clean
+
+    for text in (
+            "go through the failing tests one by one and fix them",
+            "add end to end coverage",
+            "do it step by step",
+            "set the grid to 2 x 2",
+            "the code is 4 4 7 1",
+            "the PIN is 1 1 2 2",
+            "call 050 050 tomorrow",
+            "לאט לאט זה עובד",
+            "פגישה פנים אל פנים",
+            "הוא לא הוא",
+            "לא לא, זה לא נכון",
+            "very very good",
+            "turn it on on Monday"):
+        assert clean(text) == text, (text, clean(text))
+    # the real stutters still go: a word restarted from its start, a
+    # prefix letter left behind, a function word doubled, a row of three
+    assert clean("אני רוצה רוצ רוצה את זה") == "אני רוצה את זה"
+    assert clean("תוסיף את את הקובץ") == "תוסיף את הקובץ"
+    assert clean("I I think so") == "I think so"
+    assert clean("the the file") == "the file"
+    assert clean("לאט לאט לאט") == "לאט"
+    assert clean("אני א אני אני הולך") == "אני הולך"
+    # a Latin fragment is a word, never a leftover
+    assert clean("the file x the file") == "the file x the file"
 
 
 def test_cleanup_never_empties_real_content() -> None:
@@ -14801,6 +15047,179 @@ def test_the_recorder_declares_its_streams_before_the_first_frame() -> None:
         # Nothing was recorded, so nothing is left behind.
         assert silent.finish(timeout=1) is None
         assert not (tmp / "a.mp4").exists(), "an empty clip left a stub file"
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_picture_and_the_sound_take_turns_writing_the_clip() -> None:
+    """Audit 2026-09-23, A14. A recording with sound — the default — has
+    two threads writing one mp4: clip-encode muxes the frames, clip-audio
+    the sound, and PyAV's mux copies into ONE packet buffer and writes
+    with the GIL released. Unlocked, the audit's paced runs aborted the
+    whole app (exit 3), left clips with no moov atom, and once died of
+    heap corruption inside mux. Every encode+mux takes Clip's lock now,
+    and the sound thread never sees a container whose resampler does not
+    exist yet.
+
+    Part one is a fake PyAV whose mux notices a second thread inside it —
+    deterministic, and it fails on the unlocked Clip. Part two is the real
+    PyAV, when this interpreter has it: a few hundred packets of each from
+    two threads, and the file must come back readable."""
+    import types
+
+    import capture as cap
+
+    seen = {"inside": 0, "most": 0, "h264": 0, "aac": 0, "half": 0}
+    guard = threading.Lock()
+
+    class Packet:
+        def __init__(self, kind):
+            self.kind = kind
+
+    class Stream:
+        def __init__(self, kind):
+            self.kind = kind
+            self.codec_context = types.SimpleNamespace()
+
+        def encode(self, frame=None):
+            return [Packet(self.kind)] if frame is not None else []
+
+    class Container:
+        def add_stream(self, codec, rate=None):
+            time.sleep(0.002)       # widen the half-built window
+            return Stream("h264" if codec == "libx264" else "aac")
+
+        def mux(self, packet):
+            with guard:
+                seen["inside"] += 1
+                seen["most"] = max(seen["most"], seen["inside"])
+            time.sleep(0.0003)
+            with guard:
+                seen["inside"] -= 1
+                seen[packet.kind] += 1
+
+        def close(self):
+            pass
+
+    class Frame:
+        @classmethod
+        def from_ndarray(cls, _array, **_kw):
+            return cls()
+
+    class Resampler:
+        def __init__(self, **_kw):
+            pass
+
+        def resample(self, frame):
+            return [frame]
+
+    fake = types.ModuleType("av")
+    fake.open = lambda _path, mode="w": Container()
+    fake.VideoFrame = fake.AudioFrame = Frame
+    fake_audio = types.ModuleType("av.audio")
+    fake_resampler = types.ModuleType("av.audio.resampler")
+    fake_resampler.AudioResampler = Resampler
+    fake.audio, fake_audio.resampler = fake_audio, fake_resampler
+    names = ("av", "av.audio", "av.audio.resampler")
+    saved = {n: sys.modules.get(n) for n in names}
+    sys.modules.update(zip(names, (fake, fake_audio, fake_resampler)))
+    try:
+        clip = cap.Clip(Path("unused.mp4"), (64, 48), 30, 23,
+                        audio_rate=48000)
+        sound = np.zeros(1024, dtype=np.int16)
+        picture = np.zeros((48, 64, 4), dtype=np.uint8)
+        start = threading.Barrier(2)
+        problems: list[BaseException] = []
+
+        def frames():
+            start.wait()
+            try:
+                for i in range(300):
+                    clip.add_frame(picture, i * 33)
+            except BaseException as e:            # noqa: BLE001
+                problems.append(e)
+
+        def audio():
+            start.wait()
+            end = time.monotonic() + 20
+            try:
+                while seen["aac"] < 300 and time.monotonic() < end:
+                    # the start-order race: open, but no resampler yet
+                    if clip._container is not None and clip._resampler is None:
+                        seen["half"] += 1
+                    clip.add_audio(sound)
+            except BaseException as e:            # noqa: BLE001
+                problems.append(e)
+
+        threads = [threading.Thread(target=frames),
+                   threading.Thread(target=audio)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        assert not problems, problems
+        assert seen["h264"] == 300 and seen["aac"] >= 300, seen
+        assert seen["most"] == 1, \
+            f"two threads were inside mux at once ({seen['most']})"
+        assert seen["half"] == 0, "the sound saw a half-built clip"
+        assert clip.close() == Path("unused.mp4")
+        clip.add_audio(sound)                    # after close: dropped
+        assert clip.close() is None
+    finally:
+        for n, module in saved.items():
+            if module is None:
+                sys.modules.pop(n, None)
+            else:
+                sys.modules[n] = module
+
+    try:
+        import av
+    except ImportError:
+        return
+    if getattr(av, "is_stub", None) is not None and av.is_stub():
+        return                    # an installed copy without the pack
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-clip-"))
+    try:
+        path = tmp / "both.mp4"
+        clip = cap.Clip(path, (64, 48), 30, 30, audio_rate=48000)
+        picture = np.zeros((48, 64, 4), dtype=np.uint8)
+        sound = (np.sin(np.arange(1024) / 8.0) * 3000).astype(np.int16)
+        start = threading.Barrier(2)
+        problems = []
+        pushed = [0]
+
+        def frames():
+            start.wait()
+            try:
+                for i in range(300):
+                    clip.add_frame(picture, i * 33)
+            except BaseException as e:            # noqa: BLE001
+                problems.append(e)
+
+        def audio():
+            start.wait()
+            end = time.monotonic() + 30
+            try:
+                while pushed[0] < 300 and time.monotonic() < end:
+                    live = clip._container is not None
+                    clip.add_audio(sound)
+                    pushed[0] += live
+            except BaseException as e:            # noqa: BLE001
+                problems.append(e)
+
+        threads = [threading.Thread(target=frames),
+                   threading.Thread(target=audio)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(60)
+        assert not problems, problems
+        assert pushed[0] >= 300, pushed
+        assert clip.close() == path
+        with av.open(str(path)) as done:
+            assert done.streams.video and done.streams.audio, done.streams
+            video = sum(1 for _ in done.decode(video=0))
+        assert video >= 250, f"{video} of 300 frames came back"
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

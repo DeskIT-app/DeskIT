@@ -10,6 +10,7 @@ import io
 import logging
 import math
 import threading
+import time
 import wave
 from typing import Callable
 
@@ -38,6 +39,35 @@ OVERFLOWED = "overflowed"
 # times the loudest floor and a fifth of the quietest speech.
 SILENT_PEAK = 0.02
 SILENT_AFTER_S = 10.0
+
+# A DEAD STREAM, which is not a dead microphone. The alarm above counts
+# SAMPLES inside the PortAudio callback, so it can only fire while
+# callbacks arrive; when the stream itself dies — a headset unplugged, a
+# driver resetting the endpoint, and PortAudio's WASAPI host often does
+# not report either as an error — no callback comes at all, the alarm
+# never fires, and every recording after it ended with zero chunks. main
+# read that as "hit the cap": on 2026-09-18 22:36 the stream did not
+# restart (AUDCLNT_E_UNSUPPORTED_FORMAT) and the next 23 dictations, three
+# minutes of them, were logged "discarded: hit the inf s cap" with no cue
+# and no card (audit 2026-09-23, A5). So the recorder now says WHY an
+# empty recording is empty (`last_empty`), notices a stream that stopped
+# calling back (`stalled`) and can open itself again (`reopen`).
+#
+# STALL_S: a running stream calls back every buffer — about 10 ms on
+# WASAPI shared mode, a few hundred at the very worst — whether anything
+# is being recorded or not (the meter reads every buffer). Two seconds
+# without one is a stream that has stopped, not a slow one.
+# NO_AUDIO_AFTER_S: a key held this long with not one buffer in it is a
+# dead stream; anything shorter is a tap that fell between two buffers.
+STALL_S = 2.0
+NO_AUDIO_AFTER_S = 0.5
+
+# Why the last recording came back empty — `Recorder.last_empty`.
+EMPTY_OVERFLOWED = "overflowed"      # past the cap, discarded on purpose
+EMPTY_NO_AUDIO = "no audio"          # held, and not one buffer arrived
+EMPTY_TAP = "tap"                    # too short for a buffer to land in
+EMPTY_EXCLUDED = "excluded"          # all of it was cut out (the ask card)
+EMPTY_NOT_RECORDING = "not recording"
 
 
 def wasapi_auto_convert():
@@ -73,10 +103,25 @@ class Recorder:
     _peak = 0.0
     _silent_told = False
     _sound_told = False
+    # The dead-stream fields (see STALL_S), defaulted the same way. A
+    # hand-built Recorder has no stream, and one with no stream is never
+    # called stalled — there is nothing to reopen.
+    _stream = None
+    _device: int | str | None = None
+    _wanted_rate = 16000
+    _began_at = 0.0
+    _last_callback = 0.0
+    _closed = False
+    last_empty: str | None = None
 
     def __init__(self, sample_rate: int, device: int | str | None,
                  max_seconds: float, on_overflow: Callable[[], None]):
         self._on_overflow = on_overflow
+        # What reopen() asks for again: the microphone and rate he chose,
+        # not the fallback this start may have ended up on.
+        self._device = device
+        self._wanted_rate = sample_rate
+        self._reopen_lock = threading.Lock()
         self._lock = threading.Lock()
         self._state = IDLE
         self._chunks: list[np.ndarray] = []
@@ -103,8 +148,27 @@ class Recorder:
         self._sound_told = False      # on_sound fired after it
         self.on_silent: Callable[[], None] | None = None
         self.on_sound: Callable[[], None] | None = None
+        self._stream = self._open_or_default(device, sample_rate)
+        self.sample_rate = int(self._stream.samplerate)
+        if self.sample_rate != sample_rate:
+            # Said out loud, because the one time this happened quietly it
+            # cost a day: a microphone that forced its own rate used to
+            # switch language detection off without a word, and English
+            # dictation came back as invented Hebrew. See
+            # local_whisper._decode_pcm, which no longer cares — this line
+            # is so the NEXT thing that only works at 16 kHz is found in
+            # the log rather than in the transcripts.
+            log.warning("the microphone refused %d Hz — recording at its "
+                        "own %d Hz instead", sample_rate, self.sample_rate)
+        self._default_max_samples = float(max_seconds * self.sample_rate)
+        self._max_samples = self._default_max_samples
+
+    def _open_or_default(self, device, sample_rate: int):
+        """_open on `device`, and on the system default input when that
+        microphone cannot be opened. The start and reopen() both come
+        through here."""
         try:
-            self._stream = self._open(device, sample_rate)
+            return self._open(device, sample_rate)
         except (sd.PortAudioError, ValueError) as e:
             if device is None:
                 raise
@@ -125,20 +189,7 @@ class Recorder:
                         "system default input instead; set [audio] device "
                         "in config.toml (see --list-devices)",
                         device, str(e).splitlines()[0])
-            self._stream = self._open(None, sample_rate)
-        self.sample_rate = int(self._stream.samplerate)
-        if self.sample_rate != sample_rate:
-            # Said out loud, because the one time this happened quietly it
-            # cost a day: a microphone that forced its own rate used to
-            # switch language detection off without a word, and English
-            # dictation came back as invented Hebrew. See
-            # local_whisper._decode_pcm, which no longer cares — this line
-            # is so the NEXT thing that only works at 16 kHz is found in
-            # the log rather than in the transcripts.
-            log.warning("the microphone refused %d Hz — recording at its "
-                        "own %d Hz instead", sample_rate, self.sample_rate)
-        self._default_max_samples = float(max_seconds * self.sample_rate)
-        self._max_samples = self._default_max_samples
+            return self._open(None, sample_rate)
 
     def _open(self, device, sample_rate: int):
         """One input stream on `device`, at `sample_rate` if it can be had.
@@ -176,14 +227,71 @@ class Recorder:
         raise last                      # never None: the list is not empty
 
     def start_stream(self) -> None:
+        # Counted from here, so a stream that has not delivered its first
+        # buffer yet is not already "stalled".
+        self._last_callback = time.monotonic()
         self._stream.start()
 
     def close(self) -> None:
+        self._closed = True           # and reopen() will not bring it back
         try:
             self._stream.stop()
             self._stream.close()
         except Exception:
             pass
+
+    def stalled(self, now: float | None = None) -> bool:
+        """Has the stream stopped calling back? See STALL_S.
+
+        Never blocks and never raises: it is asked on the hook thread, at
+        every press and every release. A stream PortAudio itself calls
+        inactive counts at once; one that is silently dead (the WASAPI
+        case) counts once no buffer has come for STALL_S.
+        """
+        stream = self._stream
+        if stream is None or self._closed:
+            return False
+        try:
+            if not stream.active:
+                return True
+        except Exception:
+            return True               # a stream that cannot answer is gone
+        now = time.monotonic() if now is None else now
+        return now - self._last_callback > STALL_S
+
+    def reopen(self) -> None:
+        """Close the stream and open it again through the same ladder the
+        start used (_open_or_default: the chosen microphone, then the
+        system default), and start it. Raises what the ladder raises when
+        no input can be opened at all — the caller retries on a timer.
+
+        The callback is the same bound method, so a recording that is
+        ACTIVE while this runs simply starts receiving buffers again; the
+        buffer, the state and the alarms are not touched.
+        """
+        with self._reopen_lock:
+            if self._closed:
+                return
+            old = self._stream
+            try:
+                if old is not None:
+                    old.stop()
+                    old.close()
+            except Exception:
+                pass                  # it is dead; that is why we are here
+            stream = self._open_or_default(self._device, self._wanted_rate)
+            rate = int(stream.samplerate)
+            if rate != self.sample_rate:
+                log.warning("the microphone came back at %d Hz (was %d Hz)",
+                            rate, self.sample_rate)
+                with self._lock:
+                    scale = rate / self.sample_rate
+                    self._default_max_samples *= scale
+                    self._max_samples *= scale    # a latch's inf stays inf
+                    self.sample_rate = rate
+            self._stream = stream
+            self._last_callback = time.monotonic()
+            stream.start()
 
     def meter(self) -> tuple[float, bool]:
         """(loudest sample of the last buffer 0..1, still recording?).
@@ -212,6 +320,7 @@ class Recorder:
             self._peak = 0.0
             self._silent_told = self._sound_told = False
             self._max_samples = self._default_max_samples  # undo any lift
+            self._began_at = time.monotonic()
             self._state = ACTIVE
 
     def peak(self) -> float:
@@ -355,6 +464,19 @@ class Recorder:
             self._questions = []
             self._samples = 0
         if state != ACTIVE or not chunks:
+            # Empty, and WHY, because the three reasons want three answers:
+            # the cap already cued, a tap is nobody's fault, and a key held
+            # with not one buffer in it is a stream that has died — which
+            # used to be logged as the cap, with no cue (see STALL_S).
+            if state == OVERFLOWED:
+                self.last_empty = EMPTY_OVERFLOWED
+            elif state != ACTIVE:
+                self.last_empty = EMPTY_NOT_RECORDING
+            elif (time.monotonic() - self._began_at >= NO_AUDIO_AFTER_S
+                    or self.stalled()):
+                self.last_empty = EMPTY_NO_AUDIO
+            else:
+                self.last_empty = EMPTY_TAP
             return [], samples / self.sample_rate
         # Questions the owner asked the screen and said were none of this
         # sentence's business. Dropped whole chunks, so what is left still
@@ -375,13 +497,14 @@ class Recorder:
             else:
                 pieces.append([to_card, [chunk]])
         kept = sum(len(c) for _q, part in pieces for c in part)
+        self.last_empty = None if pieces else EMPTY_EXCLUDED
         return pieces, kept / self.sample_rate
 
     def end(self) -> tuple[bytes | None, float]:
         """Finish the utterance -> (wav_bytes, seconds).
 
         wav_bytes is None when the recording overflowed max_seconds (already
-        discarded) or nothing was captured.
+        discarded) or nothing was captured; `last_empty` says which.
         """
         pieces, seconds = self._finish()
         if not pieces:
@@ -419,6 +542,8 @@ class Recorder:
         # taken under ACTIVE. One max over the buffer; the peak, the chunks
         # and the alarms stay the recording's own.
         level = float(np.abs(indata).max()) / 32768.0 if len(indata) else 0.0
+        # The stream's heartbeat, for stalled(): one float, every buffer.
+        self._last_callback = time.monotonic()
         with self._lock:
             self._level = level
             if self._state == ACTIVE:
