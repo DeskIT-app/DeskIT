@@ -12,6 +12,10 @@ owner speaking ("on my first update", "I asked"), never "the owner" or
 "his" (his word, 2026-09-21, on reading 1.0.2's notes on GitHub).
 `test_the_release_notes_are_english_only` holds both rules.
 
+## 1.0.5
+
+My learned words can no longer be wiped out by a crash. If the computer lost power or ran out of disk while DeskIT was saving the words it had learned from my corrections, the list could come back empty the next time — and the account sync then deleted every one of those words from my other PCs as well. Now the list is saved whole or not at all, the last good copy is kept beside it, a damaged list is put aside and the good copy read in its place, and the sync deletes a word from my account only when I removed it on this PC; anything else that is missing is brought back down from the account instead. Two promises that were not being kept are kept now too: "keep what I dictated for 30 days" really trims the older lines on an installed copy (it failed in silence, because DeskIT was holding the file open while it tried, and still told its log the lines were gone), and unticking "Check for updates weekly" during setup really turns the weekly check off — before, the switch was ignored and DeskIT went on asking GitHub every week.
+
 ## 1.0.4
 
 Settings is rearranged, and every tab is named for what you came looking for. I went looking for where my recordings and screenshots are saved and could not find them — they were under Screen, and they belong in General. There are eight tabs now: General (the dot and its corner, what is drawn on the screen, the microphone, Start with Windows, where files are saved, updates), Dictation (the speech model, what it learns, the translate key), Screen (screenshots, recordings, the camera), Messages & sounds, Phone, Account, Privacy and About. The words changed too: instead of library and code names it says what a thing does and how much room it takes — "Screen recording and the webcam need one extra download (28 MB)" instead of a library's name — all twenty sounds have human names ("Nothing to do", not "noop"), and facts about this computer and the model moved to About, where a fact belongs.

@@ -4912,6 +4912,80 @@ def test_the_vocabulary_survives_a_round_trip() -> None:
         [("xpogo", "Expo Go")], b.corrections
 
 
+def test_the_word_list_is_written_whole_and_a_damaged_one_is_set_aside() -> None:
+    """Audit 2026-09-23, A7: vocab.json was written in place and an
+    unreadable one loaded as an empty list, so a full disk or a crash
+    mid-write lost every learned word — and the sync then deleted them
+    from every PC. Now a save is a temp file swapped in (a failed write
+    leaves the old file whole and no temp behind), the previous good
+    file is kept as vocab.json.bak, a damaged file is set aside and the
+    .bak read in its place with the store marked broken, a file that
+    will not even open is never saved over, and a forget is recorded in
+    the file for the sync's guard."""
+    import shutil
+
+    d = Path(tempfile.mkdtemp(prefix="vocab-whole-"))
+    try:
+        path = d / "vocab.json"
+        v = vocab_mod.Vocab(path)
+        for i in range(5):
+            v.learn_by_hand(f"garble{i}", f"Word{i}")
+        assert v.broken is None
+        assert json.loads(path.read_text("utf-8"))["corrections"][-1]["heard"] == "garble4"
+        assert len(json.loads(v.backup_path.read_text("utf-8"))["corrections"]) == 4, \
+            "the last good copy is the file before the last save"
+        assert not list(d.glob("*.tmp")), list(d.glob("*"))
+
+        # a disk that fills mid-save: the file on disk is the one before
+        def full(fd):
+            raise OSError(28, "No space left on device")
+        whole = path.read_bytes()
+        with _patched(vocab_mod.os, "fsync", full):
+            v.learn_by_hand("garble5", "Word5")
+        assert path.read_bytes() == whole, "a failed save touched the file"
+        assert not list(d.glob("*.tmp")), "the failed save left its temp file"
+
+        # a file cut in half: set aside, the last good copy read instead
+        path.write_bytes(whole[: len(whole) // 2])
+        w = vocab_mod.Vocab(path)
+        assert w.broken == "JSONDecodeError", w.broken
+        aside = list(d.glob("vocab.json.broken-*"))
+        assert len(aside) == 1 and aside[0].read_bytes() == whole[: len(whole) // 2]
+        assert not path.exists(), "the damaged file stayed where a save would go"
+        assert [c["heard"] for c in w.corrections] == [f"garble{i}" for i in range(4)], w.corrections
+        w.learn_by_hand("garble9", "Word9")
+        assert len(json.loads(path.read_text("utf-8"))["corrections"]) == 5
+        assert w.mend() and w.broken is None
+        # the file gone and its copy there (the desk read the damaged
+        # one first): the copy is read, and the store is broken
+        path.unlink()
+        assert vocab_mod.Vocab(path).broken == "missing"
+
+        # a file that will not open is left alone and never saved over
+        (d / "held").mkdir()
+        held = d / "held" / "vocab.json"
+        held.mkdir()
+        h = vocab_mod.Vocab(held)
+        assert h.broken and h._hold and not h.mend()
+        h.learn_by_hand("xpogo", "Expo Go")
+        assert held.is_dir(), "a store that would not open was written over"
+
+        # forget is recorded in the file, a relearn clears it, told() ends it
+        fresh = vocab_mod.Vocab(d / "forget.json")
+        for i in range(3):
+            fresh.learn_by_hand(f"g{i}", f"W{i}")
+        fresh.forget("G0")
+        fresh.edit("g1", "g1b", "W1")
+        again = vocab_mod.Vocab(d / "forget.json")
+        assert again.forgotten_keys() == {"g0", "g1"}, again.forgotten
+        again.learn("g1", "W1")
+        assert again.forgotten_keys() == {"g0"}
+        again.told(["g0"])
+        assert vocab_mod.Vocab(d / "forget.json").forgotten_keys() == set()
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 # ---- the guard that makes the context pass safe to run at all ----
 
 
@@ -32246,6 +32320,64 @@ def test_history_keep_days_prunes():
         _restore_log(tmp)
 
 
+def test_keep_days_prunes_the_log_the_app_holds_open():
+    """Audit 2026-09-23, A8: main.setup_logging opens transcripts.log
+    with a RotatingFileHandler before keep_days is read, and on Windows
+    os.replace onto a file Python holds open fails — so an installed
+    copy never pruned, left transcripts.log.tmp (a second copy of the
+    text) beside it, and app.log still said the lines were dropped.
+    With the handler open exactly as main opens it: the old line goes,
+    no .tmp is left, the handler writes on into the pruned file — and a
+    replace that fails reports nothing dropped and leaves no .tmp."""
+    import logging
+    import logging.handlers
+    from datetime import datetime, timedelta
+
+    import history as history_mod
+
+    now = datetime.now()
+    old = (now - timedelta(days=40)).strftime("%Y-%m-%d %H:%M:%S")
+    new = (now - timedelta(days=2)).strftime("%Y-%m-%d %H:%M:%S")
+    tmp, path = _log_with([
+        f"{old},000 | OK | 4.0s | local | 0.5s latency | old words",
+        f"{new},000 | OK | 4.0s | local | 0.5s latency | new words",
+    ])
+    logger = logging.getLogger("tests-transcripts-held-open")
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    handler = logging.handlers.RotatingFileHandler(
+        path, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
+    logger.addHandler(handler)
+    cfg = config_mod.load(Path(__file__).resolve().parent / "defaults.toml")
+    try:
+        assert handler.stream is not None, "the fixture must hold the file open"
+        with _patched(paths, "OWNER_DATA", False):
+            line = history_mod.apply(cfg, logger)
+        assert "(1 older line(s) dropped" in line, line
+        text = path.read_text("utf-8")
+        assert "old words" not in text and "new words" in text, text
+        assert not path.with_name(path.name + ".tmp").exists(), "a copy of the text was left beside the log"
+        logger.info("OK | 1.0s | local | 0.1s latency | after the prune")
+        handler.flush()
+        assert "after the prune" in path.read_text("utf-8"), "the handler did not take the log back"
+
+        # prune() alone, with the handler holding the file again, is the
+        # old road: the replace fails, and now it counts nothing and
+        # takes its .tmp with it.
+        path.write_text(f"{old},000 | OK | 4.0s | local | 0.5s latency | old again\n", "utf-8")
+        assert handler.stream is not None
+        dropped, removed = history_mod.prune(30)
+        assert (dropped, removed) == (0, 0), (dropped, removed)
+        assert "old again" in path.read_text("utf-8")
+        assert not path.with_name(path.name + ".tmp").exists(), "the failed prune left its .tmp"
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+        history_mod.enabled = True
+        _restore_log(tmp)
+
+
 def test_reset_spares_the_owners_training_data():
     """--reset-data on the checkout's own data leaves transcripts.log,
     recent\ and corpus\ alone (the 72 read-aloud clips of 2026-09-13
@@ -35502,6 +35634,58 @@ def test_the_extras_page_asks_before_taking_the_claude_door():
             assert (w._claude_state, w._claude_other) == ("mine", None)
             assert config_mod.read_settings(s).get("notify.enabled") in (None, True)
         finally:
+            try:
+                w.root.destroy()
+            except Exception:                                # noqa: BLE001
+                pass
+            shutil.rmtree(d, ignore_errors=True)
+
+
+def test_the_wizards_update_switch_turns_the_weekly_check_off():
+    """Audit 2026-09-23, A9: the extras page's 'Check for updates
+    weekly' went through privacy.withdraw, which takes only the seven
+    consent kinds and raised ValueError for the switch — swallowed at
+    INFO, so an unticked row left [privacy] update_check true and the
+    weekly GET the person declined still went out. Unticked and Next:
+    the line is in settings.toml, and this process's privacy.allowed
+    (what updates.py asks) says no before the app has started."""
+    import firstrun
+    import net as net_mod
+    import notify_hook
+    import privacy
+
+    cfg = dataclasses.replace(config_mod.load(REPO / "defaults.toml"),
+                              setup=config_mod.SetupConfig(done=False))
+    d, s, t = _layer_files()
+    offers = {"portable": True, "model": None, "pack": None, "detector": None, "tier": "gpu"}
+    gates, was_offline = dict(privacy._gates), net_mod.offline
+    with _patched(paths, "SETTINGS_FILE", s), _patched(paths, "STATE_FILE", t), \
+            _patched(notify_hook, "DEFAULT_SETTINGS", d / "claude-settings.json"):
+        try:
+            w = firstrun.Wizard(cfg, facts={"tier": "gpu"}, offers=offers)
+        except Exception as err:                             # noqa: BLE001
+            print(f"    (skipped: no Tk window — {err})")
+            return
+        try:
+            privacy._gates["update_check"] = True
+            assert privacy.allowed("update_check")
+            w.page = firstrun.PAGES.index("extras")
+            w._show_page()
+            w.root.update()
+            assert w.switches["updates"].get() is True, "the shipped default is on"
+            w.switches["updates"].toggle()
+            assert w.extras["updates"] is False
+            w._next()
+            assert w.name == "done", "Next did not leave the extras page"
+            assert config_mod.read_settings(s).get("privacy.update_check") is False, \
+                config_mod.read_settings(s)
+            assert privacy.allowed("update_check") is False, \
+                "the unticked switch left the weekly check on"
+            assert config_mod.load_layered().privacy.update_check is False
+        finally:
+            privacy._gates.clear()
+            privacy._gates.update(gates)
+            net_mod.offline = was_offline
             try:
                 w.root.destroy()
             except Exception:                                # noqa: BLE001
@@ -39601,6 +39785,111 @@ def test_sync_vocab_merges_as_a_union_with_tombstones():
     push = sync_mod.vocab_changed(sync_mod.vocab_rows(later, snapshot), snapshot)
     assert [(r["heard"], r["hits"], r["deleted"]) for r in push] == \
         [("brinth", 2, False), ("cowork", 0, True)], push
+
+
+def test_the_sync_deletes_only_the_words_this_pc_forgot():
+    """Audit 2026-09-23, A7: a word missing from vocab.json is a
+    tombstone for every PC of the account, so a damaged file used to
+    delete the whole list everywhere 30 s after start. Three roads now:
+    a store that could not be read pulls the account's whole list back
+    and sends nothing; a list that lost most of the snapshot without a
+    forget on this PC holds those tombstones back and pulls everything
+    on the next pass, which puts the words back; and words this PC's
+    forget() took out still leave, however many, and their record ends
+    once the account has them."""
+    import sb
+    import sync as sync_mod
+
+    server: dict[str, dict] = {}
+    calls: list[tuple] = []
+    clock = [0]
+
+    def fake_rest(method, table, *, purpose, query="", payload=None, prefer=""):
+        assert table == "vocab_sync" and purpose == "sync"
+        calls.append((method, query, payload))
+        if method == "GET":
+            m = re.search(r"updated_at=gt\.([^&]+)", query)
+            since = urllib_parse.unquote(m.group(1)) if m else ""
+            rows = sorted((dict(r) for r in server.values() if r["updated_at"] > since),
+                          key=lambda r: r["updated_at"])
+            return 200, rows
+        out = []
+        for row in payload:
+            clock[0] += 1
+            stored = dict(row, updated_at=f"2026-09-23T00:00:{clock[0]:02d}+00:00")
+            stored.pop("user_id", None)
+            server[row["heard"]] = stored
+            out.append(stored)
+        return 201, out
+
+    words = [{"heard": f"garble{i}", "meant": f"Word{i}", "hits": 2,
+              "last": "2026-09-20 10:00:00"} for i in range(5)]
+    for i, e in enumerate(words):
+        server[e["heard"]] = {"heard": e["heard"], "meant": e["meant"], "hits": 2,
+                              "last_used": "2026-09-20T07:00:00+00:00", "deleted": False,
+                              "updated_at": f"2026-09-20T00:00:0{i}+00:00"}
+
+    def synced_cursor():
+        return {"vocab_pulled_at": "2026-09-20T00:00:04+00:00",
+                "vocab_snapshot": sync_mod.vocab_snapshot(words)}
+
+    d = Path(tempfile.mkdtemp(prefix="deskit-vocab-guard-"))
+    try:
+        with _patched(sb, "_rest", fake_rest), \
+                _patched(sb, "_fresh", lambda: {"user": {"id": "u"}}):
+            # 1. unreadable at start, no copy: the whole list comes back
+            (d / "vocab.json").write_text('{"version": 1, "corrections": [{"he', "utf-8")
+            v = vocab_mod.Vocab(d / "vocab.json")
+            assert v.broken and v.corrections == []
+            cursor = synced_cursor()
+            out = sb._sync_vocab(cursor, v)
+            assert [c[0] for c in calls] == ["GET"], "a broken store sent something"
+            assert "updated_at=gt." not in calls[0][1], "the pull did not start from the beginning"
+            assert out == "pulled 5, pushed 0", out
+            assert sorted(c["heard"] for c in v.corrections) == [e["heard"] for e in words]
+            assert v.broken is None and all(not r["deleted"] for r in server.values())
+            assert len(json.loads((d / "vocab.json").read_text("utf-8"))["corrections"]) == 5
+
+            # 2. a list that lost most words with no forget here (a file an
+            #    older build damaged, restored from an old copy, a hand edit)
+            calls.clear()
+            (d / "two.json").write_text(json.dumps(
+                {"version": 1, "corrections": words[:1]}), "utf-8")
+            v2 = vocab_mod.Vocab(d / "two.json")
+            assert v2.broken is None
+            cursor = synced_cursor()
+            out = sb._sync_vocab(cursor, v2)
+            assert out.endswith("held back 4"), out
+            assert not any(r.get("deleted") for m, _q, p in calls if m == "POST" for r in p), \
+                "a word nobody forgot was deleted from the account"
+            assert all(not r["deleted"] for r in server.values())
+            assert cursor["vocab_pulled_at"] == "", "the next pass does not pull everything"
+            sb._sync_vocab(cursor, v2)
+            assert sorted(c["heard"] for c in v2.corrections) == [e["heard"] for e in words], \
+                "the held words did not come back"
+
+            # 3. forget() on this PC: the tombstones leave, most of the list or not
+            calls.clear()
+            (d / "three.json").write_text(json.dumps(
+                {"version": 1, "corrections": [dict(e) for e in words]}), "utf-8")
+            v3 = vocab_mod.Vocab(d / "three.json")
+            for i in range(3):
+                assert v3.forget(f"garble{i}")
+            cursor = synced_cursor()
+            out = sb._sync_vocab(cursor, v3)
+            assert out == "pulled 0, pushed 3", out
+            assert sorted(k for k, r in server.items() if r["deleted"]) == \
+                ["garble0", "garble1", "garble2"]
+            assert v3.forgotten_keys() == set(), "the record outlived the push"
+
+            # 4. the other PC's tombstones are not echoed back as this PC's
+            calls.clear()
+            out = sb._sync_vocab(synced_cursor(), v2)
+            assert "held back" not in out, out
+            assert sorted(c["heard"] for c in v2.corrections) == ["garble3", "garble4"]
+            assert not any(m == "POST" for m, _q, _p in calls), calls
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def test_sync_history_rows_and_remote_lines_round_trip():

@@ -24,6 +24,9 @@ malformed line is skipped rather than repaired.
 """
 from __future__ import annotations
 
+import contextlib
+import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -309,17 +312,64 @@ def apply(cfg, transcript_logger=None) -> str:
     if paths.OWNER_DATA:
         return (f"history: keep_days = {days} is not applied — "
                 f"{DEVELOPER_KEEPS_EVERYTHING}")
-    dropped, removed = prune(days)
+    with _released(logger):
+        dropped, removed = prune(days)
     return (f"history: kept {days} days ({dropped} older line(s) dropped, "
             f"{removed} old file(s) removed)")
+
+
+@contextlib.contextmanager
+def _released(logger):
+    """The transcripts handler lets go of the log for the length of a
+    prune, and takes it back after.
+
+    main.setup_logging opens transcripts.log (RotatingFileHandler, no
+    delay) long before the config — and so keep_days — is read, and
+    Python opens a file without FILE_SHARE_DELETE, so os.replace onto
+    the open log fails on Windows. It failed on EVERY installed copy:
+    the old lines stayed, a second copy of the text sat beside it in
+    transcripts.log.tmp, and app.log said they had been dropped (audit
+    2026-09-23, A8; probed in a scratch home with a real handler open:
+    (1, 0) reported, the line still there). The handler's own lock is
+    held throughout, so a line written from another thread waits for the
+    prune instead of reopening the file under it; a stream that will not
+    reopen stays None, and FileHandler.emit opens it on the next line."""
+    held = [h for h in list(getattr(logger, "handlers", ()))
+            if isinstance(h, logging.FileHandler)
+            and os.path.normcase(h.baseFilename)
+            == os.path.normcase(os.path.abspath(LOG))]
+    for handler in held:
+        handler.acquire()
+    try:
+        for handler in held:
+            stream, handler.stream = handler.stream, None
+            if stream is not None:
+                try:
+                    stream.flush()
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
+        yield
+    finally:
+        for handler in held:
+            try:
+                if handler.stream is None:
+                    handler.stream = handler._open()
+            except OSError:
+                pass
+            finally:
+                handler.release()
 
 
 def prune(days: int, now: datetime | None = None) -> tuple[int, int]:
     """Drop lines older than `days` from the log, atomically, and delete
     rotated siblings whose newest line is older than that. Returns
-    (lines dropped, files removed). Never raises for a missing file."""
-    import os
+    (lines dropped, files removed). Never raises for a missing file.
 
+    A line is counted only once the file it was in no longer holds it:
+    the count is what app.log reports as done, and it used to be
+    counted before a replace that could fail. A replace that fails
+    takes its .tmp with it — that file is a second copy of the text."""
     now = now or datetime.now()
     cutoff = now.timestamp() - days * 86400
     dropped = removed = 0
@@ -337,7 +387,6 @@ def prune(days: int, now: datetime | None = None) -> tuple[int, int]:
                 except ValueError:
                     when = None
                 if when is not None and when < cutoff:
-                    dropped += 1
                     continue
             kept.append(line)
         if len(kept) == len(lines):
@@ -346,6 +395,7 @@ def prune(days: int, now: datetime | None = None) -> tuple[int, int]:
             try:
                 path.unlink()
                 removed += 1
+                dropped += len(lines) - len(kept)
             except OSError:
                 pass
             continue
@@ -353,8 +403,12 @@ def prune(days: int, now: datetime | None = None) -> tuple[int, int]:
         try:
             tmp.write_text("".join(kept), "utf-8")
             os.replace(tmp, path)
+            dropped += len(lines) - len(kept)
         except OSError:
-            pass
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
     return dropped, removed
 
 

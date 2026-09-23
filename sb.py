@@ -955,7 +955,12 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
     ``push=False`` is a live pass, the pull alone."""
     if vocab is None:
         return "skipped"
-    since = str(cursor.get("vocab_pulled_at") or "")
+    # A word list that could not be read at start (vocab.Vocab.broken)
+    # tells the account nothing: every word it lacks would go out as a
+    # tombstone and come off every PC. It pulls the whole list back
+    # down instead, from the start of time (audit 2026-09-23, A7).
+    broken = bool(getattr(vocab, "broken", None))
+    since = "" if broken else str(cursor.get("vocab_pulled_at") or "")
     query = "select=heard,meant,hits,last_used,deleted,updated_at&order=updated_at.asc&limit=2000"
     if since:
         query += "&updated_at=gt." + urllib.parse.quote(since)
@@ -976,7 +981,20 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
                 if any(str(r.get("heard") or "").strip().lower() == heard.lower() for r in rows):
                     snapshot[heard] = {"hits": int(entry.get("hits", 1) or 0),
                                        "meant": str(entry.get("meant") or "").strip()}
+            # ...and a tombstone that came down is not echoed back up as
+            # one of this PC's own (nor counted by the guard below)
+            gone = {str(r.get("heard") or "").strip().lower() for r in rows if r.get("deleted")}
+            for key in [k for k in snapshot if k.strip().lower() in gone]:
+                snapshot.pop(key, None)
         cursor["vocab_pulled_at"] = str(rows[-1].get("updated_at") or since)
+    if broken:
+        cursor["vocab_snapshot"] = snapshot
+        mended = vocab.mend() if hasattr(vocab, "mend") else False
+        log.warning("vocabulary sync: the word list could not be read at "
+                    "start; %d word(s) came back from the account, nothing "
+                    "was sent%s", pulled,
+                    "" if mended else " (the unreadable file is still in the way)")
+        return f"pulled {pulled}, pushed 0"
     with vocab._write_lock:
         corrections = [dict(c) for c in vocab.corrections]
     to_push = sync.vocab_changed(sync.vocab_rows(corrections, snapshot), snapshot) if push else []
@@ -987,6 +1005,23 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
         if rows:
             cursor["vocab_snapshot"] = snapshot
         return f"pulled {pulled}, pushed 0"
+    # The guard: a push that would delete MOST of what the account holds
+    # from here is sent only for the words this PC was told to forget
+    # (vocab.forget / a renamed edit, recorded in the file). The rest is
+    # held back — not deleted anywhere — and the next pass pulls the
+    # whole list again, which puts them back in this file. A damaged
+    # file from an older build, a hand edit, a restore from an old copy:
+    # each looks exactly like "forgot everything" to the snapshot.
+    forgot = vocab.forgotten_keys() if hasattr(vocab, "forgotten_keys") else set()
+    unasked = [r for r in to_push if r.get("deleted")
+               and str(r.get("heard") or "").strip().lower() not in forgot]
+    held = 0
+    if unasked and len(unasked) * 2 > len(snapshot):
+        held = len(unasked)
+        to_push = [r for r in to_push if not any(r is u for u in unasked)]
+        log.warning("vocabulary sync: %d of %d word(s) are missing here and "
+                    "were never forgotten on this PC — not deleted from the "
+                    "account; the next pass brings them back", held, len(snapshot))
     if to_push:
         uid = _fresh()["user"]["id"]
         for row in to_push:
@@ -1001,7 +1036,15 @@ def _sync_vocab(cursor: dict, vocab, push: bool = True) -> str:
         stamps = [str(r.get("updated_at") or "") for r in (data or []) if isinstance(r, dict)]
         if stamps:
             cursor["vocab_pulled_at"] = max([cursor.get("vocab_pulled_at") or ""] + stamps)
+        told = [r["heard"] for r in to_push if r.get("deleted")]
+        if told and hasattr(vocab, "told"):
+            vocab.told(told)
     cursor["vocab_snapshot"] = sync.vocab_snapshot(corrections)
+    if held:
+        # the held words are out of the snapshot now (never tombstoned
+        # later) and a pull from the start brings them back down
+        cursor["vocab_pulled_at"] = ""
+        return f"pulled {pulled}, pushed {pushed}, held back {held}"
     return f"pulled {pulled}, pushed {pushed}"
 
 
