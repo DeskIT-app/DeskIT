@@ -181,11 +181,27 @@ def _snapshot_locked() -> tuple[str, str | None]:
         if _format_count() == 0:
             return ("empty", None)
         if win32clipboard.IsClipboardFormatAvailable(win32con.CF_UNICODETEXT):
-            return ("text",
-                    win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT))
+            try:
+                return ("text",
+                        win32clipboard.GetClipboardData(
+                            win32con.CF_UNICODETEXT))
+            except Exception as e:
+                # The clipboard said it held text and then would not hand
+                # it over (a delay-rendering owner that failed, pywintypes
+                # "error 0"). Nothing to put back is the honest answer —
+                # the transcript stays on the clipboard afterwards. Raising
+                # here threw away the whole dictation: 9 of the 10
+                # recordings lost on the owner's PC 2026-09-18..22 died on
+                # this line (under show_placeholder, the "..." marker),
+                # 1-11 ms after "captured ... transcribing". The tenth died
+                # in snapshot_all's close — see there.
+                log.info("the clipboard would not hand over its text (%s) "
+                         "— nothing to put back this time",
+                         type(e).__name__)
+                return ("empty", None)
         return ("other", None)  # image, files, ... — v0 cannot restore these
     finally:
-        win32clipboard.CloseClipboard()
+        _close_clipboard()
 
 
 # Every copy this app has made FOR the user, counted. Guarded by a lock
@@ -405,7 +421,10 @@ def inject(text: str, paste_chord: str, restore_delay_ms: int) -> str:
         if state[0] == "other":
             try:
                 blobs = snapshot_all()
-            except ClipboardBusyError:
+            except Exception as e:  # busy, or a format that would not read
+                if not isinstance(e, ClipboardBusyError):
+                    log.info("the clipboard's other formats would not "
+                             "read (%s)", type(e).__name__)
                 blobs = None        # fall through to the old answer
         mark = claim_mark()
         paste_text(text, paste_chord, restore_delay_ms)
@@ -673,7 +692,11 @@ def snapshot_all() -> list[tuple[int, bytes]]:
                 saved.append((fmt, blob))
         return saved
     finally:
-        win32clipboard.CloseClipboard()
+        # CloseClipboard answered 1418 ("thread does not have a clipboard
+        # open") under a dictation's marker on 2026-09-20, replacing a list
+        # that had already been read — and the whole recording went with
+        # it. The close cannot be the reason a caller hears about.
+        _close_clipboard()
 
 
 def restore_all(saved: list[tuple[int, bytes]], retries: int = 40,

@@ -6321,6 +6321,14 @@ class App:
                         shown = True
                 except injector.ClipboardBusyError as e:
                     log.warning("could not show the placeholder: %s", e)
+                except Exception as e:
+                    # The marker is cosmetic; the recording is not. Every
+                    # other failure here used to unwind to the worker and
+                    # take the dictation with it — 10 recordings, 90 s of
+                    # speech, lost that way 2026-09-18..22, all on a
+                    # clipboard read under this call. Transcribe without it.
+                    log.warning("could not show the placeholder (%s) — "
+                                "transcribing without it", type(e).__name__)
                 finally:
                     self._cursor_lock.release()
             else:
@@ -6706,6 +6714,21 @@ def _load_config(explicit: str | None) -> config_mod.Config:
     return config_mod.load_layered()
 
 
+def transcript_backups() -> int:
+    """How many rolled-over transcripts.log files the handler keeps.
+
+    Three on anybody's copy — the history is about four megabytes, and
+    [history] keep_days is what bounds it by time. On the owner's checkout
+    transcripts.log is training data (paths.OWNER_DATA), and a rotation
+    that keeps three DELETES the fourth: at the owner's rate (234 KB in the
+    first six days) that would have started eating his oldest dictations
+    around December. There a rollover renames and never deletes — 9,999
+    files of 1 MB each before the handler would drop one. history.files()
+    still reads the newest four; the rest stay on disk for training.
+    """
+    return 9_999 if paths.OWNER_DATA else 3
+
+
 def setup_logging() -> None:
     handlers: list[logging.Handler] = []
     if HAS_CONSOLE:
@@ -6727,8 +6750,8 @@ def setup_logging() -> None:
     handlers.append(app_file)
     logging.basicConfig(level=logging.INFO, handlers=handlers)
     file_handler = logging.handlers.RotatingFileHandler(
-        paths.TRANSCRIPTS_LOG, maxBytes=1_000_000, backupCount=3,
-        encoding="utf-8")
+        paths.TRANSCRIPTS_LOG, maxBytes=1_000_000,
+        backupCount=transcript_backups(), encoding="utf-8")
     file_handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
     transcript_log.addHandler(file_handler)
     transcript_log.propagate = False  # transcripts.log only

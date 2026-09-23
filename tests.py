@@ -1634,6 +1634,77 @@ def test_permanent_failure_keeps_audio_and_removes_marker() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_a_marker_that_fails_does_not_take_the_dictation_with_it() -> None:
+    """The "..." marker is cosmetic and the recording is not. A clipboard
+    read that failed under show_placeholder (pywintypes "error 0" from
+    GetClipboardData) used to unwind to the worker and lose the whole
+    dictation: 10 recordings, 90 s of speech, on the owner's PC
+    2026-09-18..22. Now it is transcribed without a marker and pasted
+    plainly — no backspaces, since nothing was put there to erase."""
+    import shutil
+    import tempfile
+
+    import pywintypes
+
+    import main as main_mod
+
+    class _MarkerFails(_FakeInjector):
+        def show_placeholder(self, text, chord, delay):
+            self.calls.append(("show-failed", text))
+            raise pywintypes.error(0, "GetClipboardData",
+                                   "No error message is available")
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-e2e-"))
+    fake = _MarkerFails()
+    real = main_mod.injector
+    try:
+        main_mod.injector = fake
+        app = _worker_app(_Flaky(fail_times=0, text="שלום"), tmp)
+        app._handle(b"RIFF-audio", 9.0, fake.focus)
+
+        kinds = [c[0] for c in fake.calls]
+        assert kinds[0] == "show-failed", fake.calls
+        assert "replace" not in kinds, \
+            f"backspaces were sent for a marker that was never shown: {fake.calls}"
+        assert ("inject", "שלום") in fake.calls, fake.calls
+        assert app.spool.pending() == [], app.spool.pending()
+    finally:
+        main_mod.injector = real
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_clipboard_that_will_not_hand_over_its_text_is_nothing_to_put_back() -> None:
+    """Measured on the owner's PC: the clipboard said CF_UNICODETEXT was
+    there and GetClipboardData then failed (pywintypes error 0), and once
+    CloseClipboard failed (1418) after a read that had worked. Neither may
+    raise out of a snapshot: the first is "nothing to put back", the
+    second is swallowed."""
+    import pywintypes
+
+    import injector as injector_mod
+    cw = injector_mod.win32clipboard
+
+    def refuse(fmt):
+        raise pywintypes.error(0, "GetClipboardData",
+                               "No error message is available")
+
+    def close_fails():
+        raise pywintypes.error(1418, "CloseClipboard",
+                               "Thread does not have a clipboard open.")
+
+    with _patched(injector_mod, "_open_clipboard", lambda *a, **k: None), \
+            _patched(injector_mod, "_format_count", lambda: 1), \
+            _patched(cw, "IsClipboardFormatAvailable", lambda fmt: True), \
+            _patched(cw, "GetClipboardData", refuse), \
+            _patched(cw, "CloseClipboard", close_fails):
+        assert injector_mod.snapshot() == ("empty", None)
+
+    with _patched(injector_mod, "_open_clipboard", lambda *a, **k: None), \
+            _patched(cw, "IsClipboardFormatAvailable", lambda fmt: False), \
+            _patched(cw, "CloseClipboard", close_fails):
+        assert injector_mod.snapshot_all() == []
+
+
 def test_moving_window_falls_back_to_clipboard() -> None:
     """If the user switched windows, never fire backspaces at it — leave the
     transcript on the clipboard instead."""
@@ -18130,10 +18201,16 @@ def test_the_corpus_is_capped_and_gold_is_never_downgraded() -> None:
         wav.write_bytes(b"RIFFx")
         return _StudyItem(wav, {})
 
-    assert corpus.admit(make("a.wav"), "אחת", "gold")
-    assert corpus.admit(make("b.wav"), "שתיים", "silver")
-    assert corpus.admit(make("c.wav"), "שלוש", "silver")
-    assert len(corpus) == 2, "keep=2 must trim the oldest"
+    # A stranger's copy: the cap stands. (The owner's checkout never trims
+    # — see the test below — and this process runs in a checkout.)
+    with _patched(paths, "OWNER_DATA", False):
+        assert corpus.admit(make("a.wav"), "אחת", "gold")
+        assert corpus.admit(make("b.wav"), "שתיים", "silver")
+        assert corpus.admit(make("c.wav"), "שלוש", "silver")
+    assert len(corpus) == 2, "keep=2 must trim"
+    left = sorted(p.name for p in (root / "corpus").glob("*.wav"))
+    assert left == ["a.wav", "c.wav"], \
+        f"the oldest SILVER goes first; gold is the last to go: {left}"
     # a gold label is a human's word; silver evidence must not overwrite it
     item = make("d.wav")
     corpus_keep_all = study_mod.Corpus(root / "corpus2", keep=10)
@@ -18142,6 +18219,25 @@ def test_the_corpus_is_capped_and_gold_is_never_downgraded() -> None:
     side = json_mod.loads(
         (root / "corpus2" / "d.json").read_text("utf-8"))
     assert side["tier"] == "gold" and side["text"] == "מילה של בנאדם", side
+
+
+def test_the_owner_corpus_is_never_trimmed() -> None:
+    """On the owner's checkout corpus\\ is training data (paths.OWNER_DATA)
+    and nothing may delete it. Counted 2026-09-23: 230 clips, 41 gold,
+    +25-50 a day against corpus_keep = 400 — the cap would have started
+    deleting his oldest clips, gold among them, within the week."""
+    import tempfile
+    import study as study_mod
+    root = Path(tempfile.mkdtemp(prefix="corpus-owner-"))
+    src = Path(tempfile.mkdtemp(prefix="rec-"))
+    corpus = study_mod.Corpus(root / "corpus", keep=2)
+    with _patched(paths, "OWNER_DATA", True):
+        for i, tier in enumerate(("gold", "silver", "silver", "gold", "silver")):
+            wav = src / f"{i}.wav"
+            wav.write_bytes(b"RIFFx")
+            assert corpus.admit(_StudyItem(wav, {}), f"משפט {i}", tier)
+    assert len(corpus) == 5, f"the owner's corpus was trimmed to {len(corpus)}"
+    assert len(list((root / "corpus").glob("*.json"))) == 5
 
 
 def test_the_engine_studies_one_clip_and_feeds_the_vocab() -> None:
@@ -32244,6 +32340,42 @@ def test_history_keep_days_prunes():
     finally:
         history_mod.enabled = True
         _restore_log(tmp)
+
+
+def test_the_owners_transcripts_rotate_without_deleting():
+    """transcripts.log is training data on the owner's checkout. A
+    RotatingFileHandler with backupCount=3 DELETES the fourth file on every
+    rollover after the history reaches ~4 MB — around December at his rate.
+    There it keeps 9,999; anybody else's copy keeps three, as before."""
+    import logging
+    import logging.handlers
+    import tempfile
+
+    import main as main_mod
+
+    with _patched(paths, "OWNER_DATA", False):
+        assert main_mod.transcript_backups() == 3
+    with _patched(paths, "OWNER_DATA", True):
+        keep = main_mod.transcript_backups()
+    assert keep >= 1000, keep
+
+    # And the handler really keeps them all: 12 rollovers, nothing deleted.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        target = Path(d) / "transcripts.log"
+        handler = logging.handlers.RotatingFileHandler(
+            target, maxBytes=200, backupCount=keep, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        try:
+            for i in range(13):
+                handler.emit(logging.makeLogRecord(
+                    {"msg": f"OK | {i:02d} | " + "x" * 190}))
+        finally:
+            handler.close()
+        kept = sorted(line[5:7] for p in Path(d).glob("transcripts.log*")
+                      for line in p.read_text("utf-8").splitlines()
+                      if line.startswith("OK | "))
+        assert kept == [f"{i:02d}" for i in range(13)], \
+            f"rollovers deleted records: {kept}"
 
 
 def test_reset_spares_the_owners_training_data():
