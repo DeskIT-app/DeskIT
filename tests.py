@@ -6460,6 +6460,10 @@ def test_the_window_carries_the_real_icon() -> None:
     finally:
         try:
             board.root.destroy()
+            # a destroyed desk is not a buried one: the sleeping dashboard-poll
+            # thread still holds it, and whichever thread collects it later
+            # aborts the suite (Tcl_AsyncDelete) - bury it here, on its own thread
+            board._bury()
         except Exception:
             pass
 
@@ -11567,6 +11571,10 @@ def _window(log=None):
             board.closing = True
             try:
                 board.root.destroy()
+                # a destroyed desk is not a buried one: the sleeping dashboard-poll
+                # thread still holds it, and whichever thread collects it later
+                # aborts the suite (Tcl_AsyncDelete) - bury it here, on its own thread
+                board._bury()
             except Exception:
                 pass
         control_mod.send, singleton_mod.is_running, history_mod.load = saved
@@ -13605,6 +13613,10 @@ def test_the_keys_screen_can_reach_every_key_it_lists() -> None:
     finally:
         try:
             board.root.destroy()
+            # a destroyed desk is not a buried one: the sleeping dashboard-poll
+            # thread still holds it, and whichever thread collects it later
+            # aborts the suite (Tcl_AsyncDelete) - bury it here, on its own thread
+            board._bury()
         except Exception:
             pass
 
@@ -21991,6 +22003,10 @@ def test_the_settings_screen_can_reach_its_last_row() -> None:
     finally:
         try:
             board.root.destroy()
+            # a destroyed desk is not a buried one: the sleeping dashboard-poll
+            # thread still holds it, and whichever thread collects it later
+            # aborts the suite (Tcl_AsyncDelete) - bury it here, on its own thread
+            board._bury()
         except Exception:
             pass
 
