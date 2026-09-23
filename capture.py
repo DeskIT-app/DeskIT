@@ -1736,6 +1736,21 @@ class Clip:
     construction, so a recording that fails to start leaves no zero-byte
     file behind, and so the stream's timebase is anchored to a real
     first frame.
+
+    TWO THREADS WRITE INTO IT, and they take turns on `_lock`. The frames
+    come from `clip-encode` and the sound from `clip-audio` — every
+    recording with sound, which is the default (computer sound is on) —
+    and PyAV's mux copies each packet into ONE packet buffer the container
+    owns and then writes it with the GIL released. Two muxes at once is
+    two threads in that buffer and in libavformat's interleaving queue:
+    measured by the 2026-09-23 audit (A14) with the real Clip paced like
+    the app, 4 paced runs of 4 ended in an abort (exit 3); a run on its
+    own wrote one mp4 in twelve with no moov atom and raised nothing; the
+    start-order probe died of heap corruption (0xc0000374) inside mux, and
+    2 of 20 sound starts raised and turned the clip mute. With one lock
+    around the encode+mux, 4 of 4 paced runs wrote 12 clean clips each.
+    The lock covers only the encode and its muxes, work each thread was
+    already doing; what is new is the other one waiting for it.
     """
 
     def __init__(self, path: Path, size: tuple[int, int], fps: int,
@@ -1745,6 +1760,7 @@ class Clip:
         self.fps = fps
         self.crf = crf
         self.audio_rate = audio_rate
+        self._lock = threading.Lock()
         self._container = None
         self._video = None
         self._audio = None
@@ -1753,11 +1769,27 @@ class Clip:
         self.frames = 0
 
     def _open(self) -> None:
+        """Called with `_lock` held. Everything is built into locals and
+        `_container` is set LAST: the sound thread's "is it open yet?" is
+        `_container is None`, and until 2026-09-23 it could see a container
+        whose resampler did not exist yet."""
         import fractions
         import av
-        self._container = av.open(str(self.path), mode="w")
+        container = av.open(str(self.path), mode="w")
+        try:
+            video, audio, resampler = self._streams(container, fractions, av)
+        except Exception:
+            try:
+                container.close()
+            except Exception:
+                pass
+            raise
+        self._video, self._audio, self._resampler = video, audio, resampler
+        self._container = container
+
+    def _streams(self, container, fractions, av):
         width, height = self.size
-        stream = self._container.add_stream("libx264", rate=self.fps)
+        stream = container.add_stream("libx264", rate=self.fps)
         stream.width, stream.height = width, height
         stream.pix_fmt = "yuv420p"
         # veryfast rather than ultrafast: measured on this machine the
@@ -1771,26 +1803,27 @@ class Clip:
         # manage 24 fps must not play back 20% fast; every frame carries
         # the millisecond it was taken at instead.
         stream.codec_context.time_base = fractions.Fraction(1, CLOCK_HZ)
-        self._video = stream
+        audio = resampler = None
         if self.audio_rate:
             import av.audio.resampler
-            audio = self._container.add_stream("aac", rate=self.audio_rate)
+            audio = container.add_stream("aac", rate=self.audio_rate)
             audio.layout = "mono"
-            self._audio = audio
-            self._resampler = av.audio.resampler.AudioResampler(
+            resampler = av.audio.resampler.AudioResampler(
                 format="fltp", layout="mono", rate=self.audio_rate)
+        return stream, audio, resampler
 
     def add_frame(self, bgra, at_ms: int) -> None:
         import fractions
         import av
-        if self._container is None:
-            self._open()
         frame = av.VideoFrame.from_ndarray(bgra, format="bgra")
         frame.pts = int(at_ms)
         frame.time_base = fractions.Fraction(1, CLOCK_HZ)
-        for packet in self._video.encode(frame):
-            self._container.mux(packet)
-        self.frames += 1
+        with self._lock:
+            if self._container is None:
+                self._open()
+            for packet in self._video.encode(frame):
+                self._container.mux(packet)
+            self.frames += 1
 
     def add_audio(self, samples) -> None:
         """int16 mono samples. Their OWN clock, and that is the point.
@@ -1803,37 +1836,41 @@ class Clip:
         is audible, to save a jitter in the video, which is not.
         """
         import av
-        if self._container is None or self._audio is None:
-            return
-        frame = av.AudioFrame.from_ndarray(
-            samples.reshape(1, -1), format="s16", layout="mono")
-        frame.sample_rate = self.audio_rate
-        frame.pts = self._audio_pts
-        self._audio_pts += samples.shape[0]
-        for resampled in self._resampler.resample(frame):
-            for packet in self._audio.encode(resampled):
-                self._container.mux(packet)
+        with self._lock:
+            if self._container is None or self._audio is None:
+                return
+            frame = av.AudioFrame.from_ndarray(
+                samples.reshape(1, -1), format="s16", layout="mono")
+            frame.sample_rate = self.audio_rate
+            frame.pts = self._audio_pts
+            self._audio_pts += samples.shape[0]
+            for resampled in self._resampler.resample(frame):
+                for packet in self._audio.encode(resampled):
+                    self._container.mux(packet)
 
     def close(self) -> Path | None:
         """Flush both encoders and close. Returns the path, or None when
-        nothing was ever written."""
-        if self._container is None:
-            return None
-        try:
-            for packet in self._video.encode():
-                self._container.mux(packet)
-            if self._audio is not None:
-                for packet in self._audio.encode():
-                    self._container.mux(packet)
-        except Exception:
-            log.debug("flushing the clip's encoder failed", exc_info=True)
-        finally:
+        nothing was ever written. Under the lock, so a sound buffer that
+        arrives while the file is being finished waits and then finds it
+        closed, rather than muxing into a container being torn down."""
+        with self._lock:
+            if self._container is None:
+                return None
             try:
-                self._container.close()
+                for packet in self._video.encode():
+                    self._container.mux(packet)
+                if self._audio is not None:
+                    for packet in self._audio.encode():
+                        self._container.mux(packet)
             except Exception:
-                pass
-            self._container = None
-        return self.path
+                log.debug("flushing the clip's encoder failed", exc_info=True)
+            finally:
+                try:
+                    self._container.close()
+                except Exception:
+                    pass
+                self._container = None
+            return self.path
 
 
 class SystemSound:

@@ -128,6 +128,92 @@ def collapse_char_runs(text: str) -> str:
     return _CHAR_RUN.sub(lambda m: (m.group(1) or m.group(2)) * 2, text)
 
 
+_REPEAT_TOKEN = re.compile(r"[\w֐-׿']+")
+_REPEAT_GAP = re.compile(r"[ ,]+")
+_HEBREW_LETTERS = re.compile(r"[א-ת]+")
+# The one-letter prefixes a restart mid-word leaves behind ("מה ש מה
+# שאנחנו"). None of them is a word on its own.
+_PREFIX_LETTERS = frozenset("ושהבלכמ")
+# The words a restart repeats and a sentence never doubles on purpose, so
+# that a PAIR of them ("זה זה לא עובד", "the the") is still a stutter. Any
+# other word needs three in a row. Left out on purpose, because doubling
+# them is real speech: לא/כן/טוב/רגע ("לא לא", "כן כן"), יש ("יש! יש!"),
+# עם ("עם עם ישראל"), הוא/היא/הם (the emphatic "הוא הוא"), מה ("מה מה?"),
+# and in/on/for/that/had/is/so ("log in in", "turn it on on Monday", "use
+# for for loops", "I know that that works", "so so").
+_PAIR_STUTTERS = frozenset((
+    "אני", "אתה", "את", "אנחנו", "אתם", "זה", "זאת", "של", "על", "אם",
+    "כי", "גם", "רק", "אז", "אבל", "כאילו",
+    "i", "the", "a", "an", "to", "and", "but", "it", "we", "you", "my",
+    "of",
+))
+
+
+def _stutter_fragment(fragment: str, word: str) -> bool:
+    """Is `fragment`, standing between two copies of a run that starts with
+    `word`, the leftover of a restart rather than a word of its own?
+
+    Only two things are: one Hebrew prefix letter, or the start of the
+    repeated word itself ("אנ אני", "רוצ רוצה"). Never a Latin word, never a
+    digit, never a whole Hebrew word — "one by one", "end to end", "2 x 2",
+    "פנים אל פנים" and "הוא לא הוא" are phrases, and the first version of
+    this function took anything of one or two characters and ate them all.
+    """
+    if not _HEBREW_LETTERS.fullmatch(fragment):
+        return False
+    if len(fragment) == 1 and fragment in _PREFIX_LETTERS:
+        return True
+    return len(fragment) < len(word) and word.startswith(fragment)
+
+
+def _repeat_at(text: str, toks: list, i: int, n: int):
+    """The span to delete when the n words at toks[i] are said again right
+    after (keeping the FIRST copy), or None. toks is [(start, end, word)]."""
+    def joined(a: int, b: int) -> bool:           # only spaces and commas
+        return bool(_REPEAT_GAP.fullmatch(text[toks[a][1]:toks[b][0]]))
+
+    def same_run(at: int) -> bool:
+        if at + n > len(toks):
+            return False
+        for k in range(n):
+            if toks[at + k][2].lower() != toks[i + k][2].lower():
+                return False
+            if k and not joined(at + k - 1, at + k):
+                return False
+        return True
+
+    run = [toks[i + k][2] for k in range(n)]
+    # A code, a PIN, a phone number: "4 4 7 1" and "1 1 2 2" are digits
+    # said twice on purpose, never a restart.
+    if any(ch.isdigit() for w in run for ch in w):
+        return None
+    if not all(joined(i + k, i + k + 1) for k in range(n - 1)):
+        return None
+    last = i + n - 1
+    if last + 1 >= len(toks) or not joined(last, last + 1):
+        return None
+    if same_run(i + n):
+        if n > 1:
+            return toks[last][1], toks[i + 2 * n - 1][1]
+        # One word said again. Count the whole row: a pair is a stutter
+        # only for the words that never double on purpose ("לאט לאט" is
+        # how Hebrew says "slowly"); three or more is a stutter or a
+        # decoder loop whatever the word.
+        j = i + 1
+        while (j + 1 < len(toks) and toks[j + 1][2].lower() == run[0].lower()
+               and joined(j, j + 1)):
+            j += 1
+        if j - i + 1 >= 3 or run[0].lower() in _PAIR_STUTTERS:
+            return toks[last][1], toks[j][1]
+        return None
+    frag = i + n
+    if (frag + 1 < len(toks) and joined(frag, frag + 1)
+            and _stutter_fragment(toks[frag][2], run[0])
+            and same_run(frag + 1)):
+        return toks[last][1], toks[frag + n][1]
+    return None
+
+
 def collapse_repeats(text: str, max_phrase: int = 4) -> str:
     """Collapse an immediately repeated run of words.
 
@@ -135,22 +221,30 @@ def collapse_repeats(text: str, max_phrase: int = 4) -> str:
     "רק את מה ש רק את מה שאנחנו בנינו" -> "רק את מה שאנחנו בנינו".
     Longer phrases are tried first so the largest restart wins.
 
-    A dangling one- or two-letter fragment between the two copies is
-    swallowed too: Hebrew prefixes (ש, ה, ו, ב, ל, כ, מ) mean a speaker who
-    restarts mid-word leaves the prefix behind, which would otherwise break
-    the repetition into two non-adjacent runs.
+    A dangling fragment between the two copies is swallowed too, but only
+    a real one (`_stutter_fragment`): a Hebrew prefix letter (ש, ה, ו, ב,
+    ל, כ, מ), which a speaker who restarts mid-word leaves behind, or the
+    start of the repeated word. Until 2026-09-23 any one- or two-character
+    token qualified and every exact pair collapsed, so "one by one" came
+    out "one", "end to end" "end", "4 4 7 1" "4 7 1", "לאט לאט" "לאט" and
+    "פנים אל פנים" "פנים" — words he said, deleted before the repair pass
+    or the sidecar could see them. Now a run with a digit in it is never
+    touched, and a single word needs three in a row unless it is one of
+    `_PAIR_STUTTERS`.
     """
     for n in range(max_phrase, 0, -1):
-        pattern = re.compile(
-            r"(?<![\w֐-׿])"
-            r"((?:[\w֐-׿']+[ ,]+){%d}?[\w֐-׿']+)"
-            r"[ ,]+(?:[\w֐-׿']{1,2}[ ,]+)?"
-            r"\1(?![\w֐-׿])" % (n - 1),
-            re.IGNORECASE)
-        prev = None
-        while prev != text:               # repeated restarts: "אני אני אני"
-            prev = text
-            text = pattern.sub(r"\1", text)
+        toks = [(m.start(), m.end(), m.group(0))
+                for m in _REPEAT_TOKEN.finditer(text)]
+        i = 0
+        while i + 2 * n <= len(toks):
+            cut = _repeat_at(text, toks, i, n)
+            if cut is None:
+                i += 1
+                continue
+            # the same i is tried again: repeated restarts, "אני א אני אני"
+            text = text[:cut[0]] + text[cut[1]:]
+            toks = [(m.start(), m.end(), m.group(0))
+                    for m in _REPEAT_TOKEN.finditer(text)]
     return text
 
 
