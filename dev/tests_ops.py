@@ -1557,6 +1557,65 @@ def test_the_routine_is_told_about_the_strangers_reports() -> None:
     assert "report_replies" in low and "no `report_replies`" in low
 
 
+def test_the_ci_gives_a_failed_test_one_second_try_and_says_so() -> None:
+    """dev/ci_suite.py, the CI's suite step (2026-09-23: 14 of 100 runs red,
+    nearly each on a different timing test, each an e-mail). Driven with a
+    stand-in suite that keeps a count in a file: a test that fails once and
+    passes on the second try is a warning and a green run; one that fails
+    twice is red; a run that dies gets one more full run; more than
+    MAX_RETRY failures at once gets no second try."""
+    import json
+    import subprocess
+    import sys as sys_mod
+    import tempfile
+
+    fake = r'''
+import json, sys
+from pathlib import Path
+state = Path(__file__).with_name("state.json")
+s = json.loads(state.read_text()) if state.exists() else {"calls": 0}
+s["calls"] += 1
+state.write_text(json.dumps(s))
+mode = Path(__file__).with_name("mode.txt").read_text().strip()
+picks = [a for a in sys.argv[1:] if not a.startswith("-")]
+if mode == "flaky":
+    if s["calls"] == 1:
+        print("  PASS  test_a"); print("  FAIL  test_b: boom"); print(); print("1 FAILED: test_b"); sys.exit(1)
+    assert picks == ["test_b"], picks
+    print("  PASS  test_b"); print(); print("all tests passed")
+elif mode == "twice":
+    print("  FAIL  test_b: boom"); print(); print("1 FAILED: test_b"); sys.exit(1)
+elif mode == "died":
+    if s["calls"] == 1:
+        print("  PASS  test_a"); print("Tcl_AsyncDelete: async handler deleted by the wrong thread"); sys.exit(3)
+    print("  PASS  test_a"); print(); print("all tests passed")
+elif mode == "many":
+    names = [f"test_{i}" for i in range(6)]
+    print(); print(f"6 FAILED: {', '.join(names)}"); sys.exit(1)
+'''
+    expect = {"flaky": (0, 2, "Flaky on the CI runner::test_b"),
+              "twice": (1, 2, "Failed twice::test_b"),
+              "died": (0, 2, "Suite died once on the CI runner"),
+              "many": (1, 1, "no second try")}
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as d:
+        script = Path(d) / "fake_suite.py"
+        script.write_text(fake, "utf-8")
+        for mode, (code, calls, said) in expect.items():
+            (Path(d) / "state.json").unlink(missing_ok=True)
+            (Path(d) / "mode.txt").write_text(mode, "utf-8")
+            proc = subprocess.run(
+                [sys_mod.executable, str(REPO / "dev" / "ci_suite.py"),
+                 "--script", str(script)],
+                cwd=REPO, capture_output=True, text=True, encoding="utf-8",
+                creationflags=0x08000000)
+            got = json.loads((Path(d) / "state.json").read_text())["calls"]
+            assert proc.returncode == code, (mode, proc.returncode, proc.stdout[-600:])
+            assert got == calls, (mode, "suite ran", got, "times")
+            assert said in proc.stdout, (mode, proc.stdout[-600:])
+    workflow = (REPO / ".github" / "workflows" / "ci.yml").read_text("utf-8")
+    assert "python dev/ci_suite.py" in workflow, "the CI does not run the suite through ci_suite.py"
+
+
 def test_the_inbox_is_not_in_the_product_and_its_secret_name_is_reserved() -> None:
     """The module lives in dev/ (the archive of the product tree has no
     dev/ — test_export_ignore_covers_forbidden), `inbox` is in
