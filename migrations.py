@@ -41,6 +41,12 @@ def _sync_follows_the_account() -> None:
     withdrawn and re-granted), nothing happens; a copy that withdrew the
     sync AFTER this step ran is never touched again — steps run once."""
     import privacy
+    # The account row of a copy this old was given under the card's
+    # 2026-09-19 words, which read stale since 2026-09-23 — step 5 would
+    # carry it forward, but only AFTER this step had already read it as
+    # "not signed in". Carrying it here first is the same idempotent
+    # rewrite, one step early.
+    privacy.carry_forward("account", privacy.CARRIED_FORWARD.get("account", ()))
     if privacy.consent("account") is not None and privacy.consent("settings_sync") is None:
         import consent_card as cc
         privacy.grant("settings_sync", cc.card_for("settings_sync")["text_version"])
@@ -76,10 +82,23 @@ def _the_lock_asks_nothing_new() -> None:
         privacy.carry_forward(kind, old_versions)
 
 
+def _the_account_words_ask_nothing_new() -> None:
+    """The account card's words (2026-09-23) stop promising that the
+    keys never travel to DeskIT's project — the syncs the sign-in press
+    grants send them there sealed, and the sync cards always said so.
+    Nothing new leaves under the account gate itself, so a row given
+    under the 2026-09-19 words is rewritten to the new version rather
+    than going stale and turning every signed-in copy's account off
+    until someone presses Turn on (privacy.CARRIED_FORWARD["account"])."""
+    import privacy
+    privacy.carry_forward("account", privacy.CARRIED_FORWARD["account"])
+
+
 #: (config_version this step PRODUCES, the step). Append, never reorder.
 STEPS: list[tuple[int, object]] = [(2, _sync_follows_the_account),
                                    (3, _history_follows_the_sync),
-                                   (4, _the_lock_asks_nothing_new)]
+                                   (4, _the_lock_asks_nothing_new),
+                                   (5, _the_account_words_ask_nothing_new)]
 
 
 def current() -> int:

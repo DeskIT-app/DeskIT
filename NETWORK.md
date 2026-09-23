@@ -31,15 +31,18 @@ line here fails the build.
 
 The Supabase host is a single value, never a suffix rule: a suffix would
 admit any project on that domain. The schema of that project is
-published in `supabase/migrations/` and has no column that could hold a
-key.
+published in `supabase/migrations/` and has no column that holds a key
+the server can read: your cloud keys reach it only inside the `vault`
+rows, locked with a key only your own PCs hold, and only while your
+settings sync to your account.
 
 ## What never goes out
 
 - Anything at all while Offline mode is on, except to `127.0.0.1`.
 - A transcript, a recording or a screenshot to any host without the
   consent row for that kind.
-- A key to any host but the one provider that issued it.
+- A key, as it is, to any host but the one provider that issued it. Your
+  account gets only the locked copy the settings sync carries.
 - A key in a URL: any query parameter named like one (`key`, `token`,
   ...) is refused on every host.
 - A request to a host not on this page.

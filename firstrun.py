@@ -179,12 +179,19 @@ WORDS = {
     "account.stored.signin": ("Stored: the account id and e-mail of the Google account you "
                               "pick, this PC's name, the app version and the Windows "
                               "version — on DeskIT's server (Supabase, Frankfurt)."),
-    "account.never": ("Never stored: your voice, what you said, your keys. The last page "
-                      "asks whether your learned words and settings stay in the account; "
-                      "what you said is synced only if you turn that on in Settings."),
-    "account.never.signin": ("Never stored: your voice, what you said, your keys. Settings > "
-                             "Privacy > Withdraw stops the sync at any time; what you said "
-                             "is synced only if you turn that on in Settings."),
+    # What the sign-in press turns on (privacy.sign_in_grants: the account
+    # AND both syncs), said before the press. Until 2026-09-23 these two
+    # lines promised "Never stored: your voice, what you said, your keys"
+    # while the press stored both, sealed; the owner kept the syncs on by
+    # default (2026-09-20) and had the words fixed instead.
+    "account.never": ("Only your voice never leaves this PC. Your learned words and settings "
+                      "are kept in your account, and so are what you said and your cloud "
+                      "keys, locked with a key only your own PCs hold. The last page lets "
+                      "you turn this off."),
+    "account.never.signin": ("Only your voice never leaves this PC. Your learned words and "
+                             "settings are kept in your account, and so are what you said and "
+                             "your cloud keys, locked with a key only your own PCs hold. "
+                             "Settings > Privacy > Withdraw turns this off."),
     "account.none": "This copy has no account server — you can go on.",
     "account.button": "Sign in with Google",
     "account.waiting": "Waiting for Google's sign-in page in your browser…",
