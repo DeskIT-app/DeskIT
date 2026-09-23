@@ -587,9 +587,12 @@ class Reader:
             self.last_backend = backend.name
             proposals = parse_reply(reply)
             if proposals is None:
+                # D8: the size, not the reply — a model that answers
+                # prose instead of an array mostly answers the dictation
+                # back.
                 log.info("second reading via %s answered with no JSON "
-                         "array — ignored: %s", backend.name,
-                         reply.strip()[:200])
+                         "array — ignored (%d chars)", backend.name,
+                         len(reply.strip()))
                 return None
             return proposals
         return None
@@ -1192,10 +1195,9 @@ class Engine:
                 transcript_log.info("REVIEW | rejected | %s || %s",
                                     change.get("before", ""),
                                     change.get("after", ""))
-            log.info("review %s rejected (%s): %s", item.get("id"), by,
-                     " | ".join(f"{c.get('before')} -> "
-                                f"{c.get('after') or '(drop)'}"
-                                for c in changes))
+            # D8: the words are on the REVIEW lines just written.
+            log.info("review %s rejected (%s): %d change(s)", item.get("id"),
+                     by, len(changes))
             return
         if status != ACCEPTED:
             return

@@ -42,7 +42,7 @@ Then **Settings > Privacy > YOUR CLOUD KEYS**: paste the key into the masked fie
 never shown again), press **Save and test** — "Works · N models visible" or the provider's own
 error — and the key is stored. **Remove** deletes it. The sentence under each field:
 
-> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it only to api.groq.com. It is never written to a file, a log or a report, and never sent to the developer — see Settings > Privacy > EVERY CONNECTION for every request.
+> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own PCs hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
 
 [Chapter 4](04-privacy) shows how to check that sentence yourself in two minutes.
 

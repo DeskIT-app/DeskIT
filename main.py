@@ -1809,7 +1809,10 @@ class App:
                                     self.cfg.restore_delay_ms)
                 transcript_log.info("REVIEW | fixed | %s || %s", pasted,
                                     proposed)
-                log.info("review: fixed the text in the field: %s", proposed)
+                # D8: the words are on the REVIEW line above; app.log (and
+                # so Copy diagnostics) gets the size of the change only.
+                log.info("review: fixed the text in the field (%d -> %d chars)",
+                         len(pasted), len(proposed))
             finally:
                 try:
                     injector.restore(state, "the fixed text", since=kept)
@@ -3314,8 +3317,9 @@ class App:
             fixed, backend = self._punctuation().punctuate(
                 text, max_wait_s=getattr(pcfg, "max_wait_s", 6.0))
         except punctuate_mod.UnsafeReply as e:
+            # e.logged, not e: str(e) names the altered word (D8).
             log.warning("auto punctuation REJECTED — %s. The transcript "
-                        "lands as it came.", e)
+                        "lands as it came.", e.logged)
             return text
         except TimeoutError as e:
             log.warning("auto punctuation gave up waiting (%s) — the "
@@ -5454,11 +5458,11 @@ class App:
                                            heard_in=last.get("raw", ""))
         refiled = len(proposed) - len(pairs)
         if refiled:
+            # D8: the count only. Which pairs they were is the difference
+            # between the two halves of the CORRECTED line just below.
             log.info("ignored %d proposed pair(s) the decoder never said — "
                      "they are this app's own rewrite being handed back to "
-                     "it: %s", refiled,
-                     " | ".join(f"{h} -> {m}" for h, m in proposed
-                                if (h, m) not in pairs))
+                     "it", refiled)
         transcript_log.info("CORRECTED | %s || %s", shown, fixed)
         self._nudge_sync("vocab", "history")
         # What is on screen is now what the app believes it produced.
@@ -5738,8 +5742,9 @@ class App:
                 self._cue_once("error", "punctuate-unsafe")
                 self._say(f"left it alone — the model rewrote your words "
                           f"instead of punctuating them ({e})")
+                # The card names the word; app.log does not (D8).
                 log.error("punctuation discarded: %s. Your text is untouched.",
-                          e)
+                          e.logged)
                 return
             except TranscriptionError as e:
                 beep("error")
@@ -6090,8 +6095,14 @@ class App:
             try:
                 text, applied = self.vocab.apply(text)
                 if applied:
-                    log.info("repaired %d learned mishearing(s): %s",
-                             len(applied), " | ".join(applied))
+                    # D8: app.log counts; the pairs themselves go to
+                    # transcripts.log, the one place that keeps words —
+                    # 33 of these lines quoted them across the owner's
+                    # three app.log files (2026-09-23 audit), and Copy
+                    # diagnostics hands app.log's tail to a bug report.
+                    log.info("repaired %d learned mishearing(s)",
+                             len(applied))
+                    transcript_log.info("REPAIRED | %s", " | ".join(applied))
             except Exception:
                 log.exception("the vocabulary repair pass failed — using the "
                               "transcript as it came out of the backend")

@@ -574,9 +574,11 @@ class Reading:
                            "seconds": round(float(seconds), 2),
                            "match": m, "wav": pending,
                            "when": time.strftime("%H:%M")}
-            log.info("reading: %s — %d of %d words as written%s",
-                     verdict(m).rstrip("."), m["same"], m["words"],
-                     "".join(f"; {h!r} for {e!r}" for h, e in m["pairs"]))
+            # D8: counts only. What was heard is this reading's `heard`,
+            # filed in its sidecar when it is kept.
+            log.info("reading: %s — %d of %d words as written, %d pair(s) "
+                     "differ", verdict(m).rstrip("."), m["same"], m["words"],
+                     len(m["pairs"]))
             return self.state()
 
     def keep(self, ident: str) -> Path | None:

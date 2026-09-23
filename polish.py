@@ -137,6 +137,9 @@ from transcribers.base import RateLimitError, TranscriptionError
 from vocab import words
 
 log = logging.getLogger("app")
+#: Where a rejected reply's words go (D8: app.log counts, this file keeps
+#: words — and is the one Copy diagnostics never reads).
+transcript_log = logging.getLogger("transcripts")
 
 # How far a reply may drift from the transcript before it is treated as a
 # rewrite rather than a correction. 0.75 leaves room to fix several words
@@ -543,10 +546,18 @@ class Polisher:
             ok, why = _is_safe(text, candidate)
             if not ok:
                 # Loud on purpose. This is the guard doing its job, and if
-                # it fires often the prompt or the model is wrong.
+                # it fires often the prompt or the model is wrong. `why` is
+                # counts and percentages only; what the model wanted is
+                # the dictation near enough word for word, so it goes to
+                # transcripts.log and app.log gets its size (D8 — this
+                # line quoted up to 300 characters of it until
+                # 2026-09-23, into the tail Copy diagnostics copies).
+                wanted = " ".join(candidate.split())
                 log.warning("polish REJECTED from %s — %s. Keeping the raw "
-                            "transcript.\n  wanted: %s", backend.name, why,
-                            candidate.strip()[:300])
+                            "transcript (the reply was %d chars).",
+                            backend.name, why, len(wanted))
+                transcript_log.info("POLISH-REJECTED | %s | %s | %s",
+                                    backend.name, why, wanted[:300])
                 return text, None
             if candidate.strip() == text.strip():
                 return text, None          # nothing to say about a no-op

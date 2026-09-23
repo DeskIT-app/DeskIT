@@ -11636,11 +11636,17 @@ class Dashboard:
     LANDING_SENTENCE = ("Hebrew dictation for Windows that stays on your PC. Hold a "
                         "key, speak, let go — the Hebrew lands at the cursor, in any "
                         "window.")
+    # 2026-09-23: this said "Your keys never travel there. Every sync
+    # stays off until you turn it on yourself, on its own card" — and the
+    # button under it runs privacy.sign_in_grants, which turns both syncs
+    # on. The words the wizard's account page says, said here too.
     LANDING_STORED = ("What is stored: an account id and the e-mail of the Google "
                       "account you choose; this PC's name, the app's version and "
                       "Windows'. The server is DeskIT's own (Supabase, Frankfurt). "
-                      "Your keys never travel there. Every sync stays off until you "
-                      "turn it on yourself, on its own card.")
+                      "Only your voice never leaves this PC: your learned words and "
+                      "settings are kept in your account, and so are what you said "
+                      "and your cloud keys, locked with a key only your own PCs hold. "
+                      "Settings > Privacy > Withdraw turns this off.")
 
     def _locked_now(self, reply: dict | None) -> bool:
         """Is there an account on this PC? The app's word when it

@@ -6773,15 +6773,55 @@ def test_nikud_passes_the_same_guard() -> None:
 
 def test_a_swapped_word_is_rejected_and_named() -> None:
     """The failure this exists for: a model that decided to 'improve' a
-    word while it was in there. The reason has to name the word, or the
-    log line is a verdict with no evidence behind it."""
+    word while it was in there. The reason the CARD gets has to name the
+    word, or it is a verdict with no evidence behind it — and app.log
+    gets the verdict alone (D8, 2026-09-23: this word went to app.log,
+    whose tail Copy diagnostics copies into a public bug report). The
+    word is kept, privately, on a transcripts.log line."""
+    import logging
+
     import punctuate as punctuate_mod
 
     before = "המקלדת מסתירה את השדה"
     after = "הלוח מסתיר את השדה."
     ok, why = punctuate_mod.is_safe(before, after)
-    assert not ok
-    assert "המקלדת" in why, why
+    assert not ok and "words changed" in why, why
+    assert "המקלדת" not in why, "is_safe's reason is logged — it must not quote"
+
+    app_lines: list[str] = []
+    tx_lines: list[str] = []
+
+    class _Catch(logging.Handler):
+        def __init__(self, sink):
+            super().__init__()
+            self.sink = sink
+
+        def emit(self, record):
+            self.sink.append(record.getMessage())
+
+    app_log, tx_log = logging.getLogger("app"), logging.getLogger("transcripts")
+    ca, ct = _Catch(app_lines), _Catch(tx_lines)
+    levels = (app_log.level, tx_log.level)
+    app_log.setLevel(logging.INFO)
+    tx_log.setLevel(logging.INFO)
+    app_log.addHandler(ca)
+    tx_log.addHandler(ct)
+    try:
+        try:
+            _punctuator(_FakePunctuateBackend("groq", reply=after)).punctuate(before)
+        except punctuate_mod.UnsafeReply as e:
+            card, logged = str(e), e.logged
+        else:
+            raise AssertionError("the swapped word was pasted")
+    finally:
+        app_log.removeHandler(ca)
+        tx_log.removeHandler(ct)
+        app_log.setLevel(levels[0])
+        tx_log.setLevel(levels[1])
+    assert "המקלדת" in card and "words changed" in card, card
+    assert "המקלדת" not in logged and "words changed" in logged, logged
+    assert app_lines and not any("המקלדת" in l or "הלוח" in l for l in app_lines), app_lines
+    assert any("המקלדת" in l for l in tx_lines), tx_lines
 
 
 def test_added_and_dropped_words_are_both_rejected() -> None:
@@ -17989,7 +18029,8 @@ def test_the_adjudicator_cannot_introduce_words_from_nowhere() -> None:
     assert ok
     ok, why = study_mod._safe_choice(primary, candidates,
                                      "נוזל צינון למנוע")
-    assert not ok and "צינון" in why, (ok, why)
+    # the reason is logged to app.log, so it names no word (D8, 2026-09-23)
+    assert not ok and "no decode" in why and "צינון" not in why, (ok, why)
     # the Hebrew prefixes are one word, not a new one
     ok, _ = study_mod._safe_choice("הלכתי סירקה", ["הלכתי לסריקה"],
                                    "הלכתי סריקה")
@@ -32065,7 +32106,12 @@ TEXT_NAMES = frozenset({
     "cleaned", "text", "fixed", "final", "raw", "transcript", "polished",
     "sentence", "answer", "question", "selection", "selected", "typed",
     "phrase", "heard", "meant", "translated", "punctuated", "pasted",
-    "shown", "body"})
+    "shown", "body",
+    # 2026-09-23 audit: the four shapes the narrow walk let through —
+    # a repair reply, a proposed field, the learned pairs, a join of them.
+    "candidate", "proposed", "applied", "pairs", "reply", "changes"})
+#: A call that turns text into a number: len(text) is fine, text is not.
+LOG_COUNTS = frozenset({"len", "sum", "round", "int", "float", "bool"})
 LOG_SCANNED = ("main.py", "polish.py", "punctuate.py", "translate.py",
                "lookup.py", "visual_qa.py", "review.py", "study.py",
                "server.py", "reading.py", "notify.py", "shelf.py",
@@ -32073,17 +32119,71 @@ LOG_SCANNED = ("main.py", "polish.py", "punctuate.py", "translate.py",
                "spool.py", "vocab.py", "summary.py", "popup.py")
 
 
-def _log_calls_quoting_text() -> list[str]:
-    """Every `log.<info|warning|error|exception>(fmt, ...)` in LOG_SCANNED
-    whose arguments include a bare name, attribute or subscript whose
-    last word is in TEXT_NAMES — the shape of a line that quotes what
-    the person said or read. Wrapped in len() or any other call it
-    does not count."""
+def _words_reaching_a_log(node):
+    """Every name, attribute or string key under `node` whose value can
+    reach the formatted line: the whole expression is walked — a join
+    of pairs, `candidate.strip()[:300]`, an f-string, a comprehension's
+    source — except what only makes a number (LOG_COUNTS) or a truth
+    value (a comparison, a `not`, the condition of an `a if c else b`).
+    An attribute is its own last word (`answer.backend` is a backend,
+    not an answer) unless a method is called on it, which passes the
+    text through (`pasted.strip()`); `x["text"]` and `x.get("text")`
+    are their key."""
     import ast
 
+    if isinstance(node, ast.Call):
+        f = node.func
+        if isinstance(f, ast.Name) and f.id in LOG_COUNTS:
+            return
+        if (isinstance(f, ast.Attribute) and f.attr == "get" and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)):
+            yield node.args[0].value
+            return
+        if isinstance(f, ast.Attribute):
+            yield from _words_reaching_a_log(f.value)
+        for sub in list(node.args) + [k.value for k in node.keywords]:
+            yield from _words_reaching_a_log(sub)
+    elif isinstance(node, ast.Name):
+        yield node.id
+    elif isinstance(node, ast.Attribute):
+        yield node.attr
+    elif isinstance(node, ast.Subscript):
+        key = getattr(node.slice, "value", None)
+        if isinstance(key, str):
+            yield key                     # heard["text"] yes, heard["seconds"] no
+        else:
+            yield from _words_reaching_a_log(node.value)
+    elif isinstance(node, ast.IfExp):
+        yield from _words_reaching_a_log(node.body)
+        yield from _words_reaching_a_log(node.orelse)
+    elif isinstance(node, ast.Compare) or (
+            isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not)):
+        return
+    elif isinstance(node, ast.comprehension):
+        yield from _words_reaching_a_log(node.iter)
+    else:
+        for child in ast.iter_child_nodes(node):
+            yield from _words_reaching_a_log(child)
+
+
+def _log_calls_quoting_text(sources: dict[str, str] | None = None) -> list[str]:
+    """Every `log.<info|warning|error|exception>(...)` in LOG_SCANNED
+    (or in `sources`, name -> code) whose arguments can carry a name in
+    TEXT_NAMES into the line — the shape of a line that quotes what the
+    person said or read. Every sub-expression of every argument counts,
+    the format string's included (an f-string there is a quote too);
+    len() and the other counts do not. Until 2026-09-23 only a bare
+    name, attribute or subscript argument counted, and a join of the
+    learned pairs, a proposed field and a sliced repair reply all went
+    to app.log past it."""
+    import ast
+
+    if sources is None:
+        sources = {name: (REPO / name).read_text("utf-8") for name in LOG_SCANNED}
     found = []
-    for name in LOG_SCANNED:
-        tree = ast.parse((REPO / name).read_text("utf-8"))
+    for name, code in sources.items():
+        tree = ast.parse(code)
         for node in ast.walk(tree):
             if not (isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Attribute)
@@ -32092,18 +32192,44 @@ def _log_calls_quoting_text() -> list[str]:
                     and isinstance(node.func.value, ast.Name)
                     and node.func.value.id in ("log", "logger")):
                 continue
-            for arg in node.args[1:]:
-                # heard["text"] is text; heard["seconds"] is not
-                if isinstance(arg, ast.Subscript):
-                    key = getattr(arg.slice, "value", None)
-                    word = key if isinstance(key, str) else None
-                else:
-                    word = (arg.id if isinstance(arg, ast.Name) else
-                            arg.attr if isinstance(arg, ast.Attribute)
-                            else None)
-                if word in TEXT_NAMES:
-                    found.append(f"{name}:{node.lineno} passes {word}")
+            words = sorted({w for arg in node.args
+                            for w in _words_reaching_a_log(arg)
+                            if w in TEXT_NAMES})
+            if words:
+                found.append(f"{name}:{node.lineno} passes {', '.join(words)}")
     return found
+
+
+def test_the_log_walk_sees_every_shape_of_a_quote():
+    """The walk behind test_app_log_never_quotes_text, held to the shapes
+    the 2026-09-23 audit found in app.log (a join of the learned pairs,
+    a proposed field, a sliced reply, a join over the changes, an
+    f-string) and to the shapes that are only numbers or names."""
+    quoting = {
+        "join": 'log.info("repaired %d: %s", len(applied), " | ".join(applied))',
+        "name": 'log.info("fixed the field: %s", proposed)',
+        "slice": 'log.warning("wanted: %s", candidate.strip()[:300])',
+        "method": 'log.info("was: %s", pasted.strip())',
+        "comp": 'log.info("%s", " | ".join(f"{c}" for c in changes))',
+        "fstring": 'log.info(f"heard {heard!r}")',
+        "key": 'log.info("%s", item["text"])',
+        "get": 'log.info("%s", item.get("text"))',
+        "either": 'log.info("%s", text or "(none)")',
+    }
+    for shape, code in quoting.items():
+        assert _log_calls_quoting_text({shape: code}), f"{shape} got past: {code}"
+    clean = {
+        "count": 'log.info("repaired %d", len(applied))',
+        "sum": 'log.info("%d", sum(len(p) for p in pairs))',
+        "attr": 'log.info("%s via %s", answer.target, answer.backend)',
+        "seconds": 'log.info("%.1f s", heard["seconds"])',
+        "flag": 'log.info("%s", ", with text" if text.strip() else "")',
+        "compare": 'log.info("%s", reply == "")',
+        "debug": 'log.debug("%s", text)',
+        "other": 'transcript_log.info("OK | %s", text)',
+    }
+    for shape, code in clean.items():
+        assert not _log_calls_quoting_text({shape: code}), f"{shape} flagged: {code}"
 
 
 def test_app_log_never_quotes_text():
@@ -32161,6 +32287,46 @@ def test_app_log_never_quotes_text():
         ssrc = inspect.getsource(server_mod)
         assert 'log.info("open this on the phone: %s", self.url)' not in ssrc
         assert "Local URL: %s" not in ssrc
+        # 5b. the 2026-09-23 audit's sites, driven: the learned-pair
+        # repair on every dictation (main._improve) and a rejected
+        # second-reading card (review._learn). Counts to app.log, the
+        # words to transcripts.log.
+        import types
+        app.cfg = types.SimpleNamespace(vocab=types.SimpleNamespace(enabled=True))
+        app.vocab = types.SimpleNamespace(
+            apply=lambda t: (t, [f"heard-{marker} -> meant-{marker}"]))
+        assert app._improve("some text", wait=False) == "some text"
+        engine = review_mod.Engine.__new__(review_mod.Engine)
+        engine._learn({"id": "r1", "status": review_mod.REJECTED, "by": "card",
+                       "changes": [{"before": "before-" + marker,
+                                    "after": "after-" + marker}]})
+        # ...and a repair reply the guard throws away (polish.py): it is
+        # the dictation near enough, so it is kept where words are kept
+        import dataclasses
+
+        import polish as polish_mod
+
+        class _Rewriter:
+            name = "rewriter"
+
+            def translate(self, text):
+                return f"an entirely different paragraph {marker} about other things"
+
+        pcfg = config_mod.load(REPO / "defaults.toml")
+        pcfg = dataclasses.replace(pcfg, polish=config_mod.PolishConfig(
+            when="always", min_chars=1, max_wait_s=5))
+        pol = polish_mod.Polisher(pcfg, _tmp_vocab())
+        pol._backends = lambda text: iter([_Rewriter()])
+        said = "תריץ את השרת בבקשה ותגיד לי מה קרה שם"
+        assert pol.polish(said) == (said, None)
+        assert any(l.startswith("polish REJECTED from rewriter") for l in app_lines), app_lines
+        assert any("POLISH-REJECTED | rewriter" in l and marker in l for l in tx_lines), tx_lines
+        assert any(l.startswith("repaired 1 learned") for l in app_lines), app_lines
+        assert any(l.startswith("review r1 rejected") for l in app_lines), app_lines
+        assert any("REPAIRED" in l and marker in l for l in tx_lines), tx_lines
+        assert any("REVIEW | rejected" in l and marker in l for l in tx_lines), tx_lines
+        assert not any(marker in l for l in app_lines), \
+            [l for l in app_lines if marker in l]
         # 6. and every other site, statically: no app-log call in a
         # product module hands a text-shaped variable to its format as
         # it is. len(text) is fine, text is not; the paste line quoted
@@ -34248,6 +34414,31 @@ def test_network_md_matches_net_py():
                     "ollama", "notify", "account", "sync", "history", "report"):
         assert f"`{purpose}`" in page, purpose
     assert "us.aws.cdn.hf.co" in page and "Offline" in page
+
+
+def test_diagnose_leaves_out_log_lines_that_hold_hebrew():
+    """The second belt behind D8 (2026-09-23 audit: 136 lines with Hebrew
+    in six days of the owner's app.log, and Copy diagnostics says "no
+    transcripts"): a line of app.log's tail that holds a Hebrew letter
+    or point is left out of the block, and the header says how many."""
+    import problems as problems_mod
+
+    tmp = Path(tempfile.mkdtemp(prefix="deskit-diag-he-"))
+    try:
+        log_path = tmp / "app.log"
+        log_path.write_text("\n".join(
+            ["line 0", "repaired 1 learned mishearing(s): שלום -> שולם",
+             "line 2", "review: fixed the text in the field: בדיקה",
+             "pointed: ָ only", "line 5"]) + "\n", "utf-8")
+        with _patched(paths, "APP_LOG", log_path), _patched(paths, "LOGS_DIR", tmp):
+            block = problems_mod.diagnose()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    tail = block.split("--- app.log")[1]
+    assert not problems_mod.HEBREW.search(tail), tail
+    assert "last 6 lines (3 left out: they held Hebrew words) ---" in tail, tail
+    for kept in ("line 0", "line 2", "line 5"):
+        assert kept in tail.splitlines(), kept
 
 
 def test_diagnose_block_is_safe_to_paste():
@@ -39325,9 +39516,9 @@ def test_the_sync_follows_the_account():
             privacy.grant("history_sync", "deskit-terms-0+en-2020-01-01")
         migrations._the_lock_asks_nothing_new()                  # another old version: not carried
         assert privacy.consent("history_sync") is None
-        assert [n for n, _fn in migrations.STEPS] == [2, 3, 4]
+        assert [n for n, _fn in migrations.STEPS] == [2, 3, 4, 5]
         import version
-        assert version.CONFIG_VERSION == 4
+        assert version.CONFIG_VERSION == 5
         for kind in privacy.SYNC_KINDS:
             words = " ".join(t for _l, t in cc.card_for(kind)["blocks"]).lower()
             assert "technically" not in words and "cannot" in words, (kind, words)
@@ -39340,6 +39531,82 @@ def test_the_sync_follows_the_account():
         policy = " ".join((REPO / "docs" / "privacy.md").read_text("utf-8").split())
         assert "Both come with the account" in policy and "Withdraw" in policy
         assert "the two sync consents" in policy, "the policy does not say the press grants both"
+    finally:
+        for kind in all_three:
+            privacy.withdraw(kind)
+
+
+def test_the_account_words_say_what_the_sign_in_press_turns_on():
+    """The sign-in press grants the account AND both syncs
+    (privacy.sign_in_grants), and the syncs store what was said and the
+    cloud keys in the account, sealed (sb._sync_history, sb._sync_vault).
+    Until 2026-09-23 every surface that meets a person before or around
+    that press said the opposite — "Never stored: your voice, what you
+    said, your keys" above the button, "your keys never travel there" on
+    the account card, "Every sync stays off until you turn it on" on the
+    desk's landing, "never sent to the developer" beside the key field,
+    "no column that could hold a key" on NETWORK.md. The owner kept the
+    syncs on (2026-09-20) and had the words fixed: only the voice stays,
+    the rest is kept in the account, what was said and the keys locked.
+    The account card's words changed, so its version bumped — and a row
+    given under the old words is carried forward (nothing new leaves
+    under that gate), by migration step 5 and, for a copy old enough to
+    run step 2 first, by step 2 before it reads the row."""
+    import consent_card as cc
+    import dashboard as dash
+    import firstrun
+    import migrations
+    import privacy
+    import secretstore
+
+    assert set(privacy.SYNC_KINDS) == {"settings_sync", "history_sync"}
+    shown = {"account.never": firstrun.WORDS["account.never"],
+             "account.never.signin": firstrun.WORDS["account.never.signin"],
+             "landing": dash.Dashboard.LANDING_STORED}
+    for where, words in shown.items():
+        low = words.lower()
+        assert "never stored" not in low and "stays off" not in low, (where, words)
+        assert "only your voice never leaves this pc" in low, (where, words)
+        for must in ("what you said", "cloud keys", "learned words", "settings",
+                     "locked with a key only your own pcs hold"):
+            assert must in low, (where, must)
+        assert "turns this off" in low or "turn this off" in low, (where, words)
+    card = " ".join(t for _l, t in cc.card_for("account")["blocks"]).lower()
+    assert "never travel" not in card and "no column" not in card, card
+    assert "cloud keys" in card and "what you said" in card and "locked" in card, card
+    assert cc.card_for("account")["text_version"] == privacy.TEXT_VERSIONS["account"]
+    old = "deskit-terms-0+en-2026-09-19"
+    assert old != privacy.TEXT_VERSIONS["account"] and old in privacy.CARRIED_FORWARD["account"]
+    for name in secretstore.KEY_HOSTS:
+        sentence = secretstore.storage_sentence(name)
+        assert "never sent to the developer" not in sentence, sentence
+        assert "your account" in sentence and "only your own PCs hold" in sentence, sentence
+        assert f"as it is only to {secretstore.KEY_HOSTS[name]}" in sentence, sentence
+    page = (REPO / "NETWORK.md").read_text("utf-8")
+    assert "no column that could hold a" not in page
+    assert "- A key to any host but the one provider" not in page
+
+    # the carry: a row under the old words reads stale, step 5 makes it
+    # current with the date it was given; step 2 does it before it reads
+    assert str(_SCRATCH_HOME) in str(paths.CONSENT_FILE), paths.CONSENT_FILE
+    all_three = ("account",) + privacy.SYNC_KINDS
+    for kind in all_three:
+        privacy.withdraw(kind)
+    try:
+        with _patched(privacy, "TEXT_VERSIONS", {**privacy.TEXT_VERSIONS, "account": old}):
+            privacy.grant("account", old)
+            given = privacy.consent("account")["when"]
+        assert privacy.consent("account") is None, "the old row is not stale"
+        migrations._the_account_words_ask_nothing_new()
+        row = privacy.consent("account")
+        assert row is not None and row["carried_from"] == old and row["when"] == given, row
+        assert (5, migrations._the_account_words_ask_nothing_new) in migrations.STEPS
+        privacy.withdraw("account")
+        with _patched(privacy, "TEXT_VERSIONS", {**privacy.TEXT_VERSIONS, "account": old}):
+            privacy.grant("account", old)
+        migrations._sync_follows_the_account()
+        assert privacy.consent("account") is not None
+        assert privacy.consent("settings_sync") is not None, "step 2 read the old row as signed out"
     finally:
         for kind in all_three:
             privacy.withdraw(kind)

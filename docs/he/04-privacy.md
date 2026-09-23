@@ -24,7 +24,7 @@ title: 4. פרטיות, ואיך לבדוק בעצמך
 
 הניסוח שליד כל שדה מפתח, כדי שתראה אותו לפני שתדביק מפתח:
 
-> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it only to api.groq.com. It is never written to a file, a log or a report, and never sent to the developer — see Settings > Privacy > EVERY CONNECTION for every request.
+> This key is stored in Windows Credential Manager on this PC (Control Panel > Credential Manager > Windows Credentials > DeskIT/groq). DeskIT sends it as it is only to api.groq.com. While your settings sync to your account, a copy goes to your account too, locked with a key only your own PCs hold. It is never written to a file, a log or a report — see Settings > Privacy > EVERY CONNECTION for every request.
 
 כלומר: המפתח נשמר במנהל האישורים של חלונות במחשב הזה, נשלח רק לשרת של הספק שלו, אף פעם לא
 נכתב לקובץ, ליומן או לדיווח, ואף פעם לא נשלח למפתח התוכנה — כל בקשה רשומה במקום Network.

@@ -267,7 +267,9 @@ def _safe_choice(primary: str, candidates: list[str],
             continue
         if len(lw) > 2 and lw[0] in _PREFIXES and lw[1:] in allowed:
             continue                      # ...and "סירקה" allows "בסירקה"
-        return False, f"{w!r} appears in no decode of this audio"
+        # Not the word: this reason is logged to app.log (D8 — counts
+        # and names only there, and Copy diagnostics copies its tail).
+        return False, "a word of the reply appears in no decode of this audio"
     return True, ""
 
 

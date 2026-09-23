@@ -110,12 +110,20 @@ KEY_HOSTS: dict[str, str] = {"groq": "api.groq.com",
 def storage_sentence(name: str) -> str:
     """The fixed wording next to every key field (plan arch-B section 4,
     D12): the Privacy tab's block draws it, the guide quotes it from
-    docs/strings/keys.json, and a test holds the two equal."""
+    docs/strings/keys.json, and a test holds the two equal.
+
+    Until 2026-09-23 it said the key was "never sent to the developer",
+    while the settings sync puts a sealed copy in the account's vault
+    table on DeskIT's server (vault.export_keys, sb._sync_vault) — true
+    of what the developer can READ, not of where it goes. It says both
+    halves now: as it is, only to its provider; locked, to the account."""
     return (f"This key is stored in Windows Credential Manager on this PC "
             f"(Control Panel > Credential Manager > Windows Credentials > "
-            f"{target(name)}). DeskIT sends it only to {KEY_HOSTS[name]}. It is "
-            f"never written to a file, a log or a report, and never sent to the "
-            f"developer — see Settings > Privacy > EVERY CONNECTION for every request.")
+            f"{target(name)}). DeskIT sends it as it is only to {KEY_HOSTS[name]}. "
+            f"While your settings sync to your account, a copy goes to your account "
+            f"too, locked with a key only your own PCs hold. It is never written to "
+            f"a file, a log or a report — see Settings > Privacy > EVERY CONNECTION "
+            f"for every request.")
 
 
 def _cred_read(name: str) -> str | None:

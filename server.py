@@ -472,7 +472,9 @@ class _Handler(BaseHTTPRequestHandler):
             # someone to check Ollama; this means the model answered and
             # rewrote their words, and the app threw that away — which is
             # the guard working, not breaking.
-            log.error("phone punctuation discarded: %s. Text untouched.", e)
+            # The phone's reply names the word; app.log does not (D8).
+            log.error("phone punctuation discarded: %s. Text untouched.",
+                      getattr(e, "logged", "the words changed"))
             self._json(409, {"error": f"left it alone — the model rewrote "
                                       f"your words ({e})", "unsafe": True})
             return

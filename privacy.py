@@ -86,7 +86,9 @@ TEXT_VERSIONS: dict[str, str] = {
     "cloud_text": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-21",
     "cloud_audio": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
     "cloud_screenshots": "groq-2026-06-22+gemini-2026-04-28+en-2026-09-19",
-    "account": "deskit-terms-0+en-2026-09-19",
+    # 2026-09-23: the words stop promising the keys never travel there
+    # (they go sealed, through the syncs); carried forward, see below.
+    "account": "deskit-terms-0+en-2026-09-23",
     "report_upload": "deskit-terms-0+en-2026-09-19",
     "settings_sync": "deskit-terms-0+en-2026-09-21",
     "history_sync": "deskit-terms-0+en-2026-09-21",
@@ -96,9 +98,17 @@ TEXT_VERSIONS: dict[str, str] = {
 #: again: the 2026-09-21 words promise strictly LESS than the ones they
 #: replace (what was said, and the keys, leave the PC locked; nothing
 #: new leaves), so a row given under the old words stands.
+#: The account card's 2026-09-23 words send nothing new either: what
+#: leaves under the account gate is the same id, e-mail, PC name and
+#: versions; the sentence that changed was about what the SYNCS send —
+#: "your keys never travel there", false since the lock — and the sync
+#: cards have said what they send all along. Asking every signed-in
+#: copy to say yes to its own account again would turn the account off
+#: until it answered and change nothing that leaves.
 CARRIED_FORWARD: dict[str, tuple[str, ...]] = {
     "settings_sync": ("deskit-terms-0+en-2026-09-19",),
     "history_sync": ("deskit-terms-0+en-2026-09-19",),
+    "account": ("deskit-terms-0+en-2026-09-19",),
 }
 
 #: net.py's purpose -> the gate it needs. A purpose absent here (key

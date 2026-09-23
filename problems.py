@@ -280,6 +280,10 @@ def _consents() -> list[dict]:
 
 DIAGNOSE_LINES = 50
 
+#: A Hebrew letter or point (the block, and the presentation forms): an
+#: app.log line holding one quotes words, and diagnose() leaves it out.
+HEBREW = re.compile("[֐-׿יִ-ﭏ]")
+
 
 def diagnose(cfg=None) -> str:
     """One text block for a bug report (plan 14.7): env()'s whitelist,
@@ -317,8 +321,18 @@ def diagnose(cfg=None) -> str:
         lines.append(f"settings: failed ({e})")
     try:
         tail = paths.APP_LOG.read_text("utf-8", errors="replace").splitlines()[-DIAGNOSE_LINES:]
-        lines.append(f"--- app.log, last {len(tail)} lines ---")
-        lines.extend(tail)
+        # The second belt behind D8: app.log is meant to carry counts and
+        # names only, and a line that carries Hebrew anyway is a line that
+        # quotes somebody's words — the 2026-09-23 audit counted 136 such
+        # lines in six days of the owner's app.log, under a header that
+        # says "no transcripts". Left out, and counted, so the block
+        # still says how many lines it is not showing.
+        kept = [line for line in tail if not HEBREW.search(line)]
+        held = len(tail) - len(kept)
+        lines.append(f"--- app.log, last {len(tail)} lines ---" if not held else
+                     f"--- app.log, last {len(tail)} lines ({held} left out: "
+                     f"they held Hebrew words) ---")
+        lines.extend(kept)
     except Exception as e:                # noqa: BLE001
         lines.append(f"app.log: unreadable ({e})")
     try:

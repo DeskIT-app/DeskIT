@@ -37,8 +37,10 @@ Two cards, one question each. There is no way past this page without an account.
 **New to DeskIT?** — **Create an account**. A field for your name (what DeskIT calls you —
 the account needs one, so **Continue with Google** wakes once you have typed it), what the
 account is for (your learned words and settings follow you to any PC you sign in on), what is
-stored (the id and e-mail of the Google account you pick, the name you type) and what never is
-(your voice, what you said, your keys). **Continue with Google** opens the browser once; this
+stored (the id and e-mail of the Google account you pick, the name you type), and that only
+your voice never leaves this PC: your learned words and settings are kept in your account, and
+so are what you said and your cloud keys, locked with a key only your own PCs hold (the last
+page turns this off). **Continue with Google** opens the browser once; this
 PC remembers you until you sign out, and the rest of the setup follows.
 
 **Used DeskIT before?** — **I have an account**. **Sign in with Google** with the account you
