@@ -1759,8 +1759,9 @@ class Wizard:
     # ------------------------------------------------------- the link step
     # The account lock (2026-09-21, what Apple's "approve from another
     # device" and Bitwarden's log-in-with-device do): this PC asked to
-    # join and shows an eight-character code; the other PC's card shows
-    # the same one and the person presses Approve there. This page waits
+    # join and shows a ten-character code made from its own key; the
+    # other PC's card works the same code out from that key and the
+    # person presses Approve there. This page waits
     # (sb.poll_lock every LINK_POLL_S), offers the recovery key for the
     # day no other PC is at hand, and Later for now — the desk's Account
     # card carries the request on.

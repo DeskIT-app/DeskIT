@@ -38416,6 +38416,7 @@ class _fixture_project:
         import secretstore
         secretstore.delete("supabase_session")
         secretstore.delete("account_key")
+        secretstore.delete("account_key_aside")
         self.sb.forget_cache()
         self.sb._status.update(busy="", last_error="", last_sync="", signin_url="")
         self.sb._device_names.update(at=0.0, names={})       # the other PCs' names, believed 10 min
@@ -38830,7 +38831,8 @@ class _pc:
         self.home = Path(tempfile.mkdtemp(prefix=f"deskit-pc-{name}-"))
         self.state = {"sb": {"_cache": {"loaded": False, "session": None},
                              "_lock_state": {"at": 0.0, "state": "", "lock_id": "", "pairing": None,
-                                             "pending": [], "recovery": None, "error": ""},
+                                             "pending": [], "recovery": None, "error": "",
+                                             "changed": None},
                              "_device_names": {"at": 0.0, "names": {}},
                              "_seen_pairings": set(), "_pending": set()},
                       "vault": {"_applicants": {}}}
@@ -38935,8 +38937,9 @@ def test_vault_seals_hands_over_and_recovers_through_cng():
         # the recovery key
         recovery = vault.new_recovery()
         assert re.fullmatch(r"([0-9A-HJKMNP-TV-Z]{4}-){5}[0-9A-HJKMNP-TV-Z]{4}", recovery), recovery
-        code = vault.new_code()
-        assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}", code), code
+        assert not hasattr(vault, "new_code"), "a random pairing code is back"
+        code = vault.pairing_code(uid, "req-1", pub)
+        assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}", code), code
         assert vault.normalize("0l1o-abcd", 8) == "0110ABCD" and vault.normalize("ABCD-EFG", 8) is None \
             and vault.normalize("ABCD-EFGU", 8) is None and vault.pretty("0110ABCD") == "0110-ABCD"
         raad = vault.AAD_RECOVERY.format(uid=uid)
@@ -38985,7 +38988,7 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
     the wire has `cipher` and no `text`; the words appear in no request)
     and its Credential Manager key as a sealed vault row. B signs in:
     its pass finds the lock taken, opens a request (a `pairings` row with
-    B's public key and an eight-character code), says "waiting", pushes
+    B's public key and a ten-character code computed from that key), says "waiting", pushes
     nothing of what was said, and still syncs its words and settings. A
     sees the request (once, through PAIRING_HOOKS, with B's name and the
     same code) and approves: the row gets the key wrapped to B's public
@@ -39054,12 +39057,13 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
                 assert out["history"] == "waiting for the lock" and out["vault"] == "waiting for the lock", out
                 assert out["settings"] in ("pulled", "pushed", "same"), out
                 lock = sb.status()["lock"]
-                assert lock["state"] == "waiting" and re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}", lock["code"]), lock
+                assert lock["state"] == "waiting" and re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}", lock["code"]), lock
                 assert vault.key(fake.UID) is None
                 assert len(fake.tables["history"]) == 1, "B pushed while waiting"
                 req = fake.tables["pairings"][0]
-                assert req["device_name"] == "laptop" and req["code"] == lock["code"].replace("-", "") \
+                assert req["device_name"] == "laptop" and req["code"] == lock["code"].replace("-", "")[:8] \
                     and req["applicant"].startswith("p1.") and req.get("handed") is None, req
+                assert lock["code"] == vault.pairing_code(fake.UID, req["id"], req["applicant"])
                 assert set(req) == {"id", "user_id", "device_id", "device_name", "code", "applicant", "updated_at"}
                 pairing = [m for m in fake.broadcasts if m["messages"][0]["event"] == "pairing"]
                 assert len(pairing) == 1 and pairing[0]["messages"][0]["payload"]["code"] == lock["code"]
@@ -39156,7 +39160,9 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
                 assert out["history"] == "pulled 2, pushed 0" and sb.status()["lock"]["state"] == "have", out
                 assert fake.tables["pairings"] == []
 
-            # ---- A: a fingerprint that changed under it drops the key and asks
+            # ---- A: a fingerprint that changed under it KEEPS the key and
+            # pauses (it dropped it and asked to join until 2026-09-23 —
+            # the audit's A15; test_a_changed_lock_* has the whole story)
             with a:
                 fake.tables["profiles"][0]["lock_id"] = "0" * 16
                 # "the last look at the lock was longer ago than LOCK_TTL_S":
@@ -39166,17 +39172,365 @@ def test_the_lock_is_made_once_and_a_second_pc_joins_by_approval_or_recovery():
                 # its key, state "have"); this PC has been up for hours
                 sb._lock_state["at"] = time.monotonic() - sb.LOCK_TTL_S - 1
                 out = sb.sync_now()
-                assert vault.key(fake.UID) is None and sb.status()["lock"]["state"] == "waiting", (out, sb.status()["lock"])
-                assert out["history"] == "waiting for the lock"
+                assert vault.key(fake.UID) == a_key and sb.status()["lock"]["state"] == "changed", (out, sb.status()["lock"])
+                assert out["history"] == "paused — the lock changed" and out["vault"] == "paused — the lock changed", out
+                assert fake.tables.get("pairings", []) == [], "A asked to join a lock it did not hold"
                 # delete my account forgets everything of the lock
                 fake.tables["profiles"][0]["lock_id"] = fp
-                vault.keep(fake.UID, a_key)
                 sb.delete_account()
                 assert vault.key(fake.UID) is None and sb.status()["lock"] == {
-                    "state": "", "id": "", "code": "", "pending": [], "recovery": None, "error": ""}
+                    "state": "", "id": "", "code": "", "pending": [], "recovery": None, "error": "",
+                    "changed": None}
     finally:
         for pc in (a, b, c):
             pc.gone()
+
+
+def test_the_pairing_code_is_computed_from_the_applicants_key_on_both_sides():
+    """The code both screens show is the request's own (2026-09-23, the
+    audit's A35/A74 — it was random, so a copy of a real request with
+    another public key carried the real code and got the account key):
+    vault.pairing_code over the account, the request id and the
+    applicant's public key, ten characters of a slow hash. The same
+    inputs give the same code on both PCs; another key, another request
+    or another account gives another; the column holds an eight-character
+    hint that fits 0004's check and that the approver never reads.
+    Against the fake project: B asks; a twin with B's name and B's code
+    column but another key shows ANOTHER code on A; two open requests of
+    one PC are one entry with `twins`, no code and no knock, and
+    approving either is refused; a twin written after Home showed the
+    real one is caught at the approval; a row written again under the
+    shown id with another key is refused; the real one alone is
+    approved, and B takes the key."""
+    import sb
+    import secretstore
+    import vault
+
+    uid = _FakeSupabase.UID
+    pub1, pub2 = vault.applicant("code-1"), vault.applicant("code-2")
+    try:
+        c1 = vault.pairing_code(uid, "code-1", pub1)
+        assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}", c1), c1
+        vault._codes.clear()
+        t0 = time.perf_counter()
+        assert vault.pairing_code(uid, "code-1", pub1) == c1, "the approver computes another code"
+        assert time.perf_counter() - t0 < 2.0, "the code's hash is too slow for a poll"
+        assert vault.CODE_ROUNDS >= 2 ** 17 and 5 * vault.CODE_CHARS >= 50, "the code got cheap to grind"
+        assert vault.pairing_code(uid, "code-1", pub2) != c1, "another key, the same code"
+        assert vault.pairing_code(uid, "code-2", pub1) != c1, "another request, the same code"
+        assert vault.pairing_code("another-uid", "code-1", pub1) != c1
+        hint = vault.code_hint(c1)
+        assert hint == c1.replace("-", "")[:8] and re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{8}", hint), hint
+        sql = (REPO / "supabase" / "migrations" / "0004_account_lock.sql").read_text("utf-8")
+        assert "code ~ '^[0-9A-HJKMNP-TV-Z]{8}$'" in sql, "the column's check moved: the hint must follow it"
+        try:
+            vault.pairing_code(uid, "code-3", "p1.AAAA")
+        except vault.VaultError:
+            pass
+        else:
+            raise AssertionError("a code for something that is not a public key")
+    finally:
+        vault.drop("code-1")
+        vault.drop("code-2")
+
+    a, b = _pc("A", "DeskIT.test"), _pc("B", "DeskIT.testB")
+    asked: list[dict] = []
+    twin_pub = vault.applicant("twin")                      # somebody else's key
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), \
+                _patched(sb, "PAIRING_HOOKS", [asked.append]):
+            session = json.dumps(fake.session("p@example.com"))
+
+            def sign_in(name):
+                secretstore.set("supabase_session", session)
+                sb.forget_cache()
+                config_mod.save({"account.device_name": name})
+
+            with a:
+                sign_in("desk")
+                sb.sync_now()
+                assert sb.status()["lock"]["state"] == "have"
+            with b:
+                sign_in("laptop")
+                sb.sync_now()
+                b_code = sb.status()["lock"]["code"]
+                real = dict(fake.tables["pairings"][0])
+            assert real["code"] == vault.code_hint(b_code)
+            # the copy: the name and the code column B wrote, another key
+            twin = dict(real, id="99999999-0000-0000-0000-000000000001",
+                        device_id="somebody-else", applicant=twin_pub)
+            fake.tables["pairings"].append(twin)
+            with a:
+                shown = {p["id"]: p for p in sb.pending_pairings()}
+                assert shown[real["id"]]["code"] == b_code, "A shows another code than B"
+                assert shown[twin["id"]]["code"] and shown[twin["id"]]["code"] != b_code, \
+                    "the copy shows the real request's code"
+                # the same PC twice: one entry, no code, no knock, no approval
+                fake.tables["pairings"].remove(twin)
+                twin["device_id"] = real["device_id"]
+                fake.tables["pairings"].append(twin)
+                asked.clear()
+                sb._seen_pairings.clear()               # as if it were new: still no knock
+                pending = sb.pending_pairings()
+                assert len(pending) == 1 and pending[0]["twins"] == 2 and pending[0]["code"] == "", pending
+                assert sb.status()["lock"]["pending"][0]["twins"] == 2
+                assert asked == [], "a knock for a request nobody can approve"
+                for pid in (real["id"], twin["id"]):
+                    try:
+                        sb.approve_pairing(pid)
+                    except sb.AccountError as e:
+                        assert "Home" in str(e), str(e)
+                    else:
+                        raise AssertionError("one of two twins was approved")
+                assert all(r.get("handed") is None for r in fake.tables["pairings"])
+                # Home shows the real one alone; a twin arrives after: caught at the press
+                fake.tables["pairings"].remove(twin)
+                assert [(p["id"], p["code"]) for p in sb.pending_pairings()] == [(real["id"], b_code)]
+                fake.tables["pairings"].append(twin)
+                try:
+                    sb.approve_pairing(real["id"])
+                except sb.AccountError as e:
+                    assert "neither" in str(e), str(e)
+                else:
+                    raise AssertionError("approved while a twin waited")
+                fake.tables["pairings"].remove(twin)
+                # the shown row, written again under its id with another key
+                row = next(r for r in fake.tables["pairings"] if r["id"] == real["id"])
+                row["applicant"] = twin_pub
+                try:
+                    sb.approve_pairing(real["id"])
+                except sb.AccountError as e:
+                    assert "changed after Home showed it" in str(e), str(e)
+                else:
+                    raise AssertionError("approved a request whose key changed after it was shown")
+                assert row.get("handed") is None
+                row["applicant"] = real["applicant"]
+                assert sb.approve_pairing(real["id"]) == "laptop"
+            with b:
+                sb.sync_now()
+                assert sb.status()["lock"]["state"] == "have", sb.status()["lock"]
+    finally:
+        vault.drop("twin")
+        for pc in (a, b):
+            pc.gone()
+
+
+def test_a_changed_lock_keeps_the_key_pauses_the_sealed_syncs_and_waits_for_him():
+    """The PC is the lock's trust anchor, not the server (2026-09-23, the
+    audit's A15: one write of profiles.lock_id made every PC delete its
+    key, take the next key handed to it and push everything again under
+    it). Now: the profile names another lock -> this PC KEEPS its key
+    (the same bytes, the file still there), the lock is "changed" with
+    both fingerprints, history and the cloud keys say "paused — the lock
+    changed" and touch neither table in either direction, no request to
+    join is made (so there is nothing to hand a key to), and this PC
+    approves nobody. A restart asks again. [It wasn't me]: nothing moves,
+    the refusal survives a restart; [Put my lock back] writes this PC's
+    fingerprint over the one the server was given and the stores resume.
+    Another change, [It was me]: the key is MOVED ASIDE (never deleted),
+    this PC asks to join with a code computed from its key; a key handed
+    over for another lock is refused; the confirmed lock's key is taken.
+    Delete my account forgets the key and what was set aside."""
+    import sb
+    import secretstore
+    import vault
+
+    a = _pc("A", "DeskIT.test")
+    try:
+        with _fixture_project() as fake, _consented("account", "settings_sync", "history_sync"), a:
+            uid = fake.UID
+            a.log.write_text("2026-09-23 10:00:00,100 | OK | 1.0s | local | 0.4s latency | המילה הראשונה\n", "utf-8")
+            secretstore.set("supabase_session", json.dumps(fake.session("p@example.com")))
+            sb.forget_cache()
+            config_mod.save({"account.device_name": "desk"})
+            for n in secretstore.CRED_NAMES:
+                secretstore.delete(n)
+            out = sb.sync_now()
+            assert out["history"] == "pulled 0, pushed 1", out
+            a_key = vault.key(uid)
+            fp = vault.fingerprint(a_key)
+
+            def stale():
+                # "the last look was longer ago than LOCK_TTL_S" — see the
+                # three-PC test for why this is not 0.0
+                sb._lock_state["at"] = time.monotonic() - sb.LOCK_TTL_S - 1
+
+            # ---- the attack: the profile is given another lock
+            attacker = os.urandom(32)
+            fake.tables["profiles"][0]["lock_id"] = vault.fingerprint(attacker)
+            stale()
+            with a.log.open("a", encoding="utf-8") as f:
+                f.write("2026-09-23 10:01:00,100 | OK | 1.0s | local | 0.4s latency | המילה השנייה\n")
+            calls = len(fake.calls)
+            sb._lock_state["pending"] = [{"id": "req-9", "name": "laptop", "code": "7K2MQ-X9D4H", "created_at": ""}]
+            out = sb.sync_now()
+            assert vault.key(uid) == a_key, "the server's word took this PC's key"
+            assert sb.status()["lock"]["pending"] == [], "an Approve stayed up under a lock this PC does not trust"
+            assert (paths.SECRETS_DIR / "account_key.bin").is_file()
+            lock = sb.status()["lock"]
+            assert lock["state"] == "changed" and lock["changed"] == {
+                "server": vault.fingerprint(attacker)[:8], "mine": fp[:8], "refused": False}, lock
+            assert out["history"] == "paused — the lock changed" and out["vault"] == "paused — the lock changed", out
+            touched = {c["path"] for c in fake.calls[calls:]}
+            assert not touched & {"rest/v1/history", "rest/v1/vault", "rest/v1/pairings"}, touched
+            assert out["settings"] in ("pulled", "pushed", "same"), "the words and settings stopped too"
+            assert len(fake.tables["history"]) == 1, "pushed while the lock was changed"
+            assert sb.pending_pairings() == []
+            try:
+                sb.approve_pairing("00000000-0000-0000-0000-000000000000")
+            except sb.AccountError as e:
+                assert "does not hold" in str(e), str(e)
+            else:
+                raise AssertionError("approved while the lock was changed")
+            try:
+                sb.recover(vault.new_recovery())
+            except sb.AccountError as e:
+                assert "Home" in str(e), str(e)
+            else:
+                raise AssertionError("recovered while the lock was changed")
+            # a restart asks again, and nothing moved
+            sb._forget_lock_state()
+            sb.sync_now()
+            assert sb.status()["lock"]["state"] == "changed" and vault.key(uid) == a_key
+
+            # ---- [It wasn't me]: kept, paused, remembered
+            assert sb.lock_answer(False) == "kept"
+            assert vault.key(uid) == a_key and vault.refused(uid) == vault.fingerprint(attacker)
+            assert sb.status()["lock"]["changed"]["refused"] is True
+            sb._forget_lock_state()
+            out = sb.sync_now()
+            assert sb.status()["lock"]["changed"]["refused"] is True, "the refusal was forgotten on a restart"
+            assert out["history"] == "paused — the lock changed", out
+            # ---- [Put my lock back]
+            assert sb.restore_lock() == fp
+            assert fake.tables["profiles"][0]["lock_id"] == fp and vault.refused(uid) == ""
+            lock = sb.status()["lock"]
+            assert lock["state"] == "have" and lock["changed"] is None, lock
+            out = sb.sync_now()
+            assert out["history"] == "pulled 0, pushed 1", out
+            try:
+                sb.restore_lock()
+            except sb.AccountError:
+                pass
+            else:
+                raise AssertionError("put a lock back that was never refused")
+
+            # ---- another change, and this time it was him
+            other = os.urandom(32)
+            fake.tables["profiles"][0]["lock_id"] = vault.fingerprint(other)
+            stale()
+            sb.sync_now()
+            assert sb.status()["lock"]["state"] == "changed"
+            assert sb.lock_answer(True) == "asked"
+            assert vault.key(uid) is None and vault.aside(uid) == [fp], vault.aside(uid)
+            assert (paths.SECRETS_DIR / "account_key_aside.bin").is_file()
+            assert a_key not in (paths.SECRETS_DIR / "account_key_aside.bin").read_bytes(), "the key set aside is not DPAPI"
+            assert vault.confirmed(uid) == vault.fingerprint(other)
+            lock = sb.status()["lock"]
+            req = fake.tables["pairings"][-1]
+            assert lock["state"] == "waiting" and lock["code"] == vault.pairing_code(uid, req["id"], req["applicant"]), lock
+            # a key handed over for ANOTHER lock than the one he confirmed: refused
+            req["handed"] = vault.hand_over(attacker, req["applicant"],
+                                            vault.AAD_PAIRING.format(uid=uid, pairing_id=req["id"]))
+            sb.sync_now()
+            assert vault.key(uid) is None and sb.status()["lock"]["state"] == "waiting"
+            assert all(r["id"] != req["id"] for r in fake.tables["pairings"]), "the refused hand-over stayed"
+            # the confirmed lock's key: taken
+            req = fake.tables["pairings"][-1]
+            req["handed"] = vault.hand_over(other, req["applicant"],
+                                            vault.AAD_PAIRING.format(uid=uid, pairing_id=req["id"]))
+            sb.sync_now()
+            assert vault.key(uid) == other and sb.status()["lock"]["state"] == "have"
+            assert vault.aside(uid) == [fp], "the old key did not stay set aside"
+            # ---- Delete my account: the key and what was set aside go
+            sb.delete_account()
+            assert vault.key(uid) is None and vault.aside(uid) == [] and vault.confirmed(uid) is None
+            assert not (paths.SECRETS_DIR / "account_key_aside.bin").exists()
+    finally:
+        a.gone()
+
+
+def test_a_changed_lock_is_a_row_on_home_and_one_knock():
+    """The desk's side of a changed lock (2026-09-23): a ROW on Home's
+    pile, never a card that asks by itself (the owner's rule) — "The lock
+    of your account changed — not on this PC. Was it you?" with [It
+    wasn't me] / [It was me] sending `account` `lock_answer` no / yes;
+    after the refusal, [Put my lock back] (`lock_restore`) and [Sign
+    out], which only goes to Settings > Account. Two requests from one
+    PC are a row with [Not now] and no Approve. No recovery-key row while
+    the lock is changed. The app knocks ONCE per changed lock through its
+    own notification door (source `account`, the desk link) and takes it
+    down once he answered; the pipe verb wants yes or no."""
+    import dashboard
+    import notify as notify_mod
+    import sb
+
+    board = dashboard.Dashboard.__new__(dashboard.Dashboard)
+    board.running = True
+    account = {"signed_in": True, "lock": {}}
+    board.status = {"account": account}
+    sent: list = []
+    board._lock_do = lambda do, said, **args: sent.append((do, args))
+    changed = {"state": "changed", "id": "d8de920c", "code": "", "pending": [], "recovery": False,
+               "error": "", "changed": {"server": "00ff00ff", "mine": "d8de920c", "refused": False}}
+    account["lock"] = json.loads(json.dumps(changed))
+    rows = board._waiting_lock()
+    assert len(rows) == 1, rows
+    assert "lock of your account changed" in rows[0]["text"] and "Was it you?" in rows[0]["text"]
+    assert [b[0] for b in rows[0]["buttons"]] == ["It wasn't me", "It was me"]
+    for label, tone, press in rows[0]["buttons"]:
+        press()
+    assert sent == [("lock_answer", {"kind": "no"}), ("lock_answer", {"kind": "yes"})], sent
+    account["lock"]["changed"]["refused"] = True
+    rows = board._waiting_lock()
+    assert len(rows) == 1 and rows[0]["text"].startswith("Not you"), rows
+    assert [b[0] for b in rows[0]["buttons"]] == ["Put my lock back", "Sign out"]
+    rows[0]["buttons"][0][2]()
+    assert sent[-1] == ("lock_restore", {})
+    assert rows[0]["buttons"][1][2] == board._lock_go_account, "Sign out does more than show the way"
+    account["lock"]["changed"]["mine"] = ""        # its key was set aside already: nothing to put back
+    assert [b[0] for b in board._waiting_lock()[0]["buttons"]] == ["Sign out"]
+    account["lock"] = {"state": "have", "id": "d8de920c", "code": "", "recovery": True, "error": "",
+                       "changed": None,
+                       "pending": [{"id": "req-9", "name": "laptop", "code": "", "twins": 2, "created_at": ""}]}
+    rows = board._waiting_lock()
+    assert len(rows) == 1 and rows[0]["text"].startswith("Two requests say they are laptop"), rows
+    assert [b[0] for b in rows[0]["buttons"]] == ["Not now"], "a twin can be approved"
+    rows[0]["buttons"][0][2]()
+    assert sent[-1] == ("decline", {"kind": "req-9"})
+
+    # the app: one knock per changed lock, down once answered
+    main_mod = __import__("main")
+    app = main_mod.App.__new__(main_mod.App)
+    said: list[str] = []
+    app._say = said.append
+    received: list = []
+    dismissed: list = []
+
+    class Engine:
+        def receive(self, payload, **kw):
+            received.append(notify_mod.clean(payload))
+            return {"ok": True}
+
+        def dismiss_source(self, source, **kw):
+            dismissed.append(source)
+            return 1
+    app.notify = Engine()
+    lock = json.loads(json.dumps(changed))
+    with _patched(sb, "lock_status", lambda: lock):
+        app._pairing_settled()
+        app._pairing_settled()
+        assert len(received) == 1 and dismissed == [], (received, dismissed)
+        note = received[0]
+        assert note["source"] == "account" and note["title"] == "The lock of your account changed"
+        assert note["link"] == notify_mod.DESK_LINK and "was it you" in note["body"].lower()
+        assert said and "Home" in said[-1]
+        lock["changed"]["refused"] = True
+        app._pairing_settled()
+        assert len(received) == 1 and dismissed == ["account"]
+    with _patched(sb, "configured", lambda: True):
+        reply = app._account_command("lock_answer", kind="maybe")
+        assert not reply["ok"] and "yes or no" in reply["error"], reply
 
 
 def test_sb_imports_are_narrow():

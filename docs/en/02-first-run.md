@@ -46,7 +46,7 @@ used on the other PC, and that is all: your learned words, settings and what you
 down and DeskIT opens by itself — no microphone, sentence, keys or extras pages, only the downloads page if
 this PC still lacks something. The microphone and the keys are the usual ones until you
 change them in Settings. What you said and your cloud keys are locked with a key only your
-own PCs hold, so one more step: the page shows an eight-character code and waits; open the desk
+own PCs hold, so one more step: the page shows a ten-character code and waits; open the desk
 on your other PC — Home there shows the same code — and press **Approve**. Everything
 locked then arrives here too. No other PC at hand? Type the recovery key DeskIT made for you
 (Settings > Account > The lock, on any PC that is in). Or **Later**: DeskIT works meanwhile

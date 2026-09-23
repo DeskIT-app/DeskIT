@@ -37,7 +37,9 @@ one Realtime topic per account that carries nothing but "go and pull".
   whether it holds the right key, opens nothing). `recovery` is the
   account key wrapped under a recovery key the app generated and you
   keep (scrypt, then AES-GCM). `pairings` is a new PC's request to
-  join: its public key, the eight-character code it shows, and — once a
+  join: its public key, the first eight characters of the code it shows
+  (a hint for a person reading the table: both PCs work the code out
+  from the public key and never read this column), and — once a
   PC that holds the key approved it — the key wrapped to that public
   key; fifteen minutes, one use. Every opaque column carries
   `is_sealed()` (a version tag and standard base64) in place of

@@ -9761,8 +9761,23 @@ class Dashboard:
                         "account. Making a new one replaces it.",
                 "buttons": [("Copy", "gold", self._lock_copy), ("Done", "quiet", self._lock_done)],
             })
+        rows += self._lock_changed_rows(lock, now)
         for ask in lock.get("pending") or []:
             name = ask.get("name") or "Another PC"
+            if ask.get("twins"):
+                # two open requests from one PC: one of them is somebody
+                # else's copy (the audit's A74) — nothing to approve
+                rows.append({
+                    "at": now + 1, "kind": "lock", "mark": "keys", "mark_colour": ui.RED,
+                    "eyebrow": "Your account", "eyebrow_right": False,
+                    "text": f"Two requests say they are {name} — neither can be approved",
+                    "note": f"One of them is not your PC. On {name}, sign out and sign in again to "
+                            "ask afresh. Nobody of yours asking right now? Sign out in Settings > "
+                            "Account — it signs out every PC and anyone else in your account.",
+                    "buttons": [("Not now", "quiet",
+                                 lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))],
+                })
+                continue
             rows.append({
                 "at": now + 1, "kind": "lock", "mark": "keys", "mark_colour": ui.AMBER,
                 "eyebrow": "Your account", "eyebrow_right": False,
@@ -9801,6 +9816,55 @@ class Dashboard:
             })
         return rows
 
+    def _lock_changed_rows(self, lock: dict, now: float) -> list[dict]:
+        """The account's lock changed somewhere else (2026-09-23, the
+        audit's A15): this PC kept its key, what was said and the cloud
+        keys stopped syncing both ways, and the row asks — a row on
+        Home, never a card that asks by itself (the owner's rule). Signal
+        does the same when a contact's safety number changes: a notice in
+        the conversation, nothing trusted silently. [It was me] asks to
+        join the new lock (the old key is set aside, not deleted); [It
+        wasn't me] keeps everything as it is and then offers the way
+        out: Sign out (every session, a stolen one too) and Put my lock
+        back."""
+        ch = lock.get("changed") or {}
+        if lock.get("state") != "changed":
+            return []
+        if not ch.get("refused"):
+            return [{
+                "at": now + 3, "kind": "lock", "mark": "keys", "mark_colour": ui.RED,
+                "eyebrow": "Your account", "eyebrow_right": False,
+                "text": "The lock of your account changed — not on this PC. Was it you?",
+                "note": "Until you answer, what you said and your cloud keys stop syncing, both "
+                        "ways; this PC keeps its key. It was you: this PC asks to join the new "
+                        "lock — approve it from your other PC or type the recovery key. It "
+                        "wasn't: nothing here changes.",
+                "buttons": [("It wasn't me", "gold",
+                             lambda: self._lock_do("lock_answer", "kept", kind="no")),
+                            ("It was me", "quiet",
+                             lambda: self._lock_do("lock_answer", "asked", kind="yes"))],
+            }]
+        buttons = [("Sign out", "quiet", self._lock_go_account)]
+        if ch.get("mine"):                 # a key here to put back (not one set aside already)
+            buttons.insert(0, ("Put my lock back", "gold",
+                               lambda: self._lock_do("lock_restore", "put back")))
+        return [{
+            "at": now + 3, "kind": "lock", "mark": "keys", "mark_colour": ui.RED,
+            "eyebrow": "Your account", "eyebrow_right": False,
+            "text": "Not you — this PC kept its key. What you said and your keys stay paused",
+            "note": "Sign out in Settings > Account: it signs out every PC of yours and anyone "
+                    "else in your account. Sign in again here, then put your lock back — "
+                    "syncing starts again under this PC's key.",
+            "buttons": buttons,
+        }]
+
+    def _lock_go_account(self) -> None:
+        """The changed-lock row's [Sign out]: Settings > Account, where
+        Sign out is — one press away, never pressed for him."""
+        self._show("Settings")
+        self._settings_go("Account")
+        self._finish_settings()
+
     def _lock_go_type(self) -> None:
         """The pile's [Type the recovery key]: the Privacy tab's lock card
         with its field open and focused — one press, and the caret is
@@ -9820,9 +9884,21 @@ class Dashboard:
         # every screen switch, and the banner lives on the pane across them
         pending = (lock.get("pending") or []) if self.running else []
         waiting = self.running and lock.get("state") == "waiting"
+        changed = self.running and lock.get("state") == "changed" \
+            and not (lock.get("changed") or {}).get("refused")
         if self.screen == "Home":
-            pending, waiting = [], False         # Home carries the same as a row
-        if pending:
+            pending, waiting, changed = [], False, False     # Home carries the same as a row
+        if changed:
+            text = "The lock of your account changed — not on this PC. Answer on Home."
+            buttons = [("Home", lambda: self._show("Home"))]
+            key = ("changed", (lock.get("changed") or {}).get("server"))
+        elif pending and pending[0].get("twins"):
+            ask = pending[0]
+            text = (f"Two requests say they are {ask.get('name') or 'another PC'} — "
+                    f"neither can be approved. See Home.")
+            buttons = [("Home", lambda: self._show("Home"))]
+            key = ("twins", ask.get("id"))
+        elif pending:
             ask = pending[0]
             text = (f"{ask.get('name') or 'Another PC'} asks to join your account — "
                     f"its screen must show  {ask.get('code') or '?'}")
@@ -9911,7 +9987,7 @@ class Dashboard:
         except Exception:                                    # noqa: BLE001
             import logging
             logging.getLogger("app").warning("the lock banner did not paint", exc_info=True)
-        ids = {str(a.get("id")) for a in (lock.get("pending") or [])}
+        ids = {str(a.get("id")) for a in (lock.get("pending") or []) if not a.get("twins")}
         fresh = ids - getattr(self, "_lock_noted", set())
         self._lock_noted = ids
         if fresh and self.screen != "Home":
@@ -9947,6 +10023,32 @@ class Dashboard:
                         "account. Making a new one replaces it.")
             colour = ui.AMBER
             buttons = [("Copy", self._lock_copy), ("Done", self._lock_done)]
+        elif lock.get("state") == "changed":
+            ch = lock.get("changed") or {}
+            colour = ui.RED
+            if not ch.get("refused"):
+                said = "The lock of your account changed — not on this PC. Was it you?"
+                said_sub = ("This PC keeps its key; what you said and your cloud keys stop "
+                            "syncing until you answer. It was you: this PC asks to join the new "
+                            "lock. It wasn't: nothing here changes.")
+                buttons = [("It wasn't me", lambda: self._lock_do("lock_answer", "kept", kind="no")),
+                           ("It was me", lambda: self._lock_do("lock_answer", "asked", kind="yes"))]
+            else:
+                said = "Not you — this PC kept its key; what you said and your keys stay paused."
+                said_sub = ("Sign out above: it signs out every PC of yours and anyone else in "
+                            "your account. Sign in again, then put your lock back.")
+                buttons = ([("Put my lock back", lambda: self._lock_do("lock_restore", "put back"))]
+                           if ch.get("mine") else [])
+            if ch.get("server"):
+                said_sub += f"  ·  on the server: lock {ch['server']}, here: lock {ch.get('mine') or '—'}"
+        elif lock.get("pending") and lock["pending"][0].get("twins"):
+            ask = lock["pending"][0]
+            said = (f"Two requests say they are {ask.get('name') or 'another PC'} — "
+                    "neither can be approved.")
+            said_sub = (f"One of them is not your PC. On {ask.get('name') or 'that PC'}, sign out "
+                        "and sign in again to ask afresh.")
+            colour = ui.RED
+            buttons = [("Not now", lambda i=ask.get("id"): self._lock_do("decline", "declined", kind=i))]
         elif lock.get("pending"):
             ask = lock["pending"][0]
             said = f"{ask.get('name') or 'Another PC'} signed in to your account and asks to join."

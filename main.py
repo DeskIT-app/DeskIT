@@ -2259,13 +2259,29 @@ class App:
     def _pairing_settled(self) -> None:
         """sb.LOCK_HOOKS: the lock's state moved — with no request left
         waiting, the account's notifications come down (answered on the
-        desk, or gone on their own)."""
+        desk, or gone on their own). The account's lock changed somewhere
+        else (2026-09-23): ONE knock per changed lock, through the same
+        door — the question itself is a row on Home, never a card that
+        asks by itself — and it stays up until he answers there."""
         engine = getattr(self, "notify", None)
         if engine is None:
             return
         try:
             import sb
-            if not sb.lock_status().get("pending"):
+            lock = sb.lock_status()
+            changed = lock.get("changed") or {}
+            if lock.get("state") == "changed" and not changed.get("refused"):
+                if getattr(self, "_lock_knocked", None) != changed.get("server"):
+                    self._lock_knocked = changed.get("server")
+                    self._say("the lock of your account changed somewhere else — "
+                              "open the desk and answer on Home")
+                    engine.receive({"source": "account", "kind": "input",
+                                    "title": "The lock of your account changed",
+                                    "body": "Not on this PC. Syncing what you said and your "
+                                            "keys is paused. Open the desk: was it you?",
+                                    "app": "DeskIT", "link": notify_mod.DESK_LINK})
+                return
+            if not lock.get("pending"):
                 engine.dismiss_source("account")
         except Exception:                                    # noqa: BLE001
             log.debug("the join notification did not come down", exc_info=True)
@@ -3002,6 +3018,26 @@ class App:
                 return {"ok": False, "error": str(e)[:200]}
             self._say("your account is open on this PC — what you said is on its way")
             return {"ok": True, "message": "opened — your history and keys are on their way"}
+        if do == "lock_answer":
+            # Home's row when the account's lock changed somewhere else
+            # (2026-09-23): kind "yes" = It was me, "no" = It wasn't me
+            if kind not in ("yes", "no"):
+                return {"ok": False, "error": "yes or no?"}
+            try:
+                said = sb.lock_answer(kind == "yes")
+            except Exception as e:                           # noqa: BLE001
+                return {"ok": False, "error": str(e)[:200]}
+            if said == "asked":
+                return {"ok": True, "message": "your old key is kept aside — approve this PC "
+                                               "from your other PC, or type the recovery key"}
+            return {"ok": True, "message": "kept — what you said and your keys stay paused"}
+        if do == "lock_restore":
+            try:
+                sb.restore_lock()
+            except Exception as e:                           # noqa: BLE001
+                return {"ok": False, "error": str(e)[:200]}
+            self._say("your lock is back on the account — syncing again")
+            return {"ok": True, "message": "your lock is back — syncing again"}
         if do == "recovery_new":
             # the one answer that carries a secret: the recovery key,
             # once, to the desk that asked for it, which shows it once

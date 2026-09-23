@@ -61,14 +61,19 @@ the sealing; this module only moves what it produces. Every pass
 starts with ``_ensure_lock``: the first PC of an account makes the key
 and writes its fingerprint on the profile; a PC without the key asks
 to join (``_request_pairing`` — a row in ``pairings`` with its public
-key and an eight-character code it shows) and waits for a PC that has
-it to approve (``approve_pairing`` — the key wrapped to that public
+key; the ten-character code it shows is computed from that key) and
+waits for a PC that has it to approve (``approve_pairing`` — the code
+computed again from the key it wraps to, the key wrapped to that public
 key, never in the clear), or for the person to type the recovery key
 (``recover``). ``history.cipher`` and the ``vault`` rows (the cloud
 keys, one per name) are sealed under the account key and opened only
 here; ``ts``, ``kind`` and ``engine`` stay readable for the ordering.
 Until the key is here those two stores say "waiting for the lock" and
 their cursors do not move; the words and settings sync as before.
+A PC that holds a key never gives it up because the profile names
+another lock (2026-09-23, the audit's A15): the lock is "changed", those
+two stores say "paused — the lock changed" in both directions, and Home
+asks the person whether it was him (``lock_answer``, ``restore_lock``).
 
 Failure is a log line and a later retry, never a dialog (8.8): a paused
 project, no network and a 5xx all read the same. A 401 is one refresh
@@ -826,7 +831,7 @@ def delete_account() -> None:
         raise AccountError(f"the server refused the deletion ({_server_said(status, data)})")
     _clear_session()
     sync.forget_all()
-    vault.forget()
+    vault.forget(uid)             # the key and every key of this account set aside
     _forget_lock_state()
     import config
     config.save({"account.device_id": None, "account.device_seen_at": None,
@@ -1063,7 +1068,7 @@ def _sync_history(cursor: dict, push: bool = True) -> str:
     uid = _fresh()["user"]["id"]
     key = _lock_key(uid)
     if key is None:
-        return "waiting for the lock"
+        return _lock_wait_word()
     # down
     names = _names()
     pulled = unopened = 0
@@ -1128,7 +1133,7 @@ def _sync_vault(cursor: dict, push: bool = True) -> str:
     uid = _fresh()["user"]["id"]
     key = _lock_key(uid)
     if key is None:
-        return "waiting for the lock"
+        return _lock_wait_word()
     pushed_ciphers: dict = dict(cursor.get("vault_pushed") or {})
     known: dict = dict(cursor.get("vault_digest") or {})
     # down
@@ -1652,7 +1657,7 @@ def stop_live() -> None:
 # --------------------------------------------------------------- the lock
 
 _lock_state: dict = {"at": 0.0, "state": "", "lock_id": "", "pairing": None,
-                     "pending": [], "recovery": None, "error": ""}
+                     "pending": [], "recovery": None, "error": "", "changed": None}
 _seen_pairings: set[str] = set()
 
 
@@ -1678,7 +1683,7 @@ def _forget_lock_state() -> None:
         vault.drop(req["id"])
     with _lock:
         _lock_state.update(at=0.0, state="", lock_id="", pairing=None, pending=[],
-                           recovery=None, error="")
+                           recovery=None, error="", changed=None)
     _seen_pairings.clear()
 
 
@@ -1686,6 +1691,14 @@ def _lock_key(uid: str) -> bytes | None:
     """The key a store may seal with: this PC's, once ``_ensure_lock``
     said it is the account's."""
     return vault.key(uid) if _lock_state.get("state") == "have" else None
+
+
+def _lock_wait_word() -> str:
+    """What a sealed store says when it may not move: waiting for an
+    approval, or paused because the lock changed somewhere else."""
+    if _lock_state.get("state") == "changed":
+        return "paused — the lock changed"
+    return "waiting for the lock"
 
 
 def _profile_lock_id(uid: str) -> str | None:
@@ -1713,8 +1726,11 @@ def _ensure_lock(uid: str) -> bytes | None:
     this PC makes one (the first PC). This PC's key is the account's:
     done, believed for LOCK_TTL_S. Another PC made the lock: this PC's
     request to join is opened, or looked at again — None until it is
-    approved or the recovery key is typed. Every outcome is a log line
-    and status()["lock"]."""
+    approved or the recovery key is typed. The account's lock is not the
+    one this PC holds: this PC keeps its key and the lock is "changed" —
+    None, both sealed stores paused, until the person answers on Home
+    (2026-09-23: the server never decides which key a PC trusts). Every
+    outcome is a log line and status()["lock"]."""
     key = vault.key(uid)
     fp = vault.fingerprint(key) if key else ""
     st = _lock_state
@@ -1737,15 +1753,45 @@ def _ensure_lock(uid: str) -> bytes | None:
             remote = _profile_lock_id(uid) or ""
     if key is not None and remote == fp:
         first = st.get("state") != "have"
-        _set_lock(state="have", lock_id=fp, pairing=None)
+        _set_lock(state="have", lock_id=fp, pairing=None, changed=None)
+        if vault.refused(uid):
+            vault.refuse(uid, "")        # the lock is this PC's again
         if first:
             _recovery_known()
         return key
     if key is not None:
-        log.warning("lock: this PC's key (%s) is not the account's (%s) — dropped; "
-                    "the account's other PC must approve this one", fp, remote)
-        vault.forget()
+        # NOT dropped (it was, until 2026-09-23: one write of the
+        # profile made every PC delete its key and take the next one
+        # handed to it — the audit's A15). The server does not get to
+        # say which key this PC trusts; the person does, on Home.
+        return _lock_changed(uid, fp, remote)
+    was = vault.confirmed(uid)
+    if was is not None and was != remote:
+        # this PC set its key aside for the lock the person confirmed,
+        # and the server now names yet another one: asked again
+        return _lock_changed(uid, "", remote)
     return _request_pairing(uid, remote)
+
+
+def _lock_changed(uid: str, mine: str, remote: str) -> None:
+    """The profile names a lock this PC does not hold (``mine`` is this
+    PC's own fingerprint, "" when it set its key aside already). Nothing
+    is dropped and nothing is taken: the state is "changed", the sealed
+    stores pause both ways, and Home asks whether it was him. A lock he
+    already said was not his stays refused across restarts."""
+    was = _lock_state.get("changed") or {}
+    if was.get("server") != remote:
+        log.warning("lock: the account's lock on the server (%s) is not the one this PC "
+                    "holds (%s) — this PC keeps its key; what you said and your keys are "
+                    "paused until you answer on Home", remote, mine or "set aside")
+    req = _lock_state.get("pairing")
+    if req:
+        vault.drop(req["id"])
+    refused = bool(mine) and vault.refused(uid) == remote
+    # pending=[]: a PC that does not trust the account's lock approves nobody
+    _set_lock(state="changed", lock_id=mine, pairing=None, pending=[],
+              changed={"server": remote, "mine": mine, "refused": refused})
+    return None
 
 
 def _cursor_follows_lock(cursor: dict, key: bytes) -> None:
@@ -1769,10 +1815,19 @@ def _cursor_follows_lock(cursor: dict, key: bytes) -> None:
 def _request_pairing(uid: str, remote: str) -> bytes | None:
     """This PC's open request to join, made if there is none (or the
     last one expired), looked at if there is: approved means the key
-    is taken out of what the other PC handed over and kept here."""
+    is taken out of what the other PC handed over and kept here — only
+    when its fingerprint is the lock the profile named when this PC
+    asked AND names now, and, on a PC that set a key aside, the lock the
+    person confirmed."""
     st = _lock_state
     req = st.get("pairing")
     now = time.time()
+    if req is not None and req.get("lock_id", remote) != remote:
+        # the lock moved while this PC waited: this request asked for
+        # another one — dropped, and asked afresh for the lock named now
+        log.info("lock: the account's lock moved while this PC waited — asking again")
+        vault.drop(req["id"])
+        req = None
     if req is not None and req["expires"] > now:
         status, rows = _rest("GET", "pairings", purpose="account",
                              query=f"select=handed,approved_at&id=eq.{req['id']}")
@@ -1794,7 +1849,8 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
                 req = None
             else:
                 fp = vault.fingerprint(key)
-                if remote and fp != remote:
+                was = vault.confirmed(uid)
+                if not remote or fp != remote or (was is not None and fp != was):
                     log.warning("lock: the key handed over (%s) is not the account's (%s) — asking again", fp, remote)
                     _rest("DELETE", "pairings", purpose="account", query=f"id=eq.{req['id']}")
                     req = None
@@ -1819,17 +1875,19 @@ def _request_pairing(uid: str, remote: str) -> bytes | None:
         except (AccountError, net.EgressRefused, net.NetError, OSError) as e:
             log.debug("lock: the old requests were not swept (%s)", e)
         pid = str(uuid.uuid4())
-        code = vault.new_code()
         public = vault.applicant(pid)
+        # the code is the key's own (vault.pairing_code): the other PC
+        # computes it from the same public key, never from the column
+        code = vault.pairing_code(uid, pid, public)
         status, data = _rest("POST", "pairings", purpose="account",
                              payload={"id": pid, "user_id": uid, "device_id": device_id(),
                                       "device_name": device_name(),
-                                      "code": code.replace("-", ""), "applicant": public},
+                                      "code": vault.code_hint(code), "applicant": public},
                              prefer="return=minimal")
         if status not in (200, 201, 204):
             vault.drop(pid)
             raise AccountError(f"lock: the request to join was refused ({_server_said(status, data)})")
-        req = {"id": pid, "code": code, "expires": now + PAIRING_TTL_S}
+        req = {"id": pid, "code": code, "expires": now + PAIRING_TTL_S, "lock_id": remote}
         log.info("lock: another PC holds the account's key — this PC asks to join (code %s)", code)
         _set_lock(state="waiting", lock_id=remote, pairing=req)
         _broadcast(event="pairing", extra={"id": pid, "code": code, "name": device_name()})
@@ -1871,35 +1929,54 @@ def pending_pairings() -> list[dict]:
     """The other PCs of this account waiting to be approved by this one
     — read off the table, each new one handed to PAIRING_HOOKS once.
     Nothing without the key: a PC that does not hold it cannot hand it
-    over."""
+    over. The code each carries is COMPUTED here from the request's own
+    public key (vault.pairing_code) — the ``code`` column is not read —
+    so a twin request with another key shows another code. Two open
+    requests from one PC are one entry with ``twins`` and no code:
+    neither can be approved (the audit's A74 — a copied twin used to
+    collapse into the newest row and carry the real one's code)."""
     if not (configured() and signed_in()):
         return []
     uid = _fresh()["user"]["id"]
-    if vault.key(uid) is None:
+    if vault.key(uid) is None or _lock_state.get("state") == "changed":
         return []
     status, rows = _rest("GET", "pairings", purpose="account",
-                         query="select=id,device_id,device_name,code,created_at,expires_at"
+                         query="select=id,device_id,device_name,applicant,created_at,expires_at"
                                "&handed=is.null&order=created_at.asc")
     if status != 200 or not isinstance(rows, list):
         raise AccountError(f"lock: {_server_said(status, rows)}")
     now = datetime.now(timezone.utc)
-    latest: dict[str, dict] = {}                 # one request per asking PC: its newest
+    asking: dict[str, list[dict]] = {}           # the open requests, by asking PC
     for r in rows:
         if str(r.get("device_id") or "") == device_id():
             continue
         until = sync._parse_iso(str(r.get("expires_at") or ""))
         if until is not None and until <= now:
             continue
-        code = vault.normalize(str(r.get("code") or ""), vault.CODE_CHARS) or ""
-        latest[str(r.get("device_id") or r.get("id"))] = {
-            "id": str(r.get("id") or ""), "name": str(r.get("device_name") or "") or "another PC",
-            "code": vault.pretty(code) if code else "", "created_at": str(r.get("created_at") or "")}
-    out = list(latest.values())
+        asking.setdefault(str(r.get("device_id") or r.get("id")), []).append(r)
+    out: list[dict] = []
+    for reqs in asking.values():
+        r = reqs[-1]
+        entry = {"id": str(r.get("id") or ""), "name": str(r.get("device_name") or "") or "another PC",
+                 "code": "", "created_at": str(r.get("created_at") or "")}
+        if len(reqs) > 1:
+            entry["twins"] = len(reqs)
+            if entry["id"] not in _seen_pairings:
+                log.warning("lock: %d open requests to join say they are the same PC — "
+                            "none of them can be approved", len(reqs))
+        else:
+            try:
+                entry["code"] = vault.pairing_code(uid, entry["id"], str(r.get("applicant") or ""))
+            except vault.VaultError as e:
+                log.info("lock: a request to join without a usable public key — skipped (%s)", e)
+                continue
+        out.append(entry)
     with _lock:
         was = [r["id"] for r in _lock_state.get("pending") or []]
         _lock_state["pending"] = out
         fresh = [r for r in out if r["id"] not in _seen_pairings]
         _seen_pairings.update(r["id"] for r in fresh)
+    fresh = [r for r in fresh if not r.get("twins")]   # no knock for a request nobody can approve
     for r in fresh:
         for hook in list(PAIRING_HOOKS):
             try:
@@ -1914,14 +1991,19 @@ def pending_pairings() -> list[dict]:
 def approve_pairing(pairing_id: str) -> str:
     """[Approve] on this PC: the account's key wrapped to the asking
     PC's public key and written on its request — the one place the key
-    crosses, and it crosses sealed. Returns the other PC's name."""
+    crosses, and it crosses sealed. Returns the other PC's name. Only
+    the request the person was SHOWN: its code, computed again from the
+    public key read now, must be the code on Home (a row deleted and
+    written again under the same id with another key is refused), and a
+    PC with two open requests gets neither."""
     uid = _fresh()["user"]["id"]
     key = vault.key(uid)
-    if key is None:
+    if key is None or _lock_state.get("state") == "changed":
         raise AccountError("this PC does not hold the account's key")
     pid = str(pairing_id or "").strip()
     status, rows = _rest("GET", "pairings", purpose="account",
-                         query=f"select=applicant,device_name,handed,expires_at&id=eq.{urllib.parse.quote(pid)}")
+                         query="select=applicant,device_id,device_name,handed,expires_at"
+                               f"&id=eq.{urllib.parse.quote(pid)}")
     if status != 200 or not isinstance(rows, list):
         raise AccountError(f"lock: {_server_said(status, rows)}")
     if not rows:
@@ -1931,7 +2013,28 @@ def approve_pairing(pairing_id: str) -> str:
     until = sync._parse_iso(str(row.get("expires_at") or ""))
     if until is not None and until <= datetime.now(timezone.utc):
         raise AccountError(f"{name}'s request expired — it asks again on its own")
+    shown = next((r for r in _lock_state.get("pending") or [] if r.get("id") == pid), None)
+    if shown is None or shown.get("twins") or not shown.get("code"):
+        raise AccountError("that is not the request Home shows — look at Home again")
     if not row.get("handed"):
+        try:
+            code = vault.pairing_code(uid, pid, str(row.get("applicant") or ""))
+        except vault.VaultError as e:
+            raise AccountError(f"{name}'s request carries no usable key") from e
+        if code != shown["code"]:
+            log.warning("lock: a request to join changed after it was shown — not approved")
+            raise AccountError(f"{name}'s request changed after Home showed it — not approved")
+        status, same = _rest("GET", "pairings", purpose="account",
+                             query="select=id,expires_at&handed=is.null&device_id=eq."
+                                   + urllib.parse.quote(str(row.get("device_id") or "")))
+        if status != 200 or not isinstance(same, list):
+            raise AccountError(f"lock: {_server_said(status, same)}")
+        now = datetime.now(timezone.utc)
+        until_of = (sync._parse_iso(str(r.get("expires_at") or "")) for r in same)
+        open_ = [u for u in until_of if u is None or u > now]
+        if len(open_) > 1:
+            log.warning("lock: %d open requests say they are the same PC — none approved", len(open_))
+            raise AccountError(f"two requests say they are {name} — neither is approved")
         handed = vault.hand_over(key, str(row.get("applicant") or ""),
                                  vault.AAD_PAIRING.format(uid=uid, pairing_id=pid))
         status, data = _rest("PATCH", "pairings", purpose="account",
@@ -1957,6 +2060,74 @@ def decline_pairing(pairing_id: str) -> None:
         _lock_state["pending"] = [r for r in _lock_state.get("pending") or [] if r["id"] != pid]
     log.info("lock: a request to join was declined on this PC")
     _run_lock_hooks()
+
+
+def lock_answer(yes: bool) -> str:
+    """Home's answer to "the lock of your account changed — was it you?".
+
+    [It was me]: this PC's key is MOVED ASIDE (vault.set_aside — kept,
+    never deleted) with the lock he confirmed written beside it, and
+    this PC asks to join that lock the usual way — another PC of his
+    approves it, or he types the recovery key; a key handed over for any
+    other lock is not taken. Returns "asked".
+    [It wasn't me]: nothing moves. The key stays, the sealed stores stay
+    paused both ways, and the refusal is written beside the key so a
+    restart does not ask again; Home then points to Sign out (every
+    session of the account, a stolen one too) and offers
+    ``restore_lock``. Returns "kept"."""
+    uid = _fresh()["user"]["id"]
+    with _sync_lock:
+        ch = dict(_lock_state.get("changed") or {})
+        if _lock_state.get("state") != "changed" or not ch.get("server"):
+            raise AccountError("the lock has not changed — there is nothing to answer")
+        remote = _profile_lock_id(uid) or ""
+        if remote != ch["server"]:
+            _ensure_lock(uid)
+            raise AccountError("the lock changed again — look at Home once more")
+        if not yes:
+            vault.refuse(uid, remote)
+            _set_lock(state="changed", changed=dict(ch, refused=True))
+            log.warning("lock: the change of lock was refused on this PC — the key stays and "
+                        "what you said and your keys stay paused")
+            return "kept"
+        moved = vault.set_aside(uid, remote)
+        log.info("lock: the change of lock was confirmed on this PC — %s; this PC asks to "
+                 "join the new lock (%s)", "its key is set aside" if moved else "no key here",
+                 remote)
+        with _lock:
+            _lock_state.update(state="", lock_id="", changed=None)
+        _ensure_lock(uid)
+    _wake.set()
+    return "asked"
+
+
+def restore_lock() -> str:
+    """[Put my lock back], offered after [It wasn't me]: this PC's own
+    fingerprint written over the one the server was given — only while
+    the profile still names the lock he refused, so a later change is
+    never overwritten unseen. The key never moved; the stores resume
+    under it. Returns this PC's fingerprint."""
+    uid = _fresh()["user"]["id"]
+    with _sync_lock:
+        key = vault.key(uid)
+        ch = dict(_lock_state.get("changed") or {})
+        if key is None or _lock_state.get("state") != "changed" or not ch.get("refused"):
+            raise AccountError("there is no lock of this PC to put back")
+        fp = vault.fingerprint(key)
+        status, rows = _rest("PATCH", "profiles", purpose="account",
+                             query=f"user_id=eq.{urllib.parse.quote(uid)}"
+                                   f"&lock_id=eq.{urllib.parse.quote(ch['server'])}",
+                             payload={"lock_id": fp}, prefer="return=representation")
+        if status not in (200, 201, 204):
+            raise AccountError(f"lock: the fingerprint was refused ({_server_said(status, rows)})")
+        if not (isinstance(rows, list) and rows):
+            _ensure_lock(uid)
+            raise AccountError("the lock changed again — look at Home once more")
+        vault.refuse(uid, "")
+        _set_lock(state="have", lock_id=fp, pairing=None, changed=None)
+        log.warning("lock: this PC put its own lock back on the account (%s)", fp)
+    _wake.set()
+    return fp
 
 
 def make_recovery() -> str:
@@ -1987,6 +2158,8 @@ def recover(recovery: str) -> None:
     flat = vault.normalize(recovery, vault.RECOVERY_CHARS)
     if flat is None:
         raise AccountError("that is not a recovery key — 24 letters and digits in six groups")
+    if _lock_state.get("state") == "changed":
+        raise AccountError("the lock changed — answer the question on Home first")
     uid = _fresh()["user"]["id"]
     status, rows = _rest("GET", "recovery", purpose="account", query="select=wrapped&limit=1")
     if status != 200 or not isinstance(rows, list):
@@ -2018,15 +2191,22 @@ def recover(recovery: str) -> None:
 def lock_status() -> dict:
     """What the Account card and the wizard draw: ``state`` is ``have``
     (this PC holds the key), ``waiting`` (it asked to join; ``code`` is
-    what it shows), or empty (no account, or not looked at yet);
-    ``pending`` the other PCs waiting on this one; ``recovery`` whether
-    the account holds a recovery key (None until asked)."""
+    what it shows), ``changed`` (the account's lock is not the one this
+    PC holds — ``changed`` says ``server`` and ``mine``, eight hex each,
+    and ``refused`` once he said it was not him), or empty (no account,
+    or not looked at yet); ``pending`` the other PCs waiting on this
+    one (``twins`` on one that asked twice: nothing to approve);
+    ``recovery`` whether the account holds a recovery key (None until
+    asked)."""
     st = _lock_state
     req = st.get("pairing")
+    ch = st.get("changed") or None
     return {"state": str(st.get("state") or ""), "id": str(st.get("lock_id") or "")[:8],
             "code": str(req["code"]) if req else "",
             "pending": [dict(r) for r in (st.get("pending") or [])],
-            "recovery": st.get("recovery"), "error": str(st.get("error") or "")}
+            "recovery": st.get("recovery"), "error": str(st.get("error") or ""),
+            "changed": ({"server": str(ch.get("server") or "")[:8], "mine": str(ch.get("mine") or "")[:8],
+                         "refused": bool(ch.get("refused"))} if ch else None)}
 
 
 # ------------------------------------------------------------- the status
@@ -2066,4 +2246,5 @@ __all__ = [
     "REQUIRED", "SIGNED_OUT_HOOKS", "LIVE_ENABLED", "STORES", "stop_live",
     "PAIRING_HOOKS", "LOCK_HOOKS", "lock_status", "poll_lock", "pending_pairings",
     "approve_pairing", "decline_pairing", "make_recovery", "recover",
+    "lock_answer", "restore_lock",
 ]
