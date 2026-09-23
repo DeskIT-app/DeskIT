@@ -4,9 +4,11 @@ into `problems\\inbox\\<user_id>\\`, in the shape `problems.json` rows have
 
 This runs on the owner's machine and nowhere else. It is in `dev/`, so
 the build manifest keeps it out of every installed copy, and it takes the
-project's SECRET key from one place — the `DESKIT_SUPABASE_SECRET`
-variable in the owner's own user environment (hand-work 1.2). Never from
-a file, never from the repo, never printed. The publishable key the app
+project's SECRET key from Windows Credential Manager (`CRED_TARGET`) —
+or, until the owner has run dev\move_supabase_secret.py, from the
+`DESKIT_SUPABASE_SECRET` variable in his user environment (hand-work
+1.2), where every process of his could read it (audit 2026-09-23).
+Never from a file, never from the repo, never printed. The publishable key the app
 ships cannot read another person's rows (RLS, 8.3); this key can, which
 is exactly why it lives here and not in the product.
 
@@ -72,6 +74,12 @@ import paths  # noqa: E402
 log = logging.getLogger("inbox")
 
 SECRET_VAR = "DESKIT_SUPABASE_SECRET"
+#: Where the key lives once moved: Credential Manager, the store the product
+#: keeps Groq's and Gemini's keys in, under a target of the owner's own —
+#: not "DeskIT/", so the product's Delete everything never touches it, and
+#: not "DeskIT.test/", so no test does. A user environment variable is read
+#: by every process he starts; a credential only by one that asks for it.
+CRED_TARGET = "DeskIT.dev/supabase_secret"
 URL_VAR = "DESKIT_SUPABASE_URL"
 #: The consented columns (7.7). Nothing else is ever selected.
 COLUMNS = ("id", "user_id", "created_at", "updated_at", "app_version",
@@ -117,15 +125,38 @@ def project_url() -> str:
     return f"https://{ref}.supabase.co"
 
 
+def cred_secret() -> str:
+    """The key as Credential Manager holds it under CRED_TARGET; "" when
+    there is none (or pywin32 is not there to ask)."""
+    try:
+        import pywintypes
+        import win32cred
+    except ImportError:
+        return ""
+    try:
+        cred = win32cred.CredRead(TargetName=CRED_TARGET,
+                                  Type=win32cred.CRED_TYPE_GENERIC)
+    except pywintypes.error:
+        return ""
+    blob = bytes(cred.get("CredentialBlob") or b"")
+    try:                          # CredWrite from Python stores UTF-16-LE
+        value = blob.decode("utf-16-le")
+    except UnicodeDecodeError:
+        value = blob.decode("utf-8", "replace")
+    return value.strip("\x00").strip()
+
+
 def secret() -> str:
-    """The secret key, from the owner's environment and nowhere else."""
-    value = os.environ.get(SECRET_VAR, "").strip()
+    """The secret key: the environment variable while it still exists (the
+    days before the move, and every test, which sets it), then Credential
+    Manager. Never a file."""
+    value = os.environ.get(SECRET_VAR, "").strip() or cred_secret()
     if not value:
-        raise InboxError(f"{SECRET_VAR} is not set in this environment — "
-                         "it lives in the owner's user variables, never in "
-                         "a file (hand-work 1.2)")
+        raise InboxError(f"the project's secret key is in neither Credential "
+                         f"Manager ({CRED_TARGET}) nor {SECRET_VAR} — it is "
+                         "never kept in a file (hand-work 1.2)")
     if not value.startswith("sb_secret_"):
-        raise InboxError(f"{SECRET_VAR} does not look like the project's "
+        raise InboxError("the stored key does not look like the project's "
                          "secret key (sb_secret_...)")
     return value
 

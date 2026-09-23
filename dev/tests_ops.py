@@ -1425,15 +1425,19 @@ def test_the_inbox_pulls_only_what_was_ticked_and_forgets_what_was_deleted():
         # only open rows, when asked
         rows[R2]["status"] = "fixed"
         assert inbox_mod.pull(project, root=root, status="open")["rows"] == 0
-        # the secret: environment only, and shaped like the project's
+        # the secret: the environment or Credential Manager, never a file,
+        # and shaped like the project's. The credential is looked up under a
+        # test name that does not exist - never the owner's real one.
         import os
         saved = os.environ.pop(inbox_mod.SECRET_VAR, None)
+        real_target = inbox_mod.CRED_TARGET
+        inbox_mod.CRED_TARGET = "DeskIT.test/inbox_secret_absent"
         try:
             try:
                 inbox_mod.secret()
                 raise AssertionError("no secret and no error")
             except inbox_mod.InboxError as e:
-                assert "user variables" in str(e)
+                assert "Credential Manager" in str(e) and "never kept in a file" in str(e), str(e)
             os.environ[inbox_mod.SECRET_VAR] = "sb_publishable_not_the_secret"
             try:
                 inbox_mod.secret()
@@ -1441,6 +1445,7 @@ def test_the_inbox_pulls_only_what_was_ticked_and_forgets_what_was_deleted():
             except inbox_mod.InboxError:
                 pass
         finally:
+            inbox_mod.CRED_TARGET = real_target
             if saved is None:
                 os.environ.pop(inbox_mod.SECRET_VAR, None)
             else:
@@ -1747,6 +1752,64 @@ def test_the_weekly_review_hands_claude_no_key_and_no_open_door() -> None:
         assert "owner's part" in again[0]["args"][again[0]["args"].index("-p") + 1]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_the_inbox_key_comes_from_credential_manager_once_moved() -> None:
+    """Audit 2026-09-23: the project's secret key sat in HKCU\\Environment,
+    inherited by every process the owner starts. dev\\inbox.py now reads it
+    from Credential Manager when the variable is gone, the variable still
+    wins while it exists (so the move is safe to make at any time, and every
+    test that sets it keeps its own fake key), and neither is a hard,
+    named error. The move script never prints the key."""
+    import os
+
+    import pywintypes
+    import win32cred
+
+    import inbox as inbox_mod
+    probe = "DeskIT.test/inbox_secret_probe"
+
+    def drop():
+        try:
+            win32cred.CredDelete(TargetName=probe,
+                                 Type=win32cred.CRED_TYPE_GENERIC)
+        except pywintypes.error:
+            pass
+
+    saved_env = os.environ.pop(inbox_mod.SECRET_VAR, None)
+    real_target = inbox_mod.CRED_TARGET
+    inbox_mod.CRED_TARGET = probe
+    drop()
+    try:
+        try:
+            inbox_mod.secret()
+        except inbox_mod.InboxError as e:
+            assert probe in str(e) and inbox_mod.SECRET_VAR in str(e), str(e)
+        else:
+            raise AssertionError("no key anywhere was not an error")
+        win32cred.CredWrite({"Type": win32cred.CRED_TYPE_GENERIC,
+                             "TargetName": probe, "UserName": "test",
+                             "CredentialBlob": "sb_secret_from_cred",
+                             "Persist": win32cred.CRED_PERSIST_SESSION}, 0)
+        assert inbox_mod.secret() == "sb_secret_from_cred"
+        os.environ[inbox_mod.SECRET_VAR] = "sb_secret_from_env"
+        assert inbox_mod.secret() == "sb_secret_from_env", \
+            "the variable must win while it still exists"
+    finally:
+        drop()
+        inbox_mod.CRED_TARGET = real_target
+        os.environ.pop(inbox_mod.SECRET_VAR, None)
+        if saved_env is not None:
+            os.environ[inbox_mod.SECRET_VAR] = saved_env
+
+    src = (REPO / "dev" / "move_supabase_secret.py").read_text("utf-8")
+    for line in src.splitlines():
+        if "print(" in line:
+            assert "{value}" not in line and "value)" not in line.replace(
+                "len(value)", ""), f"the move script may print the key: {line}"
+    assert "cred_secret() != value" in src, "the copy is not checked before the delete"
+    assert src.index("CredWrite") < src.index("DeleteValue"), \
+        "the variable is deleted before the credential exists"
 
 
 def test_the_inbox_is_not_in_the_product_and_its_secret_name_is_reserved() -> None:

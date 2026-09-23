@@ -426,16 +426,19 @@ beside each row under `<report_id>.shot.jpg`, `.dictation.wav`,
 `.sidecar.json`.
 
 **The pull is the wrapper's, not yours.** `weekly_review.ps1` runs it before
-either part starts, with `DESKIT_SUPABASE_SECRET` in its own environment and
-never in yours:
+either part starts; `dev\inbox.py` reads the project's key from Windows
+Credential Manager (`DeskIT.dev/supabase_secret`), or from
+`DESKIT_SUPABASE_SECRET` on a machine where the owner has not moved it yet —
+and the wrapper strips that variable from your environment either way:
 
 ```
 .venv\Scripts\python.exe dev\inbox.py pull
 ```
 
 and writes its counts line into `run.log` as `[inbox pull] ...`. If that line
-reads `inbox: DESKIT_SUPABASE_SECRET is not set` or `inbox: the project did not
-answer`, the rows on disk are the last pull's: rule on them, and say so in your
+says the project's secret key is in neither Credential Manager nor
+`DESKIT_SUPABASE_SECRET`, or reads `inbox: the project did not answer`, the
+rows on disk are the last pull's: rule on them, and say so in your
 final message. Do not look for the key anywhere; it is not in your environment,
 and it must never be written anywhere.
 
