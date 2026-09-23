@@ -162,6 +162,19 @@ $script:Target = $Fallback
 #   the command file uses, and may not read problems\inbox at all. The inbox
 #   part may read, and write ONE file, problems\weekly\<date>-inbox.md: no Bash,
 #   no interpreter, no store.
+# - ...and the owner's part may not read that ONE file either, of any week. It
+#   carries every stranger's report in full (the archive, inside its markers),
+#   and it sits in the folder the owner's part reads its old plans from and
+#   greps for ids: without these three rules a stranger's words reached the
+#   session that can run code one step removed, through the inbox part's own
+#   document. The review of this split found it, 2026-09-23; the same day the
+#   real problems\weekly held no *-inbox.md and no file with an <!-- inbox -->
+#   block in it, so nothing older needs the same fence.
+# - The git forms the command file forbids are refused by name too: --output
+#   (git log/show/diff write a file wherever it points) and commit's -a, --all
+#   and --amend (the tree has other people's work in it). A `*` inside a rule
+#   is the documented form; it was not measured separately here -- and while
+#   the owner's part may run the interpreter these are a fence, not the wall.
 $PermissionMode = 'dontAsk'
 
 $DenyAlways = @(
@@ -183,6 +196,11 @@ $OwnerAllow = @(
 )
 $OwnerDeny = $DenyAlways + @(
     'Read(./problems/inbox/**)', 'Edit(./problems/inbox/**)', 'Write(./problems/inbox/**)',
+    'Read(./problems/weekly/*-inbox.md)', 'Edit(./problems/weekly/*-inbox.md)',
+    'Write(./problems/weekly/*-inbox.md)',
+    'Bash(git log *--output*)', 'Bash(git show *--output*)', 'Bash(git diff *--output*)',
+    'Bash(git commit * -a)', 'Bash(git commit * -a *)', 'Bash(git commit * --all*)',
+    'Bash(git commit * --amend*)',
     'Edit(./.git/**)', 'Write(./.git/**)', 'Edit(./.github/**)', 'Write(./.github/**)',
     'Edit(./weekly_review.ps1)', 'Write(./weekly_review.ps1)', 'Edit(./.env)', 'Write(./.env)',
     'Bash(git add -- .)', 'Bash(git add -- ./)', 'Bash(git add -- :/)',
@@ -485,21 +503,26 @@ $Py = if ($PythonPath) { $PythonPath } else { Join-Path $Repo '.venv\Scripts\pyt
 # process, and the key never reaches a model. `status` then says how many of
 # the rows on disk are open, which decides whether the inbox part has work.
 # Its output is counts and paths, never a row: a row on stdout would land here.
+# Only when the inbox part is going to run: an -Answered fire, or one after the
+# inbox part already finished today, has no use for the strangers' rows, and
+# the pull is the one call in here made with the project's secret.
 $Open = -1
-try {
-    foreach ($line in @(& $Py (Join-Path $Repo 'dev\inbox.py') pull)) {
-        if ("$line".Trim()) { Write-Log "[inbox pull] $line" }
+if ($doInbox) {
+    try {
+        foreach ($line in @(& $Py (Join-Path $Repo 'dev\inbox.py') pull)) {
+            if ("$line".Trim()) { Write-Log "[inbox pull] $line" }
+        }
+    } catch {
+        Write-Log ("[inbox pull] could not run: " + $_.Exception.Message)
     }
-} catch {
-    Write-Log ("[inbox pull] could not run: " + $_.Exception.Message)
-}
-try {
-    $statusText = (@(& $Py (Join-Path $Repo 'dev\inbox.py') status) -join "`n")
-    $Open = [int](($statusText | ConvertFrom-Json).open)
-    Write-Log "[inbox] $Open open report(s) from other people on this disk"
-} catch {
-    Write-Log ("[inbox] could not count the reports on disk: " + $_.Exception.Message)
-    $Open = -1
+    try {
+        $statusText = (@(& $Py (Join-Path $Repo 'dev\inbox.py') status) -join "`n")
+        $Open = [int](($statusText | ConvertFrom-Json).open)
+        Write-Log "[inbox] $Open open report(s) from other people on this disk"
+    } catch {
+        Write-Log ("[inbox] could not count the reports on disk: " + $_.Exception.Message)
+        $Open = -1
+    }
 }
 
 # --- and the keys stay HERE

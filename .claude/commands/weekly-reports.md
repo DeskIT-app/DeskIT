@@ -42,7 +42,11 @@ are.
   name. So is a run whose prompt says "the owner's part". **The owner's part
   never reads `problems\inbox\`:** skip §0e, and do not open, grep or quote
   anything under that folder (in the unattended run the permission list
-  refuses it anyway).
+  refuses it anyway). **Nor any `problems/weekly/*-inbox.md`**, this week's or
+  an earlier one: that is the inbox part's document, and it carries the same
+  reports in full. When you look through `problems/weekly/` — the old plans
+  (§3a), an id in the old archives (§6) — name the files you mean
+  (`*-plan.md`, `*-reports.md`), never the whole folder.
 - **The inbox part** reads the reports other people sent (§0e) and does
   nothing else. It is started only by `weekly_review.ps1`, whose prompt says
   "the inbox part". If you think you are the inbox part but were started as the
@@ -79,7 +83,13 @@ backslashes. The owner's part may edit the repo except `.git`, `.github`,
 `.claude`, `.env` and `weekly_review.ps1`; may run `.venv/Scripts/python.exe`;
 and may run `git fetch origin main`, `git log`, `git show`, `git diff`,
 `git status`, `git rev-parse`, `git add -- <paths>`, `git commit -m ...` and
-`git checkout -- <paths>`. The inbox part may Read, Glob and Grep inside the
+`git checkout -- <paths>` — never with `--output`, `-a`, `--all` or `--amend`,
+which are refused by name — and may not read `problems\inbox\` or
+`problems/weekly/*-inbox.md`. A JSON file this file tells you to write for a
+store call goes in `problems/weekly/` (the folder is his and gitignored;
+anywhere outside the repo is refused, and the repo root would leave it lying in
+`git status`) — `problems/weekly/call.json`, overwritten each time, is the
+name the commands below use. The inbox part may Read, Glob and Grep inside the
 repo and write `problems/weekly/<DATE>-inbox.md`, and nothing else. No part
 may push, reach the network, or read a key file.
 
@@ -717,11 +727,13 @@ store. One question per report; if you have three, you have not finished the
 evidence work.
 
 ```
-.venv\Scripts\python.exe -c "import pathlib,sys,json,questions;s=questions.Store(pathlib.Path(getattr(questions,'STORE_NAME','questions.json')));a=json.load(open(sys.argv[1],encoding='utf-8'));print(s.ask(a['report_id'],a['question'],a['options']))" <a json file you wrote>
+.venv\Scripts\python.exe -c "import pathlib,sys,json,questions;s=questions.Store(pathlib.Path(getattr(questions,'STORE_NAME','questions.json')));a=json.load(open(sys.argv[1],encoding='utf-8'));print(s.ask(a['report_id'],a['question'],a['options']))" problems/weekly/call.json
 ```
 
 Pass it through a small JSON file rather than a command line: the questions and
 the options are Hebrew, and a console codepage must not be what mangles them.
+Write it with the Write tool at `problems/weekly/call.json` and overwrite it
+for the next call — never at the repo root, never outside the repo.
 
 **The store write is not where the answer is collected — the chat is (§8b). It
 is there so the question survives.** He can close the session without
@@ -1031,7 +1043,8 @@ cheaper of the two mistakes.
 
 For each answered report you are about to build, compare it with two things:
 the **subjects of those unpushed commits**, and **§2 of the previous plan(s)
-under `problems/weekly/`** — each subsection there names a commit and the
+under `problems/weekly/`** (the `*-plan.md` files, and only those) — each
+subsection there names a commit and the
 report id it was built for (§4). The report is **the same thing** when:
 
 - an unpushed commit was built for **that very report id** — the plan's §2
@@ -1454,7 +1467,8 @@ surprised by the card.
 ## 6. Write `problems/weekly/<DATE>-reports.md` — the archive
 
 Every open report whose id does not yet appear in any earlier
-`problems/weekly/<date>-reports.md` — grep the folder for the id — **in
+`problems/weekly/<date>-reports.md` — grep `problems/weekly/*-reports.md` for
+the id, never the `*-inbox.md` files beside them — **in
 full**, so the record survives independently of `problems.json`. The routine
 closes nothing (§7), but rows do leave the store: he marks a report Fixed from
 the tab or by answering a `Fixed?` question, and a resolved row ages out of the
@@ -1563,7 +1577,7 @@ ordinary question:
   to ask — say so in your output and write no question for it.
 
   ```
-  .venv\Scripts\python.exe -c "import pathlib,sys,json,problems;s=problems.Store(pathlib.Path('problems.json'));a=json.load(open(sys.argv[1],encoding='utf-8'));print(s.suggest(a['id'],by='weekly',note=a['note']))" <a json file you wrote>
+  .venv\Scripts\python.exe -c "import pathlib,sys,json,problems;s=problems.Store(pathlib.Path('problems.json'));a=json.load(open(sys.argv[1],encoding='utf-8'));print(s.suggest(a['id'],by='weekly',note=a['note']))" problems/weekly/call.json
   ```
 
 - **`ask(report_id, question, options)`** on the questions store, the same call
@@ -1778,7 +1792,7 @@ order, for each question he answered:**
    passed in a small JSON file the way §2 passes a question:
 
    ```
-   .venv\Scripts\python.exe -c "import pathlib,sys,json,questions;s=questions.Store(pathlib.Path(getattr(questions,'STORE_NAME','questions.json')));a=json.load(open(sys.argv[1],encoding='utf-8'));print(s.answer(a['id'],choice=a.get('choice'),text=a.get('text',''),by='owner'))" <a json file you wrote>
+   .venv\Scripts\python.exe -c "import pathlib,sys,json,questions;s=questions.Store(pathlib.Path(getattr(questions,'STORE_NAME','questions.json')));a=json.load(open(sys.argv[1],encoding='utf-8'));print(s.answer(a['id'],choice=a.get('choice'),text=a.get('text',''),by='owner'))" problems/weekly/call.json
    ```
 
    `choice` is the index into the stored `options`, **counted from zero** —
