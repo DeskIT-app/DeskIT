@@ -22,6 +22,9 @@ recent/
 corpus/
 vocab.json
 vocab.json.bak-*
+# the last good copy, a save in flight, a file that would not read
+# (vocab.py, 2026-09-23)
+vocab.json.*
 lookup_cache.json
 # The second reading's proposals (review.py): sentences you dictated and
 # what the app thinks you meant — the same record vocab.json is.
