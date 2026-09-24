@@ -328,6 +328,63 @@ def _takes_the_key(binding: Binding) -> bool:
     return any(_MOD_GROUP.get(m) == 0x5B for m in binding.mods)
 
 
+# EVERY KEY A HAND SENT TO THE FOCUSED APP, counted, for the "..." marker:
+# injector.Marker erases it only while this has not moved since the marker
+# went down, because any such key may have moved the caret off it. Counted
+# at the end of PTTStateMachine.handle, when the key-down is not injected
+# (the app's own paste and backspaces are), was not swallowed (it reached
+# the app), is not a modifier on its own (a Ctrl moves no caret), and is
+# not a dictation key — that one is pressed again to start the NEXT
+# dictation while the last one is still on its way, and it types nothing.
+#
+# And every batch THIS APP sends (_send), for the same reader: the second
+# reading's Accept selects the whole field and pastes it back, a translate
+# or a punctuate replaces a selection, a card's answer is pasted — each can
+# move the caret off a marker that is still waiting, and none of them is a
+# hand.
+_typed = 0
+_sent = 0
+_typed_lock = threading.Lock()
+VK_TAB = 0x09
+_ALT_VKS = (0x12, 0xA4, 0xA5)
+_CTRL_VKS = (0x11, 0xA2, 0xA3)
+_SHIFT_VKS = (0x10, 0xA0, 0xA1)
+
+
+def held_now(vk: int) -> bool:
+    """Windows' answer to "is this key down?" — PTTStateMachine's
+    held_probe in the app. Microseconds; safe on the hook thread."""
+    try:
+        return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+    except Exception:
+        return True          # unknown: keep what the events said
+# Pause, Caps Lock, Print Screen, Num Lock, Scroll Lock, and the volume,
+# media and launch keys: none of them moves a caret.
+_INERT_VKS = frozenset({0x13, 0x14, 0x2C, 0x90, 0x91, *range(0xAD, 0xB8)})
+
+
+def keys_typed() -> int:
+    """How many keys have reached the focused app from a hand so far."""
+    return _typed
+
+
+def keys_sent() -> int:
+    """How many batches of keys this app has sent (SendInput) so far."""
+    return _sent
+
+
+def _count_typed() -> None:
+    global _typed
+    with _typed_lock:
+        _typed += 1
+
+
+def _count_sent() -> None:
+    global _sent
+    with _typed_lock:
+        _sent += 1
+
+
 def is_modifier_key(keycode: int) -> bool:
     """Is this key-down only ever the FIRST half of a chord?
 
@@ -595,7 +652,16 @@ class PTTStateMachine:
                  ask_open: Callable[[], bool] | None = None,
                  on_ask_start: Callable[[str], None] | None = None,
                  on_ask_stop: Callable[[str], None] | None = None,
-                 on_refused: Callable[[], None] | None = None):
+                 on_refused: Callable[[], None] | None = None,
+                 held_probe: Callable[[int], bool] | None = None):
+        # Asked ONLY by the typed-key count (_reaches_the_text), never by
+        # the chord matcher, which stays on the events it is fed (see the
+        # class docstring). A key-up made on the secure desktop (Win+L)
+        # never reaches this hook, and a Win it still thinks is held would
+        # stop the count for good — the one place a phantom modifier fails
+        # OPEN (the second review, 2026-09-23). None: the events alone,
+        # which is what the tests drive; the app passes held_now.
+        self._held_probe = held_probe
         self._on_start = on_start
         self._on_stop = on_stop
         self._on_abort = on_abort
@@ -645,6 +711,9 @@ class PTTStateMachine:
         # including whatever the app injected, and a chord must not be
         # completed by the app's own paste.
         self._mods_down: set[int] = set()
+        # An Alt pressed with nothing else before its release: that tap
+        # opens the menu in whatever has focus, so it counts as typed.
+        self._alt_alone = False
         self._swallow_latch_up = False
         self._swallow_tap_up: set[int] = set()
         self._lock = threading.Lock()
@@ -970,6 +1039,7 @@ class PTTStateMachine:
         `on_key_down` claims)."""
         fire: Callable[[], None] | None = None
         swallow = False
+        took = None          # a tap this app matched, if any (see the count)
         # First, in every state, and OUTSIDE the lock. First because the
         # Esc that closes a box on screen has to reach it whether or not a
         # recording is running, and while paused too. Outside the lock
@@ -1016,6 +1086,12 @@ class PTTStateMachine:
                     self._mods_down.discard(vk)
                 else:
                     self._mods_down.add(vk)
+            if not injected and event_type == "down":
+                # Alone means no other modifier either: Alt+Shift is the
+                # language switch, not a trip into the menu.
+                self._alt_alone = vk in _ALT_VKS and (
+                    self._alt_alone if was_down
+                    else not self._holding(_CTRL_VKS + _SHIFT_VKS + _WIN_VKS))
             if event_type == "up":
                 self._tap_held.discard(vk)
                 self._down.discard(vk)
@@ -1240,9 +1316,49 @@ class PTTStateMachine:
                 # Anything else is ignored on purpose: latched, the user's
                 # hands are free, and a stray keystroke must not throw away
                 # minutes of speech.
+        # Counted before fire(), which is somebody else's code: a callback
+        # that raised would otherwise let the key reach the app uncounted.
+        if not injected and not swallow and vk not in self._hotkeys:
+            if event_type == "down" and self._reaches_the_text(vk, took):
+                _count_typed()
+            elif event_type == "up" and vk in _ALT_VKS and self._alt_alone:
+                self._alt_alone = False
+                _count_typed()
         if fire is not None:
             fire()  # outside the lock
         return swallow or eaten
+
+    def _reaches_the_text(self, vk: int, took) -> bool:
+        """Could this key-down, which reached the focused app from a hand,
+        have moved its caret? For keys_typed(). Every "no" below is a key
+        the review of 2026-09-23 found sending a finished dictation to the
+        clipboard for nothing:
+        - a modifier on its own (a lone Alt TAP is counted on its release);
+        - a key this app matched as one of its taps — its screen keys do
+          nothing where they land, and the text keys touch the field by
+          SENDING keys, which keys_sent() counts. Except under Ctrl+Alt:
+          that is AltGr, and in a Hebrew layout ctrl+alt+m types a point
+          into the field whatever the app does with it;
+        - a lock, media, volume or Print Screen key;
+        - anything pressed with Win held (the shell's), and Tab with Alt
+          held — switching away and back leaves the caret where it was,
+          and the foreground test sees a switch that did not come back.
+        """
+        if is_modifier_key(vk) or vk in _INERT_VKS:
+            return False
+        if took is not None and not (self._holding(_CTRL_VKS)
+                                     and self._holding(_ALT_VKS)):
+            return False
+        if self._holding(_WIN_VKS):
+            return False
+        return not (vk == VK_TAB and self._holding(_ALT_VKS))
+
+    def _holding(self, vks) -> bool:
+        """Is one of these modifiers held: by the events seen, and — when
+        this machine was given a probe — by Windows as well."""
+        probe = self._held_probe
+        return any(v in self._mods_down and (probe is None or probe(v))
+                   for v in vks)
 
 
 # ------------------------------------------------------------- the OS hook
@@ -1374,6 +1490,8 @@ def _send(seq: list[_INPUT]) -> None:
         return
     arr = (_INPUT * len(seq))(*seq)
     sent = user32.SendInput(len(seq), arr, ctypes.sizeof(_INPUT))
+    if sent:
+        _count_sent()
     if sent != len(seq):
         raise OSError(f"SendInput injected {sent}/{len(seq)} events "
                       f"(WinError {ctypes.get_last_error()})")
