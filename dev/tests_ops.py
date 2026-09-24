@@ -1774,6 +1774,11 @@ def test_the_master_reads_a_night_from_the_run_log_and_the_transcript_is_the_evi
         assert "2 failed" in failed[0].title and "test_a" in failed[0].title
         assert "FAIL  test_a" in failed[0].body, failed[0].body
         assert failed[0].body_from == "machine", failed[0].body_from
+        # each failing test once, and the run's own "2 FAILED: a, b" summary
+        # is not one of them — the first version quoted every window around
+        # every FAIL and repeated the same block eight times
+        assert failed[0].body.count("FAIL ") == 2, failed[0].body
+        assert "FAILED:" not in failed[0].body, failed[0].body
         assert failed[0].evidence and failed[0].evidence[0].kind == "transcript"
 
 
