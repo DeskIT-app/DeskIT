@@ -22,8 +22,8 @@ const SUB: Record<Place, [string, string]> = {
   Reports: ["Reports", "Yours and other people's, in one list."],
   Tests: ["Tests", "Last night here, and the CI on GitHub."],
   Code: ["Code", "What is on this PC and not on GitHub."],
-  Server: ["Server", "The account server, counted."],
-  Data: ["Data", "The training data that cannot be made again."],
+  Server: ["Server", "Where people's settings, words and history travel between their own PCs."],
+  Data: ["Data", "On this computer only: your voice, and what it learned from it."],
 };
 
 const FOOT: Record<Place, string> = {
@@ -31,8 +31,8 @@ const FOOT: Record<Place, string> = {
   Reports: "Nothing ticks a box but you.",
   Tests: "The nightly run files its own report. Nothing on this screen does anything.",
   Code: "It does not push, merge or tag. That stays in the terminal.",
-  Server: "Nothing here writes to the server.",
-  Data: "The checkout keeps every line and every clip. Only this screen watches the ceilings.",
+  Server: "Read only — nothing here writes to the server. The free plan holds 500 MB and 50,000 people a month.",
+  Data: "None of this can be made again, and this copy never deletes any of it. The screen watches the ceilings.",
 };
 
 // which rows belong under which heading, per screen
@@ -44,6 +44,12 @@ const SECTIONS: Partial<Record<Place, { word: string; is: (id: string) => boolea
   Code: [
     { word: "Waiting for the weekly merge", is: (id) => id.startsWith("code:branch") },
     { word: "Releases", is: (id) => id.startsWith("code:release") },
+  ],
+  Server: [
+    { word: "Who is on it", is: (id) => id.startsWith("server:who") },
+    { word: "What it keeps for them — sealed, the server cannot read it",
+      is: (id) => id.startsWith("server:kept") },
+    { word: "Waiting for you", is: (id) => id.startsWith("server:wait") },
   ],
 };
 
