@@ -247,18 +247,41 @@ def _failed_names(path: Path) -> list[str]:
 
 
 def _failing_lines(path: Path, names: list[str]) -> str:
-    """What the export carries for a bad night: the failing tests' own
-    output, so a chat reads the assertion and not just the name."""
+    """What the export carries for a bad night: each failing test once,
+    with its own traceback under it.
+
+    The first version took a window of lines around anything that said
+    FAIL — including the run's own "4 FAILED: a, b, c" summary, and
+    including the windows of the other failures — so the same block came
+    out eight times and the document was mostly repetition (his export of
+    2026-09-24). A block now starts at a FAIL line, stops at the next
+    PASS / FAIL / section rule, and a name that has already been printed
+    is skipped.
+    """
     try:
         lines_ = path.read_text("utf-8", errors="replace").splitlines()
     except OSError:
         return ""
-    keep: list[str] = []
+    blocks: list[str] = []
+    seen: set[str] = set()
     for i, line_ in enumerate(lines_):
-        if line_.strip().startswith("FAIL") or any(n and n in line_ for n in names):
-            keep.extend(lines_[max(0, i - 1):i + 14])
-            keep.append("")
-    return "\n".join(keep[:240]).strip()
+        stripped = line_.strip()
+        if not stripped.startswith("FAIL "):
+            continue                       # "4 FAILED: ..." is a summary, not a failure
+        name = stripped.split()[1].rstrip(":") if len(stripped.split()) > 1 else ""
+        if name in seen:
+            continue
+        seen.add(name)
+        block = [line_.rstrip()]
+        for nxt in lines_[i + 1:i + 60]:
+            head = nxt.strip()
+            if head.startswith(("PASS ", "FAIL ", "----")) or head.startswith("running "):
+                break
+            block.append(nxt.rstrip())
+        blocks.append("\n".join(block).rstrip())
+    if names and not blocks:               # the transcript said nothing we can quote
+        return "(the transcript has no line for: " + ", ".join(names) + ")"
+    return "\n\n".join(blocks).strip()
 
 
 def _seconds(tail: str) -> str:
