@@ -334,6 +334,22 @@ def get_text() -> str:
     return text if kind == "text" and text else ""
 
 
+# When this THREAD's last paste chord went out: the moment the text is on
+# its way to the screen. main.App times a dictation to it and not to the
+# end of inject(), because what follows the chord is the restore wait —
+# 0.3 s in which the text is already on screen and only the clipboard is
+# still busy — and counting it made the logged "to the paste" figure
+# look right for the wrong reason (2026-09-23 audit, A32). Per thread,
+# because the chord's owner is the one asking.
+_chord = threading.local()
+
+
+def last_paste_at() -> float:
+    """time.monotonic() when this thread last sent a paste chord through
+    paste_text(), or 0.0 if it never has."""
+    return getattr(_chord, "at", 0.0)
+
+
 def paste_text(text: str, paste_chord: str, restore_delay_ms: int) -> None:
     """Put text on the clipboard and send the paste chord.
 
@@ -362,6 +378,7 @@ def paste_text(text: str, paste_chord: str, restore_delay_ms: int) -> None:
         _put_text(text)
         time.sleep(SETTLE_SECONDS)
         send_chord(paste_chord)
+        _chord.at = time.monotonic()
         # The target app reads the clipboard asynchronously after the chord
         # arrives; restoring too early would paste the OLD content.
         time.sleep(max(restore_delay_ms, 0) / 1000)
