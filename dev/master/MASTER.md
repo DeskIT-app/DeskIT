@@ -230,6 +230,42 @@ the passage of time. His words, 2026-09-23: *"תוסיף לי כזה צ'קבוק
 - Sorting and the pile on Home never reorder on a tick. A box he ticked by
   accident is untickable by the same click, and nothing has moved under it.
 
+## 6a. The window (built 2026-09-24)
+
+`dev\master\window.py` opens `dev\master\web\dist` in a WebView2 window
+and hands it `api.Api` — six calls and no others (`rows`, `tick`,
+`preview`, `take`, `open_folder`, `ping`).
+
+- **The shell is the product's**: `webdesk.py` from the `web-ui` spike,
+  kept at `dev\master\webdesk.py` until that branch puts it at the root.
+  It brings the registry pre-check (pywebview falls back to MSHTML
+  *silently* and writes HKCU on the way), the virtual host instead of a
+  server or `file://`, our own CoreWebView2 environment with crash
+  reporting kept local, the muted InPrivate profile on a folder of its
+  own, the scrubbed environment, and a bridge that reads every web
+  message itself. Its one change for the master: the allowlist comes from
+  the Api object (`webdesk._calls`), because the master's six names are
+  not the desk's three. A page cannot widen it — `api` comes from the
+  process that opened the window.
+- **The look is the approved one**: the mockups' own `bplus.css`, plus
+  `styles.css` for what a live window has and a picture does not — a
+  scroller, a hover, a pressed button, and the bubble on the bar sliding
+  to the place you pick (his first note about B).
+- **Speed, measured on the hidden desktop.** Home took 11 s at first:
+  the Code screen built every branch's whole diff (three git commands ×
+  25 branches) before anything could be drawn. Two answers: a branch's
+  body is a callable the EXPORT runs (`rows.Row.body_fn` /
+  `Row.words()`), and `git branch --no-merged main` finds the waiting
+  branches in ONE call. Home 1.3 s, Code 2.4 s, and every screen keeps
+  its rows for 90 s unless Refresh asks again (`api.FRESH_S`).
+- **Built with** `npm install && npm run build` in `dev\master\web`
+  (React 19 + TypeScript + Vite, the spike's pinned versions,
+  `ignore-scripts=true`). `dist\` and `node_modules\` are gitignored:
+  the source is committed, the build is per checkout.
+- **Photographing it** never puts a window on his screen:
+  `python -m dev.master.window --shot out.png --screen tests [--click .take]`
+  through `tests_quiet.run_hidden`.
+
 ## 7. How it is built
 
 - **The same stack as the new user desk** — React + TypeScript in a WebView2
