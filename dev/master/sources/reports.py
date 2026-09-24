@@ -29,6 +29,48 @@ KIND_LOOK = {
 RESOLVED = ("fixed", "closed")
 
 
+def pull(root: Root) -> dict:
+    """Fetch what people have sent, into `problems\\inbox\\`.
+
+    The master does not do this itself: `dev\\inbox.py` owns that folder,
+    the secret key and the fetch.log line per row, and stays its only
+    writer — this asks it to run (the Refresh button on the Reports
+    screen) and says what came of it. Reading from the server is reading
+    (MASTER.md rule 2); nothing here writes to the project.
+    """
+    import sys                                          # noqa: PLC0415
+    sys.path[:0] = [str(root.dir / "dev"), str(root.dir)]
+    try:
+        import inbox                                    # noqa: PLC0415
+    except Exception as e:                              # noqa: BLE001
+        return {"ok": False, "why": f"dev\\inbox.py did not import ({e})"}
+    try:
+        key = inbox.secret()
+        if not key:
+            return {"ok": False, "why": "no secret key in Credential Manager "
+                                        f"({inbox.CRED_TARGET})"}
+        got = inbox.pull(inbox.Project(inbox.project_url(), key),
+                         root=root.problems_dir)
+    except Exception as e:                              # noqa: BLE001
+        return {"ok": False, "why": f"{type(e).__name__}: {e}"}
+    if isinstance(got, dict):
+        return {"ok": True, **got}
+    return {"ok": True, "rows": got if isinstance(got, int) else 0}
+
+
+def pull_failed(why: str) -> Row:
+    """What the screen says when the fetch could not run: the rows that
+    are already on disk are still shown under it."""
+    from .. import when as _W                            # noqa: PLC0415
+    return Row(id="reports:pull", screen="reports",
+               title="The server was not asked for new reports", under=why,
+               tone="warn", glyph="warn", at=_W.stamp_now(),
+               facts={"Why": why,
+                      "What runs the fetch": "dev\\inbox.py pull",
+                      "Where they land": "problems\\inbox\\<user_id>\\"},
+               came_from=["dev\\inbox.py"])
+
+
 def rows(root: Root) -> list[Row]:
     out = [_mine(item, root) for item in _my_items(root)]
     out += [_theirs(path, root) for path in _inbox_files(root)]
