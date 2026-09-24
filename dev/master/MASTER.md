@@ -1,6 +1,7 @@
 # The master app — the spec
 
-Planned 2026-09-23 with the owner. Not built yet. Nothing in here ships:
+Planned 2026-09-23 with the owner, built 2026-09-24 (the engine, the
+window and the export; §6a says what the window is). Nothing in here ships:
 `dev/` is `export-ignore` in `.gitattributes`, so `git archive` — and every
 installed copy — never sees this folder.
 

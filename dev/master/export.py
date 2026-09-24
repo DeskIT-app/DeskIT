@@ -149,14 +149,14 @@ def document(row: Row, root: Root, files: list[dict] | None = None) -> str:
     if body.strip():
         note = NOTE.get(row.body_from, NOTE["person"])
         beside = next((f["name"] for f in files if f.get("from") == "(built here)"), "")
-        shown = body if len(body) <= BODY_INLINE else body[:BODY_INLINE]
+        shown = body if len(body) <= BODY_INLINE else _head(body)
         out.append(f"\n## {row.body_title}\n")
         out.append(f"<!-- {note} -->")
         out.append(f"{FENCE}text")
         out.append(shown.rstrip())
         if beside:
             out.append(f"\n[... the rest is in `{beside}`, beside this file — "
-                       f"{len(body) - BODY_INLINE:,} more characters ...]")
+                       f"{len(body) - len(shown):,} more characters ...]")
         out.append(FENCE)
         out.append(f"\n_{note}_")
     elif row.under:
@@ -184,6 +184,14 @@ def document(row: Row, root: Root, files: list[dict] | None = None) -> str:
 
 
 # ---------------------------------------------------------------- pieces
+
+def _head(body: str) -> str:
+    """The first BODY_INLINE characters, cut at the last line break rather
+    than mid-word — the first long export ended "...keeps that t"."""
+    cut = body[:BODY_INLINE]
+    line_end = cut.rfind("\n")
+    return cut[:line_end] if line_end > BODY_INLINE // 2 else cut
+
 
 def _evidence_name(kind: str, source: Path) -> str:
     plain = {"picture": "shot", "recording": "dictation",
