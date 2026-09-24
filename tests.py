@@ -1970,9 +1970,8 @@ def test_the_erase_waits_for_the_next_dictations_hand_holding_nothing() -> None:
         # the next dictation is held for longer than the idle bound
         with _patched(main_mod, "HANDS_OFF_S", 0.05):
             threading.Timer(0.3, held.update, kwargs={"on": False}).start()
-            started = time.monotonic()
             app._hands_off()
-            assert time.monotonic() - started >= 0.3, "gave up mid-hold"
+            assert not held["on"], "gave up mid-hold"
             # nothing is being recorded: a stuck key is waited out briefly
             held["on"] = True
             _Machine.state = hotkey_mod.IDLE
