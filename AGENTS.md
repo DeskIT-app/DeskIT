@@ -547,6 +547,17 @@ exactly what classic did.
   never said appear, ABLATE THE HOTWORDS FIRST — decode the `recent\`
   wav with `hotwords=None` and with `word_timestamps` — before blaming
   the model or the thresholds.
+- **`vocab.apply` matches a word where `_WORD` says a word is, and not a
+  character looser.** Its old edge was "the next character is not a
+  letter", so the hyphen of "ה-API" ended a word: the owner's pair
+  "ה" -> "ה-Dev" (a lone article the decoder left after dropping "Dev")
+  pasted "ה-Dev-read" and "ה-Dev-Problems", 3 of his last 50 dictations
+  on 2026-09-23, and "ה-Dev" came out "ה-Dev-Dev". `_START`/`_END` are the
+  tokenizer's edges; `_says_meant` leaves text that already reads as
+  `meant` alone (A48, "Claude Code Code"); and the pass takes every match
+  from the text as it arrived, so one pair's output is never another's
+  input. When a pasted word is wrong and `raw` had it right, check the
+  REPAIRED line in transcripts.log before blaming the repair pass.
 - **Subprocesses under pythonw allocate consoles.** Every `subprocess.run`
   needs `creationflags=CREATE_NO_WINDOW` (0x08000000) or each git/python
   spawn freezes the UI thread for hundreds of ms. This froze the dashboard

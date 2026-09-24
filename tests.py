@@ -4836,6 +4836,107 @@ def test_repair_sees_through_a_hebrew_prefix() -> None:
     out, applied = v.apply("העלה את זה לסירקה ציבורית")
     assert out == "העלה את זה לסריקה ציבורית", out
     assert applied == ["סירקה -> סריקה"], applied
+    # Through a hyphen too, up to three prefix letters — the shape
+    # reading.py strips ("ל-GitHub", "וב-branch").
+    for said, fixed in (("וב-סירקה", "וב-סריקה"), ("ה-סירקה", "ה-סריקה")):
+        assert v.apply(said)[0] == fixed, said
+
+
+def test_a_lone_letter_pair_never_eats_the_head_of_a_hyphenated_word() -> None:
+    """The owner's live pair, 2026-09-23: "ה" -> "ה-Dev", taught twice
+    because the decoder had dropped "Dev" and left the article alone. The
+    matcher stopped at the first non-letter, so the hyphen of every
+    "ה-<English>" counted as the end of a word: "ה-read" was pasted as
+    "ה-Dev-read" and "ה-Problems" as "ה-Dev-Problems" — 3 of the last 50
+    pasted dictations — and a correct "ה-Dev" came out "ה-Dev-Dev". A word
+    ends where `_WORD` says it does."""
+    v = _tmp_vocab(replace_after_hits=2)
+    v.learn("ה", "ה-Dev")
+    v.learn("ה", "ה-Dev")
+    for said in ("זה ה-Problems של", "תפתח את ה-read", "זה ה-Dev של",
+                 "זה ה־API", "ה-Dev-Problems"):
+        out, applied = v.apply(said)
+        assert (out, applied) == (said, []), (said, out)
+    # The decoder's split already says it too.
+    assert v.apply("זה ה Dev של") == ("זה ה Dev של", [])
+    # And the lesson still fires where it was taught: the lone letter.
+    assert v.apply("זה ה של") == ("זה ה-Dev של", ["ה -> ה-Dev"])
+
+
+def test_a_pair_that_grows_a_word_never_doubles_what_is_already_right() -> None:
+    """2026-09-23 audit, A48: a pair whose `meant` holds its `heard`
+    ("Claude" -> "Claude Code") matched the head of every correct "Claude
+    Code" and pasted "Claude Code Code". Text that already says `meant`,
+    in any case, is left alone — from either side of the heard word."""
+    v = _tmp_vocab(replace_after_hits=1)
+    v.learn("Claude", "Claude Code")
+    for said in ("Claude Code", "claude code", "open Claude Code now"):
+        assert v.apply(said) == (said, []), said
+    assert v.apply("ask Claude now") == ("ask Claude Code now",
+                                         ["Claude -> Claude Code"])
+    assert v.apply("Claude, then Claude Code")[0] == \
+        "Claude Code, then Claude Code"
+    # A joined word is one word: "Claude's", "Claude.ai" are not "Claude".
+    for said in ("Claude's", "Claude.ai"):
+        assert v.apply(said) == (said, []), said
+    # ...and a joined tail on the correction's own last word still says it.
+    for said in ("Claude Code's docs", "Claude Code-based"):
+        assert v.apply(said) == (said, []), said
+
+    w = _tmp_vocab(replace_after_hits=1)
+    w.learn("Code", "Claude Code")
+    assert w.apply("Claude Code") == ("Claude Code", [])
+    assert w.apply("the Code")[0] == "the Claude Code"
+
+    # A maqaf joins like a hyphen; a word the correction holds twice is
+    # lined up at both places.
+    maqaf = _tmp_vocab(replace_after_hits=1)
+    maqaf.learn("ה", "ה־Dev")
+    assert maqaf.apply("זה ה Dev של") == ("זה ה Dev של", [])
+    assert maqaf.apply("זה ה Dev־ים") == ("זה ה Dev־ים", [])
+    twice = _tmp_vocab(replace_after_hits=1)
+    twice.learn("Go", "Go Go")
+    assert twice.apply("Go Go now") == ("Go Go now", [])
+    assert twice.apply("Go now")[0] == "Go Go now"
+
+
+def test_a_long_word_list_builds_each_pairs_patterns_once() -> None:
+    """Rebuilt on every apply(), the patterns lived in `re`'s own cache —
+    512 entries, oldest out first — and past ~256 ready pairs every
+    dictation missed on all of them: 165-400 ms before the paste (the
+    second review, 2026-09-23). Built once per pair now; a second apply
+    over 600 ready pairs compiles nothing."""
+    v = _tmp_vocab(replace_after_hits=1)
+    for i in range(600):
+        v.learn(f"garble{i}", f"word{i}")
+    v.learn("Claude", "Claude Code")
+    text = "garble7 and Claude and garble599"
+    first = v.apply(text)
+    built = vocab_mod._matcher.cache_info().misses
+    assert v.apply(text) == first
+    assert vocab_mod._matcher.cache_info().misses == built, \
+        "the second pass built patterns again"
+    assert first[0] == "word7 and Claude Code and word599", first
+
+
+def test_one_pairs_output_is_never_anothers_input() -> None:
+    """The pass used to run each pair over the text the previous pair had
+    already rewritten, so "cloud code" -> "Claude Code" followed by
+    "Claude" -> "Claude Code" pasted "Claude Code Code", and a chain
+    A -> B, B -> C turned an A into a C. Every match is taken from the
+    text as it arrived."""
+    v = _tmp_vocab(replace_after_hits=1)
+    v.learn("cloud code", "Claude Code")
+    v.learn("Claude", "Claude Code")
+    out, applied = v.apply("cloud code and Claude")
+    assert out == "Claude Code and Claude Code", out
+    assert applied == ["cloud code -> Claude Code", "Claude -> Claude Code"]
+
+    chain = _tmp_vocab(replace_after_hits=1)
+    chain.learn("xpogo", "Expo")
+    chain.learn("Expo", "Expo Go")
+    assert chain.apply("xpogo")[0] == "Expo", "A became C"
+    assert chain.apply("xpogo and Expo")[0] == "Expo and Expo Go"
 
 
 def test_hotwords_put_the_seeds_first_and_stay_bounded() -> None:

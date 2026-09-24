@@ -64,6 +64,7 @@ speech, so it is gitignored for the same reason transcripts.log is.
 from __future__ import annotations
 
 import difflib
+import functools
 import json
 import logging
 import os
@@ -102,6 +103,36 @@ _PREFIX = "[ובהלכמש]"
 # Hebrew.
 MIN_PREFIXABLE = 2
 
+# WHERE A LEARNED WORD MAY START AND END: exactly where `_WORD` says a word
+# does, and nowhere looser. A hyphen, a dot, an apostrophe or a quote with
+# a letter on each side JOINS the two into one word ("ה-API", "node.js",
+# "Claude's"); the maqaf and the geresh are inside ֐-׿ already.
+#
+# The matcher used to stop at the first non-letter, which is one character
+# looser than the tokenizer that LEARNS the pairs, and the difference was
+# measured on the owner's PC on 2026-09-23: a pair "ה" -> "ה-Dev" (a lone
+# letter the decoder left when it dropped "Dev", corrected twice) matched
+# the head of every "ה-<English word>" he said and pasted "ה-Dev-read",
+# "ה-Dev-Problems" — 3 of the last 50 pasted dictations. Across his 452 raw
+# transcripts: 53 "ה-<English>", 2 "ה-<digits>" and 1 "ה-<Hebrew>" that the
+# pair would have grown a "Dev" into, and 12 correct "ה-Dev" that came out
+# "ה-Dev-Dev"; old against new over all of them (a second reader, the same
+# evening), 51 of 502 texts differ and every one is this fix. Same class
+# of bug as "הר" eating "הרבה", one character to the right.
+_LETTER = r"[\w֐-׿]"
+_JOINER = r"[.\-'\"]"
+_START = rf"(?<!{_LETTER})(?<!{_LETTER}{_JOINER})"
+_END = rf"(?!{_LETTER})(?!{_JOINER}{_LETTER})"
+# ...and the one way a word may be glued on at the front and still be the
+# word: its prefix letters, bare ("לסירקה", one letter, as it always was)
+# or through a hyphen ("וב-branch", "ה-סירקה", up to three — reading.py
+# strips the same shape). The hyphen form used to work by accident, the
+# old start being satisfied by the hyphen itself.
+_GLUED = rf"(?:{_PREFIX}{{1,3}}[\-־]|{_PREFIX})?"
+# What may stand between the words of a phrase when deciding whether the
+# text already says it: a space, a hyphen, a maqaf.
+_GAP = r"[\s\-־]"
+
 # Hard ceiling from faster_whisper's get_prompt(); see the module docstring.
 HOTWORD_TOKEN_LIMIT = 223
 
@@ -124,6 +155,65 @@ def family(heard: str, meant: str) -> str:
 
 def words(text: str) -> list[str]:
     return _WORD.findall(text or "")
+
+
+@functools.lru_cache(maxsize=4096)
+def _matcher(heard: str, meant: str):
+    """The pair's pattern and its _says_meant test, built once per pair.
+
+    Rebuilt on every apply() they ran through `re`'s own cache, which holds
+    512 and evicts oldest first: with two or more patterns a pair, a copy
+    past ~256 ready pairs missed on every lookup and paid 165-400 ms a
+    dictation before the paste (measured by the second review, 2026-09-23;
+    the old single pattern hit the same wall at 512)."""
+    glued = _GLUED if len(heard) >= MIN_PREFIXABLE else ""
+    pattern = re.compile(
+        _START + "(" + glued + ")(" + re.escape(heard) + ")" + _END,
+        re.IGNORECASE)
+    return pattern, _says_meant(heard, meant)
+
+
+def _says_meant(heard: str, meant: str):
+    """For a pair whose `meant` holds its `heard` as a word ("Claude" ->
+    "Claude Code", "Code" -> "Claude Code", "ה" -> "ה-Dev"): a test of
+    whether the text around one match ALREADY reads as `meant`, called as
+    says(text, start_of_heard, end_of_match). None for every other pair —
+    nearly all of them — which then costs nothing.
+
+    "Reads as" forgives what the match forgives: the case, and the gap
+    between the words, which may be a space, a hyphen or a maqaf — so
+    "ה Dev", the decoder's split, already says "ה-Dev". Found in `meant`
+    by letters alone (not by _END), because "ה" inside "ה-Dev" is exactly
+    the word this has to find — and the maqaf, which ֐-׿ counts as a
+    letter, is a gap there too. Every place `heard` stands in `meant` is
+    tried ("Go" -> "Go Go"). The text's side is bounded by letters alone
+    as well: a joined tail on the last word ("Claude Code's", "ה-Dev-ים")
+    still says "Claude Code" (review of 2026-09-23).
+    """
+    letter = r"[\w֐-ֽֿ-׿]"
+    joint = _GAP + "+"
+    tests = []
+    for inside in re.finditer(rf"(?<!{letter}){re.escape(heard)}(?!{letter})",
+                              meant, re.IGNORECASE):
+        lead = [w for w in re.split(joint, meant[:inside.start()]) if w]
+        trail = [w for w in re.split(joint, meant[inside.end():]) if w]
+        if not lead and not trail:
+            continue      # the same word in another case: nothing to double
+        before = (re.compile(rf"(?<!{letter})" + _GLUED
+                             + joint.join(map(re.escape, lead))
+                             + _GAP + r"*\Z", re.IGNORECASE) if lead else None)
+        after = (re.compile(_GAP + "*" + joint.join(map(re.escape, trail))
+                            + rf"(?!{letter})", re.IGNORECASE)
+                 if trail else None)
+        tests.append((before, after))
+    if not tests:
+        return None
+
+    def says(text: str, start: int, end: int) -> bool:
+        return any((before is None or before.search(text, 0, start))
+                   and (after is None or after.match(text, end) is not None)
+                   for before, after in tests)
+    return says
 
 
 # How much of the transcript must still be recognisable in what was grabbed
@@ -777,7 +867,20 @@ class Vocab:
         really says.
 
         Whole-token matching only, so a learned "הר" never eats the middle
-        of "הרבה".
+        of "הרבה" — and "ה" never eats the head of "ה-API" (_START/_END).
+
+        Two more rules, both about a pair whose `meant` CONTAINS its
+        `heard` ("Claude" -> "Claude Code", "ה" -> "ה-Dev" — a lone word
+        the decoder left when it dropped the one after it):
+
+        - text that already says `meant` is left alone. Without this every
+          correct "Claude Code" came out "Claude Code Code", before the
+          repair pass ever saw it (2026-09-23 audit, A48).
+        - ONE pass over the text as it arrived. Each pair's matches are
+          taken from the original, longest `heard` first, and a stretch one
+          pair has claimed is never matched again — so one pair's output
+          can never become another pair's input, which the old loop of
+          `subn`s over its own growing result allowed.
         """
         if not text.strip():
             return text, []
@@ -787,20 +890,36 @@ class Vocab:
         if not ready:
             return text, []
         applied: list[str] = []
+        taken: list[tuple[int, int, str]] = []
         # Longest first: a two-word garble must win over either of its words.
         for entry in sorted(ready, key=lambda c: -len(c["heard"])):
             heard, meant = entry["heard"], entry["meant"]
-            prefix = (_PREFIX + "?") if len(heard) >= MIN_PREFIXABLE else ""
-            pattern = re.compile(
-                r"(?<![\w֐-׿])(" + prefix + r")" + re.escape(heard)
-                + r"(?![\w֐-׿])", re.IGNORECASE)
-            # A function, not a template: `meant` is user data and a literal
-            # backslash or \1 in it would otherwise be read as a group
-            # reference and corrupt the output.
-            text, n = pattern.subn(lambda m: m.group(1) + meant, text)
-            if n:
+            pattern, says = _matcher(heard, meant)
+            fired = False
+            for m in pattern.finditer(text):
+                start, end = m.span()
+                if any(start < t_end and t_start < end
+                       for t_start, t_end, _ in taken):
+                    continue
+                if says is not None and says(text, m.start(2), end):
+                    continue
+                # Built here, not by a template: `meant` is user data and a
+                # literal backslash or \1 in it would otherwise be read as a
+                # group reference and corrupt the output.
+                taken.append((start, end, m.group(1) + meant))
+                fired = True
+            if fired:
                 applied.append(f"{heard} -> {meant}")
-        return text, applied
+        if not taken:
+            return text, applied
+        out: list[str] = []
+        at = 0
+        for start, end, repl in sorted(taken):
+            out.append(text[at:start])
+            out.append(repl)
+            at = end
+        out.append(text[at:])
+        return "".join(out), applied
 
     def __len__(self) -> int:
         return len(self.corrections)
