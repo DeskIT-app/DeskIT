@@ -262,8 +262,10 @@ y = -100000                   # where you last dragged it to, in screen pixels.
 # reason. That is the whole point: mid-dictation those keys used to do
 # nothing at all, silently, and a key that does nothing silently reads as
 # a key that is broken.
-enabled = true                # false = never show it. The "don't show this
-                              # again" box on the card writes this line
+enabled = true                # false = never show it. The card's X writes
+                              # this line when its "don't show this again"
+                              # box is ticked (an X alone hides it for that
+                              # one dictation); Settings > General puts it back
 after_ms = 400                # how long the key must be held before it appears.
                               # A short dictation never sees it — the card is
                               # for the press you hesitated on, which is exactly
@@ -283,8 +285,10 @@ y = -100000                   # it, in screen pixels — what you can SEE, not t
                               # of the primary has real negative coordinates
                               # (this one starts at x = -1920) and the -1 this
                               # used to mean threw every card dragged there away
-scale = 0.8                   # how big you last made it (0.6 .. 1.4). The − and
-                              # + on the card step this by 10% and save it
+scale = 0.8                   # how big you last made it (0.8 .. 1.4 on the card;
+                              # an older 0.6 or 0.7 is drawn at 0.8, where a
+                              # label is 12.8 px). The − and + on the card
+                              # step this by 10% and save it
 
 [setup]
 # The first-run wizard: welcome, the microphone with its meter, what this

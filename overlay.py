@@ -1414,6 +1414,13 @@ class HintCard:
         # keyboard hook and read from the card's own loop, and because
         # setting one touches no Tk at all — see hush().
         self._hushed = threading.Event()
+        # The X and the box (2026-09-24). `_shut` is "closed by hand until
+        # the next dictation": set by the X on the card's thread, cleared
+        # by recording_began() from the keyboard hook — an Event for the
+        # same reason as _hushed. `_ticked` is the box, which only ticks;
+        # it counts when the card goes away (card_gone, closed_by_hand).
+        self._shut = threading.Event()
+        self._ticked = False
 
     @classmethod
     def off(cls) -> "HintCard":
@@ -1517,11 +1524,58 @@ class HintCard:
         self._changed(scale=round(self.scale, 3))
 
     def dismissed(self) -> None:
-        """The box on the card was ticked: never again, and not just for
-        this run — the whole point of a "don't show this again" is that it
-        outlives the thing it was ticked on."""
+        """Never again, and not just for this run — the whole point of a
+        "don't show this again" is that it outlives the thing it was
+        ticked on. Settings > General turns it back on."""
         self._enabled = False
+        self._ticked = False
         self._changed(enabled=False)
+
+    # -- the X and the box, since 2026-09-24 --
+    #
+    # The box used to BE the off switch: one click on "don't show this
+    # again" and the card was gone for good, which the owner read as a
+    # checkbox that cannot be checked. His rule: the box only ticks, the X
+    # closes, and what the X does depends on the box — unticked, the card
+    # is gone for this dictation and back on the next; ticked, it is gone
+    # and stays gone. A tick left on the box when the card goes away on its
+    # own (the key let go, the shelf took the corner) counts the same way.
+
+    @property
+    def ticked(self) -> bool:
+        return self._ticked
+
+    def tick(self) -> bool:
+        """The box was clicked: tick it, or untick it. Nothing is written
+        and nothing closes."""
+        self._ticked = not self._ticked
+        return self._ticked
+
+    def closed_by_hand(self) -> None:
+        """The X. Ticked, it is the "never again"; unticked, the card
+        stays down until recording_began()."""
+        if self._ticked:
+            self.dismissed()
+        else:
+            _log.info("hint card: closed until the next dictation")
+        self._shut.set()
+
+    def card_gone(self) -> None:
+        """The card left the screen without the X. A tick left on the box
+        is still an answer."""
+        if self._ticked:
+            self.dismissed()
+
+    def recording_began(self) -> None:
+        """A new dictation: a card closed by hand may come back. Clears an
+        Event and returns — this runs inside the keyboard hook."""
+        self._shut.clear()
+
+    def accepts(self, item) -> bool:
+        """Whether the card's thread should take a card off the queue.
+        Taking it down (None) is always taken; a card is refused between
+        the X and the next dictation."""
+        return item is None or not self._shut.is_set()
 
     def _changed(self, **fields) -> None:
         if self._on_change is None:
