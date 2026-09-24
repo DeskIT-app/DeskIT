@@ -123,10 +123,18 @@ def _not_merged(root: Root) -> set | None:
     branch is measured the slow way rather than silently dropped.
     """
     try:
-        return {ln.strip().lstrip("* ").strip()
-                for ln in lines(["git", "branch", "--no-merged", MAIN], root.dir)}
+        out_ = lines(["git", "branch", "--no-merged", MAIN], root.dir)
     except Failed:
         return None
+    # git marks the branch this checkout is on with "*" and a branch that
+    # is checked out in ANOTHER worktree with "+". Missing the "+" is how
+    # the branch this was written on disappeared from its own screen.
+    names = set()
+    for ln in out_:
+        name = ln.strip().lstrip("*+").strip()
+        if name and not name.startswith("("):        # "(HEAD detached at ...)"
+            names.add(name)
+    return names
 
 
 def _head(root: Root) -> str:
