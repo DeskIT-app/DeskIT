@@ -1,0 +1,66 @@
+/* The master's window on top of the B+ mockup stylesheet.
+   The font is the repo's own fonts\Rubik.ttf — one copy on this PC,
+   hashed into dist/assets by the build; the CSP allows 'self' and not
+   a data: URI, so the base64 sheet the mockups used cannot come here.
+   bplus.css was drawn for a 1160x720 picture; these rules make the same
+   look fluid and add the few pieces a live window has that a picture
+   does not: a scroller, a pressed state, a sheet that opens. */
+
+@font-face {
+  font-family: "Rubik";
+  src: url("../../../../fonts/Rubik.ttf") format("truetype-variations");
+  font-weight: 300 700;                /* one variable file, four weights */
+  font-style: normal;
+  font-display: block;
+}
+
+html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+body { user-select: none; cursor: default; }
+
+/* the bar and the page stretch with the window */
+.bar { width: 100%; }
+.page { position: absolute; left: 24px; right: 24px; top: 56px; bottom: 0;
+        width: auto; height: auto; }
+.stack, .pile, .foot { width: auto; right: 0; }
+.stack { position: absolute; left: 0; right: 0; top: 118px; bottom: 56px; overflow: hidden; }
+.stack.low { top: 68px; }
+.scroll { position: absolute; inset: 0; overflow-y: auto; overflow-x: hidden;
+          padding-right: 6px; scrollbar-width: thin;
+          scrollbar-color: var(--thumb) transparent; }
+.scroll::-webkit-scrollbar { width: 6px; }
+.scroll::-webkit-scrollbar-thumb { background: var(--thumb); border-radius: 3px; }
+.pile { position: absolute; left: 0; right: 288px; top: 68px; bottom: 56px; overflow: hidden; }
+.side { left: auto; right: 0; width: 264px; top: 68px; bottom: 56px; height: auto;
+        overflow: hidden; }
+.foot { position: absolute; left: 0; right: 0; top: auto; bottom: 0; }
+
+/* the bubble travels instead of jumping — the one thing he named first
+   about this design ("it slides, it does not jump") */
+.seg .bubble { transition: left .26s cubic-bezier(.22,.61,.36,1),
+                           width .26s cubic-bezier(.22,.61,.36,1); }
+.seg .item { cursor: pointer; }
+.bar .btn, .take, .tick, .sheet .btn { cursor: pointer; }
+.bar .btn:active, .sheet .btn:active { transform: translateY(1px); }
+
+/* rows: the pointer lights one, and the box is his */
+.row:hover:not(.done), .mrow:hover { background: linear-gradient(180deg, var(--quiet-bot), transparent 120%);
+  box-shadow: inset 0 1px 0 var(--inner-hi), inset 0 0 0 1px var(--line-faint); }
+.row:hover .take, .mrow:hover .take { color: var(--ink);
+  background: linear-gradient(180deg, var(--quiet-top), var(--quiet-bot));
+  box-shadow: inset 0 1px 0 var(--btn-hi), inset 0 0 0 1px var(--btn-rim); }
+.row:hover .take .ic, .mrow:hover .take .ic { color: var(--iris); }
+.tick:hover { box-shadow: inset 0 0 0 1.5px var(--iris-edge); }
+.what .l1 { white-space: normal; }
+.row .what .l1 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+                 overflow: hidden; }
+
+/* the state of a screen while it is being read */
+.hint { position: absolute; left: 0; top: 118px; font-size: 13px; color: var(--ink-3); }
+.empty { padding: 26px 22px; font-size: 14px; color: var(--ink-2); }
+.empty span { display: block; margin-top: 6px; font-size: 12.5px; color: var(--ink-3); }
+
+/* the sheet, and what it becomes once the folder is written */
+.sheet .done-line { margin-top: 16px; font-size: 12.5px; color: var(--ok); }
+.sheet .path { font-family: "Cascadia Mono", Consolas, monospace; font-size: 11px;
+               word-break: break-all; }
+.dim { cursor: default; }

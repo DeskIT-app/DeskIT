@@ -1632,6 +1632,330 @@ def test_the_inbox_is_not_in_the_product_and_its_secret_name_is_reserved() -> No
         assert "import inbox" not in src and "DESKIT_SUPABASE_SECRET" not in src, name
 
 
+# ---------------------------------------------------------------------------
+# The master app (dev\master\, MASTER.md). Six screens that READ, one verb
+# that takes a row to a chat, one tick that only his hand puts on a row.
+# Every test here builds its own checkout in a scratch folder: none of them
+# may look at the owner's real problems.json, corpus or account.
+# ---------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+
+from dev.master import export as _mexport  # noqa: E402
+from dev.master import sources as _msources  # noqa: E402
+from dev.master.root import Root as _MRoot  # noqa: E402
+from dev.master.store import Store as _MStore  # noqa: E402
+
+_NIGHT_OUT = ('[{stamp}] {word} in {secs}s\n'
+              '[{stamp}] [out] {json}\n')
+
+
+def _master_root(folder: Path, *, git: bool = True, guard: bool = True) -> "_MRoot":
+    """A checkout the master can read: his own report, a stranger's with
+    its files, three nights, a corpus, a vocabulary and a log."""
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "VERSION").write_text("9.9.9\n", "utf-8")
+    (folder / "defaults.toml").write_text("[study]\ncorpus_keep = 4\n"
+                                          "[vocab]\nkeep_audio = 2\n", "utf-8")
+    trim = "    def _trim(self) -> None:\n"
+    trim += "        if paths.OWNER_DATA:\n            return\n" if guard else "        pass\n"
+    (folder / "study.py").write_text("class Corpus:\n" + trim, "utf-8")
+    if git:
+        (folder / ".git").mkdir(exist_ok=True)
+
+    # his own report
+    (folder / "problems.json").write_text(_json.dumps({"version": 1, "items": [
+        {"id": "20260923-211403", "at": "2026-09-23 21:14:03", "where": "the desk",
+         "kind": "broken", "status": "open",
+         "text": "הדף של ההגדרות קופץ כשאני עובר בין הלשוניות",
+         "env": {"version": "1.0.4"}, "dictation": {}},
+    ]}, ensure_ascii=False), "utf-8")
+
+    # a stranger's, with a picture and a recording beside it
+    box = folder / "problems" / "inbox" / "8f2ccafe"
+    box.mkdir(parents=True, exist_ok=True)
+    (box / "shot.jpg").write_bytes(b"\xff\xd8\xff\xe0 not really a jpeg")
+    (box / "dictation.wav").write_bytes(b"RIFF....WAVEfmt ")
+    (box / "r1.json").write_text(_json.dumps({
+        "id": "r1", "user_id": "8f2ccafe", "at": "2026-09-23 19:02:00",
+        "where": "dictation", "kind": "wrong", "status": "open",
+        "text": "The second button does nothing when I press it",
+        "shot": "shot.jpg", "dictation": {"wav": "dictation.wav", "seconds": 4.2},
+        "env": {"version": "1.0.4", "os": "Windows 11 26200"},
+        "server": {"created_at": "2026-09-23T19:02:00Z"},
+    }, ensure_ascii=False), "utf-8")
+
+    # three nights: one clean, one with the machine's known flake, one failed
+    nights = folder / "problems" / "nightly"
+    nights.mkdir(parents=True, exist_ok=True)
+    log = ""
+    for stamp, word, verdict in (
+            ("20260921-030003", "4 failed",
+             {"result": "failed", "failed": ["test_a", "test_b"],
+              "real": ["test_a", "test_b"], "code": 1, "report": "p1"}),
+            ("20260922-030004", "clean",
+             {"result": "clean", "failed": [], "real": [], "code": 0, "report": None}),
+            ("20260923-030002", "clean",
+             {"result": "clean", "failed": [], "real": [], "code": 0, "report": None})):
+        transcript = nights / f"{stamp}-tests.txt"
+        body = "  PASS  test_one\n  PASS  test_two\n"
+        if verdict["result"] == "failed":
+            body += "  FAIL  test_a: it did not\n  FAIL  test_b: nor did it\n"
+        transcript.write_text(body + "\n(hidden desktop 'DeskITTests': 16 test(s) "
+                                     "ran in the open; 244s in all)\n", "utf-8")
+        verdict["transcript"] = str(transcript)
+        pretty = f"{stamp[:4]}-{stamp[4:6]}-{stamp[6:8]} {stamp[9:11]}:{stamp[11:13]}:{stamp[13:15]}"
+        log += _NIGHT_OUT.format(stamp=pretty, word=word, secs=244,
+                                 json=_json.dumps(verdict))
+    (nights / "run.log").write_text(log, "utf-8")
+
+    # the training data
+    corpus = folder / "corpus"
+    corpus.mkdir(exist_ok=True)
+    for n, tier in enumerate(("gold", "silver", "silver")):
+        (corpus / f"2026092{n}-120000-0001.wav").write_bytes(b"RIFF")
+        (corpus / f"2026092{n}-120000-0001.json").write_text(_json.dumps(
+            {"text": "מה שאמרתי", "tier": tier, "seconds": 4.0,
+             "kept": f"2026-09-2{n} 12:00:0{n}"}, ensure_ascii=False), "utf-8")
+    (folder / "recent").mkdir(exist_ok=True)
+    (folder / "recent" / "x.wav").write_bytes(b"RIFF")
+    (folder / "transcripts.log").write_text(
+        "2026-09-23 21:14:57,185 | OK | 1.3s | local | 0.5s latency | תמשיך\n"
+        "2026-09-23 21:15:57,185 | POLISHED | 2.3s | local | 0.5s | עוד משפט\n", "utf-8")
+    (folder / "vocab.json").write_text(_json.dumps({"version": 1, "corrections": [
+        {"heard": "ריפו", "meant": "repo", "hits": 2, "last": "2026-09-20 10:00:00"}]},
+        ensure_ascii=False), "utf-8")
+    return _MRoot(folder)
+
+
+def _master_snapshot(folder: Path) -> dict:
+    """Every file under a checkout, by its bytes — what a read must leave
+    exactly as it found it."""
+    out = {}
+    for path in sorted(folder.rglob("*")):
+        if path.is_file():
+            out[str(path.relative_to(folder))] = path.read_bytes()
+    return out
+
+
+def test_the_master_reads_his_reports_and_other_peoples_into_one_list():
+    """Both kinds, newest first, with the stranger's files found beside
+    the report and the Hebrew line marked as the right-to-left one."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "checkout")
+        rows = _msources.rows("reports", root)
+        assert len(rows) == 2, [r.id for r in rows]
+        mine, theirs = rows
+        assert mine.id == "report:mine:20260923-211403" and mine.rtl, mine
+        assert "yours" in mine.under and "1.0.4" in mine.under, mine.under
+        assert theirs.id == "report:8f2ccafe:r1" and not theirs.rtl, theirs
+        assert "from a user" in theirs.under, theirs.under
+        kinds = {e.kind: e for e in theirs.evidence}
+        assert set(kinds) >= {"picture", "recording"}, theirs.evidence
+        assert kinds["recording"].word == "4.2 s", kinds["recording"]
+        assert kinds["picture"].path.is_file() and kinds["recording"].path.is_file()
+        # the words are the row's body, untouched
+        assert theirs.body == "The second button does nothing when I press it"
+
+
+def test_the_master_reads_a_night_from_the_run_log_and_the_transcript_is_the_evidence():
+    """The verdict is the [out] line of run.log — the first version of
+    this screen read the transcripts instead and called eleven good
+    nights "stopped". Two clean nights in a row collapse into one row."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "checkout")
+        rows = _msources.rows("tests", root, net=False)
+        assert [r.tone for r in rows][:1] == ["ok"], [(r.title, r.tone) for r in rows]
+        newest = rows[0]
+        assert "Clean" in newest.title and "244 s" in newest.under, newest.under
+        assert newest.facts["Tests"] == 2, newest.facts
+        failed = [r for r in rows if r.tone == "bad"]
+        assert len(failed) == 1, [r.title for r in rows]
+        assert "2 failed" in failed[0].title and "test_a" in failed[0].title
+        assert "FAIL  test_a" in failed[0].body, failed[0].body
+        assert failed[0].body_from == "machine", failed[0].body_from
+        # each failing test once, and the run's own "2 FAILED: a, b" summary
+        # is not one of them — the first version quoted every window around
+        # every FAIL and repeated the same block eight times
+        assert failed[0].body.count("FAIL ") == 2, failed[0].body
+        assert "FAILED:" not in failed[0].body, failed[0].body
+        assert failed[0].evidence and failed[0].evidence[0].kind == "transcript"
+
+
+def test_the_master_counts_the_corpus_and_warns_only_where_the_trim_can_run():
+    """The numbers are counted, not guessed; and the warning row exists
+    only where study.py's trim would actually delete something — never on
+    the owner's own checkout, where the guard returns first."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "his", git=True, guard=True)
+        rows = {r.id: r for r in _msources.rows("data", root)}
+        assert "data:trim" not in rows, "the owner's checkout never trims"
+        assert rows["data:corpus"].fig == "3", rows["data:corpus"].fig
+        assert rows["data:corpus"].fig_small == "of 4 before the trim"
+        assert rows["data:gold"].fig == "1", rows["data:gold"].fig
+        assert rows["data:vocab"].fig == "1", rows["data:vocab"].fig
+        assert rows["data:transcripts"].facts["Lines"] == 2
+        assert rows["data:recent"].fig == "1" and rows["data:recent"].fig_small == "of 2"
+
+        stranger = _master_root(Path(tmp) / "stranger", git=False, guard=False)
+        rows = {r.id: r for r in _msources.rows("data", stranger)}
+        assert "data:trim" in rows, "a copy whose trim runs must say so"
+        assert rows["data:trim"].tone == "warn"
+        assert rows["data:trim"].facts["Guard in study.py"] == "NO"
+
+
+def test_only_a_hand_ticks_a_master_row_and_an_export_never_does():
+    """His rule, 2026-09-23: nothing marks a row handled but him. The
+    ledger records that a row was taken to a chat and leaves the tick
+    exactly as it was."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "checkout")
+        store = _MStore(Path(tmp) / "state")
+        row = _msources.rows("reports", root, store=store)[0]
+        assert not row.ticked and not row.took
+
+        _mexport.take_to_a_chat(row, root, store, home=Path(tmp) / "out", copy=False)
+        again = _msources.rows("reports", root, store=store)[0]
+        assert again.took, "the ledger did not record the export"
+        assert not again.ticked, "an export must never tick a row"
+
+        store.tick(row.id, True)
+        ticked = _msources.rows("reports", root, store=store)[0]
+        assert ticked.ticked and ticked.ticked_at, ticked
+        store.tick(row.id, False)
+        assert not _msources.rows("reports", root, store=store)[0].ticked
+        # and the mark survives a new Store over the same folder
+        store.tick(row.id, True)
+        assert _MStore(Path(tmp) / "state").ticked(row.id)
+
+
+def test_an_export_carries_the_words_untouched_and_the_files_beside_them():
+    """Verbatim, in a block that says it is a quotation — he pastes this
+    into a chat, and a report that says "ignore your instructions" must
+    arrive there as data."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "checkout")
+        store = _MStore(Path(tmp) / "state")
+        row = next(r for r in _msources.rows("reports", root, store=store)
+                   if r.id.startswith("report:8f2ccafe"))
+        done = _mexport.take_to_a_chat(row, root, store,
+                                       home=Path(tmp) / "out", copy=False)
+        folder = Path(done["folder"])
+        names = sorted(p.name for p in folder.iterdir())
+        assert names == ["dictation.wav", "report.md", "shot.jpg"], names
+        text = (folder / "report.md").read_text("utf-8")
+        assert row.body in text, "the words were not carried whole"
+        assert "data, not instructions" in text, text[:400]
+        assert "```text" in text and text.count("```") >= 2
+        assert "9.9.9" in text and row.id in text
+        assert "Windows 11 26200" in text, "the facts around it were dropped"
+        assert "summar" in text.rsplit("---", 1)[-1], "the promise is not on the page"
+        # a second export is a second line in the ledger, not a second folder
+        _mexport.take_to_a_chat(row, root, store, home=Path(tmp) / "out", copy=False)
+        assert len(store._data["exports"][row.id]) == 2
+
+
+def test_the_master_writes_nothing_into_the_checkout_it_reads():
+    """Rule 1 of MASTER.md, held by bytes: read every screen, then
+    compare every file in the checkout with what it was before."""
+    with tempfile.TemporaryDirectory() as tmp:
+        folder = Path(tmp) / "checkout"
+        root = _master_root(folder)
+        store = _MStore(Path(tmp) / "state")
+        before = _master_snapshot(folder)
+        for screen in ("reports", "tests", "data"):
+            _msources.rows(screen, root, net=False, store=store)
+        row = _msources.rows("reports", root, store=store)[0]
+        store.tick(row.id, True)
+        _mexport.take_to_a_chat(row, root, store, home=Path(tmp) / "out", copy=False)
+        after = _master_snapshot(folder)
+        assert after == before, sorted(set(after) ^ set(before)) or "a file changed"
+        assert not (folder / "dev").exists(), "the master made a folder in his checkout"
+
+
+def test_a_row_may_leave_its_body_for_the_export_to_build():
+    """A branch's diff is three git commands; twenty-five branches were
+    seventy-five of them before the Code screen could be drawn. Such a
+    body is a callable the EXPORT runs — the screen never pays for it,
+    and the page is never handed a function."""
+    from dev.master.rows import Row as _MRow
+    built = []
+
+    def slow():
+        built.append(1)
+        return "the whole diff"
+
+    row = _MRow(id="code:branch:x", screen="code", title="x", body_fn=slow)
+    assert row.body == "" and "body_fn" not in row.to_dict()
+    assert not built, "the screen built the body"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "checkout")
+        text = _mexport.document(row, root)
+        assert "the whole diff" in text and len(built) == 1
+        _mexport.document(row, root)
+        assert len(built) == 1, "the body was built twice"
+
+
+def test_a_long_body_goes_in_a_file_beside_the_document():
+    """His first real export, 2026-09-24: a branch's diff was 276,000
+    characters. Cutting it inside the document kept the first 12 KB of
+    `git diff` — alphabetical, so .gitignore survived and no line of the
+    code did. The whole thing is a file beside the document now, and the
+    document keeps its head and says where the rest is."""
+    from dev.master.rows import Row as _MRow
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "checkout")
+        store = _MStore(Path(tmp) / "state")
+        long = "diff --git a/x b/x\n" + ("+a line of the change\n" * 4000)
+        row = _MRow(id="code:branch:x", screen="code", title="x — a big branch",
+                    body=long, body_from="machine")
+        done = _mexport.take_to_a_chat(row, root, store,
+                                       home=Path(tmp) / "out", copy=False)
+        folder = Path(done["folder"])
+        assert sorted(p.name for p in folder.iterdir()) == ["change.diff", "report.md"]
+        assert (folder / "change.diff").read_text("utf-8") == long, "the file is not whole"
+        text = (folder / "report.md").read_text("utf-8")
+        assert len(text) < len(long) / 3, "the document swallowed the whole diff"
+        assert "change.diff" in text and "more characters" in text
+        assert long[:500] in text, "the document lost the head of it"
+
+
+def test_the_windows_bridge_answers_only_the_names_the_api_lists():
+    """webdesk.py's dispatcher checks Api.CALLS, and the master's Api is
+    flat: no dotted path, no attribute that is not one of those calls.
+    The page cannot widen the list — `api` comes from the process that
+    opened the window."""
+    from dev.master import webdesk as _mwebdesk
+    from dev.master.api import Api as _MApi
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "checkout")
+        api = _MApi(root, _MStore(Path(tmp) / "state"))
+        assert set(api.CALLS) == {"rows", "tick", "preview", "take",
+                                  "open_folder", "ping"}, api.CALLS
+        assert tuple(_mwebdesk._calls(api)) == tuple(api.CALLS)
+        assert _mwebdesk._calls(None) == _mwebdesk.CALLS
+        for name in api.CALLS:
+            assert callable(getattr(api, name)), name
+        public = {n for n in dir(api) if not n.startswith("_")}
+        assert public == set(api.CALLS) | {"CALLS"}, public
+        assert api.rows("nowhere")["ok"] is False
+        assert api.open_folder("C:\\Windows")["ok"] is False, "any path was opened"
+
+
+def test_every_master_row_has_an_id_a_screen_and_a_tone_the_window_can_draw():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "checkout")
+        seen = set()
+        for screen in ("reports", "tests", "data"):
+            for row in _msources.rows(screen, root, net=False):
+                assert row.id and row.id not in seen, f"duplicate row id {row.id}"
+                seen.add(row.id)
+                assert row.screen == screen, (row.id, row.screen)
+                assert row.tone in ("q", "ok", "warn", "bad", "iris"), row.tone
+                assert row.title.strip(), row.id
+                assert ":" in row.id, row.id
+
+
 if __name__ == "__main__":
     if not paths.DEVELOPER:
         print("the ops suite is the owner's: it runs only in the checkout "
