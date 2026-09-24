@@ -14,7 +14,7 @@ const IC: Record<string, string> = {
   warn: "", ok: "", bad: "", idea: "", person: "",
   cloud: "", chart: "", stack: "", doc: "", folder: "",
   link: "", clock: "", info: "", star: "", pulse: "",
-  copy: "",
+  copy: "", up: "",
 };
 
 const SUB: Record<Place, [string, string]> = {

@@ -22,7 +22,9 @@ SKIP = ("weekly/", "worktree-", "claude/")     # branches that are not lanes
 #: his Dev's integration branch (AGENTS / the dev-all note), so "not
 #: pushed" is what it is for, not something to flag.
 LOCAL_ONLY = ("dev-all",)
-BODY_MAX = 12000
+#: a sanity ceiling only — a diff past this is a branch nobody
+#: reviews in one go, and the file beside the document says so.
+BODY_MAX = 2_000_000
 
 
 def rows(root: Root, *, net: bool = True) -> list[Row]:
@@ -55,7 +57,7 @@ def _branches(root: Root) -> list[Row]:
         big, small = W.words(date)
         local = name in LOCAL_ONLY
         tone, glyph = (("q", "link") if local or (pushed and not unpushed)
-                       else ("warn", "warn"))
+                       else ("warn", "up"))   # "up" = waiting to be pushed, not broken
         out_rows.append(Row(
             id=f"code:branch:{name}",
             screen="code",
@@ -167,7 +169,11 @@ def _body(root: Root, branch: str) -> str:
         patch = out(["git", "diff", f"{MAIN}...{branch}"], root.dir)
     except Failed as e:
         return f"(git could not be read: {e})"
-    cut = patch[:BODY_MAX]
+    # The whole diff, not a slice of it: export.py writes a long body into
+    # a file beside the document (change.diff), so there is nothing to
+    # gain by cutting here — and cutting here cut it alphabetically, which
+    # on the first real export kept .gitignore and dropped every line of
+    # code the question was about (2026-09-24).
     if len(patch) > BODY_MAX:
-        cut += f"\n\n[... {len(patch) - BODY_MAX:,} more characters of diff ...]"
-    return f"Commits\n{log}\nFiles\n{stat}\nThe change\n{cut}"
+        patch += f"\n\n[... the diff stops here: {len(patch):,} characters ...]"
+    return f"Commits\n{log}\nFiles\n{stat}\nThe change\n{patch}"
