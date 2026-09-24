@@ -836,15 +836,22 @@ class _FakeInjector:
         self.calls.append(("show", text))
         return self.focus
 
-    def replace_placeholder(self, placeholder, text, chord, delay, hwnd):
+    def replace_placeholder(self, placeholder, text, chord, delay, hwnd,
+                            marker=None):
         if hwnd and self.foreground_window() != hwnd:
             raise injector.FocusChangedError("moved")
         self.calls.append(("replace", placeholder, text))
         return "old clipboard restored"
 
-    def clear_placeholder(self, placeholder, hwnd):
+    def clear_placeholder(self, placeholder, hwnd, marker=None):
         self.calls.append(("clear", placeholder))
         return True
+
+    def modifiers_held(self):
+        return False
+
+    def copied_since(self, marker):
+        return False
 
     def inject(self, text, chord, delay):
         self.calls.append(("inject", text))
@@ -1732,6 +1739,330 @@ def test_moving_window_falls_back_to_clipboard() -> None:
     finally:
         main_mod.injector = real
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+
+def test_the_marker_is_erased_only_while_nothing_could_have_moved_the_caret() -> None:
+    """2026-09-23 audit, A29/A60: the erase's one test was the top-level
+    window, which is a whole browser or a whole VS Code — a Ctrl+Tab, a
+    click into another box, a few letters typed while the text was on its
+    way, and the three backspaces ate the user's own characters, the
+    transcript landed in the other box and the "..." stayed behind. A key
+    that reached the app, a key the app itself sent there, a mouse press
+    (a short tap too, and on our own cards too), another box taking the
+    focus: any of them and not one backspace is sent. And a modifier still
+    held — the next dictation's Right Ctrl — is waited out, because a
+    Backspace under it is a Ctrl+Backspace that deletes a word."""
+    import threading
+    import time
+
+    import hotkey as hotkey_mod
+    import injector as inj
+
+    sent, pasted = [], []
+    keys = {"held": set(), "tapped": set()}
+    state = {"focus": 77}
+
+    def key_state(vk):
+        value = 0x8000 if vk in keys["held"] else 0
+        if vk in keys["tapped"]:
+            keys["tapped"].discard(vk)          # read once, like Windows
+            value |= 0x0001
+        return value
+
+    def cycle(between=None, clear=False):
+        """Marker down, `between` happens, then the erase. What it raised,
+        or None."""
+        keys["held"].clear()
+        keys["tapped"].clear()
+        state["focus"] = 77
+        sent.clear()
+        pasted.clear()
+        marker = inj.show_placeholder("...", "ctrl+v", 0)
+        assert marker.hwnd == 4242 and marker.focus == 77
+        if between is not None:
+            between()
+        try:
+            if clear:
+                return inj.clear_placeholder("...", 4242, marker=marker)
+            inj.replace_placeholder("...", "שלום", "ctrl+v", 0, 4242,
+                                    marker=marker)
+            return None
+        except inj.FocusChangedError as e:
+            return e
+        finally:
+            # whatever it decided, the watch is over
+            assert not marker._watch._thread.is_alive()
+
+    def click():
+        keys["held"].add(0x01)
+        time.sleep(inj.CLICK_POLL_S * 5)
+        keys["held"].discard(0x01)
+        time.sleep(inj.CLICK_POLL_S * 3)
+
+    def tap():
+        # down and up between two looks: only the "pressed since" bit
+        keys["tapped"].add(0x01)
+        time.sleep(inj.CLICK_POLL_S * 3)
+
+    hand = PTTStateMachine(                         # dictation on F8
+        0x77, on_start=lambda lang: None, on_stop=lambda lang: None,
+        on_abort=lambda why: None, taps={0x78: "capture"},  # F9: a screen key
+        on_tap=lambda action: None)
+
+    def press(*vks, injected=False):
+        """Down in order, up in reverse — a chord, or one key."""
+        for vk in vks:
+            hand.handle("down", vk, injected=injected)
+        for vk in reversed(vks):
+            hand.handle("up", vk, injected=injected)
+
+    with _patched(inj, "inject", lambda t, c, d: pasted.append(t) or "ok"), \
+            _patched(inj, "send_key_times",
+                     lambda name, n: sent.append((name, n))), \
+            _patched(inj, "foreground_window", lambda: 4242), \
+            _patched(inj, "focus_of", lambda h: state["focus"]), \
+            _patched(inj, "menu_open", lambda h: state.get("menu", False)), \
+            _patched(inj, "ours_in_front",
+                     lambda: state.get("ours", False)), \
+            _patched(inj, "key_state", key_state), \
+            _patched(inj, "SETTLE_SECONDS", 0):
+        # Nothing happened: the old erase, exactly.
+        assert cycle() is None
+        assert sent == [("backspace", 3)] and pasted == ["...", "שלום"]
+
+        # What moves no caret moves nothing: an injected key, a Ctrl on its
+        # own, the dictation key pressed for the next one, this app's own
+        # screen key, a lock or volume key, Alt+Tab away (the foreground
+        # test sees a switch that did not come back), a Win chord.
+        def harmless():
+            press(VK_V, injected=True)
+            press(VK_LCTRL)
+            press(0x77)
+            press(0x78)
+            press(0x14)                    # Caps Lock
+            press(0xAF)                    # volume up
+            press(0xA4, 0x09)              # Alt+Tab
+            press(0x5B, 0x44)              # Win+D
+            press(0xA0, 0xA4)              # Shift+Alt: the language switch
+        assert cycle(harmless) is None and sent == [("backspace", 3)]
+
+        # A press on one of OUR windows while it holds the foreground — a
+        # screenshot's drag — is not a press in the field.
+        def drag_on_ours():
+            state["ours"] = True
+            click()
+            state["ours"] = False
+        assert cycle(drag_on_ours) is None and sent == [("backspace", 3)]
+
+        # A lone Alt tap puts the focus in the window's menu.
+        moved = cycle(lambda: press(0xA4))
+        assert isinstance(moved, inj.MarkerMovedError) and sent == []
+        # ...and a menu that is open is where the keys would go.
+        state["menu"] = True
+        moved = cycle()
+        state["menu"] = False
+        assert isinstance(moved, inj.MarkerMovedError), moved
+        assert "menu" in str(moved) and sent == []
+
+        # A key that reached the app from a hand.
+        def typed():
+            hand.handle("down", 0x41, injected=False)      # "a"
+            hand.handle("up", 0x41, injected=False)
+        moved = cycle(typed)
+        assert isinstance(moved, inj.MarkerMovedError), moved
+        assert "keys" in str(moved) and sent == [] and pasted == ["..."]
+
+        # Keys the app itself sent there (a review Accept, a translate).
+        moved = cycle(hotkey_mod._count_sent)
+        assert isinstance(moved, inj.MarkerMovedError), moved
+        assert "app itself" in str(moved) and sent == []
+
+        # A mouse press, held or a tap shorter than a poll.
+        for between in (click, tap):
+            moved = cycle(between)
+            assert isinstance(moved, inj.MarkerMovedError), between
+            assert "mouse" in str(moved) and sent == []
+
+        # Another box in the same window took the focus.
+        moved = cycle(lambda: state.update(focus=78))
+        assert isinstance(moved, inj.MarkerMovedError) and sent == []
+
+        # The next dictation's Right Ctrl, still held: waited out...
+        def held_then_let_go():
+            keys["held"].add(0x11)
+            threading.Timer(0.2, keys["held"].discard, (0x11,)).start()
+        started = time.monotonic()
+        assert cycle(held_then_let_go) is None
+        assert time.monotonic() - started >= 0.2
+        assert sent == [("backspace", 3)]
+        # ...and never sent under it, however long it stays down.
+        with _patched(inj, "MODIFIER_WAIT_S", 0.1):
+            moved = cycle(lambda: keys["held"].add(0x11))
+        assert isinstance(moved, inj.MarkerMovedError), moved
+        assert "held" in str(moved) and sent == []
+
+        # The give-up path leaves it, too, and says so with False.
+        assert cycle(typed, clear=True) is False and sent == []
+        assert cycle(clear=True) is True and sent == [("backspace", 3)]
+
+    # A key the hook SWALLOWED never reached the app: the latch press
+    # mid-recording is the one every dictation can meet.
+    spy = Spy()
+    m = _latch_machine(spy)
+    before = hotkey_mod.keys_typed()
+    m.handle("down", VK_RCTRL, injected=False)
+    m.handle("down", VK_LEFT, injected=False)       # latched: swallowed
+    assert spy.events == ["start", "latch"], spy.events
+    assert hotkey_mod.keys_typed() == before
+    m.handle("up", VK_LEFT, injected=False)         # key-ups never count
+    assert hotkey_mod.keys_typed() == before
+
+    # Ctrl+Alt is AltGr: an app chord there still types a point in a
+    # Hebrew layout, so it counts even though this app took it.
+    altgr = PTTStateMachine(
+        VK_RCTRL, on_start=lambda lang: None, on_stop=lambda lang: None,
+        on_abort=lambda why: None, taps={parse_binding("ctrl+alt+m"): "x"},
+        on_tap=lambda action: None)
+    before = hotkey_mod.keys_typed()
+    for vk in (VK_LCTRL, 0xA4, 0x4D):
+        altgr.handle("down", vk, injected=False)
+    assert hotkey_mod.keys_typed() == before + 1
+
+    # A Win whose key-up Windows never delivered (Win+L: it happens on the
+    # secure desktop) must not switch the count off. The app's machine
+    # asks Windows (held_probe); here Windows says nothing is held.
+    stale = PTTStateMachine(
+        VK_RCTRL, on_start=lambda lang: None, on_stop=lambda lang: None,
+        on_abort=lambda why: None, held_probe=lambda vk: False)
+    stale.handle("down", 0x5B, injected=False)     # its up is lost
+    before = hotkey_mod.keys_typed()
+    stale.handle("down", 0x41, injected=False)
+    assert hotkey_mod.keys_typed() == before + 1, "a phantom Win hid a key"
+
+
+def test_the_erase_waits_for_the_next_dictations_hand_holding_nothing() -> None:
+    """The second review, 2026-09-23: the 30 s wait for a held Ctrl sat
+    under the cursor lock and gave up in the middle of an ordinary held
+    sentence. App._hands_off waits with no lock, for as long as the next
+    dictation is being recorded, and HANDS_OFF_S otherwise."""
+    import threading
+    import time
+
+    import main as main_mod
+
+    app = main_mod.App.__new__(main_mod.App)
+    held = {"on": True}
+
+    class _Machine:
+        state = hotkey_mod.RECORDING
+
+    app.machine = _Machine()
+
+    class _Keys:
+        @staticmethod
+        def modifiers_held():
+            return held["on"]
+
+    real = main_mod.injector
+    try:
+        main_mod.injector = _Keys
+        # the next dictation is held for longer than the idle bound
+        with _patched(main_mod, "HANDS_OFF_S", 0.05):
+            threading.Timer(0.3, held.update, kwargs={"on": False}).start()
+            started = time.monotonic()
+            app._hands_off()
+            assert time.monotonic() - started >= 0.3, "gave up mid-hold"
+            # nothing is being recorded: a stuck key is waited out briefly
+            held["on"] = True
+            _Machine.state = hotkey_mod.IDLE
+            started = time.monotonic()
+            app._hands_off()
+            assert time.monotonic() - started < 0.3
+    finally:
+        main_mod.injector = real
+
+
+def test_a_caret_that_may_have_moved_sends_the_text_to_the_clipboard() -> None:
+    """The worker's half of the rule above: the erase refused, so the
+    transcript goes where a window switch always sent it — the clipboard —
+    and the marker it could not vouch for is handed back to the erase that
+    asks about it."""
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    class _CaretMoved(_FakeInjector):
+        def show_placeholder(self, text, chord, delay):
+            self.calls.append(("show", text))
+            return "the-marker"
+
+        def replace_placeholder(self, placeholder, text, chord, delay, hwnd,
+                                marker=None):
+            self.calls.append(("refused", marker))
+            raise injector.MarkerMovedError(
+                "keys were pressed while the text was on its way")
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-e2e-"))
+    fake = _CaretMoved()
+    real = main_mod.injector
+    try:
+        main_mod.injector = fake
+        app = _worker_app(_Flaky(fail_times=0, text="טקסט"), tmp)
+        app._handle(b"RIFF-audio", 5.0, fake.focus)
+        assert fake.calls == [("show", "..."), ("refused", "the-marker"),
+                              ("clipboard", "טקסט")], fake.calls
+
+        # ...unless something was copied meanwhile (a screenshot taken
+        # during the wait): that stays, and the text is on the shelf.
+        fake.calls.clear()
+        fake.copied_since = lambda marker: marker == "the-marker"
+        app._handle(b"RIFF-audio", 5.0, fake.focus)
+        assert fake.calls == [("show", "..."), ("refused", "the-marker")], \
+            fake.calls
+        assert app._last["final"] == "טקסט"
+    finally:
+        main_mod.injector = real
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_a_restore_that_fails_after_the_paste_is_not_a_failed_paste() -> None:
+    """2026-09-23 audit, A109: once the chord is sent the text has landed,
+    and a clipboard that would not take its old contents back is a status,
+    not a raise. Raised, it read as "paste failed" with an error cue over
+    text that was on screen — and under the "..." marker it left the
+    worker believing there was no marker, so the transcript was pasted
+    after it and the marker stayed."""
+    import injector as inj
+
+    pasted = []
+
+    def busy(*_a, **_k):
+        raise inj.ClipboardBusyError("held by a clipboard manager")
+
+    with _patched(inj, "snapshot", lambda: ("text", "what I had")), \
+            _patched(inj, "paste_text",
+                     lambda t, c, d: pasted.append(t)), \
+            _patched(inj, "restore", busy):
+        with _patched(inj, "restore_all", lambda saved, **k: False):
+            status = inj.inject("שלום", "ctrl+v", 0)
+            assert pasted == ["שלום"], pasted
+            assert "could not be put back" in status, status
+            # ...and the marker is a Marker, so the worker knows it is up
+            marker = inj.show_placeholder("...", "ctrl+v", 0)
+            try:
+                assert isinstance(marker, inj.Marker)
+            finally:
+                marker.close()
+        # The text restore gets restore_all's longer budget before it
+        # gives up.
+        got = []
+        with _patched(inj, "restore_all",
+                      lambda saved, **k: got.append(saved) or True):
+            assert inj.inject("שלום", "ctrl+v", 0) == "old clipboard restored"
+        fmt, blob = got[0][0]
+        assert blob.decode("utf-16-le") == "what I had\0", blob
 
 
 def test_silence_is_not_retried_or_spooled() -> None:

@@ -1241,6 +1241,35 @@ exactly what classic did.
   formats when the clipboard holds something it cannot describe as text —
   otherwise the transcript pastes over the screenshot just taken, which is
   the headline gesture undoing itself.
+- **The "..." marker's Backspaces are blind; they go only while nothing
+  could have moved the caret.** The foreground window is not enough: it
+  is a whole browser or a whole Electron app, whose focused control is the
+  top-level window itself (measured), so a Ctrl+Tab, a click into another
+  box or a few typed letters sent the Backspaces into the user's own text
+  (2026-09-23 audit, A29/A60). `injector.Marker` holds the baseline taken
+  BEFORE the marker's paste: `hotkey.keys_typed()` (keys that reached the
+  app from a hand and can move a caret — `_reaches_the_text` says which,
+  a lone Alt tap included), `hotkey.keys_sent()` (the app's OWN
+  SendInput: a review Accept selects the whole field), a click watch
+  counting every button press — our own cards too, a notify card opens
+  another conversation in the same Claude window — with GetAsyncKeyState's
+  "pressed since" bit for taps shorter than a poll, the focused control,
+  and an open menu; a press on one of ours that holds the foreground (a
+  screenshot's drag) is the one exemption. Anything moved →
+  `MarkerMovedError` → the clipboard, unless something was copied since
+  the marker landed (`copied_since`): then that stays and the text is on
+  the shelf. And the erase waits for every modifier to come UP: a
+  Backspace under the next dictation's held Right Ctrl is Ctrl+Backspace
+  and deletes words (1 of 256 erases in five days). `App._hands_off`
+  waits holding NO lock, for as long as the next dictation is recording,
+  5 s otherwise; never inject a Ctrl up to clear it, that ends the next
+  dictation. The typed-key count confirms a remembered Win/Alt/Ctrl with
+  Windows (`held_probe`) — a Win+L loses the key-up on the secure desktop
+  — while the chord matcher stays on the events it is fed. Do not "fix" any of it by
+  reading the marker back with Shift+Left + copy: arrows move visually in
+  a Hebrew line, and the copy chord is an interrupt in a terminal. And
+  once the paste chord is sent, `inject` never raises: a failed clipboard
+  restore is a status (A109).
 - **Our own windows and the owner's screenshots: keep them out of the
   DRAG, not out of the PICTURE.** This rule used to read "our own windows
   must not appear in the user's screenshots" and it was wrong, which cost

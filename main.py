@@ -236,6 +236,12 @@ _SCREEN_ACTIONS = frozenset({"visual_qa", "capture", "record", "photo",
 # worse than no clip: a week later it still reads as evidence.
 PROBLEM_LAST_MAX_S = 300.0
 
+# How long a marker's erase waits for a held modifier to come up (see
+# App._hands_off): while the next dictation is being held, up to the
+# longest recording there is; otherwise a Ctrl held for anything else.
+HELD_NEXT_MAX_S = 600.0
+HANDS_OFF_S = 5.0
+
 # What the dot should say for a machine state, when a worker has finished
 # with something and is deciding what to put back. Only two states are
 # named because only two mean "still listening": everything else — idle,
@@ -550,7 +556,8 @@ class App:
             ask_open=self._ask_card_open,
             on_ask_start=self._on_ask_start,
             on_ask_stop=self._on_ask_stop,
-            on_refused=self._on_dictation_refused)
+            on_refused=self._on_dictation_refused,
+            held_probe=hotkey_mod.held_now)
         self.hook = HookThread(self.machine)
         # The model's own state: "on", "off", "loading", "unloading".
         # Stop in the desk unloads the model and the microphone stream
@@ -6274,6 +6281,25 @@ class App:
             self._polisher = polish_mod.Polisher(self.cfg, self.vocab)
         return self._polisher
 
+    def _hands_off(self) -> None:
+        """Wait for every modifier to come up before a marker's Backspaces
+        (injector._vouch says why), holding NOTHING while it waits — not
+        the cursor lock every other door to the cursor queues on.
+
+        As long as the next dictation is being held, because its release
+        is certain and is the moment the text may land: Right Ctrl is the
+        hold key, and a text that waited out a flat bound went to the
+        clipboard in the middle of an ordinary sentence (the second
+        review, 2026-09-23). Otherwise HANDS_OFF_S — a Ctrl held for
+        something else, or a key stuck down — and then _vouch decides."""
+        started = time.monotonic()
+        while injector.modifiers_held():
+            waited = time.monotonic() - started
+            held_next = self.machine.state == hotkey_mod.RECORDING
+            if waited > (HELD_NEXT_MAX_S if held_next else HANDS_OFF_S):
+                return
+            time.sleep(0.02)
+
     def _handle(self, wav: bytes, seconds: float, hwnd: int,
                 language: str | None = None,
                 to_card: bool | None = None,
@@ -6284,6 +6310,7 @@ class App:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
+        marker = None
         # A screen question owns the next dictation: no marker in the app
         # underneath, because nothing will ever be pasted over it.
         #
@@ -6315,9 +6342,11 @@ class App:
             if self._cursor_lock.acquire(timeout=1.0):
                 try:
                     if injector.foreground_window() == hwnd:
-                        injector.show_placeholder(placeholder,
-                                                  self.cfg.paste_chord,
-                                                  self.cfg.restore_delay_ms)
+                        # What was true when it went down, so the erase can
+                        # ask whether the caret is still after it.
+                        marker = injector.show_placeholder(
+                            placeholder, self.cfg.paste_chord,
+                            self.cfg.restore_delay_ms)
                         shown = True
                 except injector.ClipboardBusyError as e:
                     log.warning("could not show the placeholder: %s", e)
@@ -6393,8 +6422,10 @@ class App:
             # Nothing to paste. Take the marker back down so the user is not
             # left with a stray "..." in their document.
             if shown:
+                self._hands_off()
                 with self._cursor_lock:
-                    injector.clear_placeholder(placeholder, hwnd)
+                    injector.clear_placeholder(placeholder, hwnd,
+                                               marker=marker)
             beep("error")
             self._bump(failures=1)
             if no_model:
@@ -6420,8 +6451,10 @@ class App:
         cleaned = text.strip()
         if not cleaned:
             if shown:
+                self._hands_off()
                 with self._cursor_lock:
-                    injector.clear_placeholder(placeholder, hwnd)
+                    injector.clear_placeholder(placeholder, hwnd,
+                                               marker=marker)
             log.info("empty transcript (no speech heard) — not pasting")
             if item:
                 item.discard()
@@ -6442,8 +6475,10 @@ class App:
             if shown:
                 # The marker was pasted before the window opened; it is
                 # not where the answer is going any more.
+                self._hands_off()
                 with self._cursor_lock:
-                    injector.clear_placeholder(placeholder, hwnd)
+                    injector.clear_placeholder(placeholder, hwnd,
+                                               marker=marker)
             try:
                 cleaned, _applied = self.vocab.apply(cleaned)
             except Exception:
@@ -6641,12 +6676,14 @@ class App:
                           "when": time.strftime("%Y-%m-%d %H:%M:%S"),
                           "wav": str(kept.wav_path) if kept else ""}
 
+        if shown:
+            self._hands_off()
         try:
             with self._cursor_lock:
                 if shown:
                     status = injector.replace_placeholder(
                         placeholder, cleaned, self.cfg.paste_chord,
-                        self.cfg.restore_delay_ms, hwnd)
+                        self.cfg.restore_delay_ms, hwnd, marker=marker)
                 elif not hwnd:
                     # NOBODY KNOWS where this belongs. Reachable since the
                     # release-time window stopped being trusted when it is
@@ -6668,14 +6705,33 @@ class App:
                 else:
                     status = injector.inject(cleaned, self.cfg.paste_chord,
                                              self.cfg.restore_delay_ms)
-        except injector.FocusChangedError:
-            # Do NOT fire backspaces into whatever the user switched to.
+        except injector.FocusChangedError as e:
+            # Do NOT fire backspaces into whatever the user switched to —
+            # nor into the same window once a key, a click or another box
+            # may have moved the caret off the marker (MarkerMovedError).
+            #
+            # And do not put the text over something the user COPIED while
+            # it was on its way: a screenshot taken during the wait was
+            # replaced by the transcript here (the second review,
+            # 2026-09-23). The text is on the shelf (Copy) either way.
             with self._cursor_lock:
-                injector.set_text(cleaned)
+                kept_theirs = injector.copied_since(marker)
+                if not kept_theirs:
+                    injector.set_text(cleaned)
             beep("stop")
-            log.warning("you moved to another window — the transcript is on "
-                        "your clipboard, press %s to paste it (%d chars)",
-                        self.cfg.paste_chord, len(cleaned))
+            if kept_theirs:
+                log.warning("%s — you copied something while it was on its "
+                            "way, so that stays on your clipboard; the "
+                            "transcript is on the shelf (%d chars)%s", e,
+                            len(cleaned),
+                            "; the marker was left where it is"
+                            if shown else "")
+            else:
+                log.warning("%s — the transcript is on your clipboard, press "
+                            "%s to paste it (%d chars)%s", e,
+                            self.cfg.paste_chord, len(cleaned),
+                            "; the marker was left where it is"
+                            if shown else "")
             if item:
                 item.discard()
             return
