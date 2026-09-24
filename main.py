@@ -1559,7 +1559,8 @@ class App:
         """Write what the owner did to the card back into config.toml.
 
         Called from the overlay thread when a drag ends, a size button is
-        pressed or the box is ticked. Everything goes through
+        pressed, or the card goes away with its "don't show this again"
+        box ticked (the X, or the key let go). Everything goes through
         `config.set_values`, which is a line-wise edit that keeps the
         comments — a TOML round-trip here would delete the measurements
         the file is made of.
@@ -3365,6 +3366,11 @@ class App:
         self._question_texts = []
         self._cap, self._latched = self.cfg.max_seconds, False
         self._rec_at = time.monotonic()
+        # A key card closed with its X stays down until a new dictation —
+        # this one. Before _set_state, which queues the card.
+        began = getattr(getattr(self, "hint", None), "recording_began", None)
+        if began is not None:
+            began()
         self._set_state("recording")
         # An ask-the-screen card that is reading an answer aloud stops the
         # moment you start talking over it — that is what makes the thing

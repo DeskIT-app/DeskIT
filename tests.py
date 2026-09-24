@@ -1191,9 +1191,14 @@ class _FakeHint:
 
     def __init__(self):
         self.shown = []
+        # how many cards had been shown each time a recording began
+        self.began = []
 
     def show(self, card):
         self.shown.append(card)
+
+    def recording_began(self):
+        self.began.append(len(self.shown))
 
     def start(self):
         pass
@@ -1395,6 +1400,10 @@ def test_a_transcript_is_never_aimed_at_one_of_our_own_windows() -> None:
         ours["mine"] = False
         app._on_start(None)
         assert app._start_hwnd == 0x1111, hex(app._start_hwnd)
+        # Every press told the key card a new dictation began, BEFORE the
+        # card for it was queued: a card closed with its X comes back on
+        # the next dictation and not a moment sooner.
+        assert app.hint.began == [0, 1], (app.hint.began, app.hint.shown)
     finally:
         main_mod.injector = real
 
@@ -18763,10 +18772,11 @@ def test_a_failed_save_never_reaches_the_keyboard_thread() -> None:
     assert (card.x, card.y) == (10, 20)
 
 
-def test_the_card_takes_the_mouse_in_four_places_and_nowhere_else() -> None:
-    """Everything else answers HTTRANSPARENT, so a click aimed at the close
-    button of a maximised window underneath still reaches it — the trap the
-    status dot paid for once already."""
+def test_the_card_takes_the_mouse_in_five_places_and_nowhere_else() -> None:
+    """The drag strip, the X, − and +, and the box. Everything else
+    answers HTTRANSPARENT, so a click aimed at the close button of a
+    maximised window underneath still reaches it — the trap the status dot
+    paid for once already."""
     try:
         from skin import glass as skin_glass, hint as skin_hint
     except Exception:
@@ -18796,8 +18806,17 @@ def test_the_card_takes_the_mouse_in_four_places_and_nowhere_else() -> None:
         # and so does everything outside the card entirely
         assert skin_hint.hit_test(card, scale, 2, 2)[0] == \
             skin_glass.HTTRANSPARENT
-    # the size buttons must not sit on top of each other
+        # the box's row is as wide as the card, but only the box and its
+        # words take the click: the left end of that row is the window
+        # behind
+        fy = boxes[skin_hint.DISMISS]
+        assert skin_hint.hit_test(card, scale, pad + 4, (fy[1] + fy[3]) / 2)[0] \
+            == skin_glass.HTTRANSPARENT
+    # the X, − and + sit in a row, left to right, not on top of each other,
+    # and the X is a clear gap away from − so a size press is not a close
     boxes = skin_hint.regions(card, 1.0)
+    assert boxes[skin_hint.CLOSE][2] < boxes[skin_hint.SMALLER][0], boxes
+    assert boxes[skin_hint.SMALLER][0] - boxes[skin_hint.CLOSE][2] >= 10
     assert boxes[skin_hint.SMALLER][2] <= boxes[skin_hint.BIGGER][0], boxes
 
 
@@ -18809,10 +18828,174 @@ def test_the_size_buttons_stop_at_the_ends_of_their_range() -> None:
     assert skin_hint.clamp_scale(99) == skin_hint.SCALE_MAX
     assert skin_hint.clamp_scale(0.01) == skin_hint.SCALE_MIN
     assert skin_hint.clamp_scale(1.0) == 1.0
-    # and the range the card enforces is the range config.py will accept,
-    # or a size chosen on screen would refuse to load next time
-    assert skin_hint.SCALE_MIN == config_mod.HINT_SCALE_MIN
-    assert skin_hint.SCALE_MAX == config_mod.HINT_SCALE_MAX
+    # and the range the card enforces is INSIDE the range config.py will
+    # accept, or a size chosen on screen would refuse to load next time
+    assert config_mod.HINT_SCALE_MIN <= skin_hint.SCALE_MIN
+    assert skin_hint.SCALE_MAX <= config_mod.HINT_SCALE_MAX
+    # An older, smaller size that config.py still accepts (the owner's
+    # was 0.6 on 2026-09-24) is drawn at the card's smallest, not refused.
+    assert skin_hint.clamp_scale(config_mod.HINT_SCALE_MIN) == \
+        skin_hint.SCALE_MIN
+    # ...and the first + from there is a press that changes the size on
+    # screen: stepped from the 0.8 he sees, not the 0.6 in the file
+    step = skin_hint.STEP
+    assert skin_hint.stepped(0.6, step) == round(skin_hint.SCALE_MIN + step, 3)
+    assert skin_hint.stepped(0.6, -step) == skin_hint.SCALE_MIN
+    assert skin_hint.stepped(skin_hint.SCALE_MAX, step) == skin_hint.SCALE_MAX
+
+
+def test_the_key_card_is_readable_at_its_smallest_and_not_half_a_screen(
+) -> None:
+    """The owner's clip of 2026-09-24: "if I make it bigger it takes half
+    the screen, and at a reasonable size I cannot read it". The card was
+    one column of fourteen keys, 652 px tall at 1.0 and 913 at 1.4, and at
+    the 0.6 he had pressed it down to a label was 8 px.
+
+    Two numbers hold the answer: the smallest size still draws a label at
+    12 px or more, and the whole key list at the largest size is shorter
+    than half of a 1080-line screen."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    import main as main_mod
+
+    label_px = skin_hint.PT_LABEL * skin_hint.SCALE_MIN * 96 / 72
+    assert label_px >= 12, label_px
+    key_px = skin_hint.PT_KEY * skin_hint.SCALE_MIN * 96 / 72
+    assert key_px >= 11, key_px
+    for state in (hint_mod.HOLD, hint_mod.LATCHED):
+        card = hint_mod.card_for(_hint_cfg(), state, main_mod._SCREEN_ACTIONS)
+        _w, h = skin_hint.measure(card, skin_hint.SCALE_MAX)
+        assert h < 540, (state, h)
+        _w, h = skin_hint.measure(card, 1.0)
+        assert h < 400, (state, h)
+
+
+def test_the_keys_go_in_two_columns_split_between_groups() -> None:
+    """The dictation and the screen on the right, where a Hebrew reader
+    starts; "more" on the left. A group is never cut in two, and the cut
+    is the one that makes the taller column shortest."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    import main as main_mod
+
+    for state in (hint_mod.HOLD, hint_mod.LATCHED):
+        card = hint_mod.card_for(_hint_cfg(), state, main_mod._SCREEN_ACTIONS)
+        names = [name for name, _rows in card["groups"]]
+        assert names == [hint_mod.GROUP_DICTATION, hint_mod.GROUP_SCREEN,
+                         hint_mod.GROUP_OTHER], names
+        right, left = skin_hint.split(card["groups"])
+        assert [n for n, _r in right] == names[:2], right
+        assert [n for n, _r in left] == names[2:], left
+    one = [("a", [("F1", "x", True)] * 3)]
+    assert skin_hint.split(one) == [one]
+    # a tall first group goes alone on the right
+    tall = [("a", [("F1", "x", True)] * 9), ("b", [("F2", "y", True)] * 2),
+            ("c", [("F3", "z", True)] * 3)]
+    right, left = skin_hint.split(tall)
+    assert [n for n, _r in right] == ["a"], right
+
+
+def test_the_key_card_is_as_wide_as_its_words() -> None:
+    """The old card was 340 px whatever it said, and a third of every row
+    was empty on the left. Now the width is the columns' own: take the
+    longest label away and the card gets narrower."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    groups = [("א", [("F1", "קצר", True)]), ("ב", [("F2", "קצר", True)])]
+    base = {"title": "נעול", "sub": "", "footer": "אל תציג", "dot": "locked",
+            "groups": groups}
+    wide = dict(base, groups=[groups[0], ("ב", [(
+        "F2", "תווית ארוכה מאוד שממלאת את כל השורה הזאת", True)])])
+    w1, h1 = skin_hint.measure(base, 1.0)
+    w2, h2 = skin_hint.measure(wide, 1.0)
+    assert w2 > w1 and h1 == h2, (w1, w2, h1, h2)
+    # and the two columns fill the inside: the right one ends at the right
+    # padding, the left one starts at the left padding
+    lay = skin_hint._layout(wide, 1.0)
+    pad = skin_hint.PAD
+    assert abs(lay.col_right[0] - (skin_hint.SHADOW + w2 - pad)) < 1
+    left_edge = lay.col_right[1] - lay.col_w[1]
+    assert abs(left_edge - (skin_hint.SHADOW + pad)) < 1.5, left_edge
+
+
+def test_the_box_ticks_and_the_x_closes() -> None:
+    """His rule of 2026-09-24. The box only ticks — nothing closes and
+    nothing is written. The X closes: unticked, until the next dictation;
+    ticked, for good (enabled=false, which Settings > General undoes). A
+    tick left on the box when the card goes away on its own counts too."""
+    writes = []
+
+    def fresh():
+        return overlay_mod.HintCard(on_change=writes.append)
+
+    card = fresh()
+    assert card.ticked is False
+    assert card.tick() is True and card.ticked is True
+    assert card.tick() is False and card.ticked is False
+    assert writes == [], writes
+    assert card.accepts({"state": "hold"}) and card.accepts(None)
+
+    # the X, unticked: down for the rest of this dictation, nothing written
+    card.closed_by_hand()
+    assert writes == [], writes
+    assert not card.accepts({"state": "latched"}), "came back after the X"
+    assert card.accepts(None), "taking it down is always taken"
+    assert card._enabled
+    card.recording_began()
+    assert card.accepts({"state": "hold"}), "the next dictation shows it"
+
+    # the X, ticked: never again
+    card = fresh()
+    card.tick()
+    card.closed_by_hand()
+    assert writes == [{"enabled": False}], writes
+    assert not card._enabled and card.ticked is False
+    card._thread = object()                 # as if started
+    card.show({"state": "hold"})
+    assert card._q.empty(), "a card switched off still queued a card"
+
+    # ticked, and the key let go before the X: the tick is the answer
+    writes.clear()
+    card = fresh()
+    card.tick()
+    card.card_gone()
+    assert writes == [{"enabled": False}], writes
+    # ...and untouched, the card going away writes nothing
+    writes.clear()
+    card = fresh()
+    card.card_gone()
+    assert writes == [] and card._enabled, writes
+
+
+def test_the_ticked_box_is_drawn_and_nothing_else_moves() -> None:
+    """The tick changes the box and its words, and not the card's size or
+    where anything takes the mouse."""
+    try:
+        from skin import hint as skin_hint
+    except Exception:
+        return
+    import main as main_mod
+
+    card = hint_mod.card_for(_hint_cfg(), hint_mod.LATCHED,
+                             main_mod._SCREEN_ACTIONS)
+    plain = skin_hint.paint(card, None, 1.0)
+    ticked = skin_hint.paint(card, None, 1.0, ticked=True)
+    assert plain.size == ticked.size
+    box = skin_hint.regions(card, 1.0)[skin_hint.DISMISS]
+    diff = [(x, y) for y in range(int(box[1]), int(box[3]))
+            for x in range(int(box[0]), int(box[2]))
+            if plain.getpixel((x, y)) != ticked.getpixel((x, y))]
+    assert diff, "the tick drew nothing"
+    top = skin_hint.regions(card, 1.0)[skin_hint.DRAG]
+    for y in range(int(top[1]), int(top[3]), 3):
+        for x in range(int(top[0]), int(top[2]), 3):
+            assert plain.getpixel((x, y)) == ticked.getpixel((x, y)), (x, y)
 
 
 # ---------------------------------------------------------------------------
@@ -19901,12 +20084,24 @@ def test_the_card_is_measured_from_its_rows_not_a_guess() -> None:
                                 translate_hotkey="", correct_hotkey="")
     small = hint_mod.card_for(fewer, hint_mod.LATCHED,
                               main_mod._SCREEN_ACTIONS)
-    w1, h1 = skin_hint.measure(full)
-    w2, h2 = skin_hint.measure(small)
-    assert w1 == w2, (w1, w2)
     dropped = len(full["keys"]) - len(small["keys"])
     assert dropped == 4, dropped
-    assert h1 - h2 == dropped * skin_hint.ROW_H, (h1, h2)
+    # Two columns since 2026-09-24: the card is as tall as the TALLER one,
+    # counted row by row, heading by heading.
+    sizes = {}
+    for name, card in (("full", full), ("small", small)):
+        tall = max(
+            sum(skin_hint.GROUP_H + skin_hint.ROW_H * len(rows)
+                for _n, rows in column)
+            + skin_hint.GROUP_GAP * (len(column) - 1)
+            for column in skin_hint.split(card["groups"]))
+        want = round(skin_hint.PAD + skin_hint.HEAD_H + skin_hint.RULE_GAP
+                     + tall + skin_hint.RULE_GAP + skin_hint.FOOT_H
+                     + skin_hint.PAD - 4)
+        sizes[name] = skin_hint.measure(card)
+        assert sizes[name][1] == want, (name, sizes[name], want)
+    # four keys fewer is a shorter card, never a taller or a clipped one
+    assert sizes["small"][1] < sizes["full"][1], sizes
 
 
 # --------------------------------------------------------------------------
