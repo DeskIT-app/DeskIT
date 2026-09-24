@@ -1891,6 +1891,30 @@ def test_a_row_may_leave_its_body_for_the_export_to_build():
         assert len(built) == 1, "the body was built twice"
 
 
+def test_a_long_body_goes_in_a_file_beside_the_document():
+    """His first real export, 2026-09-24: a branch's diff was 276,000
+    characters. Cutting it inside the document kept the first 12 KB of
+    `git diff` — alphabetical, so .gitignore survived and no line of the
+    code did. The whole thing is a file beside the document now, and the
+    document keeps its head and says where the rest is."""
+    from dev.master.rows import Row as _MRow
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "checkout")
+        store = _MStore(Path(tmp) / "state")
+        long = "diff --git a/x b/x\n" + ("+a line of the change\n" * 4000)
+        row = _MRow(id="code:branch:x", screen="code", title="x — a big branch",
+                    body=long, body_from="machine")
+        done = _mexport.take_to_a_chat(row, root, store,
+                                       home=Path(tmp) / "out", copy=False)
+        folder = Path(done["folder"])
+        assert sorted(p.name for p in folder.iterdir()) == ["change.diff", "report.md"]
+        assert (folder / "change.diff").read_text("utf-8") == long, "the file is not whole"
+        text = (folder / "report.md").read_text("utf-8")
+        assert len(text) < len(long) / 3, "the document swallowed the whole diff"
+        assert "change.diff" in text and "more characters" in text
+        assert long[:500] in text, "the document lost the head of it"
+
+
 def test_the_windows_bridge_answers_only_the_names_the_api_lists():
     """webdesk.py's dispatcher checks Api.CALLS, and the master's Api is
     flat: no dotted path, no attribute that is not one of those calls.
