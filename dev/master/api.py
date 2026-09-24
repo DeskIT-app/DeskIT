@@ -22,7 +22,8 @@ from pathlib import Path
 
 from . import export as export_mod
 from .root import Root
-from .sources import SCREENS, home as home_src, rows as screen_rows
+from .sources import (SCREENS, home as home_src, reports as reports_src,
+                      rows as screen_rows)
 from .store import Store
 
 FRESH_S = 90.0          # how long a screen's rows stand before they are read again
@@ -46,13 +47,25 @@ class Api:
         screen = str(screen)
         if screen not in SCREENS:
             return {"ok": False, "error": f"no such screen: {screen}"}
+        pulled = self._pull_reports() if (screen == "reports" and refresh
+                                          and self._net) else None
         rows = self._rows(screen, refresh)
+        if pulled is not None and not pulled.get("ok"):
+            rows = [reports_src.pull_failed(str(pulled.get("why") or "")), *rows]
         self._store.decorate(rows)
         out = {"ok": True, "screen": screen, "read_at": time.strftime("%H:%M"),
                "rows": [r.to_dict() for r in rows]}
         if screen == "home":
             out["counts"] = dict(home_src.home_counts)
         return out
+
+    def _pull_reports(self) -> dict:
+        """Refresh on the Reports screen asks dev\\inbox.py to fetch what
+        people sent. It runs before the rows are read, so what arrived is
+        on the screen in the same press, and the cache is dropped for it."""
+        answer = reports_src.pull(self._root)
+        self._cache.pop("reports", None)
+        return answer
 
     def _rows(self, screen: str, refresh: bool) -> list:
         hit = self._cache.get(screen)
