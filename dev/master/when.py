@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 DAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -26,7 +26,20 @@ def parse(stamp) -> datetime | None:
     text = str(stamp or "").strip()
     if not text:
         return None
+    # The server's stamps are UTC ("...T12:56:56+00:00", or a Z). Dropping
+    # the offset and comparing against a local clock made every one of
+    # them three hours older than it was — so a UTC stamp is brought to
+    # this PC's time before anything is said about it.
+    utc = text.endswith("Z") or "+00:00" in text or "+0000" in text
     text = text.replace("T", " ").replace("Z", "").split("+")[0].split(".")[0]
+    if utc:
+        for shape in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                when = datetime.strptime(text.strip(), shape)
+            except ValueError:
+                continue
+            return (when.replace(tzinfo=timezone.utc)
+                    .astimezone(None).replace(tzinfo=None))
     for shape in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
         try:
             return datetime.strptime(text.strip(), shape)

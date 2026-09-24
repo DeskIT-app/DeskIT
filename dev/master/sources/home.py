@@ -96,8 +96,12 @@ def _data_count(rows_: list) -> dict:
 
 
 def _server_count(rows_: list) -> dict:
+    """The one number that means something at a glance: how many people
+    have an account. (The first version added every table's rows together
+    and called it "rows in all", which told him nothing.)"""
     if any(r.id == "server:offline" for r in rows_):
         return {"n": "—", "word": "not read"}
-    rows_n = [r for r in rows_ if r.id.startswith("server:") and r.fig.replace(",", "").isdigit()]
-    total = sum(int(r.fig.replace(",", "")) for r in rows_n)
-    return {"n": f"{total:,}", "word": "rows in all"}
+    people = next((r for r in rows_ if r.id == "server:who:people"), None)
+    if people is None:
+        return {"n": len(rows_), "word": "things counted"}
+    return {"n": people.fig, "word": "people with an account"}

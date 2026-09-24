@@ -53,7 +53,8 @@ def rows(root: Root) -> list[Row]:
 
     out.append(Row(
         id="data:corpus",
-        screen="data", title="Corpus clips", under="what the study pass kept",
+        screen="data", title="Recordings kept with their text",
+        under="what you said, with the words that were right — on this PC only",
         fig=str(corpus["clips"]),
         fig_small=(f"of {keep} before the trim" if keep else "no ceiling"),
         pct=_pct(corpus["clips"], keep),
@@ -69,8 +70,8 @@ def rows(root: Root) -> list[Row]:
     ))
     out.append(Row(
         id="data:gold",
-        screen="data", title="Gold clips",
-        under="text you corrected by hand — it cannot be made again",
+        screen="data", title="Recordings you corrected yourself",
+        under="the best kind: the text is yours, not the machine's guess",
         fig=str(corpus["gold"]), fig_small=f"of {corpus['clips']} clips",
         tone="q", glyph="star", at=W.stamp_now(),
         facts={"Gold clips": corpus["gold"],
@@ -83,7 +84,8 @@ def rows(root: Root) -> list[Row]:
     ))
     out.append(Row(
         id="data:voice",
-        screen="data", title="Hours of your voice", under="in the corpus",
+        screen="data", title="Hours of your voice",
+        under="how much of you it has to learn from",
         fig=_hours(corpus["seconds"]), fig_small=f"{corpus['clips']} clips",
         tone="q", glyph="mic", at=W.stamp_now(),
         facts={"Seconds": round(corpus["seconds"], 1),
@@ -95,7 +97,8 @@ def rows(root: Root) -> list[Row]:
     read = _clips(root.read_aloud)
     out.append(Row(
         id="data:read",
-        screen="data", title="Read aloud", under="the sentences you read",
+        screen="data", title="Sentences you read out loud",
+        under="kept under the words on the card, so the text is certain",
         fig=str(read["clips"]),
         fig_small=f"{read['minutes']} min" if read["clips"] else "none kept",
         tone="q", glyph="doc", at=W.stamp_now(),
@@ -110,8 +113,8 @@ def rows(root: Root) -> list[Row]:
     ring = int(root.setting("vocab", "keep_audio", 50) or 0)
     out.append(Row(
         id="data:recent",
-        screen="data", title="Recent recordings",
-        under="the ring a report pins its audio from",
+        screen="data", title="The last recordings",
+        under="the ring a problem report pins its audio from",
         fig=str(recent), fig_small=f"of {ring}" if ring else "",
         pct=_pct(recent, ring), meter_tone="ok",
         tone="q", glyph="mic", at=W.stamp_now(),
@@ -123,8 +126,9 @@ def rows(root: Root) -> list[Row]:
     log = _transcripts(root)
     out.append(Row(
         id="data:transcripts",
-        screen="data", title="transcripts.log",
-        under=line(f"{log['lines']:,} lines", "never pruned on this PC"),
+        screen="data", title="Everything you have said on this PC",
+        under=line(f"{log['lines']:,} lines in transcripts.log",
+                   "never pruned here — this copy keeps every one"),
         fig=log["size"], fig_small="the words themselves",
         tone="q", glyph="doc", at=W.stamp_now(),
         facts={"Lines": log["lines"], "Size": log["size"],
@@ -136,8 +140,8 @@ def rows(root: Root) -> list[Row]:
     vocab = _vocab(root)
     out.append(Row(
         id="data:vocab",
-        screen="data", title="Vocabulary",
-        under="words it has learned to hear your way",
+        screen="data", title="Words it learned to hear your way",
+        under="the corrections it now makes by itself",
         fig=str(vocab["words"]),
         fig_small=f"{vocab['by_hand']} taught by hand",
         tone="q", glyph="doc", at=W.stamp_now(),
