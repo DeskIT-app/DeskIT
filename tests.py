@@ -1680,6 +1680,223 @@ def test_a_marker_that_fails_does_not_take_the_dictation_with_it() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_the_decode_does_not_wait_for_the_marker() -> None:
+    """Putting the "..." up is a paste like any other — the chord, then
+    restore_delay_ms (300) for the target to read it before the old
+    clipboard goes back — and every decode used to wait it out first,
+    about 0.35 s of every dictation (2026-09-23 audit, A32). The marker
+    goes up on a thread of its own now, so the decode starts while it is
+    still being pasted; and every door that reads `shown` — the erase,
+    the clear — still waits for the marker, so the cursor sees what it
+    always saw: "..." up, then replaced or taken down.
+
+    Asked with events, not a stopwatch. The marker's paste does not end
+    until the decode has begun, so a decode that waits for the marker is
+    a five-second timeout here, not a slow pass."""
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    decoding = threading.Event()   # the backend was entered
+    decoded = threading.Event()    # ...and it answered
+
+    class _SlowMarker(_FakeInjector):
+        def __init__(self, until):
+            super().__init__()
+            self.until = until
+
+        def show_placeholder(self, text, chord, delay):
+            self.calls.append(("show", text))
+            # The restore wait. What it waits FOR is the case under test.
+            beside = self.until.wait(5.0)
+            time.sleep(0.05)        # and a little more, past it
+            self.calls.append(("shown", beside))
+            return self.focus
+
+    class _Decoder(_Flaky):
+        def transcribe(self, wav):
+            decoding.set()
+            try:
+                return super().transcribe(wav)
+            finally:
+                decoded.set()
+
+    def run(until, backend, retry_seconds=5.0):
+        decoding.clear()
+        decoded.clear()
+        fake = _SlowMarker(until)
+        tmp = Path(tempfile.mkdtemp(prefix="dictation-marker-"))
+        real = main_mod.injector
+        try:
+            main_mod.injector = fake
+            app = _worker_app(backend, tmp, retry_seconds=retry_seconds)
+            app._handle(b"RIFF-audio", 4.0, fake.focus)
+            return fake.calls
+        finally:
+            main_mod.injector = real
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    # The decode began while the marker was still being pasted, and the
+    # erase came after the marker was up.
+    calls = run(decoding, _Decoder(fail_times=0))
+    assert [c[0] for c in calls] == ["show", "shown", "replace"], calls
+    assert calls[1] == ("shown", True), \
+        f"the decode waited for the marker to be pasted first: {calls}"
+
+    # A decode that beat the marker (2 in 230 on the owner's PC) waits for
+    # it: backspaces sent before the "..." has landed would eat his text.
+    calls = run(decoded, _Decoder(fail_times=0))
+    assert [c[0] for c in calls] == ["show", "shown", "replace"], calls
+
+    # Nothing to paste after all: the marker is still taken back down,
+    # and only once it is there.
+    calls = run(decoded, _Decoder(fail_times=99), retry_seconds=0.2)
+    assert [c[0] for c in calls] == ["show", "shown", "clear"], calls
+    calls = run(decoded, _Decoder(fail_times=0, text="  "))
+    assert [c[0] for c in calls] == ["show", "shown", "clear"], calls
+
+
+def test_the_paste_time_runs_from_the_release_to_the_chord() -> None:
+    """The "X s to the paste" figure began after the marker's 0.35 s and
+    ended after the 0.3 s restore wait that follows the paste chord, so it
+    looked about right while measuring the wrong span (A32). It runs from
+    the RELEASE, which _on_stop stamps and the queue item carries, to the
+    transcript's paste chord — the moment the text is on its way to the
+    screen, stamped per thread by injector.paste_text."""
+    import logging
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    # The stamp: at the chord, before the restore wait, and per thread.
+    with _patched(injector, "_put_text", lambda text: None), \
+            _patched(injector, "send_chord", lambda chord: None):
+        before = time.monotonic()
+        injector.paste_text("x", "ctrl+v", 300)
+        after = time.monotonic()
+    at = injector.last_paste_at()
+    assert before <= at <= after - 0.25, (before, at, after)
+    other: list = []
+    t = threading.Thread(target=lambda: other.append(injector.last_paste_at()))
+    t.start()
+    t.join()
+    assert other == [0.0], other
+
+    class _Chord(_FakeInjector):
+        def __init__(self, stale=False):
+            super().__init__()
+            # A stamp left by some EARLIER paste on this thread, which the
+            # worker must not mistake for this one's chord.
+            self.stale = stale
+            self.chord_at = -1000.0 if stale else 0.0
+
+        def last_paste_at(self):
+            return self.chord_at
+
+        def replace_placeholder(self, placeholder, text, chord, delay, hwnd,
+                                marker=None):
+            status = super().replace_placeholder(placeholder, text, chord,
+                                                 delay, hwnd, marker)
+            time.sleep(0.2)    # the Backspaces, the settle, the snapshot
+            if not self.stale:
+                self.chord_at = time.monotonic()
+            time.sleep(0.4)             # the restore wait after the chord
+            return status
+
+    def run(stale=False):
+        lines: list[str] = []
+        said: list[str] = []
+
+        class _Catch(logging.Handler):
+            def emit(self, record):
+                lines.append(record.getMessage())
+
+        app_log = logging.getLogger("app")
+        catch = _Catch()
+        level = app_log.level
+        app_log.setLevel(logging.INFO)
+        app_log.addHandler(catch)
+        tmp = Path(tempfile.mkdtemp(prefix="dictation-clock-"))
+        fake = _Chord(stale)
+        try:
+            with _patched(main_mod, "injector", fake):
+                app = _worker_app(_Flaky(fail_times=0), tmp)
+                app._say = lambda text: said.append(text)
+                released = time.monotonic() - 1.0   # he let go a second ago
+                app._handle(b"RIFF-audio", 4.0, fake.focus, released=released)
+                done = time.monotonic()
+        finally:
+            app_log.removeHandler(catch)
+            app_log.setLevel(level)
+            shutil.rmtree(tmp, ignore_errors=True)
+        pasted = [l for l in lines if l.startswith("pasted ")]
+        assert len(pasted) == 1, lines
+        m = re.search(r"\((-?\d+\.\d) s to the paste via ", pasted[0])
+        assert m, pasted[0]
+        to_paste = float(m.group(1))
+        status = [s for s in said if "spoken ->" in s]
+        assert status and f"in {to_paste:.1f} s via" in status[0], said
+        return to_paste, released, done, fake.chord_at, pasted[0]
+
+    to_paste, released, done, chord_at, line = run()
+    # From the release: the second before the worker got it is in it...
+    assert to_paste >= 0.95, line
+    # ...so is the work in front of the chord (not a clock that stops
+    # when the paste BEGINS)...
+    assert chord_at - released - 0.05 <= to_paste, (line, chord_at - released)
+    assert to_paste >= 1.15, line
+    # ...and the restore wait after the chord is not.
+    assert to_paste <= (done - released) - 0.3, (line, done - released)
+
+    # A stamp older than this paste is not this paste's chord: the clock
+    # falls back to the end of the paste, the old answer, never to a
+    # number from some other dictation.
+    to_paste, released, done, _chord_at, line = run(stale=True)
+    assert to_paste >= 1.55, line
+    assert to_paste <= (done - released) + 0.05, (line, done - released)
+
+
+def test_a_marker_thread_that_will_not_start_does_not_lose_the_dictation() -> None:
+    """The marker has a thread of its own (A32), and starting one can
+    fail when handles or memory run out. The audio is not on disk at that
+    point — it is spooled only once a decode fails — so raising out of
+    _handle there would lose the recording, which a marker may never do
+    (test_a_marker_that_fails_does_not_take_the_dictation_with_it). No
+    marker then, and the words are pasted plainly."""
+    import shutil
+    import tempfile
+
+    import main as main_mod
+
+    class _NoMarkerThread:
+        """main's `threading`, except that the marker's thread won't start."""
+
+        class Thread(threading.Thread):
+            def start(self):
+                if self.name == "marker-paste":
+                    raise RuntimeError("can't start new thread")
+                super().start()
+
+        def __getattr__(self, name):
+            return getattr(threading, name)
+
+    tmp = Path(tempfile.mkdtemp(prefix="dictation-e2e-"))
+    fake = _FakeInjector()
+    try:
+        with _patched(main_mod, "injector", fake), \
+                _patched(main_mod, "threading", _NoMarkerThread()):
+            app = _worker_app(_Flaky(fail_times=0, text="שלום"), tmp)
+            app._handle(b"RIFF-audio", 9.0, fake.focus)
+        kinds = [c[0] for c in fake.calls]
+        assert "show" not in kinds and "replace" not in kinds, fake.calls
+        assert ("inject", "שלום") in fake.calls, fake.calls
+        assert app.spool.pending() == [], app.spool.pending()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_a_clipboard_that_will_not_hand_over_its_text_is_nothing_to_put_back() -> None:
     """Measured on the owner's PC: the clipboard said CF_UNICODETEXT was
     there and GetClipboardData then failed (pywintypes error 0), and once
@@ -30414,6 +30631,9 @@ def test_the_press_starts_a_roller_and_the_release_hands_it_to_the_worker():
         assert app._roller is None
         item = app.queue.get_nowait()
         assert item[5].get("rolled") is roller, item[5]
+        # ...and the release, for the time to the paste (A32)
+        assert isinstance(item[5].get("released"), float), item[5]
+        assert item[5]["released"] <= time.monotonic(), item[5]
         assert roller._stop.is_set()
         # The worker: a head with a window makes the backend decode the
         # tail; here the thread found nothing, so the whole recording.

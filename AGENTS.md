@@ -1270,6 +1270,17 @@ exactly what classic did.
   a Hebrew line, and the copy chord is an interrupt in a terminal. And
   once the paste chord is sent, `inject` never raises: a failed clipboard
   restore is a status (A109).
+  **And the marker goes up BESIDE the decode, not in front of it** (A32,
+  2026-09-24). Its paste is ~0.35 s (the chord, then restore_delay_ms for
+  the target to read it) and every decode used to wait it out; the decode
+  is p50 0.70 s and under 0.35 s in 2 of 230 dictations, so on a thread of
+  its own (`App._marker_beside` → `_put_marker`) the wait is hidden.
+  `_handle` joins that thread right after the decode, before anything
+  reads `shown` or `marker` — never move a use of either above the join,
+  or the Backspaces can arrive before the "..." exists. The logged "to
+  the paste" runs from `_on_stop`'s `released` (on the queue item) to
+  `injector.last_paste_at()`, the transcript's chord (per thread), and no
+  longer includes the restore wait that follows it.
 - **Our own windows and the owner's screenshots: keep them out of the
   DRAG, not out of the PICTURE.** This rule used to read "our own windows
   must not appear in the user's screenshots" and it was wrong, which cost

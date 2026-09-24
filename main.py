@@ -3515,6 +3515,9 @@ class App:
             return None
 
     def _on_stop(self, language: str | None = "he") -> None:
+        # The release, for the clock the worker stops at the paste: the
+        # number a person feels starts HERE, not when the worker got to it.
+        released = time.monotonic()
         # The rolling transcriber first, so its next look at the buffer
         # finds it ended; the worker collects what it finished (_handle).
         roller, self._roller = getattr(self, "_roller", None), None
@@ -3560,6 +3563,7 @@ class App:
         # `in_stream` already travel this way and every caller and test
         # that builds a five- or six-tuple keeps working untouched.
         extra = {"pieces": pieces} if len(pieces) > 1 else {}
+        extra["released"] = released
         if self._to_prompt:
             extra["to_prompt"] = True
         if self._to_read:
@@ -6281,6 +6285,79 @@ class App:
             self._polisher = polish_mod.Polisher(self.cfg, self.vocab)
         return self._polisher
 
+    def _put_marker(self, placeholder: str, hwnd: int) -> tuple[bool, object]:
+        """The "..." at the cursor, if `hwnd` still has the focus: (shown,
+        the injector's Marker — what was true when it went down, so the
+        erase can ask whether the caret is still after it). Runs on the
+        marker's own thread (_marker_beside). Never raises."""
+        # BOUNDED, unlike the paste the worker makes later, and the focus
+        # test is INSIDE the lock rather than in front of it. A translate
+        # or punctuate holds this lock across its whole model call (up to
+        # translate.ollama_timeout_s = 150 s); waiting that out would hold
+        # the paste back for a marker that is only cosmetic. And
+        # show_placeholder pastes wherever focus is when it finally runs,
+        # so a check made before the wait would be a check of the wrong
+        # moment.
+        if not self._cursor_lock.acquire(timeout=1.0):
+            log.info("something else is working at the cursor — "
+                     "transcribing without the marker")
+            return False, None
+        try:
+            if injector.foreground_window() == hwnd:
+                return True, injector.show_placeholder(
+                    placeholder, self.cfg.paste_chord,
+                    self.cfg.restore_delay_ms)
+        except injector.ClipboardBusyError as e:
+            log.warning("could not show the placeholder: %s", e)
+        except Exception as e:
+            # The marker is cosmetic; the recording is not. Every other
+            # failure here used to unwind to the worker and take the
+            # dictation with it — 10 recordings, 90 s of speech, lost that
+            # way 2026-09-18..22, all on a clipboard read under this call.
+            # Transcribe without it.
+            log.warning("could not show the placeholder (%s) — "
+                        "transcribing without it", type(e).__name__)
+        finally:
+            self._cursor_lock.release()
+        return False, None
+
+    def _marker_beside(self, placeholder: str, hwnd: int):
+        """Start _put_marker on a thread of its own, so the decode does not
+        wait for it (_handle says why), and hand back the wait: a callable
+        returning (shown, marker) once the marker is up — or is not going
+        to be. The wait is as long as the marker's own call, which is
+        bounded by the cursor lock's second and the clipboard's retries,
+        exactly as it was when the worker made that call itself."""
+        got: list = [False, None]
+
+        def put() -> None:
+            # _put_marker does not raise; if it ever does, the marker is
+            # simply not shown, and _handle goes on without it.
+            try:
+                got[:] = self._put_marker(placeholder, hwnd)
+            except Exception:
+                log.exception("the marker failed — transcribing without it")
+
+        try:
+            thread = threading.Thread(target=put, daemon=True,
+                                      name="marker-paste")
+            thread.start()
+        except Exception as e:
+            # The OS would not give us a thread (handles or memory running
+            # out). The audio is not on disk yet — it is spooled only once
+            # a decode fails — so this raising out of _handle would lose
+            # the recording, which a marker failure may never do (see
+            # _put_marker). No marker; the decode goes on.
+            log.warning("could not start the marker (%s) — transcribing "
+                        "without it", type(e).__name__)
+            return lambda: (False, None)
+
+        def wait() -> tuple[bool, object]:
+            thread.join()
+            return got[0], got[1]
+
+        return wait
+
     def _hands_off(self) -> None:
         """Wait for every modifier to come up before a marker's Backspaces
         (injector._vouch says why), holding NOTHING while it waits — not
@@ -6306,7 +6383,8 @@ class App:
                 sliced: bool = False, in_stream: bool = False,
                 pieces: list | None = None,
                 to_prompt: bool = False, silent: bool = False,
-                rolled=None, to_read: str | None = None) -> None:
+                rolled=None, to_read: str | None = None,
+                released: float | None = None) -> None:
         fb = self.cfg.feedback
         placeholder = fb.placeholder
         shown = False
@@ -6329,40 +6407,22 @@ class App:
         # foreground at the press, so _on_start already filtered hwnd to
         # 0 — but only normally, and a stray "..." left in his editor is
         # exactly the kind of litter this branch exists to avoid.
+        marker_up = None
         if fb.enabled and hwnd and not diverting and not to_prompt \
                 and not to_read:
-            # BOUNDED, unlike the paste below, and the focus test is INSIDE
-            # the lock rather than in front of it. A translate or punctuate
-            # holds this lock across its whole model call (up to
-            # translate.ollama_timeout_s = 150 s); waiting that out would
-            # park the worker before transcription had even started, for a
-            # marker that is only cosmetic. And show_placeholder pastes
-            # wherever focus is when it finally runs, so a check made before
-            # the wait would be a check of the wrong moment.
-            if self._cursor_lock.acquire(timeout=1.0):
-                try:
-                    if injector.foreground_window() == hwnd:
-                        # What was true when it went down, so the erase can
-                        # ask whether the caret is still after it.
-                        marker = injector.show_placeholder(
-                            placeholder, self.cfg.paste_chord,
-                            self.cfg.restore_delay_ms)
-                        shown = True
-                except injector.ClipboardBusyError as e:
-                    log.warning("could not show the placeholder: %s", e)
-                except Exception as e:
-                    # The marker is cosmetic; the recording is not. Every
-                    # other failure here used to unwind to the worker and
-                    # take the dictation with it — 10 recordings, 90 s of
-                    # speech, lost that way 2026-09-18..22, all on a
-                    # clipboard read under this call. Transcribe without it.
-                    log.warning("could not show the placeholder (%s) — "
-                                "transcribing without it", type(e).__name__)
-                finally:
-                    self._cursor_lock.release()
-            else:
-                log.info("something else is working at the cursor — "
-                         "transcribing without the marker")
+            # BESIDE THE DECODE, NOT IN FRONT OF IT. Putting the marker up
+            # is a paste like any other — the clipboard saved, "..." put on
+            # it, the chord, then restore_delay_ms (300) for the target to
+            # read it before the old clipboard goes back — about 0.35 s in
+            # all, and until 2026-09-24 every decode waited it out first
+            # (2026-09-23 audit, A32). Measured off app.log, 230
+            # dictations 2026-09-18..24: release to the "pasted" line was
+            # 0.36 s (p50) longer than the logged figure, which started
+            # after the marker; and the decode itself is p10 0.40 s, p50
+            # 0.70 s, under 0.35 s in 2 of 230 — so on a thread of its own
+            # the marker is hidden behind the decode almost every time.
+            # The wait for it is below, before anything reads `shown`.
+            marker_up = self._marker_beside(placeholder, hwnd)
 
         started = time.monotonic()
         deadline = started + fb.retry_seconds
@@ -6417,6 +6477,12 @@ class App:
                 break
 
         latency = time.monotonic() - started
+        if marker_up is not None:
+            # EVERY door below reads `shown` — the erase, the clear, the
+            # clipboard fallback — so none of them may open before the
+            # marker is up and its own paste has put the clipboard back.
+            # A decode that beat it (2 in 230) waits here for the rest.
+            shown, marker = marker_up()
 
         if text is None:
             # Nothing to paste. Take the marker back down so the user is not
@@ -6678,6 +6744,7 @@ class App:
 
         if shown:
             self._hands_off()
+        pasting = time.monotonic()
         try:
             with self._cursor_lock:
                 if shown:
@@ -6748,7 +6815,17 @@ class App:
         # halves are what say whether the decoder or the repair pass was
         # slow. `latency` (the decode) stays the stat and the transcripts
         # line, as it always was.
-        to_paste = time.monotonic() - started
+        #
+        # From the RELEASE, carried on the queue item (_on_stop), to the
+        # transcript's paste CHORD (injector.last_paste_at) — not from
+        # `started` to the end of inject(). Until 2026-09-24 it began after
+        # the marker's 0.35 s and ended after the 0.3 s restore wait that
+        # follows the chord, so it looked about right while measuring the
+        # wrong span (2026-09-23 audit, A32). A caller with no release to
+        # give (the tests, a stand-in injector) gets the old ends.
+        chord = getattr(injector, "last_paste_at", lambda: 0.0)()
+        landed = chord if chord >= pasting else time.monotonic()
+        to_paste = landed - (started if released is None else released)
         self._say(f"{seconds:.1f} s spoken -> {len(cleaned)} chars in "
                   f"{to_paste:.1f} s via {backend}"
                   + (f" ({latency:.1f} s decode + {repair_s:.1f} s repair)"
