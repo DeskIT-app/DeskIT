@@ -39,14 +39,17 @@ def _branches(root: Root) -> list[Row]:
                     under=str(e), tone="warn", glyph="warn", at=W.stamp_now(),
                     facts={"Why": str(e)}, came_from=["git for-each-ref"])]
     head = _head(root)
+    waiting = _not_merged(root)            # ONE git call instead of one per branch
     out_rows = []
     for row_text in raw:
         name, upstream, date, subject = (row_text.split("\t") + ["", "", ""])[:4]
         if name in (MAIN,) or any(name.startswith(p) for p in SKIP):
             continue
+        if waiting is not None and name not in waiting and name != head:
+            continue                       # already in main: not waiting for anything
         ahead, behind = _counts(root, MAIN, name)
         if ahead == 0 and name != head:
-            continue                       # already in main: not waiting for anything
+            continue
         pushed = bool(upstream)
         unpushed = _counts(root, upstream, name)[0] if upstream else ahead
         big, small = W.words(date)
@@ -69,7 +72,7 @@ def _branches(root: Root) -> list[Row]:
                    "Commits on top of main": ahead, "Behind main": behind,
                    "Not pushed": unpushed, "Last commit": date,
                    "Checked out here": name == head},
-            body=_body(root, name),
+            body_fn=(lambda r=root, n=name: _body(r, n)),
             body_title="The commits and the change",
             body_from="machine",
             came_from=[f"git log {MAIN}..{name}", f"git diff {MAIN}...{name}"],
@@ -110,6 +113,21 @@ def _releases(root: Root) -> list[Row]:
 
 
 # ---------------------------------------------------------------- git bits
+
+def _not_merged(root: Root) -> set | None:
+    """The branches that still have something main does not — one call.
+
+    Asking `git rev-list` per branch was 25 branches x 2 calls before the
+    screen could be drawn; this one call cuts it to the handful that are
+    really waiting. None means git could not answer, and then every
+    branch is measured the slow way rather than silently dropped.
+    """
+    try:
+        return {ln.strip().lstrip("* ").strip()
+                for ln in lines(["git", "branch", "--no-merged", MAIN], root.dir)}
+    except Failed:
+        return None
+
 
 def _head(root: Root) -> str:
     try:

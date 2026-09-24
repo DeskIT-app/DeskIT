@@ -1,0 +1,437 @@
+/* B+ / NOCTURNE, refined - DeskIT desk, night direction. Mockup only, not product code. */
+:root{
+  /* TYPE. Every face on the page comes from these three names; the owner picks the
+     final font from a separate sheet, so nothing below names a family. Rubik for now. */
+  --font-ui:'Rubik','Segoe UI',sans-serif;        /* English chrome */
+  --font-he:'Rubik','Segoe UI',sans-serif;        /* the user's Hebrew */
+  --font-display:'Rubik','Segoe UI',sans-serif;   /* headlines and the big numbers */
+  --w-body:400;            /* sentences, help lines */
+  --w-label:460;           /* row labels, places, buttons */
+  --w-strong:500;          /* the one bold word in a line (a slip's title, the state word) */
+  --w-display:420;         /* the page title: warm and even, never the thin 300/350 of before */
+  --w-num:400;             /* the doors' numbers */
+  --w-he:400;              /* Hebrew runs */
+  --display-track:-.018em;
+
+  /* THE FLOOR. Deep night with four soft fields of light behind the glass. The flat
+     tokens are composites (comp.py) at the LIGHTEST pixel each layer can reach:
+     the brightest field at its peak, the others' tails and a ribbon of light over it. */
+  --ground:#080a14;         /* the window's floor */
+  --floor-lit:#363670;      /* composite: the floor at the indigo field's peak (worst case) */
+  --calm-lit:#38417d;       /* composite: the floor where the calm Home's lamp light lies too */
+  --slip-lit:#353760;       /* composite: a pile slip over that peak */
+  --lead-lit:#373b66;       /* composite: the newest slip over that peak */
+  --dock-lit:#32345c;       /* composite: the doors' column over a peak */
+  --card-lit:#2f3256;       /* composite: a settings card over a peak */
+  --card:#111526;           /* composite: a card over the plain floor (reference) */
+  --chip-lit:#181b32;       /* composite: the state chip on the bar */
+  --track-lit:#111326;      /* composite: the places / tabs track */
+  --bubble-lit:#373949;     /* composite: the selected bubble at its lightest (its top) */
+  --quiet-lit:#4b4f75;      /* composite: a quiet button on the newest slip - the lightest surface words meet */
+  --disc-lit:#3e4062;       /* composite: an icon's disc on a card */
+
+  /* ink - a faintly warm, lavender-white, never pure white */
+  --ink:#efedf7;            /* words */
+  --ink-2:#c0c3d8;          /* the second voice: help lines, context words */
+  --ink-3:#a4a9c2;          /* the third voice: times, eyebrows, facts */
+
+  /* the one accent: iris, a soft violet light */
+  --iris:#a597ff;           /* the proposal's edge and tick */
+  --iris-hi:#b9aeff;        /* the lit button, its top */
+  --iris-lo:#9486ee;        /* the lit button, its foot */
+  --iris-ink:#140f33;       /* words on iris */
+  --iris-text:#c2b9ff;      /* iris as text (DEV) */
+  --prop-pill:#484982;      /* composite: the proposal pill on the newest slip */
+  --prop-ink:#ded8ff;       /* the proposed word */
+
+  /* the status lamp - four meanings */
+  --lamp-listen:#4db8ff;    /* listening: blue */
+  --lamp-rec:#ff5d6e;       /* recording, locked on: red */
+  --lamp-write:#ffb84d;     /* starting, loading, transcribing: amber */
+  --lamp-idle:#8a93a8;      /* paused, model off, off: grey, no light */
+
+  /* what a mark means */
+  --ok:#5fdba6;             /* finished, fine, awake */
+  --warn:#ffb84d;           /* worth a look */
+  --bad:#ff6e7e;            /* a problem; the misheard word's edge */
+  --bad-pill:#514269;       /* composite: the misheard pill on the newest slip */
+  --bad-ink:#ffbcc4;        /* the misheard word */
+
+  /* controls - a switch carries no accent: a soft lavender-grey track when on, a hollow ring when off */
+  --sw-on:#8286ad;          /* switch track, on */
+  --knob:#ffffff;           /* switch knob, on */
+  --sw-ring:#7f86a6;        /* switch track edge, off */
+  --sw-off:#141a2a;         /* switch track fill, off */
+  --knob-off:#a2a8c0;       /* switch knob, off */
+  --cap:#1b2036;            /* a keycap's face */
+
+  /* the aurora: four fields and a ribbon, all translucent - text is checked on the composites above */
+  --f-indigo:rgba(118,98,246,.30);
+  --f-blue:rgba(44,146,232,.22);
+  --f-plum:rgba(196,92,178,.13);
+  --f-teal:rgba(40,178,168,.10);
+  --f-lamp:rgba(70,160,240,.10);           /* the calm Home: the listening lamp lighting the room */
+  --ribbon:rgba(170,160,255,.05);
+
+  /* glass */
+  --bar-glass:rgba(9,11,21,.62);
+  --glass-slip:rgba(32,38,68,.52);
+  --glass-lead:rgba(40,46,82,.56);
+  --glass-dock:rgba(26,31,56,.50);
+  --glass-card:rgba(24,29,52,.56);
+  --glass-chip:rgba(22,27,46,.55);
+  --glass-track:rgba(10,13,24,.55);
+  --glass-disc:rgba(255,255,255,.07);
+  --frost:rgba(255,255,255,.045);          /* the frost's own light, top-left of every pane */
+  --quiet-top:rgba(255,255,255,.10);       /* a quiet button, top */
+  --quiet-bot:rgba(255,255,255,.055);      /* a quiet button, foot */
+  --bubble-top:rgba(255,255,255,.16);      /* the selected bubble, top */
+  --bubble-mid:rgba(255,255,255,.06);      /* the selected bubble, middle */
+  --bubble-bot:rgba(255,255,255,.09);      /* the selected bubble, foot (light caught underneath) */
+  --bubble-caustic:rgba(175,160,255,.34);  /* the violet light pooled inside the bubble's foot */
+  --spec:rgba(255,255,255,.24);            /* the lit button's top edge */
+  --bubble-rim-top:rgba(255,255,255,.34);  /* the bubble's top rim - the brightest line on the bar */
+  --bubble-rim-foot:rgba(195,185,255,.22); /* the bubble's lower rim: light coming back through the glass */
+  --bubble-sheen:rgba(255,255,255,.09);    /* the bubble's upper-half sheen */
+  --rim-hi:rgba(255,255,255,.26);          /* a pane's rim where the light hits it (top-left) */
+  --rim-mid:rgba(255,255,255,.08);
+  --rim-lo:rgba(255,255,255,.025);         /* the rim, far from the light */
+  --rim-foot:rgba(160,150,255,.10);        /* the rim at the bottom-right: a little light comes back */
+  --inner-hi:rgba(255,255,255,.07);        /* a pane's inner top light */
+  --btn-rim:rgba(255,255,255,.10);
+  --btn-hi:rgba(255,255,255,.16);
+  --line:rgba(170,175,220,.12);            /* dividers - they fade out at both ends */
+  --line-faint:rgba(170,175,220,.08);
+  --thumb:rgba(190,195,235,.20);
+  --shade-1:rgba(0,0,0,.40);
+  --shade-2:rgba(2,3,12,.70);
+  --shade-3:rgba(2,3,12,.45);
+  --iris-halo:rgba(165,151,255,.30);
+  --iris-glow:rgba(135,115,255,.50);       /* the pool of light under the lit button - below it, never a ring */
+  --iris-edge:rgba(165,151,255,.70);
+  --iris-foot:rgba(40,20,120,.28);         /* the lit button's lower lip */
+  --lamp-core:#c9ecff;                     /* the listening lamp's hot centre */
+  --listen-ring:rgba(77,184,255,.16);
+  --listen-ring2:rgba(77,184,255,.06);
+  --listen-glow:rgba(77,184,255,.50);
+  --listen-spill:rgba(77,184,255,.15);     /* the lamp's light on the chip's glass */
+  --rec-ring:rgba(255,93,110,.16);
+  --rec-glow:rgba(255,93,110,.50);
+  --write-ring:rgba(255,184,77,.14);
+  --write-glow:rgba(255,184,77,.48);
+  --ok-tint:rgba(95,219,166,.22);
+  --ok-wash:rgba(95,219,166,.05);
+  --ok-ring:rgba(95,219,166,.28);
+  --ok-glow:rgba(95,219,166,.45);
+  --bad-tint:rgba(255,110,126,.22);
+  --bad-wash:rgba(255,110,126,.05);
+  --bad-ring:rgba(255,110,126,.30);
+  --bad-glow:rgba(255,110,126,.40);
+  --bad-edge:rgba(255,110,126,.62);
+  --iris-tint:rgba(165,151,255,.22);
+  --iris-wash:rgba(165,151,255,.05);
+  --iris-ring:rgba(165,151,255,.30);
+  --scr-top:#1d2244;
+  --scr-bot:#0c1022;
+  --scr-glow:rgba(118,98,246,.36);
+  --mark-top:#272f4a;
+  --mark-bot:#141a2c;
+  --mark-lamp:#c9c0ff;
+  --mark-rim:rgba(160,165,215,.26);
+
+  /* CORRECTIONS adds three composites (comp.py's floor, card and frost, then the layer named) */
+  --hover-lit:#393c5e;      /* composite: a learned row under the pointer (white .05 over a card at its peak) */
+  --pair-lit:#3e4062;       /* the learned pair's capsule - a solid fill, the same shade as a disc on a card */
+  --focus-lit:#1a1b33;      /* composite: a field with the caret in it (track + iris .06) */
+
+  /* contrast: --ink/--ground body, --ink/--floor-lit body, --ink/--calm-lit body, --ink/--lead-lit body, --ink/--quiet-lit body, --ink/--bubble-lit body, --ink/--chip-lit body, --ink/--cap body, --ink/--card-lit body, --ink-2/--floor-lit body, --ink-2/--calm-lit body, --ink-2/--slip-lit body, --ink-2/--lead-lit body, --ink-2/--dock-lit body, --ink-2/--card-lit body, --ink-2/--track-lit body, --ink-2/--disc-lit body, --ink-3/--floor-lit body, --ink-3/--slip-lit body, --ink-3/--lead-lit body, --ink-3/--dock-lit body, --ink-3/--card-lit body, --ink-3/--card body, --ink-3/--chip-lit body, --ink-3/--cap body, --iris-ink/--iris-lo body, --iris-ink/--iris-hi body, --iris-text/--track-lit body, --prop-ink/--prop-pill body, --bad-ink/--bad-pill body, --bad/--bad-pill ui, --iris/--prop-pill ui, --lamp-listen/--chip-lit ui, --lamp-rec/--chip-lit ui, --lamp-write/--chip-lit ui, --lamp-idle/--chip-lit ui, --ok/--lead-lit ui, --warn/--card-lit ui, --bad/--slip-lit ui, --sw-on/--card-lit ui, --sw-on/--card ui, --knob/--sw-on ui, --sw-ring/--card-lit ui, --sw-ring/--card ui, --knob-off/--sw-off ui, --bad-ink/--pair-lit body, --ink/--pair-lit body, --ink-3/--pair-lit ui, --ink-2/--hover-lit body, --ink-3/--hover-lit body, --iris/--hover-lit ui, --iris/--card-lit ui, --ok/--card-lit ui, --ok/--dock-lit ui, --iris/--dock-lit ui, --ink/--dock-lit body, --ink-3/--track-lit body, --ink/--track-lit body, --ink/--focus-lit body, --ink-3/--focus-lit body, --iris/--slip-lit ui, --ink/--slip-lit body, --prop-ink/--prop-pill body, --bad/--disc-lit ui, --ink-2/--disc-lit body, --ink/--disc-lit body */
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1160px;height:720px;overflow:hidden}
+html{background:var(--ground)}
+body{background:var(--ground);color:var(--ink);
+  font-family:var(--font-ui);font-weight:var(--w-body);font-size:13px;line-height:1.4;
+  -webkit-font-smoothing:antialiased;position:relative}
+.num{font-variant-numeric:tabular-nums}
+.he{font-family:var(--font-he);font-weight:var(--w-he)}
+.ic{font-family:'Segoe Fluent Icons','Segoe MDL2 Assets';font-style:normal;font-weight:400;line-height:1;display:inline-block}
+
+/* ------------------------------------------------ the sky behind the glass */
+.sky{position:absolute;inset:0;overflow:hidden;z-index:0;pointer-events:none}
+.sky i{position:absolute;display:block;border-radius:50%;filter:blur(30px)}
+.sky .indigo{background:radial-gradient(closest-side, var(--f-indigo), transparent)}
+.sky .blue{background:radial-gradient(closest-side, var(--f-blue), transparent)}
+.sky .plum{background:radial-gradient(closest-side, var(--f-plum), transparent)}
+.sky .teal{background:radial-gradient(closest-side, var(--f-teal), transparent)}
+.sky .lamp-light{background:radial-gradient(closest-side, var(--f-lamp), transparent);display:none}
+/* ribbons: thin curtains of light, so the frost has something to soften */
+.sky .rib{border-radius:50%;filter:blur(14px);
+  background:linear-gradient(90deg, transparent, var(--ribbon) 30%, var(--ribbon) 70%, transparent)}
+.grain{position:absolute;inset:0;z-index:0;pointer-events:none;opacity:.07;mix-blend-mode:overlay;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix type='saturate' values='0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>")}
+.page,.bar{z-index:1}
+
+/* ------------------------------------------------ glass */
+.glass{position:relative;border-radius:22px;
+  backdrop-filter:blur(26px) saturate(150%);
+  box-shadow:inset 0 1px 0 var(--inner-hi), 0 26px 48px -30px var(--shade-2), 0 2px 8px -3px var(--shade-3)}
+.glass::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;
+  background:linear-gradient(155deg, var(--rim-hi), var(--rim-mid) 22%, var(--rim-lo) 55%, var(--rim-foot));
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude}
+.fade-rule{height:1px;background:linear-gradient(90deg, transparent, var(--line) 12%, var(--line) 88%, transparent)}
+
+/* ------------------------------------------------ the bar */
+.bar{position:absolute;left:0;top:0;width:1160px;height:56px;
+  display:flex;align-items:center;padding:0 24px;
+  background:var(--bar-glass);backdrop-filter:blur(22px) saturate(140%)}
+.bar::after{content:"";position:absolute;left:0;right:0;bottom:0;height:1px;
+  background:linear-gradient(90deg, transparent, var(--line) 18%, var(--line) 82%, transparent)}
+.mark{width:26px;height:44px;position:relative;margin-right:18px;flex:none}
+.mark svg{position:absolute;left:0;top:4px;display:block}
+.mark .dev{position:absolute;left:0;width:26px;top:33px;text-align:center;
+  font-family:var(--font-ui);font-size:7.5px;font-weight:600;letter-spacing:.16em;
+  color:var(--iris-text);padding-left:.16em}
+
+/* the segmented track and its ONE bubble: the bubble is its own element, so it can travel */
+.seg{position:relative;display:flex;height:38px;padding:4px;border-radius:19px;
+  background:var(--glass-track);
+  box-shadow:inset 0 1px 3px var(--shade-1), inset 0 -1px 0 var(--line-faint), 0 0 0 1px var(--line-faint)}
+.seg .item{position:relative;z-index:1;height:30px;padding:0 14px;display:flex;align-items:center;border-radius:15px;
+  font-size:13px;font-weight:var(--w-label);color:var(--ink-2);white-space:nowrap}
+.seg .item.on{color:var(--ink)}      /* same weight on and off: the bar never shifts */
+.bubble{position:absolute;z-index:0;top:4px;left:4px;width:60px;height:30px;border-radius:15px;
+  background:
+    radial-gradient(60% 70% at 50% 120%, var(--bubble-caustic), transparent 70%),
+    linear-gradient(180deg, var(--bubble-top), var(--bubble-mid) 55%, var(--bubble-bot));
+  backdrop-filter:blur(6px) saturate(170%);
+  box-shadow:inset 0 1px 0 var(--bubble-rim-top), inset 0 -1px 0 var(--bubble-rim-foot), inset 0 0 0 1px var(--btn-rim), 0 6px 14px -6px var(--shade-2)}
+/* the sheen: the upper half of the bubble catches the light, and it fades before the middle */
+.bubble::after{content:"";position:absolute;left:1px;right:1px;top:1px;height:46%;border-radius:14px 14px 50% 50% / 14px 14px 6px 6px;
+  background:linear-gradient(180deg, var(--bubble-sheen), transparent)}
+/* mid-slide: front edge leads, back edge lags - the bubble stretches, thins a touch, and trails its own light */
+.bubble.moving{height:28px;top:5px;border-radius:14px;
+  -webkit-mask-image:linear-gradient(90deg, transparent, #000 34px);mask-image:linear-gradient(90deg, transparent, #000 34px)}
+/* its back edge dissolves while it travels - the front edge stays crisp, so the eye reads the direction */
+
+.spacer{flex:1}
+.chip{width:208px;height:34px;flex:none;display:flex;align-items:center;padding:0 15px 0 14px;border-radius:17px;margin-right:16px;
+  background:radial-gradient(70px 40px at 18px 50%, var(--listen-spill), transparent 75%), var(--glass-chip);
+  box-shadow:inset 0 1px 0 var(--inner-hi), 0 0 0 1px var(--line-faint)}
+.chip.rec{background:radial-gradient(70px 40px at 18px 50%, var(--rec-ring), transparent 75%), var(--glass-chip)}
+.chip.idle{background:var(--glass-chip)}
+.lamp{width:8px;height:8px;border-radius:50%;flex:none}
+.lamp.listen{background:radial-gradient(circle at 40% 38%, var(--lamp-core), var(--lamp-listen) 62%);
+  box-shadow:0 0 0 3px var(--listen-ring), 0 0 0 6px var(--listen-ring2), 0 0 14px 2px var(--listen-glow)}
+.lamp.rec{background:var(--lamp-rec);box-shadow:0 0 0 3px var(--rec-ring), 0 0 14px 1px var(--rec-glow)}
+.lamp.write{background:var(--lamp-write);box-shadow:0 0 0 3px var(--write-ring), 0 0 14px 1px var(--write-glow)}
+.lamp.idle{background:var(--lamp-idle)}
+.chip .word{margin-left:11px;font-weight:var(--w-strong);font-size:13px;white-space:nowrap}
+.chip .meta{margin-left:auto;font-size:12px;color:var(--ink-3);white-space:nowrap}
+
+/* buttons: a quiet one is a pill of frost; the lit one is a soft luminous fill, lit from above */
+.btn{height:34px;display:inline-flex;align-items:center;gap:8px;padding:0 16px;border-radius:17px;
+  font-family:var(--font-ui);font-size:13px;font-weight:var(--w-label);color:var(--ink);white-space:nowrap;
+  background:linear-gradient(180deg, var(--quiet-top), var(--quiet-bot));
+  box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 0 0 1px var(--btn-rim), 0 4px 10px -6px var(--shade-2)}
+.btn .ic{font-size:13px;color:var(--ink-2)}
+.btn.primary{color:var(--iris-ink);font-weight:var(--w-strong);
+  background:linear-gradient(180deg, var(--iris-hi), var(--iris) 55%, var(--iris-lo));
+  box-shadow:inset 0 1px 0 var(--spec), inset 0 -1px 0 var(--iris-foot), 0 10px 22px -12px var(--iris-glow), 0 0 0 1px var(--iris-halo)}
+.btn.primary .ic{color:var(--iris-ink)}
+.btn.bare{background:none;box-shadow:none;color:var(--ink-2)}
+.btn.bare.end{padding-right:0}
+.btn.dis{background:var(--glass-disc);box-shadow:none;color:var(--ink-3)}
+.btn.dis .ic{color:var(--ink-3)}
+.stop{width:86px;justify-content:center;margin-right:24px}
+.btn.run{width:114px;justify-content:center}
+.btn.scrk{width:136px;justify-content:center}
+.gap8{margin-right:8px}
+.gone{visibility:hidden}
+
+/* keycaps */
+.keys{display:inline-flex;align-items:center;gap:3px}
+.cap{height:21px;min-width:21px;padding:0 7px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;
+  font-family:var(--font-ui);font-size:11px;font-weight:var(--w-label);color:var(--ink);
+  background:var(--cap);box-shadow:inset 0 -2px 0 var(--shade-1), inset 0 1px 0 var(--btn-hi), 0 0 0 1px var(--btn-rim)}
+.plus{font-size:10px;color:var(--ink-3)}
+.eyebrow{font-size:12.5px;font-weight:var(--w-label);color:var(--ink-3)}
+
+/* marks: a disc of coloured light - lit from inside, soft at the edge */
+.mk{width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex:none}
+.mk.ok{color:var(--ok);background:radial-gradient(circle at 50% 30%, var(--ok-tint), var(--ok-wash) 75%);box-shadow:inset 0 0 0 1px var(--ok-ring), 0 0 22px -6px var(--ok-glow)}
+.mk.bad{color:var(--bad);background:radial-gradient(circle at 50% 30%, var(--bad-tint), var(--bad-wash) 75%);box-shadow:inset 0 0 0 1px var(--bad-ring), 0 0 22px -6px var(--bad-glow)}
+.mk.q{color:var(--iris-text);background:radial-gradient(circle at 50% 30%, var(--iris-tint), var(--iris-wash) 75%);box-shadow:inset 0 0 0 1px var(--iris-ring), 0 0 22px -8px var(--iris-glow)}
+/* The MASTER app on top of B+ — the owner's own window. Mockup only, not product code.
+   Minimal on purpose: one accent, one action per row, one mark he ticks himself. */
+:root{
+  /* composites, flattened at the lightest pixel each surface can reach (comp.py's method) */
+  --hot-lit:#393c5e;        /* a row under the pointer */
+  --disc-hot:#474a69;       /* a disc on that row */
+  --field-lit:#1e1f40;      /* the search field over the floor's peak */
+  --meter-bed:rgba(255,255,255,.07);
+  --tick-ring:#7f86a6;      /* the empty box's edge */
+  --tick-lit:#3b3d63;       /* composite: the ticked box's fill */
+  /* contrast: --ink/--card-lit body, --ink-2/--card-lit body, --ink-3/--card-lit body, --ink/--hot-lit body, --ink-2/--hot-lit body, --ink-3/--hot-lit body, --ink-2/--disc-lit body, --ink-2/--disc-hot body, --ink/--dock-lit body, --ink-2/--dock-lit body, --ink-3/--dock-lit body, --ink-3/--floor-lit body, --ink-2/--floor-lit body, --ink/--floor-lit body, --iris/--card-lit ui, --ok/--card-lit ui, --warn/--card-lit ui, --bad/--card-lit ui, --iris/--hot-lit ui, --ink/--cap body, --ink-3/--field-lit body, --ink/--field-lit body, --tick-ring/--card-lit ui, --iris/--tick-lit ui */
+}
+
+.page{position:absolute;left:24px;top:56px;width:1112px;height:664px}
+
+/* the sky, calmer than the user's desk: three fields and one ribbon */
+.sky .indigo{left:-260px;top:-60px;width:820px;height:520px;transform:rotate(-12deg)}
+.sky .blue{left:800px;top:180px;width:620px;height:560px}
+.sky .plum{left:120px;top:620px;width:860px;height:280px;transform:rotate(3deg)}
+.sky .r1{left:40px;top:300px;width:1020px;height:60px;transform:rotate(-10deg)}
+
+/* ---- the head ---- */
+.title{position:absolute;left:-1px;top:18px;font-family:var(--font-display);font-weight:var(--w-display);
+  font-size:28px;letter-spacing:var(--display-track);line-height:36px}
+.sub{position:absolute;top:29px;font-size:13.5px;line-height:18px;color:var(--ink-2)}
+.headr{position:absolute;right:0;top:22px;display:flex;align-items:center;gap:12px;font-size:12.5px;color:var(--ink-3)}
+.chips{position:absolute;left:0;top:68px}
+.chips .seg .item{font-size:12.5px}
+
+/* ---- cards and rows ---- */
+.stack{position:absolute;left:0;top:118px;width:1112px}
+.stack.low{top:68px}
+.sect{display:flex;align-items:baseline;gap:10px;height:28px;padding:0 4px}
+.sect .eyebrow{font-size:12.5px}
+.sect .facts{font-size:12px;color:var(--ink-3)}
+.card{border-radius:22px;background:linear-gradient(150deg, var(--frost), transparent 45%), var(--glass-card);margin-top:6px}
+.card + .sect{margin-top:18px}
+
+.row{display:grid;align-items:center;min-height:58px;padding:11px 20px 11px 18px;position:relative;border-radius:18px;
+  grid-template-columns:26px 62px 32px 1fr auto auto;column-gap:14px}
+.row + .row::before{content:"";position:absolute;left:20px;right:22px;top:0;height:1px;
+  background:linear-gradient(90deg, var(--line-faint), var(--line) 20%, var(--line) 80%, transparent)}
+.row.hot{background:linear-gradient(180deg, var(--quiet-bot), transparent 120%);
+  box-shadow:inset 0 1px 0 var(--inner-hi), inset 0 0 0 1px var(--line-faint)}
+.row.hot::before, .row.hot + .row::before{display:none}
+.row.done .what, .row.done .when, .row.done .kd{opacity:.5}
+.row.wide{grid-template-columns:26px 1fr auto auto;column-gap:16px}
+
+/* the one mark in the app, and only his hand puts it there */
+.tick{width:22px;height:22px;border-radius:7px;flex:none;display:flex;align-items:center;justify-content:center;
+  font-size:12px;color:transparent;background:transparent;box-shadow:inset 0 0 0 1.5px var(--tick-ring)}
+.tick.on{color:var(--iris);background:var(--iris-wash);box-shadow:inset 0 0 0 1.5px var(--iris-edge)}
+
+.when{display:flex;flex-direction:column;gap:1px;line-height:17px}
+.when b{font-weight:var(--w-label);font-size:13.5px;color:var(--ink)}
+.when span{font-size:11.5px;color:var(--ink-3)}
+.kd{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:13px;
+  background:var(--glass-disc);box-shadow:inset 0 1px 0 var(--inner-hi), 0 0 0 1px var(--line-faint)}
+.kd.ok{color:var(--ok)} .kd.bad{color:var(--bad)} .kd.warn{color:var(--warn)}
+.kd.iris{color:var(--iris)} .kd.q{color:var(--ink-2)}
+
+.what{min-width:0}
+.what .l1{font-size:14.5px;line-height:21px;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.what .l1.he{font-size:15px}
+.what .l2{margin-top:2px;font-size:12px;line-height:17px;color:var(--ink-3);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.what .l2 b{font-weight:var(--w-label);color:var(--ink-2)}
+.mono{font-family:'Cascadia Mono','Consolas',monospace;font-size:12px}
+
+/* what came with a row: a paperclip and one word each */
+.ev{display:flex;align-items:center;gap:7px}
+.ev .tag{height:24px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:12px;
+  font-size:11.5px;color:var(--ink-2);white-space:nowrap;
+  background:var(--glass-disc);box-shadow:inset 0 0 0 1px var(--line-faint)}
+.ev .tag .ic{font-size:11px;color:var(--ink-3)}
+
+/* the one verb. Quiet on every row; a pill on the row under the pointer. */
+.take{height:30px;display:inline-flex;align-items:center;gap:8px;padding:0 12px;border-radius:15px;
+  font-size:12.5px;font-weight:var(--w-label);color:var(--ink-3);white-space:nowrap;margin-left:6px}
+.take .ic{font-size:13px;color:var(--ink-3)}
+.row.hot .take{color:var(--ink);background:linear-gradient(180deg, var(--quiet-top), var(--quiet-bot));
+  box-shadow:inset 0 1px 0 var(--btn-hi), inset 0 0 0 1px var(--btn-rim)}
+.row.hot .take .ic{color:var(--iris)}
+.took{font-size:11.5px;color:var(--ink-3);white-space:nowrap;margin-left:6px;display:inline-flex;align-items:center;gap:7px}
+.took .ic{font-size:11px;color:var(--ink-3)}
+
+/* meters: one number against its ceiling */
+.mrow{display:grid;grid-template-columns:26px 1fr 128px 164px auto;column-gap:16px;align-items:center;
+  min-height:56px;padding:10px 20px 10px 18px;position:relative;border-radius:18px}
+.mrow + .mrow::before{content:"";position:absolute;left:20px;right:22px;top:0;height:1px;
+  background:linear-gradient(90deg, var(--line-faint), var(--line) 20%, var(--line) 80%, transparent)}
+.mrow .nm{font-size:14px;color:var(--ink)}
+.mrow .nm span{display:block;margin-top:2px;font-size:12px;color:var(--ink-3)}
+.mrow .fig{text-align:right;font-family:var(--font-display);font-weight:var(--w-num);font-size:19px;
+  letter-spacing:-.01em;line-height:22px}
+.mrow .fig i{display:block;font-style:normal;font-size:11.5px;font-weight:var(--w-body);color:var(--ink-3);margin-top:1px}
+.meter{width:150px;height:5px;border-radius:3px;background:var(--meter-bed);overflow:hidden;margin-left:10px}
+.meter i{display:block;height:100%;border-radius:3px;background:var(--iris)}
+.meter.warn i{background:var(--warn)} .meter.ok i{background:var(--ok)} .meter.bad i{background:var(--bad)}
+
+/* the five little doors under Home's pile */
+.doors{position:absolute;left:0;bottom:66px;width:1112px;display:flex;gap:12px}
+.door{flex:1;height:86px;border-radius:20px;padding:14px 16px 0 16px;
+  background:linear-gradient(160deg, var(--frost), transparent 50%), var(--glass-dock)}
+.door .eyebrow{font-size:12px}
+.door .n{font-family:var(--font-display);font-weight:var(--w-num);font-size:26px;line-height:32px;margin-top:2px}
+.door .n small{font-size:12.5px;font-weight:var(--w-body);color:var(--ink-3);margin-left:5px;letter-spacing:0}
+.door .w{font-size:11.5px;color:var(--ink-3);margin-top:-1px}
+
+/* footer */
+.foot{position:absolute;left:0;top:612px;width:1112px;height:52px;display:flex;align-items:center;
+  justify-content:space-between;padding:0 2px}
+.foot::before{content:"";position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg, transparent, var(--line) 10%, var(--line) 90%, transparent)}
+.foot .l{display:flex;align-items:center;gap:9px;font-size:13px;color:var(--ink-2)}
+.foot .l .ic{font-size:13px;color:var(--ink-3)}
+.foot .btn.bare{padding-right:0}
+
+/* ---- the export sheet ---- */
+.dim{position:absolute;inset:0;z-index:5;background:rgba(6,8,18,.58)}
+.sheet{position:absolute;z-index:6;left:330px;top:150px;width:500px;border-radius:24px;padding:26px 28px 22px 28px;
+  background:linear-gradient(150deg, var(--frost), transparent 45%), rgba(26,31,56,.80);
+  backdrop-filter:blur(30px) saturate(150%);
+  box-shadow:inset 0 1px 0 var(--inner-hi), 0 40px 80px -30px #000}
+.sheet::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;
+  background:linear-gradient(155deg, var(--rim-hi), var(--rim-mid) 22%, var(--rim-lo) 55%, var(--rim-foot));
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;mask-composite:exclude}
+.sheet h2{font-family:var(--font-display);font-weight:var(--w-display);font-size:20px;letter-spacing:var(--display-track)}
+.sheet .of{font-size:13px;color:var(--ink-2);margin-top:5px}
+.sheet .files{margin-top:18px;display:flex;flex-direction:column;gap:11px}
+.sheet .f{display:flex;align-items:center;gap:11px;font-size:13px;color:var(--ink)}
+.sheet .f .ic{font-size:14px;color:var(--ink-3);width:16px;text-align:center}
+.sheet .f span{color:var(--ink-3);font-size:12px}
+.sheet .where{margin-top:18px;padding:11px 14px;border-radius:14px;background:var(--glass-track);
+  font-size:11.5px;color:var(--ink-2);box-shadow:inset 0 0 0 1px var(--line-faint)}
+.sheet .note{margin-top:16px;font-size:12.5px;line-height:18px;color:var(--ink-3)}
+.sheet .acts{margin-top:20px;display:flex;align-items:center;gap:12px}
+.sheet .acts .btn{height:36px}
+/* the few rules the master's own bar and Home need on top of master.css */
+.mark .dev.master{width:58px;left:-16px;letter-spacing:.13em;font-size:7px}
+.bar .read{font-size:12px;color:var(--ink-3);margin-right:14px;white-space:nowrap}
+.bar .btn.qq{height:32px;padding:0 15px}
+
+.what .l1{text-align:left}
+.what .l2{text-align:left}
+
+/* Home: the pile on the left, the five counts in a column on the right */
+.pile{position:absolute;left:0;top:68px;width:836px}
+.side{position:absolute;left:848px;top:68px;width:264px;height:534px;border-radius:24px;padding:18px 22px 0 22px;
+  background:linear-gradient(160deg, var(--frost), transparent 45%), var(--glass-dock)}
+.side .blk{padding:13px 0 14px 0}
+.side .blk + .blk{border-top:1px solid var(--line-faint)}
+.side .eyebrow{font-size:12px}
+.side .n{font-family:var(--font-display);font-weight:var(--w-num);font-size:30px;line-height:34px;margin-top:3px;
+  display:flex;align-items:baseline;gap:8px}
+.side .n small{font-size:13px;font-weight:var(--w-body);color:var(--ink-2);letter-spacing:0}
+.side .w{font-size:12px;color:var(--ink-3);margin-top:1px}
+.side .n .dotok{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 12px -1px var(--ok-glow)}
+
+/* a banner row: one thing the screen is shouting about */
+.banner{border-radius:20px;padding:16px 20px 16px 18px;display:grid;
+  grid-template-columns:26px 32px 1fr auto;column-gap:14px;align-items:center;
+  background:linear-gradient(150deg, var(--frost), transparent 45%), var(--glass-card);
+  box-shadow:inset 0 0 0 1px var(--warn-ring, rgba(255,184,77,.22))}
+.banner .l1{font-size:14.5px;color:var(--ink)}
+.banner .l2{margin-top:2px;font-size:12px;color:var(--ink-3)}
+
+/* a quiet note card under a screen's table */
+.note-card{margin-top:14px;border-radius:18px;padding:14px 18px;display:flex;align-items:center;gap:11px;
+  font-size:12.5px;color:var(--ink-2);background:var(--glass-track);box-shadow:inset 0 0 0 1px var(--line-faint)}
+.note-card .ic{font-size:14px;color:var(--ink-3)}

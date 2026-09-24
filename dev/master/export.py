@@ -110,12 +110,13 @@ def document(row: Row, root: Root, files: list[dict] | None = None) -> str:
     if row.ticked:
         out.append(f"| Marked handled by you | {row.ticked_at} |")
 
-    if row.body.strip():
+    body = row.words()                    # built now, if the screen left it for here
+    if body.strip():
         note = NOTE.get(row.body_from, NOTE["person"])
         out.append(f"\n## {row.body_title}\n")
         out.append(f"<!-- {note} -->")
         out.append(f"{FENCE}text")
-        out.append(row.body.rstrip())
+        out.append(body.rstrip())
         out.append(FENCE)
         out.append(f"\n_{note}_")
     elif row.under:
