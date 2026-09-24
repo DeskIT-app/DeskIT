@@ -1868,6 +1868,51 @@ def test_the_master_writes_nothing_into_the_checkout_it_reads():
         assert not (folder / "dev").exists(), "the master made a folder in his checkout"
 
 
+def test_a_row_may_leave_its_body_for_the_export_to_build():
+    """A branch's diff is three git commands; twenty-five branches were
+    seventy-five of them before the Code screen could be drawn. Such a
+    body is a callable the EXPORT runs — the screen never pays for it,
+    and the page is never handed a function."""
+    from dev.master.rows import Row as _MRow
+    built = []
+
+    def slow():
+        built.append(1)
+        return "the whole diff"
+
+    row = _MRow(id="code:branch:x", screen="code", title="x", body_fn=slow)
+    assert row.body == "" and "body_fn" not in row.to_dict()
+    assert not built, "the screen built the body"
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "checkout")
+        text = _mexport.document(row, root)
+        assert "the whole diff" in text and len(built) == 1
+        _mexport.document(row, root)
+        assert len(built) == 1, "the body was built twice"
+
+
+def test_the_windows_bridge_answers_only_the_names_the_api_lists():
+    """webdesk.py's dispatcher checks Api.CALLS, and the master's Api is
+    flat: no dotted path, no attribute that is not one of those calls.
+    The page cannot widen the list — `api` comes from the process that
+    opened the window."""
+    from dev.master import webdesk as _mwebdesk
+    from dev.master.api import Api as _MApi
+    with tempfile.TemporaryDirectory() as tmp:
+        root = _master_root(Path(tmp) / "checkout")
+        api = _MApi(root, _MStore(Path(tmp) / "state"))
+        assert set(api.CALLS) == {"rows", "tick", "preview", "take",
+                                  "open_folder", "ping"}, api.CALLS
+        assert tuple(_mwebdesk._calls(api)) == tuple(api.CALLS)
+        assert _mwebdesk._calls(None) == _mwebdesk.CALLS
+        for name in api.CALLS:
+            assert callable(getattr(api, name)), name
+        public = {n for n in dir(api) if not n.startswith("_")}
+        assert public == set(api.CALLS) | {"CALLS"}, public
+        assert api.rows("nowhere")["ok"] is False
+        assert api.open_folder("C:\\Windows")["ok"] is False, "any path was opened"
+
+
 def test_every_master_row_has_an_id_a_screen_and_a_tone_the_window_can_draw():
     with tempfile.TemporaryDirectory() as tmp:
         root = _master_root(Path(tmp) / "checkout")

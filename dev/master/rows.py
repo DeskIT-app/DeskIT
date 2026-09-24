@@ -56,6 +56,11 @@ class Row:
     evidence: list[Evidence] = field(default_factory=list)
     facts: dict = field(default_factory=dict)      # label -> value, printed in the document
     came_from: list[str] = field(default_factory=list)
+    #: a body that is too expensive to build for a screen nobody exports:
+    #: a branch's diff is three git commands, and a list of twenty-five
+    #: branches was seventy-five of them before the screen could be drawn.
+    #: The export calls this; the window never sees it.
+    body_fn: object | None = None
     # filled in by store.decorate(), never by a source
     ticked: bool = False
     ticked_at: str = ""
@@ -65,7 +70,18 @@ class Row:
     def to_dict(self) -> dict:
         d = dict(self.__dict__)
         d["evidence"] = [e.to_dict() for e in self.evidence]
+        d.pop("body_fn", None)             # a function is not something a page is given
         return d
+
+    def words(self) -> str:
+        """The body, built now if it was left for the export to build."""
+        if self.body.strip() or self.body_fn is None:
+            return self.body
+        try:
+            self.body = str(self.body_fn() or "")
+        except Exception as e:             # noqa: BLE001 — a missing body is not a lost export
+            self.body = f"(this could not be read: {type(e).__name__}: {e})"
+        return self.body
 
 
 def line(*bits: str) -> str:

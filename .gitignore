@@ -158,3 +158,5 @@ packaging/wizard/
 # the master app keeps its ticks and its export ledger here (dev only)
 dev/master/state/
 dev/master/__pycache__/
+dev/master/web/node_modules/
+dev/master/web/dist/
