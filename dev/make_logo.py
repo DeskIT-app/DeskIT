@@ -35,7 +35,14 @@ from PIL import Image, ImageDraw, ImageFont
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
 APP_ICO = REPO / "icon.ico"                      # the app's own icon
-MASTER_ICO = REPO / "dev" / "master" / "master.ico"
+#: the master's icon. The NAME matters: Windows caches a desktop icon
+#: by the path of the .ico, and neither ie4uinit nor deleting
+#: iconcache*.db nor rebuilding the shortcut freed the large sizes
+#: once "master.ico" was in that cache (2026-09-24, four rounds of
+#: "it still looks broken"). A file the cache has never seen is read
+#: fresh — so if this is ever redrawn and Windows keeps the old
+#: picture, give it a new name here and re-point the shortcut.
+MASTER_ICO = REPO / "dev" / "master" / "DeskIT-Master.ico"
 
 #: the app's ground: LAMPLIGHT's graphite, the colour its icon has always had
 APP_TOP, APP_BOT = (46, 44, 40), (22, 21, 19)

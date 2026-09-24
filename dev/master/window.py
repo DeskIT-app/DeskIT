@@ -35,7 +35,7 @@ DIST = HERE / "web" / "dist"
 PROFILE = HERE / "state" / "webview"
 #: the title bar, the taskbar and Alt-Tab (dev\master\make_icon is gone;
 #: dev\make_logo.py draws this and the app's icon from the one mark)
-ICON = HERE / "master.ico"
+ICON = HERE / "DeskIT-Master.ico"
 TITLE = "DeskIT Master"
 
 
