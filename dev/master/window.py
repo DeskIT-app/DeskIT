@@ -33,6 +33,9 @@ HERE = Path(__file__).resolve().parent
 DIST = HERE / "web" / "dist"
 #: WebView2's own folder, beside the master's state and gitignored with it
 PROFILE = HERE / "state" / "webview"
+#: the title bar, the taskbar and Alt-Tab (dev\master\make_icon is gone;
+#: dev\make_logo.py draws this and the app's icon from the one mark)
+ICON = HERE / "master.ico"
 TITLE = "DeskIT Master"
 
 
@@ -50,6 +53,7 @@ def open_window(*, root: Root | None = None, dist: Path | None = None,
     PROFILE.mkdir(parents=True, exist_ok=True)
     return webdesk.run(dist=Path(dist or DIST), title=TITLE, api=api,
                        storage=PROFILE, width=width, height=height,
+                       icon=ICON if ICON.is_file() else None,
                        on_ready=on_ready)
 
 

@@ -316,6 +316,10 @@ class Options:
     crash_local: bool = True
     inprivate: bool = True
     api: Any = None
+    #: the .ico the window wears in its title bar, its taskbar button and
+    #: Alt-Tab. Without it the window wears pythonw.exe's own — the Python
+    #: snake, which is what he saw in the title bar (2026-09-24).
+    icon: Path | None = None
 
 
 class Desk:
@@ -492,6 +496,12 @@ def _install(desks: dict):
             finally:
                 edgechromium.WebView2 = real
             desk.stamp("control_built")
+            if self._opts.icon:
+                try:                         # the window's own face, not pythonw's
+                    from System.Drawing import Icon as _Icon
+                    form.Icon = _Icon(str(self._opts.icon))
+                except Exception as e:       # noqa: BLE001 — an icon is not worth a window
+                    desk.errors.append(f"icon: {e!r}")
             options = CoreWebView2EnvironmentOptions()
             options.AdditionalBrowserArguments = self._opts.args
             try:
@@ -657,7 +667,8 @@ def _install(desks: dict):
 def run(*, dist=None, route: str = "", width: int = 1180, height: int = 760,
         title: str = "DeskIT", storage=None, api=None, extra_args=(),
         on_ready: Callable[[Desk], None] | None = None, crash_local: bool = True,
-        inprivate: bool = True, x: int | None = None, y: int | None = None) -> int:
+        inprivate: bool = True, x: int | None = None, y: int | None = None,
+        icon=None) -> int:
     """Open the desk and block until it closes. 0 when it ran; 2 when the
     pre-check said no (nothing of webview was imported); 3 when it could
     not start. `on_ready(desk)` runs on a thread of its own once the page
@@ -690,7 +701,8 @@ def run(*, dist=None, route: str = "", width: int = 1180, height: int = 760,
                                    height=height, x=x, y=y,
                                    background_color=BACKGROUND, text_select=False)
     window._deskit_options = Options(dist=dist, route=route, args=browser_args(extra_args),
-                                     crash_local=crash_local, inprivate=inprivate, api=api)
+                                     crash_local=crash_local, inprivate=inprivate, api=api,
+                                     icon=Path(icon) if icon else None)
     desk.window = window
     desks[window.uid] = desk
     desk.stamp("start")
