@@ -1386,7 +1386,8 @@ class HintCard:
     def __init__(self, after_ms: int = 400, corner: str = "bottom-right",
                  margin: int = 14, x: int = HINT_UNSET, y: int = HINT_UNSET,
                  scale: float = 1.0, on_change=None,
-                 dot_corner: str = "bottom-right", dot_at=None) -> None:
+                 dot_corner: str = "bottom-right", dot_at=None,
+                 compact: bool = False) -> None:
         self._q: queue.Queue = queue.Queue()
         self._after = max(0, int(after_ms)) / 1000.0
         self._corner = corner
@@ -1404,6 +1405,11 @@ class HintCard:
         # or "I moved it" lasts exactly one dictation.
         self.x, self.y = int(x), int(y)
         self.scale = float(scale)
+        # The small card (2026-10-01): the step below the smallest size,
+        # saved like the scale. `_peek` is its "All keys", for the card on
+        # screen only — the next dictation is small again.
+        self.compact = bool(compact)
+        self._peek = False
         self._on_change = on_change
         self._thread: threading.Thread | None = None
         self._alive = threading.Event()
@@ -1523,6 +1529,34 @@ class HintCard:
         self.scale = float(scale)
         self._changed(scale=round(self.scale, 3))
 
+    def sized(self, scale: float, compact: bool) -> None:
+        """A press of − or +: the size and whether it is the small card,
+        as skin.hint.step answered. Only what changed is written."""
+        fields = {}
+        if round(float(scale), 3) != round(self.scale, 3):
+            self.scale = float(scale)
+            fields["scale"] = round(self.scale, 3)
+        if bool(compact) != self.compact:
+            self.compact = bool(compact)
+            self._peek = False
+            fields["compact"] = self.compact
+        if fields:
+            self._changed(**fields)
+
+    @property
+    def view(self) -> str:
+        """How the card is laid out: "full" (every key), "compact" (the
+        small card) or "peek" (the small card opened for now)."""
+        if not self.compact:
+            return "full"
+        return "peek" if self._peek else "compact"
+
+    def more(self) -> None:
+        """The small card's "All keys", and "Fewer keys" to fold it again.
+        Nothing is written: the next dictation is the small card again."""
+        if self.compact:
+            self._peek = not self._peek
+
     def dismissed(self) -> None:
         """Never again, and not just for this run — the whole point of a
         "don't show this again" is that it outlives the thing it was
@@ -1558,17 +1592,20 @@ class HintCard:
             self.dismissed()
         else:
             _log.info("hint card: closed until the next dictation")
+        self._peek = False
         self._shut.set()
 
     def card_gone(self) -> None:
         """The card left the screen without the X. A tick left on the box
-        is still an answer."""
+        is still an answer; an "All keys" was for that card only."""
+        self._peek = False
         if self._ticked:
             self.dismissed()
 
     def recording_began(self) -> None:
         """A new dictation: a card closed by hand may come back. Clears an
         Event and returns — this runs inside the keyboard hook."""
+        self._peek = False
         self._shut.clear()
 
     def accepts(self, item) -> bool:
@@ -1753,7 +1790,7 @@ class HintCard:
                 shown["up"] = False
 
         def draw(card: dict) -> None:
-            w, h = _hint_paint(canvas, card, self.scale)
+            w, h = _hint_paint(canvas, card, self.scale, self.compact)
             canvas.configure(width=w, height=h)
             # The whole desktop as well as the work area: without it a
             # card following a dot he dragged onto the left-hand monitor
@@ -5021,14 +5058,15 @@ _HINT_ROW = 26
 _HINT_CHIP = 19
 
 
-def _hint_paint(canvas, card: dict, scale: float = 1.0) -> tuple[int, int]:
+def _hint_paint(canvas, card: dict, scale: float = 1.0,
+                compact: bool = False) -> tuple[int, int]:
     """Draw the card onto a Tk canvas; return the size it needs.
 
-    Two columns, never one string: a chip on the right and the label to
-    its left, each its own canvas item. A single "Esc — ביטול" string is
-    exactly the mixed Hebrew-and-Latin line Tk 8.6 lays out backwards
-    (popup.py proved this glyph by glyph), and there is no bidi to reach
-    for here. Two items sidestep the question entirely.
+    Two columns, never one string: a chip on the left and the label to
+    its right, each its own canvas item. LEFT TO RIGHT since 2026-10-01,
+    when the card's words became English (hint.py); it used to be the
+    mirror of this, right-anchored for Hebrew. `compact` is the small card:
+    the dictation's own rows only.
 
     `scale` is honoured but cannot be CHANGED from here: this window is
     click-through, for the same reason the dot is, and skin\\hint.py is
@@ -5041,14 +5079,15 @@ def _hint_paint(canvas, card: dict, scale: float = 1.0) -> tuple[int, int]:
     head = ("Rubik", max(7, round(11 * s)), "bold")
     canvas.delete("all")
     width = round(300 * s)
+    left = _HINT_PAD
     right = width - _HINT_PAD
     y = _HINT_PAD
 
-    canvas.create_oval(right - 9, y + 3, right - 1, y + 11, width=0,
+    canvas.create_oval(left + 1, y + 3, left + 9, y + 11, width=0,
                        fill=CARD_DOT.get(card.get("dot"), CARD_FG))
-    canvas.create_text(right - 16, y + 7, text=card["title"], anchor="e",
+    canvas.create_text(left + 16, y + 7, text=card["title"], anchor="w",
                        fill=CARD_FG, font=head)
-    canvas.create_text(right - 16, y + 25, text=card["sub"], anchor="e",
+    canvas.create_text(left + 16, y + 25, text=card["sub"], anchor="w",
                        fill=CARD_DIM, font=("Rubik", 8))
     y += 42
     canvas.create_line(_HINT_PAD, y, right, y, fill=CARD_LINE)
@@ -5059,28 +5098,29 @@ def _hint_paint(canvas, card: dict, scale: float = 1.0) -> tuple[int, int]:
         for key, label, on in items:
             chip_w = max(30, 7 * len(key) + 14)
             canvas.create_rectangle(
-                right - chip_w, y + 2, right, y + 2 + _HINT_CHIP,
+                left, y + 2, left + chip_w, y + 2 + _HINT_CHIP,
                 fill=CARD_KEY_BG if on else CARD_BG,
                 outline=CARD_KEY_EDGE if on else CARD_LINE)
-            canvas.create_text(right - chip_w / 2, y + 2 + _HINT_CHIP / 2,
+            canvas.create_text(left + chip_w / 2, y + 2 + _HINT_CHIP / 2,
                                text=key, anchor="center", font=bold,
                                fill=CARD_KEY_FG if on else CARD_FAINT)
-            canvas.create_text(right - chip_w - 9, y + 2 + _HINT_CHIP / 2,
-                               text=label, anchor="e", font=font,
+            canvas.create_text(left + chip_w + 9, y + 2 + _HINT_CHIP / 2,
+                               text=label, anchor="w", font=font,
                                fill=CARD_FG if on else CARD_FAINT)
             y += _HINT_ROW
 
     rows(card["rows"])
-    y += 2
-    canvas.create_text(right, y + 4, text=card["section"], anchor="e",
-                       fill=CARD_FAINT, font=("Rubik", 8, "bold"))
-    y += 17
-    rows(card["keys"])
+    if not compact:
+        y += 2
+        canvas.create_text(left, y + 4, text=card["section"], anchor="w",
+                           fill=CARD_FAINT, font=("Rubik", 8, "bold"))
+        y += 17
+        rows(card["keys"])
     y += 6
     canvas.create_line(_HINT_PAD, y, right, y, fill=CARD_LINE)
     y += 10
-    canvas.create_rectangle(right - 12, y, right, y + 12,
+    canvas.create_rectangle(left, y, left + 12, y + 12,
                             fill=CARD_BG, outline=CARD_LINE)
-    canvas.create_text(right - 20, y + 6, text=card["footer"], anchor="e",
+    canvas.create_text(left + 20, y + 6, text=card["footer"], anchor="w",
                        fill=CARD_DIM, font=("Rubik", 8))
     return width, y + 12 + _HINT_PAD

@@ -774,7 +774,7 @@ Two writes change shape, not only place: `vocab.py:295-299` writes `vocab.json` 
 | `state.json` key | Today | Notes |
 |---|---|---|
 | `dot.x`, `dot.y` | `config.toml:235-236` | clamped to the current virtual screen at load (`map/owner` rec 10; `config.py:884-893` explains why they were unvalidated) |
-| `hint.x`, `hint.y`, `hint.scale` | `265-266, 274` | same clamp |
+| `hint.x`, `hint.y`, `hint.scale`, `hint.compact` | `265-266, 274` | same clamp (the last since 2026-10-01: the small card) |
 | `notify.x`, `notify.y` | `[notify]` section (`map/owner` rec 10) | |
 | `problems.x`, `problems.y`, `problems.card_x`, `problems.card_y` | `1230-1246` | |
 | `shelf.x`, `shelf.y`, `shelf.scale` | `1281-1289` | |
