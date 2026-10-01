@@ -3066,7 +3066,7 @@ class Dashboard:
         prompt; the list itself stays."""
         if self.running:
             self._ask("option", then=lambda r: self._announce(
-                r, settings_mod.saved_sentence("vocab.enabled")),
+                r, settings_mod.saved_sentence("vocab.enabled", bool(on))),
                 name="vocab.enabled", value=bool(on))
             return
         try:
@@ -3075,7 +3075,8 @@ class Dashboard:
             self._note(str(e))
             self.parts["words_use"].set(not on)
             return
-        self._note(settings_mod.saved_sentence("vocab.enabled", live=False))
+        self._note(settings_mod.saved_sentence("vocab.enabled", bool(on),
+                                               live=False))
 
     def _words_search_soon(self, text: str) -> None:
         if self._words_search_after is not None:
@@ -11417,7 +11418,8 @@ class Dashboard:
             autostart.apply(bool(value))
         self.parts["values"][setting.path] = value
         self._paint_setting(setting.path, value)
-        self._note(settings_mod.saved_sentence(setting.path, live=False))
+        self._note(settings_mod.saved_sentence(setting.path, value,
+                                               live=False))
 
     def _setting_answered(self, setting, value, reply) -> None:
         if reply is None:           # it stopped between the poll and the click
@@ -11431,7 +11433,7 @@ class Dashboard:
         self.parts["values"][setting.path] = value
         self._paint_setting(setting.path, value)
         self._note(reply.get("message")
-                   or settings_mod.saved_sentence(setting.path))
+                   or settings_mod.saved_sentence(setting.path, value))
 
     def _paint_setting(self, path: str, value) -> None:
         """Every control that shows `path` set to `value`, without any of

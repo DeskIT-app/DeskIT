@@ -23483,6 +23483,35 @@ def test_no_message_about_a_setting_calls_it_what_the_file_calls_it() -> None:
         assert "next time" in settings_mod.saved_sentence(path, live=False)
         assert "next time" not in settings_mod.saved_sentence(path)
 
+    # A switch answers WHICH WAY it went: his two screenshots of
+    # 2026-10-01 are the same sentence, one taken after turning the key
+    # card off and one after turning it back on.
+    here = Path(__file__).resolve().parent
+    sections = settings_mod.read(here / "defaults.toml")
+    switches = menus = 0
+    for path in settings_mod.friendly_paths():
+        setting = settings_mod.find(sections, path)
+        if setting is None:
+            continue
+        if settings_mod.kind_of(setting.value) == "bool":
+            on = settings_mod.saved_sentence(path, True)
+            off = settings_mod.saved_sentence(path, False)
+            assert on.endswith("is now on"), on
+            assert off.endswith("is now off"), off
+            want = (f'"{settings_mod.label_for(path)}" will be off '
+                    "the next time it starts")
+            later = settings_mod.saved_sentence(path, False, live=False)
+            assert later == want, later
+            switches += 1
+            continue
+        row = settings_mod._row_for(path)
+        if row is not None and len(row.names) > 1:
+            said = {settings_mod.saved_sentence(path, choice)
+                    for choice, _name in row.names}
+            assert len(said) == len(row.names), (path, said)
+            menus += 1
+    assert switches > 10 and menus > 3, (switches, menus)
+
     # A measurement no tab draws has no name a person would know, so its
     # message carries none — rather than falling back to the path, which
     # is the bug itself.
@@ -23496,7 +23525,6 @@ def test_no_message_about_a_setting_calls_it_what_the_file_calls_it() -> None:
         off = config_mod.rebound_sentence(field, "")
         assert field not in off and label in off, off
 
-    here = Path(__file__).resolve().parent
     for name in ("dashboard.py", "main.py"):
         source = (here / name).read_text(encoding="utf-8")
         for shape in ("{setting.path} saved", "{name} saved",
@@ -23570,7 +23598,8 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
             asked.append((command, args))
             if then is not None:
                 then({"ok": True, "message":
-                      settings_mod.saved_sentence(args["name"])})
+                      settings_mod.saved_sentence(args["name"],
+                                                  args["value"])})
 
         def never(*_a, **_k):
             raise AssertionError("the dashboard wrote the file itself")

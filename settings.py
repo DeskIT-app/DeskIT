@@ -688,25 +688,70 @@ def label_for(path: str) -> str:
     return path
 
 
-def saved_sentence(path: str, live: bool = True) -> str:
+_NO_VALUE = object()
+
+
+def _row_for(path: str) -> Friendly | None:
+    """The TABS row that draws `path`, or None when no tab draws it."""
+    for tab in TABS:
+        for group in tab.groups:
+            for row in group.rows:
+                if row.path == path:
+                    return row
+    return None
+
+
+def value_name(path: str, value) -> str | None:
+    """What the CONTROL calls `value` — "on", "off", or the name on the
+    menu. None when the row shows the value as itself (a folder, a
+    number, a device) and there is no shorter word for it."""
+    if isinstance(value, bool):
+        return "on" if value else "off"
+    row = _row_for(path)
+    if row is not None:
+        for choice, name in row.names:
+            if choice == value:
+                return name
+    if isinstance(value, (int, float)):
+        return str(value)          # a count or a length of time says itself
+    return None
+
+
+def saved_sentence(path: str, value=_NO_VALUE, live: bool = True) -> str:
     """What a person is told when the line behind `path` was written.
 
     THE NAME IN IT IS THE ONE THE ROW SHOWS, never the dotted path.
     2026-10-01, the owner turned a switch on the Settings place off and
     on again and the window told him `hint.enabled saved` — the
     developer's name for the line in the file, in a message meant for
-    the person who had just read the row in English. The row's own
-    label is right there on the screen he is looking at, so it is the
-    only name that belongs in the message.
+    the person who had just read the row in English.
+
+    AND IT SAYS WHICH WAY THE ROW WENT. His second clip that evening is
+    two screenshots of the same sentence, one taken after turning the
+    key card off and one after turning it back on: "this is no good, it
+    shows the same thing when you turn it off and on". A switch that
+    answers the same word either way is not a confirmation, so a value
+    the control has a word for — on, off, a name on a menu — is in the
+    sentence. A folder, a number or a microphone is shown by the row
+    itself and has no shorter word, so those still say only that they
+    were written.
 
     A path no tab draws has no name a person would know; its message
     carries none at all rather than falling back to the path, which is
     the bug. `live` is whether the running app took the change now:
-    False adds the sentence that says it waits for the next start.
+    False says so, rather than claiming a switch is already on.
     """
     label = label_for(path)
-    head = "saved" if label == path else f'"{label}" — saved'
-    return head if live else f"{head}, and it applies the next time it starts"
+    name = None if value is _NO_VALUE else value_name(path, value)
+    if label == path:                  # a measurement, drawn by no tab
+        return ("saved" if live
+                else "saved, and it applies the next time it starts")
+    if name is None:
+        return (f'"{label}" — saved' if live
+                else f'"{label}" — saved, and it applies the next time '
+                     f'it starts')
+    return (f'"{label}" is now {name}' if live
+            else f'"{label}" will be {name} the next time it starts')
 
 
 def groups_for(name: str) -> tuple[Group, ...]:
