@@ -11963,12 +11963,12 @@ def test_the_way_home_sits_at_the_top_middle_of_the_column_of_rows(
         root.destroy()
 
 
-def test_the_way_home_lands_the_same_way_on_all_of_the_six_places(
+def test_the_way_home_lands_the_same_way_on_all_of_the_five_places(
 ) -> None:
     """The other half of it, on the real window rather than a stand-in.
 
     One screen is not the test: the button is the Scroller's and every
-    place has one, so this walks all six, forces each page to have been
+    place has one, so this walks all five, forces each page to have been
     scrolled back up, and asks the same questions of each — is it the
     right size, is it centred on that page's own column of rows, is it
     inside the viewport, is it clear of the thumb, and is it clear of
@@ -11981,9 +11981,9 @@ def test_the_way_home_lands_the_same_way_on_all_of_the_six_places(
     the 'Show more', so please move it" — and it is the spot the button
     would have gone back to if the bottom middle had been chosen.
 
-    Corrections and Problems are given proposals and reports of their
-    own, because on this machine both are empty and an empty page has
-    nothing to scroll. Home and Keys are given a long filler instead:
+    Corrections is given proposals of its own, because on this machine
+    it is empty and an empty page has nothing to scroll. Home and Keys
+    are given a long filler instead:
     neither of them scrolls with a real day's load — the Home is a
     summary that is built to fit exactly and the Keys place is a board
     with a short list under it — so on those two the button never appears
@@ -12093,8 +12093,7 @@ def test_the_way_home_lands_the_same_way_on_all_of_the_six_places(
         for name in dash.SCREENS:
             board._show(name)
             # Both of these draw off a poll rather than off the build.
-            board._problems_stamp = board._corr_stamp = None
-            board._poll_problems()
+            board._corr_stamp = None
             board._poll_corrections()
             for _ in range(60):
                 root.update()
@@ -12137,7 +12136,7 @@ def test_the_way_home_lands_the_same_way_on_all_of_the_six_places(
                         f"on {name} the way home (sheet x{sx}..{sx + bw} "
                         f"y{sy}..{sy + bh}) sits on {label!r} at "
                         f"x{cx}..{cx + cw} y{cy}..{cy + ch}")
-        for must in ("Home", "Corrections", "Problems", "Said", "Keys",
+        for must in ("Home", "Corrections", "Said", "Keys",
                      "Settings"):
             assert must in seen, (
                 f"the {must} page had no way home to measure — only "
@@ -12458,18 +12457,18 @@ def test_a_place_asked_for_mid_switch_comes_after_it() -> None:
         _let_the_switch_land(board)
         order: list = []
         real_keys, real_said = board._screen_keys, board._screen_said
-        real_problems = board._screen_problems
+        real_corr = board._screen_corrections
 
         def keys() -> None:
             order.append("keys")
             real_keys()
-            board._show("Problems")      # a click that lands mid-switch
+            board._show("Corrections")   # a click that lands mid-switch
             board._show("Said")          # and another: the newest wins
             order.append("keys built")
         board._screen_keys = keys
         board._screen_said = lambda: (order.append("said"), real_said())
-        board._screen_problems = lambda: (order.append("problems"),
-                                          real_problems())
+        board._screen_corrections = lambda: (order.append("corrections"),
+                                             real_corr())
         board._show("Keys")
         assert order == ["keys", "keys built", "said"], order
         assert board.screen == "Said" and board.nav.selected == "Said"
@@ -22854,376 +22853,6 @@ def test_the_settings_screen_can_reach_its_last_row() -> None:
             pass
 
 
-def test_restart_stops_the_app_waits_for_it_to_go_starts_it_and_then_reopens_the_window(
-) -> None:
-    """Restart, with singleton and launch faked — NEVER against the real
-    app: the owner's dictation runs from the main checkout while this
-    suite runs.
-
-    The app half: quit is asked for, then the mutex is polled until it
-    is gone, and only then is the app started — a start while the old
-    copy still holds the mutex is a second copy refused at its own door.
-    An app that is not running is simply started. An app that will not
-    let go is a sentence and no start.
-
-    The window half: the window closes itself with _relaunch set, and
-    main() opens the new copy only AFTER the instance mutex is released
-    — a copy started earlier would be the "second launch" that pokes
-    the old window and exits, leaving no dashboard at all. A restart
-    that failed keeps the window and says why on the card."""
-    import launch as launch_mod
-    import singleton as singleton_mod
-
-    import dashboard as dash
-
-    saved = (singleton_mod.is_running, singleton_mod.request_quit,
-             launch_mod.start_app)
-    log: list[str] = []
-    try:
-        answers = iter([True, True, True, False, False, False])
-
-        def running() -> bool:
-            now = next(answers, False)
-            log.append(f"running={now}")
-            return now
-        singleton_mod.is_running = running
-        singleton_mod.request_quit = lambda: (log.append("quit"), True)[1]
-        launch_mod.start_app = lambda *a, **k: (log.append("start"), True)[1]
-        result = dash.restart_app(wait_s=2.0, step_s=0.001)
-        assert result["ok"] is True, result
-        assert log == ["running=True", "quit", "running=True", "running=True",
-                       "running=False", "start"], log
-
-        # Nothing running: no quit, no wait, just the start.
-        log.clear()
-        singleton_mod.is_running = lambda: (log.append("running=False"),
-                                            False)[1]
-        result = dash.restart_app(wait_s=2.0, step_s=0.001)
-        assert result["ok"] is True
-        assert log == ["running=False", "start"], log
-
-        # It will not let go: no start, and a sentence that says so.
-        log.clear()
-        singleton_mod.is_running = lambda: True
-        result = dash.restart_app(wait_s=0.02, step_s=0.001)
-        assert result["ok"] is False
-        assert "did not stop" in result["said"], result["said"]
-        assert log == ["quit"], log
-    finally:
-        (singleton_mod.is_running, singleton_mod.request_quit,
-         launch_mod.start_app) = saved
-
-    # The window: a restart that worked closes it with the one word
-    # main() reads; one that failed leaves it, with the sentence.
-    real = dash.restart_app
-    with _window() as board:
-        if board is None:
-            return
-        board._scan_changes = lambda: None
-        board._write_digest = lambda: None
-        board._show("Problems")
-        try:
-            dash.restart_app = lambda *a, **k: {"ok": False,
-                                                "said": "It would not stop."}
-            board._restart_all()
-            assert board._pushing == "restart"
-            assert board._push_said[dash.TRUNK] == \
-                "Restarting — the app takes about 25 seconds to load."
-            assert _until(lambda: board._pushing is None,
-                          pump=board.root.update), \
-                "the restart never came back"
-            assert board._push_said[dash.TRUNK] == "It would not stop."
-            assert not board.closing and board.root.winfo_exists(), \
-                "a failed restart took the window away"
-            assert not board.__dict__.get("_relaunch")
-
-            dash.restart_app = lambda *a, **k: {"ok": True, "said": ""}
-            board._restart_all()
-            end = time.monotonic() + 10.0     # not _until: the pump itself
-            while time.monotonic() < end:     # dies here, and that is the point
-                try:
-                    board.root.update()
-                except Exception:         # the root is gone: that is the
-                    break                 # point
-                if board.closing:
-                    break
-                time.sleep(0.02)
-            assert board.closing, "a restart that worked left the window up"
-            assert board.__dict__.get("_relaunch") is True, \
-                "the window closed without asking to come back"
-        finally:
-            dash.restart_app = real
-
-    # main(): release, THEN relaunch — and no relaunch when the window
-    # closed for any other reason.
-    import singleton as singleton_mod
-    order: list[str] = []
-
-    class Lock:
-        def __init__(self, name) -> None:
-            order.append(f"lock {name}")
-
-        def release(self) -> None:
-            order.append("release")
-
-    class Window:
-        wants = True
-
-        def run(self) -> bool:
-            order.append("run")
-            return Window.wants
-
-    # bring_up_the_keys is faked too: left real, each main() here spawned a
-    # real `main.py --no-model` under the suite's home, and the second of
-    # them opened a real desk — the pair every full run left on the hidden
-    # desktop until 2026-09-19 (found through the suite home's spawn.log).
-    saved = (singleton_mod.InstanceLock, dash.Dashboard,
-             dash._relaunch_dashboard, dash.bring_up_the_keys)
-    try:
-        singleton_mod.InstanceLock = Lock
-        dash.Dashboard = Window
-        dash._relaunch_dashboard = lambda: (order.append("relaunch"), True)[1]
-        dash.bring_up_the_keys = lambda: (order.append("keys"), False)[1]
-        assert dash.main() == 0
-        assert order == [f"lock {singleton_mod.DASHBOARD_MUTEX}", "keys", "run",
-                         "release", "relaunch"], order
-        order.clear()
-        Window.wants = False
-        assert dash.main() == 0
-        assert order == [f"lock {singleton_mod.DASHBOARD_MUTEX}", "keys", "run",
-                         "release"], order
-    finally:
-        (singleton_mod.InstanceLock, dash.Dashboard,
-         dash._relaunch_dashboard, dash.bring_up_the_keys) = saved
-
-
-def test_an_answered_report_reopens_and_the_x_asks_before_it_deletes(
-) -> None:
-    """The two things he asked for on 2026-09-08, on the row itself.
-
-    He found four of his own reports closed and did not close them: "open
-    them again... and if I close something I should be able to open it
-    again, because right now I cannot". So an ANSWERED row carries
-    Reopen, and pressing it puts the report back on the list with no
-    resolution date and nobody's name on it.
-
-    And the delete: "add an X, and when I'm pressing the X a question
-    will jump — are you sure — because I don't want the reports to be
-    deleted instantly". So the ✕ writes NOTHING. It grows the row into a
-    question with Delete and Keep it under it, Keep it takes the question
-    away and leaves the report, and only Delete reaches the store. That
-    is the whole point of the test: the press that used to be the delete
-    is asserted here to have deleted nothing.
-
-    The store is a temp one. It is never his — see the cleanup that ate
-    two real reports while screenshotting this very screen.
-    """
-    import shutil
-    import tkinter as tk
-
-    import ui as ui_mod
-
-    import problems as problems_mod
-
-    tmp = Path(tempfile.mkdtemp(prefix="problems-"))
-    try:
-        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
-        ident = store.add({"text": "the recordings tab shows yesterday",
-                           "kind": "wrong", "where": "recordings"})["id"]
-        assert store.resolve(ident, problems_mod.CLOSED, by="dashboard")
-
-        with _window() as board:
-            if board is None:
-                return
-            board.closing = True
-            board._scan_changes = lambda: None   # git is not the subject
-            board._write_digest = lambda: None  # nor is his problems.md
-            board._problems_store = lambda: store
-            board._show("Problems")
-            board.root.update()
-
-            def controls() -> dict:
-                """Every pressable thing on the list, by its label."""
-                found: dict = {}
-                stack = list(board.parts["problems_list"]
-                             .inner.winfo_children())
-                while stack:
-                    widget = stack.pop()
-                    if isinstance(widget, ui_mod.Button):
-                        found[widget.itemcget(widget._label, "text")] = widget
-                    elif isinstance(widget, tk.Label):
-                        found.setdefault(str(widget.cget("text")), widget)
-                    stack.extend(widget.winfo_children())
-                return found
-
-            def words() -> str:
-                out = []
-                stack = list(board.parts["problems_list"]
-                             .inner.winfo_children())
-                while stack:
-                    widget = stack.pop()
-                    if isinstance(widget, tk.Canvas):
-                        for item in widget.find_all():
-                            if widget.type(item) == "text":
-                                out.append(str(widget.itemcget(item, "text")))
-                    try:
-                        out.append(str(widget.cget("text")))
-                    except Exception:
-                        pass
-                    stack.extend(widget.winfo_children())
-                return "\n".join(out)
-
-            def press(label: str) -> None:
-                widget = controls().get(label)
-                assert widget is not None, f"no {label!r} on the row: " \
-                                           f"{sorted(controls())}"
-                if isinstance(widget, ui_mod.Button):
-                    widget._released(None)
-                else:
-                    widget.event_generate("<Button-1>")
-                board.root.update()
-
-            # ANSWERED, and offering the way back.
-            assert "Reopen" in controls(), sorted(controls())
-            assert "closed" in words(), words()
-            press("Reopen")
-            back = store.get(ident)
-            assert back["status"] == problems_mod.OPEN, back
-            assert back["resolved"] is None and back["by"] == "", back
-            assert "Reopen" not in controls(), "it is open — nothing to undo"
-            assert "Fixed" in controls() and "Close" in controls()
-
-            # THE ✕ WRITES NOTHING.
-            before = json.loads((tmp / problems_mod.STORE_NAME)
-                                .read_text("utf-8"))
-            press("✕")
-            assert json.loads((tmp / problems_mod.STORE_NAME)
-                              .read_text("utf-8")) == before, \
-                "the ✕ touched the store before he had answered"
-            assert board._problem_asking == ident
-            said = words()
-            assert "Delete this report?" in said, said
-            assert "Delete" in controls() and "Keep it" in controls()
-            assert "✕" not in controls(), "it has already been asked"
-
-            # Keep it: the question goes, the report stays.
-            press("Keep it")
-            assert board._problem_asking == ""
-            assert "Delete this report?" not in words()
-            assert store.get(ident) is not None
-            assert "✕" in controls()
-
-            # And the second, deliberate press is the one that deletes.
-            press("✕")
-            press("Delete")
-            assert store.get(ident) is None, "Delete did not delete"
-            assert store.items() == []
-            assert board._problem_asking == ""
-            assert "Nothing reported yet" in str(
-                board.parts["problems_empty"].cget("text"))
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
-def test_pressing_the_x_on_a_report_keeps_the_page_where_he_was_reading(
-) -> None:
-    """His words on 2026-09-08, the day after the ✕ was built: "when I'm
-    pressing the X button to delete the problem it makes the screen jump
-    up and then I just scroll down and then press delete".
-
-    _fill_problems rebuilds every row from scratch and ended in
-    to_top(), so the ✕ — which writes nothing and is a redraw and
-    nothing else — threw the whole list back to the beginning and left
-    him to find the row again. Every redraw but the one that OPENS the
-    tab now puts the view back where it was, in pixels, and the answer he
-    has to press is on screen when it lands.
-
-    Twenty reports, because the bug cannot exist on a page that does not
-    scroll. The store is a temp one, never his.
-    """
-    import shutil
-    import tkinter as tk
-
-    import ui as ui_mod
-
-    import problems as problems_mod
-
-    tmp = Path(tempfile.mkdtemp(prefix="problems-"))
-    try:
-        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
-        for n in range(20):
-            store.add({"text": f"report number {n} of a list long enough "
-                               f"to have somewhere to be lost in",
-                       "kind": "wrong", "where": "recordings"})
-
-        with _window() as board:
-            if board is None:
-                return
-            board.closing = True
-            board._scan_changes = lambda: None
-            board._write_digest = lambda: None
-            board._problems_store = lambda: store
-            board._show("Problems")
-            board.root.update()
-
-            page = board.parts["problems_list"]
-            page.canvas.yview_scroll(12, "units")
-            page._paint_thumb()
-            board.root.update()
-            where = page.canvas.canvasy(0)
-            assert where > 0, "the page did not scroll: nothing to lose"
-
-            def cross_on_screen():
-                """The ✕ of a row he can see, with room under it for the
-                question the press opens."""
-                view = page.canvas.canvasy(0)
-                for row in page.inner.winfo_children():
-                    top = row.winfo_y()
-                    if not view + 8 <= top <= view + page._height - 160:
-                        continue
-                    for child in row.winfo_children():
-                        if (isinstance(child, tk.Label)
-                                and child.cget("text") == "✕"):
-                            return row, child
-                return None, None
-
-            row, cross = cross_on_screen()
-            assert cross is not None, "no ✕ on screen to press"
-            cross.event_generate("<Button-1>")
-            board.root.update()
-            assert board._problem_asking, "the ✕ did not ask"
-            landed = page.canvas.canvasy(0)
-            assert landed > 0, "the ✕ threw the page back to the top"
-            assert abs(landed - where) <= ui_mod.SCROLL_STEP * 3, \
-                f"the page moved {landed - where} px under him"
-            # And the two answers are ON SCREEN, not below the fold.
-            asked = board._asking_row
-            assert asked is not None and asked.winfo_exists()
-            bottom = asked.winfo_y() + asked.winfo_height()
-            assert bottom <= page.canvas.canvasy(0) + page._height + 1, \
-                "the question opened off the bottom of the page"
-
-            # The same again for the press that does delete.
-            gone = None
-            for child in asked.winfo_children():
-                if (isinstance(child, ui_mod.Button)
-                        and child.itemcget(child._label, "text") == "Delete"):
-                    gone = child
-            assert gone is not None, "no Delete on the row that asked"
-            gone._released(None)
-            board.root.update()
-            assert len(store.items()) == 19, "Delete did not delete"
-            assert page.canvas.canvasy(0) > 0, \
-                "deleting threw the page back to the top"
-
-            # Opening the tab, and only that, goes home.
-            board._show("Problems")
-            board.root.update()
-            assert board.parts["problems_list"].canvas.canvasy(0) == 0
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
 def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
     """The write is config.save with the dotted path and nothing else —
     one line into settings.toml (chapter 3.4). A refused value (save
@@ -24624,63 +24253,6 @@ def test_a_second_reading_row_says_which_word_became_which():
                 "changes": []}
         bands = dash.Dashboard._change_bands(dash.Dashboard, none, 800)
         assert bands["runs"] is None and bands["text"] == "שלום", bands
-    finally:
-        root.destroy()
-
-
-def test_a_report_row_leads_with_the_first_sentence_of_the_report():
-    """And it knows what day the report was filed.
-
-    Two things, and the second one was invisible: problems.Store writes
-    "at", in ISO, and this row asked for "when" in the review store's
-    format — so every report stamped 0.0, sorted to the bottom of the
-    pile and drew "You reported this" with no date on it.
-    """
-    import time as time_mod
-
-    import dashboard as dash
-    import problems as problems_mod
-
-    root = _tk_or_skip()
-    if root is None:
-        return
-    try:
-        report = {
-            "id": "1", "at": "2026-09-05T20:11:03", "status": "open",
-            "where": "Chrome",
-            "text": "הדשבורד נתקע לשתים עשרה שניות כשלחצתי על הכפתור. "
-                    "זה קרה פעמיים היום, גם אחרי שהפעלתי מחדש."}
-
-        class Store:
-            def items(self, _status=None):
-                return [report]
-
-        class Desk(dash.Dashboard):
-            def __init__(self):
-                pass
-
-            def _problems(self):
-                return problems_mod
-
-            def _problems_store(self):
-                return Store()
-
-        spec = Desk()._waiting_problems()[0]
-        assert spec["text"] == \
-            "הדשבורד נתקע לשתים עשרה שניות כשלחצתי על הכפתור.", spec
-        assert not spec["text"].endswith("…"), "a whole sentence, unmarked"
-        assert "the whole list has all of it" in spec["note"], spec
-        assert spec["note"].startswith("Chrome"), spec
-        assert spec["at"] == time_mod.mktime(
-            time_mod.strptime("2026-09-05 20:11:03", "%Y-%m-%d %H:%M:%S"))
-        assert "5 Sep" in spec["eyebrow"], spec["eyebrow"]
-
-        # One sentence and nothing behind it: no note about a rest that
-        # does not exist.
-        report["text"] = "הדשבורד נתקע."
-        spec = Desk()._waiting_problems()[0]
-        assert spec["text"] == "הדשבורד נתקע." and spec["note"] == "Chrome", \
-            spec
     finally:
         root.destroy()
 
@@ -28113,12 +27685,14 @@ def test_a_held_finish_is_said_on_the_waiting_place_and_never_counted_twice():
         assert line.cget("text") == ""
 
 
-def test_the_waiting_pile_draws_the_four_stores_and_notices_they_moved():
-    """The pile IS the files: four stores, newest first, a row each with
-    its own verb, and a redraw only when one of the four stamps moved —
-    because a rebuild every second would cost the caret in whatever is
-    being typed into it. A store that raises contributes nothing and the
-    other three still draw."""
+def test_the_waiting_pile_draws_its_stores_and_notices_they_moved():
+    """The pile IS the files: a row per unread notification and per
+    proposal of the second reading, newest first, each with its own
+    verb, and a redraw only when one of the stamps moved — because a
+    rebuild every second would cost the caret in whatever is being
+    typed into it. A store that raises contributes nothing and the
+    other still draws. His reports and the routine's questions were
+    two more sources here until 2026-10-01 (MASTER.md §8)."""
     import widgets as widgets_mod
 
     class Fake:
@@ -28149,37 +27723,33 @@ def test_the_waiting_pile_draws_the_four_stores_and_notices_they_moved():
                "status": "pending", "proposed": "הטקסט הזה נכון עכשיו.",
                "changes": [{"before": "נכן", "after": "נכון",
                             "why": "הגייה דומה"}]}]
-    problems = [{"id": "p1", "when": "2026-09-03 09:00:00",
-                 "status": "open", "what": "A card stayed on the screen."}]
     with _window() as board:
         if board is None:
             return
         board._show("Home")
         board._notify_store = lambda: Fake(notify)
         board._review_store = lambda: Fake(review)
-        board._problems_store = lambda: Fake(problems)
         items = board._waiting_items()
-        assert [i["kind"] for i in items] == ["review", "notify", "problem"],\
+        assert [i["kind"] for i in items] == ["review", "notify"], \
             [i["kind"] for i in items]        # newest first, whatever it is
         board._pile_stamp = object()
         board._poll_waiting()
         rows = [w for w in board.parts["pile_list"].inner.winfo_children()
                 if isinstance(w, widgets_mod.PileRow)]
-        assert len(rows) == 3, len(rows)
+        assert len(rows) == 2, len(rows)
         assert board.parts["pile_card"].winfo_manager() == "pack"
-        assert "Three things" in board.parts["waiting_head"].cget("text")
+        assert "Two things" in board.parts["waiting_head"].cget("text")
         # Exactly one gold button on the surface: Yes on a second reading.
         golds = [b for row in rows for b in row.buttons.values()
                  if isinstance(b, widgets_mod.ToneButton)]
         assert len(golds) == 1, len(golds)
 
-        # The stamp is remembered: the same four files do not redraw.
+        # The stamp is remembered: the same files do not redraw.
         board._notify_store = lambda: Fake([])
         board._review_store = lambda: Fake([])
-        board._problems_store = lambda: Fake([])
         board._poll_waiting()
         assert len([w for w in board.parts["pile_list"].inner.winfo_children()
-                    if isinstance(w, widgets_mod.PileRow)]) == 3, \
+                    if isinstance(w, widgets_mod.PileRow)]) == 2, \
             "redrew without a file moving"
         board._pile_stamp = object()
         board._poll_waiting()
@@ -28189,14 +27759,13 @@ def test_the_waiting_pile_draws_the_four_stores_and_notices_they_moved():
             "an empty pile shows no card at all"
         assert "Nothing is waiting" in board.parts["waiting_head"].cget("text")
 
-        # One broken file must not cost the other two their rows.
+        # One broken file must not cost the other its rows.
         board._notify_store = lambda: Fake(notify, boom=True)
         board._review_store = lambda: Fake(review)
-        board._problems_store = lambda: Fake(problems)
         board._pile_stamp = object()
         board._poll_waiting()              # must not raise
         assert len([w for w in board.parts["pile_list"].inner.winfo_children()
-                    if isinstance(w, widgets_mod.PileRow)]) == 2
+                    if isinstance(w, widgets_mod.PileRow)]) == 1
 
 
 # ---------------------------------------------- report a problem
@@ -28984,230 +28553,6 @@ def test_the_copy_that_travels_is_the_toggles_and_nothing_else() -> None:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def test_the_problems_list_draws_a_report_with_and_without_a_picture(
-        ) -> None:
-    """The list is the file: two open reports and one answered draw three
-    rows plus the ANSWERED heading, a report whose screenshot has been
-    deleted draws a row anyway, an empty store shows the empty line, and
-    a store that raises leaves an empty list rather than a dead screen. It
-    redraws only when the stamp moved."""
-    import tkinter as tk
-
-    import problems as problems_mod
-
-    class Fake:
-        def __init__(self, items, boom=False):
-            self._items, self._boom = items, boom
-            self.path = REPO / problems_mod.STORE_NAME
-
-        def items(self, status=None):
-            if self._boom:
-                raise OSError("broken file")
-            return [i for i in self._items
-                    if status is None or i.get("status") == status]
-
-        def summary(self):
-            if self._boom:
-                raise OSError("broken file")
-            return {"open": 2, "fixed": 1, "closed": 0}
-
-        def stamp(self):
-            return (1, 1)
-
-    def report(ident, status, **extra):
-        return dict({"id": ident, "at": "2026-09-04T13:22:01",
-                     "where": "recordings", "kind": "wrong",
-                     "text": "הכרטיס מראה את המספר של אתמול — yesterday's "
-                             "count", "status": status, "resolved": None,
-                     "by": "", "dictation": {}, "shot": "", "env": {}},
-                    **extra)
-
-    three = [report("a", problems_mod.OPEN,
-                    shot="problems/definitely-not-here.jpg",
-                    dictation={"raw": "מטוס", "final": "מנטוס",
-                               "backend": "local", "seconds": 2.8}),
-             report("b", problems_mod.OPEN, kind="idea", where=""),
-             report("c", problems_mod.FIXED, resolved="2026-09-04T14:00:00",
-                    by="claude")]
-    with _window() as board:
-        if board is None:
-            return
-        # The real problems.md is not this test's to rewrite; opening the
-        # tab regenerates it, and the store here is a fake.
-        board._write_digest = lambda: None
-        board._show("Home")
-        board._waiting_all()          # the whole backlog, behind the pile
-        board._problems_store = lambda: Fake(three)
-        board._problems_stamp = None
-        board._poll_problems()
-        rows = [w for w in board.parts["problems_list"].inner.winfo_children()
-                if isinstance(w, tk.Canvas)]
-        assert len(rows) == 3, len(rows)
-        assert all(getattr(r, "shot", None) is None for r in rows), \
-            "a shot that is not on disk drew a picture anyway"
-        heads = [w for w in board.parts["problems_list"].inner.winfo_children()
-                 if isinstance(w, tk.Label)]
-        assert [w.cget("text") for w in heads] == ["ANSWERED"], heads
-        assert "2 open" in board.parts["problems_head"].cget("text")
-        assert "1 fixed" in board.parts["problems_head"].cget("text")
-        assert not board.parts["problems_empty"].winfo_manager()
-        # The stamp is remembered: the same file does not redraw.
-        board._problems_store = lambda: Fake([])
-        board._poll_problems()
-        rows = [w for w in board.parts["problems_list"].inner.winfo_children()
-                if isinstance(w, tk.Canvas)]
-        assert len(rows) == 3, "redrew without the file moving"
-        board._problems_stamp = None
-        board._poll_problems()
-        assert [w for w in board.parts["problems_list"].inner.winfo_children()
-                if isinstance(w, tk.Canvas)] == []
-        assert board.parts["problems_empty"].winfo_manager() == "place"
-        assert "Nothing reported yet" in \
-            board.parts["problems_empty"].cget("text")
-        board._problems_store = lambda: Fake([], boom=True)
-        board._problems_stamp = None
-        board._poll_problems()              # must not raise
-        assert [w for w in board.parts["problems_list"].inner.winfo_children()
-                if isinstance(w, tk.Canvas)] == []
-        board._problems = lambda: None      # no problems.py on this checkout
-        board._problems_store = lambda: None
-        board._problems_stamp = None
-        board._poll_problems()
-        assert "problems.py is not here" in \
-            board.parts["problems_empty"].cget("text")
-
-
-def test_a_row_the_routine_thinks_is_fixed_says_fixed_maybe_in_amber_and_waits(
-) -> None:
-    """His words, after the routine closed three reports on 2026-09-12
-    that were not fixed: "instead of writing 'fix' it writes 'fix?' in a
-    different colour, not green like now" — and asks him.
-
-    So a marked report is still an OPEN row: the same Fixed, Close and ✕
-    on it, in the same place, and the counts line still counts it as
-    open. What it gains is a FIXED? tag beside the kind, in the tab's
-    amber and not the Fixed button's green, and an amber line under his
-    text carrying the routine's note — drawn through ui.draw_text, like
-    every other line here that may be Hebrew — and telling him what to
-    do about it. The counts line says how many are waiting like that,
-    and only when any are. Pressing Fixed is his answer: the report
-    resolves exactly as it always did and the mark goes with it.
-
-    The store is a temp one, never his.
-    """
-    import shutil
-    import tkinter as tk
-
-    import ui as ui_mod
-
-    import problems as problems_mod
-
-    tmp = Path(tempfile.mkdtemp(prefix="problems-"))
-    drawn: list[tuple[str, str]] = []
-    real_draw = ui_mod.draw_text
-
-    def spy_draw(text, **kw):
-        drawn.append((text, kw.get("colour", "")))
-        return real_draw(text, **kw)
-
-    try:
-        store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
-        plain = store.add({"text": "the dot sits on the wrong screen",
-                           "kind": "broken", "where": "overlay"})["id"]
-        ident = store.add({"text": "the recordings tab shows yesterday",
-                           "kind": "wrong", "where": "recordings"})["id"]
-        note = "הכרטיס נבנה מחדש ומראה את הספירה של היום"
-        assert store.suggest(ident, by="weekly", note=note)
-        ui_mod.draw_text = spy_draw
-
-        with _window() as board:
-            if board is None:
-                return
-            board.closing = True
-            board._scan_weekly = lambda: None   # git is not the subject
-            board._write_digest = lambda: None  # nor is his problems.md
-            board._problems_store = lambda: store
-            board._show("Problems")
-            board.root.update()
-
-            def rows() -> list:
-                return [w for w in board.parts["problems_list"]
-                        .inner.winfo_children() if isinstance(w, tk.Canvas)]
-
-            def texts(row) -> dict:
-                """Every text item on a row canvas, by its words."""
-                return {str(row.itemcget(i, "text")): i
-                        for i in row.find_all() if row.type(i) == "text"}
-
-            def buttons(row) -> dict:
-                return {w.itemcget(w._label, "text"): w
-                        for w in row.winfo_children()
-                        if isinstance(w, ui_mod.Button)}
-
-            # Two open rows, newest first: the marked one on top.
-            assert len(rows()) == 2, len(rows())
-            marked, other = rows()
-            assert "FIXED?" in texts(marked), sorted(texts(marked))
-            assert "FIXED?" not in texts(other), sorted(texts(other))
-            tag = texts(marked)["FIXED?"]
-            assert marked.itemcget(tag, "fill") == ui_mod.AMBER, \
-                marked.itemcget(tag, "fill")
-            assert ui_mod.AMBER != ui_mod.GREEN
-            # The tag stands to the right of the kind and the surface, on
-            # their line, and inside a frame drawn under it.
-            kinds = texts(marked)["WRONG  ·  RECORDINGS"]
-            assert marked.bbox(tag)[0] > marked.bbox(kinds)[2], \
-                (marked.bbox(tag), marked.bbox(kinds))
-            assert abs(marked.bbox(tag)[1] - marked.bbox(kinds)[1]) <= 2
-            order = list(marked.find_all())
-            frame = order[order.index(tag) - 1]
-            assert marked.type(frame) == "image", marked.type(frame)
-            fx0, fy0, fx1, fy1 = marked.bbox(frame)
-            tx0, ty0, tx1, ty1 = marked.bbox(tag)
-            assert fx0 <= tx0 and fx1 >= tx1 and fy0 <= ty0 and fy1 >= ty1, \
-                (marked.bbox(frame), marked.bbox(tag))
-            # The note, in amber, through the Hebrew-capable path, with
-            # what he does about it — and the row grew to hold it.
-            hint = [t for t, c in drawn if note in t]
-            assert hint, [t for t, _c in drawn]
-            assert hint[-1] == f"{note} — try it, then press Fixed", hint[-1]
-            assert (hint[-1], ui_mod.AMBER) in drawn, \
-                [c for t, c in drawn if t == hint[-1]]
-            assert int(marked.cget("height")) > int(other.cget("height"))
-            # His buttons are exactly what an open row has.
-            assert sorted(buttons(marked)) == ["Close", "Fixed"], \
-                sorted(buttons(marked))
-            assert sorted(buttons(other)) == ["Close", "Fixed"]
-            head = str(board.parts["problems_head"].cget("text"))
-            assert "2 open" in head and "1 fixed?" in head, head
-            assert "0 fixed   " in head and "0 closed" in head, head
-
-            # And pressing Fixed is his word.
-            buttons(marked)["Fixed"]._released(None)
-            board.root.update()
-            done = store.get(ident)
-            assert done["status"] == problems_mod.FIXED, done
-            assert done["by"] == "dashboard" and done["resolved"], done
-            assert problems_mod.MAYBE not in done, done
-            assert store.get(plain)["status"] == problems_mod.OPEN
-            assert all("FIXED?" not in texts(r) for r in rows()), \
-                "the tag outlived the mark"
-            head = str(board.parts["problems_head"].cget("text"))
-            assert "1 open" in head and "1 fixed" in head, head
-            assert "fixed?" not in head, head
-
-        # The line itself, with and without a note that already says it.
-        import dashboard as dash
-        hint = dash.Dashboard._problem_hint
-        assert hint({"note": "נסה שוב ולחץ Fixed"}) == "נסה שוב ולחץ Fixed"
-        assert hint({"note": ""}) == "Try it, then press Fixed"
-        assert hint({"note": "  the  count is  today's "}) \
-            == "the count is today's — try it, then press Fixed"
-    finally:
-        ui_mod.draw_text = real_draw
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
 def test_the_report_cards_painter_puts_every_control_where_it_draws_it(
         ) -> None:
     """problem_card is a pure function of the report, so the card can be
@@ -29804,8 +29149,8 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
     (locally, as always), marks the row PREVIEW with the toggles and
     opens the Preview — the exact JSON and the ticked files, with [Send]
     and [Keep on this PC]. Keep leaves nothing in the outbox and clears
-    the mark; Send writes the payload and the copies into the outbox
-    and the row says "waiting to send" with a Send now beside it. A
+    the mark; Send writes the payload and the copies into the outbox,
+    and the store carries the verdict the master reads back. A
     shut gate asks the app for its consent card over the pipe and the
     switch stays off until the gate opens. The store, the recent folder
     and the outbox are all under a temp root; the screen grab is a
@@ -29849,14 +29194,6 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
             time.sleep(0.05)
             board.root.update()
 
-    def first_row(board):
-        return [w for w in board.parts["problems_list"].inner.winfo_children()
-                if isinstance(w, tk.Canvas)][0]
-
-    def words_on(row) -> set:
-        return {str(row.itemcget(i, "text")) for i in row.find_all()
-                if row.type(i) == "text"}
-
     try:
         recent = tmp / "recent"
         recent.mkdir()
@@ -29875,10 +29212,8 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
                 return
             control_mod.send = fake_send      # _window's None until now
             board.closing = True
-            board._scan_weekly = lambda: None
-            board._write_digest = lambda: None
             board._problems_on = True
-            board._show("Problems")
+            board._show("Home")
             board.root.update()
             store = problems_mod.Store(tmp / problems_mod.STORE_NAME)
 
@@ -29958,20 +29293,16 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
             spin(board, 3)
             assert not toplevels(board, "Preview — what leaves this PC")
             assert store.get(ident)["sent"] == "" and not (tmp / "problems" / "outbox").exists()
-            # the row offers nothing about sending now
-            board._fill_problems()
-            board.root.update()
-            assert "Preview & send" not in buttons(first_row(board)), sorted(buttons(first_row(board)))
-            # marked again from the row's side (the hotkey path): [Preview & send]
+            # MARKED AGAIN FROM THE HOTKEY CARD, which is the other
+            # process: the row is the message, and the look-round is
+            # the door that opens its preview now that the Problems
+            # place is gone (_preview_if_waiting, MASTER.md §8).
             problems_mod.mark_preview(store, ident, {"shot": True, "transcript": True})
-            board._fill_problems()
-            board.root.update()
-            row = first_row(board)
-            assert "Preview & send" in buttons(row), sorted(buttons(row))
-            buttons(row)["Preview & send"]._released(None)
-            spin(board, 3)
+            board._previewed.clear()
+            board._preview_if_waiting()
+            spin(board, 5)
             preview = toplevels(board, "Preview — what leaves this PC")
-            assert preview
+            assert preview, "the look-round opened no preview"
             buttons(preview[0])["Send"]._released(None)
             spin(board, 3)
             queued = store.get(ident)
@@ -29982,18 +29313,13 @@ def test_send_to_the_developer_previews_before_anything_leaves() -> None:
             assert body["text"] == "המילה האחרונה נעלמה" and body["kind"] == "wrong"
             assert [a["name"] for a in body["attachments"]] == ["shot.jpg", "sidecar.json"]
             assert ("account", {"do": "nudge"}) in asked, asked
-            board._fill_problems()
-            board.root.update()
-            row = first_row(board)
-            assert "waiting to send" in words_on(row), sorted(words_on(row))
-            assert "Send now" in buttons(row), sorted(buttons(row))
-            # the app's verdict, read back on the next draw
+            # and sb.py's verdict is read back off the store, which is
+            # where the master's Reports screen reads it too: the
+            # payload gone means the app sent it.
             payload.unlink()
-            board._fill_problems()
-            board.root.update()
-            row = first_row(board)
-            assert "sent to the developer" in words_on(row), sorted(words_on(row))
-            assert "Send now" not in buttons(row)
+            assert problems_mod.sync_outbox(store, app_dir=tmp)
+            assert store.get(ident)["sent"] == problems_mod.SENT, \
+                store.get(ident)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -30237,7 +29563,7 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
     there, and nothing on the page that needs scrolling to be seen.
 
     The doors were a thin line of counts drawn only for the kinds that
-    had something waiting; they are a band of five tiles now, one per
+    had something waiting; they are a band of four tiles now, one per
     place, always drawn. What is being held to has not changed — a count
     with nowhere to go is a count nobody can act on.
     """
@@ -30265,14 +29591,11 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
                "text": "הטקסט הזה נכן עכשיו.",
                "changes": [{"before": "נכן", "after": "נכון",
                             "why": "הגייה דומה"}]} for i in range(5)]
-    problems = [{"id": "p1", "when": "2026-09-07 09:00:00",
-                 "status": "open", "what": "A card stayed on the screen."}]
     with _window() as board:
         if board is None:
             return
         board._notify_store = lambda: None
         board._review_store = lambda: Fake(review)
-        board._problems_store = lambda: Fake(problems)
         board._show("Home")
         board._pile_stamp = object()
         board._poll_waiting()
@@ -30280,14 +29603,14 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
         rows = [w for w in board.parts["pile_list"].inner.winfo_children()
                 if isinstance(w, widgets_mod.PileRow)]
         assert len(rows) == dash.PILE_CAP == 3, len(rows)
-        assert "Six things" in board.parts["waiting_head"].cget("text"), \
+        assert "Five things" in board.parts["waiting_head"].cget("text"), \
             board.parts["waiting_head"].cget("text")
-        # The subline has to AGREE with the headline: six things want an
-        # answer and three of them are on the screen, so it says which
-        # three and how many are not, rather than "nothing else needs
-        # you" under a headline that says six things do.
+        # The subline has to AGREE with the headline: five things want
+        # an answer and three of them are on the screen, so it says
+        # which three and how many are not, rather than "nothing else
+        # needs you" under a headline that says five things do.
         sub = board.parts["waiting_sub"].cget("text")
-        assert "newest three" in sub and "three more are waiting" in sub, sub
+        assert "newest three" in sub and "two more are waiting" in sub, sub
         # Exactly one lit button on the surface, still.
         golds = [b for row in rows for b in row.buttons.values()
                  if isinstance(b, widgets_mod.ToneButton)]
@@ -30296,9 +29619,9 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
         band = board.parts["elsewhere"]
         board.root.update_idletasks()
         tiles = sorted(band.winfo_children(), key=lambda w: w.winfo_x())
-        # five again since Network left the bar (2026-09-18): a door to a
+        # four since Problems left the bar (2026-10-01): a door to a
         # place that is not on the bar is a door with no way back
-        assert len(tiles) == 5, len(tiles)
+        assert len(tiles) == 4, len(tiles)
         assert all(t.winfo_manager() for t in tiles)
         # The count and the words it counts are two labels on one line,
         # so the tile is read as the set of things drawn on it.
@@ -30306,8 +29629,6 @@ def test_the_home_is_a_summary_and_says_where_the_rest_is() -> None:
         corrections = next(t for t in tiles
                            if "corrections" in words[t])
         assert "5" in words[corrections], words[corrections]
-        trouble = next(t for t in tiles if "problems" in words[t])
-        assert "1" in words[trouble], words[trouble]
         # the band fills the row: the last tile ends where the page does
         last = tiles[-1]
         assert last.winfo_x() + last.winfo_width() == dash.CW, (
@@ -30362,20 +29683,14 @@ def test_the_home_fills_its_page_whether_nothing_or_everything_waits():
                "text": "הטקסט הזה נכן עכשיו.",
                "changes": [{"before": "נכן", "after": "נכון",
                             "why": "הגייה דומה"}]} for i in range(5)]
-    problems = [{"id": f"p{i}", "when": "2026-09-07 09:00:00",
-                 "status": "open", "what": "A card stayed on the screen."}
-                for i in range(2)]
     with _window() as board:
         if board is None:
             return
         board._notify_store = lambda: None
-        board._questions_store = lambda: None
         board._show("Home")
-        for name, proposals, reports in (("nothing", [], []),
-                                         ("two", [], problems),
-                                         ("six", review, problems[:1])):
+        for name, proposals in (("nothing", []), ("two", review[:2]),
+                                ("five", review)):
             board._review_store = lambda p=proposals: Fake(p)
-            board._problems_store = lambda r=reports: Fake(r)
             board._pile_stamp = object()
             board._poll_waiting()
             board.root.update_idletasks()
@@ -30392,14 +29707,14 @@ def test_the_home_fills_its_page_whether_nothing_or_everything_waits():
             # say, so it may never be the thing that is missing.
             tiles = sorted(board.parts["elsewhere"].winfo_children(),
                            key=lambda w: w.winfo_x())
-            assert len(tiles) == 5, (name, len(tiles))
+            assert len(tiles) == 4, (name, len(tiles))
             assert tiles[0].winfo_x() == 0
             assert (tiles[-1].winfo_x() + tiles[-1].winfo_width()
                     == dash.CW), name
             # Every tile is still a door to somewhere that is not here.
             # By index and re-read each time: pressing one rebuilds the
             # screen, so the widgets from before the press are gone.
-            for index in range(5):
+            for index in range(4):
                 tiles = sorted(board.parts["elsewhere"].winfo_children(),
                                key=lambda w: w.winfo_x())
                 said = _texts(tiles[index])
@@ -30931,202 +30246,6 @@ def test_the_writer_turns_a_reply_into_a_file_of_sentences() -> None:
                                              Path(d) / "read")] == found
 
 
-def test_the_read_aloud_tab_arms_keeps_and_moves_on_by_itself() -> None:
-    """The Corrections place's second tab, driven against the app's own
-    control handler over a Reading in a temp folder: the tab arms the
-    sentence it shows, redraws for each phase, lets a reading stand until
-    ← keeps it — however it came back — and puts up the next one, takes
-    the last one back on Redo, asks again only when nothing came back at
-    all, has a paragraph written when the folder runs dry, and disarms
-    when he leaves."""
-    import shutil
-
-    import control as control_mod
-    import main as main_mod
-    import reading
-    import dashboard as dash
-    import widgets as widgets_mod
-
-    tmp = Path(tempfile.mkdtemp(prefix="dictation-readtab-"))
-    texts, read = tmp / "texts", tmp / "read"
-    texts.mkdir()
-    (texts / "notes.txt").write_text(
-        "אני רוצה לפתוח את הפרויקט הזה מחדש היום.\n"
-        "לא הבנתי למה זה לא עובד בכלל.\n", "utf-8")
-    r = reading.Reading(read, root_of=lambda h: h)
-    # The writer, scripted: asked once the folder is read out, and what
-    # it writes is the next thing on the card.
-    wrote: list = []
-
-    def write(_self, count=reading.WRITE_SENTENCES, seed=None, names=()):
-        wrote.append((count, seed))
-        return ["הדשבורד מציג את הנתונים, אבל עדיין יש חוסר סינכרון.",
-                "תזכיר לי לבדוק את הענף הזה אחרי שאני שומר."]
-    app = main_mod.App.__new__(main_mod.App)
-    app.reading = r
-    activity = ["ready"]
-    sent: list[dict] = []
-
-    def send(cmd, timeout_ms=0, **args):
-        if cmd == "status":
-            return {"ok": True, "stage": "running", "activity": activity[0],
-                    "uptime_s": 60, "keys": {"hotkey": "right ctrl"},
-                    "read": r.state()}
-        if cmd == "read":
-            sent.append(dict(args))
-            return app.control_command("read", args)
-        return None
-
-    def settle(board, until=None, ticks: int = 40) -> None:
-        """Pump the window until `until` holds — the poll runs every
-        POLL_MS and a pipe reply lands on the next pump, so a chain of
-        them is seconds, not a fixed number of ticks — or for `ticks`
-        when nothing in particular is waited for."""
-        for _ in range(250 if until is not None else ticks):
-            board.root.update()
-            time.sleep(0.02)
-            if until is not None and until():
-                board.root.update()
-                return
-        assert until is None, "the window never got there"
-
-    def phase(board) -> str:
-        board._refresh(send("status"))
-        return board._read_phase()[0]
-
-    def kept() -> list:
-        return [p for p in read.glob("*.wav")
-                if not p.name.startswith(reading.PENDING)]
-
-    saved = (dash.READ_DIR, dash.READ_TEXTS, control_mod.send,
-             reading.Writer.write)
-    dash.READ_DIR, dash.READ_TEXTS = read, texts
-    reading.Writer.write = write
-    try:
-        with _window() as board:
-            if board is None:
-                return
-            control_mod.send = send
-            board._corr_tab = "read"
-            board._show("Corrections")
-            settle(board, until=lambda: r.armed_id is not None)
-            first = board._read_current
-            assert first is not None and board._read_deck, "the deck is empty"
-            assert first.text == "אני רוצה לפתוח את הפרויקט הזה מחדש היום."
-            assert first.said == "notes" and (first.index, first.count) == (1, 2)
-            assert r.armed_id == first.key, "the tab armed what it shows"
-            assert sent[-1]["hwnd"] == board._read_hwnd() and sent[-1]["hwnd"]
-            assert phase(board) == "waiting"
-            assert "read_card" in board.parts and "voice_card" in board.parts
-            assert "corr_list" not in board.parts, "the other tab's list"
-            assert not wrote, "nothing written while the folder has text"
-
-            activity[0] = "recording"
-            assert phase(board) == "listening"
-            activity[0] = "ready"
-            # NOTHING CAME BACK: the one case he is asked to read again
-            r.heard(first.key, b"RIFF", 0.4, "")
-            assert phase(board) == "nothing"
-            settle(board, ticks=10)
-            assert not kept() and board._read_current is first
-            assert not [w for w in board.parts["read_card"].body.winfo_children()
-                        if isinstance(w, widgets_mod.ToneButton)], \
-                "no gold button on the card any more"
-
-            # A WORD CAME BACK DIFFERENT: the recording STANDS all the
-            # same — he read the card, and the card is the label — until
-            # ← keeps it; ← with nothing standing does nothing
-            assert board._read_left() is None and not kept()
-            r.heard(first.key, b"RIFF-1", 3.0,
-                    "אני רוצה לפתוח את הפרוגקט הזה מחדש היום.")
-            assert phase(board) == "heard"
-            settle(board, ticks=10)
-            assert not kept() and board._read_current is first, "it stands"
-            golds = [w for w in board.parts["read_card"].body.winfo_children()
-                     if isinstance(w, widgets_mod.ToneButton)]
-            assert len(golds) == 1, "the gold Keep, for the mouse"
-            assert board._read_left() == "break"
-            settle(board, until=lambda: board._read_current is not None
-                   and board._read_current.key != first.key
-                   and r.armed_id == board._read_current.key)
-            assert len(kept()) == 1, "kept on the left arrow"
-            second = board._read_current
-            assert second is not None and second.key != first.key
-            assert r.armed_id == second.key, "the next one is armed"
-            assert board._read_counts["kept"] == 1
-            assert board._read_last is not None and board._read_last[0] is first
-            side = json.loads(kept()[0].with_suffix(".json").read_text("utf-8"))
-            assert side["text"] == first.text and side["match"] == [7, 8], side
-            assert side["heard"].startswith("אני רוצה לפתוח את הפרוגקט"), side
-
-            # REDO: the reading he just made is taken back, its sentence is
-            # up again and the one that replaced it waits behind it
-            board._read_redo()
-            settle(board, until=lambda: board._read_current is first
-                   and r.armed_id == first.key and not board._read_busy)
-            assert not kept(), "the fumbled reading is gone"
-            assert board._read_counts == {"kept": 0, "skipped": 0, "again": 1}
-            assert board._read_last is None and board._read_deck[0] is second
-            r.heard(first.key, b"RIFF-2", 3.0, first.text)
-            r.heard(first.key, b"RIFF-3", 3.2, first.text)   # read it over
-            assert phase(board) == "heard"
-            board._read_left()
-            settle(board, until=lambda: board._read_current is second
-                   and r.armed_id == second.key)
-            assert len(kept()) == 1 and kept()[0].read_bytes() == b"RIFF-3", \
-                "the new take replaced the one before it"
-
-            r.heard(second.key, b"RIFF", 2.0, second.text)   # word for word
-            assert phase(board) == "heard"
-            board._read_left()
-            settle(board, until=lambda: board._read_counts["kept"] == 2
-                   and board._read_current is not None
-                   and r.armed_id == board._read_current.key)
-            assert len(kept()) == 2
-            assert board._read_counts["kept"] == 2
-            # THE FOLDER IS READ OUT: a paragraph was asked for, saved as
-            # a file, and its first sentence is up
-            assert len(wrote) == 1 and wrote[0][1] == 0, wrote
-            written = [p for p in texts.iterdir()
-                       if p.stem.startswith(reading.WRITTEN)]
-            assert len(written) == 1, written
-            third = board._read_current
-            assert third is not None and third.text.startswith("הדשבורד מציג")
-            assert third.said.startswith(reading.WRITTEN)
-            assert (third.index, third.count) == (1, 2)
-            assert r.armed_id == third.key and phase(board) == "waiting"
-            sides = [json.loads(p.read_text("utf-8"))
-                     for p in read.glob("*.json") if p.name != reading.SKIPPED]
-            assert sorted(s["text"] for s in sides) == sorted(
-                [first.text, second.text]), sides
-            assert sorted(s["key"] for s in sides) == sorted(
-                [first.key, second.key]), "the sentence's key is filed"
-
-            assert board.root.bind("<Left>"), "the left arrow is the tab's"
-            board._corr_tab_to("waiting")
-            settle(board, until=lambda: r.armed_id is None
-                   and sent[-1]["do"] == "disarm")
-            assert r.armed_id is None, "leaving the tab disarms"
-            assert "corr_list" in board.parts and "read_card" not in board.parts
-            assert sent[-1]["do"] == "disarm", sent[-1]
-            assert not board.root.bind("<Left>"), "and gives the arrow back"
-            # And with no model able to write, the card says what to do
-            # instead of asking again and again
-            reading.Writer.write = lambda _self, count=0, seed=None, names=(): None
-            for p in written:
-                p.unlink()
-            board._corr_tab_to("read")
-            settle(board, until=lambda: board._read_write_failed
-                   and not board._read_writing)
-            assert board._read_write_failed and not board._read_writing
-            assert board._read_current is None and phase(board) == "done"
-            assert "corpus" in (board._toast_text or ""), board._toast_text
-    finally:
-        (dash.READ_DIR, dash.READ_TEXTS, control_mod.send,
-         reading.Writer.write) = saved
-        shutil.rmtree(tmp, ignore_errors=True)
-
-
 def test_a_reading_is_kept_under_the_cards_words_and_can_be_taken_back() -> None:
     """reading.Reading: the app's side. Armed with the dashboard's window,
     it takes a dictation begun over that window and no other; what comes
@@ -31569,23 +30688,25 @@ def test_the_bar_keeps_stop_away_from_the_key_he_presses_all_day() -> None:
         assert room >= 100, f"Stop is back within a slip of Pause: {room} px"
 
 
-def test_the_window_has_six_places_and_every_one_of_them_is_registered():
+def test_the_window_has_five_places_and_every_one_of_them_is_registered():
     """A place is five registrations (NAV, ICON, _show, _refresh, and for
     a key KEY_GROUPS + NESTED_HOTKEYS); missing any one of them is a
     KeyError the first time somebody clicks.
 
-    There are SEVEN, in this order: Home (a summary and nothing more),
+    There are FIVE, in this order: Home (a summary and nothing more),
     Corrections (the second reading's proposals and the words it has
-    learned), Problems (his reports, the routine's questions, what is
-    here and not on GitHub), Said (transcripts.log read back), Keys,
-    Settings. Network — D12's window — was the seventh word from PR 21
-    (chapter 9 screen 6) to 2026-09-18, when he said "as a user I don't
-    understand why I need it": it is a screen still (SCREENS), reached
-    from the EVERY CONNECTION card on Settings > Privacy, and the bar
-    lights Settings while it is up. It was three for one evening, with
-    the whole desk on the home; he read that home and said "Home should
-    be a summary, and then maybe add more tabs". Home, Corrections,
-    Problems and Said are new words for old screens, so NAV_GLYPH is
+    learned), Said (transcripts.log read back), Keys, Settings. It was
+    seven at its widest: Network — D12's window — was a word on the bar
+    from PR 21 to 2026-09-18, when he said "as a user I don't
+    understand why I need it", and it is a screen still (SCREENS),
+    reached from the EVERY CONNECTION card on Settings > Privacy, with
+    the bar lighting Settings while it is up; Problems — his reports,
+    the routine's questions and the git card — left on 2026-10-01 with
+    the rest of the owner's surface (MASTER.md §8), and reporting is a
+    button and a card now, with no place behind it. It was three for
+    one evening, with the whole desk on the home; he read that home and
+    said "Home should be a summary, and then maybe add more tabs".
+    Corrections and Said are new words for old screens, so NAV_GLYPH is
     what says whose glyphs they borrow. Every place has to fit along the
     56 px top bar beside the state chip and the three buttons — which is
     why the wordmark is gone."""
@@ -31593,9 +30714,9 @@ def test_the_window_has_six_places_and_every_one_of_them_is_registered():
     import ui
 
     names = [key for key, _label in dash.NAV]
-    assert names == ["home", "corrections", "problems", "said", "keys",
+    assert names == ["home", "corrections", "said", "keys",
                      "settings"], names
-    assert dash.SCREENS == ("Home", "Corrections", "Problems", "Said", "Keys",
+    assert dash.SCREENS == ("Home", "Corrections", "Said", "Keys",
                             "Settings", "Network"), dash.SCREENS
     assert dash.SIDE == 0, "the rail is gone"
     for key, label in dash.NAV:
@@ -31613,7 +30734,7 @@ def test_the_window_has_six_places_and_every_one_of_them_is_registered():
         assert board._problems_on, "the shipped config has it on"
         assert set(board.nav.items) == {label for _key, label in dash.NAV}, \
             sorted(board.nav.items)
-        # The bar holds all seven words, the state and the buttons, and
+        # The bar holds all five words, the state and the buttons, and
         # nothing in it may reach past the window: a place drawn off the
         # right edge is a place with no way to click it. Measured in the
         # state that holds the MOST buttons, which is the one that pushes
@@ -34552,19 +33673,27 @@ def test_reset_spares_the_owners_training_data():
                 setattr(paths, name, value)
 
 
-# ------------------------------------------- the owner's surface, hidden
+# -------------------------------------------- the owner's surface, gone
 #
-# DISTRIBUTION_PLAN.md D15, PR 7: what only the checkout has — the git
-# block, the Saturday routine's questions and problems.md, the nightly
-# tests, the read-aloud corpus tool, the developer rows on Settings, the
-# three owner commands — is behind paths.DEVELOPER. On this checkout it
-# is all there; the test flips the flag and looks at a stranger's copy.
+# It was behind paths.DEVELOPER for a year (DISTRIBUTION_PLAN.md D15,
+# PR 7) and a flag is not the same promise: he tested a desk no user
+# had. MASTER.md §8 took each surface out of the product as the master
+# app grew one of its own — the Problems place and its git card, the
+# routine's questions and answer_card, the Stop-tests button, the
+# Read-aloud tab, and --benchmark/--study/--review. So this asks the
+# stronger thing: they are not in the product AT ALL, for anybody,
+# and what replaces each one is where it says it is.
+#
+# What STAYS is underneath and is not a surface: the portable layout,
+# OWNER_DATA, the .dev names, port 8757, autostart refusing in a
+# checkout, updates that look and never install.
 
-def test_a_strangers_copy_shows_no_owner_surface():
+def test_the_product_has_no_owner_surface_left():
     import inspect
 
     import dashboard as dash
     import main as main_mod
+    import overlay as overlay_mod
     import settings as settings_mod
 
     defaults = Path(__file__).resolve().parent / "defaults.toml"
@@ -34581,18 +33710,48 @@ def test_a_strangers_copy_shows_no_owner_surface():
     assert not hasattr(settings_mod, "developer_only")
     assert "Privacy" in settings_mod.tab_names()
 
-    with _patched(paths, "DEVELOPER", False):
-        assert [k for k, _n in dash.corr_tabs()] == ["words"]
-
-        class _Board:
-            _questions = staticmethod(lambda: object())
-            _questions_store = staticmethod(lambda: object())
-        assert dash.Dashboard._pending_questions(_Board()) == []
-        assert dash.Dashboard._nightly_running(_Board()) is False
-    assert [k for k, _n in dash.corr_tabs()] == ["words", "read"]
+    # the Corrections tabs are the words and nothing else, on every
+    # copy — the flag cannot bring the Read-aloud chip back
+    for flag in (True, False):
+        with _patched(paths, "DEVELOPER", flag):
+            assert [k for k, _n in dash.corr_tabs()] == ["words"], flag
+    # five places, and Problems is not one of them
+    assert "Problems" not in dash.SCREENS and "Problems" not in [
+        name for _key, name in dash.NAV], dash.SCREENS
+    # nothing of the Problems place, the questions or the git card is
+    # left on the window — not hidden, not guarded: absent
+    for gone in ("_screen_problems", "_fill_problems", "_poll_problems",
+                 "_waiting_problems", "_waiting_questions",
+                 "_pending_questions", "_questions_store",
+                 "_answer_question", "_nightly_running", "_stop_tests",
+                 "_scan_changes", "_changes_block", "_git_done",
+                 "_restart_all", "_write_digest"):
+        assert not hasattr(dash.Dashboard, gone), gone
+    for gone in ("local_changes", "push_main", "undo_main",
+                 "restart_app", "_git", "_nightly", "_answerable"):
+        assert not hasattr(dash, gone), gone
+    # ...nor of the question card in the app or on the overlay
+    assert not hasattr(overlay_mod, "AnswerCard")
+    for gone in ("_watch_questions", "_question_show", "_answer_box",
+                 "_shelf_question", "_questions_quiet"):
+        assert not hasattr(main_mod.App, gone), gone
+    assert not hasattr(main_mod, "_questions_mod")
+    # the three measuring commands are a dev tool, not a guarded flag
     src = inspect.getsource(main_mod.main)
-    assert "for the developer's checkout only" in src
-    assert src.index("not paths.DEVELOPER") < src.index("return benchmark(cfg)")
+    for word in ("--benchmark", "--study", "--review",
+                 "for the developer's checkout only"):
+        assert word not in src, word
+    assert not hasattr(main_mod, "benchmark")
+    measure = Path(__file__).resolve().parent / "dev" / "measure.py"
+    if measure.is_file():        # export-ignored, so not on a user's disk
+        words = measure.read_text("utf-8")
+        for word in ("--benchmark", "--study", "--review"):
+            assert word in words, word
+    # and what a person CAN still do about a problem: the key, the
+    # button and the card, with problems.py behind them
+    assert "report_hotkey" in [f for f, _label in config_mod.HOTKEY_FIELDS]
+    assert hasattr(dash.Dashboard, "_report")
+    assert hasattr(dash.Dashboard, "_report_preview")
 
 
 # ------------------------------------------------- one number (PR 9, D21)
@@ -40417,15 +39576,18 @@ def test_install_hook_names_an_interpreter_that_exists():
 # DISTRIBUTION_PLAN.md 7.5 and chapter 15: this file is the product suite
 # — run on GitHub's windows-latest by .github/workflows/ci.yml and on the
 # owner's hidden desktop by tests_quiet.py — and dev/tests_ops.py is the
-# owner's half (the nightly run, the git card, the routine's docs), run in
+# owner's half (the nightly run, the master, the routine's docs), run in
 # the checkout only. Two things have to stay true for that to hold: the
 # product must import without a single owner file, and the runner's list
 # of tests that need the real screen must be the list of tests that do.
 
 #: The owner's modules — the python half of 7.4's build manifest, D15. A
 #: product module may reach for one inside a function only the owner's
-#: surface calls (dashboard._nightly, main._questions_mod), never at
-#: import; this file imports none of them anywhere.
+#: surface calls, never at import; this file imports none of them
+#: anywhere. There is no such call left in the product since
+#: 2026-10-01 (MASTER.md §8) — questions.py and answer_card.py are in
+#: the tree and nothing reaches for them — and the list stays, because
+#: it is what the import test blocks.
 DEV_MODULES = ("nightly", "questions", "tests_quiet", "tests_ops", "inbox",
                "weekly_review", "dev_git", "answer_card", "versions")
 #: The tree's files that are not product modules. (versions.py is gone

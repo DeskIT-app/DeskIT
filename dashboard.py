@@ -92,7 +92,6 @@ import awake as awake_mod
 import hardware as hardware_mod
 import models as models_mod
 import packs as packs_mod
-import reading as reading_mod
 import settings as settings_mod
 import singleton
 import summary
@@ -130,9 +129,6 @@ BAR_RUN_W = 104          # Pause / Resume / Start — the key he presses all
 BAR_STOP_W = 84
 BAR_GAP = 8              # was 12 until the seventh place (Network) needed the room
 BAR_KEEP = 24
-# The nightly run's own Stop, which is in the bar only while a nightly
-# test run is going — see _paint_bar_buttons for what pays for it.
-BAR_TESTS_W = 96
 
 # activity -> (dot colour, the word for it). The colours are asked of
 # `ui` when the chip is painted, not here, so a repainted palette lands
@@ -189,8 +185,8 @@ PAGE_H = H - TOP - PILE_Y - 62      # down to the footer rule
 # one-line rows of the day, and 300 px of bare ground under them with the
 # footer rule sitting on nothing. His words on 2026-09-07: "the home
 # screen looks very empty and not good". A count that exists only when it
-# is not zero cannot hold a page together. So all five places are on the
-# band, always, each with what it is holding at this moment, and each of
+# is not zero cannot hold a page together. So every other place is on
+# the band, always, each with what it is holding at this moment,
 # them still the door it was — a count with nowhere to go is a count
 # nobody can act on.
 #
@@ -228,34 +224,28 @@ SAID_W = CW - 320
 # at a panel that showed the last six on the right: "a full list that
 # anyone can see; a way to add by hand, because the transcriber writes
 # the same wrong thing every time and the app never proposes it; the
-# search; and the switch". Read aloud is reading.py: one of his own
-# sentences on a card, read into the dictation key with this window in
-# front, and kept under the words on the card. It lives here and not
-# as a seventh word in the bar because the bar has no room for one:
-# measured 2026-09-13, seven places at gap 14 run under the state chip
-# by 3 px the moment a nightly run puts Stop tests in the bar. The two
-# are one place because they are one story — the words it learned from
-# him, and the voice it is learning from him.
-CORR_TABS = (("words", "Words"), ("read", "Read aloud"))
+# search; and the switch". Read aloud was the second tab here
+# until 2026-10-01: one of his own sentences on a card, read
+# into the dictation key with this window in front. It was the
+# owner's corpus tool, never a user's, so it left the desk with
+# the rest of his surface (MASTER.md §8); reading.py is still
+# in the tree, and the chip comes back in one commit.
+CORR_TABS = (("words", "Words"),)
 WORD_ROW_H = 44          # one learned pair in the Words list
 WORD_EDIT_H = 64         # the card a pair is typed or changed on
 WORD_FIELD_W = 300       # each of its two fields
 
 
 def corr_tabs() -> tuple:
-    """The Corrections tabs this copy shows: Read aloud is the owner's
-    corpus tool (reading.py) and is not in the product (D15, PR 7)."""
-    return CORR_TABS if paths.DEVELOPER else CORR_TABS[:1]
+    """The Corrections tabs this copy shows. Read aloud was his
+    own corpus tool (reading.py) and left the desk on
+    2026-10-01; the module is still in the tree, so putting
+    its chip back is one commit.
+    """
+    return CORR_TABS
 CORR_CHIPS_Y = 62
 CORR_HEAD_Y = 110        # the "N proposals" line, under the chips
 CORR_PAGE_Y = 140
-READ_CARD_Y = 112
-READ_PAD = 24            # the sentence card's own padding
-READ_ARM_EVERY_S = 3.0   # how long before an unanswered arm is sent again
-READ_ARM_GRACE_S = 1.5   # how long a just-sent arm is taken on trust
-READ_DIR = paths.READ_DIR
-READ_TEXTS = READ_DIR / reading_mod.TEXTS   # the prose he reads, a file each
-CORPUS_DIR = paths.CORPUS_DIR
 
 # The Keys place, top to bottom. THE BOARD IS THE FULL-SIZE ONE since
 # 2026-09-07 — 22.5 cap units wide against the tenkeyless 18.25, because
@@ -347,12 +337,9 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
 #                reading's proposals above the list while any wait
 #                (his: "the vocabulary and all the corrections it does
 #                automatically"; 2026-09-21: "a full list anyone can
-#                see") — and, on a second tab, Read aloud: his own
-#                sentences read to it one at a time, kept as (voice,
-#                text) pairs (CORR_TABS, reading.py)
-#   Problems     what he reported, the routine's questions, what is on
-#                this computer and not on GitHub — everything that needs
-#                more than a line
+#                see"). Read aloud, his own corpus tool, left
+#                the desk on 2026-10-01; reading.py stays in
+#                the tree
 #   Said         transcripts.log read back, with the search
 #   Keys         every binding, lit on a drawn keyboard
 #   Settings     config.toml, on tabs
@@ -369,7 +356,7 @@ COLOURS = {"accent": ui.ACCENT, "teal": ui.TEAL, "violet": ui.VIOLET,
 #
 # Overview is gone: its state line is in the top bar now, on every place.
 NAV = (("home", "Home"), ("corrections", "Corrections"),
-       ("problems", "Problems"), ("said", "Said"),
+       ("said", "Said"),
        ("keys", "Keys"), ("settings", "Settings"))
 
 #: Every screen `_show` can draw: the six places and the one behind
@@ -377,14 +364,14 @@ NAV = (("home", "Home"), ("corrections", "Corrections"),
 SCREENS = tuple(name for _key, name in NAV) + ("Network",)
 
 # A place takes its glyph from ui.ICON[key] where there is one. Home,
-# Corrections, Problems and Said are new words for old screens, and
-# ui.py is not this wave's file, so they borrow the glyphs those
+# Corrections and Said are new words for old screens, and ui.py
+# is not this wave's file, so they borrow the glyphs those
 # screens had — HERE, rather than the one table that names the places
 # having to call them "overview" and "review". A key with no glyph and
 # no entry here is still a KeyError the first time the bar is built,
 # which is the point.
 NAV_GLYPH = {"home": "overview", "corrections": "review",
-             "problems": "error", "said": "history"}
+             "said": "history"}
 
 # The Awake screen probes the machine (powercfg, PowerShell — a few
 # seconds) the moment it opens. Off for the tests, which open every
@@ -821,75 +808,6 @@ REPORT_NONE = getattr(_pc, "NONE_WORD", "none")
 def _size_word(n) -> str:
     return _pc.size_word(n) if _pc is not None else str(n)
 
-# The question row's words, numbers and one RULE, and answer_card owns
-# every one of them. The card the app pops up and the row on this screen
-# are TWO SURFACES ON ONE QUESTION — he may answer either — so the moment
-# they disagree about how many options there can be, what the button
-# says, how tall the box is or when it is allowed to send, one of them is
-# lying about the other. Read off that module rather than typed again
-# here, which is the same trade the FIELD_* block above makes with
-# problem_card and answer_card itself makes with both.
-#
-# ITS KEYS LINE IS DELIBERATELY NOT BORROWED, and that is answer_card's
-# own reasoning about problem_card.KEYS applied one step further: half
-# that line is about a modal — digits bound to a card that holds the
-# keyboard, Esc taking that card down — and this is a row in a list with
-# five other rows and no keyboard of its own. A line naming keys that do
-# nothing here is how a shortcut stops being trusted. The clauses the two
-# surfaces DO share are spelled out below, and tests.py is the place to
-# assert they still match.
-try:
-    import answer_card as _ac
-except Exception:                         # noqa: BLE001 — feature absent
-    _ac = None
-
-Q_OPTIONS_MAX = getattr(_ac, "OPTIONS_MAX", 5)
-Q_SEND_LABEL = getattr(_ac, "SEND_LABEL", "Send")
-# Two lines where the report box takes three, because answer_card lowered
-# its own floor for a reason that holds here too: this box is usually one
-# clause he is adding to an answer he already pressed, not a paragraph he
-# is composing from nothing.
-Q_FIELD_LINES_MIN = getattr(_ac, "FIELD_LINES_MIN", 2)
-# THE PERMISSION SLIP, in the card's words. A box under a list of choices
-# reads as the alternative to them — press a row OR write, one of the
-# two — which is exactly the shape he threw out. This is the one faint
-# line that says the geometry's quiet part out loud.
-Q_FIELD_CAP = getattr(_ac, "FIELD_CAP",
-                      "In your own words — add to a choice, or answer "
-                      "instead.")
-
-
-def _nightly():
-    """nightly.py, the owner's nightly test run (DISTRIBUTION_PLAN.md
-    D15). It is not in the product build, so it is imported here — on
-    the poll that asks whether a run is going, on the Stop press — and
-    never at start: a copy without the file must open this window.
-    test_product_suite_imports_no_dev_modules holds the line."""
-    import nightly
-    return nightly
-
-
-def _answerable(choice, typed: str) -> bool:
-    """Whether the store would take this as an answer, which is the only
-    thing that may light the Send button.
-
-    THE RULE ITSELF IS IMPORTED, not just the numbers around it: a choice
-    or words or both, and only both-empty refuses. answer_card.answerable
-    is that rule and questions.Store.answer is what enforces it, so a
-    button that armed where the store refuses would teach him to press
-    something that does nothing, and one that stayed dark where the store
-    accepts would hide an answer he had already given. The fallback is
-    the same sentence in Python, for the tree where the card's module is
-    not here at all.
-    """
-    card = {"choice": choice, "typed": typed or ""}
-    if _ac is not None:
-        try:
-            return bool(_ac.answerable(card))
-        except Exception:                 # noqa: BLE001
-            pass
-    return choice is not None or bool(str(typed or "").strip())
-
 
 def _display_lines(widget) -> int:
     """How many lines a tk.Text is actually SHOWING.
@@ -930,351 +848,6 @@ def _problems_enabled() -> bool:
     return bool(getattr(pcfg, "enabled", True))
 
 
-# The question card's own numbers. The FIELD in it is the report box's
-# field — the block above owns those metrics and problem_card owns that
-# block — because it is the same field doing the same job: he types or
-# dictates a sentence into it and reads the echo back underneath. Only
-# the room around it is this card's.
-Q_INDENT = 18            # how far a question sits in under its report
-Q_PAD = 14               # the card's own margin
-Q_MARK = 26              # the room the pick dot takes at the left of a band
-Q_BAND_MIN = 34          # an option band is at least this tall
-Q_ECHO_LINES = 2         # how much of the echo stays on screen
-Q_POLL_MS = 80           # how often the field is read (the card uses 60)
-# The Text sits this far inside its painted well. At FIELD_RADIUS 9 the
-# arc passes 2.6 px from the corner, so 3 px in is inside the curve and
-# no square nub of the field pokes out of the rounding — measured for the
-# report box, and the same well is painted here.
-Q_WELL_INSET = 3
-
-# ---------------------------------------------------------------------------
-# git, for what is on this computer and not on GitHub
-# ---------------------------------------------------------------------------
-#
-# Every change to this app — the Saturday routine's and any Claude
-# session's — is committed straight onto `main` in this folder, and
-# whoever made it NEVER pushes it. The folder always stands on `main`.
-# He restarts, tries the change, and then either pushes it or throws it
-# away, and each of those is a button on the Problems tab. This is the
-# plumbing under the three buttons. His decision, 2026-09-12.
-#
-# THE OLD SHAPE, AND WHY ITS GUARD WAS WRONG. Until that day the routine
-# built on a branch, weekly/<DATE>, this block listed those branches, and
-# Push sent the branch up and then merged it into `main` — behind a guard
-# that refused the merge if `main` held any commit GitHub lacked. The
-# guard reasoned that THE ROUTINE NEVER COMMITS TO `main`, so such a
-# commit had to be another session's half-finished work, and publishing
-# the branch onto `main` would carry it up. True of the routine; false of
-# how he actually works. To TRY a change he has to run it, the app runs
-# out of this folder, and this folder stands on `main` — so the moment a
-# session moved the work onto `main` so that he could try it (his need,
-# and the only way to meet it), the guard saw a commit GitHub lacked and
-# the button refused the very work he was trying to push. A guard that
-# fires on the ordinary case is not a guard. What replaces it is simpler
-# and true: everything on `main` that GitHub lacks IS the work, all of it
-# his to push or to undo, and the one refusal left is the one that keeps
-# `git push` from ever wanting --force (see push_main).
-#
-# CREATE_NO_WINDOW on every call, for the reason versions.py measured:
-# git is a console program, this window runs under pythonw, and a spawn
-# without the flag ALLOCATES A CONSOLE — visible flicker and hundreds of
-# milliseconds, on whichever thread asked. capture.py:1683 says the same
-# where it opens explorer.
-# WHERE EVERYTHING GOES HOME TO. It was "fast" until 2026-09-08, and that
-# name was a leftover: `fast` meant "the fast one OF THE TWO", against a
-# `classic` that no longer exists. With one version the word said nothing
-# true, and the owner asked for it to go - "you can also change the name
-# to classic or whatever you want". "main" carries no claim about a
-# repair pass, which is the point.
-TRUNK = "main"
-GIT_READ_S = 20                # a local read
-GIT_NET_S = 180                # a push or a fetch, over his connection
-_CREATE_NO_WINDOW = 0x08000000
-# How many of the commits the card lists before "+N more". Eight lines
-# is a week of the routine's work with room to spare; past that the
-# list is not being read, it is being scrolled past.
-CHANGES_SHOWN = 8
-# How long Restart waits for the app to let go of its mutex before it
-# gives up. The models unload in a second or two; twenty is for a paste
-# or a recording that is still finishing, and past twenty the app is not
-# stopping and a second copy would only be refused by the mutex anyway.
-APP_QUIT_WAIT_S = 20.0
-# Beside the routine's own run.log, and not beside app.log, for a reason
-# that is not tidiness: problems\ is gitignored and the repo root is not,
-# so a log file up there would show as an untracked path in every other
-# session's `git status` — and versions._assert_switchable refuses a
-# whole-app switch on exactly that.
-PUSH_LOG = APP_DIR / "problems" / "weekly" / "push.log"
-PUSH_LOG_MAX = 200_000
-
-
-def _push_log(text: str) -> None:
-    """Every git call this window makes, on the disk.
-
-    A refusal has to be readable an hour later — a toast is gone in nine
-    seconds — and the "app" logger reaches nothing in this process: the
-    dashboard never calls main.setup_logging, so it has no handlers. So
-    the file is the record and the logger is the bonus for whoever gives
-    this process handlers later. A log that cannot be written is not a
-    failure of the push.
-    """
-    import logging
-
-    logging.getLogger("app").info("push: %s", text)
-    try:
-        PUSH_LOG.parent.mkdir(parents=True, exist_ok=True)
-        if PUSH_LOG.exists() and PUSH_LOG.stat().st_size > PUSH_LOG_MAX:
-            # The tail kept rather than a rotation: nothing reads this
-            # file but him, and a push.log.1 in a folder he opens by hand
-            # is one more thing to explain.
-            kept = PUSH_LOG.read_text("utf-8", errors="replace")
-            PUSH_LOG.write_text(kept[-PUSH_LOG_MAX // 2:], "utf-8")
-        with PUSH_LOG.open("a", encoding="utf-8") as fh:
-            fh.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {text}\n")
-    except OSError:
-        pass
-
-
-def _git(*args: str, cwd=None,
-         timeout: int = GIT_READ_S) -> tuple[int, str, str]:
-    """One git command: (exit code, stdout, stderr).
-
-    It never raises and it never shows a window, and BOTH STREAMS ARE
-    LOGGED whatever happened — the whole point of this surface is that a
-    push he cannot explain is a push he cannot trust. A missing git, a
-    timeout and an OSError all come back as a code and a sentence,
-    because every caller here is a button.
-    """
-    import subprocess
-
-    where = str(cwd or APP_DIR)
-    try:
-        proc = subprocess.run(["git", *args], cwd=where, capture_output=True,
-                              text=True, encoding="utf-8", errors="replace",
-                              timeout=timeout,
-                              creationflags=_CREATE_NO_WINDOW)
-        code, out, err = proc.returncode, proc.stdout or "", proc.stderr or ""
-    except FileNotFoundError:
-        code, out, err = 127, "", "git is not on PATH"
-    except subprocess.TimeoutExpired:
-        code, out, err = 124, "", f"git gave no answer in {timeout} s"
-    except OSError as e:
-        code, out, err = 126, "", str(e)
-    _push_log(f"git {' '.join(args)}"
-              + ("" if where == str(APP_DIR) else f"  [in {where}]")
-              + f" -> {code}"
-              + (f"\n    out: {out.strip()}" if out.strip() else "")
-              + (f"\n    err: {err.strip()}" if err.strip() else ""))
-    return code, out, err
-
-
-def _first_line(text: str) -> str:
-    for line in (text or "").splitlines():
-        if line.strip():
-            return line.strip()
-    return ""
-
-
-# The sentence Push and Undo both open with when the fetch fails. One
-# string, because the two buttons fail the same way for the same reason
-# and he should not have to learn two wordings for "no network".
-_UNREACHABLE = ("GitHub could not be reached. Nothing changed. Try again "
-                "in a moment.")
-
-
-def local_changes() -> dict:
-    """What is on this computer and not on GitHub: `origin/main..main`,
-    with origin/main AS IT WAS LAST FETCHED.
-
-    LOCAL READS ONLY, no fetch. This is asked for every time the
-    Problems tab opens and after every one of its buttons (off the Tk
-    thread, but still), and a fetch is somebody else's server on his
-    connection — that belongs under a button, and Push and Undo both
-    fetch first. The cost of reading a stale origin/main is one number
-    being a little old, and the moment either button is pressed the
-    fetch under it makes the number current.
-
-    Returns {"commits": [{"sha", "subject", "when"}, ...] newest first,
-    "files": [...] what those commits changed, "behind": how many
-    commits GitHub has that this computer does not, "told": bool}.
-    `told` is False when git could not answer — no repo, no origin/main,
-    no git on PATH — and every one of those is an empty block on the
-    tab, never an error: a computer with no git still has a Problems
-    tab.
-    """
-    silent = {"commits": [], "files": [], "behind": 0, "told": False}
-    code, out, _err = _git("log", "--format=%H%x09%ad%x09%s",
-                           "--date=format:%Y-%m-%d %H:%M",
-                           f"origin/{TRUNK}..{TRUNK}")
-    if code != 0:
-        return silent
-    commits: list[dict] = []
-    for line in out.splitlines():
-        sha, _tab, rest = line.partition("\t")
-        when, _tab, subject = rest.partition("\t")
-        if sha.strip():
-            commits.append({"sha": sha.strip()[:7],
-                            "subject": subject.strip(),
-                            "when": when.strip()})
-    # Two dots, not three: `main` is measured against what GitHub has,
-    # and what GitHub did meanwhile is the `behind` count, not a diff.
-    code, out, _err = _git("diff", "--name-only", f"origin/{TRUNK}..{TRUNK}")
-    files = [ln.strip() for ln in out.splitlines() if ln.strip()] \
-        if code == 0 else []
-    code, out, _err = _git("rev-list", "--count", f"{TRUNK}..origin/{TRUNK}")
-    behind = int(out.strip()) if code == 0 and out.strip().isdigit() else 0
-    return {"commits": commits, "files": files, "behind": behind,
-            "told": True}
-
-
-def push_main() -> dict:
-    """His Push button, in order, with the reason for each step.
-
-    1. `git fetch origin main` first, so that every check below is about
-       what is on GitHub at this moment and not as of last Saturday.
-       No network is a sentence and nothing else happens.
-    2. Is origin/main an ancestor of main? If GitHub has a commit this
-       computer lacks, a plain push would be refused as non-fast-forward
-       and the only ways past that are a merge or --force. Neither is a
-       button's to take: a merge is a session's job (a conflict resolved
-       by a button at 4 AM is worse than a push that waits), and --force
-       would throw GitHub's commit away. So it refuses, and says whom to
-       ask. Nothing changed.
-    3. `git push origin main`, no flags. GitHub's answer is quoted back
-       to him if it says no.
-
-    Never --force, never -f, never a merge, and the working tree is not
-    touched at any step — the folder stands on `main`, and pushing a
-    branch by name moves no file. Returns {"pushed": bool, "said": str};
-    `said` is the sentence the card shows him.
-    """
-    code, _out, _err = _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
-    if code != 0:
-        return {"pushed": False, "said": _UNREACHABLE}
-    if _git("merge-base", "--is-ancestor", f"origin/{TRUNK}", TRUNK)[0] != 0:
-        return {"pushed": False,
-                "said": "GitHub has changes this computer does not have "
-                        "yet. Ask Claude to bring them in first, then "
-                        "press Push again. Nothing changed."}
-    code, out, err = _git("push", "origin", TRUNK, timeout=GIT_NET_S)
-    if code != 0:
-        return {"pushed": False,
-                "said": f"GitHub did not take the changes "
-                        f"({_first_line(err or out) or 'no reason given'}). "
-                        f"Nothing changed. Press Push again."}
-    return {"pushed": True,
-            "said": "Sent. GitHub now has everything on this computer."}
-
-
-_KEEP_REFUSED = re.compile(r"Entry '([^']+)'")
-
-
-def undo_main() -> dict:
-    """His Undo button: `main` goes back to what GitHub has, and the
-    commits that were only here are gone.
-
-    1. `git fetch origin main`, for the same reason Push fetches: the
-       thing being gone back TO has to be GitHub's main now, not a
-       remembered one.
-    2. Nothing ahead is nothing to undo, said in those words rather than
-       a reset that changes nothing and a sentence claiming it did.
-    3. The folder has to be standing on `main` — it always is, by the
-       rule at the top of this section, but `reset` moves WHATEVER HEAD
-       is, and a session that left the folder on a branch would have
-       that branch thrown back to origin/main by a button that said
-       "main". One rev-parse buys that never happening.
-    4. `git reset --keep origin/main`. --keep AND NOT --hard, and the
-       difference is the whole reason this button is safe to have:
-       --hard throws away every uncommitted edit in the folder, and
-       config.toml is his, edited by hand and modified most of the time;
-       --keep carries uncommitted edits across untouched, leaves
-       untracked files (questions.json, problems.json, the logs) alone,
-       and REFUSES — changing nothing — when a file with uncommitted
-       edits is one the undone commits also changed, because there is
-       no way to take the commit out of that file and keep his edit in
-       it without a merge. That refusal comes back as a sentence naming
-       the file. It is the one outcome that wants a session, so the
-       sentence says so.
-
-    The app in memory does not notice any of this: it loaded its code at
-    start and runs the newer version until it is restarted, which is
-    why the success sentence ends with Restart. Never --hard, never a
-    clean, never a checkout of a path. Returns {"undone": bool, "said":
-    str}.
-    """
-    code, _out, _err = _git("fetch", "origin", TRUNK, timeout=GIT_NET_S)
-    if code != 0:
-        return {"undone": False, "said": _UNREACHABLE}
-    code, out, _err = _git("rev-list", "--count", f"origin/{TRUNK}..{TRUNK}")
-    if code != 0 or not out.strip().isdigit():
-        return {"undone": False,
-                "said": f"Undo refused: git could not tell what is on this "
-                        f"computer and not on GitHub. Nothing changed. Ask "
-                        f"Claude."}
-    if int(out.strip()) == 0:
-        return {"undone": False,
-                "said": "Nothing to undo — everything on this computer is "
-                        "already on GitHub."}
-    head = _git("rev-parse", "--abbrev-ref", "HEAD")[1].strip()
-    if head != TRUNK:
-        return {"undone": False,
-                "said": f"Undo refused: this folder is standing on "
-                        f"{head or 'no branch'}, not {TRUNK}. Nothing "
-                        f"changed. Ask Claude."}
-    code, out, err = _git("reset", "--keep", f"origin/{TRUNK}")
-    if code != 0:
-        names = _KEEP_REFUSED.findall(err + out)
-        return {"undone": False,
-                "said": f"Undo refused: {', '.join(names) or 'a file'} has "
-                        f"unsaved edits and one of these changes touched "
-                        f"it. Nothing changed. Ask Claude."}
-    return {"undone": True,
-            "said": "Undone. The changes are gone from this computer "
-                    "(GitHub never had them). Restart to run the older "
-                    "version again."}
-
-
-def restart_app(wait_s: float = APP_QUIT_WAIT_S,
-                step_s: float = 0.25) -> dict:
-    """The app half of Restart: stop it if it is running, wait until it
-    has really gone, start it again. Off the Tk thread — the wait is up
-    to twenty seconds of polling.
-
-    The two halves are the bar's own Stop and Start, at the level of the
-    calls they make: singleton.request_quit sets the named event main.py
-    waits on, and launch.start_app spawns pythonw main.py detached. What
-    the bar cannot do and this can is the wait BETWEEN them: is_running
-    reads the mutex, and the mutex is the last thing the app lets go of,
-    so a start issued while it still answers True would be a second copy
-    refused at its own door. An app that was not running is simply
-    started — there is nothing to wait for.
-
-    Returns {"ok": bool, "said": str}; `said` is empty on success,
-    because a restart that worked is about to replace the window that
-    would show it.
-    """
-    if singleton.is_running():
-        if not singleton.request_quit():
-            return {"ok": False,
-                    "said": "The app is running but did not answer the "
-                            "request to stop, so nothing was restarted. "
-                            "Try Stop in the bar."}
-        deadline = time.monotonic() + wait_s
-        while singleton.is_running():
-            if time.monotonic() >= deadline:
-                return {"ok": False,
-                        "said": f"The app did not stop in "
-                                f"{int(wait_s)} seconds, so nothing was "
-                                f"restarted. Try Stop in the bar, wait for "
-                                f"the state to say stopped, then Start."}
-            time.sleep(step_s)
-    if not launch.start_app():
-        return {"ok": False,
-                "said": "The app could not be started again — see app.log. "
-                        "This window was left as it is."}
-    return {"ok": True, "said": ""}
-
-
 def _relaunch_dashboard() -> bool:
     """Open a fresh copy of this window, the way the taskbar pin does:
     wscript + Dashboard.vbs, the launcher the shortcut and the pin both
@@ -1294,7 +867,9 @@ def _relaunch_dashboard() -> bool:
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except OSError as e:
-        _push_log(f"relaunch: the window could not be opened again ({e})")
+        import logging
+        logging.getLogger("app").info(
+            "relaunch: the window could not be opened again (%s)", e)
         return False
 
 
@@ -1475,22 +1050,12 @@ class Dashboard:
         self._log_stamp: tuple[int, float] = (0, 0.0)
         self._filter: str | None = None
         self._query = ""
-        # The Corrections place: which tab is up, and the reading in
-        # hand — see _read_column. The deck is built when the tab opens
-        # and popped as he goes; the counts are this session's.
+        # The Corrections place: which tab is up, the search
+        # box, and the pair being typed.
         self._corr_tab = "words"
         self._words_query = ""          # the Words list's search box
         self._words_search_after = None
         self._words_editing = None      # None, "" (a new pair) or a heard form
-        self._read_deck: list = []
-        self._read_current = None
-        self._read_drawn = None
-        self._read_armed_at = 0.0
-        self._read_busy = False
-        self._read_writing = False        # a paragraph is with the model
-        self._read_write_failed = False   # no backend answered this session
-        self._read_counts = {"kept": 0, "skipped": 0, "again": 0}
-        self._read_last = None            # (sentence, wav name) just kept
         self._toast = None
         self._toast_after = None
         self._pump_after = None
@@ -1553,36 +1118,8 @@ class Dashboard:
         self._preview_open = ""
         self._preview_top = None          # the Toplevel while one is up
         self._previewed: set[str] = set()
-        # ANSWERING A QUESTION, held on the window and not in the widgets.
-        # The Problems list is rebuilt from scratch whenever either store
-        # moves — and it moves BECAUSE he answered, or because the routine
-        # wrote a question while he was reading one — so the half of an
-        # answer he has already given has to survive its own row being
-        # destroyed. What he typed and what he picked live here, keyed by
-        # question id, and the row is drawn from them.
-        self._q_typed: dict = {}
-        self._q_choice: dict = {}
-        self._q_fields: dict = {}   # id -> the live widgets, per redraw
-        self._q_focus = None        # whose field had the caret last
-        self._q_after = None        # the echo poll
-        self._questions_stamp = None
-        # Which report has been asked "delete this?" and has not answered
-        # yet — at most one at a time, and it lives out here for the same
-        # reason the half-typed answers do: _fill_problems destroys and
-        # rebuilds every row a second, and a question that dies with its
-        # row is a ✕ that deletes on one press after all.
-        self._problem_asking = ""
-        self._asking_row = None     # ...and the row it is drawn on now
-        # What is on this computer and not on GitHub, as git last
-        # answered. None is "nobody has asked yet", which is not the same
-        # as "there is nothing".
-        self._changes = None
-        self._changes_scanning = False
-        self._push_said: dict = {}  # what the last press did, by TRUNK
-        self._pushing = None        # "push", "undo" or "restart" while
-        #                             one of them is in flight
-        # Restart asked for this window to come back as a new process.
-        # Read by run() after the window is gone — see _restart_all.
+        # Nothing sets this any more: Restart left with the git
+        # card (MASTER.md §8). run() and _close still read it.
         self._relaunch = False
         # Which of the Home place's two views is up: the calm home, or
         # the whole backlog behind it.
@@ -1592,13 +1129,6 @@ class Dashboard:
         # the key you want" at the same moment the dialog does.
         self._capturing = None
         self._cap_selected = None
-        # Is a nightly test run going right now? Re-asked once a poll and
-        # answered by a file on disk, because the run is a process this
-        # window did not start and cannot see any other way — see
-        # nightly.py's contract. False until the first poll says so, so
-        # the bar never opens holding a button for a run that ended
-        # while the window was closed.
-        self._tests_running = False
 
         self._build()
         # After _build: LoadImage/WM_SETICON need a realised window, and on
@@ -1644,13 +1174,14 @@ class Dashboard:
 
     def _preview_if_waiting(self) -> None:
         """A report the hotkey card marked for its Preview (plan 7.6,
-        screen 7: "from the hotkey card it opens the dashboard on
-        Problems with the preview"): the app is another process, so the
-        row is the message — this window looks for one when it comes up
-        and whenever the show signal brings it forward, and opens
-        Problems with the Preview on the newest such row. Once per row:
-        a preview he closed without answering stays a row with [Preview
-        & send] on it, not a window that keeps coming back."""
+        screen 7: "from the hotkey card it opens the dashboard
+        with the preview"): the app is another process, so the row
+        is the message — this window looks for one when it comes
+        up and whenever the show signal brings it forward, and
+        opens the Preview on the newest such row over whatever
+        place is up. Once per row: a preview he closed without
+        answering stays a report with its toggles as he left them,
+        not a window that keeps coming back."""
         module, store = self._problems(), self._problems_store()
         if module is None or store is None or not hasattr(module, "awaiting_preview"):
             return
@@ -1666,8 +1197,6 @@ class Dashboard:
         if not ident or ident in self._previewed:
             return
         self._previewed.add(ident)
-        if self.screen != "Problems":
-            self._show("Problems")
         self.root.after(150, lambda: self._report_preview(ident))
 
     # ------------------------------------------------------------- chrome
@@ -1695,12 +1224,12 @@ class Dashboard:
         # from the app's own word the moment it answers.
         if self._locked_now(None):
             self._landing(True)
-        # A report the hotkey card left waiting for its Preview opens
-        # Problems over Home, once the first frame is up.
+        # A report the hotkey card left waiting for its Preview
+        # opens over Home, once the first frame is up.
         self.root.after(600, self._preview_if_waiting)
 
     def _topbar(self) -> None:
-        """The mark, the six places, the state, and whichever buttons the
+        """The mark, the five places, the state, and whichever buttons the
         state allows — one 56 px strip.
 
         THE RAIL IS GONE, and the reason is arithmetic as much as taste.
@@ -1743,15 +1272,15 @@ class Dashboard:
                                 selected="Home", command=self._nav_go, gap=10)
         # The bar is measured rather than guessed: the places start
         # after the mark and have to end before the state chip in EVERY
-        # state — the fullest is the owner's, with Stop tests in the bar
-        # during a nightly run and "Transcribing" on the chip, where the
-        # chip's left edge is 548 (BAR_GAP 8). 24 + 26 mark + 6 air = 56;
-        # the seven words of 2026-09-17 ended at 544 at gap 10, and the
-        # six since Network left the bar end sooner. Since every word
-        # keeps its BOLD width (widgets.Tabs, 2026-09-22) the six end at
-        # 488 whichever is lit, against a chip edge of 544 with Stop
-        # tests up and "Transcribing" on it (measured on the hidden
-        # desktop). Three tests hold it (tests.py twice, tests_ops.py).
+        # state. 24 + 26 mark + 6 air = 56; the seven words of 2026-09-17
+        # ended at 544 at gap 10, and the six since Network left the bar
+        # end sooner. Since every word keeps its BOLD width (widgets.Tabs,
+        # 2026-09-22) the six end at 488 whichever is lit, against a chip
+        # edge of 544 measured on the hidden desktop in the widest state
+        # the bar then had — "Transcribing" with Stop tests up. That
+        # button left on 2026-10-01 (MASTER.md §8), so the chip can only
+        # start FURTHER right from now on and 56 px is a floor. Three
+        # tests hold it (tests.py twice, tests_ops.py).
         self.nav.place(x=PAD + 32, y=17)
 
         # The state chip and the buttons are placed from the RIGHT edge, so
@@ -1767,15 +1296,6 @@ class Dashboard:
         self.parts["run"] = ui.Button(bar, "Pause", self._toggle_pause,
                                       w=BAR_RUN_W, h=32, bg=ui.BG,
                                       quiet=True)
-        # STOP TESTS is in the bar for exactly as long as there is a
-        # nightly test run to stop, and not one poll longer — the rule
-        # the Push button and Stop already follow. It answers a question
-        # neither of its neighbours does: at three in the morning the
-        # suite takes the real mouse for about fifteen seconds, and if
-        # he is awake and using the machine he wants it to let go now.
-        self.parts["tests_stop"] = ui.Button(
-            bar, "Stop tests", self._stop_tests, w=BAR_TESTS_W, h=32,
-            bg=ui.BG, quiet=True)
         # SCREENS OFF is in the bar, on every place. It was a small gold
         # link in the home's footer and the owner could not find it
         # (2026-09-07: "it would have been good to understand where it
@@ -1884,9 +1404,6 @@ class Dashboard:
             # events): the newest wish, once that one is on the screen.
             self._show_next = (name, then)
             return
-        if (self.screen == "Corrections" and name != "Corrections"
-                and self._corr_tab == "read"):
-            self._read_leave()
         self.screen = name
         self._stop_rows()
         held, _step = self._hold_for()
@@ -1904,7 +1421,6 @@ class Dashboard:
                 self._hide_toast()
                 {"Home": self._screen_home,
                  "Corrections": self._screen_corrections,
-                 "Problems": self._screen_problems,
                  "Said": self._screen_said,
                  "Keys": self._screen_keys,
                  "Settings": self._screen_settings,
@@ -2269,9 +1785,8 @@ class Dashboard:
                                      w=96, h=26)
 
         # Reporting a problem is noticed while looking at the thing that
-        # is wrong, so the button is here as well as on the Problems
-        # place, and it says its key — all five reports in ten days were
-        # filed from the key.
+        # is wrong, so the button is here, and it says its key —
+        # all five reports in ten days were filed from the key.
         if self._problems_on:
             p["report_button"] = ui.Button(
                 self.sheet, "Report a problem", self._report, h=30,
@@ -2499,35 +2014,18 @@ class Dashboard:
           Pause, where it used to be 8.
         - Stop is not there at all while there is nothing to stop.
 
-        STOP TESTS ANSWERS THE SAME QUESTION ABOUT A DIFFERENT THING —
-        is there a nightly test run to stop — and it is the one button
-        here that does not care whether the app is up: the nightly run
-        is started by a scheduled task and not by DeskIT, on purpose, so
-        that the night DeskIT crashed is still a night the tests run.
-
-        THE UPTIME STEPS ASIDE FOR IT, and that is arithmetic rather
-        than taste. Measured 2026-09-08 on this machine, in the widest
-        state the bar has ("Transcribing", which is the longest word the
-        chip ever holds): the six places end at 523 px and the chip's
-        left edge is 559, so there are 36 px of slack — and a fourth
-        button costs 108 (96 for the pill, 12 for the gap). The uptime
-        is worth 81 of those, which is enough: with it forgotten the
-        chip starts at 532 and the places still clear it by 9 px, and by
-        34 to 330 px in every other state. It is also the right thing to
-        spend, not merely the only thing: how long the app has been up
-        is a fact, and "Stop tests" is a control with something to do,
-        which is the rule that decides whether a button is in this bar
-        at all. It comes back the moment the run ends — FORGOTTEN and
-        not blanked, because an empty label still costs its padding
-        (widgets.StateChip.show_meta says how much).
+        STOP TESTS USED TO BE HERE — in the bar for exactly as long
+        as a nightly run had something to stop, with the uptime
+        stepping aside for its 108 px. It left with the rest of the
+        owner's surface on 2026-10-01 (MASTER.md §8), so the chip
+        keeps its meta in every state and three buttons is the most.
         """
         chip = self.parts.get("chip")
         run = self.parts.get("run")
         stop = self.parts.get("stop_bar")
         screens = self.parts.get("bar_screens")
-        tests = self.parts.get("tests_stop")
         if not all(w is not None and w.winfo_exists()
-                   for w in (chip, run, stop, screens, tests)):
+                   for w in (chip, run, stop, screens)):
             return
         # ONE BUTTON, THREE WORDS. Start, Resume and Pause are never
         # available at the same moment, so three buttons would be two
@@ -2559,13 +2057,7 @@ class Dashboard:
         else:
             screens.place_forget()
             stop.place_forget()
-        if self._tests_running:
-            tests.place(x=x, y=12, anchor="ne")
-            x -= BAR_TESTS_W + BAR_GAP
-        else:
-            tests.place_forget()
-            tests.configure_text("Stop tests")
-        chip.show_meta(not self._tests_running)
+        chip.show_meta(True)
         chip.place(x=x, y=TOP // 2, anchor="e")
 
     def _screen_corrections(self) -> None:
@@ -2597,10 +2089,6 @@ class Dashboard:
                            active=(key == self._corr_tab), bg=ui.BG)
             chip.pack(side="left", padx=(0, 6))
             p["corr_chips"][key] = chip
-        if self._corr_tab == "read":
-            self._read_column()
-            self._voice_panel()
-            return
         self._words_editing = None
 
         # the tools, right of the chips: search · Use them · Teach a word
@@ -2667,8 +2155,6 @@ class Dashboard:
     def _corr_tab_to(self, key: str) -> None:
         if key == self._corr_tab:
             return
-        if self._corr_tab == "read":
-            self._read_leave()
         self._corr_tab = key
         self._show("Corrections")
 
@@ -2677,9 +2163,6 @@ class Dashboard:
         file moved — a verdict given at a card, a word learned from a
         correction, or another PC's word arriving through the account
         are the usual reasons one did."""
-        if self._corr_tab == "read":
-            self._poll_read()
-            return
         if "corr_list" not in self.parts:
             return
         if self._words_editing is not None:
@@ -3092,565 +2575,15 @@ class Dashboard:
         self._words_query = text
         self._fill_corrections()
 
-    # ---------------------------------------------------------- read aloud
-
-    def _read_column(self) -> None:
-        """The Read aloud tab's left column: the sentence card, and under
-        it what he has kept today. The card is drawn by _poll_read off the
-        app's answer, not here — see reading.py for who owns what.
-
-        THE DECK IS BUILT WHEN THE TAB OPENS and popped as he reads: a
-        kept or skipped sentence is written to corpus\\read by the app,
-        and a deck built later leaves it out on its own, so switching
-        tabs and back never shows him a sentence twice.
-        """
-        p = self.parts
-        self._read_drawn = None
-        self._read_armed_at = 0.0
-        self._read_busy = False
-        self._read_writing = False
-        self._read_current = None
-        self._read_last = None
-        try:
-            READ_TEXTS.mkdir(parents=True, exist_ok=True)  # for the button
-        except OSError:
-            pass
-        tk.Label(self.sheet,
-                 text="Any Hebrew text dropped into corpus\\read\\texts is "
-                      "read here, in order; a model writes more when it "
-                      "runs dry.\nNothing is checked but that something came "
-                      "back — you read the card, and the card is the label.\n"
-                      "Kept readings go to corpus\\read — the audio never "
-                      "leaves this machine.",
-                 bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
-                 justify="left").place(x=PAD, y=610)
-        wide = widgets.button_width("Open the texts", icon=True)
-        ui.Button(self.sheet, "Open the texts",
-                  lambda: launch.open_path(READ_TEXTS), w=wide, h=30,
-                  quiet=True, bg=ui.BG, icon=ui.ICON["folder"]).place(
-            x=PAD + SAID_W, y=616, anchor="ne")
-        p["read_on"] = True
-        # THE LEFT ARROW KEEPS. His flow (2026-09-13, late): let go of the
-        # key and the recording stands; ← keeps it and brings the next
-        # sentence; holding the key again reads the same sentence over.
-        # Left is the latch key, swallowed by the hook only while a
-        # recording is running — after the release it reaches this
-        # window like any key. Bound on the root, like the Keys place's
-        # press, and taken off again when he leaves the tab.
-        self.root.bind("<Left>", self._read_left)
-        self._read_deck = self._read_build_deck()
-        self._read_advance()
-
-    @staticmethod
-    def _read_build_deck() -> list:
-        try:
-            return reading_mod.deck(READ_TEXTS, paths.VOCAB_FILE,
-                                    READ_DIR)
-        except Exception:                 # noqa: BLE001 — a bad file
-            return []
-
-    def _read_leave(self) -> None:
-        """Off the tab: the app is told there is nothing armed. Best
-        effort and fire-and-forget — a sentence left armed is harmless
-        anyway, since `takes` wants this window in front of it."""
-        self._read_current = None
-        self._read_drawn = None
-        try:
-            self.root.unbind("<Left>")
-        except tk.TclError:
-            pass
-        self._ask("read", do="disarm")
-
-    def _read_phase(self) -> tuple[str, dict | None]:
-        """What the card should show, from the app's last answer.
-
-        off — no app to listen; writing — the next paragraph is with
-        the model; done — nothing left to read; arming — the app has not
-        got this sentence yet; waiting — it has, and the key is up;
-        listening / checking — the key is down / the decode is running;
-        heard — the transcript is back, and the reading is kept on the
-        next poll; nothing — it is back and empty: a dead microphone, a
-        key let go too soon, and the one case he is asked to read again.
-        """
-        cur = self._read_current
-        if not self.running:
-            return "off", None
-        if self._read_writing:
-            return "writing", None
-        if cur is None:
-            return "done", None
-        read = self.status.get("read") or {}
-        heard = read.get("heard")
-        if heard and heard.get("id") == cur.key:
-            m = heard.get("match") or {}
-            return ("heard" if m.get("same") or not m.get("words")
-                    else "nothing"), heard
-        armed = read.get("armed") or {}
-        if armed.get("id") != cur.key:
-            return "arming", None
-        activity = self.status.get("activity")
-        if activity in ("recording", "locked"):
-            return "listening", None
-        if activity == "busy":
-            return "checking", None
-        return "waiting", None
-
-    def _read_left(self, _event=None) -> str | None:
-        """← : the recording that stands is kept and the next sentence
-        comes up. Nothing standing, nothing happens."""
-        if not self.parts.get("read_on") or self.closing:
-            return None
-        if self._read_phase()[0] == "heard":
-            self._read_keep()
-            return "break"
-        return None
-
-    def _poll_read(self) -> None:
-        """Once a poll: arm the sentence the app has not got, and redraw
-        the card only when what it would say has changed. A reading that
-        is back STANDS until he keeps it (←) or reads the sentence over
-        — the card is the label either way, and which take is the good
-        one is his to say (reading.py)."""
-        if not self.parts.get("read_on") or self.closing:
-            return
-        phase, heard = self._read_phase()
-        cur = self._read_current
-        since_arm = time.monotonic() - self._read_armed_at
-        if phase == "arming" and cur is not None \
-                and since_arm > READ_ARM_EVERY_S:
-            self._read_arm()
-        if phase == "arming" and since_arm < READ_ARM_GRACE_S:
-            # The arm is in flight, or answered and a poll that left
-            # before it is landing now. The pipe answers in milliseconds;
-            # drawing "one moment" for a poll's worth of that is a
-            # flicker between every two sentences.
-            phase = "waiting"
-        key = (phase, cur.key if cur else None,
-               heard.get("when") if heard else None)
-        if key != self._read_drawn:
-            self._read_drawn = key
-            self._draw_read_card(phase, heard)
-
-    def _read_hwnd(self) -> int:
-        """This window's top-level HWND — the one Windows puts in the
-        foreground, which is what the app compares against."""
-        try:
-            return int(ctypes.windll.user32.GetAncestor(
-                self.root.winfo_id(), reading_mod.GA_ROOT))
-        except Exception:                 # noqa: BLE001
-            return 0
-
-    def _read_arm(self) -> None:
-        cur = self._read_current
-        if cur is None:
-            return
-        self._read_armed_at = time.monotonic()
-        self._ask("read", then=self._read_answered, do="arm", id=cur.key,
-                  text=cur.text, hwnd=self._read_hwnd())
-
-    def _read_answered(self, reply: dict | None) -> None:
-        """Every read command answers with the app's new state; take it
-        now rather than a poll later, so the card moves at once."""
-        if reply and isinstance(reply.get("read"), dict):
-            self.status["read"] = reply["read"]
-        self._poll_read()
-
-    def _read_keep(self) -> None:
-        cur = self._read_current
-        if cur is None or self._read_busy:
-            return
-        self._read_busy = True
-        self._ask("read", then=lambda r: self._read_kept(r, cur), do="keep",
-                  id=cur.key)
-
-    def _read_kept(self, reply: dict | None, sentence) -> None:
-        self._read_busy = False
-        if not reply or not reply.get("ok"):
-            self._announce(reply, "that did not keep")
-            self._read_answered(reply)
-            return
-        self._read_counts["kept"] += 1
-        self._read_last = (sentence, str(reply.get("kept") or ""))
-        self._read_advance(reply)
-        self._voice_panel()
-
-    def _read_redo(self) -> None:
-        """The reading he just made, taken back — he knows he fumbled it
-        — and its sentence up again, the one that replaced it waiting
-        behind it."""
-        last = self._read_last
-        if last is None or self._read_busy:
-            return
-        self._read_busy = True
-        self._read_last = None
-        self._ask("read", then=lambda r: self._read_redone(r, last),
-                  do="forget", name=last[1])
-
-    def _read_redone(self, reply: dict | None, last) -> None:
-        self._read_busy = False
-        if not reply or not reply.get("ok"):
-            self._announce(reply, "that could not be taken back")
-            return
-        sentence, _name = last
-        self._read_counts["kept"] = max(0, self._read_counts["kept"] - 1)
-        self._read_counts["again"] += 1
-        if self._read_current is not None:
-            self._read_deck.insert(0, self._read_current)
-        self._read_current = sentence
-        self._read_armed_at = 0.0
-        self._read_drawn = None
-        self._read_answered(reply)
-        self._voice_panel()
-
-    def _read_skip(self) -> None:
-        cur = self._read_current
-        if cur is None or self._read_busy:
-            return
-        self._read_busy = True
-        self._read_counts["skipped"] += 1
-        self._ask("read", then=lambda r: self._read_advance(r), do="drop",
-                  id=cur.key, skip=True)
-
-    def _read_advance(self, reply: dict | None = None) -> None:
-        """The next sentence of the deck; with the deck empty, a
-        paragraph is asked of the model first and the deck rebuilt from
-        the file it lands in. Arming is the next poll's job, and it is
-        asked for now rather than in READ_ARM_EVERY_S."""
-        self._read_busy = False
-        deck = self._read_deck
-        if not deck and not self._read_write_failed \
-                and not self._read_writing:
-            self._read_current = None
-            # THE TOKEN names this paragraph: one landing after the tab
-            # was left and opened again (which asks for one of its own)
-            # is kept as a file and not allowed to swap the sentence he
-            # is reading by then.
-            self._read_writing = token = object()
-            threading.Thread(target=self._read_write, args=(token,),
-                             daemon=True, name="read-write").start()
-            self._read_answered(reply)
-            return
-        self._read_current = deck.pop(0) if deck else None
-        self._read_armed_at = 0.0
-        self._read_answered(reply)
-
-    def _read_write(self, token) -> None:
-        """Off the Tk thread: one model call for one paragraph, saved as
-        a file of the folder like anything he dropped there. The result
-        lands through _events like a pipe reply does."""
-        path = None
-        try:
-            cfg = config_mod.load_layered()
-            found = reading_mod.Writer(cfg).write(
-                seed=reading_mod.written_count(READ_TEXTS),
-                names=reading_mod.names_of(paths.VOCAB_FILE))
-            if found:
-                path = reading_mod.save_written(READ_TEXTS, found)
-        except Exception:                 # noqa: BLE001
-            path = None
-        self._events.put(lambda: self._read_written(path, token))
-
-    def _read_written(self, path, token) -> None:
-        if path is None:
-            self._read_write_failed = True
-            self._note("no model could write the next paragraph — drop a "
-                       "text into corpus\\read\\texts to keep reading")
-        if self._read_writing is not token:
-            return                        # a paragraph the tab moved past
-        self._read_writing = False
-        if not self.parts.get("read_on") or self.closing:
-            return
-        self._read_deck = self._read_build_deck()
-        self._read_advance()
-
-    def _draw_read_card(self, phase: str, heard: dict | None) -> None:
-        """The sentence card for one phase, and the kept-today list under
-        it. Rebuilt whole: the card is as tall as what is in it, and the
-        list starts where the card ends."""
-        p = self.parts
-        for key in ("read_card", "read_kept_head", "read_kept"):
-            old = p.pop(key, None)
-            if old is not None:
-                try:
-                    old.destroy()
-                except tk.TclError:
-                    pass
-        cur = self._read_current
-        inner = SAID_W - 2 * READ_PAD
-        keys = self.status.get("keys") or self._read_keys()
-        hold = pretty_key(keys.get("hotkey", ""))
-
-        if phase in ("off", "done", "writing"):
-            card = ui.Card(self.sheet, SAID_W, 200, radius=14, bg=ui.BG,
-                           pad=READ_PAD)
-            card.place(x=PAD, y=READ_CARD_Y)
-            p["read_card"] = card
-            if phase == "off":
-                head = "Start the app first — it does the listening."
-                sub = ("The models that hear you live in the app, not in "
-                       "this window.")
-            elif phase == "writing":
-                head = "Writing the next paragraph…"
-                sub = ("A model writes a few sentences round your own "
-                       "names — text only, the audio goes nowhere.")
-            else:
-                head = "Nothing left to read."
-                sub = ("Drop any Hebrew text (.txt or .md) into "
-                       "corpus\\read\\texts and it is here, sentence by "
-                       "sentence.")
-            tk.Label(card.body, text=head, bg=ui.CARD, fg=ui.FG,
-                     font=(ui.UI, 12)).place(x=inner // 2, y=70,
-                                             anchor="center")
-            tk.Label(card.body, text=sub, bg=ui.CARD, fg=ui.FAINT,
-                     font=(ui.UI, 9)).place(x=inner // 2, y=98,
-                                            anchor="center")
-            self._draw_read_kept(READ_CARD_Y + 200 + 20)
-            return
-
-        # MEASURED FIRST: the card is exactly as tall as what is in it.
-        photo, text_h, _l = ui.draw_text(cur.text, pt=20, width=inner,
-                                         max_lines=3, colour=ui.FG,
-                                         bg=ui.CARD)
-        y_sentence = 32
-        rule_y = y_sentence + text_h + 22
-        ly = rule_y + 20
-        block_h = 48 if phase in ("waiting", "nothing", "heard") else 30
-        by = ly + block_h + 18
-        card_h = by + 36 + 2 * READ_PAD + 4
-
-        card = ui.Card(self.sheet, SAID_W, card_h, radius=14, bg=ui.BG,
-                       pad=READ_PAD)
-        card.place(x=PAD, y=READ_CARD_Y)
-        p["read_card"] = card
-        body = card.body
-
-        left = len(self._read_deck)
-        source = ("WRITTEN FOR YOU"
-                  if cur.said.startswith(reading_mod.WRITTEN)
-                  else f"FROM {cur.said.upper()}")
-        eyebrow = "  ·  ".join(
-            (source, f"SENTENCE {cur.index} OF {cur.count}",
-             f"{left} MORE TO READ" if left else "THE LAST ONE"))
-        tk.Label(body, text=eyebrow, bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, ui.PT_CAPS)).place(x=0, y=0)
-        # The taught words it carries, as lit chips — the reason it is
-        # near the top of the deck.
-        if cur.terms:
-            pills = tk.Canvas(body, width=inner // 2, height=ui.PILL_H,
-                              bg=ui.CARD, highlightthickness=0, bd=0)
-            pills.place(x=inner, y=-8, anchor="ne")
-            x = inner // 2
-            for term in cur.terms[:3]:
-                x -= ui.pill(pills, x, 0, term, ui.CARD,
-                             colour=ui.ACCENT_TEXT, fill=ui.ACCENT_SOFT,
-                             border=ui.CHIP_ON_EDGE) + 6
-                if x < 0:
-                    break
-
-        holder = tk.Label(body, image=photo, bg=ui.CARD, bd=0)
-        holder.image = photo
-        holder.place(x=inner, y=y_sentence, anchor="ne")
-        widgets.rule(body, inner, bg=ui.CARD, colour=ui.LINE, y=rule_y)
-
-        colour = {"listening": ui.RECORDING, "checking": ui.AMBER,
-                  "heard": ui.GREEN, "nothing": ui.AMBER}.get(phase, ui.FAINT)
-        lamp = ui.lamp(15, colour, ui.CARD,
-                       0.0 if phase in ("waiting", "arming") else 0.45)
-        lamp_label = tk.Label(body, bg=ui.CARD, image=lamp)
-        lamp_label.image = lamp
-        lamp_label.place(x=0, y=ly + 2)
-        sub = ""
-        if phase == "listening":
-            line = "Listening…  let go when you finish."
-        elif phase == "checking":
-            line = "One moment…"
-        elif phase == "heard":
-            line = (f"Recorded, {float(heard.get('seconds') or 0):.1f} s.  "
-                    "Press ← to keep it and move on.")
-            sub = (f"Or hold {hold} and read it again — the new take "
-                   "replaces this one.")
-        elif phase == "nothing":
-            line = "Nothing came back."
-            sub = (f"Is the microphone on? Hold {hold} and read it again — "
-                   "the key has to stay down until you finish.")
-        elif phase == "arming":
-            line = "One moment — handing the sentence to the app."
-        else:
-            line = (f"Hold {hold} and read it aloud.  Let go when you finish."
-                    if hold != "off" else "No dictation key is set — see Keys.")
-            sub = ("Let go, and the recording stands: ← keeps it and "
-                   "brings the next one; the key again reads it over.")
-        tk.Label(body, text=line, bg=ui.CARD, fg=ui.FG,
-                 font=(ui.UI, 11)).place(x=28, y=ly)
-        if sub:
-            tk.Label(body, text=sub, bg=ui.CARD, fg=ui.FAINT,
-                     font=(ui.UI, 9), wraplength=inner - 28,
-                     justify="left").place(x=28, y=ly + 24)
-
-        if phase == "heard":
-            widgets.gold_button(body, "Keep  ←", self._read_keep, w=110,
-                                h=36, bg=ui.CARD).place(x=inner, y=by,
-                                                        anchor="ne")
-            ui.Button(body, "Skip", self._read_skip, w=84, h=36, quiet=True,
-                      bg=ui.CARD).place(x=inner - 122, y=by, anchor="ne")
-        else:
-            ui.Button(body, "Skip this one", self._read_skip, w=136, h=36,
-                      quiet=True, bg=ui.CARD).place(x=inner, y=by,
-                                                     anchor="ne")
-        if self._read_last is not None:
-            # The one he just read, if he knows he fumbled it: taken
-            # back, and up again. Only until the next one is kept — the
-            # one before that is in the folder to stay.
-            wide = widgets.button_width("Redo the last one")
-            ui.Button(body, "Redo the last one", self._read_redo, w=wide,
-                      h=36, quiet=True, bg=ui.CARD).place(x=0, y=by)
-        else:
-            tk.Label(body, text="Skip a sentence you would never say.",
-                     bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 9),
-                     justify="left", anchor="w").place(x=0, y=by + 8)
-        self._draw_read_kept(READ_CARD_Y + card_h + 20)
-
-    def _draw_read_kept(self, y: int) -> None:
-        """What he has kept today, newest first, as many as fit above the
-        footer."""
-        p = self.parts
-        try:
-            kept = reading_mod.tally(READ_DIR, CORPUS_DIR)["today"]
-        except Exception:                 # noqa: BLE001
-            kept = []
-        room = 600 - y - 22
-        if room < 28:
-            return
-        p["read_kept_head"] = tk.Label(self.sheet, text="K E P T   T O D A Y",
-                                       bg=ui.BG, fg=ui.FAINT,
-                                       font=(ui.MEDIUM, 8))
-        p["read_kept_head"].place(x=PAD, y=y)
-        rows = tk.Canvas(self.sheet, width=SAID_W, height=room, bg=ui.BG,
-                         highlightthickness=0, bd=0)
-        rows.place(x=PAD, y=y + 22)
-        p["read_kept"] = rows
-        if not kept:
-            rows.create_text(0, 9, anchor="w", font=(ui.UI, 9), fill=ui.FAINT,
-                             text="Nothing yet today.")
-            return
-        ry = 0
-        for when, text in kept:
-            if ry + 28 > room:
-                break
-            rows.create_text(0, ry + 9, text=when, anchor="w",
-                             font=(ui.UI, 9), fill=ui.FAINT)
-            rows.create_text(48, ry + 9, text=ui.ICON["check"], anchor="w",
-                             font=(ui.ICONS, 9), fill=ui.GREEN)
-            img, _h, _l = ui.draw_text(text, pt=10, width=SAID_W - 76,
-                                       max_lines=1, colour=ui.DIM, bg=ui.BG)
-            rows.create_image(SAID_W, ry + 9, anchor="e", image=img)
-            ry += 28
-
-    def _voice_panel(self) -> None:
-        """The Read aloud tab's right panel, where the vocabulary sits on
-        the other tab: how much of his voice is on file against what a
-        fine-tune wants, today's reading against the day's bar, and the
-        key to hold."""
-        p = self.parts
-        old = p.pop("voice_card", None)
-        if old is not None:
-            try:
-                old.destroy()
-            except tk.TclError:
-                pass
-        try:
-            scfg = config_mod.load_layered().study
-            goal_s = max(1.0, float(scfg.read_goal_hours)) * 3600
-            day_n = max(1, int(scfg.read_sentences))
-        except Exception:                 # noqa: BLE001 — unreadable config
-            goal_s, day_n = 3 * 3600, 20
-        try:
-            t = reading_mod.tally(READ_DIR, CORPUS_DIR)
-        except Exception:                 # noqa: BLE001
-            t = {"total_s": 0.0, "today_s": 0.0}
-        width = CW - SAID_W - 20
-        card = ui.Card(self.sheet, width, 508, fill=ui.CARD, bg=ui.BG, pad=16)
-        card.place(x=PAD + SAID_W + 20, y=64)
-        p["voice_card"] = card
-        body, inner = card.body, width - 32
-
-        def bar(y: int, done: float, whole: float) -> None:
-            track = tk.Canvas(body, width=inner, height=4, bg=ui.CARD,
-                              highlightthickness=0, bd=0)
-            track.place(x=0, y=y)
-            track.create_image(0, 0, anchor="nw",
-                               image=ui.rounded(inner, 4, 2, ui.LINE,
-                                                ui.CARD, None))
-            lit = int(inner * min(1.0, done / whole)) if whole else 0
-            if lit >= 4:
-                track.create_image(0, 0, anchor="nw",
-                                   image=ui.rounded(lit, 4, 2, ui.ACCENT,
-                                                    ui.CARD, None))
-
-        tk.Label(body, text="Y O U R   V O I C E", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.MEDIUM, 8)).place(x=0, y=0)
-        tk.Label(body, text=_minutes(t["total_s"]), bg=ui.CARD, fg=ui.FG,
-                 font=(ui.DISPLAY, 24, "bold")).place(x=0, y=20)
-        tk.Label(body, text="on file, in your own words — a fine-tune wants "
-                            f"{_hours(goal_s)}",
-                 bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9), wraplength=inner,
-                 justify="left").place(x=0, y=60)
-        bar(104, t["total_s"], goal_s)
-
-        widgets.rule(body, inner, bg=ui.CARD, colour=ui.LINE, x=0, y=136)
-        # HOW MANY OF HOW MANY, and how many to go — his words
-        # (2026-09-14), and in sentences, which is what he counts in: a
-        # reading is seconds of audio and a quarter-minute of his time.
-        done = len(t.get("today") or [])
-        left = max(0, day_n - done)
-        tk.Label(body, text="T O D A Y", bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.MEDIUM, 8)).place(x=0, y=150)
-        tk.Label(body, text=f"{done} of {day_n}", bg=ui.CARD, fg=ui.FG,
-                 font=(ui.DISPLAY, 24, "bold")).place(x=0, y=170)
-        tk.Label(body, text=(f"sentences today — {left} to go" if left
-                             else "sentences today — done for today"),
-                 bg=ui.CARD, fg=ui.DIM, font=(ui.UI, 9), wraplength=inner,
-                 justify="left").place(x=0, y=210)
-        bar(236, done, day_n)
-        c = self._read_counts
-        counts = "  ·  ".join(
-            part for part in (f"{_clock(t['today_s'])} of voice",
-                              f"{c['skipped']} skipped" if c["skipped"] else "",
-                              f"{c['again']} read again" if c["again"] else "")
-            if part)
-        tk.Label(body, text=counts, bg=ui.CARD, fg=ui.FAINT,
-                 font=(ui.UI, 9)).place(x=0, y=250)
-
-        widgets.rule(body, inner, bg=ui.CARD, colour=ui.LINE, x=0, y=286)
-        keys = self.status.get("keys") or self._read_keys()
-        hold = pretty_key(keys.get("hotkey", ""))
-        row = tk.Frame(body, bg=ui.CARD)
-        row.place(x=0, y=302)
-        ui.KeyCap(row, hold, bg=ui.CARD,
-                  w=max(56, 26 + ui.text_width(hold, ui.UI, 10)),
-                  h=28).pack(side="left")
-        tk.Label(row, text="hold it and read", bg=ui.CARD, fg=ui.DIM,
-                 font=(ui.UI, 9)).pack(side="left", padx=(10, 0))
-        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
-                 wraplength=inner, justify="left",
-                 text="Only while this window is in front. Anywhere else "
-                      "the key dictates as it always has.").place(x=0, y=340)
-        tk.Label(body, bg=ui.CARD, fg=ui.FAINT, font=(ui.UI, 8),
-                 wraplength=inner, justify="left",
-                 text="Every reading is a (voice, text) pair the local model "
-                      "can be tuned on. Nothing is sent anywhere."
-                 ).place(x=0, y=436)
-
     def _poll_waiting(self) -> None:
-        """Once a second from _refresh. Four stores, one stamp each, and
-        a redraw only when one of them moved — a notification arriving, a
-        verdict given at a card, a report filed, a question asked by the
-        routine. Reading four stat()s costs nothing; rebuilding six rows
-        every second would cost the caret in the answer box."""
+        """Once a second from _refresh. Six stores, one stamp
+        each, and a redraw only when one of them moved — a
+        notification arriving, a verdict given at a card, a
+        consent whose words changed. Reading six stat()s costs
+        nothing; rebuilding the rows every second would not."""
         if "pile_list" not in self.parts:
             return
         stamp = (self._notify_stat(), self._review_stat(),
-                 self._problems_stat(), self._questions_stat(),
                  self._hardware_stat(), self._lock_stat(),
                  self._consent_stat())
         if stamp != getattr(self, "_pile_stamp", None):
@@ -3663,11 +2596,7 @@ class Dashboard:
         """Everything that wants an answer, newest first, as row specs.
 
         Each source is guarded on its own: a store that is absent, off or
-        unreadable contributes nothing and the other three still draw.
-        `[questions]` in particular is missing from config.toml on this
-        branch, so _questions_store returns None and the block simply is
-        not there — which is what "show the section only when it exists"
-        means.
+        unreadable contributes nothing and the others still draw.
         """
         items: list[dict] = []
         items += self._waiting_consent()
@@ -3676,8 +2605,6 @@ class Dashboard:
         items += self._waiting_hardware()
         items += self._waiting_notify()
         items += self._waiting_review()
-        items += self._waiting_problems()
-        items += self._waiting_questions()
         items.sort(key=lambda row: row.get("at", 0.0), reverse=True)
         # ONE GOLD BUTTON PER SURFACE, across the whole pile and not per
         # row: with three proposals waiting, three lit Yes buttons are three
@@ -4143,83 +3070,6 @@ class Dashboard:
         where = " ".join(raw[max(0, kept[0][0] - 8):kept[-1][1] + 8])
         return runs, len(kept), where
 
-    def _waiting_problems(self) -> list[dict]:
-        module, store = self._problems(), self._problems_store()
-        if module is None or store is None:
-            return []
-        try:
-            open_ = store.items(module.OPEN)
-        except Exception:                 # noqa: BLE001
-            return []
-        rows = []
-        for item in open_:
-            ident = str(item.get("id", ""))
-            # problems.Store writes "at", in ISO. This asked for "when",
-            # in the review store's format, so every report stamped 0 and
-            # sorted to the bottom of the pile with no date on it.
-            at = (self._stamp_of(item.get("at", ""), "%Y-%m-%dT%H:%M:%S")
-                  or self._stamp_of(item.get("when", ""),
-                                    "%Y-%m-%d %H:%M:%S"))
-            day = (time.strftime("%d %b", time.localtime(at)).lstrip("0")
-                   if at else "")
-            buttons = [("Fixed", "quiet",
-                        lambda i=ident: self._problem_decide(i, "fixed")),
-                       ("Close", "quiet",
-                        lambda i=ident: self._problem_decide(i, "closed"))]
-            # ONE LINE THAT SAYS WHAT THE REPORT IS ABOUT. He types one
-            # long line into the box and the row drew its first ~90
-            # characters, cut mid-word: "I also don't understand the
-            # report... maybe display the sentence from point to point"
-            # (2026-09-07). The first SENTENCE, whole and with no
-            # ellipsis on it when it is whole; the full text is untouched
-            # in the store and the whole list still shows all of it.
-            said = summary.one_line(
-                item.get("what") or item.get("text") or item.get("note")
-                or "", self._row_room(buttons), self._measure)
-            rows.append({
-                "at": at,
-                "kind": "problem", "mark": "alert", "mark_colour": ui.RED,
-                "eyebrow": f"You reported this on {day}" if day
-                           else "You reported this",
-                "text": said.text,
-                "note": "   ·   ".join(b for b in (
-                    " ".join(str(item.get("where") or "").split()),
-                    "" if said.whole else "the whole list has all of it")
-                    if b),
-                "buttons": buttons,
-            })
-        return rows
-
-    def _waiting_questions(self) -> list[dict]:
-        """The routine's questions — only when the store is there.
-
-        `[questions]` is not in config.toml on this branch at all, so
-        _questions_store reads it as off and this returns [] and the
-        section is simply not on the screen. When it IS there, the row
-        says what was asked and Answer opens the whole list, because
-        answering needs the options as bands to press and a box to
-        dictate into — a surface this row is far too small to be.
-        """
-        if self._questions() is None:
-            return []
-        rows = []
-        for item in self._pending_questions():
-            buttons = [("Answer", "quiet", self._waiting_all)]
-            asked = summary.one_line(
-                item.get("question") or item.get("text") or "",
-                self._row_room(buttons), self._measure)
-            rows.append({
-                "at": self._stamp_of(item.get("when", ""),
-                                     "%Y-%m-%d %H:%M:%S"),
-                "kind": "question", "mark": "review",
-                "mark_colour": getattr(ui, "ACCENT_TEXT", ui.ACCENT),
-                "eyebrow": "Saturday's read is waiting on an answer",
-                "text": asked.text,
-                "note": "" if asked.whole else "Answer has the rest of it",
-                "buttons": buttons,
-            })
-        return rows
-
     @staticmethod
     def _measure(text: str) -> int:
         """A row's words, in pixels — the face and the size a PileRow
@@ -4267,7 +3117,6 @@ class Dashboard:
         if "pile_list" not in self.parts:
             return
         self._pile_stamp = (self._notify_stat(), self._review_stat(),
-                            self._problems_stat(), self._questions_stat(),
                             self._hardware_stat(), self._lock_stat(),
                             self._consent_stat())
         p = self.parts
@@ -4423,13 +3272,11 @@ class Dashboard:
 
         Every number here is the number of ROWS the place will show him
         when he gets there, which is the only kind of count worth
-        putting on a door: Corrections is what the second reading is
-        proposing, Problems is his reports and the routine's questions
-        together (they share a place, so they share a tile), Said is
-        today's dictations, and Keys and Settings are as long as their
-        own lists. Unread messages are deliberately not here: their
-        place IS this page, and a door back to the page you are standing
-        on is not a door.
+        putting on a door: Corrections is what the second reading
+        is proposing, Said is today's dictations, and Keys and
+        Settings are as long as their own lists. Unread messages
+        are deliberately not here: their place IS this page, and
+        a door back to the page you are standing on is not a door.
         """
         today = time.strftime("%Y-%m-%d")
         said = sum(1 for e in self.log
@@ -4437,17 +3284,11 @@ class Dashboard:
                    and e.when.strftime("%Y-%m-%d") == today)
         learned = _words_learned()
         proposals = sum(1 for i in items if i["kind"] == "review")
-        trouble = sum(1 for i in items
-                      if i["kind"] in ("problem", "question"))
         return [
             ("Corrections", "review", proposals, "corrections",
              "and the words it has learned from the ones you said yes to"
              if learned is None else
              f"and the {learned} words it has learned from them"),
-            ("Problems", "error", trouble, "problems",
-             "what you reported, and what the weekly routine asked you"
-             if self._problems_on else
-             "reporting is switched off — the switch is in Settings"),
             ("Said", "history", said, "said today",
              "the last hundred of them, with the search over them"),
             ("Keys", "keys", len(config_mod.HOTKEY_FIELDS), "keys",
@@ -4458,8 +3299,8 @@ class Dashboard:
         ]
 
     def _paint_doors(self, items: list[dict]) -> None:
-        """The band under the pile: the five places, what each of them is
-        holding right now, and the way in.
+        """The band under the pile: every other place, what each of them
+        is holding right now, and the way in.
 
         It was one thin line that named only the kinds with something
         waiting — see the note over DOOR_MIN_H for the page that left
@@ -5100,1668 +3941,6 @@ class Dashboard:
             return module.Store(paths.DATA_DIR / module.STORE_NAME)
         except Exception:                 # noqa: BLE001
             return None
-
-    def _problems_stat(self):
-        """The store's own change detector. () is "no file yet", which is
-        a perfectly good state and not an error."""
-        store = self._problems_store()
-        if store is None:
-            return ()
-        try:
-            return store.stamp()
-        except Exception:                 # noqa: BLE001
-            return ()
-
-    # --------------------------------------------------- and the questions
-
-    def _questions(self):
-        """questions.py, or None if it is not here.
-
-        Guarded exactly like problems.py above, and for a sharper reason:
-        this module arrived with the weekly routine, so a checkout that
-        predates it has no such file — and the Problems screen still has
-        to open on that checkout, with the reports and without the
-        questions.
-        """
-        try:
-            import questions as questions_mod
-        except Exception:                 # noqa: BLE001 — feature absent
-            return None
-        return questions_mod
-
-    def _questions_store(self):
-        """questions.json, read off the disk — but only when `[questions]
-        enabled = true` says the app is the place he answers.
-
-        It is off by default, and the reason is not caution. The weekly
-        review is a Claude Code local scheduled task now: every run is a
-        real session with a composer in the sidebar, so it asks him there
-        and reads the answer in the same breath. The store still gets each
-        question, as a record that outlives the session — but a record is
-        not a queue. Drawing an answer surface over it would offer him a
-        question he may already have answered in the session, and the item
-        would stay PENDING here forever because the answer landed
-        somewhere else. So this screen shows the reports and the branch
-        rows, and the answering lives where the asking does.
-
-        THREE processes can still write this file when it is on — the
-        app's card, this window and the routine — which is why the store
-        carries a lock file and lands every write by rename; nothing here
-        has to arbitrate.
-        """
-        module = self._questions()
-        if module is None:
-            return None
-        try:
-            qcfg = getattr(config_mod.load_layered(), "questions", None)
-        except Exception:                 # noqa: BLE001 — unreadable config
-            qcfg = None                   # off, like an absent section
-        if qcfg is None or not getattr(qcfg, "enabled", False):
-            return None
-        try:
-            return module.Store(paths.DATA_DIR / module.STORE_NAME)
-        except Exception:                 # noqa: BLE001
-            return None
-
-    def _questions_stat(self):
-        store = self._questions_store()
-        if store is None:
-            return ()
-        try:
-            return store.stamp()
-        except Exception:                 # noqa: BLE001
-            return ()
-
-    def _pending_questions(self) -> list[dict]:
-        """The questions waiting on him, newest first.
-
-        [] for no questions.py, no questions.json, and a questions.json
-        that will not parse — the store already reads a broken file as
-        empty, because a bad store must cost him questions and never
-        dictation.
-        """
-        module, store = self._questions(), self._questions_store()
-        if module is None or store is None or not paths.DEVELOPER:
-            # The questions are the Saturday routine's, and the routine
-            # runs only on the owner's checkout (D15, D33): a stranger's
-            # copy has nobody to ask them.
-            return []
-        try:
-            return store.items(module.PENDING)
-        except Exception:                 # noqa: BLE001 — a broken file
-            return []
-
-    def _write_digest(self) -> None:
-        """Regenerate problems.md.
-
-        It is written from scratch every call, and it is what the weekly
-        read-through actually reads — so the cheapest way to keep it true
-        is to write it whenever the list is opened or answered, rather
-        than remembering to.
-        """
-        module, store = self._problems(), self._problems_store()
-        if module is None or store is None:
-            return
-        try:
-            module.digest(store, paths.DATA_DIR / module.DIGEST_NAME)
-        except Exception:                 # noqa: BLE001 — a digest that
-            pass                          # did not get written is nothing
-
-    def _open_digest(self) -> None:
-        """The weekly read, in whatever opens .md files here. The name
-        comes off the module rather than out of this line, so the two
-        cannot drift; the fallback is for the module being absent, when
-        the file will not be there either and open_path says so."""
-        name = getattr(self._problems(), "DIGEST_NAME", "problems.md")
-        launch.open_path(paths.DATA_DIR / name)
-
-    def _screen_problems(self) -> None:
-        """A place of its own: every report, every question the routine
-        asked, every change committed here and not yet on GitHub.
-
-        The pile on the home says WHAT is waiting in one line each; this
-        is where a thing that needs more than a line gets it — a question
-        with two to five answers to press and a box to dictate into, a
-        report with its evidence, the changes on this computer with the
-        three buttons that try, push or undo them. It was a view hiding
-        behind the home until he
-        asked for it as a tab: "The report problem, I would like that to
-        be in tabs."
-
-        His own bug list: what he reported, and whether it is answered.
-
-        The shape is Review's, because the job is Review's — rows out of
-        a json store, two buttons each — and the only difference is who
-        asked the question. Review is the app disagreeing with itself;
-        this is him disagreeing with the app.
-
-        AND IT IS WHERE THE ROUTINE ANSWERS BACK. The weekly run reads
-        these reports, builds what he has already approved and — for what
-        it cannot decide — asks him a question with as many real answers
-        as it honestly has, two to five, and a box that is always under
-        them. A question belongs WITH THE
-        REPORT IT IS ABOUT, so it is drawn under it; the branch the
-        routine committed its work to gets a row of its own, with the one
-        button that publishes it.
-        """
-        # No right-hand line on this title: the Report button is up there
-        # and the two ran into each other (photographed 2026-09-07).
-        self._title("Problems")
-        p = self.parts
-        if self._problems_on:
-            p["report_button"] = ui.Button(
-                self.sheet, "Report a problem", self._report, h=30,
-                w=widgets.button_width("Report a problem", icon=True),
-                bg=ui.BG, quiet=True, icon=ui.ICON["error"])
-            p["report_button"].place(x=PAD + CW, y=20, anchor="ne")
-        p["problems_head"] = tk.Label(self.sheet, text="", bg=ui.BG,
-                                      fg=ui.DIM, font=(ui.UI, 10))
-        p["problems_head"].place(x=PAD, y=66)
-        # WHAT NEEDS HIM LEADS THE TAB. The report counts are a state of
-        # the world; a pending question is the routine standing still
-        # until he answers, so when there is one it takes the left of
-        # this line and the counts move over. _fill_problems places both.
-        p["questions_head"] = tk.Label(self.sheet, text="", bg=ui.BG,
-                                       fg=ui.ACCENT_TEXT,
-                                       font=(ui.MEDIUM, 10))
-        p["problems_list"] = ui.Scroller(self.sheet, CW + 10, 498, bg=ui.BG)
-        p["problems_list"].place(x=PAD, y=100)
-        p["problems_empty"] = tk.Label(self.sheet, text="", bg=ui.BG,
-                                       fg=ui.FAINT, font=(ui.UI, 10),
-                                       wraplength=CW - 80, justify="center")
-        tk.Label(self.sheet,
-                 # ONE LINE. There is room under the list for exactly
-                 # one at this width, and the second wraps off the
-                 # bottom edge of the window where nobody will read it.
-                 text="Report a problem is on the home as well, and on "
-                      "Ctrl+Alt+R wherever you are. Reopen puts an "
-                      "answered one back; ✕ throws one away, and asks "
-                      "first.",
-                 bg=ui.BG, fg=ui.FAINT, font=(ui.UI, 8),
-                 wraplength=CW - 190, justify="left").place(x=PAD, y=620)
-        if paths.DEVELOPER:
-            # problems.md is the digest the Saturday routine reads; the
-            # button and the file are the owner's (PR 7).
-            wide = widgets.button_width("Open problems.md", icon=True)
-            ui.Button(self.sheet, "Open problems.md", self._open_digest,
-                      w=wide, h=30, quiet=True, bg=ui.BG,
-                      icon=ui.ICON["page"]).place(x=PAD + CW - wide, y=616)
-        self._problems_stamp = None
-        self._questions_stamp = None
-        # A "delete this?" does not survive leaving the tab and coming
-        # back to it: he answered it by walking away.
-        self._problem_asking = ""
-        if paths.DEVELOPER:
-            # Opening the tab is the cue: the weekly read wants
-            # problems.md current, and this is the moment it is known to
-            # be looked at.
-            self._write_digest()
-            # The changes are git, and git is a process spawn per
-            # question — so they are asked for off this thread when the
-            # tab opens, and again after each button. Never on the poll:
-            # five spawns a second for a list that changes when a
-            # session commits. A stranger's copy has no git at all.
-            self._scan_changes()
-        self._fill_problems(home=True)
-
-    def _waiting_all(self) -> None:
-        """The old door to the backlog. It is a place now."""
-        self._show("Problems")
-
-    def _poll_problems(self) -> None:
-        """Once a second from _refresh: redraw only when one of the two
-        files moved — a report filed from the running app or answered
-        here, a question the routine asked, or an answer given on the
-        card in the other window."""
-        if "problems_list" not in self.parts:
-            return
-        if (self._problems_stat() != getattr(self, "_problems_stamp", None)
-                or self._questions_stat()
-                != getattr(self, "_questions_stamp", None)):
-            self._fill_problems()
-
-    def _fill_problems(self, *, home: bool = False) -> None:
-        """Draw the whole list again.
-
-        `home` only when the TAB is being opened. Every other caller —
-        the poll that sees another process write the store, a Fixed, a
-        Reopen, a ✕ — leaves the view exactly where he was reading,
-        because this rebuilds every row from scratch and taking him back
-        to the top is taking the list away from him. His words on
-        2026-09-08, pressing ✕ on a report far down the page: "it makes
-        the screen jump up and then I just scroll down and then press
-        delete".
-        """
-        if "problems_list" not in self.parts:
-            return
-        self._problems_stamp = self._problems_stat()
-        self._questions_stamp = self._questions_stat()
-        module, store = self._problems(), self._problems_store()
-        waiting, done, summary = [], [], {}
-        if module is not None and store is not None:
-            try:
-                # sb.py's verdicts on the copies that travelled — a
-                # payload gone is sent, a .failed beside it failed —
-                # read back into the rows before they are drawn (7.6)
-                if hasattr(module, "sync_outbox"):
-                    module.sync_outbox(store, app_dir=paths.DATA_DIR)
-                waiting = store.items(module.OPEN)
-                done = [i for i in store.items()
-                        if i.get("status") in module.RESOLVED][:30]
-                summary = store.summary()
-            except Exception:             # noqa: BLE001 — a broken file
-                waiting, done, summary = [], [], {}
-        qmodule = self._questions()
-        asked = self._pending_questions()
-        changes = (self._changes or {}) if paths.DEVELOPER else {}
-        ahead = bool(changes.get("commits"))
-        head = self.parts["problems_head"]
-        asking = self.parts["questions_head"]
-        # "fixed?" only when there is one, and between open and fixed:
-        # it is the part of open that is waiting on HIM to try something,
-        # not a fourth state. The line is one Label in one colour, so
-        # the count is not amber here the way the tag on the row is —
-        # colouring one word would mean a second label placed by
-        # measuring the first, for a number that is usually zero.
-        maybe = summary.get("maybe", 0)
-        head.config(text=f"{summary.get('open', 0)} open   ·   "
-                         + (f"{maybe} fixed?   ·   " if maybe else "")
-                         + f"{summary.get('fixed', 0)} fixed   ·   "
-                         f"{summary.get('closed', 0)} closed")
-        head.place_forget()
-        asking.place_forget()
-        if asked:
-            asking.config(text=f"{len(asked)} question"
-                               f"{'' if len(asked) == 1 else 's'} waiting "
-                               f"on you")
-            asking.place(x=PAD, y=66)
-            head.place(x=PAD + CW, y=68, anchor="ne")
-        else:
-            head.place(x=PAD, y=66)
-        scroller = self.parts["problems_list"]
-        # Measured BEFORE the rows go: clear() empties the page and the
-        # view drops to the top with it.
-        place = scroller.keep_place()
-        scroller.clear()
-        self._q_fields = {}
-        self._asking_row = None
-        empty = self.parts["problems_empty"]
-        empty.place_forget()
-        if module is None:
-            empty.config(text="problems.py is not here, so nothing can be "
-                              "reported or read back.")
-            empty.place(x=PAD + CW / 2, y=300, anchor="center")
-        elif not waiting and not done and not asked and not ahead:
-            empty.config(text="Nothing reported yet — when something is "
-                              "wrong, say so from the sidebar and the app "
-                              "attaches the rest.")
-            empty.place(x=PAD + CW / 2, y=300, anchor="center")
-        # A QUESTION BELONGS WITH ITS REPORT, and these are the reports
-        # that are about to be drawn. Anything asked about a report that
-        # is not one of them — a question with no report_id at all, or
-        # one about a report old enough to have fallen off the bottom of
-        # the resolved list — goes in a block of its own at the TOP,
-        # because a question is the routine waiting on him and there is
-        # no such thing as one with nowhere to answer it.
-        shown = {str(i.get("id", "")) for i in waiting + done}
-        # An "are you sure" whose row is not on the screen any more — the
-        # report was answered in the other window, or aged out — is not a
-        # question, and it must not be waiting on the next report that
-        # happens to be drawn under the pointer.
-        if self._problem_asking and self._problem_asking not in shown:
-            self._problem_asking = ""
-        homed: dict = {}
-        loose: list = []
-        for item in asked:
-            report_id = str(item.get("report_id") or "")
-            if report_id and report_id in shown:
-                homed.setdefault(report_id, []).append(item)
-            else:
-                loose.append(item)
-        if loose:
-            self._question_block(scroller, qmodule, loose,
-                                 "A QUESTION, NOT ABOUT ONE REPORT")
-        if changes.get("told"):
-            self._changes_block(scroller, changes)
-        for item in waiting:
-            self._problem_row(scroller, module, item, open_=True)
-            self._question_block(scroller, qmodule,
-                                 homed.get(str(item.get("id", "")), []), "")
-        if done:
-            tk.Label(scroller.inner, text="ANSWERED", bg=ui.BG,
-                     fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
-                anchor="w", pady=(8 if waiting else 0, 6))
-        for item in done:
-            self._problem_row(scroller, module, item, open_=False)
-            self._question_block(scroller, qmodule,
-                                 homed.get(str(item.get("id", "")), []), "")
-        if home:
-            scroller.to_top()
-        else:
-            scroller.go_back_to(place)
-        # And if a row grew where it stands — the "are you sure" opening
-        # under the last report on the page — the least scroll that puts
-        # its two answers on screen. Nothing at all when they already
-        # are, which is the usual case.
-        if self._asking_row is not None:
-            scroller.bring_into_view(self._asking_row)
-        # The echo poll runs only while there is a field to read, and it
-        # stops itself the moment the screen goes.
-        if self._q_fields and self._q_after is None and not self.closing:
-            self._q_after = self.root.after(Q_POLL_MS, self._q_pump)
-        # And the caret goes back where it was. This redraw is usually
-        # triggered by ANOTHER PROCESS writing the store, and it must not
-        # cost him the field in the middle of dictating an answer into it.
-        spec = self._q_fields.get(self._q_focus or "")
-        if spec is not None:
-            try:
-                spec["field"].focus_set()
-                spec["field"].mark_set("insert", "end-1c")
-            except Exception:             # noqa: BLE001
-                pass
-
-    @staticmethod
-    def _problem_evidence(got: dict) -> str:
-        """The dictation a report was about, as the one line worth
-        reading: what came out, and how it was decoded. Empty when the
-        report was not about a dictation, which is most ideas."""
-        if not got:
-            return ""
-        bits = []
-        raw = str(got.get("raw") or "")
-        final = str(got.get("final") or got.get("text") or "")
-        if raw and final and raw != final:
-            bits.append(f"{raw}  →  {final}")
-        elif raw or final:
-            bits.append(raw or final)
-        facts = [str(got[k]) for k in ("backend", "language") if got.get(k)]
-        if got.get("seconds") not in (None, ""):
-            try:
-                facts.append(f"{float(got['seconds']):.1f}s")
-            except (TypeError, ValueError):
-                pass
-        if facts:
-            bits.append(" · ".join(facts))
-        return "   ·   ".join(bits)
-
-    @staticmethod
-    def _problem_hint(mark: dict) -> str:
-        """The amber line under a report somebody believes is fixed: the
-        mark's note, and what he does about it — "try it, then press
-        Fixed". The trailer is left off when the note already says so,
-        because a Hebrew note that ends in "ולחץ Fixed" followed by the
-        same instruction in English is the row nagging. A mark with no
-        note at all still gets the instruction, capitalised, because the
-        line has to say SOMETHING about why the tag is there."""
-        note = " ".join(str(mark.get("note") or "").split())
-        if "fixed" in note.lower():
-            return note
-        return f"{note} — try it, then press Fixed" if note \
-            else "Try it, then press Fixed"
-
-    @staticmethod
-    def _row_photo(module, item: dict):
-        """The screenshot filed with a report, small enough for a row.
-
-        None for the reports that have none, which is most of them — an
-        idea about this screen is not a photograph — and None again for a
-        shot whose file has been deleted or will not open. Neither is an
-        error: problems.thumb already decided that a missing picture is a
-        row without a picture, and a redraw must never depend on a jpeg.
-
-        problems.thumb caches by (path, mtime, side), which is what makes
-        this affordable at all: _fill_problems rebuilds every row from
-        scratch on every poll that sees a new stamp.
-        """
-        try:
-            png = module.thumb(paths.DATA_DIR, item)
-        except Exception:                 # noqa: BLE001 — never a traceback
-            return None                   #                into a redraw
-        if not png:
-            return None
-        try:
-            return tk.PhotoImage(data=png)
-        except tk.TclError:
-            return None
-
-    def _problem_row(self, scroller: ui.Scroller, module, item: dict,
-                     open_: bool) -> None:
-        """One report, one canvas: when it was filed on the left, what
-        kind it is and which screen it came from, his line, and the
-        dictation behind it when there was one. Fixed / Closed while it
-        is still open, the answer itself once it is not.
-
-        Same layout rules as a review row — time and the buttons on the
-        left, text flush right — because they are the same kind of row
-        and looking different would only say they were not.
-
-        A report that came with a screenshot shows it, small, in the
-        right-hand corner: what he wants off this list is "which of these
-        is the one I mean", and the picture of the screen answers that
-        faster than the line he typed about it. The text column gives up
-        that width and the row gets tall enough to hold the picture,
-        which is why both are measured before the canvas exists.
-
-        NOTHING HERE IS A ONE-WAY DOOR. An answered row carries Reopen,
-        because Fixed and Closed were being pressed by accident and there
-        was no way back — he found four of his own reports closed and
-        said so: "open them again because I did not close them, and if I
-        close something I should be able to open it again". And the ✕
-        that deletes a report asks before it does: pressing it grows the
-        row by one line — "Delete this report?" with Delete and Keep it
-        under it — and only Delete calls the store. Both answers are on
-        the LEFT of the strip, at the far end of the row from the ✕ he
-        just pressed, which is the same reason Stop sits where it does on
-        the bar: the safety is the layout, not a word that changes.
-
-        AND NOBODY BUT HIM CLOSES A ROW FROM HERE. An open report that a
-        routine (or a session) believes it has fixed is still an open
-        row with the same Fixed and Close on it; what it gains is a
-        FIXED? tag beside the kind, in amber and not in the green of the
-        Fixed button, and one amber line under his text saying what to
-        try. The weekly routine closed three of his reports on
-        2026-09-12 because a push looked like a fix, and his answer was
-        "instead of writing 'fix' it writes 'fix?' in a different colour,
-        not green like now" — and asks him. Pressing Fixed on such a row
-        is the answer: resolve() takes the mark off with the status.
-        """
-        text = str(item.get("text") or "")
-        ident = str(item.get("id", ""))
-        asking = bool(ident) and ident == self._problem_asking
-        left, edge = 106, CW - 14
-        shot = self._row_photo(module, item)
-        shot_w = shot.width() + 12 if shot is not None else 0
-        width = edge - left - shot_w
-        colour = ui.FG if open_ else ui.DIM
-        photo, text_h, _lines = ui.draw_text(text, pt=11, width=width,
-                                             max_lines=3, colour=colour,
-                                             bg=ui.CARD)
-        heard, heard_h = None, 0
-        evidence = self._problem_evidence(item.get("dictation") or {})
-        if evidence:
-            heard, heard_h, _l = ui.draw_text(evidence, pt=8, width=width,
-                                              max_lines=2, colour=ui.FAINT,
-                                              bg=ui.CARD)
-        # The "fixed?" line, through draw_text like the two above it: the
-        # routine writes the note in Hebrew for him, and a Label would
-        # lay a mixed line out backwards. Two lines, not one — the note
-        # is the sentence that tells him what to try, and an ellipsis on
-        # it is the one cut this row must not make.
-        mark = module.suggested(item) if open_ else None
-        hint, hint_h = None, 0
-        if mark is not None:
-            hint, hint_h, _l = ui.draw_text(self._problem_hint(mark), pt=8,
-                                            width=width, max_lines=2,
-                                            colour=ui.AMBER, bg=ui.CARD)
-        bottom = 32 + text_h + (heard_h + 8 if heard is not None else 0) \
-            + (hint_h + 8 if hint is not None else 0)
-        # 46 is a strip with buttons in it, and an answered row has them
-        # now (Reopen) where it used to have one line of text. 70 is that
-        # strip with the question standing above the two answers, so a
-        # row asking whether it may be deleted VISIBLY grows — which is
-        # the "are you sure" jumping out at him, without a second window.
-        height = max(84, bottom + (70 if asking else 46))
-        if shot is not None:
-            height = max(height, shot.height() + 26)
-        row = tk.Canvas(scroller.inner, width=CW, height=height, bg=ui.BG,
-                        highlightthickness=0, bd=0)
-        row.pack(pady=(0, 8))
-        row.create_image(0, 0, anchor="nw", image=ui.rounded(
-            CW, height, 12, ui.CARD, ui.BG,
-            ui.TILE_EDGE if open_ else ui.LINE))
-        if shot is not None:
-            row.create_image(edge, 13, anchor="ne", image=shot)
-            row.create_rectangle(edge - shot.width() - 1, 12, edge, 13
-                                 + shot.height(), outline=ui.STROKE)
-            # The canvas is the reference that keeps it: a PhotoImage
-            # nothing in Python holds is collected, and the row then
-            # draws a blank box where the picture was.
-            row.shot = shot
-        # "2026-09-04T13:22:01" — sliced rather than parsed, because a
-        # stamp this window did not write is not worth a traceback.
-        at = str(item.get("at", ""))
-        row.create_text(14, 15, text=at[11:16], anchor="nw",
-                        font=(ui.UI, 10, "bold"), fill=ui.FG)
-        try:
-            day = time.strftime("%d %b", time.strptime(at[:10], "%Y-%m-%d"))
-        except ValueError:
-            day = ""
-        row.create_text(14, 34, text=day, anchor="nw", font=(ui.UI, 8),
-                        fill=ui.FAINT)
-        kind = str(item.get("kind") or "")
-        where = str(item.get("where") or "")
-        tagline = "  ·  ".join(p for p in (kind.upper(), where.upper())
-                               if p)
-        tags = row.create_text(left, 13, anchor="nw", font=(ui.MEDIUM, 8),
-                               fill=ui.AMBER if open_ else ui.FAINT,
-                               text=tagline)
-        if mark is not None:
-            # FIXED? after the kind and the surface, in their small caps
-            # and their amber — ui.AMBER, the colour this window already
-            # gives a note that wants his attention — and deliberately
-            # not the green of the Fixed button beside it, because green
-            # would say it is done. A hairline of the
-            # same amber round it is what makes it read as a mark somebody
-            # put on the row rather than a third tag; drawn AFTER the
-            # word so the box is measured off the word at whatever DPI
-            # this screen is, and sent under it.
-            box = row.bbox(tags) if tagline else None
-            x = box[2] + 10 if box else left
-            label = row.create_text(x + 7, 13, anchor="nw",
-                                    font=(ui.MEDIUM, 8), fill=ui.AMBER,
-                                    text="FIXED?")
-            x0, y0, x1, y1 = row.bbox(label)
-            wide, tall = x1 - x0 + 12, y1 - y0 + 2
-            frame = row.create_image(x, y0 - 1, anchor="nw",
-                                     image=ui.rounded(wide, tall, tall // 2,
-                                                      ui.CARD, ui.CARD,
-                                                      ui.AMBER))
-            row.tag_lower(frame, label)
-        row.create_image(left, 30, anchor="nw", image=photo)
-        if heard is not None:
-            # Flush right of the TEXT COLUMN, not of the row: with a
-            # thumbnail in the corner those are no longer the same edge,
-            # and anchoring to the row's would lay a short report's
-            # evidence line straight across the picture.
-            row.create_image(edge - shot_w, 32 + text_h, anchor="ne",
-                             image=heard)
-        if hint is not None:
-            # Under the evidence when there is any, flush right of the
-            # same column, for the same reason.
-            row.create_image(edge - shot_w, 32 + text_h
-                             + (heard_h + 8 if heard is not None else 0),
-                             anchor="ne", image=hint)
-        if asking:
-            # _fill_problems scrolls to this one if it grew off the
-            # bottom edge of the page.
-            self._asking_row = row
-            row.create_text(14, height - 62, anchor="nw", font=(ui.UI, 9),
-                            fill=ui.FG,
-                            text="Delete this report? It does not come "
-                                 "back. Its picture and its recording "
-                                 "stay in the problems folder.")
-            wide = widgets.button_width("Keep it", least=62)
-            gone = ui.Button(row, "Delete", lambda i=ident:
-                             self._problem_delete(i),
-                             w=wide, h=26, quiet=True, fg=ui.RED)
-            keep = ui.Button(row, "Keep it", self._problem_keep,
-                             w=wide, h=26, quiet=True, fg=ui.FG)
-            row.create_window(14, height - 38, window=gone, anchor="nw")
-            row.create_window(22 + wide, height - 38, window=keep,
-                              anchor="nw")
-        elif open_:
-            fixed = ui.Button(row, "Fixed", lambda i=ident:
-                              self._problem_decide(i, module.FIXED),
-                              w=58, h=26, quiet=True, fg=ui.GREEN)
-            shut = ui.Button(row, "Close", lambda i=ident:
-                             self._problem_decide(i, module.CLOSED),
-                             w=58, h=26, quiet=True, fg=ui.FAINT)
-            row.create_window(14, height - 38, window=fixed, anchor="nw")
-            row.create_window(76, height - 38, window=shut, anchor="nw")
-            # THE COPY THAT TRAVELS, on the same strip (plan 7.6): a row
-            # waiting for its Preview carries the button that opens it;
-            # a queued one says "waiting to send" and offers Send now; a
-            # sent one says so; a failed one says why. Nothing for a
-            # report that stays here, which is most of them.
-            sent = str(item.get("sent") or "")
-            words = module.sent_line(item) if hasattr(module, "sent_line") else ""
-            x = 142
-            if sent == getattr(module, "PREVIEW", "preview"):
-                wide = widgets.button_width("Preview & send", least=62)
-                look = ui.Button(row, "Preview & send",
-                                 lambda i=ident: self._report_preview(i),
-                                 w=wide, h=26, quiet=True, fg=ui.ACCENT_TEXT)
-                row.create_window(x, height - 38, window=look, anchor="nw")
-                x += wide + 8
-            elif sent == getattr(module, "QUEUED", "queued"):
-                wide = widgets.button_width("Send now", least=62)
-                now = ui.Button(row, "Send now",
-                                lambda: self._ask("account", then=lambda r:
-                                                  self._announce(r, "sending"),
-                                                  do="nudge"),
-                                w=wide, h=26, quiet=True, fg=ui.FAINT)
-                row.create_window(x, height - 38, window=now, anchor="nw")
-                x += wide + 8
-            if words:
-                colour = (ui.GREEN if sent == getattr(module, "SENT", "sent")
-                          else ui.AMBER if sent == getattr(module, "FAILED", "failed")
-                          else ui.FAINT)
-                row.create_text(x, height - 25, anchor="w", font=(ui.UI, 8),
-                                fill=colour, text=words[:90])
-        else:
-            status = str(item.get("status") or "")
-            by = str(item.get("by") or "")
-            wide = widgets.button_width("Reopen", least=62)
-            back = ui.Button(row, "Reopen", lambda i=ident:
-                             self._problem_decide(i, module.OPEN),
-                             w=wide, h=26, quiet=True, fg=ui.ACCENT_TEXT)
-            row.create_window(14, height - 38, window=back, anchor="nw")
-            # Centred on the button beside it, not sat on the row's floor:
-            # the line and the pill are one strip and they read as one.
-            row.create_text(22 + wide, height - 25, anchor="w",
-                            font=(ui.UI, 8),
-                            fill=ui.GREEN if status == module.FIXED
-                            else ui.FAINT,
-                            text=status + (f"  ·  {by}" if by else ""))
-        if not asking and ident:
-            # The far corner of the strip, and LEFT of the picture when
-            # there is one: the thumbnail owns the right edge from y13
-            # down, and a ✕ under it would be a delete drawn on top of a
-            # screenshot. Same label, same hover and same 11 pt as the ✕
-            # on a pile row (widgets.PileRow), because it is the same
-            # gesture — except that this one asks.
-            cross = tk.Label(row, text="✕", bg=ui.CARD, fg=ui.FAINT,
-                             font=(ui.UI, 11), cursor="hand2", padx=6)
-            cross.bind("<Button-1>",
-                       lambda _e, i=ident: self._problem_ask_delete(i))
-            cross.bind("<Enter>", lambda _e, w=cross: w.config(fg=ui.RED))
-            cross.bind("<Leave>", lambda _e, w=cross: w.config(fg=ui.FAINT))
-            row.create_window(edge - shot_w, height - 25, window=cross,
-                              anchor="e")
-        scroller.bind_wheel(row)
-
-    def _problem_decide(self, ident: str, status: str) -> None:
-        """Fixed, Closed or Reopen on a row, written to problems.json
-        here.
-
-        `by` is why resolve() takes the argument at all: a report can be
-        answered from this window or from wherever else the store grows a
-        surface, and the digest says which. REOPENING CLEARS IT, because
-        the field is who answered the report and a reopened one has not
-        been answered — leaving "dashboard" there would put this window's
-        name on a resolution it had just taken away.
-        """
-        store = self._problems_store()
-        module = self._problems()
-        if store is None or module is None:
-            self._note("problems.py is not here")
-            return
-        back = status == module.OPEN
-        try:
-            saved = store.resolve(ident, status, by="" if back
-                                  else "dashboard")
-        except Exception as e:            # noqa: BLE001
-            self._note(f"could not save that: {e}")
-            return
-        if not saved:
-            self._note("that one is not in the list any more")
-        else:
-            self._note("open again — it is back on the list and on the "
-                       "home" if back else f"marked {status}")
-        self._write_digest()
-        self._fill_problems()
-
-    def _problem_ask_delete(self, ident: str) -> None:
-        """The ✕, pressed. Nothing is deleted here — the row is asked.
-
-        His own words for why there is a step at all: "when I'm pressing
-        the X, a question mark will jump, or a message that says are you
-        sure, because I don't want the reports to be deleted instantly".
-        One at a time, so a second ✕ moves the question rather than
-        leaving two rows open with a Delete on each.
-        """
-        self._problem_asking = str(ident)
-        self._fill_problems()
-
-    def _problem_keep(self) -> None:
-        """Keep it: the answer that is not a delete, and the one the row
-        goes back to on its own if he opens another tab."""
-        self._problem_asking = ""
-        self._fill_problems()
-
-    def _problem_delete(self, ident: str) -> None:
-        """Delete, pressed on a row that has already asked. The report
-        leaves problems.json for good; the screenshot and the copied
-        recording stay in problems\\, which is what the note says out
-        loud so he is never guessing what he just did."""
-        self._problem_asking = ""
-        store = self._problems_store()
-        if store is None:
-            self._note("problems.py is not here")
-            return
-        try:
-            gone = store.remove(ident)
-        except Exception as e:            # noqa: BLE001
-            self._note(f"could not delete that: {e}")
-            return
-        if gone is None:
-            self._note("that one is not in the list any more")
-        elif gone.get("shot") or gone.get("dictation"):
-            self._note("deleted — its picture and its recording are still "
-                       "in the problems folder")
-        else:
-            self._note("deleted")
-        self._write_digest()
-        self._fill_problems()
-
-    # ------------------------------------------- answering the routine back
-
-    def _question_block(self, scroller: ui.Scroller, module,
-                        items: list[dict], header: str) -> None:
-        """The questions that belong here, in a frame of their own.
-
-        A FRAME rather than rows packed straight into the list, for two
-        reasons. A question and the report above it read as one thing
-        when they are one widget — which is the point of putting it
-        there — and the list's own children stay countable: everything
-        that walks `problems_list` is counting REPORTS, and a question
-        is not one.
-        """
-        if module is None or not items:
-            return
-        block = tk.Frame(scroller.inner, bg=ui.BG)
-        block.pack(anchor="w", fill="x", pady=(0, 0))
-        if header:
-            tk.Label(block, text=header, bg=ui.BG, fg=ui.ACCENT_TEXT,
-                     font=(ui.MEDIUM, 8)).pack(anchor="w", pady=(0, 6))
-        for item in items:
-            self._question_row(block, scroller, module, item)
-
-    def _question_row(self, parent, scroller: ui.Scroller, module,
-                      item: dict) -> None:
-        """One question the routine could not answer for itself: what it
-        asked, EVERY answer it offered as a band to press, and a box he
-        can type or dictate into that is always there.
-
-        NO OPTION IS SPECIAL AND THE BOX IS NOT AN OPTION. There used to
-        be a split right here — the last option was drawn as the box's
-        label instead of as a band, because questions.py named an "open"
-        option by position — and it went with the design it came from.
-        Every entry in `options` is a real answer he can press, two to
-        five of them, however many the question honestly has; the box
-        under them belongs to no band, and no band can take it away,
-        dim it or make him press something first to reach it. An item
-        with no options at all is not a special case either — it is the
-        box on its own, which is what the imported prose questions are.
-
-        A PICK AND A TYPED LINE ARE ONE ANSWER. His own case for it: he
-        presses "run before the backup" and then writes "actually after
-        the backup, so that it doesn't fight the disk" — the band is the
-        decision and the line is the condition on it. So a press does not
-        clear the box, a word does not clear the band, and both go to the
-        store together. answer_card.py's docstring is where that decision
-        is written down and overlay.AnswerCard keeps it on the card; this
-        row is the second surface keeping the same one.
-
-        PRESSING THE LIT BAND AGAIN UN-PICKS IT, which is the card's
-        gesture exactly (overlay.AnswerCard.pick — "the same gesture
-        un-picks") and for the card's reason: the band that shows the
-        pick is the obvious place to undo it, and a separate Clear is one
-        more control on a row that already has five bands, a box and a
-        button. The line under the button says so out loud, because an
-        undo nobody can see is an undo nobody uses.
-
-        EVERY SENTENCE HERE GOES THROUGH ui.draw_text, and no option is a
-        ui.Chip. The options are the routine's, they will be Hebrew, and
-        a MIXED Hebrew/English line laid out by Tk comes back with its
-        runs in the wrong order (this file's docstring, layer 2). On a
-        transcript that is ugly; on a multiple-choice answer it is him
-        pressing the wrong one.
-        """
-        ident = str(item.get("id", ""))
-        # Blanks dropped and NOTHING INVENTED to replace them, with the
-        # card's own ceiling — answer_card.card_for does exactly this, and
-        # for the store's reason: every band is an answer he might press,
-        # so padding a short list would put a sentence on this row that
-        # nothing ever said, and this window is not allowed to write
-        # answers.
-        options = [text for text in (str(o or "").strip()
-                                     for o in (item.get("options") or ()))
-                   if text][:Q_OPTIONS_MAX]
-        # A pick that no longer points at an option: the store moved under
-        # us, or the file was hand-edited. Forget it rather than draw a
-        # dot beside nothing.
-        picked = self._q_choice.get(ident)
-        if picked is not None and not 0 <= picked < len(options):
-            self._q_choice.pop(ident, None)
-        width = CW - Q_INDENT
-        inner = width - 2 * Q_PAD
-        text_w = inner - Q_MARK - Q_PAD
-
-        # MEASURED FIRST, all of it, because the card is exactly as tall
-        # as what is in it and a canvas is sized once. Every draw_text
-        # here is cached on its arguments, so the second call for the
-        # same bitmap — one to measure, one to place — is free.
-        question, q_h, _l = ui.draw_text(str(item.get("question") or ""),
-                                         pt=11, width=inner, max_lines=3,
-                                         colour=ui.FG, bg=ui.CARD)
-        # EVERY option gets a band, and each band is as tall as its own
-        # sentence needs — the loop is the whole point, the way
-        # answer_card.layout's is: a fixed height either clips the long
-        # one or leaves the short ones swimming, and the count is the
-        # question's business.
-        bands: list[dict] = []
-        for index, option in enumerate(options):
-            on, on_h, _l = ui.draw_text(option, pt=10, width=text_w,
-                                        max_lines=2, colour=ui.FG,
-                                        bg=ui.ACCENT_SOFT)
-            off, off_h, _l = ui.draw_text(option, pt=10, width=text_w,
-                                          max_lines=2, colour=ui.DIM,
-                                          bg=ui.CARD_HI)
-            band_h = max(Q_BAND_MIN, max(on_h, off_h) + 14)
-            bands.append({"index": index, "on": on, "off": off,
-                          "text_h": max(on_h, off_h), "h": band_h})
-        # THE CAPTION IS THE CARD'S LINE NOW, not one of the options. It
-        # used to be the last option's own Hebrew, because that option WAS
-        # the box; with the open row gone nothing named the box, and a box
-        # under a list of choices that says nothing about itself reads as
-        # the choice of last resort. Skipped when there are no bands —
-        # "add to a choice" with nothing above it to add to would be a
-        # line about controls that are not on this row.
-        caption, capt_h = None, 0
-        if options:
-            caption, capt_h, _l = ui.draw_text(Q_FIELD_CAP, pt=8,
-                                               width=inner, max_lines=1,
-                                               colour=ui.FAINT, bg=ui.CARD)
-        field_h = Q_FIELD_LINES_MIN * FIELD_LINE_H + 2 * FIELD_PAD_Y
-        # One line of the echo, asked of the renderer that will draw it.
-        _probe, line_h, _l = ui.draw_text("Ag", pt=10, width=inner,
-                                          max_lines=1, colour=ui.DIM,
-                                          bg=ui.CARD)
-        echo_h = line_h * Q_ECHO_LINES
-
-        y = 32
-        y_question = y
-        y += q_h + 12
-        for band in bands:
-            band["y"] = y
-            y += band["h"] + 6
-        if bands:
-            # The gap that separates TWO THINGS, not the six pixels that
-            # join one band to the next: the box is a peer of the bands
-            # now, not the last one's body. answer_card.FIELD_GAP is the
-            # same 15 for the same reason.
-            y += 9
-        y_caption = y
-        y += capt_h + (6 if caption is not None else 0)
-        y_field = y
-        y += field_h + 6
-        y_echo = y
-        y += echo_h + 10
-        y_actions = y
-        height = y_actions + 30 + 12
-
-        row = tk.Canvas(parent, width=width, height=height, bg=ui.BG,
-                        highlightthickness=0, bd=0)
-        row.pack(anchor="w", padx=(Q_INDENT, 0), pady=(0, 8))
-        # The accent edge is what says this card is not another report:
-        # the reports around it are hairlined, and this one is the app
-        # asking rather than him telling.
-        row.create_image(0, 0, anchor="nw", image=ui.rounded(
-            width, height, 12, ui.CARD, ui.BG, ui.ACCENT_EDGE))
-        # The canvas is the only reference Python holds to these: a
-        # PhotoImage nothing keeps is collected, and the row then draws
-        # blank boxes where the sentences were.
-        row.keep = [question, caption] + [b["on"] for b in bands] \
-            + [b["off"] for b in bands]
-        at = str(item.get("at", ""))
-        try:
-            day = time.strftime("%d %b", time.strptime(at[:10], "%Y-%m-%d"))
-        except ValueError:
-            day = ""
-        row.create_text(Q_PAD, 12, anchor="nw", font=(ui.MEDIUM, 8),
-                        fill=ui.ACCENT_TEXT,
-                        text="  ·  ".join(p for p in
-                                          ("A QUESTION FOR YOU",
-                                           f"ASKED {at[11:16]} {day}".strip()
-                                           if at else "") if p))
-        row.create_image(Q_PAD, y_question, anchor="nw", image=question)
-
-        field = tk.Text(row, bg=ui.EDGE, fg=ui.FG,
-                        insertbackground=ui.ACCENT,
-                        selectbackground=ui.ACCENT_SOFT,
-                        selectforeground=ui.FG, bd=0, highlightthickness=0,
-                        wrap="word", undo=True, font=FIELD_FONT,
-                        spacing3=max(0, FIELD_LINE_H - FIELD_FONT_LINE),
-                        insertwidth=2, padx=FIELD_PAD_X - Q_WELL_INSET,
-                        pady=FIELD_PAD_Y - Q_WELL_INSET)
-        field.tag_configure("rtl", justify="right")
-
-        def paint() -> None:
-            """The dots and the faces, from the one place the pick is
-            kept. Called by a press and by the redraw, and by NOTHING
-            ELSE any more: the poll used to repaint because typing into
-            the box lit the open option's dot, and a word in the box is
-            not a vote for anything now.
-            """
-            chosen = self._q_choice.get(ident)
-            for band in bands:
-                lit_up = band["index"] == chosen
-                row.itemconfig(band["face"], image=band["faces"][
-                    "on" if lit_up else "off"])
-                row.itemconfig(band["photo"],
-                               image=band["on"] if lit_up else band["off"])
-                row.itemconfig(band["dot"],
-                               fill=ui.ACCENT if lit_up else ui.CARD_HI,
-                               outline=ui.ACCENT if lit_up else ui.STROKE)
-
-        def arm() -> None:
-            """The button lights when there is something to send, and the
-            store's own rule decides that (see _answerable): a choice, or
-            words, or both. Called on a press and on the poll, because
-            either half can arrive first — and a dictated half arrives
-            with no key event at all.
-            """
-            try:
-                answer.enable(_answerable(self._q_choice.get(ident),
-                                          self._q_typed.get(ident, "")))
-            except Exception:             # noqa: BLE001 — the row went
-                pass
-
-        def pick(index: int) -> None:
-            """Press a band to answer with it — and press the lit one
-            again to take it back.
-
-            IT DOES NOT SEND. The store takes an answer once and refuses
-            a second one, so a mis-aimed click has to be something he can
-            undo; he presses the button when he means it.
-
-            AND IT DOES NOT TOUCH THE BOX. Whatever he has typed stays
-            exactly where it is, caret and all, and goes to the store
-            beside the pick — that is the whole shape of an answer here,
-            and the card's `pick` says the same thing in the same words.
-            """
-            if not 0 <= index < len(options):
-                return
-            if self._q_choice.get(ident) == index:
-                self._q_choice.pop(ident, None)
-            else:
-                self._q_choice[ident] = index
-            paint()
-            # The pointer is still ON the band he just un-picked — this
-            # only ever arrives as a click, so it cannot be anywhere
-            # else — and paint() knows nothing about the mouse. Without
-            # this the band drops straight to flat under the cursor,
-            # which reads as the row going dead rather than as the pick
-            # coming off.
-            if self._q_choice.get(ident) is None and index < len(bands):
-                row.itemconfig(bands[index]["face"],
-                               image=bands[index]["faces"]["over"])
-            arm()
-
-        def hover(index: int, over: bool):
-            def handler(_event=None) -> None:
-                band = bands[index]
-                if self._q_choice.get(ident) != index:
-                    row.itemconfig(band["face"], image=band["faces"][
-                        "over" if over else "off"])
-                row.config(cursor="hand2" if over else "")
-            return handler
-
-        for index, band in enumerate(bands):
-            band["faces"] = {
-                "on": ui.rounded(inner, band["h"], 10, ui.ACCENT_SOFT,
-                                 ui.CARD, ui.ACCENT_EDGE),
-                "off": ui.rounded(inner, band["h"], 10, ui.CARD_HI, ui.CARD,
-                                  ui.LINE),
-                "over": ui.rounded(inner, band["h"], 10, ui.CARD_HI, ui.CARD,
-                                   ui.TILE_EDGE)}
-            tag = f"opt{index}"
-            band["face"] = row.create_image(Q_PAD, band["y"], anchor="nw",
-                                            image=band["faces"]["off"],
-                                            tags=tag)
-            # THE DOT GOES WHERE THE LINE STARTS. ui.is_rtl decides that
-            # the way the renderer will: a Hebrew option is read from the
-            # right, so its dot is on the right and the words run back
-            # towards the middle. A dot pinned to the left of a
-            # right-aligned Hebrew line sits at the END of it, with the
-            # gap between them reading as a missing word.
-            rtl = ui.is_rtl(options[index])
-            band["photo"] = row.create_image(
-                Q_PAD + (Q_PAD if rtl else Q_MARK),
-                band["y"] + (band["h"] - band["text_h"]) // 2, anchor="nw",
-                image=band["off"], tags=tag)
-            cx = Q_PAD + (inner - 15 if rtl else 15)
-            cy = band["y"] + band["h"] // 2
-            band["dot"] = row.create_oval(cx - 6, cy - 6, cx + 6, cy + 6,
-                                          fill=ui.CARD_HI, outline=ui.STROKE,
-                                          tags=tag)
-            row.tag_bind(tag, "<Button-1>", lambda _e, i=index: pick(i))
-            row.tag_bind(tag, "<Enter>", hover(index, True))
-            row.tag_bind(tag, "<Leave>", hover(index, False))
-
-        # THE CAPTION IS A LINE, NOT A CONTROL — no dot beside it and
-        # nothing bound to it. The dot it used to carry said the box was
-        # one of the choices and had to be chosen; the box is simply
-        # there, so the caption's only job is to say that a sentence in it
-        # may ADD to a band rather than replace one. It sits hard left
-        # with the English frame, unindented, because it is this window
-        # talking and not the routine.
-        if caption is not None:
-            row.create_image(Q_PAD, y_caption, anchor="nw", image=caption)
-
-        # The well is a PICTURE and the widget sits inside it: a
-        # hard-cornered box among rounded bands is half of the "very slop
-        # and strict" he objected to on the report field, and this is
-        # that field.
-        well = row.create_image(Q_PAD, y_field, anchor="nw",
-                                image=ui.rounded(inner, field_h,
-                                                 FIELD_RADIUS, ui.EDGE,
-                                                 ui.CARD, ui.STROKE))
-        row.create_window(Q_PAD + Q_WELL_INSET, y_field + Q_WELL_INSET,
-                          anchor="nw", window=field,
-                          width=inner - 2 * Q_WELL_INSET,
-                          height=field_h - 2 * Q_WELL_INSET)
-        field.configure(cursor="xterm")
-        typed = str(self._q_typed.get(ident, ""))
-        if typed:
-            field.insert("1.0", typed)
-        field.tag_add("rtl", "1.0", "end")
-        echo = row.create_image(Q_PAD, y_echo, anchor="nw")
-
-        # The word on it is the CARD'S word (answer_card.SEND_LABEL), not
-        # this file's: he answers the same question on whichever surface
-        # is in front of him, and two buttons with two names for one act
-        # is the first place a pair of surfaces starts feeling like two
-        # features.
-        answer = ui.Button(row, Q_SEND_LABEL,
-                           lambda i=ident: self._answer_question(i),
-                           w=104, h=30, primary=True, bg=ui.CARD,
-                           icon=ui.ICON["check"])
-        row.create_window(Q_PAD, y_actions, anchor="nw", window=answer)
-        # THE UN-PICK CLAUSE IS ON THE LINE because the gesture is
-        # otherwise invisible — pressing the lit band is the only way back
-        # to no choice at all, and a row whose only undo is undocumented
-        # is one he answers wrong once and then stops trusting. It is
-        # named only when there is a band to press, the way
-        # answer_card.keys_of names no digits on a question that arrived
-        # with no options.
-        #
-        # TWO LINES, SPLIT WHERE THE CLAUSES SPLIT. Measured at 8 pt
-        # beside the 104 px button: four of them do not fit across the
-        # room that is left, and letting Tk wrap where the width runs out
-        # put "dictation" alone on the second line, which reads as a
-        # mistake rather than as a list.
-        said = [c for c in ("press an answer again to un-pick" if bands
-                            else "", "Enter sends") if c]
-        row.create_text(Q_PAD + 116, y_actions + 15, anchor="w",
-                        font=(ui.UI, 8), fill=ui.FAINT, justify="left",
-                        text="  ·  ".join(said) + "\n"
-                             "Shift+Enter for a new line  ·  "
-                             "the box takes dictation")
-
-        def send(_event=None) -> str:
-            self._answer_question(ident)
-            return "break"
-
-        def newline(_event=None) -> str:
-            """Enter sends, so the new line has to be the shifted one —
-            the same split the report box made once its field was more
-            than one line tall, and the line under the button says so."""
-            field.insert("insert", "\n")
-            return "break"
-
-        def select_all(_event=None) -> str:
-            """Ctrl+A, which a tk.Text does not do on its own — its own
-            Ctrl+A is Tk's emacs inheritance, beginning-of-line."""
-            field.tag_add("sel", "1.0", "end-1c")
-            field.mark_set("insert", "end-1c")
-            return "break"
-
-        def lit(on: bool):
-            """The edge follows the caret. Wired rather than painted,
-            because the answer may arrive by dictation while he is
-            looking at another window, and a field glowing as if it had
-            the keys when it has not is the one lie that would cost him
-            a sentence."""
-            def handler(_event=None) -> None:
-                if on:
-                    self._q_focus = ident
-                try:
-                    row.itemconfig(well, image=ui.rounded(
-                        inner, field_h, FIELD_RADIUS, ui.EDGE, ui.CARD,
-                        ui.ACCENT if on else ui.STROKE))
-                except Exception:         # noqa: BLE001 — the row went
-                    pass
-            return handler
-
-        field.bind("<FocusIn>", lit(True))
-        field.bind("<FocusOut>", lit(False))
-        field.bind("<Return>", send)
-        field.bind("<KP_Enter>", send)
-        field.bind("<Shift-Return>", newline)
-        field.bind("<Shift-KP_Enter>", newline)
-        field.bind("<Control-a>", select_all)
-        field.bind("<Control-A>", select_all)
-
-        self._q_fields[ident] = {"field": field, "row": row, "echo": echo,
-                                 "paint": paint, "arm": arm,
-                                 "width": inner}
-        paint()
-        # The button's state is drawn from the same two halves the row was
-        # drawn from, so a redraw that arrived while he had a pick or half
-        # a sentence in hand does not come back with a dead button over a
-        # live answer.
-        arm()
-        # The echo is drawn NOW as well as on the poll: after a redraw the
-        # text is already in the field, so the poll sees no change and
-        # would leave the band blank under a line he has typed.
-        self._q_echo(self._q_fields[ident], typed)
-        scroller.bind_wheel(row)
-
-    def _q_echo(self, spec: dict, typed: str) -> None:
-        """His line, drawn under the field by the renderer that gets it
-        right.
-
-        MANDATORY, NOT DECORATION. Measured on the report box with this
-        exact widget: a tk.Text lays a mixed Hebrew/English line out with
-        its runs in the wrong order — "הכפתור של Settings לא עובד" draws
-        as something he never said — so the only place he can read back
-        what the store is about to be given is this band.
-        """
-        row = spec["row"]
-        stripped = " ".join(typed.split())
-        try:
-            if not stripped:
-                row.itemconfig(spec["echo"], image="")
-                row.echo_photo = None
-                return
-            photo, _h, _l = ui.draw_text(stripped, pt=10, width=spec["width"],
-                                         max_lines=Q_ECHO_LINES,
-                                         colour=ui.DIM, bg=ui.CARD)
-            row.itemconfig(spec["echo"], image=photo)
-            row.echo_photo = photo        # the canvas keeps no reference
-        except Exception:                 # noqa: BLE001
-            pass                          # the row went out from under it
-
-    def _q_pump(self) -> None:
-        """Read every answer field on a timer, not on a key.
-
-        A DICTATED ANSWER ARRIVES WITH NO KEY EVENT. This window is a
-        separate process, so injector.is_our_window does not refuse it
-        and the paste lands in whichever field holds the caret — which is
-        the whole reason he can answer here instead of in a chat. A key
-        binding would see none of that, and neither would a write trace
-        on a tk.Text; one poll catches typing, dictation, paste and undo
-        alike, which is what the report card does with the same field for
-        the same reason.
-        """
-        self._q_after = None
-        if self.closing or "problems_list" not in self.parts:
-            return                        # the screen went; so does the poll
-        if not self._q_fields:
-            return       # every question answered: _fill_problems will
-                         # start this again when there is a field to read
-        limit = int(getattr(self._questions(), "ANSWER_MAX", 600) or 600)
-        for ident, spec in list(self._q_fields.items()):
-            field = spec["field"]
-            try:
-                typed = field.get("1.0", "end-1c")
-                if len(typed) > limit:
-                    # The store would cut it silently on the way to disk;
-                    # better he watches the field stop taking words than
-                    # find the tail missing in an answer he cannot edit.
-                    field.delete("1.0+%dc" % limit, "end")
-                    typed = field.get("1.0", "end-1c")
-                # Re-applied every pass: a tag does not extend itself over
-                # text inserted after it, so a right-aligned field would
-                # start going left again at the next dictated word.
-                field.tag_add("rtl", "1.0", "end")
-            except Exception:             # noqa: BLE001
-                continue                  # that row has been destroyed
-            if typed == str(self._q_typed.get(ident, "")):
-                continue
-            self._q_typed[ident] = typed
-            # TYPING DOES NOT TOUCH THE PICK, and that is the whole change
-            # from what stood here. The last option used to be the "open"
-            # one, so a word in the box lit its dot and a cleared box put
-            # it out — a widget voting on his behalf. Every band is a real
-            # answer now: a line he types is either an answer of its own
-            # or a condition on the band he pressed, and neither of those
-            # is a vote for one of the bands. Nothing in the row moves
-            # except the button, which arms on the first character and
-            # disarms on the last backspace.
-            try:
-                spec["arm"]()
-            except Exception:             # noqa: BLE001 — the row went
-                pass
-            self._q_echo(spec, typed)
-        if not self.closing:
-            self._q_after = self.root.after(Q_POLL_MS, self._q_pump)
-
-    def _answer_question(self, ident: str) -> None:
-        """Record HIS answer, then wake the routine.
-
-        answer() is the only door into that store from this window and it
-        hands back False rather than raising — no such question, a
-        question that is no longer PENDING because the card in the other
-        window answered it first, or a write that failed. All three mean
-        the same thing here: the row he is looking at is stale, so it is
-        redrawn rather than argued with. A decision he has already made is
-        never overwritten by an older window, and the False is SAID —
-        a store that refused an answer he thinks he gave must never be
-        swallowed into a silent redraw.
-
-        BOTH HALVES GO, ALWAYS. The choice and the box are read
-        unconditionally and handed over together: `answer()` takes either
-        or both and stores both, so an `if` in front of the text here
-        would be the one bug that loses him a whole sentence without a
-        trace — he presses "before the backup", writes "actually after
-        it", and the second half never existed. Only both-empty is
-        refused, which is why the button is dark until one of them has
-        something in it.
-        """
-        store = self._questions_store()
-        if store is None:
-            self._note("questions.py is not here, so there is nothing to "
-                       "answer")
-            return
-        text = str(self._q_typed.get(ident, ""))
-        choice = self._q_choice.get(ident)
-        # The button is already dark in this state, so this is the
-        # keyboard's way in — Enter on an empty box with nothing pressed —
-        # and it asks the same rule the button asked rather than spelling
-        # the rule out a second time.
-        if not _answerable(choice, text):
-            self._note("press one of the answers, or say it in your own "
-                       "words in the box")
-            return
-        try:
-            saved = store.answer(ident, choice=choice, text=text,
-                                 by="dashboard")
-        except Exception as e:            # noqa: BLE001
-            self._note(f"could not save that: {e}")
-            return
-        if not saved:
-            self._note("that question is not waiting any more — it may have "
-                       "been answered in the app while this was open")
-            # AND HIS TWO HALVES ARE KEPT. The store refused this write,
-            # so what he pressed and what he wrote are still the only copy
-            # of them — clearing the row on the way to telling him it did
-            # not save would be the refusal costing him the answer twice.
-            # A question that really is answered elsewhere is not drawn by
-            # the redraw below, so nothing is left on screen either way.
-            self._fill_problems()
-            return
-        self._q_typed.pop(ident, None)
-        self._q_choice.pop(ident, None)
-        self._q_focus = None
-        # THE ANSWER IS RECORDED BEFORE THE WAKE, and the wake cannot
-        # unrecord it: the answer is the thing that matters, and a routine
-        # that has to wait until Saturday to read it is a delay, not a
-        # loss.
-        woke = self._wake_review()
-        self._note("answered — the review is starting now to build it"
-                   if woke else
-                   "answered — the review will pick it up on its next run")
-        self._fill_problems()
-
-    def _wake_review(self) -> bool:
-        """The moment he answers, the routine goes and builds it.
-
-        weekly_review.ps1 -Answered runs the review immediately, whatever
-        the day's .done stamp says — that switch is the other half of
-        this feature and it belongs to another file, so it is CHECKED FOR
-        rather than assumed: a script without it is logged and skipped,
-        and the answer still stands in the store for Saturday to find.
-
-        AND NOT WITH launch's FLAGS, WHICH IS THE ONE SURPRISE HERE.
-        launch.spawn cannot carry a .ps1 in the first place — it prepends
-        pythonw.exe — so the flags were the only thing to borrow, and
-        DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP DOES NOT WORK for
-        this child. Measured under pythonw on 2026-09-05, four variants
-        against a script whose only job was to write one file:
-
-            detached | new group   -> exit 0, script never ran
-            no window | new group  -> exit 0, script ran
-            no window              -> exit 0, script ran
-            no flags               -> exit 0, script ran
-
-        powershell.exe is a CONSOLE binary, and with DETACHED_PROCESS it
-        has no console to host itself in: it returns 0 and does nothing,
-        which is the worst failure shape there is — it looks exactly like
-        success. launch.py's own comment says why it does not carry
-        CREATE_NO_WINDOW ("pythonw.exe is a GUI-subsystem binary and
-        never gets a console to hide"), and that is precisely the
-        difference: this child does. So it is CREATE_NO_WINDOW — the
-        house flag for a console program under this window, the same one
-        every git call above uses — plus CREATE_NEW_PROCESS_GROUP, so a
-        Ctrl+C in a console-run dashboard is not delivered to the review.
-        The child still outlives this window either way: a Windows
-        process is not tied to its parent, and this one must not be —
-        the dashboard is closed constantly.
-        """
-        import subprocess
-
-        script = APP_DIR / "weekly_review.ps1"
-        if not script.exists():
-            _push_log("wake: no weekly_review.ps1 beside the app — the "
-                      "answer is saved and Saturday will find it")
-            return False
-        try:
-            source = script.read_text("utf-8-sig", errors="replace")
-        except OSError as e:
-            _push_log(f"wake: could not read weekly_review.ps1 ({e})")
-            return False
-        if not re.search(r"\$Answered", source, re.IGNORECASE):
-            _push_log("wake: weekly_review.ps1 has no -Answered switch yet "
-                      "— the answer is saved, and the next scheduled run "
-                      "will read it")
-            return False
-        shell = Path(os.environ.get("SystemRoot", r"C:\Windows")) \
-            / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
-        args = [str(shell) if shell.exists() else "powershell.exe",
-                "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                "-File", str(script), "-Answered"]
-        flags = _CREATE_NO_WINDOW | 0x00000200      # ...| NEW_PROCESS_GROUP
-        try:
-            subprocess.Popen(args, cwd=str(APP_DIR), creationflags=flags,
-                             close_fds=True, stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL)
-        except OSError as e:
-            _push_log(f"wake: could not start the review ({e})")
-            return False
-        _push_log("wake: started weekly_review.ps1 -Answered")
-        return True
-
-    # ------------------------------------ what is here and not on GitHub
-
-    def _scan_changes(self) -> None:
-        """Ask git what is on this computer and not on GitHub, off the
-        Tk thread.
-
-        Three spawns, and a spawn is milliseconds this window may not
-        spend: the Version screen froze solid asking git the same kind
-        of question on the UI thread, which is the measurement in
-        versions.py. The answer arrives through _events like every other
-        off-thread reply. Asked when the tab opens and after each of the
-        three buttons — never on the poll: five spawns a second for a
-        list that changes when a session commits.
-        """
-        if self._changes_scanning:
-            return
-        self._changes_scanning = True
-
-        def work() -> None:
-            try:
-                info = local_changes()
-            except Exception:             # noqa: BLE001 — never a traceback
-                info = {"commits": [], "files": [], "behind": 0,
-                        "told": False}    #                out of a thread
-            self._events.put(lambda i=info: self._changes_arrived(i))
-
-        threading.Thread(target=work, daemon=True,
-                         name="changes-scan").start()
-
-    def _changes_arrived(self, info: dict) -> None:
-        self._changes_scanning = False
-        self._changes = info
-        if self.screen == "Problems":
-            self._fill_problems()
-
-    def _changes_block(self, scroller: ui.Scroller, info: dict) -> None:
-        """What is committed here and not on GitHub, above the reports.
-
-        Above them because a change sitting here is work that is already
-        DONE and waiting on him — and in a frame, for the reason the
-        questions are in one.
-
-        ONE CARD, OR ONE LINE. The card is drawn only while something is
-        ahead of GitHub; the moment a push or an undo lands there is
-        nothing to read, nothing to decide and no button worth his
-        screen, so the block collapses to a faint line saying so. His
-        words on 2026-09-08, after a second finished week stacked under
-        the first: "if it stays here after five weeks, there will be a
-        lot and it is not convenient". The line keeps Restart, quietly,
-        because "nothing ahead" is also what the folder looks like after
-        Claude has brought GitHub's newer changes in — and those want a
-        restart to be run. The last button's sentence stays under the
-        line for the same reason: "Undone… Restart to run the older
-        version again" is an instruction, and it must not vanish with
-        the card it was about.
-        """
-        block = tk.Frame(scroller.inner, bg=ui.BG)
-        block.pack(anchor="w", fill="x", pady=(0, 2))
-        if info.get("commits"):
-            tk.Label(block, text="CHANGES ON THIS COMPUTER — TRY THEM, "
-                                 "THEN PUSH",
-                     bg=ui.BG, fg=ui.FAINT, font=(ui.MEDIUM, 8)).pack(
-                anchor="w", pady=(0, 6))
-            self._changes_row(block, scroller, info)
-            return
-        behind = int(info.get("behind") or 0)
-        said = "Everything on this computer is on GitHub."
-        if behind:
-            said += (f" GitHub also has {behind} newer change"
-                     f"{'' if behind == 1 else 's'} this computer does not "
-                     f"have yet.")
-        note = str(self._push_said.get(TRUNK, ""))
-        note_img, note_h = None, 0
-        if note:
-            note_img, note_h, _l = ui.draw_text(note, pt=8,
-                                                width=CW - 2 * Q_PAD,
-                                                max_lines=3, colour=ui.AMBER,
-                                                bg=ui.BG)
-        height = FOLD_H + (note_h + 4 if note_img is not None else 0)
-        line = tk.Canvas(block, width=CW, height=height, bg=ui.BG,
-                         highlightthickness=0, bd=0)
-        line.pack(anchor="w", pady=(0, 8))
-        line.keep = [note_img]
-        line.create_text(Q_PAD, FOLD_H / 2, text=said, anchor="w",
-                         fill=ui.FAINT, font=(ui.UI, 9))
-        if note_img is not None:
-            line.create_image(Q_PAD, FOLD_H + 2, anchor="nw", image=note_img)
-        again = ui.Button(line, "Restart", self._restart_all,
-                          w=self._changes_button_w(), h=30, quiet=True,
-                          bg=ui.BG, icon=ui.ICON["power"])
-        line.create_window(CW - Q_PAD, FOLD_H / 2, anchor="e", window=again)
-        if self._pushing is not None:
-            again.enable(False)
-        scroller.bind_wheel(line)
-
-    @staticmethod
-    def _changes_button_w() -> int:
-        """One width for the three buttons, so they read as a set. 96 is
-        what the old card's Push had; wider only if Rubik needs it for
-        "Restart", which is the longest of the three words."""
-        return max(96, *(widgets.button_width(word, icon=True)
-                         for word in ("Restart", "Push", "Undo")))
-
-    def _changes_row(self, parent, scroller: ui.Scroller,
-                     info: dict) -> None:
-        """One card, and everything he needs to decide before he presses:
-        how many changes, what each one said and when, which files, and
-        what the last press did.
-
-        A button that pushes an unknown quantity is not reviewable,
-        which is why the commits and the file list are on the card and
-        not in a log. Three buttons in a row at the top right — the
-        card's height comes from the list under them, so a column would
-        have cost a tall card for one commit — with Undo set apart from
-        Push by a wider gap: they are neighbours that do opposite things
-        and neither asks "are you sure".
-        """
-        commits = list(info.get("commits") or [])
-        files = [str(f) for f in (info.get("files") or [])]
-        behind = int(info.get("behind") or 0)
-        inner = CW - 2 * Q_PAD
-        wide = self._changes_button_w()
-        buttons = 3 * wide + 8 + 18
-        room = inner - buttons - 12
-        # One plain sentence about where the work is, in the words he
-        # asked for on 2026-09-06: not "4 commits · 3 files · not on
-        # GitHub yet", but what that means and what to do about it.
-        n = len(commits)
-        them = "it" if n == 1 else "them"
-        status = (f"{n} change{'' if n == 1 else 's'} exist"
-                  f"{'s' if n == 1 else ''} only on this computer. Restart "
-                  f"to try {them}, then Push to send {them} to GitHub — or "
-                  f"Undo to throw {them} away.")
-        if behind:
-            status += (f" GitHub also has {behind} newer change"
-                       f"{'' if behind == 1 else 's'} this computer does "
-                       f"not have yet.")
-        status, status_lines = ui.clamp(status, ui.UI, 8, room, 3)
-        # The commits, one per line, newest first: the date in the faint
-        # face and the subject in the dim one, each subject cut to its
-        # line — a subject is a sentence in this repo, and two of them
-        # wrapping would push the file list off the card.
-        lines: list[tuple[str, str]] = []
-        for commit in commits[:CHANGES_SHOWN]:
-            when = str(commit.get("when", ""))
-            subject, _n = ui.clamp(str(commit.get("subject", "")), ui.UI, 9,
-                                   inner - 110, 1)
-            lines.append((when, subject))
-        if n > CHANGES_SHOWN:
-            lines.append(("", f"+{n - CHANGES_SHOWN} more"))
-        listed, name_lines = "", 0
-        if files:
-            shown = "   ·   ".join(files[:8])
-            if len(files) > 8:
-                shown += f"   ·   +{len(files) - 8} more"
-            listed, name_lines = ui.clamp(shown, ui.UI, 8, inner, 2)
-        said = str(self._push_said.get(TRUNK, ""))
-        note, note_h = None, 0
-        if said:
-            note, note_h, _l = ui.draw_text(said, pt=8, width=inner,
-                                            max_lines=3, colour=ui.AMBER,
-                                            bg=ui.CARD)
-        # 31 is where the status starts, under a 10 pt title at 13; each
-        # 8 pt line is 14 px and each 9 pt commit line 16.
-        y = 31 + status_lines * 14 + 8
-        y_commits = y
-        y += len(lines) * 16 + (6 if lines else 0)
-        y_files = y
-        y += name_lines * 14 + (6 if name_lines else 0)
-        y_note = y
-        y += note_h + (6 if note is not None else 0)
-        height = max(74, y + 8)
-
-        row = tk.Canvas(parent, width=CW, height=height, bg=ui.BG,
-                        highlightthickness=0, bd=0)
-        row.pack(anchor="w", pady=(0, 8))
-        row.create_image(0, 0, anchor="nw", image=ui.rounded(
-            CW, height, 12, ui.CARD, ui.BG, ui.TILE_EDGE))
-        row.keep = [note]
-        row.create_text(Q_PAD, 13, anchor="nw", font=(ui.MEDIUM, 10),
-                        fill=ui.FG, text="Changes on this computer")
-        row.create_text(Q_PAD, 31, anchor="nw", font=(ui.UI, 8),
-                        fill=ui.FAINT, justify="left", text=status)
-        for index, (when, subject) in enumerate(lines):
-            top = y_commits + index * 16
-            if when:
-                row.create_text(Q_PAD, top, anchor="nw", font=(ui.UI, 8),
-                                fill=ui.FAINT, text=when)
-            row.create_text(Q_PAD + (110 if when else 0), top, anchor="nw",
-                            font=(ui.UI, 9), fill=ui.DIM, text=subject)
-        if name_lines:
-            row.create_text(Q_PAD, y_files, anchor="nw", font=(ui.UI, 8),
-                            fill=ui.FAINT, justify="left", text=listed)
-        if note is not None:
-            row.create_image(Q_PAD, y_note, anchor="nw", image=note)
-        # Right to left, so the primary one lands where the old Push did
-        # and Undo is the outermost thing on the card.
-        undo = ui.Button(row, "Undo", self._undo_main, w=wide, h=30,
-                         quiet=True, bg=ui.CARD, icon=ui.ICON["discarded"])
-        row.create_window(CW - Q_PAD, 13, anchor="ne", window=undo)
-        push = ui.Button(row, "Push", self._push_main, w=wide, h=30,
-                         primary=True, bg=ui.CARD, icon=ui.ICON["link"])
-        row.create_window(CW - Q_PAD - wide - 18, 13, anchor="ne",
-                          window=push)
-        again = ui.Button(row, "Restart", self._restart_all, w=wide, h=30,
-                          quiet=True, bg=ui.CARD, icon=ui.ICON["power"])
-        row.create_window(CW - Q_PAD - 2 * wide - 18 - 8, 13, anchor="ne",
-                          window=again)
-        if self._pushing is not None:
-            # One thing at a time: a second press would be racing the
-            # first for the same branch, and Restart is about to take the
-            # window away from under all three.
-            for button in (undo, push, again):
-                button.enable(False)
-        scroller.bind_wheel(row)
-
-    def _run_git_button(self, doing: str, saying: str, work) -> None:
-        """Push and Undo share one shape: mark the button in flight, say
-        so on the card, run the git steps off the Tk thread, and hand
-        the sentence back through _events. A push is his connection and
-        a fetch is somebody's server — tens of seconds in the worst
-        case, none of it allowed near the event loop, exactly like the
-        version switch."""
-        if self._pushing is not None:
-            return
-        self._pushing = doing
-        self._push_said[TRUNK] = saying
-        self._note(f"{doing}…")
-
-        def run() -> None:
-            try:
-                result = work()
-            except Exception as e:        # noqa: BLE001 — a failure is a
-                result = {"said": f"{doing.capitalize()} failed before it "
-                                  f"started ({e}). Nothing changed."}
-            self._events.put(lambda r=result: self._git_done(r))
-
-        threading.Thread(target=run, daemon=True,
-                         name=f"changes-{doing}").start()
-        self._fill_problems()             # the card says it is going
-
-    def _push_main(self) -> None:
-        """His Push. What it does and why it may refuse is in push_main."""
-        self._run_git_button("push", "Pushing… sending the changes to "
-                                     "GitHub.", push_main)
-
-    def _undo_main(self) -> None:
-        """His Undo. What it does and why it may refuse is in undo_main."""
-        self._run_git_button("undo", "Undoing… putting this computer back "
-                                     "to what GitHub has.", undo_main)
-
-    def _git_done(self, result: dict) -> None:
-        self._pushing = None
-        self._push_said[TRUNK] = str(result.get("said") or "")
-        self._note(self._push_said[TRUNK])
-        # The facts moved — GitHub has the commits now, or this folder
-        # no longer does — so they are asked for again rather than
-        # patched.
-        self._scan_changes()
-        if self.screen == "Problems":
-            self._fill_problems()
-
-    def _restart_all(self) -> None:
-        """His Restart: the app, then this window, so that both run what
-        is on the disk now — the changes he is about to try, or the
-        older version after an Undo.
-
-        The app half is restart_app, off the Tk thread because it waits.
-        The window half cannot be done from inside the window: main()
-        holds the single-instance mutex until run() returns, and a fresh
-        copy started before that would meet the mutex, poke this window
-        to the front and exit — leaving no dashboard at all once this
-        one closed. So the window only ASKS (self._relaunch) and closes
-        itself; main() releases the mutex and then opens the new copy.
-        A restart that failed keeps the window and says why on the card,
-        because a new window would not know the sentence.
-        """
-        if self._pushing is not None:
-            return
-        self._pushing = "restart"
-        self._push_said[TRUNK] = ("Restarting — the app takes about 25 "
-                                  "seconds to load.")
-        self._note("restarting — the app takes about 25 seconds to load")
-
-        def work() -> None:
-            try:
-                result = restart_app()
-            except Exception as e:        # noqa: BLE001 — a failure is a
-                result = {"ok": False,    #                sentence
-                          "said": f"Restart failed before it started "
-                                  f"({e}). Nothing changed."}
-            self._events.put(lambda r=result: self._restart_done(r))
-
-        threading.Thread(target=work, daemon=True,
-                         name="changes-restart").start()
-        self._fill_problems()             # the card says it is going
-
-    def _restart_done(self, result: dict) -> None:
-        self._pushing = None
-        if result.get("ok"):
-            self._relaunch = True
-            self._close()
-            return
-        self._push_said[TRUNK] = str(result.get("said") or "")
-        self._note(self._push_said[TRUNK])
-        if self.screen == "Problems":
-            self._fill_problems()
 
     # ------------------------------------------------- reporting one back
 
@@ -7638,11 +4817,9 @@ class Dashboard:
         if send and hasattr(module, "mark_preview"):
             module.mark_preview(self._problems_store(), item.get("id", ""),
                                 attach)
-        self._note(f"filed as {item.get('id', '')} — it is on the Problems "
-                   f"screen until you answer it")
-        self._write_digest()
-        if self.screen == "Problems":
-            self._fill_problems()
+        said = ("the preview says what leaves this PC" if send
+                else "it stays on this PC")
+        self._note(f"filed as {item.get('id', '')} — {said}")
         if send:
             self._report_preview(str(item.get("id", "")))
 
@@ -7755,14 +4932,12 @@ class Dashboard:
                     self._note("could not queue the report — it stays on "
                                "this PC; try Preview & send again")
                 else:
-                    self._note(f"{ident}: queued — it goes up when the app "
-                               "is next online, and the row says when it did")
+                    self._note(f"{ident}: queued — it goes up when the "
+                               "app is next online")
                     self._ask("account", do="nudge")
             else:
                 module.keep_local(store, ident)
                 self._note(f"{ident} stays on this PC")
-            if self.screen == "Problems":
-                self._fill_problems()
 
         body = tk.Frame(top, bg=ui.BG)
         body.pack(fill="both", expand=True, padx=20, pady=(18, 20))
@@ -11627,45 +8802,6 @@ class Dashboard:
         else:
             self._note("nothing to stop")
 
-    def _nightly_running(self) -> bool:
-        """Is the nightly test suite going right now?
-
-        A file on disk and not the control channel, because the run is
-        not the app's: a scheduled task starts it so that a crashed
-        DeskIT is still a tested DeskIT, and this window has to be able
-        to see a run that DeskIT knows nothing about. nightly.running
-        asks two things — the marker exists AND somebody still holds the
-        lock — so a run that was killed leaves no button behind.
-
-        It never raises. A missing folder, a missing module, a disk that
-        will not answer: all of those mean "no run", which is the same
-        bar he has had all along.
-        """
-        if not paths.DEVELOPER:
-            return False                  # the nightly run is the owner's
-        try:
-            return bool(_nightly().running(APP_DIR))
-        except Exception:                 # noqa: BLE001
-            return False
-
-    def _stop_tests(self) -> None:
-        """End the nightly run. One press, and no arming — there is
-        nothing to be sorry about: a stopped run is written down as
-        stopped and files nothing, and the next night runs as usual.
-
-        The button stays where it is and says "Stopping…" until the run
-        actually lets go, because the suite may be inside a test that
-        takes a second to come out of, and a button that vanished on the
-        press would leave him wondering whether it took."""
-        button = self.parts.get("tests_stop")
-        if _nightly().ask_stop(APP_DIR):
-            if button is not None and button.winfo_exists():
-                button.configure_text("Stopping…")
-            self._note("stopping the nightly test run — it is recorded as "
-                       "stopped, not as a failure")
-        else:
-            self._note("could not ask the test run to stop")
-
     def _toggle_pause(self) -> None:
         """The button that is in the bar in every state. Start when
         nothing is running, Resume when it is paused, Pause when it is
@@ -12043,11 +9179,6 @@ class Dashboard:
         self.parts["hint"].config(text=f"hold {dictate}" if dictate != "off"
                                   else "no dictation key set")
 
-        # Is a nightly test run going? Asked here, once a poll, and NOT
-        # inside the painter: the painter is also called from a screen
-        # swap and from the breathing loop, and a question that touches
-        # the disk belongs on the poll that already does.
-        self._tests_running = self._nightly_running()
         # Which buttons the bar holds and what each of them says are ONE
         # decision — the word on the run key is the only thing that tells
         # Start's state from Pause's — so both live in one method.
@@ -12055,7 +9186,6 @@ class Dashboard:
         self._lock_tick()
         {"Home": self._poll_waiting,
          "Corrections": self._poll_corrections,
-         "Problems": self._poll_problems,
          "Said": lambda: None,
          "Keys": self._paint_keys,
          "Settings": self._paint_settings,
@@ -12230,12 +9360,9 @@ class Dashboard:
             except Exception:                            # noqa: BLE001
                 pass
         self._resume_after_capture()
-        if self.screen == "Corrections" and self._corr_tab == "read":
-            self._read_leave()
         for pending in (self._pump_after, self._toast_after,
                         self._search_after, self._rows_after,
-                        self._slide_after, self._breath_after,
-                        self._q_after):
+                        self._slide_after, self._breath_after):
             try:
                 if pending is not None:
                     self.root.after_cancel(pending)
