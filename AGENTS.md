@@ -194,7 +194,12 @@ exactly what classic did.
    `settings.TABS` names, in the plain words written there; a new key
    is the developer's unless a person has a reason to change it, and
    then it gets a `Friendly` row on the tab it belongs to — never a
-   section of the file drawn whole.
+   section of the file drawn whole. (The file is called
+   `defaults.toml` now — this rule predates the split. `migrate.py`
+   renamed the old single file to `config.legacy.toml` and the app reads
+   `defaults.toml` + `settings.toml` + `state.json` since; checked on
+   this machine 2026-10-02, no `config.toml` exists. The measurements
+   are in `defaults.toml`, his own choices in `settings.toml` over it.)
 7. **Do not end a turn mid-task to report progress — every turn end
    rings the owner's desk.** Claude Code fires its Stop hook at the end
    of EVERY assistant turn, and that hook is the notify door
@@ -314,7 +319,14 @@ exactly what classic did.
 - GPU: 16 GB VRAM. Budgeted: two Whisper models (~6 GB) + gemma3:12b
   resident in Ollama (~8.5 GB). Adding model residency means evicting
   something — check `nvidia-smi`.
-- Mic: Arctis 7 headset, device index `"1"`, 16 kHz mono WAV everywhere.
+- Mic: Arctis 7 headset, 16 kHz mono WAV everywhere — pinned by NAME,
+  never by index: `audio.device = "Headset Microphone (Arctis 7 Chat),
+  Windows WASAPI"` in `state.json` (a state key, the top layer), and
+  `defaults.toml` ships `device = ""` with a comment forbidding indices.
+  This line used to say `device index "1"`, and on 2026-10-02 index 1 is
+  the same headset through MME at 0.18 s of input latency against
+  WASAPI's 0.01 s (index 14 that day; indices move between boots).
+  Anyone who trusted the old line moved dictation onto the slow path.
 - Ollama at `http://127.0.0.1:11434` — **127.0.0.1, never localhost**
   (localhost resolves ::1 first and costs ~2 s of refused connection).
 - Keys: Windows Credential Manager first (`DeskIT/groq`, `DeskIT/gemini`
@@ -389,6 +401,17 @@ exactly what classic did.
   on 2026-09-17 removed 72 read-aloud clips (29.6 min of the owner's
   voice with vouched text) that cannot be re-recorded. List every
   delete a change performs on this machine BEFORE it lands.
+  **It took more than the read-aloud clips, and the numbers built on
+  what it took still circulate.** Checked 2026-10-02: the oldest file in
+  `corpus\` is from 2026-09-17 17:54 and the first line of
+  `transcripts.log` from 16:59 the same day — the whole corpus and the
+  transcript history went with it. So the "69 gold clips" that
+  `rolling.py`'s WER table (2026-09-13) and the model-swap comparisons
+  were measured on no longer exist; the 52 gold clips in `corpus\` today
+  are a DIFFERENT set, labelled a different way (the `raw`/`text` trap
+  below says how).
+  Re-running one of those measurements on today's corpus measures
+  something else, silently.
 - **A product module never imports an owner module at the top.**
   `nightly`, `questions`, `answer_card`, `tests_quiet`, `inbox`,
   `weekly_review`, `dev_git` (`tests.DEV_MODULES`) are not in the build
@@ -495,6 +518,45 @@ exactly what classic did.
   ever unpin it, `repetition_penalty`, `collapse_char_runs` and the loop
   warning are what is left. The GPU number above was taken while six agents
   shared the card; re-time it on a quiet machine before quoting it.
+- **...and pinning the temperature turned two retries into two silent
+  drops.** Read in the installed faster-whisper 1.2.1 on 2026-10-02.
+  (1) A window whose `no_speech_prob` is over `no_speech_threshold` is
+  SKIPPED WHOLE — `seek += segment_size; continue` (transcribe.py
+  ~1217-1235) — unless its `avg_logprob` is over `log_prob_threshold`,
+  and the only trace is `logger.debug("No speech threshold is met")`.
+  Both of `hallucination_guards()`'s values push that way (0.4 against
+  stock 0.6, -0.7 against stock -1.0), and with the ladder gone a weak
+  window is never re-decoded into one that clears the rescue. (2) The
+  `hallucination_silence_threshold` branch deletes the rest of a window
+  — `current_segments[si:] = []; break` (~1337) — with no log line at
+  ANY level. HOW OFTEN EITHER FIRES ON HIS SPEECH IS UNMEASURED, and
+  nothing in app.log can say: the VAD's own line is already there at
+  INFO ("VAD filter removed MM:SS.mmm of audio", 450 lines in app.log
+  that day) but not which stretches, and a hole in a transcript looks
+  the same whether it was a pause or one of these. Two ways to find
+  out, neither yet run: `logging.getLogger("faster_whisper")` at DEBUG
+  for a week (it never logs dictated text — checked, D8-safe), or the
+  `recent\` wavs re-decoded at stock thresholds on the hidden desktop
+  at night and diffed against `words`. Until one of them has run, do not
+  write "the guards only remove hallucinations" anywhere.
+- **There is no unbiased accuracy number on this machine, and the tools
+  that look like one are not.** Checked 2026-10-02. `--benchmark` scores
+  only the `recent\` clips with a typed correction (`meta["corrected"]`)
+  and there were 0 of 50 — it prints "nothing to measure". `--review`
+  scores against `corpus\` gold, which is ~97% pipeline text (the
+  `raw`/`text` trap below). A WER computed where a gold line and a
+  `recent\` line share a clip (3.0-3.2% over 9 clips, 2026-09-24) is the
+  residual on clips picked FOR having had an error, not the pipeline's
+  error rate — never quote it as one. The one source whose label exists
+  before the audio, the read-aloud channel (`corpus\read\`), has held 0
+  readings since the 2026-09-17 reset, and its `reading.match` forgives
+  every word carrying Latin or digits — exactly the class (English terms
+  in Hebrew letters) that is 31% of the errors he has confirmed. What IS
+  honest today, and needs no labels: each sidecar's three hotword-free
+  re-decodes (`review.variants`) as acoustic witnesses, and his own
+  second-reading verdicts in `transcripts.log` (`REVIEW | accepted |
+  rejected`, 164 on 2026-10-02) as change-level labels. Both are
+  change-level, not WER; use them as such.
 - **A percentage guard cannot see a truncation.** `polish._is_safe` bounds
   drift at ±15% *symmetrically* — that part is fine and was verified — but
   15% of a long dictation is enormous: it silently accepted a 13-word cut
@@ -510,15 +572,32 @@ exactly what classic did.
   in `recent\`: 49 legitimate repairs still pass, 1 rejected, and it is the
   known truncation.
 - **`raw` and `text` in `recent\*.json` are a free before/after of the
-  whole text pipeline, and they settle stage arguments outright.** `raw` is
-  the decoder's output, `text` is what was pasted. Example: the polite
-  words that appear at the end of sentences unbidden ("בבקשה", "טוב") are
-  present in `raw` in 2 of 79 pairs and were ADDED by the repair pass in
-  **0 of 79** — so that bug is the fine-tune's, not Groq's, and no amount
-  of prompt work on `polish.py` will touch it. Check this pair before
-  blaming a stage. (`corpus\*.json` does NOT carry `raw` — only
-  `{kept, seconds, text, tier}` — so it contributes 0 pairs to such a
-  census, and `tier = "gold"` there means the owner corrected it by hand.)
+  text pipeline AFTER the decoder, and they settle stage arguments
+  outright.** `text` is what was pasted; `raw` is what reached the
+  vocabulary swap — NOT the decoder's own output, which this line said
+  until 2026-10-02. `transcribe()` returns `clean_text(_settle(...))`, so
+  the loop cut, the stock-phrase drop, the boilerplate strip and
+  `cleanup`'s fillers and collapsed repeats are all upstream of `raw`.
+  What the decoder itself wrote is the sidecar's `words` — `[word, start,
+  end, probability]` straight off its segments, never filtered — on every
+  sidecar; joined, it differs from `raw` on 15-30 of 50 clips, and the
+  difference is exactly what those stages removed. So: `raw` -> `text`
+  measures vocab + repair + punctuation, and `words` -> `raw` measures
+  the cleanup. Example: the polite words that appear at the end of
+  sentences unbidden ("בבקשה", "טוב") are present in `raw` in 2 of 79
+  pairs and were ADDED by the repair pass in **0 of 79** — so that bug is
+  the fine-tune's (the stages above `raw` only ever remove words), not
+  Groq's, and no amount of prompt work on `polish.py` will touch it.
+  Check this pair before blaming a stage.
+  (`corpus\*.json` does NOT carry `raw` — only `{kept, seconds, text,
+  tier}` — so it contributes 0 pairs to such a census. And `tier =
+  "gold"` there does NOT mean the owner corrected the text by hand, which
+  this line also said: since the second reading, an approved card files
+  the WHOLE proposed sentence as gold (`review.py`, `corpus.admit(...,
+  item["proposed"], "gold")`) while the card put one to four changed
+  words in front of him — measured 2026-09-24, about 1.1 approved words
+  in a clip of about 44, so ~3% of a gold line was ever looked at. Gold
+  here is pipeline text with one confirmed fix in it, not ground truth.)
 - **Do not fix the invented polite tail with a word list.** It is tempting
   and it is wrong: of 18 dictations ending in a polite word, roughly 10 are
   real speech — he really does end sentences with "בבקשה". The existing
@@ -1342,7 +1421,7 @@ exactly what classic did.
 | `recorder.py` | mic stream, WAV frames |
 | `hotkey.py` | global hook, state machine, chords |
 | `transcribers/` | whisper/gemini/fake backends |
-| `rolling.py` | the dictation decoded WHILE IT IS STILL BEING SPOKEN, so the release waits only for the tail: a 95 s clip 4.9 s -> 1.05 s, 80 s 3.7 -> 1.3, 70 s 2.05 -> 0.9, and about a second whatever the length. One `Roller` per recording — started at the key down, `close()`d at the key up, `finish()`ed on the worker — reads the recorder's buffer on a thread of its own (read, never written) and hands each settled stretch to the backend's `decode_window` (`LEAD_S` and `EXT_S`, the neighbours' audio every window is decoded with, are defined here and spent there), with `main.App._polish_window` repairing it on a thread of its own while the key is still held (`Window.polished` / `polished_by`; at the release only the leading run of repaired windows is trusted). It is on by default and live — `[local] rolling`, `rolling_window_s = 25.0`, and firing on every dictation long enough to cut — 31 of them in `app.log` on 2026-10-01, a running count, so re-count it rather than quoting this one — and both knobs are the FILE'S, not the screen's. Every failure has the same answer: `finish()` returning None (nothing settled, a decode that threw, or `invalidate()` because the ask card took a slice out of the recording) means the whole recording is decoded exactly as it was before this module existed. **AND NOTHING REACHES THE SCREEN EARLY** — `[polish]`'s rule stands, "..." means not finished and text means finished and will not change, so the windows are joined in the worker after the tail and the transcript lands once, whole, as it always has. WHERE TO CUT is `cut_at`, pure so a test can drive it with numbers, and decided on the audio and not the clock: at a pause — a run of quiet at least `PAUSE_S` long — so no word is split between two decodes; only once that pause is `LAG_S` behind the microphone, so a breath that turns out to be mid-word is not mistaken for the end of one; the LATEST such pause, so a window comes out as long as `window_s` allows rather than as short as the speech permits; through the pause's MIDDLE, so both windows keep a little of the silence; and never past `MAX_WINDOW_S` = 28 s without a cut — past that it takes the quietest chunk of the last five seconds, because a quiet chunk chosen here beats the hard 30 s edge faster-whisper would choose itself. "Quiet" is RELATIVE (`RATIO` of the pending audio's 95th-percentile loud level, `FLOOR` the least that can ever count): this microphone peaks at 0.03-0.06 on many recordings and 0.3 on others while the floor between words sits at 0.0000-0.0009 on all of them, so a fixed threshold would either miss the quiet sessions' pauses or call their speech silence. And a stretch under HALF the target is refused outright — a later pause makes a longer one — unless the pending audio is about to hit the 28 s ceiling anyway. The size was measured, not chosen, and the module docstring carries the table (2026-09-13, the 69 gold clips in `corpus\`, the roller simulated over each as it would have arrived): whole recording 7.53% WER, 25 s windows 9.44%, 20 s 11.0-11.9%, 8 s 13.92% — against the three framing CONTROLS that make those readable, the same whole recording with only its framing nudged (0.35 s of silence in front 9.16%, 1.0 s in front 10.62%, the first 0.3 s dropped 11.21%). 25 s is inside that band, 20 s sits at its edge, 8 s is well outside; the wish for "no minimum" was tried and is what the 8 s row says |
+| `rolling.py` | the dictation decoded WHILE IT IS STILL BEING SPOKEN, so the release waits only for the tail: a 95 s clip 4.9 s -> 1.05 s, 80 s 3.7 -> 1.3, 70 s 2.05 -> 0.9, and about a second whatever the length. One `Roller` per recording — started at the key down, `close()`d at the key up, `finish()`ed on the worker — reads the recorder's buffer on a thread of its own (read, never written) and hands each settled stretch to the backend's `decode_window` (`LEAD_S` and `EXT_S`, the neighbours' audio every window is decoded with, are defined here and spent there), with `main.App._polish_window` repairing it on a thread of its own while the key is still held (`Window.polished` / `polished_by`; at the release only the leading run of repaired windows is trusted). It is on by default and live — `[local] rolling`, `rolling_window_s = 25.0`, and firing on every dictation long enough to cut — 31 of them in `app.log` on 2026-10-01, a running count, so re-count it rather than quoting this one — and both knobs are the FILE'S, not the screen's. Every failure has the same answer: `finish()` returning None (nothing settled, a decode that threw, or `invalidate()` because the ask card took a slice out of the recording) means the whole recording is decoded exactly as it was before this module existed. **AND NOTHING REACHES THE SCREEN EARLY** — `[polish]`'s rule stands, "..." means not finished and text means finished and will not change, so the windows are joined in the worker after the tail and the transcript lands once, whole, as it always has. WHERE TO CUT is `cut_at`, pure so a test can drive it with numbers, and decided on the audio and not the clock: at a pause — a run of quiet at least `PAUSE_S` long — so no word is split between two decodes; only once that pause is `LAG_S` behind the microphone, so a breath that turns out to be mid-word is not mistaken for the end of one; the LATEST such pause, so a window comes out as long as `window_s` allows rather than as short as the speech permits; through the pause's MIDDLE, so both windows keep a little of the silence; and never past `MAX_WINDOW_S` = 28 s without a cut — past that it takes the quietest chunk of the last five seconds, because a quiet chunk chosen here beats the hard 30 s edge faster-whisper would choose itself. "Quiet" is RELATIVE (`RATIO` of the pending audio's 95th-percentile loud level, `FLOOR` the least that can ever count): this microphone peaks at 0.03-0.06 on many recordings and 0.3 on others while the floor between words sits at 0.0000-0.0009 on all of them, so a fixed threshold would either miss the quiet sessions' pauses or call their speech silence. And a stretch under HALF the target is refused outright — a later pause makes a longer one — unless the pending audio is about to hit the 28 s ceiling anyway. The size was measured, not chosen, and the module docstring carries the table (2026-09-13, the 69 gold clips in `corpus\` as it stood then — the 2026-09-17 reset took them, so today's `corpus\` cannot re-run it — the roller simulated over each as it would have arrived): whole recording 7.53% WER, 25 s windows 9.44%, 20 s 11.0-11.9%, 8 s 13.92% — against the three framing CONTROLS that make those readable, the same whole recording with only its framing nudged (0.35 s of silence in front 9.16%, 1.0 s in front 10.62%, the first 0.3 s dropped 11.21%). 25 s is inside that band, 20 s sits at its edge, 8 s is well outside; the wish for "no minimum" was tried and is what the 8 s row says |
 | `transcribers/local_whisper.py`, the rolling half | `decode_window` is one settled stretch decoded exactly as the whole recording would be — the Hebrew model, the language pinned, the same prompt, hotwords, beam and guards, the same loop retry and the same checks after — WITH ITS NEIGHBOURS AROUND IT: `LEAD_S` of the previous window in front and up to `EXT_S` of what came after (which exists, because a cut is at least `LAG_S` behind the microphone). Bare cuts were measured to cost words at the edges (2026-09-13, the gold clips): a window ending on a breath grew a "תודה", the next lost its soft first words to VAD's onset; with a second of context either side the decoder sees what the whole recording would have shown it at that point. `_trim` then keeps the words whose MIDDLE falls inside the stretch — the middle and not the start, because the boundary sits in a pause, so a word's middle is well clear of it on one side or the other while its start and end move a few ms between two decodes of the same audio, and a word that BOTH neighbours drop is a word lost — and rebuilds the text by running the words' own strings together, never joining with spaces: faster-whisper keeps each word's leading space in `word`, and a token it split at punctuation ("'ר" after "בפיצ") has none, so a space joined one INTO the word. It touches no instance state, because the live path may be finishing the previous dictation on the worker while this runs. `transcribe_with_head` is the release: only the audio past `head.end_s` is decoded now, with the same lead and the same trim, and a tail shorter than `MIN_TAIL_S` = 2 s is not decoded alone — Whisper invents on very short clips — but together with the window before it, which is decoded again in its place. The ENGLISH decision is still made there, on the whole recording as it always was, and a recording that turns out not to be Hebrew throws every window away and goes the old way. `can_overlap` is `word_timestamps`: a backend that cannot time its words gets bare windows (`Roller(overlap=False)`) and no trim |
 | `polish.py` + `translate.py` | repair pass + all chat backends (Gemini/Ollama/Cerebras/Groq) |
 | `cleanup.py` / `vocab.py` | filler removal, learned words. `vocab.py` has three hand doors since 2026-09-21 — `learn_by_hand` (a typed pair stands at `replace_after_hits` at once: both sides were spelled out on purpose), `edit` (keeps the hits under a new heard form), `forget` (the next sync makes a tombstone of the absence) — behind the app's `vocab` control verb (`main.App._vocab_command`: the app owns the file while it runs) and, with nothing running, the desk's own write. The Corrections > Words tab is their face: the whole list, a search, `[+ Teach a word]`, the pencil and the cross on a row, and the `Use them` switch (`vocab.enabled`, live for the prompt too — the hotwords callable asks the config at every decode) |
