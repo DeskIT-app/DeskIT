@@ -21174,6 +21174,54 @@ def test_pressing_the_x_on_a_report_keeps_the_page_where_he_was_reading(
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def test_no_message_about_a_setting_calls_it_what_the_file_calls_it() -> None:
+    """A sentence a person reads never carries the developer's name for
+    the line.
+
+    2026-10-01: the owner turned one switch on the Settings place off and
+    on again, and the window told him `hint.enabled saved` — the dotted
+    path out of defaults.toml, under a row that reads "Show the key card
+    while a key is held". The row's own label was on the screen he was
+    looking at; the path is the name only this repository uses.
+
+    Every row the Settings place draws and every key the Keys screen
+    lists is checked here, and the two files that build such sentences
+    are read for the shapes that made that one, so a new message cannot
+    bring it back.
+    """
+    import settings as settings_mod
+
+    for path in settings_mod.friendly_paths():
+        label = settings_mod.label_for(path)
+        assert label and label != path, path
+        for live in (True, False):
+            said = settings_mod.saved_sentence(path, live=live)
+            assert path not in said, (path, said)
+            assert label in said, (path, said)
+        assert "next time" in settings_mod.saved_sentence(path, live=False)
+        assert "next time" not in settings_mod.saved_sentence(path)
+
+    # A measurement no tab draws has no name a person would know, so its
+    # message carries none — rather than falling back to the path, which
+    # is the bug itself.
+    quiet = settings_mod.saved_sentence("local.beam_size", live=False)
+    assert "local.beam_size" not in quiet and "next time" in quiet, quiet
+
+    for field, label in config_mod.HOTKEY_FIELDS:
+        said = config_mod.rebound_sentence(field, "ctrl+f6")
+        assert field not in said and label in said, said
+        assert "ctrl+f6" in said, said
+        off = config_mod.rebound_sentence(field, "")
+        assert field not in off and label in off, off
+
+    here = Path(__file__).resolve().parent
+    for name in ("dashboard.py", "main.py"):
+        source = (here / name).read_text(encoding="utf-8")
+        for shape in ("{setting.path} saved", "{name} saved",
+                      "{field} is now", "{setting.path}:"):
+            assert shape not in source, (name, shape)
+
+
 def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
     """The write is config.save with the dotted path and nothing else —
     one line into settings.toml (chapter 3.4). A refused value (save
@@ -21196,7 +21244,8 @@ def test_a_switch_on_the_settings_screen_writes_one_dotted_line() -> None:
             switch.toggle()
             assert written == [{"punctuate.auto": True}], written
             assert board.parts["values"]["punctuate.auto"] is True
-            assert "punctuate.auto saved" in board._toast_text, \
+            assert "Punctuate every dictation" in board._toast_text \
+                and "punctuate.auto" not in board._toast_text, \
                 board._toast_text
             # Drawn again after a visit to another tab, the line shows
             # the new value: the values cache outlives the widgets.
@@ -21238,7 +21287,8 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
         def ask(command, then=None, **args):
             asked.append((command, args))
             if then is not None:
-                then({"ok": True, "message": f"{args['name']} saved"})
+                then({"ok": True, "message":
+                      settings_mod.saved_sentence(args["name"])})
 
         def never(*_a, **_k):
             raise AssertionError("the dashboard wrote the file itself")
@@ -21261,7 +21311,10 @@ def test_a_setting_changed_while_the_app_runs_goes_through_the_app() -> None:
                                          "value": "never"})], asked
             assert menu.get() == "never"
             assert board.parts["values"]["polish.when"] == "never"
-            assert "polish.when saved" in board._toast_text
+            assert "Fix misheard words with a model" \
+                in board._toast_text \
+                and "polish.when" not in board._toast_text, \
+                board._toast_text
 
             def refuse(command, then=None, **args):
                 then({"ok": False, "error": "polish.when must be one "
@@ -21555,8 +21608,9 @@ def test_set_option_writes_first_and_takes_the_live_ones_into_the_running_app() 
         app.hint = _Hint()
 
         message = app.set_option("punctuate.auto", True)
-        assert "punctuate.auto saved" in message and "next time" not in message, \
-            message
+        assert "Punctuate every dictation" in message \
+            and "punctuate.auto" not in message \
+            and "next time" not in message, message
         assert config_mod.load(copy).punctuate.auto is True
         assert app.cfg.punctuate.auto is True
         assert app._punctuator is None, \

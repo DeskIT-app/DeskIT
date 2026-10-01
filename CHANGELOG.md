@@ -12,6 +12,10 @@ owner speaking ("on my first update", "I asked"), never "the owner" or
 "his" (his word, 2026-09-21, on reading 1.0.2's notes on GitHub).
 `test_the_release_notes_are_english_only` holds both rules.
 
+## 1.0.5
+
+Settings tells me what I changed in the words I had just read. I turned a switch off and on again and the message at the bottom of the window said "hint.enabled saved" — the name of a line in a file I have never opened, for the row I was looking at. Every one of those messages now says the row back to me: "Show the key card while a key is held" — saved, and it tells me the same way whether the change is live or waiting for the next start. Moving a key says "Screenshot (tap)" is now ctrl+f11 rather than capture_hotkey, and when I type something a row cannot take, it is the row's own name that says so.
+
 ## 1.0.4
 
 Settings is rearranged, and every tab is named for what you came looking for. I went looking for where my recordings and screenshots are saved and could not find them — they were under Screen, and they belong in General. There are eight tabs now: General (the dot and its corner, what is drawn on the screen, the microphone, Start with Windows, where files are saved, updates), Dictation (the speech model, what it learns, the translate key), Screen (screenshots, recordings, the camera), Messages & sounds, Phone, Account, Privacy and About. The words changed too: instead of library and code names it says what a thing does and how much room it takes — "Screen recording and the webcam need one extra download (28 MB)" instead of a library's name — all twenty sounds have human names ("Nothing to do", not "noop"), and facts about this computer and the model moved to About, where a fact belongs.

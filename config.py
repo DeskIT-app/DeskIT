@@ -1462,6 +1462,25 @@ HOTKEY_FIELDS: tuple[tuple[str, str], ...] = (
 )
 
 
+def hotkey_label(field: str) -> str:
+    """What the Keys screen calls `field` — the name a MESSAGE about that
+    key uses too. The file's own word for the line (`capture_hotkey`) is
+    the developer's; the person who moved the key read "Screenshot (tap)"
+    on the row he was pressing. Same rule as settings.saved_sentence,
+    and the same owner's complaint of 2026-10-01 behind it."""
+    for name, label in HOTKEY_FIELDS:
+        if name == field:
+            return label
+    return field
+
+
+def rebound_sentence(field: str, key: str) -> str:
+    """What a person is told when one key moved — or was turned off."""
+    label = hotkey_label(field)
+    name = label if label != field else "that key"
+    return f'"{name}" is now {key}' if key else f'"{name}" is off'
+
+
 # The keys that may carry modifiers ("ctrl+f6"). Only the taps: they are
 # pressed and released in an instant, which is the only thing a chord can
 # describe. A chord on the hold hotkey would mean keeping ctrl down for
