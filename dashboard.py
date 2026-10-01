@@ -2077,18 +2077,26 @@ class Dashboard:
         the way the Said list draws its pills — because a list of forty
         Canvases is fine and a list of forty Frames of Canvases is not.
         """
-        self._title("Corrections", "the words it learned, what the second "
-                                   "reading proposes, and what you read to it")
+        self._title("Corrections", "the words it learned, and what the "
+                                   "second reading proposes")
         p = self.parts
         self._row_w = CW
-        chips = tk.Frame(self.sheet, bg=ui.BG)
-        chips.place(x=PAD, y=CORR_CHIPS_Y)
+        # ONE TAB IS NO TABS. The strip is drawn only while there is
+        # something to choose between: with Read aloud gone (2026-10-01,
+        # MASTER.md §8) a lone "Words" chip over a list of words is a
+        # control that chooses nothing — it was the first thing visible
+        # in the photograph of the place that evening. corr_tabs() is
+        # still the table, so a second tab brings the strip back.
         p["corr_chips"] = {}
-        for key, name in corr_tabs():
-            chip = ui.Chip(chips, name, lambda k=key: self._corr_tab_to(k),
-                           active=(key == self._corr_tab), bg=ui.BG)
-            chip.pack(side="left", padx=(0, 6))
-            p["corr_chips"][key] = chip
+        if len(corr_tabs()) > 1:
+            chips = tk.Frame(self.sheet, bg=ui.BG)
+            chips.place(x=PAD, y=CORR_CHIPS_Y)
+            for key, name in corr_tabs():
+                chip = ui.Chip(chips, name,
+                               lambda k=key: self._corr_tab_to(k),
+                               active=(key == self._corr_tab), bg=ui.BG)
+                chip.pack(side="left", padx=(0, 6))
+                p["corr_chips"][key] = chip
         self._words_editing = None
 
         # the tools, right of the chips: search · Use them · Teach a word
